@@ -203,9 +203,15 @@ impl ApplyReport {
 struct Session {
     id: u64,
     changed: BTreeSet<String>,
-    savepoints: Vec<String>,
+    savepoints: Vec<SessionSavepoint>,
     counter: u64,
     pull_pages: Vec<BTreeMap<String, u64>>,
+}
+
+struct SessionSavepoint {
+    name: String,
+    changed: BTreeSet<String>,
+    pull_pages_len: usize,
 }
 
 pub struct Client<S: ClientStore> {
@@ -827,7 +833,11 @@ impl<S: ClientStore> Client<S> {
         session.counter += 1;
         let name = format!("session_{}", session.counter);
         self.store.savepoint(&name)?;
-        session.savepoints.push(name);
+        session.savepoints.push(SessionSavepoint {
+            name,
+            changed: session.changed.clone(),
+            pull_pages_len: session.pull_pages.len(),
+        });
         Ok(())
     }
     pub fn session_release(&mut self) -> Result<()> {
@@ -835,22 +845,25 @@ impl<S: ClientStore> Client<S> {
             .session
             .as_mut()
             .ok_or_else(|| invalid("no active transaction"))?;
-        let name = session
+        let savepoint = session
             .savepoints
             .pop()
             .ok_or_else(|| invalid("no savepoint"))?;
-        self.store.release(&name)
+        self.store.release(&savepoint.name)
     }
     pub fn session_rollback_savepoint(&mut self) -> Result<()> {
         let session = self
             .session
             .as_mut()
             .ok_or_else(|| invalid("no active transaction"))?;
-        let name = session
+        let savepoint = session
             .savepoints
             .pop()
             .ok_or_else(|| invalid("no savepoint"))?;
-        self.store.rollback_to(&name)
+        self.store.rollback_to(&savepoint.name)?;
+        session.changed = savepoint.changed;
+        session.pull_pages.truncate(savepoint.pull_pages_len);
+        Ok(())
     }
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
         let key = self.schema.record_key(&key.model, &key.identity)?;

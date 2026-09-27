@@ -3,7 +3,10 @@ use axton_client::*;
 use axton_client::{StoreChange, StoreDelivery};
 use axton_sqlite::SqliteStore;
 use common::*;
+use serde_json::Value;
 use serde_json::json;
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[test]
 fn prepares_newer_authority_under_optimism_without_changing_visible_row() {
@@ -421,4 +424,203 @@ fn preflight_does_not_consume_outstanding_pull_identity() {
         .unwrap();
     assert!(report.stale);
     assert!(client.read(&key()).unwrap().is_none());
+}
+
+#[test]
+fn rolled_back_caller_savepoint_does_not_consume_prepared_pull() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = open(&dir.path().join("db"));
+    subscribe(&mut client, "a");
+    client.downlink_request().unwrap().expect("issued pull");
+    client.begin_session().unwrap();
+    client.session_savepoint().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::Page(page("a", 0, 1, Some("old-response"))))
+        .unwrap();
+    assert_eq!(
+        client
+            .apply_prepared_store(prepared)
+            .unwrap()
+            .as_page()
+            .unwrap()
+            .applied,
+        1
+    );
+    client.session_rollback_savepoint().unwrap();
+    client.commit_session().unwrap();
+    assert!(client.read(&key()).unwrap().is_none());
+    assert_eq!(client.cursor("a").unwrap(), Some(0));
+    assert!(!client.last_changed().contains("Entry"));
+    client
+        .transaction(|tx| tx.set_channel("a".into(), false))
+        .unwrap();
+    subscribe(&mut client, "a");
+    let report = client
+        .apply_page(page("a", 0, 1, Some("old-response")))
+        .unwrap();
+    assert!(
+        report.stale,
+        "rolled-back response must retain its old pull epoch"
+    );
+    assert!(client.read(&key()).unwrap().is_none());
+}
+
+#[test]
+fn released_caller_savepoint_keeps_prepared_pull_for_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = open(&dir.path().join("db"));
+    subscribe(&mut client, "a");
+    client.downlink_request().unwrap().expect("issued pull");
+    client.begin_session().unwrap();
+    client.session_savepoint().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::Page(page("a", 0, 1, Some("first"))))
+        .unwrap();
+    client.apply_prepared_store(prepared).unwrap();
+    client.session_release().unwrap();
+    client.commit_session().unwrap();
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "first");
+    client
+        .transaction(|tx| tx.set_channel("a".into(), false))
+        .unwrap();
+    subscribe(&mut client, "a");
+    let mut second = page("a", 0, 1, Some("second"));
+    second.changes[0].stamp = 2;
+    let report = client.apply_page(second).unwrap();
+    assert!(
+        !report.stale,
+        "released page must consume the old pull at commit"
+    );
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "second");
+}
+
+struct FaultStore {
+    sqlite: SqliteStore,
+    enabled: Rc<Cell<bool>>,
+    failed: Rc<Cell<bool>>,
+    post_fault_held_reads: Rc<Cell<usize>>,
+}
+
+impl ClientStore for FaultStore {
+    fn begin(&mut self) -> Result<()> {
+        self.sqlite.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        self.sqlite.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.sqlite.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.sqlite.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.sqlite.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.sqlite.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        // The dirty Entry has already been staged into its before image and
+        // inserted into Held when storing its stamp reaches this boundary.
+        if self.enabled.get()
+            && !self.failed.get()
+            && sql.starts_with("INSERT INTO axton_record")
+            && parameters.get(2) == Some(&json!(2))
+        {
+            self.failed.set(true);
+            return Err(invalid("injected stamp write failure after Held insert"));
+        }
+        self.sqlite.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.sqlite.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        if self.failed.get()
+            && sql.contains("FROM \"axton_before_Entry\"")
+            && parameters == [json!("e")]
+        {
+            self.post_fault_held_reads
+                .set(self.post_fault_held_reads.get() + 1);
+        }
+        self.sqlite.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.sqlite.query_committed(sql, parameters)
+    }
+}
+
+#[test]
+fn failed_record_savepoint_discards_held_key_before_later_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let enabled = Rc::new(Cell::new(false));
+    let failed = Rc::new(Cell::new(false));
+    let post_fault_held_reads = Rc::new(Cell::new(0));
+    let store = FaultStore {
+        sqlite: SqliteStore::open(dir.path().join("db")).unwrap(),
+        enabled: enabled.clone(),
+        failed: failed.clone(),
+        post_fault_held_reads: post_fault_held_reads.clone(),
+    };
+    let mut client = Client::open(store, schema()).unwrap();
+    client
+        .transaction(|tx| {
+            tx.direct(create("Entry", "e", json!({"text":"base","note":null})))?;
+            tx.enqueue(mutation("optimistic"))?;
+            Ok(())
+        })
+        .unwrap();
+    enabled.set(true);
+    let response = DirectActionResponse {
+        completion: CallCompletion {
+            call_id: "fault-case".into(),
+            outcome: ActionOutcome::Succeeded {
+                result: Value::Null,
+            },
+        },
+        records: vec![
+            authority(Some("server"), 2),
+            authority_of("valid", Some("good"), 3),
+        ],
+    };
+    client.begin_session().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::Direct {
+            response,
+            snapshot: None,
+        })
+        .unwrap();
+    assert!(
+        failed.get(),
+        "the injected fault must fire after Held insertion"
+    );
+    assert_eq!(prepared.accepted(), &[1]);
+    assert_eq!(
+        post_fault_held_reads.get(),
+        0,
+        "failed key must not be replayed from Held"
+    );
+    assert_eq!(
+        client.session(|tx| tx.read(&key())).unwrap().unwrap()["text"],
+        "optimistic"
+    );
+    let StoreResult::Direct(report) = client.apply_prepared_store(prepared).unwrap() else {
+        panic!("direct")
+    };
+    assert_eq!(report.skipped(), 1);
+    assert_eq!(report.applied, 1);
+    client.commit_session().unwrap();
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "optimistic");
+    assert_eq!(
+        client
+            .read(
+                &schema()
+                    .record_key("Entry", &json!({"id":"valid"}))
+                    .unwrap()
+            )
+            .unwrap()
+            .unwrap()["text"],
+        "good"
+    );
 }

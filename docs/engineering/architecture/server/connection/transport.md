@@ -8,6 +8,8 @@ The server transport terminates HTTP and WebSocket traffic, authenticates each r
 
 `backend.listen({port, host = "127.0.0.1"})` starts one Node HTTP server with two routes, `POST /sync/mutations` and `POST /sync/pull`, and a WebSocket upgrade on `/sync/live`. Other paths are `404`; other methods `405`. Bodies and frames are limited to 1 MiB.
 
+`POST /sync/loads` serves batched native Load pages ([Protocol / Loads](../../protocol/loads.md)). It authenticates once per request (`401` without it) and answers a malformed envelope `400 request.invalid`; every item outcome, a rejection included, answers `200` inside the body.
+
 ## 5. Building Block View
 
 Request handling is a pipeline: `authenticate` (null or blank → `401 unauthenticated`), read the body under the size cap (`413 request_too_large`), parse strict UTF-8 JSON (`400 request.invalid`), call the engine inside a transaction, answer `200` with the engine's JSON. Engine errors map by their code, never by message text ([Bindings](../../sdks/bindings.md)):

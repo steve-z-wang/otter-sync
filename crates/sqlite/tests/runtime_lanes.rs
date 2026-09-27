@@ -8,11 +8,16 @@
 mod common;
 use axton_client::runtime::{ClientRuntime, Input};
 use axton_client::*;
+use axton_core::invalid;
 use axton_sqlite::SqliteStore;
 use common::ack;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 const ENTROPY: u64 = 200;
 
@@ -34,8 +39,8 @@ fn factory() -> StoreFactory<SqliteStore> {
 
 /// The host of one runtime: it keeps every event, the effects still
 /// outstanding, and the clock.
-struct Host {
-    runtime: ClientRuntime<SqliteStore>,
+struct Host<S: ClientStore = SqliteStore> {
+    runtime: ClientRuntime<S>,
     now: u64,
     open: BTreeMap<String, Value>,
     _dir: Option<tempfile::TempDir>,
@@ -54,8 +59,111 @@ fn host_with(schema: Value) -> Host {
     .unwrap();
     Host::of(runtime, Some(dir))
 }
-impl Host {
-    fn of(runtime: ClientRuntime<SqliteStore>, dir: Option<tempfile::TempDir>) -> Self {
+fn hooked_host() -> Host {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = ClientRuntime::with_store_hooks(
+        Client::open(
+            SqliteStore::open(dir.path().join("db")).unwrap(),
+            Schema::from_value(schema_value()).unwrap(),
+        )
+        .unwrap(),
+        vec!["Entry".into()],
+    )
+    .unwrap();
+    Host::of(runtime, Some(dir))
+}
+fn hooked_query_host() -> Host {
+    let mut schema = schema_value();
+    let mut entry = schema["models"][0].clone();
+    entry["version"] = json!(1);
+    entry["enums"] = json!([]);
+    schema["resultModels"] = json!([entry]);
+    schema["actions"].as_array_mut().unwrap().push(json!({
+        "name":"Find","version":1,"kind":"query","inputs":[],
+        "outputs":[{"name":"entry","kind":"model","model":"Entry","modelReadVersion":1,
+            "cardinality":"single","source":"handlerIdentity",
+            "handlerType":{"kind":"identity","model":"Entry","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]}}]
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = ClientRuntime::with_store_hooks(
+        Client::open(
+            SqliteStore::open(dir.path().join("db")).unwrap(),
+            Schema::from_value(schema).unwrap(),
+        )
+        .unwrap(),
+        vec!["Entry".into()],
+    )
+    .unwrap();
+    Host::of(runtime, Some(dir))
+}
+struct FaultStore {
+    inner: SqliteStore,
+    fail_commit: Arc<AtomicBool>,
+    fail_barrier: Arc<AtomicBool>,
+}
+impl ClientStore for FaultStore {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        if self.fail_commit.swap(false, Ordering::SeqCst) {
+            return Err(invalid("injected bookkeeping commit failure"));
+        }
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        if sql.contains("AND bootstrap_state='catching_up'")
+            && self.fail_barrier.swap(false, Ordering::SeqCst)
+        {
+            return Err(invalid("injected barrier scan failure"));
+        }
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        if sql.contains("AND bootstrap_state='catching_up'")
+            && self.fail_barrier.swap(false, Ordering::SeqCst)
+        {
+            return Err(invalid("injected barrier scan failure"));
+        }
+        self.inner.query_committed(sql, parameters)
+    }
+}
+fn hooked_fault_host() -> (Host<FaultStore>, Arc<AtomicBool>, Arc<AtomicBool>) {
+    let dir = tempfile::tempdir().unwrap();
+    let fail_commit = Arc::new(AtomicBool::new(false));
+    let fail_barrier = Arc::new(AtomicBool::new(false));
+    let client = Client::open(
+        FaultStore {
+            inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+            fail_commit: fail_commit.clone(),
+            fail_barrier: fail_barrier.clone(),
+        },
+        Schema::from_value(schema_value()).unwrap(),
+    )
+    .unwrap();
+    let runtime = ClientRuntime::with_store_hooks(client, vec!["Entry".into()]).unwrap();
+    (Host::of(runtime, Some(dir)), fail_commit, fail_barrier)
+}
+impl<S: ClientStore + 'static> Host<S> {
+    fn of(runtime: ClientRuntime<S>, dir: Option<tempfile::TempDir>) -> Self {
         Self {
             runtime,
             now: 1_000,
@@ -183,7 +291,7 @@ impl Host {
         self.now += millis;
         self.answer(timer, json!({"ok":true,"value":null}));
     }
-    fn client(&mut self) -> &mut Client<SqliteStore> {
+    fn client(&mut self) -> &mut Client<S> {
         self.runtime.client()
     }
     fn text(&mut self, id: &str) -> Option<Value> {
@@ -303,6 +411,11 @@ fn echoed(body: &str, label: &str) -> String {
     json!({"completion":{"callId":call_id(body),"outcome":{"status":"succeeded","result":{"label":label}}},"records":[]})
         .to_string()
 }
+fn found(body: &str, text: &str, stamp: u64) -> String {
+    json!({"completion":{"callId":call_id(body),"outcome":{"status":"succeeded","result":{"entry":{"id":"e","text":text,"note":null}}}},
+        "records":[{"model":"Entry","identity":{"id":"e"},"stamp":stamp,"state":{"text":text,"note":null}}]})
+        .to_string()
+}
 fn receipt(client_id: &str, body: &str) -> String {
     let push: Value = serde_json::from_str(body).unwrap();
     let completions: Vec<Value> = push["mutations"]
@@ -313,6 +426,645 @@ fn receipt(client_id: &str, body: &str) -> String {
         .collect();
     json!({"clientId":client_id,"batchSequence":push["batchSequence"],"rejections":[],"completions":completions,"records":[]})
         .to_string()
+}
+
+#[test]
+fn direct_mutation_hook_failure_rolls_back_authority_without_resending() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("first", rename("server"));
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &renamed(&body, "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert!(h.text("e").is_none());
+    assert!(events.iter().all(|event| event["requestId"] != "first"));
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":false,"error":"refused"}));
+    let events = h.run();
+    assert!(
+        events.iter().any(|event| event["requestId"] == "first"
+            && event["details"]["code"] == "store_hook_failed"
+            && event["details"]["model"] == "Entry"
+            && event["details"]["path"] == "direct"
+            && event["details"]["callbackEffectId"] == callback["effectId"]),
+        "{events:?}"
+    );
+    assert!(h.text("e").is_none());
+    assert!(h.outstanding("http", Some("action")).is_empty());
+}
+
+#[test]
+fn frozen_push_receipt_waits_for_hook_commit_and_retries_locally_after_failure() {
+    let mut h = hooked_host();
+    assert_eq!(h.call("seed", create("e", "base"))["ok"], true);
+    h.task("one", json!({"kind":"submitAction","name":"Rename","version":1,"args":{"entry":{"id":"e","text":"one"}}}));
+    h.task(
+        "two",
+        json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+    );
+    let submitted = h.run();
+    let one = h.completion(&submitted, "one")["value"]["callId"].clone();
+    let two = h.completion(&submitted, "two")["value"]["callId"].clone();
+    h.connect(false);
+    let (http, body) = h.http("push");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["mutations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "{body}"
+    );
+    let mut response: Value =
+        serde_json::from_str(&receipt(h.client().client_id(), &body)).unwrap();
+    for completion in response["completions"].as_array_mut().unwrap() {
+        if completion["callId"] == one {
+            completion["outcome"]["result"] = json!({"text":"server"});
+        }
+    }
+    response["records"] = json!([{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]);
+    h.ok(&http, &response.to_string());
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert!(
+        events.iter().all(|event| event["type"] != "callCompleted"),
+        "{events:?}"
+    );
+    assert_eq!(h.client().pending_count().unwrap(), 2);
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":false,"error":"refused"}));
+    let events = h.run();
+    assert!(
+        events.iter().all(|event| event["type"] != "callCompleted"),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["diagnostic"]["kind"] == "storeHook"
+                && event["diagnostic"]["model"] == "Entry"
+                && event["diagnostic"]["path"] == "receipt"
+                && event["diagnostic"]["callbackEffectId"] == callback["effectId"]),
+        "{events:?}"
+    );
+    assert_eq!(h.client().pending_count().unwrap(), 2);
+    assert!(
+        h.outstanding("http", Some("push")).is_empty(),
+        "saved receipt should retry without network"
+    );
+    let timer = h.one("timer", None).0;
+    h.fire(&timer);
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"));
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":true}));
+    let events = h.run();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "callCompleted" && event["callId"] == one),
+        "{events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event["type"] == "callCompleted" && event["callId"] == two),
+        "{events:?}"
+    );
+    assert_eq!(h.client().pending_count().unwrap(), 0);
+    assert_eq!(h.text("e"), Some(json!("server")));
+}
+
+#[test]
+fn streamed_page_yields_to_hook_then_advances_cursor_after_commit() {
+    let mut h = hooked_host();
+    h.connect(false);
+    let socket = h.streaming(0);
+    h.frame(&socket, &page(0, 1, "e", "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"));
+    assert_eq!(h.client().cursor("book").unwrap(), Some(0));
+    assert_eq!(h.text("e"), None);
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":true}));
+    let events = h.run();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(1));
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert!(errors(&events).is_empty(), "{events:?}");
+}
+
+#[test]
+fn joined_once_refresh_hook_failure_keeps_prior_cache_and_rejects_both_callers() {
+    let mut h = hooked_query_host();
+    h.connect(false);
+    let once = || json!({"kind":"invoke","name":"Find","version":1,"args":{},"once":true});
+    h.task("initial", once());
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &found(&body, "prior", 1));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":true}));
+    let events = h.run();
+    assert_eq!(
+        h.completion(&events, "initial")["value"]["outcome"]["result"]["entry"]["text"],
+        "prior"
+    );
+    h.task(
+        "refresh",
+        json!({"kind":"invoke","name":"Find","version":1,"args":{},"once":true,"refresh":true}),
+    );
+    h.task(
+        "joined",
+        json!({"kind":"invoke","name":"Find","version":1,"args":{},"once":true,"refresh":true}),
+    );
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &found(&body, "new", 2));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":callback["operation"]["transactionId"],"ok":false,"error":"refused"}));
+    let events = h.run();
+    for id in ["refresh", "joined"] {
+        assert_eq!(
+            h.completion(&events, id)["details"]["code"],
+            "store_hook_failed"
+        );
+    }
+    assert_eq!(h.text("e"), Some(json!("prior")));
+    assert_eq!(
+        h.call("cached", once())["value"]["outcome"]["result"]["entry"]["text"],
+        "prior"
+    );
+    assert!(h.outstanding("http", Some("action")).is_empty());
+}
+
+#[test]
+fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
+    for (recreate, ok) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut h = hooked_host();
+        h.connect(false);
+        let socket = h.streaming(0);
+        let old = h
+            .client()
+            .subscription_state("book")
+            .unwrap()
+            .unwrap()
+            .subscription_id;
+        h.frame(&socket, &page(0, 1, "e", "server"));
+        let events = h.run();
+        let callback = events
+            .iter()
+            .find(|event| event["operation"]["kind"] == "storeCallback")
+            .unwrap();
+        let transaction = callback["operation"]["transactionId"].as_str().unwrap();
+        h.submit(
+            json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
+            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+        );
+        assert!(h.run().contains(&done("remove", Value::Null)));
+        if recreate {
+            h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
+                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+            assert!(h.run().contains(&done("replace", Value::Null)));
+        }
+        h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,
+            "ok":ok,"error": if ok { Value::Null } else { json!("refused") }}));
+        let events = h.run();
+        let state = h.client().subscription_state("book").unwrap();
+        if ok {
+            assert_eq!(h.text("e"), Some(json!("server")));
+            if recreate {
+                let state = state.unwrap();
+                assert_ne!(state.subscription_id, old);
+                assert_eq!(state.cursor, None, "fresh subscription has no old cursor");
+            } else {
+                assert!(state.is_none());
+            }
+        } else {
+            assert_eq!(h.text("e"), None);
+            let state = state.unwrap();
+            assert_eq!(state.subscription_id, old);
+            assert_eq!(state.cursor, Some(0));
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["diagnostic"]["kind"] == "storeHook"
+                        && event["diagnostic"]["path"] == "live"),
+                "{events:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn terminal_bootstrap_hook_unsubscribe_keeps_authority_without_old_run_progress() {
+    for recreate in [false, true] {
+        let mut h = hooked_host();
+        h.connect(false);
+        let (old, _, _) = h.subscribe("subscribe", "book");
+        h.bootstrap("load", old);
+        h.run();
+        let socket = h.socket();
+        h.frame(&socket, &ack(&[("book", 7)]));
+        h.run();
+        let (pull, _) = h.http("pull");
+        h.ok(
+            &pull,
+            &historical(json!([{"model":"Entry","identity":{"id":"e"},"stamp":7,
+            "state":{"text":"historical","note":null}}])),
+        );
+        let events = h.run();
+        let callback = events
+            .iter()
+            .find(|event| event["operation"]["kind"] == "storeCallback")
+            .unwrap_or_else(|| panic!("{events:?}"));
+        assert_eq!(h.text("e"), None);
+        let transaction = callback["operation"]["transactionId"].as_str().unwrap();
+        h.submit(
+            json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
+            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+        );
+        assert!(h.run().contains(&done("remove", Value::Null)));
+        if recreate {
+            h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
+                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+            assert!(h.run().contains(&done("replace", Value::Null)));
+        }
+        h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
+        let events = h.run();
+        assert_eq!(h.text("e"), Some(json!("historical")));
+        let state = h.client().subscription_state("book").unwrap();
+        if recreate {
+            let state = state.unwrap();
+            assert_ne!(state.subscription_id, old);
+            assert_eq!(state.cursor, None);
+            assert_eq!(
+                h.client()
+                    .bootstrap_state("book", state.subscription_id)
+                    .unwrap()
+                    .state,
+                BootstrapPhase::NotRequested
+            );
+        } else {
+            assert!(state.is_none());
+        }
+        assert!(events.iter().any(|event| event["requestId"] == "load" && !event["ok"].as_bool().unwrap_or(true)), "{events:?}");
+    }
+}
+
+#[test]
+fn terminal_bootstrap_hook_failure_rolls_back_page_then_fails_the_original_run() {
+    for recreate in [false, true] {
+        let mut h = hooked_host();
+        h.connect(false);
+        let (old, _, _) = h.subscribe("subscribe", "book");
+        h.bootstrap("load", old);
+        h.run();
+        let socket = h.socket();
+        h.frame(&socket, &ack(&[("book", 7)]));
+        h.run();
+        let (pull, _) = h.http("pull");
+        h.ok(
+            &pull,
+            &historical(json!([{"model":"Entry","identity":{"id":"e"},"stamp":7,
+            "state":{"text":"historical","note":null}}])),
+        );
+        let events = h.run();
+        let callback = events
+            .iter()
+            .find(|event| event["operation"]["kind"] == "storeCallback")
+            .unwrap();
+        let transaction = callback["operation"]["transactionId"].as_str().unwrap();
+        h.submit(
+            json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
+            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+        );
+        h.run();
+        if recreate {
+            h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
+                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+            h.run();
+        }
+        h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":false,"error":"refused"}));
+        let events = h.run();
+        assert_eq!(h.text("e"), None);
+        assert_eq!(
+            h.client()
+                .subscription_state("book")
+                .unwrap()
+                .unwrap()
+                .subscription_id,
+            old
+        );
+        let state = h.client().bootstrap_state("book", old).unwrap();
+        assert_eq!(state.state, BootstrapPhase::Failed);
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.error.unwrap().code, "store_hook_failed");
+        assert_eq!(
+            h.completion(&events, "load")["details"]["code"],
+            "store_hook_failed"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event["diagnostic"]["kind"] == "storeHook"
+                    && event["diagnostic"]["path"] == "bootstrap"),
+            "{events:?}"
+        );
+    }
+}
+
+#[test]
+fn catchup_hook_failure_retries_from_old_cursor_and_success_commits_once() {
+    let mut h = hooked_host();
+    h.connect(false);
+    let (subscription, _, _) = h.subscribe("subscribe", "book");
+    h.client()
+        .initialize_subscriptions(
+            &BTreeMap::from([("book".into(), subscription)]),
+            &BTreeMap::from([("book".into(), 0)]),
+        )
+        .unwrap();
+    let socket = h.socket();
+    h.frame(&socket, &ack(&[("book", 2)]));
+    h.run();
+    let (pull, request) = h.http("pull");
+    assert_eq!(
+        serde_json::from_str::<Value>(&request).unwrap()["cursors"]["book"],
+        0
+    );
+    h.ok(&pull, &page(0, 2, "e", "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(0));
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":false,"error":"refused"}),
+    );
+    let events = h.run();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(0));
+    assert_eq!(h.text("e"), None);
+    assert!(
+        events
+            .iter()
+            .any(|event| event["diagnostic"]["kind"] == "storeHook"
+                && event["diagnostic"]["path"] == "catchUp"),
+        "{events:?}"
+    );
+    let timer = h.one("timer", None).0;
+    h.fire(&timer);
+    h.run();
+    let socket = h.socket();
+    h.frame(&socket, &ack(&[("book", 2)]));
+    h.run();
+    let (pull, request) = h.http("pull");
+    assert_eq!(
+        serde_json::from_str::<Value>(&request).unwrap()["cursors"]["book"],
+        0
+    );
+    h.ok(&pull, &page(0, 2, "e", "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":true}),
+    );
+    h.run();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(2));
+    assert_eq!(h.text("e"), Some(json!("server")));
+}
+
+#[test]
+fn failed_bootstrap_failure_bookkeeping_retries_without_replaying_the_page() {
+    let (mut h, fail_commit, _) = hooked_fault_host();
+    h.connect(false);
+    let (subscription, _, _) = h.subscribe("subscribe", "book");
+    h.bootstrap("load", subscription);
+    h.run();
+    let socket = h.socket();
+    h.frame(&socket, &ack(&[("book", 7)]));
+    h.run();
+    let (pull, _) = h.http("pull");
+    h.ok(
+        &pull,
+        &historical(json!([{"model":"Entry","identity":{"id":"e"},"stamp":7,
+        "state":{"text":"historical","note":null}}])),
+    );
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    fail_commit.store(true, Ordering::SeqCst);
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":false,"error":"refused"}),
+    );
+    let events = h.run();
+    assert_eq!(h.text("e"), None);
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .cursor,
+        0
+    );
+    assert!(
+        !completed(&events, "load"),
+        "failure outcome remains pending: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["operation"]["kind"] != "storeCallback")
+    );
+    let timer = h.one("timer", None).0;
+    h.fire(&timer);
+    let events = h.run();
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::Failed
+    );
+    assert_eq!(
+        h.completion(&events, "load")["details"]["code"],
+        "store_hook_failed"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["operation"]["kind"] != "storeCallback")
+    );
+    assert_eq!(h.text("e"), None);
+}
+
+#[test]
+fn hooked_live_commit_keeps_notifications_and_barrier_retry_after_scan_failure() {
+    let (mut h, _, fail_barrier) = hooked_fault_host();
+    h.connect(false);
+    let socket = h.streaming(0);
+    let subscription = h
+        .client()
+        .subscription_state("book")
+        .unwrap()
+        .unwrap()
+        .subscription_id;
+    let run = h
+        .client()
+        .request_bootstrap("book", subscription)
+        .unwrap()
+        .run;
+    h.client()
+        .apply_bootstrap_page(
+            "book",
+            subscription,
+            run,
+            0,
+            &BootstrapPage {
+                channel: "book".into(),
+                from: 0,
+                to: 0,
+                until: 0,
+                head: 1,
+                records: vec![],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::CatchingUp
+    );
+    h.frame(&socket, &page(0, 1, "e", "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    fail_barrier.store(true, Ordering::SeqCst);
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":true}),
+    );
+    let events = h.run();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(1));
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::CatchingUp
+    );
+    assert!(
+        errors(&events)
+            .iter()
+            .any(|error| error.contains("injected barrier scan failure")),
+        "{events:?}"
+    );
+    let timer = h.one("timer", None).0;
+    h.fire(&timer);
+    let events = h.run();
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::Complete
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["operation"]["kind"] != "storeCallback")
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+}
+
+#[test]
+fn bootstrap_local_commit_failure_retries_saved_page_without_failing_run_or_refetching() {
+    let (mut h, fail_commit, _) = hooked_fault_host();
+    h.connect(false);
+    let (subscription, _, _) = h.subscribe("subscribe", "book");
+    h.bootstrap("load", subscription);
+    h.run();
+    let socket = h.socket();
+    h.frame(&socket, &ack(&[("book", 7)]));
+    h.run();
+    let (pull, _) = h.http("pull");
+    h.ok(
+        &pull,
+        &historical(json!([{"model":"Entry","identity":{"id":"e"},"stamp":7,
+        "state":{"text":"historical","note":null}}])),
+    );
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    fail_commit.store(true, Ordering::SeqCst);
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":true}),
+    );
+    let events = h.run();
+    assert_eq!(h.text("e"), None);
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::Requested
+    );
+    assert!(!completed(&events, "load"));
+    assert!(h.outstanding("http", Some("pull")).is_empty());
+    let timer = h.one("timer", None).0;
+    h.fire(&timer);
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("saved page should retry locally: {events:?}"));
+    assert!(h.outstanding("http", Some("pull")).is_empty());
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":true}),
+    );
+    h.run();
+    assert_eq!(h.text("e"), Some(json!("historical")));
+    assert_eq!(
+        h.client()
+            .bootstrap_state("book", subscription)
+            .unwrap()
+            .state,
+        BootstrapPhase::CatchingUp
+    );
 }
 
 #[test]
@@ -1639,7 +2391,7 @@ fn completed(events: &[Value], id: &str) -> bool {
         .iter()
         .any(|e| e["type"] == "taskCompleted" && e["requestId"] == id)
 }
-impl Host {
+impl<S: ClientStore + 'static> Host<S> {
     /// Subscribe `scope` and answer its identity and observer.
     fn subscribe(&mut self, id: &str, scope: &str) -> (u64, Value, Vec<Value>) {
         self.task(id, json!({"kind":"scopeSubscribe","scope":scope}));

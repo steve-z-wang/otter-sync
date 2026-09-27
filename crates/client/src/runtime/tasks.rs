@@ -163,7 +163,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Ready::ApplyDirect {
                     request_id,
                     response,
-                } => self.apply_direct(request_id, response),
+                } => self.apply_direct(request_id, response, now, entropy),
                 Ready::PrerequisiteOutcome { key, error } => self.prerequisite_outcome(key, error),
                 Ready::PrerequisiteNext => self.next_prerequisite(),
             }
@@ -394,11 +394,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 TransactionOwner::Application { request_id } => {
                     self.complete(request_id, Err("client_closed".into()))
                 }
-                TransactionOwner::Authority { continuation, .. } => self.fail(
-                    continuation.request_id().to_string(),
-                    "client_closed",
-                    json!({"code":"client_closed"}),
-                ),
+                TransactionOwner::Authority { continuation, .. } => {
+                    continuation.fail(self, "client_closed".into(), None, None, 0, 0)
+                }
             }
             for command in transaction.lane {
                 self.complete(command.request_id, Err("client_closed".into()));

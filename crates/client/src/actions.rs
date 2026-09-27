@@ -99,6 +99,20 @@ impl<S: ClientStore> Client<S> {
         let request = DirectActionRequest::decode(request, &self.schema)?;
         self.apply_action_response(&request, response)
     }
+    /// Decode a received direct response while leaving its runtime call
+    /// owner in place until the authority transaction commits.
+    pub(crate) fn decode_direct_store(
+        &self,
+        request: &[u8],
+        response: &[u8],
+    ) -> Result<crate::StoreDelivery> {
+        let request = DirectActionRequest::decode(request, &self.schema)?;
+        let response = DirectActionResponse::decode(response, &request, &self.schema)?;
+        Ok(crate::StoreDelivery::Direct {
+            response,
+            snapshot: None,
+        })
+    }
     pub fn submit_action(
         &mut self,
         name: &str,

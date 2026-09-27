@@ -238,7 +238,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
 }
 
-impl<S: ClientStore> ClientRuntime<S> {
+impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// A fresh number for an identity the runtime issues. Never reused; an
     /// exhausted counter refuses rather than wraps.
     fn issue(&mut self) -> std::result::Result<u64, String> {
@@ -297,6 +297,7 @@ impl<S: ClientStore> ClientRuntime<S> {
     fn committed_since(&mut self, generation: u64) {
         if self.client.generation() != generation {
             self.observers.stale = true;
+            self.reconcile_registrations();
         }
     }
     fn report(&mut self, diagnostic: Diagnostic) {

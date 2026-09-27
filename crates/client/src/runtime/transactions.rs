@@ -27,6 +27,7 @@ pub(super) struct Transaction {
     finishing: Option<(bool, Option<String>)>,
     /// Submitted commands of the callback, in order.
     pub(super) lane: VecDeque<Continuation>,
+    current_model: Option<String>,
 }
 pub(super) enum TransactionOwner {
     Application {
@@ -39,13 +40,79 @@ pub(super) enum TransactionOwner {
     },
 }
 pub(super) enum StoreContinuation {
-    Ack { request_id: String },
-    Pull { request_id: String },
+    Ack {
+        request_id: String,
+    },
+    Pull {
+        request_id: String,
+    },
+    Direct {
+        request_id: String,
+    },
+    Push,
+    Downlink {
+        token: crate::downlink_worker::StoreToken,
+    },
 }
 impl StoreContinuation {
-    pub(super) fn request_id(&self) -> &str {
+    fn path(&self) -> &'static str {
         match self {
-            Self::Ack { request_id } | Self::Pull { request_id } => request_id,
+            Self::Ack { .. } | Self::Push => "receipt",
+            Self::Pull { .. } => "pull",
+            Self::Direct { .. } => "direct",
+            Self::Downlink { token } => token.path(),
+        }
+    }
+    pub(super) fn fail<S: ClientStore + 'static>(
+        self,
+        runtime: &mut ClientRuntime<S>,
+        error: String,
+        callback: Option<&str>,
+        model: Option<&str>,
+        now: u64,
+        entropy: u64,
+    ) {
+        let path = self.path();
+        if let Some(model) = model {
+            runtime.report(Diagnostic::StoreHook {
+                code: "store_hook_failed".into(),
+                model: model.into(),
+                path: path.into(),
+                message: error.clone(),
+                callback_effect_id: callback.map(str::to_string),
+            });
+        }
+        match self {
+            Self::Ack { request_id } | Self::Pull { request_id } => {
+                if let Some(effect_id) = callback {
+                    runtime.fail(request_id, error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
+                } else {
+                    runtime.complete(request_id, Err(error));
+                }
+            }
+            Self::Direct { request_id } => {
+                if let Some(effect_id) = callback {
+                    runtime.fail_direct(&request_id, &error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
+                } else {
+                    runtime.fail_direct(
+                        &request_id,
+                        direct::EXECUTION_UNKNOWN,
+                        direct::transport_failure(&EffectError {
+                            message: error,
+                            status: None,
+                        }),
+                    );
+                }
+            }
+            Self::Push => {
+                if callback.is_none() {
+                    runtime.error(error);
+                }
+                runtime.push_failed(now, entropy);
+            }
+            Self::Downlink { token } => {
+                runtime.downlink_store_failed(token, error, callback.is_some(), now, entropy)
+            }
         }
     }
 }
@@ -94,6 +161,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             structural: None,
             finishing: None,
             lane: VecDeque::new(),
+            current_model: None,
         });
     }
     pub(super) fn has_store_hook_candidate(&self, models: impl Iterator<Item = String>) -> bool {
@@ -121,16 +189,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         now: u64,
         entropy: u64,
     ) {
-        let request_id = continuation.request_id().to_string();
         if let Err(error) = self.client.begin_session() {
-            self.complete(request_id, Err(error.to_string()));
+            continuation.fail(self, error.to_string(), None, None, now, entropy);
             return;
         }
         let prepared = match self.client.prepare_store(delivery) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.abort_authority_session();
-                self.complete(request_id, Err(error.to_string()));
+                continuation.fail(self, error.to_string(), None, None, now, entropy);
                 return;
             }
         };
@@ -148,7 +215,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok(id) => format!("tx{id}"),
             Err(error) => {
                 self.abort_authority_session();
-                self.complete(request_id, Err(error));
+                continuation.fail(self, error, None, None, now, entropy);
                 return;
             }
         };
@@ -156,7 +223,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok(id) => id.to_string(),
             Err(error) => {
                 self.abort_authority_session();
-                self.complete(request_id, Err(error));
+                continuation.fail(self, error, None, None, now, entropy);
                 return;
             }
         };
@@ -173,6 +240,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             structural: None,
             finishing: None,
             lane: VecDeque::new(),
+            current_model: None,
         });
         self.emit_next_store_callback();
     }
@@ -186,6 +254,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let Some((model, changes)) = pending.pop_front() else {
             return;
         };
+        open.current_model = Some(model.clone());
         let effect_id = open.effect_id.clone();
         self.effects
             .insert(effect_id.clone(), effects::EffectKind::Callback);
@@ -349,10 +418,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             if let Some(refusal) = refusal {
                 self.abort_authority_session();
                 if let TransactionOwner::Authority { continuation, .. } = open.owner {
-                    self.fail(
-                        continuation.request_id().to_string(),
+                    continuation.fail(
+                        self,
                         refusal,
-                        json!({"code":"store_hook_failed"}),
+                        Some(&open.effect_id),
+                        open.current_model.as_deref(),
+                        now,
+                        entropy,
                     );
                 }
             } else if let TransactionOwner::Authority {
@@ -379,15 +451,19 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                                 structural: None,
                                 finishing: None,
                                 lane: VecDeque::new(),
+                                current_model: None,
                             });
                             self.emit_next_store_callback();
                         }
                         _ => {
                             self.abort_authority_session();
-                            self.fail(
-                                continuation.request_id().to_string(),
-                                "runtime identifiers exhausted",
-                                json!({"code":"store_hook_failed"}),
+                            continuation.fail(
+                                self,
+                                "runtime identifiers exhausted".into(),
+                                None,
+                                None,
+                                now,
+                                entropy,
                             );
                         }
                     }
@@ -434,14 +510,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .client
             .apply_prepared_store(prepared)
             .and_then(|result| {
-                let value = match result {
+                let value = match &result {
                     StoreResult::Page(report) | StoreResult::Receipt(report) => {
                         serde_json::to_value(report)?
                     }
-                    _ => unreachable!("Ack/Pull are the only checkpoint-2 store owners"),
+                    StoreResult::Direct(_) => Value::Null,
+                    StoreResult::Bootstrap(_) => Value::Null,
                 };
                 self.client.commit_session()?;
-                Ok(value)
+                Ok((value, result))
             });
         if result.is_err() {
             self.abort_authority_session();
@@ -451,14 +528,34 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.wake_lanes(now, entropy);
         }
         match result {
-            Ok(value) => {
-                self.seam_completions(&value);
-                self.complete(continuation.request_id().to_string(), Ok(value));
+            Ok((_, StoreResult::Direct(report))) => {
+                if let StoreContinuation::Direct { request_id } = continuation {
+                    self.finish_direct_store(request_id, report);
+                } else {
+                    unreachable!()
+                }
             }
-            Err(error) => self.complete(
-                continuation.request_id().to_string(),
-                Err(error.to_string()),
-            ),
+            Ok((_, StoreResult::Receipt(report)))
+                if matches!(continuation, StoreContinuation::Push) =>
+            {
+                self.push_store_committed(report);
+            }
+            Ok((_, result)) if matches!(continuation, StoreContinuation::Downlink { .. }) => {
+                if let StoreContinuation::Downlink { token } = continuation {
+                    self.lanes.downlink.store_committed(token, result);
+                    if let Some(connection) = &mut self.connection {
+                        connection.downlink.dirty = true;
+                    }
+                }
+            }
+            Ok((value, _)) => match continuation {
+                StoreContinuation::Ack { request_id } | StoreContinuation::Pull { request_id } => {
+                    self.seam_completions(&value);
+                    self.complete(request_id, Ok(value));
+                }
+                _ => unreachable!(),
+            },
+            Err(error) => continuation.fail(self, error.to_string(), None, None, now, entropy),
         }
     }
 }

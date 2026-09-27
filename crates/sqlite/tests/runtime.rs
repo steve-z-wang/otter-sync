@@ -278,10 +278,21 @@ fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
         } else {
             h.callback(&hook, true, None);
             let events = h.run();
-            assert_eq!(events.len(), 1);
-            assert_eq!(events[0]["requestId"], "2");
-            assert_eq!(events[0]["details"]["code"], "store_hook_failed");
-            assert_eq!(events[0]["ok"], false);
+            assert_eq!(events.len(), 2);
+            let task = events
+                .iter()
+                .find(|event| event["requestId"] == "2")
+                .unwrap();
+            assert_eq!(task["details"]["code"], "store_hook_failed");
+            assert_eq!(task["details"]["model"], "Entry");
+            assert_eq!(task["details"]["path"], "pull");
+            assert_eq!(task["details"]["callbackEffectId"], hook.effect);
+            assert_eq!(task["ok"], false);
+            let diagnostic = events
+                .iter()
+                .find(|event| event["type"] == "report")
+                .unwrap();
+            assert_eq!(diagnostic["diagnostic"]["kind"], "storeHook");
         }
         assert_eq!(h.committed(), None);
         let local = schema()

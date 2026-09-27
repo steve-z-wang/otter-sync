@@ -10,7 +10,9 @@
 //! reporting, refreshing credentials on 401, aborting on pause - is done
 //! here; the host only executes the effects.
 use super::effects::{EffectKind, Waiter};
+use super::transactions::StoreContinuation;
 use super::*;
+use crate::downlink_worker::StoreToken;
 use crate::{
     ClientStore, ConnectionAction, ConnectionDriver, DownlinkAction, DownlinkEvent, DownlinkWorker,
     SyncCycle,
@@ -65,6 +67,9 @@ pub(super) struct PushLane {
     /// The cycle's batch is out - sent, waiting for a refresh, or answered
     /// and waiting for its receipt to settle: one frozen batch in flight.
     waiting: bool,
+    /// A backend receipt already received for this frozen batch. Retry local
+    /// callback/application against these bytes after lane backoff.
+    receipt: Option<String>,
 }
 #[derive(Default)]
 pub(super) struct DownlinkLane {
@@ -362,10 +367,23 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     return;
                 }
                 ConnectionAction::Sync => {
-                    self.lanes.cycle.restart_push_only();
+                    if connection.push.receipt.is_none() {
+                        self.lanes.cycle.restart_push_only();
+                    }
                     connection.push.cycling = true;
                 }
             }
+        }
+        if let Some(body) = self
+            .connection
+            .as_ref()
+            .and_then(|c| c.push.receipt.clone())
+        {
+            if let Some(connection) = &mut self.connection {
+                connection.push.waiting = true;
+            }
+            self.ready.push_back(effects::Ready::PushReceipt { body });
+            return;
         }
         let generation = self.client.generation();
         let next = self.lanes.cycle.next(&mut self.client);
@@ -429,11 +447,37 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Settle a receipt in one transaction: completions after the commit,
     /// then the cycle goes on with the next batch.
     pub(super) fn push_receipt(&mut self, body: String, now: u64, entropy: u64) {
+        let candidate = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|raw| raw["records"].as_array().cloned())
+            .is_some_and(|records| {
+                self.has_store_hook_candidate(
+                    records
+                        .into_iter()
+                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                )
+            });
+        if candidate {
+            if let Some(connection) = &mut self.connection {
+                connection.push.receipt = Some(body.clone());
+            }
+            match self.lanes.cycle.receipt_delivery(body.as_bytes()) {
+                Ok(delivery) => self.open_store(delivery, StoreContinuation::Push, now, entropy),
+                Err(error) => {
+                    self.error(error.to_string());
+                    self.push_failed(now, entropy);
+                }
+            }
+            return;
+        }
         let generation = self.client.generation();
         let applied = self.lanes.cycle.complete(&mut self.client, body.as_bytes());
         self.committed_since(generation);
         match applied {
             Ok(report) => {
+                if let Some(connection) = &mut self.connection {
+                    connection.push.receipt = None;
+                }
                 self.settled(&report);
                 if let Some(connection) = &mut self.connection {
                     connection.push.waiting = false;
@@ -444,6 +488,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.error(e.to_string());
                 self.push_failed(now, entropy);
             }
+        }
+    }
+    pub(super) fn push_store_committed(&mut self, report: crate::ApplyReport) {
+        self.lanes.cycle.receipt_committed();
+        self.settled(&report);
+        if let Some(connection) = &mut self.connection {
+            connection.push.receipt = None;
+            connection.push.waiting = false;
+            connection.push.dirty = true;
         }
     }
     /// What a commit settled: every call's final outcome, then what it could
@@ -480,22 +533,36 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         };
         connection.downlink.dirty = false;
         let generation = self.client.generation();
-        let pumped =
-            self.lanes
-                .downlink
-                .handle(&mut self.client, DownlinkEvent::Next, now, entropy);
+        let hooks_active = self.client.store_hooks_active();
+        let pumped = self.lanes.downlink.next_runtime(
+            &mut self.client,
+            now,
+            entropy,
+            &self.store_hooks,
+            hooks_active,
+        );
         self.committed_since(generation);
         match pumped {
-            Ok(actions) => {
+            Ok(pump) => {
                 if let Some(connection) = &mut self.connection {
                     connection.downlink.failures = 0;
                 }
-                let waits = actions
+                let waits = pump
+                    .actions
                     .iter()
                     .any(|action| matches!(action, DownlinkAction::Wait { .. }));
-                let progressed = !actions.is_empty();
-                for action in actions {
+                let progressed = !pump.actions.is_empty();
+                for action in pump.actions {
                     self.downlink_action(action);
+                }
+                if let Some((token, delivery)) = pump.store {
+                    self.open_store(
+                        delivery,
+                        StoreContinuation::Downlink { token },
+                        now,
+                        entropy,
+                    );
+                    return;
                 }
                 // Progress without a sleep: pump again on a later unit.
                 if progressed
@@ -505,44 +572,77 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     connection.downlink.dirty = true;
                 }
             }
-            Err(e) => {
-                // End a host socket that was open, then retry the worker on a
-                // bounded timer. It may still owe actions or barrier work
-                // even when there was no socket to close.
-                self.error(e.to_string());
-                let socket = self
-                    .connection
-                    .as_ref()
-                    .and_then(|c| c.downlink.socket.clone());
-                if let Some((_, epoch)) = socket {
-                    self.abandon_session(epoch);
-                    self.enqueue_downlink(DownlinkEvent::Closed { epoch }, now, entropy);
+            Err(e) => self.downlink_retry_error(e.to_string(), now, entropy),
+        }
+    }
+
+    pub(super) fn downlink_store_failed(
+        &mut self,
+        token: StoreToken,
+        error: String,
+        structured: bool,
+        now: u64,
+        entropy: u64,
+    ) {
+        if self.lifecycle != Lifecycle::Open {
+            return;
+        }
+        match self.lanes.downlink.store_failed(
+            &mut self.client,
+            token,
+            error.clone(),
+            structured,
+            now,
+            entropy,
+        ) {
+            Ok(()) => {
+                if !structured {
+                    self.error(error);
                 }
-                if let Some(timer) = self
-                    .connection
-                    .as_mut()
-                    .and_then(|c| c.downlink.timer.take())
-                {
-                    self.cancel_effect(&timer);
-                }
-                let Some(connection) = &mut self.connection else {
-                    return;
-                };
-                if connection.paused {
-                    connection.downlink.dirty = false;
-                    return;
-                }
-                let delay = ConnectionDriver::backoff(connection.downlink.failures, entropy);
-                connection.downlink.failures = connection.downlink.failures.saturating_add(1);
-                connection.downlink.dirty = false;
-                let timer = self.issue_effect(
-                    EffectKind::DownlinkTimer,
-                    Operation::Timer { millis: delay },
-                );
                 if let Some(connection) = &mut self.connection {
-                    connection.downlink.timer = timer;
+                    connection.downlink.dirty = true;
                 }
             }
+            Err(error) => self.downlink_retry_error(error.to_string(), now, entropy),
+        }
+    }
+
+    fn downlink_retry_error(&mut self, error: String, now: u64, entropy: u64) {
+        // End a host socket that was open, then retry the worker on a
+        // bounded timer. It may still owe actions or barrier work
+        // even when there was no socket to close.
+        self.error(error);
+        let socket = self
+            .connection
+            .as_ref()
+            .and_then(|c| c.downlink.socket.clone());
+        if let Some((_, epoch)) = socket {
+            self.abandon_session(epoch);
+            self.enqueue_downlink(DownlinkEvent::Closed { epoch }, now, entropy);
+        }
+        if let Some(timer) = self
+            .connection
+            .as_mut()
+            .and_then(|c| c.downlink.timer.take())
+        {
+            self.cancel_effect(&timer);
+        }
+        let Some(connection) = &mut self.connection else {
+            return;
+        };
+        if connection.paused {
+            connection.downlink.dirty = false;
+            return;
+        }
+        let delay = ConnectionDriver::backoff(connection.downlink.failures, entropy);
+        connection.downlink.failures = connection.downlink.failures.saturating_add(1);
+        connection.downlink.dirty = false;
+        let timer = self.issue_effect(
+            EffectKind::DownlinkTimer,
+            Operation::Timer { millis: delay },
+        );
+        if let Some(connection) = &mut self.connection {
+            connection.downlink.timer = timer;
         }
     }
     fn downlink_action(&mut self, action: DownlinkAction) {

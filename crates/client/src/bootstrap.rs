@@ -211,6 +211,9 @@ impl BootstrapState {
 pub enum BootstrapApply {
     /// The response does not answer the stored task: nothing was written.
     Stale,
+    /// An admitted page's records committed after its hook removed or
+    /// replaced the registration; no historical progress belongs to it.
+    Detached { report: ApplyReport },
     /// A record of the page could not be applied. The page's successful
     /// authority is committed, the interval did not advance, and the run is
     /// failed until an explicit retry. The report is still the caller's: the
@@ -234,13 +237,15 @@ impl BootstrapApply {
     pub fn report(&self) -> Option<&ApplyReport> {
         match self {
             Self::Stale => None,
-            Self::Failed { report, .. } | Self::Applied { report, .. } => Some(report),
+            Self::Failed { report, .. }
+            | Self::Applied { report, .. }
+            | Self::Detached { report } => Some(report),
         }
     }
     /// The state the page committed, for either outcome that wrote one.
     pub fn state(&self) -> Option<&BootstrapState> {
         match self {
-            Self::Stale => None,
+            Self::Stale | Self::Detached { .. } => None,
             Self::Failed { state, .. } | Self::Applied { state, .. } => Some(state),
         }
     }
@@ -509,7 +514,7 @@ impl<S: ClientStore> Engine<'_, S> {
         page: &BootstrapPage,
         admitted: Option<&BootstrapState>,
     ) -> Result<BootstrapApply> {
-        let Some(original) = admitted else {
+        let Some(_) = admitted else {
             return Ok(BootstrapApply::Stale);
         };
         if self
@@ -528,10 +533,7 @@ impl<S: ClientStore> Engine<'_, S> {
         // A hook removed or replaced the original registration. Its already
         // admitted authority still lands, but the old run receives no progress.
         let report = self.apply_records(&page.records)?;
-        Ok(BootstrapApply::Applied {
-            state: original.clone(),
-            report,
-        })
+        Ok(BootstrapApply::Detached { report })
     }
 
     pub(crate) fn apply_bootstrap_page_body(

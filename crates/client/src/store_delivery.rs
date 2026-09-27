@@ -21,6 +21,7 @@ pub enum StoreChange {
 /// Owned delivery with the guards needed to replay it in the same session.
 /// This is a low-level runtime interface, not an SDK hook registration API.
 #[doc(hidden)]
+#[derive(Clone)]
 pub enum StoreDelivery {
     Page(PullPage),
     Bootstrap {

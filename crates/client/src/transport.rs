@@ -13,6 +13,39 @@ pub struct SyncCycle {
     active: Option<TransportAction>,
 }
 impl SyncCycle {
+    /// Validate a received push receipt against the still-frozen action and
+    /// keep that action until local authority and settlement commit.
+    pub(crate) fn receipt_delivery(&self, bytes: &[u8]) -> Result<StoreDelivery> {
+        let action = self
+            .active
+            .as_ref()
+            .ok_or_else(|| invalid("no transport action"))?;
+        if action.kind != "push" {
+            return Err(invalid("active transport action is not a push"));
+        }
+        let raw: serde_json::Value = serde_json::from_str(&action.body)?;
+        let action_batch = raw["mutations"]
+            .as_array()
+            .is_some_and(|calls| calls.iter().any(|call| call.get("callId").is_some()));
+        let request = if action_batch {
+            PushRequest::decode_action_envelope(action.body.as_bytes())?
+        } else {
+            PushRequest::decode(action.body.as_bytes())?
+        };
+        let receipt = if action_batch {
+            PushReceipt::decode_action_envelope(bytes)?
+        } else {
+            PushReceipt::decode(bytes)?
+        };
+        Ok(StoreDelivery::Receipt {
+            sequence: request.batch_sequence,
+            receipt,
+        })
+    }
+    pub(crate) fn receipt_committed(&mut self) {
+        self.active = None;
+        self.completed = false;
+    }
     pub fn restart(&mut self) {
         self.completed = false;
         self.active = None;
@@ -152,9 +185,34 @@ impl<S: ClientStore> Client<S> {
         page: PullPage,
         request: Option<PullRequest>,
     ) -> Result<DownlinkProgress> {
+        let mut progress = self.classify_downlink(&page, request.as_ref())?;
+        if progress.disposition == "applied" {
+            progress.report = self.apply_current_page(page)?;
+        }
+        Ok(progress)
+    }
+
+    /// Classify a received page for runtime callback admission. Keep pull
+    /// correlation available until its prepared authority commits.
+    pub(crate) fn admit_downlink(
+        &mut self,
+        page: &PullPage,
+        request: Option<&PullRequest>,
+    ) -> Result<DownlinkProgress> {
+        let pulls = self.pulls.clone();
+        let result = self.classify_downlink(page, request);
+        self.pulls = pulls;
+        result
+    }
+
+    fn classify_downlink(
+        &mut self,
+        page: &PullPage,
+        request: Option<&PullRequest>,
+    ) -> Result<DownlinkProgress> {
         page.validate()?;
         if let Some(request) = request
-            && !answers(&page, &request)
+            && !answers(page, request)
         {
             return Err(invalid("response does not match pull request"));
         }
@@ -170,7 +228,7 @@ impl<S: ClientStore> Client<S> {
             continues,
             report: ApplyReport::default(),
         };
-        if self.stale_subscription_page(&page) {
+        if self.stale_subscription_page(page) {
             return Ok(progress);
         }
         let subscribed = self.desired_channels()?;
@@ -196,8 +254,6 @@ impl<S: ClientStore> Client<S> {
         if !progress.gaps.is_empty() {
             progress.disposition = "recover";
         } else if live {
-            // The page passed the epoch check above; the cursor gate is shared.
-            progress.report = self.apply_current_page(page)?;
             progress.disposition = "applied";
         }
         Ok(progress)

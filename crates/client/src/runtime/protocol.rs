@@ -605,6 +605,20 @@ pub enum Diagnostic {
     /// Records a receipt, page or direct response could not apply; the
     /// client stays consistent and the application hears about each one.
     Records { reports: Vec<Report> },
+    /// An application store hook refused incoming authority. The callback
+    /// effect id lets a language bridge attach its original thrown cause.
+    StoreHook {
+        code: String,
+        model: String,
+        path: String,
+        message: String,
+        #[serde(
+            rename = "callbackEffectId",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        callback_effect_id: Option<String>,
+    },
     /// A lane or effect failure the application's `onError` would have seen:
     /// a transport error, a protocol violation the runtime closed a socket
     /// for, a failed credential refresh, a watch that failed to re-run.

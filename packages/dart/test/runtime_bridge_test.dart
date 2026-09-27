@@ -801,6 +801,39 @@ void main() {
     );
   });
 
+  test('a local callback effect for an unrouted request is refused', () async {
+    // The same answer as the Node bridge gives, so diagnostics agree.
+    final carrier = FakeCarrier((_) => null);
+    final client = await Client.open(
+      path: 'unused',
+      schema: const {},
+      carrier: carrier,
+    );
+    carrier.publish([
+      {
+        'type': 'effect',
+        'effectId': '13',
+        'operation': {
+          'kind': 'mutationLocal',
+          'transactionId': 'tx7',
+          'companionId': 'c9',
+          'requestId': 'nobody',
+        },
+      },
+    ]);
+    await pumpEventQueue();
+    expect(carrier.admitted.where((e) => e['type'] == 'callbackResult'), [
+      Bridge.callbackResultEnvelope(
+        '13',
+        'tx7',
+        ok: false,
+        error: 'unknown mutation',
+        companionId: 'c9',
+      ),
+    ]);
+    await client.close();
+  });
+
   test('a cancelled callback effect never runs its callback', () async {
     // The runtime cancelled the callback before the bridge started it; the
     // task is still pending until the runtime settles it.

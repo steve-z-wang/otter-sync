@@ -1,11 +1,12 @@
 import type { RecordValue, QuerySpec } from "../client-js/values.mts";
 import type { Call } from "../client-js/actions.mts";
 import {
-  CAPABILITY,
-  mutationCommand,
-  runLocal,
+  callbackRefusal,
+  expiredRefusal,
+  submitMutation,
   type MutationOptions,
   type MutationPort,
+  type SubmissionHost,
 } from "../client-js/local.mts";
 export {
   LocalTransaction,
@@ -21,7 +22,7 @@ export {
  */
 export class Transaction {
   #send: (command: RecordValue, scope?: string) => Promise<any>;
-  #mutations: MutationPort | undefined;
+  #host: SubmissionHost;
   #open = true;
   /** Submissions with a `local` callback that have not settled. */
   #locals = 0;
@@ -41,8 +42,18 @@ export class Transaction {
     mutations?: MutationPort,
   ) {
     this.#send = send;
-    this.#mutations = mutations;
+    this.#host = {
+      admit: () => this.#admit(),
+      track: (submit) => this.#track(() => submit(undefined)),
+      running: (delta) => void (this.#locals += delta),
+      expired: () => expiredRefusal(this.#open, this.#poison),
+      mutations,
+    };
   }
+  /** Record a structural refusal: the transaction fails whatever is caught. */
+  #poison = (error: Error): void => {
+    this.#structural ??= error;
+  };
   cancel(): void {
     this.#open = false;
   }
@@ -104,11 +115,7 @@ export class Transaction {
     if (!this.#open) return Promise.reject(Error("transaction_closed"));
     // A `local` callback owns the transaction until its submission settles:
     // a captured or pipelined parent command is refused as the runtime would.
-    if (this.#locals > 0) {
-      this.#structural ??= Error(CAPABILITY);
-      return Promise.reject(Error(CAPABILITY));
-    }
-    return undefined;
+    return callbackRefusal(this.#locals, this.#poison);
   }
   /**
    * Queue a named Mutation in this transaction; see the Node transaction.
@@ -121,31 +128,7 @@ export class Transaction {
     decode: (value: unknown) => T,
     options?: MutationOptions,
   ): Promise<Call<T>> {
-    let submission: ReturnType<typeof mutationCommand>;
-    try {
-      submission = mutationCommand(name, version, args, options);
-    } catch (error) {
-      return Promise.reject(error);
-    }
-    const refused = this.#admit();
-    if (refused) return refused;
-    const { command, local } = submission;
-    const mutations = this.#mutations;
-    if (local) this.#locals++;
-    const work: Promise<Call<T>> = this.#track(() => {
-      if (!mutations) throw Error("transaction cannot submit a Mutation");
-      return mutations.submit(
-        command,
-        undefined,
-        decode,
-        local && runLocal(local),
-      );
-    });
-    if (local) {
-      const settled = () => void this.#locals--;
-      void work.then(settled, settled);
-    }
-    return work;
+    return submitMutation(this.#host, name, version, args, decode, options);
   }
   /**
    * The callback returned. Promise lifetime decides "unawaited", and a

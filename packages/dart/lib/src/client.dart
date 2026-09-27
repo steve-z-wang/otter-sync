@@ -892,15 +892,32 @@ class Transaction implements WritePort, SubmitMutationPort {
     if (!_open) return Future.error(StateError('transaction_closed'));
     // A `local` callback owns the transaction until its submission completes:
     // a captured or pipelined parent command is refused as the runtime would.
-    if (_locals > 0) {
-      _structural ??= StateError(_capability);
-      return Future.error(StateError(_capability));
-    }
+    final refused = _callbackRefusal();
+    if (refused != null) return refused;
     if (_active != null && Zone.current[_zoneKey] != _active) {
       _structural = StateError('overlapping savepoint work');
       return Future.error(_structural!);
     }
     return null;
+  }
+
+  /// The refusal of a parent command while a submission with a `local`
+  /// callback is unfinished, recorded as structural so the transaction fails
+  /// whatever the callback catches.
+  Future<Never>? _callbackRefusal() {
+    if (_locals == 0) return null;
+    _structural ??= StateError(_capability);
+    return Future.error(StateError(_capability));
+  }
+
+  /// The refusal of a command sent through an expired `local` handle. While
+  /// this transaction is open it is the runtime's answer to a stale
+  /// capability and poisons the transaction; afterwards the handle is simply
+  /// closed.
+  StateError _expired() {
+    if (!_open) return StateError('transaction_closed');
+    _structural ??= StateError(_capability);
+    return StateError(_capability);
   }
 
   /// Queue a named Mutation in this transaction. It completes after the
@@ -936,7 +953,7 @@ class Transaction implements WritePort, SubmitMutationPort {
           if (wire != null) 'store': wire,
           if (local != null) 'local': true,
         },
-        local: local == null ? null : LocalTransaction._run(local),
+        local: local == null ? null : LocalTransaction._run(local, _expired),
         // Routed while the answer is dispatched: the transaction's rollback
         // may follow it in the same batch.
         onValue: (value) => call = _client._actionObservers.register<T>(
@@ -1026,10 +1043,8 @@ class Transaction implements WritePort, SubmitMutationPort {
 
   Future<T> savepoint<T>(Future<T> Function() body) {
     if (!_open) return Future.error(StateError('transaction_closed'));
-    if (_locals > 0) {
-      _structural ??= StateError(_capability);
-      return Future.error(StateError(_capability));
-    }
+    final refused = _callbackRefusal();
+    if (refused != null) return refused;
     if (_active != null && Zone.current[_zoneKey] != _active) {
       _structural = StateError('overlapping savepoints');
       return Future.error(_structural!);
@@ -1097,34 +1112,41 @@ class Transaction implements WritePort, SubmitMutationPort {
 /// The handle a Mutation's `local` callback receives: local Model reads and
 /// direct writes through the callback's own capability, nothing else - no
 /// Mutation, Channel, watch or savepoint. Its writes are the submitting call's
-/// local companions. It expires when the callback returns; the unawaited-work
-/// rule is the transaction's, and a failed command it caught is the
-/// runtime's to refuse with the submission.
+/// local companions. It expires when the callback returns: a later command is
+/// refused, and poisons the transaction while it is still open. The
+/// unawaited-work rule is the transaction's, and a failed command it caught
+/// is the runtime's to refuse with the submission.
 class LocalTransaction implements WritePort {
-  LocalTransaction._(this._submit);
+  LocalTransaction._(this._submit, this._expired);
   final Future<dynamic> Function(Map<String, dynamic> command) _submit;
+
+  /// The refusal of a command sent after the callback returned.
+  final StateError Function() _expired;
   bool _open = true;
   Future<void> _tail = Future<void>.value();
   int _pending = 0;
 
   /// Run [callback] as a `local` callback, then apply the transaction's
-  /// checks to it.
-  static LocalRun _run(Future<void> Function(WritePort local) callback) =>
-      (send) async {
-        final local = LocalTransaction._(send);
-        try {
-          await callback(local);
-        } catch (error, stack) {
-          try {
-            await local._finish();
-          } catch (_) {}
-          Error.throwWithStackTrace(error, stack);
-        }
+  /// checks to it. [expired] answers a command sent through its handle after
+  /// it returned.
+  static LocalRun _run(
+    Future<void> Function(WritePort local) callback,
+    StateError Function() expired,
+  ) => (send) async {
+    final local = LocalTransaction._(send, expired);
+    try {
+      await callback(local);
+    } catch (error, stack) {
+      try {
         await local._finish();
-      };
+      } catch (_) {}
+      Error.throwWithStackTrace(error, stack);
+    }
+    await local._finish();
+  };
 
   Future<dynamic> _send(Map<String, dynamic> command) {
-    if (!_open) return Future.error(StateError('transaction_closed'));
+    if (!_open) return Future.error(_expired());
     _pending++;
     final work = _submit(command);
     final settled = work.then<void>(

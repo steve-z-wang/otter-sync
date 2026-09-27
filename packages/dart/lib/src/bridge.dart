@@ -195,7 +195,6 @@ class _Abi implements Carrier {
   void detach(int runtime) => _detach(runtime);
 }
 
-/// One submitted input awaiting its `taskCompleted`.
 /// Runs a Mutation's `local` callback over its capability's commands; throws
 /// its failure.
 typedef LocalRun =
@@ -203,6 +202,7 @@ typedef LocalRun =
       Future<dynamic> Function(Map<String, dynamic> command) send,
     );
 
+/// One submitted input awaiting its `taskCompleted`.
 class _Route {
   _Route({this.run, this.local, this.scope, this.onValue})
     : zone = Zone.current;
@@ -889,7 +889,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       ),
     );
     if (route == null || local == null) {
-      answer(ok: false, error: 'no mutation callback');
+      answer(ok: false, error: 'unknown mutation');
       return;
     }
     _callbacks.add(effectId);

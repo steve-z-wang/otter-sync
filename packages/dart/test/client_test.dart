@@ -932,7 +932,6 @@ void _mutationTests() {
   test('a local callback runs inside its submission and its Call is '
       'provisional until the commit', () async {
     final order = <String>[];
-    var committed = false;
     final running = client.transaction((tx) async {
       final call = await tx.submitMutation(
         'Publish',
@@ -951,7 +950,8 @@ void _mutationTests() {
         },
       );
       order.add('submitted');
-      expect(committed, isFalse);
+      // Durable absence before the commit is checked by an independent
+      // SQLite reader in the Node harness; here the handle shows it.
       expect(call.status, CallStatus.pending);
       // An early wait is an observation error only: caught, the call stays
       // usable.
@@ -960,7 +960,6 @@ void _mutationTests() {
       expect(await tx.read('Entry', {'id': 'draft'}), isNull);
       return (call, 7);
     });
-    unawaited(running.then((_) => committed = true));
     final (call, value) = await running;
     expect(value, 7);
     expect(order, ['local', 'submitted']);
@@ -1087,36 +1086,45 @@ void _mutationTests() {
   test('the local adapter exposes only local reads and writes and expires '
       'with its callback', () async {
     late WritePort captured;
-    await client.transaction((tx) async {
-      await tx.submitMutation(
-        'Publish',
-        1,
-        _publish('p'),
-        _decode,
-        local: (local) async {
-          captured = local;
-          expect(local, isNot(isA<Transaction>()));
-          expect(local, isNot(isA<SubmitMutationPort>()));
-          final raw = local as LocalTransaction;
-          expect(await raw.readSql('SELECT 1 AS one'), [
-            {'one': 1},
-          ]);
-          expect(await raw.query('Entry'), hasLength(2));
-          await local.direct(_remove('draft'));
-        },
-      );
-      // An expired handle is refused; nothing reaches the runtime.
-      await expectLater(
-        captured.direct(_create('late', 'late')),
-        _stateError('transaction_closed'),
-      );
-    });
-    expect(await _mutationState(client), {
-      'pending': 1,
-      'draft': null,
-      'published': 'published',
-    });
+    Object? refusal;
+    await expectLater(
+      client.transaction((tx) async {
+        await tx.submitMutation(
+          'Publish',
+          1,
+          _publish('p'),
+          _decode,
+          local: (local) async {
+            captured = local;
+            expect(local, isNot(isA<Transaction>()));
+            expect(local, isNot(isA<SubmitMutationPort>()));
+            final raw = local as LocalTransaction;
+            expect(await raw.readSql('SELECT 1 AS one'), [
+              {'one': 1},
+            ]);
+            expect(await raw.query('Entry'), hasLength(2));
+            await local.direct(_remove('draft'));
+          },
+        );
+        // An expired handle is refused as the runtime refuses a stale
+        // capability, and poisons the open transaction even when caught.
+        try {
+          await captured.direct(_create('late', 'late'));
+        } catch (error) {
+          refusal = error;
+        }
+      }),
+      _stateError(_capability),
+    );
+    expect(refusal, isA<StateError>());
+    expect((refusal as StateError).message, _capability);
+    expect(await _mutationState(client), _untouched);
     expect(await client.read('Entry', {'id': 'late'}), isNull);
+    // Once the transaction ended the handle is simply closed.
+    await expectLater(
+      captured.read('Entry', {'id': 'p'}),
+      _stateError('transaction_closed'),
+    );
   });
 
   test('outer transaction commands are refused while a local callback is '

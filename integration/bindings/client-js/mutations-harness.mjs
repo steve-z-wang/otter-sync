@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import {
   schema as loadSchema,
@@ -63,6 +64,7 @@ const deferred = () => {
 /**
  * A client over a fresh file whose backend accepts every pushed call and
  * answers each created Entry's authority. `pushes` records each push body;
+ * `queued` counts the calls an independent SQLite reader sees committed;
  * `reopen` closes and opens the same file.
  */
 async function withClient(Transaction, body, { onStore } = {}) {
@@ -101,6 +103,16 @@ async function withClient(Transaction, body, { onStore } = {}) {
     await body({
       client,
       pushes,
+      queued: () => {
+        const reader = new DatabaseSync(path, { readOnly: true });
+        try {
+          return reader
+            .prepare("SELECT count(*) AS n FROM axton_mutation")
+            .get().n;
+        } finally {
+          reader.close();
+        }
+      },
       connect: () => client.connect({ url: "http://unused", token: "token" }),
       reopen: async () => {
         await client.close();
@@ -132,10 +144,9 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
   const run = (body, options) => withClient(Transaction, body, options);
 
   test("a local callback runs inside its submission and its Call is provisional until the commit", async () => {
-    await run(async ({ client, pushes, connect }) => {
+    await run(async ({ client, pushes, connect, queued }) => {
       await client.direct(create("draft", "local"));
       const order = [];
-      let committed = false;
       const running = client.transaction(async (tx) => {
         const call = await tx.submitMutation(
           "Publish",
@@ -156,7 +167,8 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
           },
         );
         order.push("submitted");
-        assert.equal(committed, false);
+        // Not durable yet: another SQLite connection sees no queued call.
+        assert.equal(queued(), 0);
         assert.equal(call.status, "pending");
         // An early wait is an observation error only: caught, the call stays usable.
         await assert.rejects(call.wait(), code("transaction_uncommitted"));
@@ -164,8 +176,8 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
         assert.equal(await tx.read("Entry", { id: "draft" }), null);
         return { call, value: 7 };
       });
-      void running.then(() => (committed = true));
       const { call, value } = await running;
+      assert.equal(queued(), 1, "the commit made the call durable");
       assert.equal(value, 7);
       assert.deepEqual(order, ["local", "submitted"]);
       assert.deepEqual(await state(client), {
@@ -311,43 +323,45 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
     await run(async ({ client }) => {
       await client.direct(create("draft", "local"));
       let captured;
-      await client.transaction(async (tx) => {
-        await tx.submitMutation("Publish", 1, publish("p"), decode, {
-          local: async (local) => {
-            captured = local;
-            for (const member of [
-              "submitMutation",
-              "channels",
-              "savepoint",
-              "watch",
-              "mutate",
-              "finish",
-              "runCallback",
-            ])
-              assert.equal(member in local, false, member);
-            assert.equal(local instanceof Transaction, false);
-            assert.deepEqual(await local.readSql("SELECT 1 AS one"), [
-              { one: 1 },
-            ]);
-            assert.equal(
-              (await local.querySpec("Entry", { filter: {} })).length,
-              2,
-            );
-            await local.direct(remove("draft"));
-          },
-        });
-        // An expired handle is refused; nothing reaches the runtime.
-        await assert.rejects(
-          captured.direct(create("late", "late")),
-          /transaction_closed/,
-        );
-      });
-      assert.deepEqual(await state(client), {
-        pending: 1,
-        draft: null,
-        published: "published",
-      });
+      let refusal;
+      await assert.rejects(
+        client.transaction(async (tx) => {
+          await tx.submitMutation("Publish", 1, publish("p"), decode, {
+            local: async (local) => {
+              captured = local;
+              for (const member of [
+                "submitMutation",
+                "channels",
+                "savepoint",
+                "watch",
+                "mutate",
+                "finish",
+                "runCallback",
+              ])
+                assert.equal(member in local, false, member);
+              assert.equal(local instanceof Transaction, false);
+              assert.deepEqual(await local.readSql("SELECT 1 AS one"), [
+                { one: 1 },
+              ]);
+              assert.equal(
+                (await local.querySpec("Entry", { filter: {} })).length,
+                2,
+              );
+              await local.direct(remove("draft"));
+            },
+          });
+          // An expired handle is refused as the runtime refuses a stale
+          // capability, and poisons the open transaction even when caught.
+          await captured.direct(create("late", "late")).catch((error) => {
+            refusal = error;
+          });
+        }),
+        CAPABILITY,
+      );
+      assert.match(refusal?.message, CAPABILITY);
+      assert.deepEqual(await state(client), untouched);
       assert.equal(await client.read("Entry", { id: "late" }), null);
+      // Once the transaction ended the handle is simply closed.
       await assert.rejects(
         captured.read("Entry", { id: "p" }),
         /transaction_closed/,

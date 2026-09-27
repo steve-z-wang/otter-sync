@@ -16,7 +16,7 @@ Two boundaries are distinct: a local transaction commits all its work together; 
 
 ### Public API
 
-The following TypeScript is the proposed shape, not a currently available API:
+The following TypeScript was the proposed shape; the implemented API is documented in the owning docs:
 
 ```ts
 const call = await client.transaction(async tx => {

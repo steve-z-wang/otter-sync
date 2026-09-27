@@ -58,7 +58,7 @@ Normalization of values and identities is shared with the server and the wire ([
 
 Verified 2026-09-14: `cargo test -p axton-sim --locked` passed with the two L4 scenarios and the direct-write random run enabled; the earlier rows were read, not executed.
 
-Executed 2026-09-27: `cargo test --workspace --locked` passed (987 tests) with the local-order scenarios above and the direct-write random run. Settlement across clean close and reopen is tested; process interruption during settlement is not.
+Executed 2026-09-27: `cargo test --workspace --locked` passed (987 tests) with the local-order scenarios above and the direct-write random run. These local-order scenarios settle across clean close and reopen; process kills around one companion delete's local commit and receipt settlement are covered in [Storage and persistence](../../../../testing/integration/persistence.md).
 
 ## 11. Risks and Technical Debt
 

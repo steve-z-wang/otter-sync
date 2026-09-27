@@ -35,9 +35,10 @@ Future<void> main(List<String> args) async {
   final [url, path, libraryPath] = args;
   final server = sdk.SyncServer(url: url, token: () => 'alice');
   var localRuns = 0;
-  // A pending `Call.wait()` does not keep a Dart isolate alive (pre-existing:
-  // the bridge holds the isolate only while an open, task or close is
-  // outstanding), so this script holds it until it finishes.
+  // A pending `Call.wait()` does not keep a Dart isolate alive (pre-existing,
+  // https://github.com/zanminwang/axton/issues/177: the bridge holds the
+  // isolate only while an open, task or close is outstanding), so this script
+  // holds it until it finishes.
   final keepAlive = ReceivePort();
   try {
     // Offline: one local commit queues two calls, each deleting its own Composition.

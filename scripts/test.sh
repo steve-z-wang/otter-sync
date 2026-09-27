@@ -34,7 +34,7 @@ case "$(uname -s)" in
 esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 (cd packages/dart && dart pub get && dart analyze && dart test)
-(cd integration/action-runtime-dart && dart pub get && dart analyze generated.dart generated_test.dart model_only/generated.dart model_free/generated.dart && bash check-negative.sh && dart test generated_test.dart)
+(cd integration/action-runtime-dart && dart pub get && dart analyze generated.dart generated_test.dart model_only/generated.dart model_free/generated.dart action_e2e_publish.dart && bash check-negative.sh && dart test generated_test.dart)
 bash integration/generated-api/verify.sh
 bash integration/e2e/run.sh
 bash integration/action-e2e/run.sh

@@ -475,9 +475,11 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   /// closed: a process-wide listener costs one port, and never closing it
   /// means no runtime can ever hold a pointer to a closed callable, however
   /// its detach and a close raced. It does not keep the isolate alive on its
-  /// own: while anything waits on a runtime (an open, a task, a close) it
-  /// does, so an awaited outcome is always delivered, and a forgotten client
-  /// with nothing outstanding pins nothing.
+  /// own: while an open, a task or a close is outstanding it does, so their
+  /// answers are delivered, and a forgotten client with nothing outstanding
+  /// pins nothing. A pending `Call.wait()` is none of these and holds nothing:
+  /// a headless isolate awaiting only a Call can exit before the outcome
+  /// arrives (https://github.com/zanminwang/axton/issues/177).
   static NativeCallable<_WakeNative>? _wake;
   static int _held = 0;
 

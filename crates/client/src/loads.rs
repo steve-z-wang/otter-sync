@@ -50,12 +50,19 @@ pub const CANCELLED: &str = "load.cancelled";
 pub const NOT_TERMINAL: &str = "load.not_terminal";
 /// Retry names a job that completed or was cancelled: that needs a new start.
 pub const NOT_RETRYABLE: &str = "load.not_retryable";
-/// A once mapping names a job that does not exist.
+/// A once mapping names a job that does not exist, or a stored job row
+/// cannot be decoded.
 pub const LEDGER_INVALID: &str = "load.ledger_invalid";
+/// The schema declares no Load of this name (and version).
+pub const UNKNOWN: &str = "load.unknown";
 /// At most this many record diagnostics are kept in a stored failure.
 pub const MAX_DIAGNOSTICS: usize = 20;
 /// The most jobs one `list` answers.
 pub const MAX_LIST: usize = 100;
+/// Undecodable rows one scheduler read reports at most. The read also stops
+/// after `limit + skip + MAX_SCAN_ISSUES` rows, so its cost is bounded by
+/// what the caller asked for, whatever the ledger holds.
+pub const MAX_SCAN_ISSUES: usize = 20;
 /// Revision of the once key derivation. Changing it makes every earlier
 /// mapping unreachable.
 pub const LOAD_ONCE_FORMAT: u64 = 1;
@@ -490,7 +497,7 @@ fn load_call(
     version: u64,
     args: &Value,
 ) -> Result<(Value, BTreeMap<String, u64>)> {
-    let load = schema.load(name, version)?;
+    let load = schema.load(name, version).map_err(|e| coded(UNKNOWN, e))?;
     let args = normalize_load_args(schema, load, args)?;
     let mut models = BTreeMap::new();
     for output in &load.outputs {
@@ -704,9 +711,11 @@ impl<S: ClientStore> Client<S> {
         };
         self.view(|e| e.load_job(&id))
     }
-    /// The `limit` (1..=100) most recently started jobs, newest first. A row
-    /// that cannot be decoded is left out; a named read of it fails.
-    pub fn list_loads(&mut self, limit: usize) -> Result<Vec<LoadJob>> {
+    /// The statuses of the `limit` (1..=100) most recently started jobs,
+    /// newest first. A row that cannot be decoded is listed as a failed job
+    /// with a `load.ledger_invalid` error ([`LoadLedgerIssue::status`]), never
+    /// left out; a named read of it fails.
+    pub fn list_loads(&mut self, limit: usize) -> Result<Vec<LoadStatus>> {
         if !(1..=MAX_LIST).contains(&limit) {
             return Err(coded(
                 INVALID_OPTIONS,
@@ -716,7 +725,10 @@ impl<S: ClientStore> Client<S> {
         Ok(self
             .view(|e| e.load_scan("", "seq DESC", limit, 0))?
             .into_iter()
-            .filter_map(std::result::Result::ok)
+            .map(|row| match row {
+                Ok(job) => job.status(),
+                Err(issue) => issue.status(),
+            })
             .collect())
     }
     /// Cancel a pending or failed job and remove its own once mapping in the
@@ -806,7 +818,7 @@ impl<S: ClientStore> Client<S> {
             .map(|load| load.version)
             .collect();
         if versions.is_empty() {
-            return Err(invalid(format!("unknown Load {name}")));
+            return Err(coded(UNKNOWN, format!("unknown Load {name}")));
         }
         let mut keys = vec![];
         let mut refusal = None;
@@ -830,9 +842,11 @@ impl<S: ClientStore> Client<S> {
         })
     }
     /// Up to `limit` ready pages in oldest-ready order, leaving out the jobs
-    /// in `skip` (a page already in flight). Bounded committed reads; a row
-    /// that cannot be decoded is reported and never blocks another job. No
-    /// page is ready while an incompatible rebuild is pending.
+    /// in `skip` (a page already in flight, a job backing off, a row already
+    /// reported as damaged). Bounded committed reads: one call reads at most
+    /// `limit + skip.len() + MAX_SCAN_ISSUES` rows and reports at most
+    /// [`MAX_SCAN_ISSUES`] rows that cannot be decoded, which never block
+    /// another job. No page is ready while an incompatible rebuild is pending.
     pub fn load_ready_pages(
         &mut self,
         limit: usize,
@@ -844,16 +858,25 @@ impl<S: ClientStore> Client<S> {
         }
         let replica = self.replica;
         let chunk = limit + skip.len();
-        let mut offset = 0;
-        while schedule.pages.len() < limit {
+        let budget = chunk + MAX_SCAN_ISSUES;
+        let (mut offset, mut scanned) = (0, 0);
+        'scan: while schedule.pages.len() < limit && scanned < budget {
+            let wanted = chunk.min(budget - scanned);
             let rows = self.view(|e| {
-                e.load_scan("WHERE phase = 'pending'", "ready, load_id", chunk, offset)
+                e.load_scan("WHERE phase = 'pending'", "ready, load_id", wanted, offset)
             })?;
             offset += rows.len();
-            let exhausted = rows.len() < chunk;
+            scanned += rows.len();
+            let exhausted = rows.len() < wanted;
             for row in rows {
                 match row {
-                    Err(issue) => schedule.issues.push(issue),
+                    Err(issue) if skip.contains(&issue.load_id) => {}
+                    Err(issue) => {
+                        schedule.issues.push(issue);
+                        if schedule.issues.len() == MAX_SCAN_ISSUES {
+                            break 'scan;
+                        }
+                    }
                     Ok(job) if skip.contains(&job.id) => {}
                     Ok(job) if schedule.pages.len() < limit => {
                         let (Some(call_id), Some(intent)) = (job.call_id, job.intent) else {

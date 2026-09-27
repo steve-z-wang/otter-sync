@@ -4,7 +4,7 @@
 //! and their public entry points are in [`loads`](crate::loads); this module
 //! only reads and writes rows.
 use crate::engine::{Engine, as_u64};
-use crate::loads::{LoadJob, LoadJobError, LoadOnceKey, LoadPhase, LoadRetryClass};
+use crate::loads::{LoadJob, LoadJobError, LoadOnceKey, LoadPhase, LoadRetryClass, LoadStatus};
 use crate::store::ClientStore;
 use axton_core::{Continuation, LoadIntent, LoadNext, Result, canonical_json, invalid};
 use serde_json::{Value, json};
@@ -26,6 +26,27 @@ const MAX_DETAIL: usize = 200;
 pub struct LoadLedgerIssue {
     pub load_id: String,
     pub detail: String,
+    /// The stored operation name and version, when those columns still read.
+    pub name: Option<String>,
+    pub version: Option<u64>,
+}
+impl LoadLedgerIssue {
+    /// The management snapshot of a row that cannot be decoded: a failed job
+    /// whose error is `load.ledger_invalid`, so a listing shows it rather than
+    /// hiding it. Its page count is unknown and reported as zero.
+    pub fn status(&self) -> LoadStatus {
+        LoadStatus {
+            id: self.load_id.clone(),
+            name: self.name.clone().unwrap_or_default(),
+            version: self.version.unwrap_or_default(),
+            phase: LoadPhase::Failed,
+            pages: 0,
+            error: Some(axton_core::LoadError::bounded(
+                crate::loads::LEDGER_INVALID,
+                format!("Load {} cannot be read: {}", self.load_id, self.detail),
+            )),
+        }
+    }
 }
 
 fn text<'a>(value: &'a Value, what: &str) -> Result<&'a str> {
@@ -79,6 +100,8 @@ fn decode_keyed(row: &[Value]) -> Result<std::result::Result<LoadJob, LoadLedger
     Ok(decode(row).map_err(|error| LoadLedgerIssue {
         load_id,
         detail: crate::bootstrap::truncate(error.to_string(), MAX_DETAIL),
+        name: row[1].as_str().map(str::to_string),
+        version: as_u64(&row[2]).ok(),
     }))
 }
 
@@ -319,6 +342,10 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     /// Fail every pending job whose frozen contract `is_available` refuses,
     /// as `error`. Rows that cannot be decoded are left for a named read.
+    ///
+    /// This is the one unbounded ledger read: it runs once per open, inside
+    /// the open's transaction, and selects four narrow columns of pending
+    /// rows only - never frozen intents or continuations.
     pub(crate) fn fail_unavailable_loads(
         &mut self,
         is_available: impl Fn(&str, u64, &BTreeMap<String, u64>) -> bool,

@@ -242,3 +242,59 @@ pub fn reply(page: LoadPageResponse) -> LoadPageReply {
         page: Ok(page),
     }
 }
+/// A SQLite store whose next commit fails once while `fail_commit` is set:
+/// nothing of that transaction is kept.
+pub struct CommitFaultStore {
+    pub inner: SqliteStore,
+    pub fail_commit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl CommitFaultStore {
+    pub fn open(path: &std::path::Path) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            Self {
+                inner: SqliteStore::open(path).unwrap(),
+                fail_commit: fail.clone(),
+            },
+            fail,
+        )
+    }
+}
+impl ClientStore for CommitFaultStore {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        if self
+            .fail_commit
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(axton_core::invalid("injected commit failure"));
+        }
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query_committed(sql, parameters)
+    }
+}

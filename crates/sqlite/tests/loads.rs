@@ -5,8 +5,8 @@
 mod common;
 use axton_client::loads::{
     CANCELLED, CONTRACT_UNAVAILABLE, HOOK_FAILED, INVALID_CONTINUATION, INVALID_OPTIONS,
-    LEDGER_INVALID, NOT_FOUND, NOT_RETRYABLE, NOT_TERMINAL, PAGE_TOO_LARGE, PROTOCOL_INVALID,
-    STORE_FAILED,
+    LEDGER_INVALID, MAX_SCAN_ISSUES, NOT_FOUND, NOT_RETRYABLE, NOT_TERMINAL, PAGE_TOO_LARGE,
+    PROTOCOL_INVALID, STORE_FAILED, UNKNOWN,
 };
 use axton_client::*;
 use axton_sqlite::SqliteStore;
@@ -354,15 +354,58 @@ fn a_damaged_job_fails_visibly_without_blocking_healthy_jobs() {
     assert_eq!(schedule.issues[0].load_id, broken);
     let error = c.get_load(&broken).unwrap_err().to_string();
     assert!(error.contains(&broken), "{error}");
+    // The listing shows the damaged job as a failed ledger entry, not a gap.
+    let listed = c.list_loads(10).unwrap();
     assert_eq!(
-        c.list_loads(10)
-            .unwrap()
-            .into_iter()
-            .map(|j| j.id)
-            .collect::<Vec<_>>(),
-        vec![healthy.clone()]
+        listed.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
+        vec![healthy.clone(), broken.clone()]
     );
+    assert_eq!(listed[0].phase, LoadPhase::Pending);
+    assert_eq!(
+        (listed[1].name.as_str(), listed[1].version, listed[1].phase),
+        ("Entries", 1, LoadPhase::Failed)
+    );
+    let damaged = listed[1].error.clone().unwrap();
+    assert_eq!(damaged.code, LEDGER_INVALID);
+    assert!(damaged.message.contains(&broken), "{damaged:?}");
+    // A caller that already knows the row skips it silently.
+    let known = c
+        .load_ready_pages(8, &BTreeSet::from([broken.clone()]))
+        .unwrap();
+    assert!(known.issues.is_empty());
+    assert_eq!(known.pages.len(), 1);
     applied(store(&mut c, &healthy, &[("a", "A", 1)], None));
+}
+
+#[test]
+fn one_scheduler_read_is_bounded_however_many_rows_are_damaged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    let damaged: Vec<String> = (0..MAX_SCAN_ISSUES + 5)
+        .map(|_| start(&mut c, plain()).job.id)
+        .collect();
+    let healthy = start(&mut c, plain()).job.id;
+    raw(
+        &path,
+        &format!("UPDATE axton_load SET intent = 'not json' WHERE load_id <> '{healthy}'"),
+    );
+    // The read stops at the issue bound; the damaged head does not make it
+    // read the whole ledger.
+    let first = c.load_ready_pages(1, &BTreeSet::new()).unwrap();
+    assert_eq!(first.issues.len(), MAX_SCAN_ISSUES);
+    assert!(first.pages.is_empty());
+    // Skipping what was reported reaches the healthy job behind it.
+    let mut skip: BTreeSet<String> = first.issues.iter().map(|i| i.load_id.clone()).collect();
+    let second = c.load_ready_pages(1, &skip).unwrap();
+    assert_eq!(second.issues.len(), 5);
+    assert_eq!(second.pages.len(), 1);
+    assert_eq!(second.pages[0].fence.load_id, healthy);
+    skip.extend(second.issues.iter().map(|i| i.load_id.clone()));
+    assert_eq!(skip, damaged.into_iter().collect());
+    let third = c.load_ready_pages(1, &skip).unwrap();
+    assert!(third.issues.is_empty());
+    assert_eq!(third.pages[0].fence.load_id, healthy);
 }
 
 #[test]
@@ -1256,7 +1299,8 @@ fn invalidation_removes_mappings_across_versions_and_nothing_else() {
             .is_err(),
         "omitted is not null"
     );
-    assert!(c.invalidate_load("Missing", &json!({})).is_err());
+    fails_with(c.invalidate_load("Missing", &json!({})), UNKNOWN);
+    fails_with(c.start_load("Missing", 1, &json!({}), plain()), UNKNOWN);
     assert_eq!(c.invalidate_load("Recent", &json!({})).unwrap(), 0);
 }
 
@@ -1368,7 +1412,7 @@ fn a_compatible_reopen_keeps_retained_jobs_and_fails_removed_versions() {
         "a retained version keeps its exact frozen page"
     );
     fails_with(c.retry_load(&v1.id), CONTRACT_UNAVAILABLE);
-    fails_with(c.start_load("Entries", 1, &args(), plain()), "unknown Load");
+    fails_with(c.start_load("Entries", 1, &args(), plain()), UNKNOWN);
     drop(c);
     // Adding a version keeps in-flight jobs of the earlier one.
     let mut value = load_schema_value();
@@ -1381,4 +1425,137 @@ fn a_compatible_reopen_keeps_retained_jobs_and_fails_removed_versions() {
     )
     .unwrap();
     assert_eq!(job(&mut c, &v2.id), v2);
+}
+
+// ------------------------------------------------ the fence inside the session
+
+/// The store step of the current page of `id`, held the way the runtime holds
+/// an admitted delivery across lane turns.
+fn held(c: &mut Client<SqliteStore>, id: &str) -> StoreDelivery {
+    let fence = fence(c, id);
+    let page = load_page(&fence, &[("a", "A", 1)], Some(json!(1)));
+    let LoadPageStep::Store(delivery) = c.load_page_step(&fence, reply(page)).unwrap() else {
+        panic!("a page to store")
+    };
+    delivery
+}
+
+#[test]
+fn a_held_page_is_inert_once_cancel_retry_forget_or_a_replica_change_moved_its_job() {
+    for case in ["cancel", "retry", "forget", "replica"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = open_db(&dir.path().join("db"));
+        let id = start(&mut c, plain()).job.id;
+        let frozen = fence(&mut c, &id);
+        let mut delivery = held(&mut c, &id);
+        match case {
+            "cancel" => {
+                c.cancel_load(&id).unwrap();
+            }
+            "retry" => {
+                failed(
+                    c.store_load_page(&frozen, reply(backend_failure(&frozen, "no")))
+                        .unwrap(),
+                );
+                c.retry_load(&id).unwrap();
+            }
+            "forget" => {
+                c.cancel_load(&id).unwrap();
+                c.forget_load(&id).unwrap();
+            }
+            _ => {
+                // A delivery held from a replica this client no longer writes.
+                let StoreDelivery::Load { fence, .. } = &mut delivery else {
+                    unreachable!()
+                };
+                fence.replica += 1;
+            }
+        }
+        let moved = c.get_load(&id).unwrap();
+        c.begin_session().unwrap();
+        let prepared = c.prepare_store(delivery).unwrap();
+        assert!(prepared.load_refusal().is_none(), "{case}");
+        let result = c.apply_prepared_store(prepared).unwrap();
+        c.commit_session().unwrap();
+        assert!(
+            matches!(result, StoreResult::Load(LoadApply::Stale)),
+            "{case}: the held page is stale"
+        );
+        assert_eq!(entry(&mut c, "a"), None, "{case}: no Model row");
+        assert_eq!(c.get_load(&id).unwrap(), moved, "{case}: no progress");
+    }
+}
+
+#[test]
+fn authority_that_moved_before_replay_retries_the_same_call_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    subscribe(&mut c, "book");
+    let id = start(&mut c, plain()).job.id;
+    let fence = fence(&mut c, &id);
+    let LoadPageStep::Store(delivery) = c
+        .load_page_step(&fence, reply(load_page(&fence, &[("e", "L", 1)], None)))
+        .unwrap()
+    else {
+        panic!("a page to store")
+    };
+    c.begin_session().unwrap();
+    let prepared = c.prepare_store(delivery).unwrap();
+    // Newer authority for the same record lands in the session before the
+    // prepared page replays, so the page's promise no longer holds.
+    let newer = c
+        .prepare_store(StoreDelivery::Page(page("book", 0, 2, Some("P"))))
+        .unwrap();
+    c.apply_prepared_store(newer).unwrap();
+    let Err(error) = c.apply_prepared_store(prepared) else {
+        panic!("the moved authority refuses the replay")
+    };
+    assert!(!c.session_active(), "the session rolled back");
+    let retrying = c
+        .record_load_failure(&fence, &LoadFailure::local_retry(error.to_string()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(retrying.phase, LoadPhase::Pending);
+    assert_eq!(retrying.call_id.as_deref(), Some(fence.call_id.as_str()));
+    assert_eq!(
+        (retrying.retry, retrying.attempts, retrying.pages),
+        (Some(LoadRetryClass::Local), 1, 0)
+    );
+    assert_eq!(entry(&mut c, "e"), None, "neither delivery was kept");
+}
+
+#[test]
+fn a_failed_page_commit_retries_the_same_call_locally() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, fail) = CommitFaultStore::open(&dir.path().join("db"));
+    let mut c = Client::open(store, load_schema()).unwrap();
+    let id = c.start_load("Entries", 1, &args(), plain()).unwrap().job.id;
+    let job = c.get_load(&id).unwrap().unwrap();
+    let fence = LoadFence {
+        replica: c.replica_generation(),
+        load_id: id.clone(),
+        run: job.run,
+        call_id: job.call_id.clone().unwrap(),
+    };
+    let page = load_page(&fence, &[("a", "A", 1)], Some(json!(1)));
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    let LoadStored::Retrying(retrying) = c.store_load_page(&fence, reply(page.clone())).unwrap()
+    else {
+        panic!("a failed commit retries")
+    };
+    assert_eq!(retrying.call_id, job.call_id, "the same call is resent");
+    assert_eq!(
+        (retrying.retry, retrying.attempts, retrying.pages),
+        (Some(LoadRetryClass::Local), 1, 0)
+    );
+    let key = load_schema()
+        .record_key("Entry", &json!({"id":"a"}))
+        .unwrap();
+    assert_eq!(c.read(&key).unwrap(), None, "nothing of the page was kept");
+    // The same answer applies once the store commits again.
+    let LoadStored::Applied { job, .. } = c.store_load_page(&fence, reply(page)).unwrap() else {
+        panic!("the resent page applies")
+    };
+    assert_eq!((job.pages, job.attempts, job.retry), (1, 0, None));
+    assert!(c.read(&key).unwrap().is_some());
 }

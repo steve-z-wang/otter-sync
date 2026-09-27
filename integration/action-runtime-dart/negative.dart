@@ -34,7 +34,9 @@ void noLoads(model_only.GeneratedClient only, model_free.GeneratedClient free) {
   free.loads;
 }
 
-// Only a schema with a current Mutation queues Mutations in a transaction.
+// Only a schema with a current Mutation queues Mutations in a transaction,
+// and only its current Mutations (Clock v2 is a Query); generated_test.dart
+// uses the model-free facade's `ping`.
 Future<void> transactionScope(model_only.GeneratedClient only, model_free.GeneratedClient free) async {
   await only.transaction((tx) async => tx.mutations);
   await free.transaction((tx) async => tx.mutations.clock);

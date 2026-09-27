@@ -18,14 +18,17 @@ expected=(
   'undefined_getter:26'
   'undefined_getter:33'
   'undefined_getter:34'
-  'undefined_getter:39'
-  'undefined_getter:40'
+  # `code:line:name` also requires the message to name that member, so a
+  # missing facade cannot stand in for the missing member.
+  'undefined_getter:41:mutations'
+  'undefined_getter:42:clock'
 )
-for pair in "${expected[@]}"; do
-  code="${pair%%:*}"
-  line="${pair##*:}"
-  if ! grep -E "negative\.dart:${line}:[0-9]+ - .* - ${code}$" <<<"$output" >/dev/null; then
-    echo "Expected $code at line $line" >&2
+for entry in "${expected[@]}"; do
+  IFS=: read -r code line name <<<"$entry"
+  message='.*'
+  [[ -n "$name" ]] && message=".*'${name}'.*"
+  if ! grep -E "negative\.dart:${line}:[0-9]+ - ${message} - ${code}$" <<<"$output" >/dev/null; then
+    echo "Expected $code at line $line${name:+ naming '$name'}" >&2
     echo "$output" >&2
     exit 1
   fi

@@ -237,11 +237,18 @@ void main() {
         final model_free.Call<void> call = await free.mutations.ping();
         expect(call.status, model_free.CallStatus.pending);
         expect((await free.syncState())['pending'], 1);
+        // A model-free schema with a current Mutation still queues it in a
+        // transaction.
+        final model_free.Call<void> queued = await free.transaction(
+          (tx) => tx.mutations.ping(),
+        );
+        expect(queued.status, model_free.CallStatus.pending);
+        expect((await free.syncState())['pending'], 2);
         final model_free.Call<model_free.ClockOutput> clock = await free
             .queries
             .enqueue
             .clock(at: DateTime.utc(2026));
-        expect((await free.syncState())['pending'], 2);
+        expect((await free.syncState())['pending'], 3);
         // Without a connection a direct Query fails instead of enqueueing.
         await expectLater(
           free.queries.clock(at: DateTime.utc(2026)),
@@ -253,9 +260,10 @@ void main() {
             ),
           ),
         );
-        expect((await free.syncState())['pending'], 2);
+        expect((await free.syncState())['pending'], 3);
         await free.close();
         expect(await call.wait(), isA<model_free.CallFailure<void>>());
+        expect(await queued.wait(), isA<model_free.CallFailure<void>>());
         expect(
           await clock.wait(),
           isA<model_free.CallFailure<model_free.ClockOutput>>(),

@@ -387,3 +387,47 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("a Fetch on a closed client rethrows the admission error", async () => {
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    await client.close();
+    await assert.rejects(fetchEntry(client, "a"), (error) => {
+      // The raw admission error every task of a closed client gets; unlike a
+      // direct call it is not mapped to a CallError.
+      assert.equal(error instanceof CallError, false);
+      assert.equal(error.message, "client_closed");
+      return true;
+    });
+    assert.equal(net.requests.length, 0);
+  });
+});
+
+test("close while a Fetch waits on the network rejects it unavailable and stores nothing late", async () => {
+  let hooks = 0;
+  await harness(
+    async ({ client, net }) => {
+      await connect(client);
+      const gate = deferred();
+      net.gates.set(1, gate);
+      const pending = fetchEntry(client, "a");
+      const joined = fetchEntry(client, "a");
+      while (net.requests.length === 0)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      const outcomes = Promise.allSettled([pending, joined]);
+      await client.close();
+      // The HTTP effect is still outstanding when the runtime closes.
+      gate.resolve();
+      for (const outcome of await outcomes) {
+        assert.equal(outcome.status, "rejected");
+        assert.ok(outcome.reason instanceof CallError, String(outcome.reason));
+        assert.equal(outcome.reason.code, "fetch.unavailable");
+        assert.equal(outcome.reason.execution, "unknown");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(net.requests.length, 1);
+      assert.equal(hooks, 0, "the late reply is fenced");
+    },
+    { onStore: { Entry: () => void hooks++ } },
+  );
+});

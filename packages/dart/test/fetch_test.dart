@@ -377,4 +377,57 @@ void main() {
       await client.close();
     }
   });
+
+  test('a Fetch on a closed client rethrows the admission error', () async {
+    final client = await open();
+    await connect(client);
+    await client.close();
+    // The raw admission error every task of a closed client gets; unlike a
+    // direct call it is not mapped to a CallError.
+    await expectLater(
+      fetch(client, 'a'),
+      throwsA(
+        isA<StateError>().having((e) => e.message, 'message', 'client_closed'),
+      ),
+    );
+    expect(requests, isEmpty);
+  });
+
+  test(
+    'close while a Fetch waits on the network rejects it unavailable',
+    () async {
+      var hooks = 0;
+      final client = await open(onStore: {'Entry': (_, _) => hooks++});
+      final gate = Completer<void>();
+      gates[1] = gate;
+      try {
+        await connect(client);
+        final waiting = [fetch(client, 'a'), fetch(client, 'a')];
+        final outcomes = [
+          for (final future in waiting)
+            future.then<Object?>((value) => value, onError: (Object e) => e),
+        ];
+        while (requests.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 5));
+        }
+        // The HTTP effect is still outstanding when the runtime closes.
+        await client.close();
+        for (final outcome in await Future.wait(outcomes)) {
+          expect(
+            outcome,
+            isA<CallError>()
+                .having((e) => e.code, 'code', 'fetch.unavailable')
+                .having((e) => e.execution, 'execution', 'unknown'),
+          );
+        }
+        // A reply released after close is fenced: nothing is stored.
+        gate.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        expect(requests, hasLength(1));
+        expect(hooks, 0);
+      } finally {
+        await client.close();
+      }
+    },
+  );
 }

@@ -443,7 +443,7 @@ test("an edit of A that explicitly returns B: A is reconciled, the result is B, 
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("generated store hook sees mandatory A authority with store:false and commits derived B before success", async () => {
+test("generated store hook commits derived rows before direct, queued and Query success", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-action-store-hook-"));
   const path = join(directory, "client.sqlite");
   let client: GeneratedClient | undefined;
@@ -459,8 +459,8 @@ test("generated store hook sees mandatory A authority with store:false and commi
         for (const change of changes) {
           const before = await tx.models.todo.get(change.identity);
           observed.push({ kind: change.kind, id: change.identity.id, row: change.kind === "upsert" ? change.row.title : undefined, before: before?.title });
-          if (change.identity.id === "hook-a") {
-            await tx.models.todo.update({ id: "hook-b" }, { title: "derived B" });
+          if (change.kind === "upsert" && (change.identity.id === "hook-a" || change.identity.id === "hook-query")) {
+            await tx.models.todo.update({ id: "hook-b" }, { title: `derived:${change.row.title}` });
             await tx.channels.subscribe("hook-derived");
           }
         }
@@ -475,11 +475,24 @@ test("generated store hook sees mandatory A authority with store:false and commi
       assert.deepEqual(result, { todo: { id: "hook-b", title: "B" } }, "result remains the Loader snapshot");
       assert.deepEqual(observed, [{ kind: "upsert", id: "hook-a", row: "A1", before: "A" }], "only mandatory input authority calls the hook");
       assert.equal((await client.models.todo.get({ id: "hook-a" }))?.title, "A1");
-      assert.equal((await client.models.todo.get({ id: "hook-b" }))?.title, "derived B");
-      await wait(async () => watched.some(rows => rows.includes("hook-a:A1") && rows.includes("hook-b:derived B")), "watcher after hook commit");
-      assert.equal(watched.some(rows => rows.includes("hook-a:A1") !== rows.includes("hook-b:derived B")), false, "watchers see no partial A/B commit");
+      assert.equal((await client.models.todo.get({ id: "hook-b" }))?.title, "derived:A1");
+      await wait(async () => watched.some(rows => rows.includes("hook-a:A1") && rows.includes("hook-b:derived:A1")), "watcher after hook commit");
+      assert.equal(watched.some(rows => rows.includes("hook-a:A1") !== rows.includes("hook-b:derived:A1")), false, "watchers see no partial A/B commit");
       assert.deepEqual(await client.readSql("SELECT channel FROM axton_subscription WHERE channel = ?", ["hook-derived"]), [{ channel: "hook-derived" }], "hook subscription intent committed");
     } finally { stop(); }
+    const pending = await client.mutations.editAndShow({ todo: { id: "hook-a", title: " A2 " }, shown: "hook-b" }, { store: false });
+    const outcome = await pending.wait();
+    assert.equal(outcome.error, null);
+    assert.deepEqual(outcome.result, { todo: { id: "hook-b", title: "B" } }, "queued result remains B's Loader snapshot");
+    assert.equal((await client.models.todo.get({ id: "hook-a" }))?.title, "A2", "Call.wait follows authoritative A commit");
+    assert.equal((await client.models.todo.get({ id: "hook-b" }))?.title, "derived:A2", "Call.wait follows derived B commit");
+    assert.deepEqual(observed[1], { kind: "upsert", id: "hook-a", row: "A2", before: " A2 " }, "queued hook sees the optimistic pre-store view and incoming server row");
+    await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('hook-query','query source')");
+    const queried = await client.queries.searchTodos({ query: "query source" });
+    assert.deepEqual(queried.todos, [{ id: "hook-query", title: "query source" }], "direct Query returns its Loader snapshot");
+    assert.equal((await client.models.todo.get({ id: "hook-query" }))?.title, "query source", "Query resolves after authoritative row commit");
+    assert.equal((await client.models.todo.get({ id: "hook-b" }))?.title, "derived:query source", "Query resolves after hook derived row commit");
+    assert.deepEqual(observed[2], { kind: "upsert", id: "hook-query", row: "query source", before: undefined });
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

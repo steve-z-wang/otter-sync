@@ -19,12 +19,14 @@ Future<void> main(List<String> args) async {
   }
 
   final observed = <String>[];
+  final observedIdentities = <String>[];
   client = await app.GeneratedClient.open(
     path: path,
     libraryPath: libraryPath,
     server: server,
     onStore: app.StoreHooks(todo: (tx, changes) async {
       for (final change in changes) {
+        observedIdentities.add(change.identity.id);
         if (change.identity.id != 'dart-hook-a') continue;
         if (change is! app.StoreUpsert<app.TodoIdentity, app.Todo>) throw StateError('expected full incoming upsert');
         final before = await tx.models.todo.get(change.identity);
@@ -46,6 +48,7 @@ Future<void> main(List<String> args) async {
     );
     check(result.todo.title == 'B', 'result B must remain the Loader snapshot');
     check(observed.length == 1 && observed.single == 'A1:A', 'mandatory A hook sees incoming row and pre-store view: $observed');
+    check(observedIdentities.length == 1 && observedIdentities.single == 'dart-hook-a', 'store:false invoked only A, not output B: $observedIdentities');
     check((await client.models.todo.get(const app.TodoIdentity(id: 'dart-hook-a')))?.title == 'A1', 'input A authority committed');
     check((await client.models.todo.get(const app.TodoIdentity(id: 'dart-hook-b')))?.title == 'derived B', 'derived B committed before success');
     final rows = await client.readSql('SELECT channel FROM axton_subscription WHERE channel = ?', parameters: ['dart:derived']);

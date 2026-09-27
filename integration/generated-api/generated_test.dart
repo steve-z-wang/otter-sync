@@ -3,8 +3,9 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:test/test.dart';
 import 'generated.dart';
+import '../action-contract/generated.dart' as composite;
 void main(){
- test('store hook variants have typed identities and decoded rows',(){
+ test('store hook variants expose typed identities and rows',(){
   final hooks=StoreHooks(entry:(tx,changes)async{
    for(final change in changes){
     final String id=change.identity.id;
@@ -20,6 +21,59 @@ void main(){
    }
   });
   expect(hooks.entry,isNotNull);
+ });
+ test('generated Dart hook decodes incoming DateTime, enum and delete identity',()async{
+  final temp=await Directory.systemTemp.createTemp('generated-store-decode-');
+  final id='123e4567-e89b-42d3-a456-426614174099';
+  final observed=<String>[];
+  final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY']!,onStore:StoreHooks(entry:(tx,changes)async{
+   for(final change in changes){
+    if(change is StoreUpsert<EntryIdentity,Entry>){
+     expect(change.row.at,DateTime.utc(2026,1,2));
+     expect(change.row.status.name,'archived');
+     expect(change.row.title,'server');
+     observed.add('upsert:${change.identity.id}');
+    }else if(change is StoreDelete<EntryIdentity,Entry>){
+     observed.add('delete:${change.identity.id}');
+    }
+   }
+  }));
+  try{
+   await client.mutate.createEntry(entry:Entry(id:id,title:'local',note:null,at:DateTime.utc(2026,1,1),tags:const [],status:Status.active));
+   final first=jsonDecode((await client.client.freeze())!) as Map<String,dynamic>;
+   await client.client.acknowledge(first['batchSequence'] as int,{
+    'clientId':first['clientId'],'batchSequence':first['batchSequence'],'rejections':[],
+    'records':[{'model':'Entry','identity':{'id':id},'stamp':1,'state':{'title':'server','note':null,'at':'2026-01-02T00:00:00.000Z','tags':['server'],'status':'archived'}}],
+   });
+   await client.mutate.removeEntries(entries:[EntryIdentity(id:id)]);
+   final second=jsonDecode((await client.client.freeze())!) as Map<String,dynamic>;
+   await client.client.acknowledge(second['batchSequence'] as int,{
+    'clientId':second['clientId'],'batchSequence':second['batchSequence'],'rejections':[],
+    'records':[{'model':'Entry','identity':{'id':id},'stamp':2,'state':null}],
+   });
+   expect(observed,['upsert:$id','delete:$id']);
+  }finally{await client.close();await temp.delete(recursive:true);}
+ });
+ test('generated Dart hook decodes a composite identity from authority',()async{
+  final temp=await Directory.systemTemp.createTemp('generated-store-composite-');
+  final observed=<String>[];
+  final client=await composite.GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY']!,onStore:composite.StoreHooks(project:(tx,changes){
+   for(final change in changes){
+    observed.add('${change.identity.tenantId}/${change.identity.id}');
+    if(change is composite.StoreUpsert<composite.ProjectIdentity,composite.Project>) expect(change.row.title,'server');
+   }
+  }));
+  try{
+   await client.mutations.link(project:const composite.Project(tenantId:'tenant',id:'project',title:'local'));
+   final frozen=jsonDecode((await client.client.freeze())!) as Map<String,dynamic>;
+   final mutation=(frozen['mutations'] as List).single as Map;
+   await client.client.acknowledge(frozen['batchSequence'] as int,{
+    'clientId':frozen['clientId'],'batchSequence':frozen['batchSequence'],'rejections':[],
+    'completions':[{'callId':mutation['callId'],'outcome':{'status':'succeeded','result':{'relatedProject':null}}}],
+    'records':[{'model':'Project','identity':{'tenantId':'tenant','id':'project'},'stamp':1,'state':{'title':'server'}}],
+   });
+   expect(observed,['tenant/project']);
+  }finally{await client.close();await temp.delete(recursive:true);}
  });
  // The child exits by itself only when nothing is left attached: no runtime
  // keeps a wake registered and no NativeCallable keeps its isolate alive.

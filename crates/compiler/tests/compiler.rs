@@ -790,6 +790,8 @@ fn store_hook_generated_names_are_reserved() {
         "StoreHandler",
         "StoreUpsert",
         "StoreDelete",
+        "StoreHook",
+        "FutureOr",
     ] {
         for declaration in [
             format!("model {name} {{ id String @@id(id) }}"),

@@ -1,7 +1,9 @@
 import type { Call, CallOutcome, GeneratedClient } from './client.ts';
 import { Project, Todo } from './backend.ts';
 import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, EditOutput, EditAndReadOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, MutationContext, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import { createBackend } from './backend.ts';
+import type { Database } from '../../packages/server/index.mts';
 
 const created: TodoCreate = { id: 't', title: 'Task', state: 'open', note: null };
 const patch: TodoUpdate<'title'> = { id: 't', title: 'Renamed' };
@@ -131,4 +133,25 @@ const loaders: Loaders<Tx> = {
   project: async () => [],
   note: async () => [],
 };
-void [handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput];
+// Loads (#173): a page answers every declared identity list and a portable continuation.
+const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
+const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
+const nullState: LoadNext = { state: null };
+const loads: Loads<Tx> = {
+  async projectTodos({ ctx, args, continuation }) {
+    void [ctx.tx.db, ctx.loadId];
+    const projectId: string = args.projectId;
+    const status: 'open' | 'closed' | 'archived' | null = args.status;
+    const tags: string[] = args.tags;
+    void [projectId, status, tags];
+    if (continuation === null) return firstPage;
+    const state: JsonValue = continuation.state;
+    void state;
+    return { data: { todos: [], projects: [] }, next: null };
+  },
+};
+const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => ({ data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState });
+const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos } };
+declare const database: Database<Tx>;
+const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
+void [handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];

@@ -28,3 +28,5 @@ mutation Ping()
 mutation Mark(moment Moment.update)
 // A deleted identity is returned through an explicit scalar output.
 mutation RemoveMoment(moment Moment.delete) { at DateTime }
+// A Load answers Model identities page by page (#173); a DateTime identity is a Date.
+load TodoPages(since DateTime, statuses Status[]) { todos Todo[] moments Moment[] }

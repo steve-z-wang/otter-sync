@@ -33,6 +33,14 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
             .find(|m| m.name == n)
             .map(|m| m.pos);
     }
+    if let Some(n) = owner.strip_prefix("Load ") {
+        let n = n.split(' ').next()?;
+        return declarations
+            .loads
+            .iter()
+            .find(|l| l.name == n)
+            .map(|l| l.pos);
+    }
     let action = owner
         .strip_prefix("Mutation ")
         .or_else(|| owner.strip_prefix("Query "))?
@@ -53,6 +61,7 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
     "LoadContext",
     "LoadError",
     "LoadException",
+    "LoadHandlerCall",
     "LoadNext",
     "LoadOptions",
     "LoadPhase",
@@ -148,11 +157,38 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             add(format!("{n}V{version}Identity"), format!("model {n}"))?;
         }
     }
-    // Per-Load contract identifiers are reserved by the emitters that
-    // declare them; until then only the shared Load names are.
-    if !values(config, "loads").is_empty() {
+    // Beside the shared Load names, exactly the per-version backend handler
+    // types: `{Name}Input` and `{Name}HandlerOutput`, `V{n}`-prefixed for a
+    // retained version.
+    let loads = values(config, "loads");
+    if !loads.is_empty() {
         for helper in LOAD_HELPERS {
             add((*helper).into(), "load helper".into())?;
+        }
+    }
+    let load_versions = || {
+        loads
+            .iter()
+            .filter_map(|load| Some((load["name"].as_str()?, load["version"].as_u64()?)))
+    };
+    let mut load_latest = BTreeMap::<&str, u64>::new();
+    for (n, version) in load_versions() {
+        load_latest
+            .entry(n)
+            .and_modify(|v| *v = (*v).max(version))
+            .or_insert(version);
+    }
+    for (n, version) in load_versions() {
+        let prefix = if version == load_latest[n] {
+            n.to_owned()
+        } else {
+            format!("{n}V{version}")
+        };
+        for suffix in ["Input", "HandlerOutput"] {
+            add(
+                format!("{prefix}{suffix}"),
+                format!("Load {n} v{version} {suffix}"),
+            )?;
         }
     }
     // Model-only schemas still emit every per-model type (such as

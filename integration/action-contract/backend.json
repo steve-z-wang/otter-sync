@@ -91,36 +91,6 @@
       "outputs": [
         {
           "cardinality": "single",
-          "kind": "model",
-          "model": "Note",
-          "modelReadVersion": 1,
-          "name": "note",
-          "source": {
-            "inputIdentity": "note"
-          }
-        },
-        {
-          "cardinality": "optional",
-          "kind": "model",
-          "model": "Note",
-          "modelReadVersion": 1,
-          "name": "maybe",
-          "source": {
-            "inputIdentity": "maybe"
-          }
-        },
-        {
-          "cardinality": "list",
-          "kind": "model",
-          "model": "Note",
-          "modelReadVersion": 1,
-          "name": "many",
-          "source": {
-            "inputIdentity": "many"
-          }
-        },
-        {
-          "cardinality": "single",
           "handlerType": {
             "fields": [
               {
@@ -249,38 +219,10 @@
           }
         }
       ],
+      "kind": "mutation",
       "name": "AddTodo",
       "outputEnums": [],
       "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 1,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        },
-        {
-          "cardinality": "optional",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 1,
-          "name": "patch",
-          "source": {
-            "inputIdentity": "patch"
-          }
-        },
-        {
-          "cardinality": "list",
-          "kind": "deleteIdentity",
-          "model": "Todo",
-          "name": "gone",
-          "source": {
-            "inputIdentity": "gone"
-          }
-        },
         {
           "cardinality": "optional",
           "handlerType": {
@@ -466,35 +408,6 @@
       ],
       "outputs": [
         {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 2,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        },
-        {
-          "cardinality": "optional",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 2,
-          "name": "patch",
-          "source": {
-            "inputIdentity": "patch"
-          }
-        },
-        {
-          "cardinality": "list",
-          "kind": "deleteIdentity",
-          "model": "Todo",
-          "name": "gone",
-          "source": {
-            "inputIdentity": "gone"
-          }
-        },
-        {
           "cardinality": "optional",
           "handlerType": {
             "fields": [
@@ -596,15 +509,183 @@
       "kind": "mutation",
       "name": "DeleteTodo",
       "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [
+          {
+            "name": "Status",
+            "values": [
+              "open",
+              "closed",
+              "archived"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "state",
+                "nullable": false,
+                "type": {
+                  "kind": "enum",
+                  "name": "Status"
+                }
+              },
+              {
+                "name": "note",
+                "nullable": true,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Todo"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "allowedPatchFields": [
+            "title",
+            "state",
+            "note"
+          ],
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Todo",
+          "name": "todo",
+          "operation": "update"
+        }
+      ],
+      "kind": "mutation",
+      "name": "Edit",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [
+          {
+            "name": "Status",
+            "values": [
+              "open",
+              "closed",
+              "archived"
+            ]
+          }
+        ],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "state",
+                "nullable": false,
+                "type": {
+                  "kind": "enum",
+                  "name": "Status"
+                }
+              },
+              {
+                "name": "note",
+                "nullable": true,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Todo"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "allowedPatchFields": [
+            "title",
+            "state",
+            "note"
+          ],
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Todo",
+          "name": "todo",
+          "operation": "update"
+        }
+      ],
+      "kind": "mutation",
+      "name": "EditAndRead",
+      "outputEnums": [],
       "outputs": [
         {
           "cardinality": "single",
-          "kind": "deleteIdentity",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
+          "kind": "model",
           "model": "Todo",
+          "modelReadVersion": 2,
           "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
+          "source": "handlerIdentity"
         }
       ],
       "prerequisites": [],
@@ -690,6 +771,7 @@
         "models": []
       },
       "inputs": [],
+      "kind": "mutation",
       "name": "GetTodos",
       "outputEnums": [],
       "outputs": [
@@ -809,16 +891,6 @@
       "name": "Link",
       "outputEnums": [],
       "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Project",
-          "modelReadVersion": 1,
-          "name": "project",
-          "source": {
-            "inputIdentity": "project"
-          }
-        },
         {
           "cardinality": "optional",
           "handlerType": {
@@ -1004,17 +1076,7 @@
       "kind": "mutation",
       "name": "RemoveTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "deleteIdentity",
-          "model": "Todo",
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -1106,6 +1168,7 @@
         "models": []
       },
       "inputs": [],
+      "kind": "mutation",
       "name": "StateList",
       "outputEnums": [
         {
@@ -1460,36 +1523,6 @@
         "outputs": [
           {
             "cardinality": "single",
-            "kind": "model",
-            "model": "Note",
-            "modelReadVersion": 1,
-            "name": "note",
-            "source": {
-              "inputIdentity": "note"
-            }
-          },
-          {
-            "cardinality": "optional",
-            "kind": "model",
-            "model": "Note",
-            "modelReadVersion": 1,
-            "name": "maybe",
-            "source": {
-              "inputIdentity": "maybe"
-            }
-          },
-          {
-            "cardinality": "list",
-            "kind": "model",
-            "model": "Note",
-            "modelReadVersion": 1,
-            "name": "many",
-            "source": {
-              "inputIdentity": "many"
-            }
-          },
-          {
-            "cardinality": "single",
             "handlerType": {
               "fields": [
                 {
@@ -1618,38 +1651,10 @@
             }
           }
         ],
+        "kind": "mutation",
         "name": "AddTodo",
         "outputEnums": [],
         "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 1,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          },
-          {
-            "cardinality": "optional",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 1,
-            "name": "patch",
-            "source": {
-              "inputIdentity": "patch"
-            }
-          },
-          {
-            "cardinality": "list",
-            "kind": "deleteIdentity",
-            "model": "Todo",
-            "name": "gone",
-            "source": {
-              "inputIdentity": "gone"
-            }
-          },
           {
             "cardinality": "optional",
             "handlerType": {
@@ -1835,35 +1840,6 @@
         ],
         "outputs": [
           {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 2,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          },
-          {
-            "cardinality": "optional",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 2,
-            "name": "patch",
-            "source": {
-              "inputIdentity": "patch"
-            }
-          },
-          {
-            "cardinality": "list",
-            "kind": "deleteIdentity",
-            "model": "Todo",
-            "name": "gone",
-            "source": {
-              "inputIdentity": "gone"
-            }
-          },
-          {
             "cardinality": "optional",
             "handlerType": {
               "fields": [
@@ -1965,15 +1941,183 @@
         "kind": "mutation",
         "name": "DeleteTodo",
         "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      },
+      {
+        "input": {
+          "enums": [
+            {
+              "name": "Status",
+              "values": [
+                "open",
+                "closed",
+                "archived"
+              ]
+            }
+          ],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "title",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "state",
+                  "nullable": false,
+                  "type": {
+                    "kind": "enum",
+                    "name": "Status"
+                  }
+                },
+                {
+                  "name": "note",
+                  "nullable": true,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Todo"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "allowedPatchFields": [
+              "title",
+              "state",
+              "note"
+            ],
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Todo",
+            "name": "todo",
+            "operation": "update"
+          }
+        ],
+        "kind": "mutation",
+        "name": "Edit",
+        "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      },
+      {
+        "input": {
+          "enums": [
+            {
+              "name": "Status",
+              "values": [
+                "open",
+                "closed",
+                "archived"
+              ]
+            }
+          ],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "title",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "state",
+                  "nullable": false,
+                  "type": {
+                    "kind": "enum",
+                    "name": "Status"
+                  }
+                },
+                {
+                  "name": "note",
+                  "nullable": true,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Todo"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "allowedPatchFields": [
+              "title",
+              "state",
+              "note"
+            ],
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Todo",
+            "name": "todo",
+            "operation": "update"
+          }
+        ],
+        "kind": "mutation",
+        "name": "EditAndRead",
+        "outputEnums": [],
         "outputs": [
           {
             "cardinality": "single",
-            "kind": "deleteIdentity",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Todo"
+            },
+            "kind": "model",
             "model": "Todo",
+            "modelReadVersion": 2,
             "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
+            "source": "handlerIdentity"
           }
         ],
         "prerequisites": [],
@@ -2059,6 +2203,7 @@
           "models": []
         },
         "inputs": [],
+        "kind": "mutation",
         "name": "GetTodos",
         "outputEnums": [],
         "outputs": [
@@ -2178,16 +2323,6 @@
         "name": "Link",
         "outputEnums": [],
         "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Project",
-            "modelReadVersion": 1,
-            "name": "project",
-            "source": {
-              "inputIdentity": "project"
-            }
-          },
           {
             "cardinality": "optional",
             "handlerType": {
@@ -2373,17 +2508,7 @@
         "kind": "mutation",
         "name": "RemoveTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "deleteIdentity",
-            "model": "Todo",
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -2475,6 +2600,7 @@
           "models": []
         },
         "inputs": [],
+        "kind": "mutation",
         "name": "StateList",
         "outputEnums": [
           {

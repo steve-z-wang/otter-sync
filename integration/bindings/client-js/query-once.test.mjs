@@ -1,6 +1,7 @@
-// Query once through the real native runtime (#158): Rust decides Cached /
-// Join / Fetch; this host executes direct I/O, shares one flight per
-// decision and decodes an independent result for every caller.
+// Query once through the real native runtime (#158, #134): Rust decides
+// Cached / Join / Fetch, runs the one request of a flight and completes every
+// joined caller; this host executes the request effect and decodes an
+// independent result for every caller.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -154,17 +155,26 @@ const once = (client, project = "p", options = {}) =>
   });
 
 test("concurrent once callers share one request and decode independent results", async () => {
-  // The native reply that carries a Fetch decision also starts another
-  // caller at that very moment: it must join the registered flight.
+  // The native batch that asks for the fetched flight's request also starts
+  // another caller at that very moment: it must join the registered flight.
   let racing;
   let client;
   const wrapped = {
-    async clientCall(request) {
-      const reply = await native.clientCall(request);
-      const parsed = JSON.parse(reply);
-      if (parsed.value?.decision === "fetch" && !racing) racing = once(client);
-      return reply;
+    runtimeOpen: (request, wake) => native.runtimeOpen(request, wake),
+    runtimeSubmit: (runtimeId, message) =>
+      native.runtimeSubmit(runtimeId, message),
+    runtimeDrain(runtimeId) {
+      const batch = native.runtimeDrain(runtimeId);
+      const fetched = JSON.parse(batch).some(
+        (event) =>
+          event.type === "effect" &&
+          event.operation.kind === "http" &&
+          event.operation.route === "action",
+      );
+      if (fetched && !racing) racing = once(client);
+      return batch;
     },
+    runtimeDetach: (runtimeId) => native.runtimeDetach(runtimeId),
   };
   await harness(
     async ({ client: opened, state, deferred }) => {
@@ -333,7 +343,8 @@ test("a failed refresh settles every waiter, releases its flight and keeps the s
         waiter,
         (error) =>
           error instanceof CallError &&
-          error.code === "action.execution_unknown",
+          error.code === "action.execution_unknown" &&
+          error.cause?.message === "network down 2",
       );
     assert.equal(state.requests, 2);
     assert.deepEqual((await once(client)).tags, ["v1", "x"]);

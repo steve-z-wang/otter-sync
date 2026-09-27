@@ -4,7 +4,9 @@ import 'dart:convert';
 import 'package:test/test.dart';
 import 'generated.dart';
 void main(){
- test('failed generated open closes its native worker isolate',()async{
+ // The child exits by itself only when nothing is left attached: no runtime
+ // keeps a wake registered and no NativeCallable keeps its isolate alive.
+ test('a failed open leaves no runtime attached',()async{
   final temp=await Directory.systemTemp.createTemp('generated-failed-open-');
   final child=await Process.start(Platform.resolvedExecutable,['failed_open.dart','${temp.path}/state.sqlite']);
   try{final code=await child.exitCode.timeout(const Duration(seconds:3));expect(code,0,reason:await child.stderr.transform(utf8.decoder).join());}

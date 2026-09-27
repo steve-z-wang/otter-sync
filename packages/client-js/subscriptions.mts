@@ -1,10 +1,16 @@
+import type { ObserverSnapshot, TaskError, TaskHooks } from "./bridge.mts";
+import type { RecordValue } from "./values.mts";
+
 /**
  * Subscription handles: the identity a registration keeps, the status it
  * publishes and the observers watching it
  * ([#150](https://github.com/zanminwang/axton/issues/150)). A handle owns none
- * of the synchronization: Rust decides what is delivered and when, and this
- * file only projects what it committed and what its lane is doing onto one
- * immutable snapshot per subscription.
+ * of the synchronization and none of the status: the Rust runtime projects
+ * each registration's connection, initialization and Bootstrap phase, decides
+ * every `bootstrap()` outcome and publishes the status as observer snapshots
+ * ([#134](https://github.com/zanminwang/axton/issues/134)). This file keeps
+ * the language objects: one handle per identity, its last snapshot and its
+ * listeners.
  */
 
 /** One stored subscription, as the native Scope commands answer it. A boundary that is not committed yet is `null`; zero is a delivery position. */
@@ -83,583 +89,256 @@ const bootstrapSuperseded = (scope: string) =>
     { code: "bootstrap.superseded" as const },
   );
 /**
- * The stable prefix the engine refuses a registration this client no longer
- * holds with (`axton_client::SUBSCRIPTION_CLOSED`). An engine error carries a
- * message and no code, so this is what a closed registration is recognized by;
- * a `bootstrap()` that raced the removal then fails the way a call through an
- * already closed handle does.
+ * The public error of a failed `scopeBootstrap` task, by the code the runtime
+ * decided (`details.code`). A task still queued when the runtime closed has no
+ * details and fails `client_closed`; any other failure is the caller's to see
+ * unchanged.
  */
-const CLOSED_REGISTRATION = "subscription.closed:";
-const refusedAsClosed = (error: unknown): boolean =>
-  typeof (error as { message?: unknown })?.message === "string" &&
-  (error as { message: string }).message.includes(CLOSED_REGISTRATION);
+function bootstrapError(scope: string, error: TaskError): unknown {
+  const details = error?.details;
+  if (details === undefined)
+    return error?.message === "client_closed" ? clientClosed() : error;
+  switch (details.code) {
+    case "subscription.closed":
+      return subscriptionClosed();
+    case "client_closed":
+      return clientClosed();
+    case "bootstrap.superseded":
+      return bootstrapSuperseded(scope);
+    default:
+      return bootstrapFailed({
+        code: details.code,
+        message:
+          typeof details.message === "string" ? details.message : error.message,
+      });
+  }
+}
 
-/**
- * What the downlink lane tells the registry. It is transport state the lane
- * already has, not a second sync state machine: which session is open, whether
- * its handshake covered a Scope, how many catch-up requests are out, and which
- * Scopes a commit moved.
- */
-export type DownlinkSignal =
-  /** The socket session of this epoch opened, or ended; an epoch that is not the current one is ignored. */
-  | { lane: "opened" | "ended"; epoch: number }
-  | { lane: "paused" | "resumed" | "stopped" }
-  | { lane: "requests"; outstanding: number }
-  | { lane: "acknowledged" | "changed"; scopes: string[] }
-  /** A bootstrap run of this registration changed, and the change is committed. */
-  | { lane: "bootstrap"; run: BootstrapRun };
+/** The part of the Bridge the handles use; tests supply a scripted runtime. */
+export type SubscriptionBridge = {
+  task(command: RecordValue, hooks?: TaskHooks): Promise<any>;
+  observe(
+    observerId: string,
+    listener: (snapshot: ObserverSnapshot) => void,
+  ): () => void;
+};
+/** A subscription observer's snapshot: the public status, verbatim. */
+type StatusSnapshot = ObserverSnapshot & { status: SubscriptionStatus };
 
-/**
- * One registration's durable load, as the worker announces it after every
- * committed transition ([#151](https://github.com/zanminwang/axton/issues/151)).
- * `cursor` is how far the historical interval has been loaded and `barrier` the
- * delivery position completion waits for, fixed by the final historical page.
- */
-export type BootstrapRun = {
-  scope: string;
-  subscriptionId: number;
-  state:
-    | "not_requested"
-    | "requested"
-    | "loading"
-    | "catching_up"
-    | "complete"
-    | "failed";
-  run: number;
-  cursor: number;
-  barrier: number | null;
-  error: null | {
-    code: string;
-    message: string;
-    records: {
-      model: string;
-      identity: Record<string, unknown>;
-      stamp: number;
-      code: string;
-    }[];
-  };
-};
-
-/** How far a run has got, and the public phase that stored state projects to. */
-const PHASES: Record<
-  BootstrapRun["state"],
-  { rank: number; phase: BootstrapPhase }
-> = {
-  not_requested: { rank: 0, phase: "not-requested" },
-  // The worker writes `loading` on the first applied page, so a requested run
-  // whose interval is already bounded is loading as far as the caller is
-  // concerned; one without a starting boundary is waiting for #150.
-  requested: { rank: 1, phase: "loading" },
-  loading: { rank: 2, phase: "loading" },
-  catching_up: { rank: 3, phase: "catching-up" },
-  complete: { rank: 4, phase: "complete" },
-  failed: { rank: 4, phase: "failed" },
-};
-
-/** The native commands and host services the registry needs; the runtime owns the serialized command path. */
-export type SubscriptionCommands = {
-  subscribe(scope: string): Promise<SubscriptionState>;
-  state(scope: string): Promise<SubscriptionState | null>;
-  /** Register or explicitly retry the durable load of this identity, and answer its stored run. */
-  requestBootstrap(
-    scope: string,
-    subscriptionId: number,
-  ): Promise<BootstrapRun>;
-  /** The stored run of this identity, read through the same serialized path. */
-  bootstrapState(scope: string, subscriptionId: number): Promise<BootstrapRun>;
-  /** Remove exactly the registration this identity names; `true` when a row went. */
-  remove(scope: string, subscriptionId: number): Promise<boolean>;
-  /** Remove whatever registration a Scope name has, in one command, so calls for one Scope keep their order. */
-  removeScope(scope: string): Promise<void>;
-  /** A committed membership change: wake the lanes, as every commit does. */
-  committed(): void;
-  /** Report an observer's exception the way the host reports an uncaught one. */
-  report(error: unknown): void;
-};
-
-/** The lane state every handle's `connection` is projected from. */
-type Lane = {
-  attached: boolean;
-  paused: boolean;
-  /** The epoch of the open socket session, if one is open. */
-  session: number | undefined;
-  outstanding: number;
-  /**
-   * The Scopes the open session's handshake covered. A removal drops its Scope,
-   * because the acknowledgement belonged to the registration that went: a
-   * registration created after it has never been acknowledged and is
-   * `connecting` until a session subscribes it.
-   */
-  acknowledged: Set<string>;
-};
-
-/** The load commands of one identity, bound by the registry, and the wake a commit owes the lanes. */
-type BootstrapLoad = {
-  /** Register the run, or explicitly retry a failed one; answers what is stored. */
-  request(): Promise<BootstrapRun>;
-  read(): Promise<BootstrapRun>;
-  committed(): void;
-};
-/** One caller of `bootstrap()`, attached to the run the command answered with. */
-type Waiter = {
-  run: number;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-};
-const NOT_REQUESTED: BootstrapStatus = Object.freeze({
-  phase: "not-requested" as const,
-  error: null,
-});
+/** Freeze a status as the runtime published it; nothing is recomputed. */
+function frozen(status: SubscriptionStatus): SubscriptionStatus {
+  const error = status.bootstrap.error;
+  return Object.freeze({
+    ...status,
+    bootstrap: Object.freeze({
+      ...status.bootstrap,
+      error: error === null ? null : Object.freeze({ ...error }),
+    }),
+  });
+}
 
 class Handle implements Subscription {
   readonly scope: string;
   readonly subscriptionId: number;
-  #lane: Lane;
-  #initialization: "pending" | "ready";
-  #load: BootstrapLoad;
-  /** The last committed run this handle has seen; phases never move backwards. */
-  #run: BootstrapRun | undefined;
-  #waiters: Waiter[] = [];
-  /** This handle committed its own removal: further removals are a no-op. */
-  #removed = false;
-  /** The handle was stopped with its client: its status is readable, its work is not. */
-  #stopped = false;
-  #listeners = new Set<(status: SubscriptionStatus) => void>();
+  #registry: Subscriptions;
+  #bridge: SubscriptionBridge;
   #report: (error: unknown) => void;
-  #remove: () => Promise<void>;
   #snapshot: SubscriptionStatus;
+  /**
+   * Why the handle is closed: `removed` through a removal or rebuild, whose
+   * later `unsubscribe()` is a harmless no-op, or `stopped` with its client,
+   * through which no work can be committed.
+   */
+  #closed: "removed" | "stopped" | undefined;
+  /** This handle submitted its own removal: the terminal snapshot is that. */
+  #removing = false;
+  #listeners = new Set<(status: SubscriptionStatus) => void>();
   constructor(
     state: SubscriptionState,
-    lane: Lane,
+    registry: Subscriptions,
+    bridge: SubscriptionBridge,
     report: (error: unknown) => void,
-    remove: () => Promise<void>,
-    load: BootstrapLoad,
   ) {
     this.scope = state.scope;
     this.subscriptionId = state.subscriptionId;
-    this.#lane = lane;
-    this.#initialization = state.startingCursor === null ? "pending" : "ready";
+    this.#registry = registry;
+    this.#bridge = bridge;
     this.#report = report;
-    this.#remove = remove;
-    this.#load = load;
-    this.#snapshot = this.#project();
+    // Replaced by the runtime's first snapshot, which it publishes behind the
+    // task that answered this identity, in the same batch.
+    this.#snapshot = frozen({
+      active: true,
+      initialization: state.startingCursor === null ? "pending" : "ready",
+      connection: "offline",
+      bootstrap: { phase: "not-requested", error: null },
+    });
   }
   get status(): SubscriptionStatus {
     return this.#snapshot;
   }
   get closed(): boolean {
-    return this.#removed || this.#stopped;
+    return this.#closed !== undefined;
   }
-  /** The one place a status comes from: what is committed for this subscription and what its lane is doing. */
-  #project(): SubscriptionStatus {
-    const lane = this.#lane;
-    const connection = this.closed
-      ? "stopped"
-      : !lane.attached || lane.paused
-        ? "offline"
-        : lane.session === undefined
-          ? "connecting"
-          : lane.outstanding > 0
-            ? "catching-up"
-            : lane.acknowledged.has(this.scope)
-              ? "live"
-              : "connecting";
-    return Object.freeze({
-      active: !this.closed,
-      initialization: this.#initialization,
-      connection,
-      bootstrap: this.#bootstrap(),
-    });
+  /** Route this identity's observer to the handle, before its first snapshot. */
+  attach(observerId: string): void {
+    this.#bridge.observe(observerId, (snapshot) =>
+      this.#receive(snapshot as StatusSnapshot),
+    );
   }
-  /**
-   * What the stored run projects to. A `requested` run whose interval has no
-   * origin to bound it is waiting for #150 initialization rather than loading,
-   * and the stored record reports are not part of the public failure.
-   */
-  #bootstrap(): BootstrapStatus {
-    const run = this.#run;
-    if (!run) return NOT_REQUESTED;
-    return Object.freeze({
-      phase:
-        run.state === "requested" && this.#initialization === "pending"
-          ? ("waiting-for-initialization" as const)
-          : PHASES[run.state].phase,
-      error: run.error
-        ? Object.freeze({ code: run.error.code, message: run.error.message })
-        : null,
-    });
-  }
-  /** Publish a new snapshot when anything changed; an observer's exception never reaches the caller. */
-  refresh(): void {
-    const next = this.#project();
-    const previous = this.#snapshot;
-    if (
-      next.active === previous.active &&
-      next.initialization === previous.initialization &&
-      next.connection === previous.connection &&
-      next.bootstrap.phase === previous.bootstrap.phase &&
-      next.bootstrap.error?.code === previous.bootstrap.error?.code &&
-      next.bootstrap.error?.message === previous.bootstrap.error?.message
-    )
-      return;
-    this.#snapshot = next;
-    this.#deliver(next);
-  }
-  #deliver(status: SubscriptionStatus): void {
-    for (const listener of [...this.#listeners])
-      try {
-        listener(status);
-      } catch (error) {
-        this.#report(error);
-      }
-  }
-  /** The committed state of this identity; another identity's state is not this handle's, and a closed handle takes none. */
-  apply(state: SubscriptionState | null): void {
+  /** One snapshot the runtime published: the status, and whether it is the last. */
+  #receive(snapshot: StatusSnapshot): void {
     if (this.closed) return;
-    if (!state || state.subscriptionId !== this.subscriptionId) return;
-    this.#initialization = state.startingCursor === null ? "pending" : "ready";
-    this.refresh();
-  }
-  /**
-   * Read what is committed for this identity's load. A handle taken after a
-   * restart names a task that may already be running or finished, and no
-   * further transition has to commit for its status to be true.
-   */
-  observe(): void {
-    this.#load.read().then(
-      (run) => this.applyBootstrap(run),
-      (error) => {
-        if (!this.closed) this.#report(error);
-      },
+    this.#publish(
+      frozen(snapshot.status),
+      snapshot.closed === true
+        ? this.#removing || !this.#registry.closing
+          ? "removed"
+          : "stopped"
+        : undefined,
     );
   }
   /**
-   * One committed transition of this identity's load. The waiters of that run
-   * are settled by it whatever the status already shows, so a re-read that
-   * raced ahead of a lane signal cannot swallow an earlier run's outcome; the
-   * status itself never moves backwards.
+   * The runtime ended without a terminal snapshot for this handle: it stops
+   * the way the runtime's close would have stopped it.
    */
-  applyBootstrap(run: BootstrapRun): void {
+  stop(): void {
     if (this.closed) return;
-    if (run.subscriptionId !== this.subscriptionId) return;
-    if (run.state === "complete") this.#settle(run.run, undefined);
-    else if (run.state === "failed")
-      this.#settle(
-        run.run,
-        bootstrapFailed(
-          // A failed run always carries its stored failure; the ledger refuses
-          // any other pairing.
-          run.error ?? {
-            code: "bootstrap.failed",
-            message: `the bootstrap of ${this.scope} failed`,
-          },
-        ),
-      );
-    this.#supersede(run.run);
-    const known = this.#run;
-    if (
-      known &&
-      (run.run < known.run ||
-        (run.run === known.run &&
-          PHASES[run.state].rank < PHASES[known.state].rank))
-    )
-      return;
-    this.#run = run;
-    this.refresh();
+    this.#publish(
+      frozen({ ...this.#snapshot, active: false, connection: "stopped" }),
+      "stopped",
+    );
   }
-  /**
-   * Waiters of a run older than the one just observed. Their run is over and
-   * its outcome is no longer observable, and an older call must never resolve
-   * from a newer run, so they are rejected rather than left attached forever.
-   */
-  #supersede(run: number): void {
-    const stale = this.#waiters.filter((waiter) => waiter.run < run);
-    if (stale.length === 0) return;
-    this.#waiters = this.#waiters.filter((waiter) => waiter.run >= run);
-    for (const waiter of stale) waiter.reject(bootstrapSuperseded(this.scope));
-  }
-  #settle(run: number, error: unknown): void {
-    const settled = this.#waiters.filter((waiter) => waiter.run === run);
-    if (settled.length === 0) return;
-    this.#waiters = this.#waiters.filter((waiter) => waiter.run !== run);
-    for (const waiter of settled)
-      if (error === undefined) waiter.resolve();
-      else waiter.reject(error);
-  }
-  bootstrap(): Promise<void> {
-    if (this.closed) return Promise.reject(subscriptionClosed());
-    // Eager: the registration is submitted when the call is made, not when the
-    // returned Promise is awaited.
-    return this.#register(this.#load.request());
-  }
-  async #register(submitted: Promise<BootstrapRun>): Promise<void> {
-    let run: BootstrapRun;
-    try {
-      run = await submitted;
-    } catch (error) {
-      if (this.closed) throw this.#closedError();
-      // The removal committed between the command and this handle's close: the
-      // engine refused a registration that is gone, and this call is one
-      // through a closed subscription however the two raced.
-      throw refusedAsClosed(error) ? subscriptionClosed() : error;
-    }
-    // A closed client or handle takes nothing further, not even the wake: the
-    // controller it would go through is closed too.
-    if (this.closed) throw this.#closedError();
-    // The commit wakes the lanes the way a membership change does; without it
-    // the registered run waits for the next commit or reconnection.
-    this.#load.committed();
-    const waiting = new Promise<void>((resolve, reject) => {
-      this.#waiters.push({ run: run.run, resolve, reject });
-    });
-    this.applyBootstrap(run);
-    // A transition that committed between the command and this waiter would
-    // otherwise be missed: re-read the stored run through the same serialized
-    // path and apply it.
-    if (this.#waiters.length > 0) this.observe();
-    return waiting;
-  }
-  #closedError(): Error {
-    return this.#stopped ? clientClosed() : subscriptionClosed();
-  }
-  /** Removed durably through this handle, or stopped with the client. */
-  close(reason: "removed" | "stopped"): void {
-    if (this.closed) return;
-    if (reason === "removed") this.#removed = true;
-    else this.#stopped = true;
-    // A removal took the epoch's load state with the row; a client close leaves
-    // the durable task exactly where it was. Either way this process stops
-    // waiting for it.
-    const waiting = this.#waiters;
-    this.#waiters = [];
-    for (const waiter of waiting)
-      waiter.reject(
-        reason === "removed" ? subscriptionClosed() : clientClosed(),
-      );
-    this.refresh();
-    // A closed handle has no changes left after that last snapshot.
-    this.#listeners.clear();
-  }
-  watch(listener: (status: SubscriptionStatus) => void): () => void {
-    // A closed handle has no changes left: it delivers its stopped snapshot and
-    // is done.
-    if (this.closed) {
-      this.#deliverOne(listener, this.#snapshot);
-      return () => {};
-    }
-    this.#listeners.add(listener);
-    this.#deliverOne(listener, this.#snapshot);
-    return () => {
-      this.#listeners.delete(listener);
-    };
-  }
-  #deliverOne(
-    listener: (status: SubscriptionStatus) => void,
+  #publish(
     status: SubscriptionStatus,
+    closed: "removed" | "stopped" | undefined,
   ): void {
+    this.#snapshot = status;
+    if (closed) {
+      this.#closed = closed;
+      this.#registry.forget(this);
+    }
+    for (const listener of [...this.#listeners]) this.#deliver(listener);
+    // A closed handle has no changes left after that last snapshot.
+    if (closed) this.#listeners.clear();
+  }
+  #deliver(listener: (status: SubscriptionStatus) => void): void {
     try {
-      listener(status);
+      listener(this.#snapshot);
     } catch (error) {
       this.#report(error);
     }
   }
+  watch(listener: (status: SubscriptionStatus) => void): () => void {
+    // A closed handle has no changes left: it delivers its stopped snapshot and
+    // is done.
+    if (!this.closed) this.#listeners.add(listener);
+    this.#deliver(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+  bootstrap(): Promise<void> {
+    if (this.closed) return Promise.reject(subscriptionClosed());
+    // Eager: the registration is submitted when the call is made, not when the
+    // returned Promise is awaited. The runtime parks the task on its run.
+    return this.#bridge
+      .task({
+        kind: "scopeBootstrap",
+        scope: this.scope,
+        subscriptionId: this.subscriptionId,
+      })
+      .then(
+        () => undefined,
+        (error: TaskError) => {
+          throw bootstrapError(this.scope, error);
+        },
+      );
+  }
+  /** Resolves once the runtime's terminal snapshot closed this handle. */
   async unsubscribe(): Promise<void> {
-    if (this.#removed) return;
-    if (this.#stopped) throw subscriptionClosed();
-    await this.#remove();
+    if (this.#closed === "removed") return;
+    if (this.#closed === "stopped") throw subscriptionClosed();
+    this.#removing = true;
+    await this.#bridge.task({
+      kind: "scopeUnsubscribe",
+      scope: this.scope,
+      subscriptionId: this.subscriptionId,
+    });
   }
 }
 
 /**
- * The registry: one handle per persistent subscription identity, the lane
- * projection they share, and the committed status they publish.
+ * The registry: one handle per persistent subscription identity, held until
+ * the runtime's terminal snapshot for it - after a removal, a rebuild or the
+ * client's close - releases it.
  */
 export class Subscriptions {
-  #commands: SubscriptionCommands;
+  #bridge: SubscriptionBridge;
+  #report: (error: unknown) => void;
   #handles = new Map<number, Handle>();
-  /** The client closed: a read still in flight answers to nobody. */
-  #closed = false;
-  #lane: Lane = {
-    attached: false,
-    paused: false,
-    session: undefined,
-    outstanding: 0,
-    acknowledged: new Set(),
-  };
-  constructor(commands: SubscriptionCommands) {
-    this.#commands = commands;
+  #closing = false;
+  constructor(bridge: SubscriptionBridge, report: (error: unknown) => void) {
+    this.#bridge = bridge;
+    this.#report = report;
+  }
+  /** The client is closing: a terminal snapshot now means its handle stopped. */
+  get closing(): boolean {
+    return this.#closing;
   }
   /**
    * Register durable intent and answer with the handle of the identity that
-   * commit belongs to. Concurrent calls run through the same serialized command
-   * path, read the same identity and share one cached handle.
+   * commit belongs to. Concurrent calls run through the runtime's serialized
+   * command path, read the same identity and share one cached handle.
    */
   async subscribe(scope: string): Promise<Subscription> {
-    const state = await this.#commands.subscribe(scope);
-    const existing = this.#handles.get(state.subscriptionId);
-    if (existing) {
-      existing.apply(state);
-      this.#commands.committed();
-      return existing;
-    }
-    const handle = new Handle(
-      state,
-      this.#lane,
-      (error) => this.#commands.report(error),
-      () => this.#removeIdentity(state.scope, state.subscriptionId),
+    let handle!: Handle;
+    await this.#bridge.task(
+      { kind: "scopeSubscribe", scope },
       {
-        request: () =>
-          this.#commands.requestBootstrap(state.scope, state.subscriptionId),
-        read: () =>
-          this.#commands.bootstrapState(state.scope, state.subscriptionId),
-        committed: () => this.#commands.committed(),
+        // While the completion is dispatched: the runtime publishes the
+        // observer's first snapshot behind it, in the same batch.
+        settled: ({
+          state,
+          observerId,
+        }: {
+          state: SubscriptionState;
+          observerId: string;
+        }) => {
+          const existing = this.#handles.get(state.subscriptionId);
+          if (existing) return void (handle = existing);
+          handle = new Handle(state, this, this.#bridge, this.#report);
+          this.#handles.set(state.subscriptionId, handle);
+          handle.attach(observerId);
+        },
       },
     );
-    this.#handles.set(state.subscriptionId, handle);
-    // A task of this identity may already be running from before this handle:
-    // read what is committed for it, so its status needs no new transition.
-    handle.observe();
-    // The lane learns of committed membership from Rust; it is only woken here.
-    this.#commands.committed();
     return handle;
   }
   /**
    * Remove whatever registration a Scope name has - the Scope-named form the
-   * generated `channels` facade keeps - and close the handle it had. One
-   * command, so a removal and a registration of the same Scope commit in the
-   * order they were called in.
+   * generated `channels` facade keeps. One command, so a removal and a
+   * registration of the same Scope commit in the order they were called in;
+   * the runtime closes the handle it had before the command completes.
    */
   async unsubscribeScope(scope: string): Promise<void> {
-    await this.#commands.removeScope(scope);
-    for (const handle of [...this.#handles.values()])
-      if (handle.scope === scope) {
-        this.#handles.delete(handle.subscriptionId);
-        handle.close("removed");
-      }
-    this.#forget(scope);
-    this.#commands.committed();
+    await this.#bridge.task({
+      kind: "channel",
+      channel: scope,
+      subscribed: false,
+    });
   }
-  async #removeIdentity(scope: string, subscriptionId: number): Promise<void> {
-    const removed = await this.#commands.remove(scope, subscriptionId);
-    const handle = this.#handles.get(subscriptionId);
-    if (handle) {
-      this.#handles.delete(subscriptionId);
-      handle.close("removed");
-    }
-    // Nothing went: another registration is this Scope's current one, and the
-    // acknowledgement it may hold is not this handle's to forget.
-    if (removed) {
-      this.#forget(scope);
-      this.#commands.committed();
-    }
+  /** A handle the runtime closed is no longer the identity's handle. */
+  forget(handle: Handle): void {
+    if (this.#handles.get(handle.subscriptionId) === handle)
+      this.#handles.delete(handle.subscriptionId);
   }
-  /**
-   * The open session's handshake covered the registration that just went, not
-   * the one a later subscribe creates: forget the Scope, so a recreated
-   * subscription is `connecting` until a session of its own acknowledges it.
-   */
-  #forget(scope: string): void {
-    this.#lane.acknowledged.delete(scope);
-    this.#publish();
-  }
-  /**
-   * The replica was replaced: the ledger this client reads now holds fresh
-   * identities, so every handle names a registration of the file that was left
-   * behind. They close the way an unsubscribed handle does - `watch` completes
-   * and a later `unsubscribe` is a harmless no-op - and the lane forgets its
-   * acknowledgements, because none of them belong to an identity that still
-   * exists.
-   */
-  rebuilt(): void {
-    const handles = [...this.#handles.values()];
-    this.#handles.clear();
-    this.#lane.acknowledged.clear();
-    for (const handle of handles) handle.close("removed");
-  }
-  /** The lane is running for this client: until then, and once it closes, every subscription is offline. */
-  attach(): void {
-    this.#lane.attached = true;
-    this.#lane.paused = false;
-    this.#publish();
-  }
-  detach(): void {
-    this.#lane.attached = false;
-    this.#endSession();
-  }
-  signal(signal: DownlinkSignal): void {
-    switch (signal.lane) {
-      case "opened":
-        this.#lane.session = signal.epoch;
-        this.#lane.outstanding = 0;
-        this.#lane.acknowledged.clear();
-        break;
-      case "ended":
-        // Whatever an abandoned session still reports belongs to no lane state.
-        if (this.#lane.session !== signal.epoch) return;
-        this.#endSession();
-        return;
-      case "paused":
-        this.#lane.paused = true;
-        this.#endSession();
-        return;
-      case "resumed":
-        this.#lane.paused = false;
-        break;
-      case "stopped":
-        this.#lane.attached = false;
-        this.#endSession();
-        return;
-      case "requests":
-        this.#lane.outstanding = signal.outstanding;
-        break;
-      case "acknowledged":
-        for (const scope of signal.scopes) this.#lane.acknowledged.add(scope);
-        break;
-      case "changed":
-        // A commit moved these Scopes: re-read what it committed for them.
-        for (const scope of signal.scopes) this.#reload(scope);
-        break;
-      case "bootstrap":
-        // A committed load transition. Another epoch's run belongs to no handle
-        // this registry still holds.
-        this.#handles
-          .get(signal.run.subscriptionId)
-          ?.applyBootstrap(signal.run);
-        break;
-    }
-    this.#publish();
-  }
-  #endSession(): void {
-    this.#lane.session = undefined;
-    this.#lane.outstanding = 0;
-    this.#lane.acknowledged.clear();
-    this.#publish();
-  }
-  #publish(): void {
-    for (const handle of [...this.#handles.values()]) handle.refresh();
-  }
-  /** Read the committed state of a Scope and hand it to the handle it belongs to. */
-  #reload(scope: string): void {
-    const handles = [...this.#handles.values()].filter(
-      (handle) => handle.scope === scope && !handle.closed,
-    );
-    if (handles.length === 0) return;
-    this.#commands.state(scope).then(
-      (state) => {
-        for (const handle of handles) handle.apply(state);
-      },
-      (error) => {
-        if (!this.#closed) this.#commands.report(error);
-      },
-    );
-  }
-  /** The client closed: every handle stops and its observers are cancelled; no subscription is removed. */
+  /** The client is closing: every handle the runtime ends from now on stopped with it. */
   close(): void {
-    this.#closed = true;
-    const handles = [...this.#handles.values()];
-    this.#handles.clear();
-    this.#lane.attached = false;
-    this.#endSession();
-    for (const handle of handles) handle.close("stopped");
+    this.#closing = true;
+  }
+  /** The runtime is gone: a handle it did not end stops here. */
+  closed(): void {
+    this.#closing = true;
+    for (const handle of [...this.#handles.values()]) handle.stop();
   }
 }

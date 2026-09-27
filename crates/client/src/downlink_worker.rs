@@ -4,6 +4,7 @@
 //! credential refresh. A callback enqueues what arrived and wakes the loop; the
 //! loop pumps, and only a pump commits
 //! ([Downlink worker](../../../docs/engineering/architecture/client/connection/controller/downlink-worker.md)).
+use crate::bootstrap_ledger::LedgerIssue;
 use crate::*;
 use std::collections::VecDeque;
 
@@ -74,7 +75,7 @@ pub enum DownlinkAction {
     /// abandons it and its failure ends the session. A `bootstrap` request is
     /// one Scope's historical page on the same route: it belongs to the lane,
     /// not to a socket, so it outlives the session, its failure ends none, and
-    /// only `pause` and `close` abandon it.
+    /// only `pause`, `reset` and `close` abandon it.
     Request {
         request: u64,
         body: String,
@@ -97,8 +98,26 @@ pub enum DownlinkAction {
     /// The SDKs turn it into the `live` connection status; no sync decision
     /// depends on it.
     Acknowledged { scopes: Vec<String> },
+    /// A stored Bootstrap row of `channel` cannot be decoded, so the schedule
+    /// and the barrier settlement skip it: the host hands `message`, a bounded
+    /// reason, to the application's error handler. The row is kept as stored
+    /// and a named read of it still fails. Announced once per defect for the
+    /// worker's lifetime - a changed defect, or one that returns after a
+    /// repair or a removal, is announced again - and it is neither a committed
+    /// `bootstrap` transition nor a record `report`
+    /// ([#163](https://github.com/zanminwang/axton/issues/163)).
+    LedgerIssue { channel: String, message: String },
     /// Nothing to do for `millis`; then pump again.
     Wait { millis: u64 },
+    /// The replica under the lane was rebuilt: abandon the socket and every
+    /// request - ordinary or historical - the host still holds for it, and
+    /// forget their state, without reporting anything. Always first in the
+    /// answer of the first pump after the rebuild, and announced once. It
+    /// replaces a `close` for the old session, which could otherwise reach a
+    /// socket opened after it; what the abandoned I/O still delivers names an
+    /// epoch or request id the worker never issues again, so it is ignored
+    /// ([#162](https://github.com/zanminwang/axton/issues/162)).
+    Reset,
 }
 
 /// Inbound work that a full page queue may never drop: the handshake, an
@@ -191,6 +210,14 @@ impl Loading {
     }
 }
 
+/// Which rows a ledger scan read: every active one, or only the candidates it
+/// was asked about.
+#[derive(Clone, Copy, PartialEq)]
+enum Scan {
+    Complete,
+    Candidates,
+}
+
 /// Streamed page frames held in the queue. Beyond this the queue is discarded
 /// whole and every channel recovers from the durable cursor: the server log is
 /// the durable queue, the cursor the pointer into it. Control work is queued
@@ -224,7 +251,9 @@ pub struct DownlinkWorker {
     /// Another pull is needed once the one in flight ends (an overflow while
     /// pulling: the lost frames may lie beyond the answer).
     again: bool,
-    /// Allocates the ids the host correlates catch-up answers by.
+    /// Allocates the ids the host correlates catch-up answers by. Like the
+    /// session's epoch it only grows for the worker's lifetime, a rebuild
+    /// included, so an answer to an abandoned request never matches a new one.
     requests: u64,
     /// A session an enqueued event ended; the next pump tells the host to close
     /// its socket.
@@ -234,6 +263,13 @@ pub struct DownlinkWorker {
     /// its acknowledgement establishes: a Scope that has been unsubscribed, or
     /// recreated, since is another subscription and takes nothing from it.
     expected: BTreeMap<String, u64>,
+    /// The replica was rebuilt since the last pump: the next one tells the
+    /// host to abandon the old replica's I/O before anything else.
+    reset: bool,
+    /// The ledger issue last announced for each channel, by fingerprint: a
+    /// scan that finds the same defect again announces nothing
+    /// ([`DownlinkWorker::ledger`]).
+    reported: BTreeMap<String, String>,
 }
 
 /// Whether an HTTP status is a refusal the server decided, which no retry can
@@ -304,6 +340,11 @@ impl DownlinkWorker {
                 // frontend, and every barrier is re-evaluated before any I/O.
                 self.loading.restart(now);
                 self.reopened = true;
+                // A new connection has its own error callback: to the
+                // application it is a reopen, so an unchanged defect is
+                // announced to it again. Only an explicit connect starts a
+                // lane, so this cannot flood.
+                self.reported.clear();
             }
             DownlinkEvent::Stop => {
                 self.end(None);
@@ -370,6 +411,59 @@ impl DownlinkWorker {
                 }
             }
         }
+    }
+
+    /// The streamed page frames held for the pump, never more than
+    /// [`QUEUED_FRAMES`].
+    pub fn queued_frames(&self) -> usize {
+        self.pages.len()
+    }
+
+    /// The replica under the lane was rebuilt in place
+    /// ([`Client::rebuild`]): everything this worker held was measured against
+    /// the old file, so every session, queue, request slot and retry is
+    /// dropped, and the host is told to abandon its I/O by the first pump
+    /// ([`DownlinkAction::Reset`]). The application's intent survives - a
+    /// running lane opens a session for the carried Scopes on that pump with
+    /// no further `start`, a paused one waits for `resume`, a stopped one for
+    /// `start` - and so do the epoch and request id allocators, the fence
+    /// against whatever the abandoned socket and requests still deliver. The
+    /// fresh replica's subscription generation cannot fence them: it restarts
+    /// and may equal the old one. No database work: the binding calls this
+    /// right after a successful rebuild, and never after a failed one
+    /// ([#162](https://github.com/zanminwang/axton/issues/162)).
+    pub fn reset_for_rebuild(&mut self) {
+        // Closing without a `close` action: the host's reset abandons it.
+        self.session.close();
+        self.control.clear();
+        self.pages.clear();
+        self.active = None;
+        self.bootstrap = None;
+        self.loaded = None;
+        self.again = false;
+        self.closing = None;
+        self.expected.clear();
+        self.driver.restart();
+        let running = self.driver.running();
+        // A started lane re-evaluates the persisted barriers and the
+        // historical schedule before any I/O, as `start` does; the rotation
+        // and the backoff belonged to the old ledger.
+        self.loading = Loading {
+            dirty: running,
+            ..Loading::default()
+        };
+        // Paused included: its first pump then re-evaluates the barriers - a
+        // local read and at most a commit, never I/O - before `resume`.
+        self.reopened = running;
+        self.reset = true;
+        // The fresh replica carries no row this map describes.
+        self.reported.clear();
+    }
+
+    /// The next catch-up or historical request id: one id space, never reused.
+    fn next_request(&mut self) -> Result<u64> {
+        self.requests = allocate(self.requests, "downlink request id")?;
+        Ok(self.requests)
     }
 
     /// Whether `request` is the catch-up in flight. An answer or failure of any
@@ -495,23 +589,49 @@ impl DownlinkWorker {
         entropy: u64,
     ) -> Result<Vec<DownlinkAction>> {
         let mut actions = vec![];
-        self.flush(&mut actions);
+        // The host abandons the old replica's I/O before it opens or requests
+        // anything for the new one. A pump that fails drops what it collected,
+        // so the reset is owed to the next one, and so is every ledger issue
+        // it announced: what it remembered as reported is forgotten again.
+        let reset = std::mem::take(&mut self.reset);
+        if reset {
+            actions.push(DownlinkAction::Reset);
+        }
+        let reported = self.reported.clone();
+        let pumped = self.advance(client, now, entropy, &mut actions);
+        if pumped.is_err() {
+            self.reset |= reset;
+            self.reported = reported;
+        }
+        pumped.map(|()| actions)
+    }
+
+    /// The pump's body, after the reset: everything it decides is collected
+    /// into `actions`.
+    fn advance<S: ClientStore>(
+        &mut self,
+        client: &mut Client<S>,
+        now: u64,
+        entropy: u64,
+        actions: &mut Vec<DownlinkAction>,
+    ) -> Result<()> {
+        self.flush(actions);
         // A committed subscribe or unsubscribe invalidates the session: the
         // lane starts over with the new channel set, without backoff.
         if self.stale(client) {
             self.invalidate(now);
-            self.flush(&mut actions);
+            self.flush(actions);
         }
         // A lane that just started re-evaluates every persisted barrier before
         // it issues anything: a run whose delivery reached its barrier while
         // the client was closed completes without another request.
-        if std::mem::take(&mut self.reopened) && self.resume(client, &mut actions)? {
-            return Ok(actions);
+        if std::mem::take(&mut self.reopened) && self.resume(client, actions)? {
+            return Ok(());
         }
-        let committed = self.process(client, now, entropy, &mut actions)?;
-        self.flush(&mut actions);
-        self.barriers(client, &mut actions)?;
-        self.historical(client, now, entropy, committed, &mut actions)?;
+        let committed = self.process(client, now, entropy, actions)?;
+        self.flush(actions);
+        self.barriers(client, actions)?;
+        self.historical(client, now, entropy, committed, actions)?;
         // The two schedules are read together and answered with one sleep: the
         // load's next attempt is its own, so the socket's backoff must never
         // hold a page back ([#151](https://github.com/zanminwang/axton/issues/151)).
@@ -519,13 +639,13 @@ impl DownlinkWorker {
         let mut socket = None;
         if !self.session.open() {
             match self.driver.next(now) {
-                ConnectionAction::Sync => self.begin(client, now, &mut actions)?,
+                ConnectionAction::Sync => self.begin(client, now, actions)?,
                 ConnectionAction::Wait { millis } => socket = Some(millis),
                 ConnectionAction::Idle => {}
             }
         }
-        self.rest(load, socket, &mut actions);
-        Ok(actions)
+        self.rest(load, socket, actions);
+        Ok(())
     }
 
     /// When the historical schedule next wants a pump, in millis from `now`:
@@ -617,8 +737,10 @@ impl DownlinkWorker {
         client: &mut Client<S>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
-        let waiting = client.bootstrap_barriers()?;
-        let settled = client.settle_bootstrap_barriers(&waiting)?;
+        let (waiting, issues) = client.bootstrap_barriers_scan()?;
+        self.ledger(issues, Scan::Complete, actions);
+        let (settled, issues) = client.settle_bootstrap_barriers_scan(&waiting)?;
+        self.ledger(issues, Scan::Candidates, actions);
         let committed = !settled.is_empty();
         for state in settled {
             actions.push(DownlinkAction::Bootstrap(state));
@@ -647,10 +769,37 @@ impl DownlinkWorker {
         if moved.is_empty() {
             return Ok(());
         }
-        for state in client.settle_bootstrap_barriers(&moved)? {
+        let (settled, issues) = client.settle_bootstrap_barriers_scan(&moved)?;
+        self.ledger(issues, Scan::Candidates, actions);
+        for state in settled {
             actions.push(DownlinkAction::Bootstrap(state));
         }
         Ok(())
+    }
+
+    /// Announce the rows a ledger scan skipped because they cannot be decoded,
+    /// each defect once: an issue whose fingerprint is the one last announced
+    /// for its channel says nothing new, so no pump, wake or delivery that
+    /// leaves the defect as it was repeats it. A complete scan saw every active
+    /// row, so a channel it found healthy or absent is forgotten, and the same
+    /// defect coming back after a repair or a removal is announced again. A
+    /// candidate scan saw only the rows it was asked about and forgets nothing
+    /// ([#163](https://github.com/zanminwang/axton/issues/163)).
+    fn ledger(&mut self, issues: Vec<LedgerIssue>, scan: Scan, actions: &mut Vec<DownlinkAction>) {
+        if scan == Scan::Complete {
+            self.reported
+                .retain(|channel, _| issues.iter().any(|issue| &issue.channel == channel));
+        }
+        for issue in issues {
+            if self.reported.get(&issue.channel) == Some(&issue.fingerprint) {
+                continue;
+            }
+            actions.push(DownlinkAction::LedgerIssue {
+                channel: issue.channel.clone(),
+                message: issue.detail,
+            });
+            self.reported.insert(issue.channel, issue.fingerprint);
+        }
     }
 
     /// The historical work class: apply what the request in flight answered,
@@ -825,7 +974,9 @@ impl DownlinkWorker {
         if self.loading.due > now {
             return Ok(());
         }
-        let Some(task) = client.bootstrap_schedule(self.loading.rotation.as_deref())? else {
+        let (task, issues) = client.bootstrap_schedule_scan(self.loading.rotation.as_deref())?;
+        self.ledger(issues, Scan::Complete, actions);
+        let Some(task) = task else {
             // Nothing is schedulable: a wake says when to look again.
             self.loading.dirty = false;
             return Ok(());
@@ -833,16 +984,16 @@ impl DownlinkWorker {
         let request = task.request(client.declared_models());
         let body = String::from_utf8(request.encode()?)
             .map_err(|_| invalid("a bootstrap request must be UTF-8"))?;
-        self.requests += 1;
+        let id = self.next_request()?;
         self.loading.rotation = Some(task.state.scope.clone());
         self.bootstrap = Some(PendingBootstrap {
-            id: self.requests,
+            id,
             subscription_id: task.state.subscription_id,
             run: task.state.run,
             request,
         });
         actions.push(DownlinkAction::Request {
-            request: self.requests,
+            request: id,
             body,
             bootstrap: true,
         });
@@ -946,13 +1097,11 @@ impl DownlinkWorker {
         let Some(body) = client.downlink_request()? else {
             return Ok(());
         };
-        self.requests += 1;
-        self.active = Some(Pending {
-            id: self.requests,
-            request: PullRequest::decode(body.as_bytes())?,
-        });
+        let request = PullRequest::decode(body.as_bytes())?;
+        let id = self.next_request()?;
+        self.active = Some(Pending { id, request });
         actions.push(DownlinkAction::Request {
-            request: self.requests,
+            request: id,
             body,
             bootstrap: false,
         });

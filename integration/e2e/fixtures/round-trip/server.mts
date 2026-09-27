@@ -5,6 +5,7 @@ import { prisma } from "../../../../packages/postgres/index.mts";
 import {
   createBackend,
   devAuth,
+  Entry,
   MutationRejected,
   type Handlers,
   type Loaders,
@@ -17,7 +18,7 @@ export async function createExample() {
   const db = new PrismaClient();
   let calls = 0;
   const handlers: Handlers<Tx> = {
-    async edit({ input, tx, publish }) {
+    async edit({ input, tx }) {
       calls++;
       const { identity, patch } = input.entry;
       if (patch.text === "reject") throw new MutationRejected("entry.denied");
@@ -25,9 +26,8 @@ export async function createExample() {
         where: identity,
         data: { ...patch, ...(typeof patch.text === "string" ? { text: patch.text.trim() } : {}) },
       });
-      // The edited entry is stamped and read back for the receipt regardless;
-      // publishing distributes that same version to the channel's subscribers.
-      publish({ channel: "book:demo" });
+      // The edited entry is stamped and read back for the receipt, and that same
+      // version reaches every Channel it is a member of: no enrollment here.
     },
   };
   /**
@@ -68,29 +68,32 @@ export async function createExample() {
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );
-      await backend.transaction(async ({ tx, changes, publish }) => {
+      await backend.transaction(async ({ tx, channel, touch }) => {
         await tx.entry.upsert({
           where: { id: "entry-1" },
           create: { id: "entry-1", text: "Hello from the server" },
           update: {},
         });
-        changes.add({ model: "Entry", identity: { id: "entry-1" } });
-        publish({ channel: "book:demo" });
+        touch.entry({ id: "entry-1" });
+        channel("book:demo").entry.add({ id: "entry-1" });
       });
     },
     /**
-     * Publish the current `Entry` rows again, changing them: a new stamp and a
-     * new position. A subscription's origin is the first head its handshake
-     * acknowledges ([#150](https://github.com/zanminwang/axton/issues/150)), so
-     * a client that subscribes after `initialize` meets the seeded rows either
-     * this way or through `subscription.bootstrap()`
-     * ([#151](https://github.com/zanminwang/axton/issues/151)); `republish`
-     * below is the version that moves a position without touching the stamp.
+     * Touch the current `Entry` rows, enrolling them on `name`: a new stamp and a
+     * new position on every Channel they belong to. A subscription's origin is
+     * the first head its handshake acknowledges
+     * ([#150](https://github.com/zanminwang/axton/issues/150)), so a client that
+     * subscribes after `initialize` meets the seeded rows either this way or
+     * through `subscription.bootstrap()`
+     * ([#151](https://github.com/zanminwang/axton/issues/151)); `readd` below is
+     * the version that moves a position without touching the stamp.
      */
-    async notify(ids: string[] = ["entry-1"], channel = "book:demo") {
-      await backend.transaction(async ({ changes, publish }) => {
-        for (const id of ids) changes.add({ model: "Entry", identity: { id } });
-        publish({ channel });
+    async notify(ids: string[] = ["entry-1"], name = "book:demo") {
+      await backend.transaction(async ({ channel, touch }) => {
+        for (const id of ids) {
+          touch.entry({ id });
+          channel(name).entry.add({ id });
+        }
       });
     },
     /**
@@ -108,48 +111,49 @@ export async function createExample() {
       const ids = Array.from({ length: count }, (_, i) => `${options.prefix}-${from + i}`);
       for (let start = 0; start < ids.length; start += size) {
         const batch = ids.slice(start, start + size);
-        await backend.transaction(async ({ tx, changes, publish }) => {
+        await backend.transaction(async ({ tx, channel, touch }) => {
           for (const id of batch) {
             await tx.entry.upsert({
               where: { id },
               create: { id, text: `${id} text` },
               update: { text: `${id} text` },
             });
-            changes.add({ model: "Entry", identity: { id } });
+            touch.entry({ id });
+            channel(options.channel).entry.add({ id });
           }
-          publish({ channel: options.channel });
         });
       }
       return ids;
     },
-    /** Write one `Entry` and publish it on every named channel. */
+    /** Write one `Entry` and enroll it on every named Channel: one stamp, one position on each. */
     async publishOne(id: string, text: string, channels: string[]): Promise<void> {
-      await backend.transaction(async ({ tx, changes, publish }) => {
+      await backend.transaction(async ({ tx, channel, touch }) => {
         await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
-        changes.add({ model: "Entry", identity: { id } });
-        for (const channel of channels) publish({ channel });
+        touch.entry({ id });
+        for (const name of channels) channel(name).entry.add({ id });
       });
     },
     /**
-     * Publish existing records again on `channel` without changing them: each
-     * takes a new cursor at the stamp it already has (guarantee D3). This is
-     * how a record leaves a subscription's historical interval and becomes the
+     * Remove existing members from `name`, then add them back in a second
+     * settlement, without changing them. Adding an absent member publishes its
+     * current state, so each takes a new cursor at the stamp it already has
+     * (guarantee D3); adding a present member would do nothing. This is how a
+     * record leaves a subscription's historical interval and becomes the
      * subscription's own delivery ([#151](https://github.com/zanminwang/axton/issues/151)).
      */
-    async republish(ids: string[], channel: string): Promise<void> {
-      await backend.transaction(async ({ publish }) => {
-        publish({
-          channel,
-          records: ids.map((id) => ({ model: "Entry", identity: { id } })),
-        });
+    async readd(ids: string[], name: string): Promise<void> {
+      await backend.transaction(async ({ channel }) => {
+        channel(name).remove(ids.map((id) => Entry({ id })));
+      });
+      await backend.transaction(async ({ channel }) => {
+        channel(name).add(ids.map((id) => Entry({ id })));
       });
     },
-    /** Delete the row and publish it: the Loader answers `null`, an authoritative deletion (D6). */
-    async tombstone(id: string, channel: string): Promise<void> {
-      await backend.transaction(async ({ tx, changes, publish }) => {
+    /** Delete the row and touch it: its members' Loader answers `null`, an authoritative deletion (D6). */
+    async tombstone(id: string): Promise<void> {
+      await backend.transaction(async ({ tx, touch }) => {
         await tx.entry.delete({ where: { id } });
-        changes.add({ model: "Entry", identity: { id } });
-        publish({ channel });
+        touch.entry({ id });
       });
     },
     /** Make the `Entry` Loader fail for these ids until `allowLoads` clears them. */
@@ -167,7 +171,7 @@ export async function createExample() {
       );
       return rows.length === 0 ? 0 : Number(rows[0]!.head);
     },
-    /** The one retained position `id` has on `channel`, or `null`; a republication replaces it in place. */
+    /** The one retained position `id` has on `channel`, or `null`; a later publication replaces it in place. */
     async positionOf(channel: string, id: string): Promise<number | null> {
       const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
         'SELECT cursor FROM axton_invalidation WHERE channel = $1 AND model = \'Entry\' AND identity_key = $2',
@@ -183,7 +187,7 @@ export async function createExample() {
      */
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_invalidation, axton_channel, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_membership, axton_invalidation, axton_channel, axton_record, axton_client, axton_call",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();

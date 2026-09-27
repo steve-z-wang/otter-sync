@@ -11,7 +11,7 @@
 //! **H**, the channel head its transaction observed, as a completion barrier:
 //! the run completes once `B = S` and `L >= H`
 //! ([#151](https://github.com/zanminwang/axton/issues/151)).
-use crate::bootstrap_ledger::Loaded;
+use crate::bootstrap_ledger::{LedgerIssue, Loaded};
 use crate::store::ClientStore;
 use crate::{ApplyReport, Client, Report, ReportKind};
 use axton_core::{BootstrapPage, BootstrapRequest, Result, invalid};
@@ -152,7 +152,7 @@ impl BootstrapError {
 }
 /// Cut `text` to at most `bytes` UTF-8 bytes, on a character boundary: a
 /// message is diagnostic text, never a place to lose a valid string.
-fn truncate(text: String, bytes: usize) -> String {
+pub(crate) fn truncate(text: String, bytes: usize) -> String {
     if text.len() <= bytes {
         return text;
     }
@@ -272,10 +272,25 @@ impl<S: ClientStore> Client<S> {
     /// Scope order after `rotation`, or the first of all when that was the last
     /// one. One committed read, so the transaction is closed before the request
     /// leaves; a run that is catching up waits for delivery and is skipped.
+    ///
+    /// A stored row that cannot be decoded is skipped too, so it cannot stop
+    /// every other run's pages; it is not repaired, and a named read of it
+    /// ([`Client::bootstrap_state`], [`Client::bootstrap_tasks`]) still fails.
+    /// The Downlink worker reports the rows it skipped to the application
+    /// ([#163](https://github.com/zanminwang/axton/issues/163)).
     pub fn bootstrap_schedule(&mut self, rotation: Option<&str>) -> Result<Option<BootstrapTask>> {
+        Ok(self.bootstrap_schedule_scan(rotation)?.0)
+    }
+    /// [`Client::bootstrap_schedule`] with an issue for every active row the
+    /// read skipped because it cannot be decoded.
+    pub(crate) fn bootstrap_schedule_scan(
+        &mut self,
+        rotation: Option<&str>,
+    ) -> Result<(Option<BootstrapTask>, Vec<LedgerIssue>)> {
         self.view(|e| {
-            let tasks: Vec<BootstrapTask> = e
-                .bootstrap_task_rows()?
+            let scan = e.bootstrap_task_scan()?;
+            let tasks: Vec<BootstrapTask> = scan
+                .rows
                 .into_iter()
                 .filter(|row| row.state.state.schedulable())
                 .filter_map(|row| {
@@ -288,18 +303,29 @@ impl<S: ClientStore> Client<S> {
             let after = rotation
                 .and_then(|last| tasks.iter().find(|t| t.state.scope.as_str() > last))
                 .or_else(|| tasks.first());
-            Ok(after.cloned())
+            Ok((after.cloned(), scan.issues))
         })
     }
     /// Every run waiting for its barrier, in Scope order: what a reopen
-    /// re-evaluates before it issues any request.
+    /// re-evaluates before it issues any request. Like the schedule, it skips a
+    /// row that cannot be decoded - which therefore never supplies completion
+    /// evidence - so one damaged registration cannot hold every other reached
+    /// barrier open. The Downlink worker reports the rows it skipped.
     pub fn bootstrap_barriers(&mut self) -> Result<Vec<String>> {
+        Ok(self.bootstrap_barriers_scan()?.0)
+    }
+    /// [`Client::bootstrap_barriers`] with an issue for every active row the
+    /// read skipped because it cannot be decoded.
+    pub(crate) fn bootstrap_barriers_scan(&mut self) -> Result<(Vec<String>, Vec<LedgerIssue>)> {
         self.view(|e| {
-            Ok(e.bootstrap_tasks()?
+            let scan = e.bootstrap_task_scan()?;
+            let waiting = scan
+                .rows
                 .into_iter()
-                .filter(|state| state.state == BootstrapPhase::CatchingUp)
-                .map(|state| state.scope)
-                .collect())
+                .filter(|row| row.state.state == BootstrapPhase::CatchingUp)
+                .map(|row| row.state.scope)
+                .collect();
+            Ok((waiting, scan.issues))
         })
     }
     /// Register a durable load of everything published to `scope` before its
@@ -459,26 +485,41 @@ impl<S: ClientStore> Client<S> {
     /// not catching up, or is still behind its barrier, contributes nothing.
     /// An empty list names no Scope and settles nothing.
     ///
-    /// Which Scopes are settleable is decided by one query on the committed
-    /// reader, barrier and delivery cursor included, so a run still short of
-    /// its barrier opens no transaction at all: waiting out a barrier must not
-    /// commit an empty write - and bump the client generation - once per
-    /// delivered page.
+    /// Which Scopes are settleable is decided by committed reads, in chunks of
+    /// at most 900 names, barrier and delivery cursor included - each chunk is
+    /// its own read, with no snapshot across them, which the write's own fence
+    /// makes harmless - so a run still short of its barrier opens no
+    /// transaction at all: waiting out a barrier must not commit an empty
+    /// write - and bump the client generation - once per delivered page. The names are a set, however many there are, and a
+    /// candidate whose stored row cannot be decoded is left out, so it
+    /// supplies no completion evidence and cannot hold the others open; the
+    /// Downlink worker reports the candidates it left out
+    /// ([#163](https://github.com/zanminwang/axton/issues/163)).
     pub fn settle_bootstrap_barriers(&mut self, scopes: &[String]) -> Result<Vec<BootstrapState>> {
-        if scopes.is_empty() {
-            return Ok(vec![]);
+        Ok(self.settle_bootstrap_barriers_scan(scopes)?.0)
+    }
+    /// [`Client::settle_bootstrap_barriers`] with an issue for every candidate
+    /// it left out because its row cannot be decoded. The committed reads
+    /// decide which channels enter the write - only a candidate whose whole
+    /// row decoded does, so a damaged one is never written - and whether a
+    /// write is worth opening at all; an empty set reads and writes nothing.
+    /// The write then re-reads and fences each healthy candidate itself.
+    pub(crate) fn settle_bootstrap_barriers_scan(
+        &mut self,
+        channels: &[String],
+    ) -> Result<(Vec<BootstrapState>, Vec<LedgerIssue>)> {
+        let scan = self.view(|e| e.settleable_scan(channels))?;
+        if scan.rows.is_empty() {
+            return Ok((vec![], scan.issues));
         }
-        let settleable = self.view(|e| e.settleable_scopes(scopes))?;
-        if settleable.is_empty() {
-            return Ok(vec![]);
-        }
-        self.write(|e| {
+        let settled = self.write(|e| {
             let mut settled = vec![];
-            for scope in &settleable {
+            for scope in &scan.rows {
                 settled.extend(e.settle_barrier(scope)?);
             }
             Ok(settled)
-        })
+        })?;
+        Ok((settled, scan.issues))
     }
 }
 

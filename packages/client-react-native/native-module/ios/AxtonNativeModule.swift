@@ -14,17 +14,75 @@ private class AxtonNativeException: Exception {
   }
 }
 
+/// The wake sink handed to every runtime this module opens. It runs on a Rust
+/// runtime thread, so it only schedules the `axtonWake` event on the main
+/// queue; the JS Bridge drains in response. `context` is the module,
+/// unretained: `OnDestroy` detaches every runtime first, and a detach returns
+/// only once no wake is running and none can follow.
+private let axtonWake: @convention(c) (UInt64, UnsafeMutableRawPointer?) -> Void = {
+  runtime, context in
+  guard let context else { return }
+  Unmanaged<AxtonNativeModule>.fromOpaque(context).takeUnretainedValue().wake(runtime)
+}
+
 public final class AxtonNativeModule: Module {
-  private let carrierQueue = DispatchQueue(label: "dev.axton.native.carrier")
+  /// Runtimes opened and not yet detached, so `OnDestroy` can detach them.
+  private let runtimesLock = NSLock()
+  private var runtimes = Set<UInt64>()
 
   public func definition() -> ModuleDefinition {
     Name("AxtonNative")
 
-    AsyncFunction("clientCall") { (request: String) async throws -> String in
-      try await withCheckedThrowingContinuation { continuation in
-        self.carrierQueue.async {
-          continuation.resume(with: Result { try self.callCarrier(request) })
-        }
+    Events("axtonWake")
+
+    // The Rust-owned client runtime (#134). All four are synchronous: they
+    // admit, drain or detach and never wait on SQLite, which runs on the
+    // runtime's own thread.
+    Function("runtimeOpen") { (request: String) throws -> String in
+      var error: UnsafeMutablePointer<CChar>?
+      let context = Unmanaged.passUnretained(self).toOpaque()
+      let runtime = request.withCString {
+        axton_mobile_runtime_open($0, axtonWake, context, &error)
+      }
+      let message = self.take(error)
+      guard runtime != 0 else {
+        throw AxtonNativeException(message ?? "AXTON runtime open failed")
+      }
+      _ = self.withRuntimes { $0.insert(runtime) }
+      return String(runtime)
+    }
+
+    Function("runtimeSubmit") { (runtimeId: String, message: String) throws in
+      let runtime = try self.runtime(runtimeId)
+      var error: UnsafeMutablePointer<CChar>?
+      let status = message.withCString {
+        axton_mobile_runtime_submit(runtime, $0, &error)
+      }
+      let failure = self.take(error)
+      if status != 0 {
+        throw AxtonNativeException(failure ?? "client_closed")
+      }
+    }
+
+    Function("runtimeDrain") { (runtimeId: String) throws -> String in
+      let runtime = try self.runtime(runtimeId)
+      return self.take(axton_mobile_runtime_drain(runtime)) ?? "[]"
+    }
+
+    Function("runtimeDetach") { (runtimeId: String) throws in
+      let runtime = try self.runtime(runtimeId)
+      axton_mobile_runtime_detach(runtime)
+      self.withRuntimes { _ = $0.remove(runtime) }
+    }
+
+    OnDestroy {
+      let open = self.withRuntimes { runtimes -> Set<UInt64> in
+        let open = runtimes
+        runtimes.removeAll()
+        return open
+      }
+      for runtime in open {
+        axton_mobile_runtime_detach(runtime)
       }
     }
 
@@ -39,40 +97,31 @@ public final class AxtonNativeModule: Module {
     }
   }
 
-  private func callCarrier(_ request: String) throws -> String {
-    guard let output = request.withCString({ axton_mobile_call($0) }) else {
-      throw AxtonNativeException("AXTON native carrier returned null")
+  /// Called from a runtime thread: post the wake on the main queue, never
+  /// into Expo from the Rust thread.
+  fileprivate func wake(_ runtime: UInt64) {
+    DispatchQueue.main.async { [weak self] in
+      self?.sendEvent("axtonWake", ["runtimeId": String(runtime)])
     }
-    defer { axton_mobile_free(output) }
+  }
 
-    let data = Data(String(cString: output).utf8)
-    let envelope: [String: Any]
-    do {
-      guard let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        throw AxtonNativeException("AXTON native carrier returned a non-object envelope")
-      }
-      envelope = decoded
-    } catch let error as AxtonNativeException {
-      throw error
-    } catch {
-      throw AxtonNativeException("AXTON native carrier returned invalid JSON: \(error)")
+  private func runtime(_ runtimeId: String) throws -> UInt64 {
+    guard let runtime = UInt64(runtimeId), runtime != 0 else {
+      throw AxtonNativeException("client_closed")
     }
-    guard envelope["ok"] as? Bool == true else {
-      throw AxtonNativeException(envelope["error"] as? String ?? "AXTON native call failed")
-    }
-    guard let result = envelope["result"] else {
-      throw AxtonNativeException("AXTON native carrier omitted result")
-    }
-    do {
-      let resultData = try JSONSerialization.data(withJSONObject: result, options: [.fragmentsAllowed])
-      guard let text = String(data: resultData, encoding: .utf8) else {
-        throw AxtonNativeException("AXTON native result is not UTF-8")
-      }
-      return text
-    } catch let error as AxtonNativeException {
-      throw error
-    } catch {
-      throw AxtonNativeException("AXTON native result could not be serialized: \(error)")
-    }
+    return runtime
+  }
+
+  private func withRuntimes<T>(_ body: (inout Set<UInt64>) -> T) -> T {
+    runtimesLock.lock()
+    defer { runtimesLock.unlock() }
+    return body(&runtimes)
+  }
+
+  /// Copy and free a string the C ABI returned; each is freed exactly once.
+  private func take(_ output: UnsafeMutablePointer<CChar>?) -> String? {
+    guard let output else { return nil }
+    defer { axton_mobile_free(output) }
+    return String(cString: output)
   }
 }

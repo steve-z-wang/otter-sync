@@ -12,11 +12,19 @@ model Moment {
  title String
  @@id(at)
 }
-@version(2) mutation Put(todo Todo.create, when DateTime, statuses Status[], note String?) { echoed DateTime status Status }
-mutation Change(todo Todo.update?, at DateTime) { echoed DateTime }
+// A composite identity with a DateTime component, for the generated Channel and Touch types.
+model Pin {
+ todo String
+ at DateTime
+ label String
+ @@id(todo, at)
+}
+@version(2) mutation Put(todo Todo.create, when DateTime, statuses Status[], note String?) { todo Todo echoed DateTime status Status }
+mutation Change(todo Todo.update?, at DateTime) { todo Todo? echoed DateTime }
 mutation Clear(todo Todo.delete[])
 mutation Ping()
 // Find v1 was retained as a Mutation; v2 reclassifies it as a Query.
 @version(2) query Find(at DateTime) { todo Todo? }
 mutation Mark(moment Moment.update)
-mutation RemoveMoment(moment Moment.delete)
+// A deleted identity is returned through an explicit scalar output.
+mutation RemoveMoment(moment Moment.delete) { at DateTime }

@@ -183,7 +183,7 @@ fn startup_validates_the_retained_model_contracts() {
 mod refusals {
     use axton_server::{
         Host, HostResult, code,
-        host::{self, Acknowledged, Handled, Head, HostRequest, Loaded, Stamped},
+        host::{self, Acknowledged, Handled, Head, HostRequest, Loaded, Memberships, Stamped},
     };
     use serde_json::{Value, json};
     use std::{
@@ -224,11 +224,14 @@ mod refusals {
                         self.handled.lock().unwrap().push(request.clone());
                         serde_json::to_value(Handled::Settled {
                             changes: vec![],
-                            publications: vec![],
+                            memberships: vec![],
                         })
                         .unwrap()
                     }
                     HostRequest::AdvanceStamp { .. } => serde_json::to_value(Stamped(1)).unwrap(),
+                    HostRequest::Memberships { .. } => {
+                        serde_json::to_value(Memberships::default()).unwrap()
+                    }
                     HostRequest::Load { identities, .. } => serde_json::to_value(Loaded::Rows(
                         identities
                             .iter()

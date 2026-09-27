@@ -35,6 +35,8 @@ export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 (cd packages/dart && dart analyze && dart test)
 ```
 
+`AXTON_LIBRARY` is the library the SDK tests load and `AXTON_DART_LIBRARY` the one the generated-API, Action and end-to-end Dart clients load. The Dart SDK calls the library's C ABI from the test's own isolate; each client's database work runs on a native runtime thread, and no worker isolate is started ([Bindings](../architecture/sdks/bindings.md#5-building-block-view)).
+
 Focused database and end-to-end runners create temporary PostgreSQL clusters and clean them up on exit. Their commands are linked under [Integration](integration/README.md) and [End-to-end](end-to-end.md). The [generated API runner](../../../integration/generated-api/verify.sh) regenerates its checked-in fixtures; inspect any resulting changes.
 
 ## Full host gate

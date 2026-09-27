@@ -62,8 +62,9 @@
       "op": "handle",
       "request": {"op": "handle", "name": "edit", "version": 1, "arguments": {"task": {"identity": {"id": "t-1"}, "patch": {"title": "typed"}}}, "owner": "alice", "ordinal": 1},
       "responses": [
-        {"variant": "settled", "value": {"changes": [{"model": "Task", "identity": {"id": "t-1"}}, {"model": "Task", "identity": {"id": "t-2"}}], "publications": [{"channel": "shared"}, {"channel": "other", "records": [{"model": "Task", "identity": {"id": "t-1"}}]}]}},
-        {"variant": "quiet", "value": {"changes": [], "publications": []}},
+        {"variant": "settled", "value": {"changes": [{"model": "Task", "identity": {"id": "t-1"}}, {"model": "Task", "identity": {"id": "t-2"}}], "memberships": [{"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": true}, {"channel": "shared", "model": "Task", "identity": {"id": "t-2"}, "present": true}, {"channel": "other", "model": "Task", "identity": {"id": "t-1"}, "present": true}]}},
+        {"variant": "withdrawn", "value": {"changes": [], "memberships": [{"channel": "other", "model": "Task", "identity": {"id": "t-1"}, "present": false}]}},
+        {"variant": "quiet", "value": {"changes": [], "memberships": []}},
         {"variant": "rejected", "value": {"rejection": "task.refused"}},
         {"variant": "failed", "value": {"error": "TypeError: cannot read title of undefined"}}
       ]
@@ -72,7 +73,7 @@
       "op": "handleAction",
       "request": {"op": "handleAction", "name": "Send", "version": 1, "arguments": {}, "owner": "alice", "callId": "01890f47-1234-7123-8123-123456789abc", "ordinal": 1},
       "responses": [
-        {"variant": "settled", "value": {"outputs": {"message": "sent"}, "changes": [], "publications": []}},
+        {"variant": "settled", "value": {"outputs": {"message": "sent"}, "changes": [], "memberships": []}},
         {"variant": "rejected", "value": {"rejection": "send.refused"}},
         {"variant": "failed", "value": {"error": "handler failure"}}
       ]
@@ -100,6 +101,27 @@
       "op": "publish",
       "request": {"op": "publish", "channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "stamp": 4},
       "responses": [{"variant": "published", "value": {"cursor": 6, "stamp": 4}}]
+    },
+    {
+      "op": "lockRecord",
+      "request": {"op": "lockRecord", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
+      "responses": [
+        {"variant": "locked", "value": 4},
+        {"variant": "absent", "value": null}
+      ]
+    },
+    {
+      "op": "memberships",
+      "request": {"op": "memberships", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
+      "responses": [
+        {"variant": "members", "value": ["other", "shared"]},
+        {"variant": "none", "value": []}
+      ]
+    },
+    {
+      "op": "setMembership",
+      "request": {"op": "setMembership", "channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}", "present": true},
+      "responses": [{"variant": "acknowledged", "value": null}]
     }
   ]
 }

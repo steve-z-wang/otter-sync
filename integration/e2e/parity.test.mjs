@@ -25,9 +25,9 @@ import {Client} from '../../packages/client-js/index.mts';
 // content cannot pass by agreeing with the other one.
 const INITIAL='Hello from the server';
 async function reseed(app){
- await app.backend.transaction(async({tx,changes,publish})=>{
+ await app.backend.transaction(async({tx,touch})=>{
   await tx.entry.update({where:{id:'entry-1'},data:{text:INITIAL}});
-  changes.add({model:'Entry',identity:{id:'entry-1'}});publish({channel:'book:demo'});
+  touch.entry({id:'entry-1'});
  });
  assert.equal((await app.db.entry.findUnique({where:{id:'entry-1'}})).text,INITIAL);
 }

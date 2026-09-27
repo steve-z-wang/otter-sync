@@ -1,7 +1,7 @@
 import * as actionBackend from "./backend.ts";
 import type { Call, GeneratedClient } from "./client.ts";
-import type { AddTodoInput, AddTodoOutput, FindTodosOutput, Note, NoteCreate, Todo, TodoIdentity, TodoUpdate, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddNotesInput as AddNotesHandlerInput, AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, FindTodosHandlerOutput, LinkHandlerOutput, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddTodoInput, AddTodoOutput, EditAndReadOutput, FindTodosOutput, Note, NoteCreate, Todo, TodoIdentity, TodoUpdate, ProjectIdentity, PingOutput } from './generated.ts';
+import type { AddNotesInput as AddNotesHandlerInput, AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, EditAndReadHandlerOutput, EditHandlerOutput, FindTodosHandlerOutput, LinkHandlerOutput, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
 
 declare const client: GeneratedClient;
 declare const concrete: GeneratedClient;
@@ -45,12 +45,19 @@ const queuedOutput: Promise<{ todos: Todo[] }> = client.queries.enqueue.findTodo
 client.queries.findTodos({ text: 'x' });
 void [directCall, queuedOutput];
 declare const queryContext: QueryContext<{}>;
-// @ts-expect-error A Query context has no changes.
-queryContext.changes;
-// @ts-expect-error A Query context has no publish.
-queryContext.publish({ channel: 'todos' });
-// @ts-expect-error A Query handler cannot use Mutation effects.
-const effectfulQuery: Queries<{}>['findTodos'] = async ({ ctx }) => { ctx.changes.add({ model: 'Todo', identity: { id: 'x' } }); return { todos: [], nextCursor: null }; };
+// @ts-expect-error A Query context has no membership writer.
+queryContext.channel('todos');
+// @ts-expect-error A Query context has no change declaration.
+queryContext.touch.todo({ id: 'x' });
+// @ts-expect-error A Query handler cannot use Mutation declarations.
+const effectfulQuery: Queries<{}>['findTodos'] = async ({ ctx }) => { ctx.touch.todo({ id: 'x' }); return { todos: [], nextCursor: null }; };
+declare const mutationContext: actionBackend.MutationContext<{}>;
+// @ts-expect-error A composite identity names every component.
+mutationContext.channel('tenant:t').project.add({ id: 'p' });
+// @ts-expect-error The old publish API is gone.
+mutationContext.publish({ channel: 'todos' });
+// @ts-expect-error The old changes collector is gone.
+mutationContext.changes.add({ model: 'Todo', identity: { id: 'x' } });
 // @ts-expect-error Query Model outputs are identity objects.
 const bareQueryOutput: FindTodosHandlerOutput = { todos: ['x'], nextCursor: null };
 const wrongKindVersion: Queries<{}>['getTodos'] = {
@@ -95,7 +102,7 @@ const oldOutput: AddTodoV1HandlerOutput = { relatedTodo: null, matches: [], coun
 const badPing: PingOutput = { unexpected: true };
 // @ts-expect-error A no-output handler must return void.
 const badPingHandler: PingHandlerOutput = { unexpected: true };
-// @ts-expect-error An implicit-only Action handler must return void.
+// @ts-expect-error A delete operand implies no result, so its handler returns void.
 const badRemoveHandler: RemoveTodoHandlerOutput = { todo: { id: 'x' } };
 // @ts-expect-error A retained v2 handler cannot be omitted.
 const missingV2: Pick<Mutations<{}>, 'addTodo'> = { addTodo: { async v1() { return { relatedTodo: null, matches: [], count: 1 }; } } };
@@ -122,9 +129,9 @@ client.mutations.call.openTodo({ store: null }, { store: { count: false } });
 client.mutations.openTodo({ store: null }, { store: { missing: false } });
 // @ts-expect-error store map values are booleans.
 client.mutations.call.openTodo({ store: null }, { store: { suggestions: 'no' } });
-// @ts-expect-error input-bound outputs are not store keys.
+// @ts-expect-error Model operands are not outputs, so they are not store keys.
 client.mutations.call.addTodo(input, { store: { todo: false } });
-// @ts-expect-error Delete confirmations are not store keys.
+// @ts-expect-error A delete operand has no result to store.
 client.mutations.call.deleteTodo({ todo: { id: 't' } }, { store: { todo: false } });
 // @ts-expect-error Operations without eligible outputs accept only a boolean store.
 client.mutations.call.ping({}, { store: {} });
@@ -165,3 +172,17 @@ const partialHandlerArgs: AddNotesHandlerInput = { note: { memo: null }, many: [
 // @ts-expect-error Local create takes the same create input.
 client.models.note.create({ body: 'x' });
 void [missingMemo, undefinedTag, partialNote, partialHandlerArgs];
+// Explicit results (#140): outputs are independent of same-name inputs.
+// @ts-expect-error explicit output is required even though input has the same name
+const missing: EditAndReadHandlerOutput = {};
+// @ts-expect-error The handler returns an identity, not the loaded record.
+const recordOutput: EditAndReadHandlerOutput = { todo: { id: 'B', title: 'B', state: 'open', note: null } };
+// @ts-expect-error A Mutation without outputs has no handler result.
+const editResult: EditHandlerOutput = { todo: { id: 'B' } };
+// @ts-expect-error A Mutation without outputs has no business result.
+client.mutations.call.edit({ todo: { id: 'A' } }).then(result => result.todo);
+// @ts-expect-error A delete operand has no implicit result.
+client.mutations.call.removeTodo({ todo: { id: 'A' } }).then(result => result.todo);
+// @ts-expect-error The client result is the loaded record, not an identity.
+const identityResult: EditAndReadOutput = { todo: { id: 'B' } };
+void [missing, recordOutput, editResult, identityResult];

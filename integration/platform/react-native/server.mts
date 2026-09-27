@@ -17,12 +17,13 @@ import {
 const db = new PrismaClient();
 const calls = { add: 0, edit: 0 };
 const handlers: Handlers<Prisma.TransactionClient> = {
-  async addEntry({ input, tx, publish }) {
+  async addEntry({ input, tx, channel }) {
     calls.add++;
     await tx.entry.create({ data: input.entry });
-    publish({ channel: "book:demo" });
+    // A new Entry joins the Channel once; its later edits reach it with no enrollment.
+    channel("book:demo").entry.add(input.entry);
   },
-  async edit({ input, tx, publish }) {
+  async edit({ input, tx }) {
     calls.edit++;
     if (input.entry.patch.text === "reject")
       throw new MutationRejected("entry.denied");
@@ -30,7 +31,6 @@ const handlers: Handlers<Prisma.TransactionClient> = {
       where: input.entry.identity,
       data: input.entry.patch,
     });
-    publish({ channel: "book:demo" });
   },
 };
 const loaders: Loaders<Prisma.TransactionClient> = {
@@ -61,14 +61,14 @@ for (const sql of migration
 await db.$executeRawUnsafe(
   'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
 );
-await backend.transaction(async ({ tx, changes, publish }) => {
+await backend.transaction(async ({ tx, channel, touch }) => {
   await tx.entry.upsert({
     where: { id: "entry-1" },
     create: { id: "entry-1", text: "seed", note: null },
     update: {},
   });
-  changes.add({ model: "Entry", identity: { id: "entry-1" } });
-  publish({ channel: "book:demo" });
+  touch.entry({ id: "entry-1" });
+  channel("book:demo").entry.add({ id: "entry-1" });
 });
 const started = await backend.listen({ port: 0, host: "127.0.0.1" });
 const target = new URL(started.url);

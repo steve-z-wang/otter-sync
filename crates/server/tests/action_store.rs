@@ -136,7 +136,7 @@ impl Host for StoreHost {
                             todo["title"].as_str().unwrap().into(),
                         );
                     }
-                    json!({"outputs":state.outputs,"changes":state.extra,"publications":[]})
+                    json!({"outputs":state.outputs,"changes":state.extra,"memberships":[]})
                 }
                 "advanceStamp" => {
                     state.next_stamp += 1;
@@ -155,6 +155,8 @@ impl Host for StoreHost {
                     state.stamps.insert(key, stamp);
                     json!(stamp)
                 }
+                // No Todo belongs to a Channel here.
+                "memberships" => json!([]),
                 "load" => {
                     let version = request["version"].as_u64().unwrap();
                     let rows: Vec<Value> = request["identities"]
@@ -328,7 +330,7 @@ fn per_output_map_is_a_positive_union_in_either_declaration_order() {
 }
 
 #[test]
-fn store_false_keeps_mutation_input_and_handler_change_authority() {
+fn store_false_keeps_mandatory_input_authority_and_extra_touches_never_force_storage() {
     let host = StoreHost::new(outputs(Some(A), &[B, C]));
     host.0.lock().unwrap().extra = vec![json!({"model":"Todo","identity":{"id":C}})];
     let receipt = push(
@@ -341,17 +343,45 @@ fn store_false_keeps_mutation_input_and_handler_change_authority() {
             Some(json!(false)),
         )],
     );
-    // A (mutation input) and C (handler change) stay; B is output-only.
-    assert_eq!(record_ids(&receipt), vec![A, C]);
+    // A (mutation input) stays; C (extra touch) and B (output-only) do not.
+    assert_eq!(record_ids(&receipt), vec![A]);
     assert_eq!(
         receipt["records"][0]["state"],
         json!({"title":"X","done":false})
     );
     assert!(host.stamped().is_empty());
     assert_eq!(
+        host.ops("advanceStamp").len(),
+        2,
+        "A and C each advance once"
+    );
+    assert_eq!(
         receipt["completions"][0]["outcome"]["result"]["mainTodo"],
         json!({"id":A,"title":"X"})
     );
+    // Under the default policy a touched record is authority only when an
+    // enabled output selects it, at the stamp settlement allocated; a pure
+    // touch (B) is not.
+    let host = StoreHost::new(outputs(Some(A), &[C]));
+    host.0.lock().unwrap().extra = vec![
+        json!({"model":"Todo","identity":{"id":B}}),
+        json!({"model":"Todo","identity":{"id":C}}),
+    ];
+    let receipt = push(
+        &host,
+        1,
+        vec![intent(CALL, 1, json!({"todo":{"id":A,"title":"X"}}), None)],
+    );
+    assert_eq!(record_ids(&receipt), vec![A, C]);
+    let stamps: Vec<u64> = receipt["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["stamp"].as_u64().unwrap())
+        .collect();
+    assert_eq!(stamps, [11, 13], "A, B and C advanced in key order");
+    assert!(host.stamped().is_empty(), "no second stamp for touched C");
+    assert_eq!(host.ops("advanceStamp").len(), 3);
 }
 
 #[test]

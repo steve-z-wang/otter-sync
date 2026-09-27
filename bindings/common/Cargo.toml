@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 [dependencies]
-axton-core = { path = "../../crates/core" }
 axton-client = { path = "../../crates/client" }
 axton-sqlite = { path = "../../crates/sqlite" }
 serde_json.workspace = true

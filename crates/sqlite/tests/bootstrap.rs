@@ -7,7 +7,7 @@ use axton_client::*;
 use axton_sqlite::SqliteStore;
 use common::*;
 use serde_json::json;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Register `scope` and commit the first delivery boundary an acknowledgement
@@ -843,6 +843,332 @@ fn tasks_are_the_initialized_runs_with_work_in_scope_order() {
     );
 }
 
+/// A second handle on the client's SQLite file: the tests below corrupt a row
+/// with SQL, as a damaged or foreign writer would, and read it back raw.
+fn raw_store(path: &std::path::Path) -> SqliteStore {
+    SqliteStore::open(path).unwrap()
+}
+/// Every stored column of `channel`'s row, with each one's SQLite type: what
+/// "retained exactly as stored" is checked against.
+fn raw_row(store: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
+    let rows = store
+        .query_committed(
+            "SELECT channel, subscription_id, starting_cursor, cursor, bootstrap_state, \
+             bootstrap_run, bootstrap_cursor, typeof(bootstrap_cursor), bootstrap_barrier, \
+             bootstrap_error, typeof(bootstrap_error) FROM axton_subscription WHERE channel=?",
+            &[json!(channel)],
+        )
+        .unwrap();
+    rows.rows
+        .into_iter()
+        .next()
+        .expect("the row is still there")
+}
+
+/// One active row that cannot be decoded is its own registration's problem: a
+/// named read of it still fails, and so does the strict task list, but the
+/// scheduler's scan skips it - wherever it falls in Channel order - and the
+/// healthy run beside it keeps its turn. Nothing rewrites the damaged row.
+#[test]
+fn an_undecodable_active_row_does_not_block_the_schedule() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    let mut ids = std::collections::BTreeMap::new();
+    for channel in ["bad", "good", "worse"] {
+        let id = origin(&mut c, channel, 5).subscription_id;
+        c.request_bootstrap(channel, id).unwrap();
+        ids.insert(channel, id);
+    }
+    let mut raw = raw_store(&path);
+    raw.execute(
+        "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE channel='bad'",
+        &[],
+    )
+    .unwrap();
+    raw.execute(
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='worse'",
+        &[],
+    )
+    .unwrap();
+    let stored = [raw_row(&mut raw, "bad"), raw_row(&mut raw, "worse")];
+    assert_eq!(stored[0][7], json!("text"), "{:?}", stored[0]);
+    assert_eq!(stored[1][10], json!("text"), "{:?}", stored[1]);
+
+    // Named reads of a damaged registration never invent a state.
+    for channel in ["bad", "worse"] {
+        c.bootstrap_state(channel, ids[channel])
+            .expect_err("a named read of an undecodable row fails");
+        c.request_bootstrap(channel, ids[channel])
+            .expect_err("so does registering against it");
+    }
+    c.bootstrap_tasks()
+        .expect_err("the strict task list keeps the decode error visible");
+
+    // The schedule rotates among the healthy runs only.
+    for rotation in [None, Some("bad"), Some("good"), Some("worse")] {
+        let task = c
+            .bootstrap_schedule(rotation)
+            .unwrap()
+            .expect("the healthy run is schedulable");
+        assert_eq!(task.state.scope, "good", "after {rotation:?}");
+        assert_eq!(task.origin, 5);
+    }
+    assert!(c.bootstrap_barriers().unwrap().is_empty());
+    let good = bootstrap(&mut c, "good");
+    assert_eq!((good.state, good.cursor), (BootstrapPhase::Requested, 0));
+
+    assert_eq!(
+        [raw_row(&mut raw, "bad"), raw_row(&mut raw, "worse")],
+        stored,
+        "the damaged rows are neither reset nor marked"
+    );
+}
+
+/// On reopen, the barrier scan finds a healthy reached barrier even beside an
+/// undecodable active row - one that is itself catching up past its barrier,
+/// and so never supplies completion evidence - and the schedule still picks
+/// the healthy requested run.
+#[test]
+fn an_undecodable_active_row_does_not_hide_a_reached_barrier() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    let mut ids = std::collections::BTreeMap::new();
+    for channel in ["bad", "good", "waiting"] {
+        let id = origin(&mut c, channel, 5).subscription_id;
+        c.request_bootstrap(channel, id).unwrap();
+        ids.insert(channel, id);
+    }
+    for channel in ["bad", "waiting"] {
+        apply(&mut c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
+        c.apply_page(page(channel, 5, 9, Some("live"))).unwrap();
+        assert_eq!(bootstrap(&mut c, channel).state, BootstrapPhase::CatchingUp);
+    }
+    let mut raw = raw_store(&path);
+    raw.execute(
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='bad'",
+        &[],
+    )
+    .unwrap();
+    let stored = raw_row(&mut raw, "bad");
+    drop(c);
+
+    let mut c = open(&path);
+    c.bootstrap_state("bad", ids["bad"])
+        .expect_err("a named read of an undecodable row fails");
+    c.bootstrap_tasks()
+        .expect_err("the strict task list keeps the decode error visible");
+    let waiting = c.bootstrap_barriers().unwrap();
+    assert_eq!(waiting, vec!["waiting".to_string()]);
+    let task = c.bootstrap_schedule(None).unwrap().expect("a healthy run");
+    assert_eq!(task.state.scope, "good");
+
+    let settled = c.settle_bootstrap_barriers(&waiting).unwrap();
+    assert_eq!(settled.len(), 1);
+    assert_eq!(settled[0].scope, "waiting");
+    assert_eq!(settled[0].state, BootstrapPhase::Complete);
+    assert_eq!(
+        c.bootstrap_state("waiting", ids["waiting"]).unwrap().state,
+        BootstrapPhase::Complete
+    );
+    assert_eq!(
+        raw_row(&mut raw, "bad"),
+        stored,
+        "the damaged row is neither reset, completed nor marked"
+    );
+}
+
+/// Take `channel` through its whole interval to a barrier ordinary delivery has
+/// reached: catching up at H = 9 with L = 9, waiting only for a settlement.
+fn reached(c: &mut Client<SqliteStore>, channel: &str) -> u64 {
+    let id = origin(c, channel, 5).subscription_id;
+    c.request_bootstrap(channel, id).unwrap();
+    apply(c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
+    c.apply_page(page(channel, 5, 9, Some("live"))).unwrap();
+    assert_eq!(bootstrap(c, channel).state, BootstrapPhase::CatchingUp);
+    id
+}
+/// Take `channel` through its whole interval to a barrier at H = 9 that
+/// delivery, still at L = 5, has not reached.
+fn behind(c: &mut Client<SqliteStore>, channel: &str) -> u64 {
+    let id = origin(c, channel, 5).subscription_id;
+    c.request_bootstrap(channel, id).unwrap();
+    apply(c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
+    assert_eq!(bootstrap(c, channel).state, BootstrapPhase::CatchingUp);
+    id
+}
+/// The names a settlement is handed below: the reached runs `a` and `z`, the
+/// run `m` still short of its barrier, 1,001 names no row carries, and
+/// duplicates of all of them. `a` sorts before every unknown name and `z`
+/// after them, so the two reached runs fall in different 900-name chunks.
+fn crowd() -> (Vec<String>, usize) {
+    let unknown = (0..1001).map(|i| format!("n{i:04}"));
+    let mut names: Vec<String> = ["z", "m", "a"].map(String::from).to_vec();
+    names.extend(unknown.clone());
+    names.extend(["a", "z", "m", "z"].map(String::from));
+    names.extend(unknown.step_by(7));
+    let distinct = names
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    assert_eq!(distinct, 1004);
+    (names, distinct)
+}
+
+/// Settlement takes its names as a set: duplicates are one name, more names
+/// than SQLite's oldest 999-variable floor are fine, each reached run
+/// completes exactly once and in Channel order, a run short of its barrier
+/// stays catching up (D10), and a second call finds nothing to write.
+#[test]
+fn settlement_takes_its_names_as_a_set_of_any_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    let ids = [
+        reached(&mut c, "a"),
+        behind(&mut c, "m"),
+        reached(&mut c, "z"),
+    ];
+
+    let generation = c.generation();
+    assert!(c.settle_bootstrap_barriers(&[]).unwrap().is_empty());
+    assert_eq!(c.generation(), generation, "an empty set writes nothing");
+
+    let (names, _) = crowd();
+    let settled = c.settle_bootstrap_barriers(&names).unwrap();
+    assert_eq!(
+        settled
+            .iter()
+            .map(|s| (s.scope.as_str(), s.state, s.barrier))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a", BootstrapPhase::Complete, Some(9)),
+            ("z", BootstrapPhase::Complete, Some(9)),
+        ]
+    );
+    for (channel, id, phase) in [
+        ("a", ids[0], BootstrapPhase::Complete),
+        ("m", ids[1], BootstrapPhase::CatchingUp),
+        ("z", ids[2], BootstrapPhase::Complete),
+    ] {
+        assert_eq!(c.bootstrap_state(channel, id).unwrap().state, phase);
+    }
+
+    let generation = c.generation();
+    assert!(
+        c.settle_bootstrap_barriers(&names).unwrap().is_empty(),
+        "settling is idempotent"
+    );
+    assert_eq!(
+        c.generation(),
+        generation,
+        "and the second call writes nothing"
+    );
+}
+
+/// The same crowd through a store that records every read: each barrier
+/// candidate query binds at most 900 names and nothing else, a duplicate takes
+/// no slot, and more than 900 distinct names take more than one query. This is
+/// the proof that does not depend on the host SQLite's variable limit, which
+/// modern builds raise far above 999. An empty set runs no SQL at all.
+#[test]
+fn a_settlement_binds_each_distinct_name_once_in_chunks_of_900() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    reached(&mut c, "a");
+    behind(&mut c, "m");
+    reached(&mut c, "z");
+    drop(c);
+    let reads = Reads::default();
+    let mut c = Client::open(
+        Recording {
+            inner: SqliteStore::open(&path).unwrap(),
+            reads: reads.clone(),
+        },
+        schema(),
+    )
+    .unwrap();
+
+    reads.take();
+    assert!(c.settle_bootstrap_barriers(&[]).unwrap().is_empty());
+    assert!(reads.take().is_empty(), "an empty set runs no SQL");
+
+    let (names, distinct) = crowd();
+    let settled = c.settle_bootstrap_barriers(&names).unwrap();
+    assert_eq!(
+        settled.iter().map(|s| s.scope.as_str()).collect::<Vec<_>>(),
+        vec!["a", "z"]
+    );
+    let candidates: Vec<usize> = reads
+        .take()
+        .into_iter()
+        .filter(|(sql, _)| sql.contains("cursor >= bootstrap_barrier"))
+        .map(|(_, bound)| bound)
+        .collect();
+    assert!(candidates.len() >= 2, "{candidates:?}");
+    assert!(
+        candidates.iter().all(|&bound| bound <= 900),
+        "{candidates:?}"
+    );
+    assert_eq!(
+        candidates.iter().sum::<usize>(),
+        distinct,
+        "each distinct name is bound exactly once: {candidates:?}"
+    );
+}
+
+/// A barrier candidate whose row cannot be decoded is reported and skipped
+/// before the write opens, so the healthy candidate beside it still completes.
+/// The damaged row supplies no completion evidence: it is neither completed,
+/// reset nor marked, its delivery cursor stays where it was, and a named read
+/// of it still fails.
+#[test]
+fn an_undecodable_candidate_does_not_block_a_healthy_settlement() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    let bad = reached(&mut c, "bad");
+    let good = reached(&mut c, "good");
+    let mut raw = raw_store(&path);
+    raw.execute(
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='bad'",
+        &[],
+    )
+    .unwrap();
+    let stored = raw_row(&mut raw, "bad");
+    assert_eq!(
+        (&stored[3], &stored[4], &stored[8]),
+        (&json!(9), &json!("catching_up"), &json!(9)),
+        "still a candidate by the settlement predicate: {stored:?}"
+    );
+
+    let names = ["bad", "good"].map(String::from);
+    let settled = c.settle_bootstrap_barriers(&names).unwrap();
+    assert_eq!(
+        settled
+            .iter()
+            .map(|s| (s.scope.as_str(), s.state))
+            .collect::<Vec<_>>(),
+        vec![("good", BootstrapPhase::Complete)]
+    );
+    assert_eq!(
+        c.bootstrap_state("good", good).unwrap().state,
+        BootstrapPhase::Complete
+    );
+    let generation = c.generation();
+    assert!(c.settle_bootstrap_barriers(&names).unwrap().is_empty());
+    assert_eq!(c.generation(), generation, "the damaged row opens no write");
+
+    c.bootstrap_state("bad", bad)
+        .expect_err("a named read of an undecodable row fails");
+    assert_eq!(
+        raw_row(&mut raw, "bad"),
+        stored,
+        "the damaged row and its cursor are neither completed, reset nor marked"
+    );
+}
+
 /// The state the binding carries is serializable, with the phase as the stored
 /// text and an uncommitted barrier as null.
 #[test]
@@ -1003,4 +1329,59 @@ fn origin_generic<S: ClientStore>(c: &mut Client<S>, scope: &str, head: u64) -> 
     let heads = std::collections::BTreeMap::from([(scope.to_string(), head)]);
     c.initialize_subscriptions(&expected, &heads).unwrap();
     state.subscription_id
+}
+/// The reads a [`Recording`] store saw: each statement's SQL and how many
+/// values it bound.
+#[derive(Clone, Default)]
+struct Reads(Rc<RefCell<Vec<(String, usize)>>>);
+impl Reads {
+    fn record(&self, sql: &str, parameters: &[serde_json::Value]) {
+        self.0
+            .borrow_mut()
+            .push((sql.to_string(), parameters.len()));
+    }
+    fn take(&self) -> Vec<(String, usize)> {
+        std::mem::take(&mut self.0.borrow_mut())
+    }
+}
+/// A SQLite store that records the bind count of every `query` and
+/// `query_committed` it forwards: the deterministic view of how many values a
+/// statement bound, whatever variable limit the host SQLite was built with.
+struct Recording {
+    inner: SqliteStore,
+    reads: Reads,
+}
+impl ClientStore for Recording {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[serde_json::Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[serde_json::Value]) -> Result<SqlRows> {
+        self.reads.record(sql, parameters);
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[serde_json::Value]) -> Result<SqlRows> {
+        self.reads.record(sql, parameters);
+        self.inner.query_committed(sql, parameters)
+    }
 }

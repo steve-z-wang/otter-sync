@@ -22,7 +22,6 @@ name = "axton-binding"
 version = "0.1.0"
 dependencies = [
  "axton-client",
- "axton-core",
  "axton-sqlite",
  "serde_json",
  "tempfile",
@@ -37,6 +36,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror",
  "uuid",
 ]
 
@@ -65,7 +65,6 @@ name = "axton-dart"
 version = "0.1.0"
 dependencies = [
  "axton-binding",
- "serde_json",
 ]
 
 [[package]]

@@ -28,17 +28,17 @@ The generated `createBackend` needs no `config` option: the schema is already bo
 
 ## Call objects
 
-A Mutation or Query Handler receives `{ctx, args}`. `args` is typed from the retained input of that version; `ctx` supplies the application's `tx`, authenticated `userId` and stable `callId`, and a Mutation's also has `changes` and `publish`. The Handler returns explicit outputs; Model outputs are identities resolved by a Loader. A Query must not change business state; the framework refuses Query effects it can see but cannot inspect your SQL ([Handlers](api.md#handlers)). A Loader receives `{ids, tx, userId}` and returns one record or null per identity. It is never told a channel.
+A Mutation or Query Handler receives `{ctx, args}`. `args` is typed from the retained input of that version; `ctx` supplies the application's `tx`, authenticated `userId` and stable `callId`, and a Mutation's also has `touch` and `channel(name)`. The Handler returns only the explicit outputs its operation declares, never an input under the same name; Model outputs are identities resolved by a Loader. A Query must not change business state; the framework refuses Query effects it can see but cannot inspect your SQL ([Handlers](api.md#handlers)). A Loader receives `{ids, tx, userId}` and returns one record or null per identity. It is never told a channel.
 
-## changes and publish
+## touch and channel
 
-In a Mutation, `ctx.changes` is the set of records the call changed. It starts with the inferred Model operands; `ctx.changes.add(record)` (an operand or a generated Model reference such as `Todo({ id })`) reports an additional record. On durable delivery, the framework allocates a **stamp** for each changed record and reads the batch-final content back through Loaders for the receipt. The call's own result snapshot is resolved separately at its invocation.
+A Mutation's Model inputs are the records the call changes. On durable delivery, the framework allocates a **stamp** for each changed record and reads the inputs' batch-final content back through Loaders for the receipt; the caller always receives that authority, whatever its outputs or `store` option say. The call's own result snapshot is resolved separately at its invocation. `ctx.touch.todo({ id })` declares another record the handler changed: it gets a stamp and reaches its Channels, but it is not returned to the caller.
 
-`ctx.publish({ channel })` distributes the final change set on a non-empty channel; `ctx.publish({ channel, records })` distributes exactly those records, and `[]` distributes nothing. Publishing is optional and may be called several times; it allocates channel cursors and carries records' stamps, never a new stamp. A record published without being changed keeps its current stamp.
+`ctx.channel(name).todo.add({ id })` makes a record a persistent member of a Channel, and `.remove({ id })` ends that. A member receives every later change to the record, from any handler or job, so a handler that creates a record usually adds it once and later handlers need no enrollment. Adding a record that is not yet a member delivers its current state without a new stamp; adding a member, or removing a non-member, does nothing. Several Models can be added at once with `channel.add([Todo({ id }), …])`.
 
 A stamp is a per-record counter carried with authority in receipts, direct responses, catch-up pages and the live stream. The client applies content by stamp, so older content arriving later cannot overwrite newer content.
 
-Publish to every channel that provides a record whenever that record changes, including when a loader starts returning `null` for it. A channel that is not published to keeps delivering its old position, and its subscribers will not pick up the change through it. The framework does not detect a missing publication.
+Touch every record a handler changes beyond its inputs, including one whose Loader now returns `null`, and keep it enrolled where its subscribers should hear of the change. The framework does not detect a missing touch or enrollment. See [Channels](api.md#channels) for removal, deletion and the full rules.
 
 ## Authentication
 
@@ -46,17 +46,17 @@ Publish to every channel that provides a record whenever that record changes, in
 
 ## Errors
 
-`onError?: (error) => void` on `BackendOptions` is called for server-side failures that clients only see as `{ code: "server" }` over HTTP: `authenticate` throws, persistence faults, publication errors, loader refusals while serving a page, and live drain failures. A failure raised by the native engine arrives as an `EngineError` with a stable `code` and a readable `message`; branch on the code, never on the message. See [Errors](api.md#errors) for the codes that map to HTTP statuses.
+`onError?: (error) => void` on `BackendOptions` is called for server-side failures that clients only see as `{ code: "server" }` over HTTP: `authenticate` throws, persistence faults, settlement errors, loader refusals while serving a page, and live drain failures. A failure raised by the native engine arrives as an `EngineError` with a stable `code` and a readable `message`; branch on the code, never on the message. See [Errors](api.md#errors) for the codes that map to HTTP statuses.
 
 ## Background jobs
 
-Outside a Handler there is no readback and no receipt, so a change must be published to reach clients. Use `backend.transaction`; its body gets the same `changes` and `publish` as a Mutation Handler, the framework stamps and publishes what it collected inside the same transaction as your writes, and wakes live subscribers after commit:
+Outside a Handler there is no readback and no receipt, so a change reaches clients only through Channels. Use `backend.transaction`; its body gets the same `touch` and `channel` as a Mutation Handler, the framework stamps, enrolls and delivers what it collected inside the same transaction as your writes, and wakes live subscribers after commit:
 
 ```ts
-await backend.transaction(async ({ tx, changes, publish }) => {
+await backend.transaction(async ({ tx, channel, touch }) => {
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From a job' } });
-  changes.add(Entry({ id: 'entry-1' }));
-  publish({ channel: 'book:demo' });
+  touch.entry({ id: 'entry-1' });
+  channel('book:demo').entry.add({ id: 'entry-1' });
 });
 ```
 
@@ -72,9 +72,9 @@ A successful Handler returns the explicit outputs declared by its Mutation or Qu
 
 ## Loaders and Pull
 
-Loaders return one state object or null for every identity, in precisely the supplied order. A missing or unauthorized row is null. One pull covers every channel the client follows and delivers a record published to several of them once. Each channel scans at most 50 compacted invalidations, and the pull materializes their current state with each record's current stamp.
+Loaders return one state object or null for every identity, in precisely the supplied order. A missing or unauthorized row is null. One pull covers every channel the client follows and delivers a record that belongs to several of them once. Each channel scans at most 50 compacted invalidations of its current members, and the pull materializes their current state with each record's current stamp.
 
-A record that cannot be read fails alone ([#95](https://github.com/zanminwang/axton/issues/95)). When a Loader throws or refuses a batch, AXTON retries each identity on its own. The record that still fails is delivered as an error change carrying `loader.failed` or the refusal code, and the rest of the page is served. The failure is reported to `onError`, which defaults to `console.error`. The client keeps its copy of that record and reports it. The record is corrected the next time you publish it. A Loader that returns the wrong number of entries is retried the same way, and a row that does not match the model type fails only its record with `loader.invalid`.
+A record that cannot be read fails alone ([#95](https://github.com/zanminwang/axton/issues/95)). When a Loader throws or refuses a batch, AXTON retries each identity on its own. The record that still fails is delivered as an error change carrying `loader.failed` or the refusal code, and the rest of the page is served. The failure is reported to `onError`, which defaults to `console.error`. The client keeps its copy of that record and reports it. The record is corrected the next time it is delivered, for example when you touch it. A Loader that returns the wrong number of entries is retried the same way, and a row that does not match the model type fails only its record with `loader.invalid`.
 
 Run `integration/persistence/server/run.sh` for the disposable PostgreSQL/Prisma integration suite. Its database is created, used, and destroyed by the runner.
 

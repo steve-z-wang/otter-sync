@@ -6,6 +6,7 @@ pub mod host;
 pub mod live;
 mod loading;
 mod readback;
+mod settlement;
 pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
 use axton_core::{
     CursorRange, PullPage, PullRequest, PushReceipt, PushRequest, RecordKey, Rejection, Schema,
@@ -13,9 +14,10 @@ use axton_core::{
 };
 pub use error::{Error, code};
 use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
-use readback::{Changes, Outcome};
+use readback::Outcome;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use settlement::Changes;
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -471,11 +473,13 @@ async fn head(host: &impl Host, channel: &str) -> Result<u64> {
     Ok(cursor)
 }
 /// Process one push: every mutation runs in its own savepoint, its changed
-/// records are stamped and read back by the loaders in that savepoint, and
-/// the receipt carries the final authority of every record a successful
-/// mutation changed. An unsupported mutation version, a handler failure, a
-/// loader failure and an undeclared or unretained model read contract each
-/// reject only the mutation they belong to; the rest of the batch stands.
+/// records are settled (stamped and distributed to their Channels) and its
+/// uploaded targets read back by the loaders in that savepoint, and the
+/// receipt carries the final authority of every record a successful
+/// mutation's operations targeted. An unsupported mutation version, a
+/// handler failure, a loader failure and an undeclared or unretained model
+/// read contract each reject only the mutation they belong to; the rest of
+/// the batch stands.
 /// The receipt is stored before the outer transaction commits, so a retry
 /// answers from storage without running a handler.
 pub async fn process_push(
@@ -570,17 +574,29 @@ pub async fn process_push(
             Handled::Failed { .. } => Outcome::Refused(code::HANDLER_FAILED.into()),
             Handled::Settled {
                 changes,
-                publications,
+                memberships,
             } => {
-                let mut set = Changes::new();
+                // The uploaded targets are this mutation's caller authority;
+                // the handler's extra changes are distributed, not read back.
+                let mut input_targets = Changes::new();
                 for key in targets {
-                    readback::insert(&mut set, key)?;
+                    settlement::insert(&mut input_targets, key)?;
                 }
+                let mut changed = input_targets.clone();
                 for record in &changes {
-                    readback::insert(&mut set, readback::resolve(config, record)?)?;
+                    settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
                 }
-                readback::read_back(config, &request.models, owner, &set, &publications, host)
-                    .await?
+                let stamps =
+                    settlement::settle_changes(config, &changed, &memberships, host).await?;
+                readback::read_back(
+                    config,
+                    &request.models,
+                    owner,
+                    &input_targets,
+                    &stamps,
+                    host,
+                )
+                .await?
             }
         };
         match outcome {
@@ -687,6 +703,12 @@ async fn process_delta(
             previous = row.cursor;
             loading::insert(&mut records, key, row.stamp)?;
         }
+        // The scan answers only rows whose record is still a member of the
+        // Channel, filtered before the limit, so a removed position is a hole
+        // no page returns. A short scan means no eligible row remains up to the
+        // head, and the range ends there even when every position in it was a
+        // hole: an empty page that still advances. A full scan ends at its last
+        // eligible cursor, which is past `from`.
         let to = if rows.len() == limits::PULL_CHANGES {
             previous
         } else {
@@ -713,10 +735,11 @@ async fn process_delta(
     String::from_utf8(page.encode().map_err(internal)?).map_err(internal)
 }
 /// Settle a business change made outside a handler, in the application's
-/// transaction: the same `{changes, publications}` shape a handler answers
-/// with. Every changed record gets its next stamp and the publications go
-/// out at those stamps; nothing is read back, since no client is waiting for
-/// a receipt. Answers `[{model, identity, stamp}]` for the changed records.
+/// transaction: the same `{changes, memberships}` shape a handler answers
+/// with, through the same settlement. Every changed record gets its next
+/// stamp and reaches its Channels at that stamp; nothing is read back, since
+/// no client is waiting for a receipt. Answers `[{model, identity, stamp}]`
+/// for the changed records.
 pub async fn settle_external(
     config: &Config,
     settlement: &Value,
@@ -726,22 +749,22 @@ pub async fn settle_external(
         .map_err(|e| Error::new(code::PUBLISH_INVALID, e.to_string()))?;
     let Handled::Settled {
         changes,
-        publications,
+        memberships,
     } = settled
     else {
         return Err(Error::new(
             code::PUBLISH_INVALID,
-            "an external settlement carries changes and publications",
+            "an external settlement carries changes and memberships",
         ));
     };
-    let mut set = Changes::new();
+    let mut changed = Changes::new();
     for record in &changes {
-        readback::insert(&mut set, readback::resolve(config, record)?)?;
+        settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
     }
-    let stamps = readback::allocate_stamps(&set, host).await?;
-    readback::publish_intents(config, &set, &stamps, &publications, host).await?;
+    let stamps = settlement::settle_changes(config, &changed, &memberships, host).await?;
     Ok(Value::Array(
-        set.iter()
+        changed
+            .iter()
             .map(|(encoded, key)| {
                 json!({"model": key.model, "identity": key.identity, "stamp": stamps[encoded]})
             })

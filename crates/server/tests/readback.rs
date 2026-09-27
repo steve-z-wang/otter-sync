@@ -1,12 +1,13 @@
-//! Authoritative readback in a push: each successful mutation stamps the
-//! records it changed, reads them back through the loaders at the declared
-//! version inside its own savepoint, publishes at those stamps, and the
-//! receipt carries the last successful authority per record.
+//! Authoritative readback in a push: each successful mutation settles the
+//! records it changed (one stamp each, distributed to their Channels), reads
+//! its uploaded targets back through the loaders at the declared version
+//! inside its own savepoint, and the receipt carries the last successful
+//! authority per target record. Extra handler changes are settled, not read.
 use axton_core::{PushReceipt, RecordKey};
 use axton_server::{Config, Host, HostResult, code, host::HostRequest};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     pin::Pin,
     sync::Mutex,
@@ -94,19 +95,25 @@ fn key(model: &str, id: &str) -> RecordKey {
 fn record(model: &str, id: &str) -> Value {
     json!({"model":model,"identity":{"id":id}})
 }
-fn settled(changes: Value, publications: Value) -> Value {
-    json!({"changes":changes,"publications":publications})
+fn settled(changes: Value, memberships: Value) -> Value {
+    json!({"changes":changes,"memberships":memberships})
+}
+fn add(channel: &str, model: &str, id: &str) -> Value {
+    json!({"channel":channel,"model":model,"identity":{"id":id},"present":true})
 }
 fn decode(text: &str) -> PushReceipt {
     PushReceipt::decode(text.as_bytes()).unwrap()
 }
 
-/// Everything a savepoint isolates: business rows, record stamps, channel heads.
+/// Everything a savepoint isolates: business rows, record stamps, channel
+/// heads and persistent memberships.
 #[derive(Default, Clone)]
 struct Store {
     business: BTreeMap<String, Value>,
     stamps: BTreeMap<String, u64>,
     heads: BTreeMap<String, u64>,
+    /// `(stamp key, channel)`.
+    members: BTreeSet<(String, String)>,
 }
 type Answer = HostResult<Value>;
 #[derive(Default)]
@@ -367,6 +374,47 @@ impl Scripted {
                 *head += 1;
                 json!({"cursor":*head,"stamp":stamp})
             }
+            HostRequest::LockRecord {
+                model,
+                identity_key,
+            } => json!(
+                s.store
+                    .stamps
+                    .get(&stamp_key(&model, &identity_key))
+                    .copied()
+            ),
+            HostRequest::Memberships {
+                model,
+                identity_key,
+            } => {
+                let record = stamp_key(&model, &identity_key);
+                json!(
+                    s.store
+                        .members
+                        .iter()
+                        .filter(|(member, _)| *member == record)
+                        .map(|(_, channel)| channel.clone())
+                        .collect::<Vec<_>>()
+                )
+            }
+            HostRequest::SetMembership {
+                channel,
+                model,
+                identity_key,
+                present,
+            } => {
+                let record = stamp_key(&model, &identity_key);
+                if present {
+                    if !s.store.stamps.contains_key(&record) {
+                        return Err(format!("{record} has no metadata to enroll"));
+                    }
+                    s.store.heads.entry(channel.clone()).or_insert(0);
+                    s.store.members.insert((record, channel));
+                } else {
+                    s.store.members.remove(&(record, channel));
+                }
+                Value::Null
+            }
         })
     }
 }
@@ -404,8 +452,8 @@ fn assert_publishes_carry_current_stamps(host: &Scripted) {
 }
 
 /// A success reads back each changed record once at its allocated stamp with
-/// the loader's normalized state, in the order stamp, load; no publication
-/// happens when the handler asked for none.
+/// the loader's normalized state, in the order stamp, membership, load; a
+/// record in no Channel is published nowhere.
 #[test]
 fn success_reads_back_each_changed_record_once_at_its_stamp() {
     let host = Scripted::new();
@@ -431,6 +479,7 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
             "savepoint(ordinal 1)",
             "handle(ordinal 1)",
             "advanceStamp",
+            "memberships",
             "load",
             "release(ordinal 1)",
             "saveReceipt"
@@ -441,7 +490,7 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
         version,
         identities,
         owner,
-    } = &host.log()[4]
+    } = &host.log()[5]
     else {
         panic!("not a load");
     };
@@ -489,11 +538,12 @@ fn a_later_mutation_on_the_same_record_replaces_the_earlier_result() {
     assert_eq!(host.count("advanceStamp"), 2);
 }
 
-/// Records the handler adds via `changes` are stamped and read back; a record
-/// named only by a publication gets `ensureStamp`, is published at that stamp
-/// and is absent from the receipt.
+/// Records the handler adds via `changes` are settled (stamped and
+/// distributed) but not read back: only the uploaded target is the caller's
+/// authority. A record the handler only enrolls gets `ensureStamp` and is
+/// published at that stamp, and is absent from the receipt.
 #[test]
-fn handler_changes_are_read_back_and_publication_only_records_are_not() {
+fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_their_stamp() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
     host.write(
@@ -506,7 +556,7 @@ fn handler_changes_are_read_back_and_publication_only_records_are_not() {
         1,
         settled(
             json!([record("Entry", "b")]),
-            json!([{"channel":"shared","records":[record("Entry","c")]}]),
+            json!([add("shared", "Entry", "c")]),
         ),
     );
     let receipt =
@@ -517,10 +567,12 @@ fn handler_changes_are_read_back_and_publication_only_records_are_not() {
             .iter()
             .map(|r| (r.identity["id"].as_str().unwrap(), r.stamp, r.state.clone()))
             .collect::<Vec<_>>(),
-        [
-            ("a", 1, json!({"text":"typed"})),
-            ("b", 1, json!({"text":"from handler"}))
-        ]
+        [("a", 1, json!({"text":"typed"}))]
+    );
+    assert_eq!(
+        host.stamp("Entry", "b"),
+        Some(1),
+        "b is settled all the same"
     );
     assert_eq!(
         host.labels(),
@@ -530,9 +582,13 @@ fn handler_changes_are_read_back_and_publication_only_records_are_not() {
             "handle(ordinal 1)",
             "advanceStamp",
             "advanceStamp",
-            "load",
             "ensureStamp",
+            "memberships",
+            "memberships",
+            "memberships",
+            "setMembership",
             "publish",
+            "load",
             "release(ordinal 1)",
             "saveReceipt"
         ]
@@ -545,13 +601,10 @@ fn handler_changes_are_read_back_and_publication_only_records_are_not() {
         matches!(&log[4], HostRequest::AdvanceStamp { identity_key, .. } if identity_key == r#"{"id":"b"}"#)
     );
     assert!(
-        matches!(&log[5], HostRequest::Load { identities, .. } if *identities == vec![json!({"id":"a"}), json!({"id":"b"})])
-    );
-    assert!(
-        matches!(&log[6], HostRequest::EnsureStamp { identity_key, .. } if identity_key == r#"{"id":"c"}"#)
+        matches!(&log[5], HostRequest::EnsureStamp { identity_key, .. } if identity_key == r#"{"id":"c"}"#)
     );
     assert_eq!(
-        log[7],
+        log[10],
         HostRequest::Publish {
             channel: "shared".into(),
             model: "Entry".into(),
@@ -560,13 +613,16 @@ fn handler_changes_are_read_back_and_publication_only_records_are_not() {
             stamp: 1,
         }
     );
+    assert!(
+        matches!(&log[11], HostRequest::Load { identities, .. } if *identities == vec![json!({"id":"a"})])
+    );
     assert_publishes_carry_current_stamps(&host);
 }
 
-/// A publication without `records` publishes exactly the final change set,
-/// including a record the handler added, each at its allocated stamp.
+/// A handler that enrolls its changed records publishes each at the stamp it
+/// was allocated; there is no implicit publication of the change set.
 #[test]
-fn default_publication_covers_the_final_change_set() {
+fn enrolled_changes_publish_at_their_allocated_stamps() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
     host.write(
@@ -577,7 +633,10 @@ fn default_publication_covers_the_final_change_set() {
     );
     host.settle(
         1,
-        settled(json!([record("Entry", "b")]), json!([{"channel":"shared"}])),
+        settled(
+            json!([record("Entry", "b")]),
+            json!([add("shared", "Entry", "a"), add("shared", "Entry", "b")]),
+        ),
     );
     // Record b has been stamped before: its next stamp is 4, not 1.
     host.with(|s| {
@@ -589,7 +648,7 @@ fn default_publication_covers_the_final_change_set() {
         decode(&process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap());
     assert_eq!(
         receipt.records.iter().map(|r| r.stamp).collect::<Vec<_>>(),
-        [1, 4]
+        [1]
     );
     let published: Vec<(String, u64)> = host
         .log()
@@ -615,25 +674,26 @@ fn default_publication_covers_the_final_change_set() {
         ]
     );
     assert_eq!(host.count("ensureStamp"), 0);
-    let labels = host.labels();
-    let load = labels.iter().position(|l| l == "load").unwrap();
-    let first_publish = labels.iter().position(|l| l == "publish").unwrap();
-    assert!(
-        load < first_publish,
-        "loads precede publications: {labels:?}"
-    );
     assert_publishes_carry_current_stamps(&host);
+    // A later change of the enrolled record reaches the Channel again without
+    // any declaration.
+    host.settle(1, settled(json!([]), json!([])));
+    let receipt =
+        decode(&process(&config(), &push(2, vec![edit(1, "a", "again")]), &host).unwrap());
+    assert_eq!(receipt.records[0].stamp, 2);
+    assert_eq!(host.count("publish"), 3);
+    assert!(matches!(
+        host.log().iter().rfind(|r| matches!(r, HostRequest::Publish { .. })),
+        Some(HostRequest::Publish { identity_key, stamp: 2, .. }) if identity_key == r#"{"id":"a"}"#
+    ));
 }
 
-/// An explicit empty `records: []` publishes nothing.
+/// A change with no membership publishes nothing and creates no Channel.
 #[test]
-fn explicit_empty_records_publish_nothing() {
+fn a_change_without_membership_publishes_nothing() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(
-        1,
-        settled(json!([]), json!([{"channel":"shared","records":[]}])),
-    );
+    host.settle(1, settled(json!([]), json!([])));
     let receipt =
         decode(&process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap());
     assert_eq!(receipt.records.len(), 1);
@@ -648,7 +708,7 @@ fn explicit_empty_records_publish_nothing() {
 fn a_publish_that_echoes_another_stamp_is_host_invalid() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(1, settled(json!([]), json!([{"channel":"shared"}])));
+    host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
     host.answer_publish(Ok(json!({"cursor":1,"stamp":99})));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST_INVALID, "{err}");
@@ -707,7 +767,7 @@ fn records_are_loaded_at_the_declared_version() {
     );
     assert_eq!(receipt.records[0].state, json!({"text":"typed"}));
     assert!(matches!(
-        &host.log()[4],
+        &host.log()[5],
         HostRequest::Load { version: 1, .. }
     ));
     let receipt = decode(
@@ -734,10 +794,13 @@ fn records_are_loaded_at_the_declared_version() {
     assert_eq!(versions, [1, 2]);
 }
 
-/// A changed model the client did not declare rejects that mutation with
-/// `model_version_unsupported` and rolls it back; the rest of the batch stands.
+/// A handler's extra change of a model the client did not declare is settled
+/// without caller authority: the mutation succeeds and the Note is never
+/// loaded for this caller. An uploaded target whose model the client did not
+/// declare still rejects its mutation with `model_version_unsupported` and
+/// rolls it back; the rest of the batch stands.
 #[test]
-fn a_changed_model_the_client_did_not_declare_rejects_that_mutation() {
+fn an_undeclared_extra_change_is_settled_but_an_undeclared_target_rejects_its_mutation() {
     let config = config_with_note(&["Entry", "Note"]);
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
@@ -748,8 +811,29 @@ fn a_changed_model_the_client_did_not_declare_rejects_that_mutation() {
         "c",
         1,
         json!({"Entry":1}),
-        vec![edit(1, "a", "lost"), edit(2, "b", "kept")],
+        vec![edit(1, "a", "typed"), edit(2, "b", "kept")],
     );
+    let receipt = decode(&process(&config, &body, &host).unwrap());
+    assert!(receipt.rejections.is_empty());
+    assert_eq!(
+        receipt
+            .records
+            .iter()
+            .map(|r| (r.model.as_str(), r.identity["id"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        [("Entry", "a"), ("Entry", "b")]
+    );
+    assert_eq!(host.stamp("Note", "n"), Some(1));
+    assert_eq!(host.business("Note", "n"), Some(json!({"id":"n"})));
+    assert!(
+        host.log()
+            .iter()
+            .all(|r| !matches!(r, HostRequest::Load { model, .. } if model == "Note"))
+    );
+    // Declaring only Note, the Entry target cannot be served.
+    let host = Scripted::new();
+    host.seed("Entry", "a", json!({"id":"a","text":"old"}));
+    let body = push_declaring("c", 1, json!({"Note":1}), vec![edit(1, "a", "lost")]);
     let receipt = decode(&process(&config, &body, &host).unwrap());
     assert_eq!(
         receipt.rejections,
@@ -758,34 +842,13 @@ fn a_changed_model_the_client_did_not_declare_rejects_that_mutation() {
             code: code::MODEL_VERSION_UNSUPPORTED.into()
         }]
     );
-    assert_eq!(receipt.records.len(), 1);
-    assert_eq!(receipt.records[0].identity, json!({"id":"b"}));
-    assert_eq!(receipt.records[0].state, json!({"text":"kept"}));
-    assert_eq!(
-        host.labels(),
-        [
-            "claim",
-            "savepoint(ordinal 1)",
-            "handle(ordinal 1)",
-            "rollback(ordinal 1)",
-            "release(ordinal 1)",
-            "savepoint(ordinal 2)",
-            "handle(ordinal 2)",
-            "advanceStamp",
-            "load",
-            "release(ordinal 2)",
-            "saveReceipt"
-        ]
-    );
+    assert!(receipt.records.is_empty());
+    assert_eq!(host.count("load"), 0);
     assert_eq!(
         host.business("Entry", "a"),
         Some(json!({"id":"a","text":"old"}))
     );
-    assert_eq!(
-        host.business("Note", "n"),
-        None,
-        "the handler's write was rolled back"
-    );
+    assert_eq!(host.stamp("Entry", "a"), None, "the stamp rolled back");
 }
 
 /// A loader refusal rejects that mutation with its code and rolls it back; an
@@ -811,11 +874,12 @@ fn a_loader_refusal_rejects_the_mutation_and_keeps_earlier_results() {
     assert_eq!(receipt.records[0].state, json!({"text":"kept"}));
     let labels = host.labels();
     assert_eq!(
-        &labels[6..],
+        &labels[7..],
         [
             "savepoint(ordinal 2)",
             "handle(ordinal 2)",
             "advanceStamp",
+            "memberships",
             "load",
             "rollback(ordinal 2)",
             "release(ordinal 2)",
@@ -897,7 +961,7 @@ fn a_later_rejection_on_the_same_record_keeps_the_first_success() {
     assert_eq!(receipt.records[0].stamp, 1);
     assert_eq!(receipt.records[0].state, json!({"text":"kept"}));
     assert_eq!(
-        &host.labels()[6..],
+        &host.labels()[7..],
         [
             "savepoint(ordinal 2)",
             "handle(ordinal 2)",
@@ -919,7 +983,7 @@ fn a_later_rejection_on_the_same_record_keeps_the_first_success() {
 fn a_failed_publication_fails_the_push() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(1, settled(json!([]), json!([{"channel":"shared"}])));
+    host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
     host.answer_publish(Err("channel down".into()));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST);
@@ -1106,8 +1170,8 @@ fn an_unretained_declaration_rejects_only_the_touching_mutation() {
     assert_eq!(host.count("claim"), 1, "the request was claimed");
 }
 
-/// Handler `changes` naming a model without a registered loader is a
-/// `loader.unregistered` error that aborts the push.
+/// Handler `changes` or a membership naming a model without a registered
+/// loader is a `loader.unregistered` error that aborts the push.
 #[test]
 fn handler_changes_naming_an_unregistered_model_are_an_error() {
     let config = config_with_note(&["Entry"]);
@@ -1124,16 +1188,10 @@ fn handler_changes_naming_an_unregistered_model_are_an_error() {
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
     assert_eq!(host.count("advanceStamp"), 0);
     assert_eq!(host.count("saveReceipt"), 0);
-    // The same for a publication member of an unregistered model.
+    // The same for a membership of an unregistered model.
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(
-        1,
-        settled(
-            json!([]),
-            json!([{"channel":"shared","records":[record("Note","n")]}]),
-        ),
-    );
+    host.settle(1, settled(json!([]), json!([add("shared", "Note", "n")])));
     let err = process(&config, &body, &host).unwrap_err();
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
 }

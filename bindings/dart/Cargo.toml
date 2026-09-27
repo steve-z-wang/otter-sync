@@ -7,4 +7,3 @@ publish.workspace = true
 crate-type = ["cdylib", "staticlib"]
 [dependencies]
 axton-binding = { path = "../common" }
-serde_json.workspace = true

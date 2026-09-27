@@ -28,7 +28,7 @@ Component, integration and end-to-end describe the scope of a test. Simulation d
   - **[Schema](testing/components/schema.md)** — Valid descriptors, types and relationships.
   - **[Protocol](testing/components/protocol.md)** — Shared messages, encoding and validation.
   - **[Compiler](testing/components/compiler.md)** — Parsing, validation and generated output.
-  - **[Client](testing/components/client.md)** — Local operations, dependencies, batches, page application and receipt completion.
+  - **[Client](testing/components/client.md)** — Local operations, dependencies, batches, page application, receipt completion and the runtime's task scheduling.
   - **[Server](testing/components/server.md)** — Request handling, handler/loader calls and publication.
 - **[Simulation](testing/simulation/README.md)** — Verify overall Rust sync behavior across clients and a server.
   - **[Scenarios](testing/simulation/scenarios.md)** — Named examples of the behavior promised by guarantees.
@@ -53,7 +53,7 @@ Current test locations. Some suites support more than one responsibility.
 | Component / Schema | [core contracts](../../crates/core/tests/contracts.rs), [compiler/tests](../../crates/compiler/tests) |
 | Component / Protocol | [core contracts](../../crates/core/tests/contracts.rs) |
 | Component / Compiler | [compiler/tests](../../crates/compiler/tests) |
-| Component / Client | Engine scenarios and live session transitions in [sqlite/tests](../../crates/sqlite/tests); scheduling tests in [client/connection.rs](../../crates/client/src/connection.rs) |
+| Component / Client | Engine scenarios and live session transitions in [sqlite/tests](../../crates/sqlite/tests), the runtime in [runtime.rs](../../crates/sqlite/tests/runtime.rs) and [runtime_lanes.rs](../../crates/sqlite/tests/runtime_lanes.rs); scheduling tests in [client/connection.rs](../../crates/client/src/connection.rs) |
 | Component / Server | [server/tests](../../crates/server/tests) (`readback.rs` for the push readback, `host_contract.rs` for the twelve host operations, `stamp.rs` for stamps and pages) |
 | Simulation / Scenarios | [sim/tests](../../crates/sim/tests) |
 | Simulation / Invariants | Checks in [sim/src/invariants.rs](../../crates/sim/src/invariants.rs); runner in [sim/tests/invariants.rs](../../crates/sim/tests/invariants.rs) |

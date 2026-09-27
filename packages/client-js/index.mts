@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { createClient } from "./runtime.mts";
+import { createClient, type NativeCarrier } from "./runtime.mts";
 import { Transaction } from "./transaction.mts";
 import { createServerConnection } from "./live.mts";
 export { Transaction, type QuerySpec } from "./transaction.mts";
@@ -37,8 +37,6 @@ export type {
 } from "./runtime.mts";
 const native = createRequire(import.meta.url)(
   "../../bindings/node/axton-node.node",
-) as {
-  clientCall(request: string): Promise<string>;
-};
+) as NativeCarrier;
 export const Client = createClient(native, Transaction, createServerConnection);
 export type Client = Awaited<ReturnType<typeof Client.open>>;

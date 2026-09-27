@@ -28,6 +28,23 @@ impl ConnectionDriver {
     pub fn stop(&mut self) {
         *self = Self::default();
     }
+    /// The work the lane was scheduling is gone - the replica under it was
+    /// replaced - but the application's intent is not: a running lane stays
+    /// running with a sync due at once, a paused one stays paused, and a
+    /// stopped one stays stopped. Nothing is in flight and no failure is
+    /// counted any more, since the attempts belonged to what was replaced.
+    pub fn restart(&mut self) {
+        *self = Self {
+            running: self.running,
+            paused: self.paused,
+            dirty: self.running,
+            ..Default::default()
+        };
+    }
+    /// Whether the lane was started and not stopped since, paused or not.
+    pub fn running(&self) -> bool {
+        self.running
+    }
     pub fn pause(&mut self) {
         self.paused = true;
     }
@@ -45,6 +62,10 @@ impl ConnectionDriver {
     /// - is scheduled only while this holds.
     pub fn active(&self) -> bool {
         self.running && !self.paused
+    }
+    /// Whether a started lane is paused.
+    pub fn paused(&self) -> bool {
+        self.running && self.paused
     }
     /// How long to wait before the attempt after `attempt` failed ones: 250 ms
     /// doubling per attempt, capped at 30 s, with ±20 % jitter from host
@@ -103,6 +124,31 @@ mod tests {
         d.stop();
         d.complete(false, 101, 0);
         assert_eq!(d.next(1000), ConnectionAction::Idle);
+    }
+    #[test]
+    fn restart_keeps_the_intent_and_forgets_the_attempt_in_flight() {
+        let mut d = ConnectionDriver::default();
+        d.start(0);
+        assert_eq!(d.next(0), ConnectionAction::Sync);
+        d.complete(false, 0, 0);
+        d.restart();
+        assert!(d.running());
+        assert_eq!(
+            d.next(0),
+            ConnectionAction::Sync,
+            "due at once: neither the attempt in flight nor its backoff survives"
+        );
+        d.restart();
+        assert_eq!(d.next(0), ConnectionAction::Sync, "nothing is in flight");
+        d.pause();
+        d.restart();
+        assert_eq!(d.next(0), ConnectionAction::Idle, "still paused");
+        d.resume(5);
+        assert_eq!(d.next(5), ConnectionAction::Sync);
+        d.stop();
+        d.restart();
+        assert!(!d.running());
+        assert_eq!(d.next(5), ConnectionAction::Idle, "still stopped");
     }
     #[test]
     fn retry_backoff_is_bounded_and_wake_does_not_busy_loop() {

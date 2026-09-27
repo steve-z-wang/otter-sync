@@ -100,6 +100,7 @@ export function createServerConnection(
             );
           socket.onmessage = (event) => {
             if (ended) return;
+            // The frame bound Node's `ws` enforces with `maxPayload`.
             if (
               typeof event.data !== "string" ||
               event.data.length > 8 * 1024 * 1024

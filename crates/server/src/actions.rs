@@ -1,7 +1,8 @@
 //! Shared transactional Action executor. A stored call response is independent
 //! of the batch receipt, so replay retains its own result and authority.
 use crate::host::{Acknowledged, Claimed, ClaimedCall, HandledAction, HostExt, HostRequest};
-use crate::readback::{self, Changes, Outcome};
+use crate::readback::{self, Outcome};
+use crate::settlement::{self, Changes};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -193,12 +194,14 @@ async fn execute_fresh(
         .validate(action)
         .map_err(|_| Error::code("action.invalid"))?;
     let store = call.store.clone().canonical();
-    let mut changes = Changes::new();
+    // Input targets are mandatory caller authority: each is reconciled
+    // whatever the outputs, `store` policy or Channels say.
+    let mut input_targets = Changes::new();
     for input in &action.inputs {
         if let ActionInputDescriptor::Model { name, model, .. } = input {
             for identity in input_identities(&config.schema, model, &args[name], input)? {
-                readback::insert(
-                    &mut changes,
+                settlement::insert(
+                    &mut input_targets,
                     config
                         .schema
                         .record_key(model, &identity)
@@ -207,7 +210,7 @@ async fn execute_fresh(
             }
         }
     }
-    for key in changes.values() {
+    for key in input_targets.values() {
         if !models.contains_key(&key.model)
             || config.contract(&key.model, models[&key.model]).is_none()
         {
@@ -224,26 +227,30 @@ async fn execute_fresh(
             ordinal,
         })
         .await?;
-    let (outputs, extra, publications) = match settled {
+    let (outputs, extra, memberships) = match settled {
         HandledAction::Rejected { rejection } => return Err(Error::code(rejection)),
         HandledAction::Failed { .. } => return Err(Error::code(code::HANDLER_FAILED)),
         HandledAction::Settled {
             outputs,
             changes,
-            publications,
-        } => (outputs, changes, publications),
+            memberships,
+        } => (outputs, changes, memberships),
     };
     // A Query's contract has no business effects. A settlement that reports
     // any is refused before the framework stamps, reads back or publishes it,
     // whatever host produced it; the caller rolls back its savepoint.
-    if action.kind == CallKind::Query && (!extra.is_empty() || !publications.is_empty()) {
+    if action.kind == CallKind::Query && (!extra.is_empty() || !memberships.is_empty()) {
         return Err(Error::code(code::QUERY_EFFECTS_FORBIDDEN));
     }
+    // Changed records are the input targets plus extra touches. An extra
+    // touch is distributed but never becomes caller authority by itself.
+    let mut changed = input_targets.clone();
     for record in &extra {
-        readback::insert(&mut changes, readback::resolve(config, record)?)?;
+        settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
     }
+    let stamps = settlement::settle_changes(config, &changed, &memberships, host).await?;
     let mut records =
-        match readback::read_back(config, models, owner, &changes, &publications, host).await? {
+        match readback::read_back(config, models, owner, &input_targets, &stamps, host).await? {
             Outcome::Refused(code) => return Err(Error::code(code)),
             Outcome::Records(records) => records,
         };
@@ -255,6 +262,7 @@ async fn execute_fresh(
         &outputs,
         crate::action_results::ResultReadback {
             records: &records,
+            stamps: &stamps,
             models,
             store: &store,
         },

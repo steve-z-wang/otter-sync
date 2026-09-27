@@ -32,6 +32,7 @@ fn config() -> Config {
 }
 /// `scan` returns the given rows; `publish` returns the given value. Both stay
 /// raw `Value`s: these tests feed the engine answers the contract refuses.
+/// Records start in no Channel and every membership write is acknowledged.
 struct Fixed {
     scan: Value,
     publish: Value,
@@ -79,6 +80,9 @@ impl Host for Fixed {
                     self.published.lock().unwrap().push(request.clone());
                     self.publish.clone()
                 }
+                HostRequest::LockRecord { .. } => json!(9),
+                HostRequest::Memberships { .. } => json!([]),
+                HostRequest::SetMembership { .. } => Value::Null,
                 other => return Err(format!("unsupported {}", other.label())),
             })
         })
@@ -251,9 +255,10 @@ fn pull_rejects_rows_without_a_positive_stamp() {
 
 #[test]
 fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_that_stamp() {
+    let enroll = |channel: &str| json!({"channel":channel,"model":"Entry","identity":{"id":"e"},"present":true});
     let settlement = json!({
         "changes":[{"model":"Entry","identity":{"id":"e"}}],
-        "publications":[{"channel":"a"},{"channel":"b"}]
+        "memberships":[enroll("a"),enroll("b")]
     });
     let ok = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
     let answer = run(axton_server::settle_external(&config(), &settlement, &ok)).unwrap();
@@ -271,15 +276,13 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         assert_eq!(*stamp, 9, "both channels carry the one allocated stamp");
     }
     drop(published);
-    // A publication-only record keeps its stamp; `ensureStamp` initializes it.
+    // An enrolled but unchanged record keeps its stamp; `ensureStamp`
+    // initializes it.
     let ensure = Fixed::new(json!([]), json!({"cursor":4,"stamp":9}));
-    let publication_only = json!({
-        "changes":[],
-        "publications":[{"channel":"a","records":[{"model":"Entry","identity":{"id":"e"}}]}]
-    });
+    let membership_only = json!({"changes":[],"memberships":[enroll("a")]});
     run(axton_server::settle_external(
         &config(),
-        &publication_only,
+        &membership_only,
         &ensure,
     ))
     .unwrap();
@@ -300,25 +303,30 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         let err = run(axton_server::settle_external(&config(), &settlement, &host)).unwrap_err();
         assert_eq!(err.code, axton_server::code::HOST_INVALID, "{bad}: {err}");
     }
-    // A publication naming no channel is refused: a blank name is no more a
+    // A membership naming no channel is refused: a blank name is no more a
     // channel than an empty one, and nothing is published for it.
     for blank in ["", " ", "\t\n"] {
         let host = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
         let err = run(axton_server::settle_external(
             &config(),
             &json!({"changes":[{"model":"Entry","identity":{"id":"e"}}],
-                    "publications":[{"channel":blank}]}),
+                    "memberships":[{"channel":blank,"model":"Entry","identity":{"id":"e"},"present":true}]}),
             &host,
         ))
         .unwrap_err();
         assert_eq!(err.code, axton_server::code::PUBLISH_INVALID, "{blank:?}");
         assert!(host.published.lock().unwrap().is_empty(), "{blank:?}");
     }
-    // A rejection or a malformed settlement is refused before any host call.
+    // A rejection, a malformed settlement or the retired `publications`
+    // shape is refused before any host call: there is no implicit publication.
     for bad in [
         json!({"rejection":"x"}),
         json!({"changes":[]}),
         json!({"channels":["a"]}),
+        json!({"changes":[],"publications":[{"channel":"a"}]}),
+        json!({"changes":[],"memberships":[],"publications":[]}),
+        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"}}]}),
+        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":"yes"}]}),
     ] {
         let host = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
         let err = run(axton_server::settle_external(&config(), &bad, &host)).unwrap_err();

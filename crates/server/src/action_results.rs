@@ -2,8 +2,9 @@
 //! returned as this invocation's Loader snapshot at its retained result read
 //! version. Additional authority is the positive union of identities chosen
 //! by the outputs the invocation's `store` policy enables; authority required
-//! by mutation inputs and handler changes arrives already read back and is
-//! never subtracted.
+//! by mutation inputs arrives already read back and is never subtracted. An
+//! extra changed record is caller authority only when an enabled output
+//! selects it, and then at the stamp settlement already allocated.
 use crate::actions::input_identities;
 use crate::host::{HostExt, HostRequest, Loaded, Stamped};
 use crate::{Config, Error, Host, Result, code, internal};
@@ -15,8 +16,10 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
 pub(crate) struct ResultReadback<'a> {
-    /// Required authority read back for mutation inputs and handler changes.
+    /// Required authority read back for mutation input targets.
     pub records: &'a [AuthorityRecord],
+    /// The stamp settlement allocated to each changed record, keyed canonically.
+    pub stamps: &'a BTreeMap<String, u64>,
     /// The client's declared authority read versions.
     pub models: &'a BTreeMap<String, u64>,
     /// The validated per-invocation storage policy.
@@ -114,6 +117,7 @@ pub(crate) async fn assemble_result(
     }
     let ResultReadback {
         records,
+        stamps,
         models,
         store,
     } = readback;
@@ -188,7 +192,10 @@ pub(crate) async fn assemble_result(
                 let encoded = key.encoded().map_err(internal)?;
                 let adds = enabled && changed.is_none() && !additional.contains_key(&encoded);
                 // Stamp evidence for new authority precedes reading its content.
-                let stamp = if adds {
+                // A record this settlement changed already has its one stamp.
+                let stamp = if adds && let Some(stamp) = stamps.get(&encoded) {
+                    Some(*stamp)
+                } else if adds {
                     let Stamped(stamp) = host
                         .call_typed(HostRequest::EnsureStamp {
                             model: model.into(),

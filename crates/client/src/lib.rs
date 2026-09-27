@@ -18,6 +18,7 @@ pub mod query;
 pub mod query_cache;
 pub mod queue;
 pub mod rows;
+pub mod runtime;
 pub mod schema_store;
 pub mod store;
 pub mod subscriptions;

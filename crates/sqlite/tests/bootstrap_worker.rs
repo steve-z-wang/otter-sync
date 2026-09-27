@@ -5,6 +5,7 @@
 //! issues the pages ([#151](https://github.com/zanminwang/axton/issues/151)).
 mod common;
 use axton_client::*;
+use axton_sqlite::SqliteStore;
 use common::*;
 use serde_json::json;
 
@@ -981,4 +982,339 @@ fn the_socket_backoff_never_paces_the_historical_pages() {
         (40, 100),
         "the deferred page went out on its own schedule, with the socket still waiting"
     );
+}
+
+/// Every ledger issue in these actions, as the host receives it: the channel
+/// and the bounded reason.
+fn issues(actions: &[DownlinkAction]) -> Vec<(&str, &str)> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            DownlinkAction::LedgerIssue { channel, message } => {
+                Some((channel.as_str(), message.as_str()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+/// Why a row whose Bootstrap progress is not a number cannot be decoded.
+const NOT_A_NUMBER: &str =
+    "the stored Bootstrap row cannot be decoded: expected an unsigned integer";
+/// Whether an issue gives a reason a row cannot be decoded, whatever the
+/// parser's own words for it.
+fn undecodable(issue: (&str, &str)) -> bool {
+    issue
+        .1
+        .starts_with("the stored Bootstrap row cannot be decoded: ")
+}
+/// The Bootstrap columns of `channel`'s row as stored, with the SQLite type of
+/// the progress and of the failure: what "kept exactly as stored" is checked
+/// against. The delivery cursor is left out, since ordinary delivery moves it.
+fn stored(raw: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
+    raw.query_committed(
+        "SELECT subscription_id, bootstrap_state, bootstrap_run, bootstrap_cursor, \
+         typeof(bootstrap_cursor), bootstrap_barrier, bootstrap_error, typeof(bootstrap_error) \
+         FROM axton_subscription WHERE channel=?",
+        &[json!(channel)],
+    )
+    .unwrap()
+    .rows
+    .into_iter()
+    .next()
+    .expect("the row is still there")
+}
+/// Write `set` into `channel`'s row behind the client's back, as a damaged or
+/// foreign writer would.
+fn tamper(raw: &mut SqliteStore, channel: &str, set: &str) {
+    let changed = raw
+        .execute(
+            &format!("UPDATE axton_subscription SET {set} WHERE channel=?"),
+            &[json!(channel)],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+/// Take `channel` through its whole interval `(0, 100]` without the lane: it is
+/// catching up to the barrier H = 130 while delivery stands where it was.
+fn finished(lane: &mut Lane, channel: &str) {
+    let state = lane.load(channel);
+    let page =
+        BootstrapPage::decode(historical(channel, 0, 100, 100, 130, vec![]).as_bytes()).unwrap();
+    lane.client
+        .apply_bootstrap_page(channel, state.subscription_id, state.run, 0, &page)
+        .unwrap();
+    assert_eq!(lane.load(channel).state, BootstrapPhase::CatchingUp);
+}
+
+/// One active row that cannot be decoded is reported to the application once,
+/// by channel and reason, and the healthy load beside it still gets its page.
+/// Nothing that leaves the defect as it was reports it again: more pumps, more
+/// wakes, a page that advances the damaged row's own valid delivery cursor.
+/// With no healthy work left the schedule goes quiet instead of spinning. A
+/// changed defect is reported again, and so is the same defect after a repair
+/// or a removal cleared it ([#163](https://github.com/zanminwang/axton/issues/163)).
+#[test]
+fn an_undecodable_row_is_reported_once_while_a_healthy_load_proceeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+    lane.saved("bad", 100);
+    lane.saved("good", 100);
+    lane.intend("bad");
+    lane.intend("good");
+    tamper(&mut raw, "bad", "bootstrap_cursor='x'");
+    let damaged = stored(&mut raw, "bad");
+
+    let started = lane.send(DownlinkEvent::Start);
+    assert_eq!(issues(&started), vec![("bad", NOT_A_NUMBER)], "{started:?}");
+    // What the host receives over the binding: the channel and the reason only.
+    let issue = started
+        .iter()
+        .find(|action| matches!(action, DownlinkAction::LedgerIssue { .. }))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(issue).unwrap(),
+        json!({"type": "ledgerIssue", "channel": "bad", "message": NOT_A_NUMBER})
+    );
+    let (id, request) = only(&started);
+    assert_eq!(request.channel, "good", "the healthy load still asks");
+    let epoch = session(&started).expect("the session opened");
+    let acknowledged = lane.message(epoch, ack(&[("bad", 100), ("good", 100)]));
+    assert_eq!(issues(&acknowledged), vec![]);
+
+    // The healthy interval finishes; the pump after it looks for more work,
+    // finds only the damaged row, and goes quiet: no issue, no zero sleep.
+    let answered = lane.answer(id, historical("good", 0, 100, 100, 130, vec![]));
+    assert_eq!(announced(&answered[0]).state, BootstrapPhase::CatchingUp);
+    assert_eq!(issues(&answered), vec![], "{answered:?}");
+    assert!(
+        !answered.contains(&DownlinkAction::Wait { millis: 0 }),
+        "{answered:?}"
+    );
+    assert_eq!(lane.pump(), vec![]);
+
+    // Ordinary delivery moves the damaged row's valid cursor: the same defect.
+    let delivered = lane.frame(epoch, &page("bad", 100, 120, Some("live")));
+    committed(&delivered, &["bad"]);
+    assert_eq!(issues(&delivered), vec![]);
+    for _ in 0..3 {
+        assert_eq!(
+            lane.send(DownlinkEvent::Wake),
+            vec![],
+            "a wake over the same defect reports nothing and does not spin"
+        );
+    }
+    assert_eq!(lane.cursor("bad"), Some(120));
+    assert_eq!(
+        stored(&mut raw, "bad"),
+        damaged,
+        "the row is kept as stored"
+    );
+    let bad = lane
+        .client
+        .subscription_state("bad")
+        .unwrap()
+        .expect("still subscribed")
+        .subscription_id;
+    lane.client
+        .bootstrap_state("bad", bad)
+        .expect_err("a named read of the damaged row still fails");
+
+    // A changed defect is a new one.
+    tamper(&mut raw, "bad", "bootstrap_cursor='y'");
+    let changed = lane.send(DownlinkEvent::Wake);
+    assert_eq!(issues(&changed), vec![("bad", NOT_A_NUMBER)], "{changed:?}");
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![]);
+
+    // Repaired - to a healthy run waiting for delivery, so it asks for nothing -
+    // then damaged again exactly as before: reported again.
+    tamper(
+        &mut raw,
+        "bad",
+        "bootstrap_state='catching_up', bootstrap_cursor=100, bootstrap_barrier=500",
+    );
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "a healthy row");
+    tamper(
+        &mut raw,
+        "bad",
+        "bootstrap_state='requested', bootstrap_cursor='y', bootstrap_barrier=NULL",
+    );
+    let again = lane.send(DownlinkEvent::Wake);
+    assert_eq!(issues(&again), vec![("bad", NOT_A_NUMBER)], "{again:?}");
+
+    // Removed, then back exactly as it was: reported again.
+    let row = raw
+        .query_committed("SELECT * FROM axton_subscription WHERE channel='bad'", &[])
+        .unwrap();
+    raw.execute("DELETE FROM axton_subscription WHERE channel='bad'", &[])
+        .unwrap();
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "nothing to report");
+    let named = row.columns.join(", ");
+    let slots = vec!["?"; row.columns.len()].join(", ");
+    raw.execute(
+        &format!("INSERT INTO axton_subscription ({named}) VALUES ({slots})"),
+        &row.rows[0],
+    )
+    .unwrap();
+    let restored = lane.send(DownlinkEvent::Wake);
+    assert_eq!(
+        issues(&restored),
+        vec![("bad", NOT_A_NUMBER)],
+        "{restored:?}"
+    );
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![]);
+}
+
+/// On reopen a reached healthy barrier settles beside a damaged active row that
+/// is itself past its barrier: the damaged row supplies no completion evidence
+/// and is reported once, and the healthy requested run still gets its page.
+#[test]
+fn a_reopen_settles_a_healthy_barrier_beside_an_undecodable_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+    for channel in ["bad", "good", "waiting"] {
+        lane.saved(channel, 100);
+        lane.intend(channel);
+    }
+    for channel in ["bad", "waiting"] {
+        finished(&mut lane, channel);
+        lane.client
+            .apply_page(page(channel, 100, 130, Some("caught up")))
+            .unwrap();
+    }
+    tamper(&mut raw, "bad", "bootstrap_error='{not json'");
+    let damaged = stored(&mut raw, "bad");
+
+    let started = lane.send(DownlinkEvent::Start);
+    let settled = statuses(&started);
+    assert_eq!(
+        settled
+            .iter()
+            .map(|s| (s.scope.as_str(), s.state))
+            .collect::<Vec<_>>(),
+        vec![("waiting", BootstrapPhase::Complete)],
+        "{started:?}"
+    );
+    let reported = issues(&started);
+    assert_eq!(reported.len(), 1, "{started:?}");
+    assert_eq!(reported[0].0, "bad");
+    assert!(undecodable(reported[0]), "{reported:?}");
+    let (_, request) = only(&started);
+    assert_eq!(request.channel, "good");
+    assert_eq!(
+        stored(&mut raw, "bad"),
+        damaged,
+        "the damaged row is neither completed, reset nor marked"
+    );
+    assert_eq!(lane.cursor("bad"), Some(130));
+}
+
+/// A barrier candidate that cannot be decoded is reported from the settlement
+/// of the delivery that reached it, once, while the healthy candidate that same
+/// delivery reached completes. The complete scan that follows sees the same
+/// defect and reports nothing more.
+#[test]
+fn an_undecodable_barrier_candidate_is_reported_once_beside_a_healthy_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+    for channel in ["bad", "good"] {
+        lane.saved(channel, 100);
+        lane.intend(channel);
+        finished(&mut lane, channel);
+    }
+    let started = lane.send(DownlinkEvent::Start);
+    assert_eq!(issues(&started), vec![]);
+    assert_eq!(requests(&started), vec![], "both runs wait for delivery");
+    let epoch = session(&started).expect("the session opened");
+    lane.message(epoch, ack(&[("bad", 100), ("good", 100)]));
+    tamper(&mut raw, "bad", "bootstrap_error='{not json'");
+    let damaged = stored(&mut raw, "bad");
+
+    let delivered = lane.frame(
+        epoch,
+        &multi(&[("bad", 100, 130, 130), ("good", 100, 130, 130)], vec![]),
+    );
+    committed(&delivered, &["bad", "good"]);
+    assert_eq!(
+        statuses(&delivered)
+            .iter()
+            .map(|s| (s.scope.as_str(), s.state, s.barrier))
+            .collect::<Vec<_>>(),
+        vec![("good", BootstrapPhase::Complete, Some(130))],
+        "{delivered:?}"
+    );
+    let reported = issues(&delivered);
+    assert_eq!(reported.len(), 1, "{delivered:?}");
+    assert_eq!(reported[0].0, "bad");
+    assert!(undecodable(reported[0]), "{reported:?}");
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "the same defect");
+    assert_eq!(
+        stored(&mut raw, "bad"),
+        damaged,
+        "delivery reached the damaged row's barrier, but it supplies no completion"
+    );
+    assert_eq!(lane.cursor("bad"), Some(130));
+}
+
+/// A pump that fails after it found a damaged row drops the issue with the rest
+/// of its actions, so the issue is still owed: the next pump reports it.
+#[test]
+fn an_issue_a_failed_pump_dropped_is_reported_by_the_next_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+    for channel in ["bad", "waiting"] {
+        lane.saved(channel, 100);
+        lane.intend(channel);
+        finished(&mut lane, channel);
+        lane.client
+            .apply_page(page(channel, 100, 130, Some("caught up")))
+            .unwrap();
+    }
+    tamper(&mut raw, "bad", "bootstrap_error='{not json'");
+    // The reopen finds the damaged row, then fails to settle the healthy one.
+    raw.execute_batch(
+        "CREATE TRIGGER held BEFORE UPDATE ON axton_subscription \
+         BEGIN SELECT RAISE(ABORT, 'held'); END;",
+    )
+    .unwrap();
+    lane.enqueue(DownlinkEvent::Start);
+    assert!(
+        lane.worker
+            .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
+            .is_err(),
+        "the settlement write fails"
+    );
+    raw.execute_batch("DROP TRIGGER held").unwrap();
+    let next = lane.drain();
+    let reported = issues(&next);
+    assert_eq!(reported.len(), 1, "{next:?}");
+    assert_eq!(reported[0].0, "bad");
+    assert!(undecodable(reported[0]), "{reported:?}");
+    assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "and only once");
+}
+
+/// The application hears about ledger issues through the error callback of one
+/// connection, so an unchanged defect is announced again to the next one: a
+/// stop and a later start on the same client report it once more, and only
+/// once.
+#[test]
+fn an_unchanged_issue_is_reported_again_after_a_stop_and_a_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+    lane.saved("bad", 100);
+    lane.intend("bad");
+    tamper(&mut raw, "bad", "bootstrap_cursor='x'");
+
+    let first = lane.send(DownlinkEvent::Start);
+    assert_eq!(issues(&first), vec![("bad", NOT_A_NUMBER)], "{first:?}");
+    lane.send(DownlinkEvent::Stop);
+
+    let second = lane.send(DownlinkEvent::Start);
+    assert_eq!(issues(&second), vec![("bad", NOT_A_NUMBER)], "{second:?}");
+    let woken = lane.send(DownlinkEvent::Wake);
+    assert_eq!(issues(&woken), vec![], "{woken:?}");
 }

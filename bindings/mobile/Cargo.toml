@@ -9,7 +9,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 axton-binding = { path = "../common" }
-serde_json.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile.workspace = true

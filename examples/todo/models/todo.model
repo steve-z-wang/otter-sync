@@ -14,4 +14,6 @@ model Todo {
 }
 
 mutation AddTodo(todo Todo.create)
-mutation SetTodoDone(todo Todo.update<done>)
+// Returns the committed Todo as its business result: an explicit output, read
+// through the Loader, independent of the input it happens to share a name with.
+mutation SetTodoDone(todo Todo.update<done>) { todo Todo }

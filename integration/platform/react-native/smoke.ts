@@ -41,16 +41,29 @@ export async function runSmoke(show: (message: string) => void) {
     check(config, "missing config");
     const { user, phase, url, expectedClientId } = config;
     show(`${user}: ${phase}`);
+    // The raw carrier, deliberately below the package's Client: a malformed
+    // open request and an envelope for a runtime that was never opened are
+    // refused synchronously, before any runtime or task exists.
     const native = requireNativeModule<{
-      clientCall(input: string): Promise<string>;
+      runtimeOpen(request: string): string;
+      runtimeSubmit(runtimeId: string, message: string): void;
     }>("AxtonNative");
-    let invalidRejected = false;
-    try {
-      await native.clientCall("{");
-    } catch {
-      invalidRejected = true;
-    }
-    check(invalidRejected, "malformed native input must reject");
+    const refuses = (attempt: () => unknown) => {
+      try {
+        attempt();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    check(
+      refuses(() => native.runtimeOpen("{")),
+      "malformed native input must reject",
+    );
+    check(
+      refuses(() => native.runtimeSubmit("0", '{"type":"close"}')),
+      "an unopened runtime must refuse admission",
+    );
     let pathRejected = false;
     try {
       await databasePath("../invalid.sqlite");
@@ -78,7 +91,9 @@ export async function runSmoke(show: (message: string) => void) {
     // load is what brings it ([#151](https://github.com/zanminwang/axton/issues/151));
     // it registers its work when the call is made and runs in the background.
     const subscription = await current.channels.subscribe("book:demo");
-    subscription.bootstrap().catch((error) => console.log("bootstrap:", String(error)));
+    subscription
+      .bootstrap()
+      .catch((error) => console.log("bootstrap:", String(error)));
     let watched = new Map<string, string>();
     current.models.entry.watch({}, (rows) => {
       watched = new Map(rows.map((row) => [row.id, row.text]));

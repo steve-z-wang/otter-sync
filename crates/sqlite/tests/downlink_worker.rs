@@ -447,6 +447,275 @@ fn scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head() {
     assert_eq!(lane.text(), "resumed");
 }
 
+/// The historical page answering a load of `scope` over `(0, until]`.
+fn loaded(scope: &str, until: u64, head: u64) -> String {
+    let page = BootstrapPage {
+        channel: scope.into(),
+        from: 0,
+        to: until,
+        until,
+        head,
+        records: vec![],
+    };
+    String::from_utf8(page.encode().unwrap()).unwrap()
+}
+/// The id and the kind of every request in these actions, in order.
+fn requested(actions: &[DownlinkAction]) -> Vec<(u64, bool)> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            DownlinkAction::Request {
+                request, bootstrap, ..
+            } => Some((*request, *bootstrap)),
+            _ => None,
+        })
+        .collect()
+}
+/// Replace the replica under the lane in place, as the binding's `rebuild`
+/// does, and reset the worker for it
+/// ([#162](https://github.com/zanminwang/axton/issues/162)).
+fn rebuild(lane: &mut Lane) {
+    lane.client.rebuild(true).unwrap();
+    lane.worker.reset_for_rebuild();
+}
+
+/// A rebuild replaces the replica under a running lane: the worker is reset in
+/// place, so the lane keeps running without another `start`. The first pump
+/// tells the host to abandon the old replica's I/O before anything new, then
+/// opens a session for the carried Scopes; nothing the old socket, catch-up or
+/// load queued or still delivers applies to the fresh file, because epochs and
+/// request ids are never issued twice in the worker's lifetime - across any
+/// number of rebuilds ([#162](https://github.com/zanminwang/axton/issues/162)).
+#[test]
+fn a_rebuild_resets_a_running_lane_in_place_and_fences_what_the_old_replica_had_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::rebuildable(&dir.path().join("db"));
+    lane.saved("a", 3);
+    let id = lane
+        .client
+        .subscription_state("a")
+        .unwrap()
+        .unwrap()
+        .subscription_id;
+    lane.client.request_bootstrap("a", id).unwrap();
+    let started = lane.send(DownlinkEvent::Start);
+    let [(load, true)] = requested(&started)[..] else {
+        panic!("one historical page is asked for: {started:?}")
+    };
+    let first = started
+        .iter()
+        .find_map(|a| match a {
+            DownlinkAction::Open { epoch, .. } => Some(*epoch),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("a session opens: {started:?}"));
+    let acknowledged = lane.message(first, ack(&[("a", 5)]));
+    let (pull, _) = request(&acknowledged[0]);
+    // Queued before the rebuild and never pumped: a streamed page, the
+    // catch-up's answer and the historical page's answer.
+    lane.enqueue(DownlinkEvent::Message {
+        epoch: first,
+        body: text(&page("a", 5, 6, Some("stale frame"))),
+    });
+    lane.enqueue(DownlinkEvent::Response {
+        request: pull,
+        body: text(&page("a", 3, 5, Some("stale pull"))),
+    });
+    lane.enqueue(DownlinkEvent::Response {
+        request: load,
+        body: loaded("a", 3, 5),
+    });
+
+    rebuild(&mut lane);
+    // Delivered after the reset and before the first pump, while no new
+    // session or request exists yet: dropped all the same.
+    lane.enqueue(DownlinkEvent::Message {
+        epoch: first,
+        body: ack(&[("a", 5)]),
+    });
+    lane.enqueue(DownlinkEvent::Response {
+        request: pull,
+        body: text(&page("a", 3, 5, Some("racing pull"))),
+    });
+    lane.enqueue(DownlinkEvent::Response {
+        request: load,
+        body: loaded("a", 3, 5),
+    });
+    lane.enqueue(DownlinkEvent::Closed { epoch: first });
+    let actions = lane.drain();
+    assert_eq!(
+        actions[0],
+        DownlinkAction::Reset,
+        "the host abandons the old I/O before anything new: {actions:?}"
+    );
+    let (second, subscribe) = opened(&actions[1]);
+    assert!(second > first, "a new socket never reuses an epoch");
+    assert_eq!(subscribe.channels, ["a"], "the carried Scope is desired");
+    assert_eq!(
+        actions.len(),
+        2,
+        "no old close, no old request: {actions:?}"
+    );
+    assert_eq!(lane.pump(), vec![], "the reset is announced once");
+    assert_eq!(
+        lane.cursor("a"),
+        None,
+        "nothing queued before or after the reset applied"
+    );
+    assert!(lane.client.read(&key()).unwrap().is_none());
+    // Whatever the old socket and requests still deliver belongs to nothing.
+    for stale in [
+        DownlinkEvent::Message {
+            epoch: first,
+            body: text(&page("a", 5, 6, Some("late frame"))),
+        },
+        DownlinkEvent::Message {
+            epoch: first,
+            body: ack(&[("a", 5)]),
+        },
+        DownlinkEvent::Overflow { epoch: first },
+        DownlinkEvent::Closed { epoch: first },
+        DownlinkEvent::Response {
+            request: pull,
+            body: text(&page("a", 3, 5, Some("late pull"))),
+        },
+        DownlinkEvent::Failed {
+            request: pull,
+            reason: None,
+            status: None,
+        },
+        DownlinkEvent::Response {
+            request: load,
+            body: loaded("a", 3, 5),
+        },
+        DownlinkEvent::Failed {
+            request: load,
+            reason: None,
+            status: Some(400),
+        },
+    ] {
+        assert_eq!(lane.send(stale.clone()), vec![], "{stale:?}");
+    }
+    assert_eq!(lane.cursor("a"), None);
+
+    // An acknowledgement queued for the rebuilt replica's session is dropped
+    // by the next rebuild too: the fence holds however often the replica is
+    // replaced under the same worker.
+    lane.enqueue(DownlinkEvent::Message {
+        epoch: second,
+        body: ack(&[("a", 9)]),
+    });
+    let old = std::mem::replace(&mut lane, Lane::rebuildable(&dir.path().join("again")));
+    lane.worker = old.worker;
+    lane.set("a", true);
+    rebuild(&mut lane);
+    let actions = lane.drain();
+    assert_eq!(actions[0], DownlinkAction::Reset, "{actions:?}");
+    let (third, _) = opened(&actions[1]);
+    assert!(third > second);
+    assert_eq!(lane.cursor("a"), None, "the queued acknowledgement is gone");
+    assert_eq!(
+        lane.send(DownlinkEvent::Message {
+            epoch: second,
+            body: ack(&[("a", 9)]),
+        }),
+        vec![]
+    );
+    assert_eq!(
+        lane.message(third, ack(&[("a", 9)])),
+        vec![
+            DownlinkAction::Changed {
+                scopes: vec!["a".into()]
+            },
+            established(&["a"])
+        ],
+        "the new session commits the carried Scope's first boundary"
+    );
+    // A gap asks for a repair under an id no earlier request held.
+    let repair = lane.frame(third, &page("a", 20, 21, None));
+    let (fresh, _) = request(&repair[0]);
+    assert!(
+        fresh > pull && fresh > load,
+        "{fresh} after {pull} and {load}"
+    );
+}
+
+/// A rebuild keeps the lane's intent: a paused lane stays paused and opens
+/// nothing until `resume`, a stopped one stays stopped until `start`, and a
+/// lane that never started opens nothing. Each still announces the reset once,
+/// so a host can abandon whatever the old replica left in flight
+/// ([#162](https://github.com/zanminwang/axton/issues/162)).
+#[test]
+fn a_rebuild_keeps_a_paused_lane_paused_and_a_stopped_lane_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut paused = Lane::rebuildable(&dir.path().join("paused"));
+    paused.saved("a", 0);
+    let (first, _) = opened(&paused.send(DownlinkEvent::Start)[0]);
+    paused.send(DownlinkEvent::Pause);
+    rebuild(&mut paused);
+    assert_eq!(paused.drain(), vec![DownlinkAction::Reset]);
+    assert_eq!(paused.send(DownlinkEvent::Wake), vec![], "still paused");
+    let (second, subscribe) = opened(&paused.send(DownlinkEvent::Resume)[0]);
+    assert!(second > first);
+    assert_eq!(subscribe.channels, ["a"]);
+
+    let mut stopped = Lane::rebuildable(&dir.path().join("stopped"));
+    stopped.saved("a", 0);
+    let (first, _) = opened(&stopped.send(DownlinkEvent::Start)[0]);
+    stopped.send(DownlinkEvent::Stop);
+    rebuild(&mut stopped);
+    assert_eq!(stopped.drain(), vec![DownlinkAction::Reset]);
+    assert_eq!(stopped.send(DownlinkEvent::Wake), vec![], "still stopped");
+    assert_eq!(stopped.send(DownlinkEvent::Resume), vec![]);
+    let (second, _) = opened(&stopped.send(DownlinkEvent::Start)[0]);
+    assert!(second > first);
+
+    let mut idle = Lane::rebuildable(&dir.path().join("idle"));
+    idle.set("a", true);
+    rebuild(&mut idle);
+    assert_eq!(idle.drain(), vec![DownlinkAction::Reset]);
+    assert_eq!(idle.send(DownlinkEvent::Wake), vec![], "never started");
+}
+
+/// A pump that fails after a rebuild does not lose the reset: whatever the
+/// failed pump had collected is dropped, so the next one announces it again,
+/// still before it opens anything
+/// ([#162](https://github.com/zanminwang/axton/issues/162)).
+#[test]
+fn a_pump_that_fails_after_a_rebuild_announces_the_reset_on_the_next_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::rebuildable(&dir.path().join("db"));
+    lane.saved("a", 0);
+    let (first, _) = opened(&lane.send(DownlinkEvent::Start)[0]);
+    let fresh = lane.client.rebuild(true).unwrap().new_file;
+    lane.worker.reset_for_rebuild();
+    // The first pump re-evaluates the persisted barriers of the fresh file,
+    // which it cannot read while the table is renamed away.
+    let mut other = axton_sqlite::SqliteStore::open(std::path::Path::new(&fresh)).unwrap();
+    other
+        .execute_batch("ALTER TABLE axton_subscription RENAME TO held")
+        .unwrap();
+    assert!(
+        lane.worker
+            .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
+            .is_err(),
+        "the pump fails after it took the reset"
+    );
+    other
+        .execute_batch("ALTER TABLE held RENAME TO axton_subscription")
+        .unwrap();
+    let actions = lane.drain();
+    assert_eq!(
+        actions[0],
+        DownlinkAction::Reset,
+        "the host still abandons the old I/O first: {actions:?}"
+    );
+    let (second, subscribe) = opened(&actions[1]);
+    assert!(second > first);
+    assert_eq!(subscribe.channels, ["a"]);
+    assert_eq!(lane.pump(), vec![], "and only once");
+}
+
 #[test]
 fn an_enqueued_page_commits_nothing_until_the_pump_applies_it() {
     let dir = tempfile::tempdir().unwrap();

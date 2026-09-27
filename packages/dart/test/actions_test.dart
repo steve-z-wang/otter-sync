@@ -6,7 +6,54 @@ import 'package:axton/axton.dart';
 import 'package:axton/src/actions.dart' show ActionObservers, ActionWeakState;
 import 'package:test/test.dart';
 
+import 'fake_carrier.dart';
+
 void main() {
+  test(
+    'a call completed in the batch of its submission is registered first',
+    () async {
+      // The runtime publishes the submission's completion and the call's
+      // `callCompleted` in one drained batch: the handle is registered while
+      // the completion is dispatched, never in a later continuation.
+      final carrier = FakeCarrier((envelope) {
+        final command = envelope['command'] as Map<String, dynamic>?;
+        if (command?['kind'] != 'submitAction') return null;
+        return [
+          completed(envelope['requestId'] as String, {
+            'callId': 'call-1',
+            'ordinal': 1,
+          }),
+          {
+            'type': 'callCompleted',
+            'callId': 'call-1',
+            'outcome': {'status': 'succeeded', 'result': 'pong'},
+          },
+        ];
+      });
+      final client = await Client.open(
+        path: 'unused',
+        schema: const {},
+        carrier: carrier,
+      );
+      try {
+        final completions = <Map<String, dynamic>>[];
+        client.actionCompletions.listen(completions.add);
+        final call = await client.invokeAction(
+          'Ping',
+          1,
+          const {},
+          (value) => value as String,
+        );
+        final outcome = await call.wait().timeout(const Duration(seconds: 1));
+        expect((outcome as CallSuccess<String>).result, 'pong');
+        expect(call.status, CallStatus.succeeded);
+        expect(completions.single['callId'], 'call-1');
+      } finally {
+        await client.close();
+      }
+    },
+  );
+
   test('weak routes sweep without retaining an abandoned handle', () {
     final refs = <_TestWeak>[];
     final observers = ActionObservers(
@@ -190,7 +237,15 @@ void main() {
     final submitting = client.invokeAction<void>('Ping', 1, {}, (_) {});
     final closing = client.close();
     release.complete();
-    await blocker;
+    // Close is priority control: it may roll the blocker back before its
+    // callback result arrives.
+    await blocker.then<void>(
+      (_) {},
+      onError: (Object error) => expect(
+        error,
+        isA<StateError>().having((e) => e.message, 'message', 'client_closed'),
+      ),
+    );
     final call = await submitting.timeout(const Duration(seconds: 1));
     final failure = await call.wait() as CallFailure<void>;
     expect(failure.error.code, 'client.closed');
@@ -629,8 +684,10 @@ void main() {
     },
   );
 
+  // A direct response's records are a runtime `report`, not part of the
+  // call: a throwing `onError` reaches the zone that connected.
   test(
-    'throwing direct diagnostic preserves applied result and reaches the Zone',
+    'throwing direct diagnostic preserves applied result and reaches the connecting Zone',
     () async {
       final schema =
           jsonDecode(
@@ -679,13 +736,19 @@ void main() {
       final diagnostic = StateError('diagnostic failed');
       final observed = <Object>[];
       try {
-        final connection = await local.connect(
-          SyncServer(
-            url: 'http://127.0.0.1:${server.port}',
-            token: () => 'alice',
-          ),
-          onError: (_) => throw diagnostic,
-        );
+        final connected = Completer<RuntimeConnection>();
+        runZonedGuarded(() {
+          local
+              .connect(
+                SyncServer(
+                  url: 'http://127.0.0.1:${server.port}',
+                  token: () => 'alice',
+                ),
+                onError: (_) => throw diagnostic,
+              )
+              .then(connected.complete, onError: connected.completeError);
+        }, (error, stack) => observed.add(error));
+        final connection = await connected.future;
         try {
           expect(
             await local.invokeDirectAction<String>(
@@ -696,14 +759,15 @@ void main() {
             ),
             'first',
           );
-          final result = Completer<String>();
-          runZonedGuarded(() {
-            local
-                .invokeDirectAction<String>('Ping', 1, {}, (_) => 'decoded')
-                .then(result.complete, onError: result.completeError);
-          }, (error, stack) => observed.add(error));
           expect(
-            await result.future.timeout(const Duration(seconds: 2)),
+            observed,
+            isEmpty,
+            reason: 'the first response applies cleanly',
+          );
+          expect(
+            await local
+                .invokeDirectAction<String>('Ping', 1, {}, (_) => 'decoded')
+                .timeout(const Duration(seconds: 2)),
             'decoded',
           );
         } finally {

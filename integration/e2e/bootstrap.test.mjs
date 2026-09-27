@@ -196,9 +196,11 @@ test('a record that moves above the origin comes from delivery, and the load sti
   const loading = background(subscription.bootstrap());
   await held.entered;
   assert.equal((await ledger(client, SCOPE)).bootstrap_cursor, 0, 'no page has been applied yet');
-  await app.republish(['moving'], SCOPE);
+  // Removed, then added back in a second settlement: an unchanged record takes a
+  // new position at the stamp it already has.
+  await app.readd(['moving'], SCOPE);
   const republished = await app.positionOf(SCOPE, 'moving');
-  assert.equal(republished, 121, 'the republication replaced its one retained position');
+  assert.equal(republished, 121, 'the re-addition replaced its one retained position');
   assert.ok(republished > S, `its latest publication is above the origin: ${republished} > ${S}`);
 
   // Normal delivery supplies it while the historical interval is untouched.
@@ -262,7 +264,7 @@ test('an older historical page never regresses newer content or resurrects a new
   // Newer authority arrives first, by ordinary delivery: one update and one
   // authoritative deletion.
   await app.publishOne('updated', 'the newer text', [SCOPE]);
-  await app.tombstone('removed', SCOPE);
+  await app.tombstone('removed');
   const head = await app.head(SCOPE);
   // The deleted record was never local, so its absence proves nothing until
   // the delivery that carries the deletion has been applied.
@@ -621,7 +623,7 @@ test('a live read failure stays visible and reported when the load completes', {
 
   // It is corrected the next time it is delivered, as D7 requires.
   app.allowLoads('unreadable');
-  await app.republish(['unreadable'], SCOPE);
+  await app.readd(['unreadable'], SCOPE);
   await wait(async () => (await client.models.entry.get({ id: 'unreadable' }))?.text === 'never delivered', 'the corrected record');
  });
 });

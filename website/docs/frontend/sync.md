@@ -43,15 +43,15 @@ Here `render` is your UI's update function. Subscribing records the desired chan
 
 The handle `subscribe` returns tells you where that is: `followed.status` has `initialization` (`pending` until the starting point is committed, then `ready`), `connection` (`offline`, `connecting`, `catching-up`, `live` or `stopped`) and `bootstrap` (`{phase, error}`), and `followed.watch(status => …)` reports the current snapshot and every change. `live` means the stream is healthy, not that everything has arrived. `followed.unsubscribe()` removes this registration, and the load with it; later calls through that handle fail with `subscription.closed`.
 
-Use channel names that your backend publishes to, and subscribe when the client needs to receive changes other clients make. A channel is not a database query or an authorization token. Loaders decide which requested records the authenticated user may see.
+Use channel names your backend adds records to, and subscribe when the client needs to receive changes other clients make. A channel is not a database query or an authorization token. Loaders decide which requested records the authenticated user may see.
 
 ## Receive your own results
 
-**A subscription is not required to see your own result.** A durable Mutation's inferred local Model changes are optimistic. Its handle's `wait()` returns the final per-invocation result or an error. The receipt also carries batch-final authority for changed records, read through the Loader in the handler transaction. AXTON applies that authority and replays later pending edits over it. Thus the result snapshot and current local Model view can differ. A direct call, such as a default Query, has no automatic local optimism or durable queue; its response carries its result and applies authority through the same local state path.
+**A subscription is not required to see your own result.** A durable Mutation's inferred local Model changes are optimistic. Its handle's `wait()` returns the final per-invocation result or an error. The receipt also carries batch-final authority for the records its Model inputs target, read through the Loader in the handler transaction, whatever outputs the operation declares. AXTON applies that authority and replays later pending edits over it. Thus the result snapshot and current local Model view can differ. A direct call, such as a default Query, has no automatic local optimism or durable queue; its response carries its result and applies authority through the same local state path.
 
-Subscribe with `client.scopes.subscribe(channel)` as above when the client needs changes made elsewhere: by other users, by background jobs, or by handlers that touch records without reporting them. Subscription starts synchronization from the point it was established and does not wait for initial data; `bootstrap()` is what fetches what the channel already held. Use `watch` to observe the records, and wait for an existing record to be available locally before updating it.
+Subscribe with `client.scopes.subscribe(channel)` as above when the client needs changes made elsewhere: by other users, by background jobs, or by handlers that touch records beyond the Model inputs. Subscription starts synchronization from the point it was established and does not wait for initial data; `bootstrap()` is what fetches what the channel already held. Use `watch` to observe the records, and wait for an existing record to be available locally before updating it.
 
-You can send Mutations and Queries without subscribing to any channel. The receipt still corrects the local row to the server's batch-final state; what you do not receive is later changes from elsewhere. If you subscribe to a channel the handler publishes to, the page for your own change carries the same stamp as the receipt and rewrites nothing, whichever arrives first.
+You can send Mutations and Queries without subscribing to any channel. The receipt still corrects the local row to the server's batch-final state; what you do not receive is later changes from elsewhere. If you subscribe to a channel the record belongs to, the page for your own change carries the same stamp as the receipt and rewrites nothing, whichever arrives first.
 
 ## Work offline
 
@@ -131,7 +131,7 @@ Authenticate requests on the backend and check business permissions in handlers 
 
 Use a separate local database per signed-in user. On an account change, stop and close the old client before opening the other user's database. Changing only the transport token leaves the old user's cached records and client identity in place.
 
-When permissions change, publish the affected records to the channels that deliver them. A loader can then return null to withdraw a record. Unsubscribing removes nothing: it stops that channel's delivery and keeps the records, their stamps and any pending edits in place. It is not a cache wipe or an authorization mechanism.
+When permissions change, touch the affected records on the backend so every channel they belong to delivers them again. A loader can then return null to withdraw a record; removing a record from a channel only stops later deliveries and withdraws nothing already delivered. Unsubscribing removes nothing: it stops that channel's delivery and keeps the records, their stamps and any pending edits in place. It is not a cache wipe or an authorization mechanism.
 
 ## Diagnose pending work
 
@@ -141,7 +141,7 @@ When permissions change, publish the affected records to the channels that deliv
 | `queued` with failed prerequisites | Host callback failure; reset its readiness to pending and run it again |
 | `frozen` after a network failure | Connectivity/authentication; retain the frozen bytes for retry |
 | `frozen` long after the network recovered | Either the server refused the batch on identity or order grounds (401/403/409 `client.owner_mismatch`/`gap`/`overlap`) — the code reaches `onError` and the batch is resent as is because the server never ran it — or a received receipt was refused locally (it named another client or batch, or omitted an accepted record): check `onError` and the backend's loaders |
-| Server values do not update | Whether every affected channel was published to, and whether the handler reported every record it changed with `changes.add` |
+| Server values do not update | Whether the record was added to the channel (`channel(name).todo.add`) and is still a member, and whether the handler touched every record it changed beyond its Model inputs (`touch.todo`) |
 | Local client fails after another process wrote | One active client per SQLite file; close/reopen the stale instance |
 | Empty local data after an app update | `syncState().schema.rebuilt`: the schema was incompatible and a fresh database is synchronising from the beginning; `syncState().schema.pending` means the old file is still sending its last changes, call `rebuild()` when it reaches 0 ([local storage](storage.md#change-the-schema)) |
 

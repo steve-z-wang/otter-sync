@@ -128,6 +128,33 @@ impl Lane {
         assert!(client.schema_state().rebuilt);
         Self::of(client)
     }
+    /// A replica whose schema no longer fits, held open in place because it
+    /// still has unsent work: `rebuild(true)` then switches this client to a
+    /// fresh file in the same process, carrying its Scope names with fresh
+    /// identities and no delivery boundary ([rebuild](rebuild.rs)). Until then
+    /// the old file syncs like any other, so a lane can run on it first.
+    pub fn rebuildable(path: &std::path::Path) -> Self {
+        let factory = || -> StoreFactory<SqliteStore> { Box::new(|p| SqliteStore::open(p)) };
+        let mut client = Client::open_at(path, schema(), factory(), false).unwrap();
+        super::seed(&mut client, "old");
+        client
+            .transaction(|tx| tx.enqueue(mutation("unsent")).map(|_| ()))
+            .unwrap();
+        drop(client);
+        let mut breaking = serde_json::to_value(schema()).unwrap();
+        breaking["models"][0]["fields"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name":"due","nullable":false,"type":{"kind":"scalar","name":"string"}}));
+        let breaking = Schema::from_value(breaking).unwrap();
+        let client = Client::open_at(path, breaking, factory(), false).unwrap();
+        assert!(client.schema_state().pending.is_some(), "the rebuild waits");
+        Self {
+            client,
+            worker: DownlinkWorker::default(),
+            now: 1_000,
+        }
+    }
     pub fn of(mut client: Client<SqliteStore>) -> Self {
         super::seed(&mut client, "local");
         Self {

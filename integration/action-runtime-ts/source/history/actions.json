@@ -96,13 +96,24 @@
         "outputs": [
           {
             "cardinality": "optional",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Todo"
+            },
             "kind": "model",
             "model": "Todo",
             "modelReadVersion": 1,
             "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
+            "source": "handlerIdentity"
           },
           {
             "cardinality": "single",
@@ -156,17 +167,7 @@
         "kind": "mutation",
         "name": "Clear",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "list",
-            "kind": "deleteIdentity",
-            "model": "Todo",
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -193,6 +194,7 @@
             }
           }
         ],
+        "kind": "mutation",
         "name": "Find",
         "outputEnums": [],
         "outputs": [
@@ -320,18 +322,7 @@
         "kind": "mutation",
         "name": "Mark",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Moment",
-            "modelReadVersion": 1,
-            "name": "moment",
-            "source": {
-              "inputIdentity": "moment"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -470,6 +461,7 @@
             }
           }
         ],
+        "kind": "mutation",
         "name": "Put",
         "outputEnums": [
           {
@@ -483,13 +475,24 @@
         "outputs": [
           {
             "cardinality": "single",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Todo"
+            },
             "kind": "model",
             "model": "Todo",
             "modelReadVersion": 1,
             "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
+            "source": "handlerIdentity"
           },
           {
             "cardinality": "single",
@@ -645,13 +648,24 @@
         "outputs": [
           {
             "cardinality": "single",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Todo"
+            },
             "kind": "model",
             "model": "Todo",
             "modelReadVersion": 1,
             "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
+            "source": "handlerIdentity"
           },
           {
             "cardinality": "single",
@@ -718,11 +732,12 @@
         "outputs": [
           {
             "cardinality": "single",
-            "kind": "deleteIdentity",
-            "model": "Moment",
-            "name": "moment",
-            "source": {
-              "inputIdentity": "moment"
+            "kind": "value",
+            "name": "at",
+            "source": "handlerValue",
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
             }
           }
         ],

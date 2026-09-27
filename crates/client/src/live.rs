@@ -15,6 +15,17 @@ struct Session {
     acknowledged: bool,
 }
 
+/// The identifier after `last`, for a fence the host echoes back: a socket
+/// epoch or a Downlink request id. Each crosses the binding as a JSON number,
+/// so none beyond the safe integer range is ever issued; an exhausted counter
+/// fails the pump instead of wrapping onto an identifier already used, which
+/// would let an abandoned socket or request answer for a new one.
+pub(crate) fn allocate(last: u64, what: &str) -> Result<u64> {
+    last.checked_add(1)
+        .filter(|next| *next <= MAX_SAFE_INTEGER)
+        .ok_or_else(|| invalid(format!("{what} exhausted")))
+}
+
 /// One socket session at a time, each with its own epoch.
 #[derive(Default)]
 pub struct LiveSession {
@@ -33,7 +44,7 @@ impl LiveSession {
     ) -> Result<(u64, String)> {
         let subscribe = SubscribeRequest::new(channels, models)?;
         let frame = String::from_utf8(subscribe.encode()?).map_err(|_| invalid("utf8"))?;
-        self.epoch += 1;
+        self.epoch = allocate(self.epoch, "socket epoch")?;
         self.session = Some(Session {
             epoch: self.epoch,
             generation,
@@ -81,5 +92,32 @@ impl LiveSession {
             return Err(invalid("live page before acknowledgement"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_exhausted_epoch_fails_the_session_instead_of_wrapping() {
+        assert_eq!(allocate(0, "socket epoch").unwrap(), 1);
+        assert_eq!(
+            allocate(MAX_SAFE_INTEGER - 1, "socket epoch").unwrap(),
+            MAX_SAFE_INTEGER
+        );
+        assert!(allocate(u64::MAX, "request id").is_err());
+        let mut live = LiveSession {
+            epoch: MAX_SAFE_INTEGER,
+            session: None,
+        };
+        let error = live
+            .begin(vec!["a".into()], BTreeMap::from([("Entry".into(), 1)]), 1)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("socket epoch exhausted"),
+            "{error}"
+        );
+        assert!(!live.open(), "no session began");
+        assert_eq!(live.epoch, MAX_SAFE_INTEGER, "the counter did not move");
     }
 }

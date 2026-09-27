@@ -10,13 +10,14 @@ test('mobile transaction adapter is available without a Node async context', () 
   const {Transaction} = module;
   test('commands serialize and retained scopes reject after finish', async () => {
     const seen = [];
-    const tx = new Transaction(async request => { seen.push(request); return 1; });
+    const scopes = [];
+    const tx = new Transaction(async (command, scope) => { seen.push(command); scopes.push(scope); return 1; });
     assert.equal('mutate' in tx, false);
     await tx.direct({model:'Entry',op:'create',identity:{id:'one'},values:{text:'one'}});
     await tx.read('Entry', {id:'one'});
     await tx.finish();
-    assert.deepEqual(seen.map(x => x.op), ['direct','read']);
-    assert.ok(seen.every(x => x.transaction === true));
+    assert.deepEqual(seen.map(x => x.kind), ['direct','read']);
+    assert.deepEqual(scopes, [undefined, undefined]);
     await assert.rejects(tx.read('Entry', {id:'one'}), /transaction_closed/);
     assert.equal('savepoint' in tx, false);
   });

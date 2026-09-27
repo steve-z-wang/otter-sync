@@ -33,4 +33,4 @@ export 'src/connection.dart'
         ActionTransportException,
         AxtonReport;
 
-export 'src/live.dart' show SyncServer;
+export 'src/live.dart' show SyncServer, HttpFailure;

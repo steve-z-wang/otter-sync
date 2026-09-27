@@ -44,7 +44,7 @@ test("generated operation codecs retain null, lists, omitted patches and DateTim
       calls.push({ name, version, args: args as Record<string, unknown> });
       return decode(
         name === "RemoveMoment"
-          ? { moment: { at: "2026-01-01T00:00:00.000Z" } }
+          ? { at: "2026-01-01T00:00:00.000Z" }
           : name === "Put"
             ? {
                 todo: {
@@ -113,8 +113,8 @@ test("generated operation codecs retain null, lists, omitted patches and DateTim
   assert.ok(result.echoed instanceof Date);
   assert.equal(result.todo, null);
   const removed = await mutations.call.removeMoment({ moment: { at } });
-  assert.ok(removed.moment.at instanceof Date);
-  assert.equal(removed.moment.at.toISOString(), at.toISOString());
+  assert.ok(removed.at instanceof Date);
+  assert.equal(removed.at.toISOString(), at.toISOString());
   const put = await mutations.call.put({
     todo: { id: "one", title: "A", at, status: "open", note: null },
     when: at,

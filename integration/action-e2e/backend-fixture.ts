@@ -16,19 +16,32 @@ export async function createFixture() {
     async addTodo({ ctx, args }) {
       handlerCalls++;
       await ctx.tx.query("INSERT INTO action_e2e_todo(id,title) VALUES($1,$2)", [args.todo.id, args.todo.title.trim()]);
-      ctx.publish({ channel: "todos:demo" });
+      // Joins its Channel once: this change and every later one reach its subscribers.
+      ctx.channel("todos:demo").todo.add(args.todo);
     },
     async updateTodo({ ctx, args }) {
       handlerCalls++;
       const changed = await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE id=$1 RETURNING id", [args.todo.id, args.todo.title?.trim()]);
       if (changed.rows.length === 0) throw new CallRejected("todo.missing");
-      ctx.publish({ channel: "todos:demo" });
     },
     async deleteTodo({ ctx, args }) {
       handlerCalls++;
       const changed = await ctx.tx.query("DELETE FROM action_e2e_todo WHERE id=$1 RETURNING id", [args.todo.id]);
       if (changed.rows.length === 0) throw new CallRejected("todo.missing");
-      ctx.publish({ channel: "todos:demo" });
+    },
+    async editAndShow({ ctx, args }) {
+      handlerCalls++;
+      const changed = await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE id=$1 RETURNING id", [args.todo.id, args.todo.title?.trim()]);
+      if (changed.rows.length === 0) throw new CallRejected("todo.missing");
+      // The `todo` output names the shown record, not the edited input.
+      return { todo: { id: args.shown } };
+    },
+    async annotateTodo({ ctx, args }) {
+      handlerCalls++;
+      const changed = await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE id=$1 RETURNING id", [args.todo.id, args.todo.title?.trim()]);
+      if (changed.rows.length === 0) throw new CallRejected("todo.missing");
+      await ctx.tx.query("UPDATE action_e2e_note SET body=$2 WHERE id=$1", [args.note, args.body]);
+      ctx.touch.note({ id: args.note });
     },
     async sendEmail({ ctx, args }) {
       handlerCalls++;
@@ -49,8 +62,8 @@ export async function createFixture() {
     async retitleTodos({ ctx, args }) {
       handlerCalls++;
       const rows = (await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE title ILIKE '%' || $1 || '%' RETURNING id", [args.query, args.title])).rows.map((row) => ({ id: String(row.id) })).sort((a, b) => a.id.localeCompare(b.id));
-      for (const todo of rows) ctx.changes.add({ model: "Todo", identity: todo });
-      ctx.publish({ channel: "todos:demo" });
+      // Explicit extra touches: distributed to their Channels, not caller authority.
+      for (const todo of rows) ctx.touch.todo(todo);
       return { todos: rows, first: rows[0] ?? null };
     },
   };

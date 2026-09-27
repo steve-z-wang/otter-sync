@@ -41,4 +41,4 @@ Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests a
 
 ## 11. Risks and Technical Debt
 
-**Accepted limitation.** Client-direction errors cross the bindings as message text; nothing branches on that wording. Owned by [SDKs / Bindings](../sdks/bindings.md).
+**Accepted limitation.** Client-direction errors cross the bindings as message text, with a machine-readable `details.code` only where the client runtime provides one; nothing branches on the wording. Owned by [SDKs / Bindings](../sdks/bindings.md).

@@ -111,15 +111,46 @@ fn action_history_fences_input_shapes_and_preserves_compatible_model_additions()
 #[test]
 fn action_identity_source_changes_need_a_version_bump() {
     let first =
-        compile("model Todo { id String @@id(id) } mutation Find(todo Todo.update)").unwrap();
+        compile("model Todo { id String @@id(id) } mutation Find(todo Todo.update) { todo Todo? }")
+            .unwrap();
     let history = reconcile_action_history(&first, None).unwrap();
-    let explicit =
-        compile("model Todo { id String @@id(id) } mutation Find() { todo Todo }").unwrap();
+    let value = compile(
+        "model Todo { id String @@id(id) } mutation Find(todo Todo.update) { todo String? }",
+    )
+    .unwrap();
     assert!(
-        reconcile_action_history(&explicit, Some(&history))
+        reconcile_action_history(&value, Some(&history))
             .unwrap_err()
             .contains("output")
     );
+}
+
+/// #140 removed the implicit same-name result of a Model operand. A history
+/// retained by an earlier compiler still carries that `inputIdentity` output,
+/// so the same source at an unchanged version is an output contract change.
+#[test]
+fn retained_implicit_operand_outputs_are_not_rewritten_at_an_unchanged_version() {
+    let model = "model Todo { id String title String @@id(id) }";
+    let current = compile(&format!("{model} mutation Edit(todo Todo.update)")).unwrap();
+    let mut external = reconcile_action_history(&current, None).unwrap();
+    external["actions"]["Edit"]["1"]["outputs"] = json!([{
+        "cardinality":"single","kind":"model","model":"Todo","modelReadVersion":1,
+        "name":"todo","source":{"inputIdentity":"todo"}
+    }]);
+    assert_eq!(
+        reconcile_action_history(&current, Some(&external)).unwrap_err(),
+        "Edit v1: incompatible output change; increase @version"
+    );
+    let bumped = compile(&format!(
+        "{model} @version(2) mutation Edit(todo Todo.update)"
+    ))
+    .unwrap();
+    let next = reconcile_action_history(&bumped, Some(&external)).unwrap();
+    assert_eq!(
+        next["actions"]["Edit"]["1"],
+        external["actions"]["Edit"]["1"]
+    );
+    assert_eq!(next["actions"]["Edit"]["2"]["outputs"], json!([]));
 }
 
 #[test]

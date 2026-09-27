@@ -147,12 +147,11 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   // one page over HTTP from the cursor it committed.
   await connection.pause();
   await wait(async()=>readerSubscription.status.connection==='offline','the reader lane is offline');
-  await app.backend.transaction(async({tx,changes,publish})=>{
-   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});changes.add({model:'Entry',identity:{id:`paged-${i}`}});}
-   // The seeded record is published inside the burst too: it is above both
-   // origins there, so the live writer and the catching-up reader both hold it.
-   changes.add({model:'Entry',identity:{id:'entry-1'}});
-   publish({channel:'book:demo'});
+  await app.backend.transaction(async({tx,channel,touch})=>{
+   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});touch.entry({id:`paged-${i}`});channel('book:demo').entry.add({id:`paged-${i}`});}
+   // The seeded record, already a member, is touched inside the burst too: it is
+   // above both origins there, so the live writer and the catching-up reader both hold it.
+   touch.entry({id:'entry-1'});
   });
   await wait(async()=>(await writer.query('Entry')).length>=56,'writer receives the burst');
   const observed=[];const unwatch=reader.watch('Entry',{},rows=>observed.push(rows));

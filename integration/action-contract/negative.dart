@@ -84,3 +84,14 @@ Future<void> createMisuse(GeneratedClient client) async {
   final AddNotesInput args = AddNotesInput(note: const NoteCreate(memo: null), many: const []); // handler args are complete
   args.hashCode;
 }
+
+Future<void> explicitResultMisuse(GeneratedClient client) async {
+  final EditAndReadHandlerOutput missing = EditAndReadHandlerOutput(); // output required despite same-name input
+  final EditAndReadHandlerOutput record = EditAndReadHandlerOutput(todo: todo); // handler returns an identity
+  final EditAndReadOutput edited = await client.mutations.call.edit(todo: const EditTodoUpdate(id: 'A')); // no business result
+  final TodoIdentity removed = await client.mutations.call.removeTodo(todo: const TodoDelete(id: 'A')); // delete has no implicit result
+  missing.hashCode;
+  record.hashCode;
+  edited.hashCode;
+  removed.hashCode;
+}

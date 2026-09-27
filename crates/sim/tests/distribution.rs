@@ -32,6 +32,20 @@ fn move_to(sim: &mut Sim, key: &str, channels: &[&str]) {
     })
     .unwrap();
 }
+/// One application transaction for `key`: `touch` is `Some(Some(text))` to
+/// write text, `Some(None)` to delete, `None` for no business change; then the
+/// ordered membership intents, settled by the engine.
+fn declare(sim: &mut Sim, key: &str, touch: Option<Option<&str>>, memberships: &[(&str, bool)]) {
+    sim.apply(Action::Declare {
+        key: key.into(),
+        touch: touch.map(|text| text.map(str::to_string)),
+        memberships: memberships
+            .iter()
+            .map(|(channel, present)| (channel.to_string(), *present))
+            .collect(),
+    })
+    .unwrap();
+}
 fn stamp_rows(sim: &mut Sim, client: usize) -> Vec<serde_json::Value> {
     sim.client(client)
         .read_sql("SELECT stamp FROM axton_record WHERE model='Entry'", &[])
@@ -369,4 +383,222 @@ fn d4_parent_and_child_move_channels_together_without_deletes() {
     );
     assert_eq!(sim.conflicts, 0);
     sim.check().unwrap();
+}
+
+/// Spec §4: removal stops future distribution and evicts nothing. The client
+/// keeps the row it applied; later content reaches no one through the Channel
+/// the record left, including a client that subscribes from zero afterwards,
+/// which the retained invalidation row would otherwise hand the new content.
+#[test]
+fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
+    let mut sim = Sim::new(61, 2);
+    let e1 = entry_key("e1");
+    subscribe(&mut sim, 0, &["a"]);
+    declare(&mut sim, "Entry:e1", Some(Some("before")), &[("a", true)]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("before"));
+    let head = sim.host.head("a");
+    declare(&mut sim, "Entry:e1", None, &[("a", false)]);
+    assert_eq!(sim.host.head("a"), head, "removal allocates no position");
+    assert_eq!(
+        sim.host.channel_stamp("a", &e1),
+        Some(1),
+        "and keeps the row"
+    );
+    declare(&mut sim, "Entry:e1", Some(Some("after removal")), &[]);
+    assert_eq!(sim.host.stamp(&e1), 2);
+    assert_eq!(sim.host.head("a"), head, "a change reaches members only");
+    sim.settle();
+    assert_eq!(
+        sim.read_text(0, &e1).as_deref(),
+        Some("before"),
+        "the row stays as it was: no deletion, no eviction"
+    );
+    assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 1);
+    assert_eq!(sim.client(0).cursor("a").unwrap(), Some(head));
+    subscribe(&mut sim, 1, &["a"]);
+    sim.settle();
+    assert_eq!(
+        sim.read_text(1, &e1),
+        None,
+        "the old Channel does not expose content published after removal"
+    );
+    assert_eq!(sim.client(1).cursor("a").unwrap(), Some(head));
+    assert_eq!(sim.conflicts, 0);
+    sim.check().unwrap();
+}
+
+/// Re-adding publishes the record's current state at a fresh position without
+/// a new stamp; later touches reach it again. Intents that cancel within one
+/// settlement change nothing.
+#[test]
+fn re_adding_publishes_current_state_and_later_touches_follow() {
+    let mut sim = Sim::new(62, 1);
+    let e1 = entry_key("e1");
+    subscribe(&mut sim, 0, &["a", "b"]);
+    declare(&mut sim, "Entry:e1", Some(Some("v1")), &[("a", true)]);
+    sim.settle();
+    declare(&mut sim, "Entry:e1", None, &[("a", false)]);
+    declare(&mut sim, "Entry:e1", Some(Some("v2")), &[]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v1"));
+    let head = sim.host.head("a");
+    declare(&mut sim, "Entry:e1", None, &[("a", true)]);
+    assert_eq!(sim.host.head("a"), head + 1, "a fresh position");
+    assert_eq!(sim.host.stamp(&e1), 2, "at the unchanged stamp");
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v2"));
+    assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 2);
+    declare(&mut sim, "Entry:e1", Some(Some("v3")), &[]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v3"));
+    // Cancelling intents: a member removed and re-added, a non-member added
+    // and removed, in one settlement.
+    let heads = (sim.host.head("a"), sim.host.head("b"));
+    declare(
+        &mut sim,
+        "Entry:e1",
+        None,
+        &[("a", false), ("b", true), ("a", true), ("b", false)],
+    );
+    assert_eq!((sim.host.head("a"), sim.host.head("b")), heads);
+    assert_eq!(sim.host.stored_memberships(&e1), ["a"]);
+    assert_eq!(sim.host.stamp(&e1), 3);
+    assert_eq!(sim.conflicts, 0);
+    sim.check().unwrap();
+}
+
+/// A deleted record stays enrolled, so its Channel delivers the deletion, and
+/// recreating the same identity reaches the same Channel without a new add.
+/// Deleting and removing in one settlement tells the Channel nothing.
+#[test]
+fn a_deleted_record_stays_enrolled_and_its_recreation_is_delivered_again() {
+    let mut sim = Sim::new(63, 1);
+    let e1 = entry_key("e1");
+    subscribe(&mut sim, 0, &["a"]);
+    declare(&mut sim, "Entry:e1", Some(Some("v1")), &[("a", true)]);
+    sim.settle();
+    declare(&mut sim, "Entry:e1", Some(None), &[]);
+    assert_eq!(sim.host.stored_memberships(&e1), ["a"]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1), None);
+    assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 2);
+    declare(&mut sim, "Entry:e1", Some(Some("again")), &[]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("again"));
+    assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 3);
+    let head = sim.host.head("a");
+    declare(&mut sim, "Entry:e1", Some(None), &[("a", false)]);
+    assert_eq!(sim.host.head("a"), head, "the final relationship wins");
+    sim.settle();
+    assert_eq!(
+        sim.read_text(0, &e1).as_deref(),
+        Some("again"),
+        "no deletion reaches a Channel the record left"
+    );
+    sim.check().unwrap();
+}
+
+/// Generated add/remove/touch sequences, with client edits, dropped and
+/// duplicated messages and client crashes and restarts in between. Every step
+/// keeps the invariants; a row a client holds disappears only by applying the
+/// authority of a version at which the server had no record (removal evicts
+/// nothing); after settling, every client at a Channel's head holds the
+/// server's state of that Channel's members, and a client that subscribes to
+/// every Channel from zero only then holds exactly the current members.
+#[test]
+fn generated_membership_sequences_converge_through_restarts_and_duplicates() {
+    let mut comparisons = 0;
+    let mut removals = 0;
+    for seed in 0..24u64 {
+        let mut sim = Sim::new(7000 + seed, 3);
+        sim.apply(Action::Crash { client: 2 }).unwrap();
+        subscribe(&mut sim, 0, &["a", "b"]);
+        subscribe(&mut sim, 1, &["b", "c"]);
+        for id in 0..4 {
+            declare(
+                &mut sim,
+                &format!("Entry:g{id}"),
+                Some(Some("created")),
+                &[(["a", "b", "c"][id % 3], true)],
+            );
+        }
+        // (record, stamp) of every version at which the server had no record.
+        let mut deletions = std::collections::BTreeSet::new();
+        for step in 0..150 {
+            let Some(action) = sim.membership_step() else {
+                continue;
+            };
+            if let Action::Declare { memberships, .. } = &action {
+                removals += memberships.iter().filter(|(_, present)| !present).count();
+            }
+            let held = held_rows(&mut sim);
+            sim.apply(action.clone())
+                .unwrap_or_else(|e| panic!("seed {seed} step {step} {action:?}: {e}"));
+            sim.check()
+                .unwrap_or_else(|e| panic!("seed {seed} step {step} {action:?}: {e}"));
+            // A stamp at which the record is absent is deletion evidence,
+            // whether a deletion or a later change to the deleted record made it.
+            for id in 0..4 {
+                let key = entry_key(&format!("g{id}"));
+                if sim.host.state(&key).is_none() {
+                    deletions.insert((key.encoded().unwrap(), sim.host.stamp(&key)));
+                }
+            }
+            for (client, key) in held {
+                if sim.is_up(client) && sim.read_text(client, &key).is_none() {
+                    let stamp = sim.client(client).record_stamp(&key).unwrap();
+                    assert!(
+                        deletions.contains(&(key.encoded().unwrap(), stamp)),
+                        "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without a deletion"
+                    );
+                }
+            }
+        }
+        for client in 0..3 {
+            sim.apply(Action::Restart { client }).unwrap();
+        }
+        subscribe(&mut sim, 2, &["a", "b", "c"]);
+        sim.settle();
+        sim.check().unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        for id in 0..4 {
+            let key = entry_key(&format!("g{id}"));
+            let expected = if sim.host.stored_memberships(&key).is_empty() {
+                None
+            } else {
+                sim.host.state(&key).map(|state| state["text"].clone())
+            };
+            let late = sim.client(2).read(&key).unwrap();
+            assert_eq!(
+                late.map(|state| state["text"].clone()),
+                expected,
+                "seed {seed}: g{id} for the late subscriber, members {:?}",
+                sim.host.stored_memberships(&key)
+            );
+        }
+        comparisons += sim.comparisons;
+        assert_eq!(sim.conflicts, 0, "seed {seed}");
+    }
+    assert!(removals > 100, "the sequences removed members: {removals}");
+    assert!(
+        comparisons > 500,
+        "convergence was actually compared: {comparisons}"
+    );
+}
+
+/// Every (client, record) whose row a running client currently holds.
+fn held_rows(sim: &mut Sim) -> Vec<(usize, axton_core::RecordKey)> {
+    let keys: Vec<_> = (0..4).map(|id| entry_key(&format!("g{id}"))).collect();
+    let mut held = vec![];
+    for client in 0..3 {
+        if !sim.is_up(client) {
+            continue;
+        }
+        for key in &keys {
+            if sim.read_text(client, key).is_some() {
+                held.push((client, key.clone()));
+            }
+        }
+    }
+    held
 }

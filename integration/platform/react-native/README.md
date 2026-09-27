@@ -83,3 +83,5 @@ Result: `PASS: two real RN clients, lost-response retry, offline writes, process
 Backend after the run: handler calls `{add: 1, edit: 4}`, one dropped push response, two rows. Alice's and Bob's client IDs differed. Screenshots and JSON assertions were written to the printed evidence directory.
 
 Limits: the evidence covers an arm64 iOS simulator with the app in the foreground. Physical devices, Android, background execution and the x86_64 simulator slice are not covered.
+
+That run predates the Rust-owned runtime carrier ([#134](https://github.com/zanminwang/axton/issues/134)): the module then exposed the synchronous `clientCall` host over `axton_mobile_call`, which is removed. The app now reaches the runtime through `runtimeOpen`/`runtimeSubmit`/`runtimeDrain`/`runtimeDetach` and the `axtonWake` event, and its first assertion checks that the raw carrier refuses a malformed open request and an envelope for an unopened runtime. The harness has not been re-run on a simulator since that change.

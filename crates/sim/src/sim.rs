@@ -8,6 +8,7 @@ use crate::{
 };
 use axton_client::{BootstrapPhase, Client, Operation, OperationKind, Report, ReportKind};
 use axton_core::{BootstrapPage, PullPage, PushReceipt, PushRequest, RecordKey};
+use axton_server::host::{MembershipIntent, RecordRef};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
 use std::{
@@ -126,6 +127,10 @@ pub enum Action {
     Restart {
         client: usize,
     },
+    /// A business change to `key` (`None` deletes it) distributed to
+    /// `channels` by low-level publication: the record is enrolled in each of
+    /// them first, since a scan answers members only, and its other
+    /// memberships are not published to.
     ServerChange {
         key: String,
         text: Option<String>,
@@ -139,6 +144,19 @@ pub enum Action {
     MoveMembership {
         key: String,
         channels: Vec<String>,
+    },
+    /// One application transaction outside any push (`backend.transaction`)
+    /// for `key`, settled by the engine. `touch` is the business change it
+    /// declares: `Some(Some(text))` writes that text, `Some(None)` deletes the
+    /// record (an Entry takes its Comments with it, each touched too), `None`
+    /// changes nothing. `memberships` are the record's ordered Channel add
+    /// (`true`) and remove (`false`) intents; the engine reduces them to the
+    /// final relationship. The record's routing follows the stored result, so
+    /// later handler calls keep it.
+    Declare {
+        key: String,
+        touch: Option<Option<String>>,
+        memberships: Vec<(String, bool)>,
     },
     RejectNext {
         code: String,
@@ -214,13 +232,14 @@ pub struct Sim {
     /// Whether the random stepper (`step.rs::choose`) may generate `Action::Direct`.
     /// Defaults to true; tests/invariants.rs runs the R2 runner both ways.
     pub generate_direct: bool,
-    /// Whether `Action::ServerChange` (`step.rs::choose`) may publish to a channel
-    /// outside a record's real, explicitly-set membership. Defaults to false: an
-    /// application's handler publishes to the channels that provide a record, and
-    /// the random runner generates what applications do. Since loads are
-    /// channel-blind, publishing outside membership is harmless to the engine - the
-    /// extra channel simply delivers the same content at the same stamp - so a test
-    /// may turn this on to prove exactly that.
+    /// Whether `Action::ServerChange` (`step.rs::choose`) may publish to (and so
+    /// enroll the record in) a channel outside a record's real, explicitly-set
+    /// routing. Defaults to false: an application's handler publishes to the
+    /// channels that provide a record, and the random runner generates what
+    /// applications do. Since loads are channel-blind, the extra channel is
+    /// harmless to the engine - it simply delivers the same content at the same
+    /// stamp until the next handler call removes it - so a test may turn this on
+    /// to prove exactly that.
     pub generate_membership_faults: bool,
     /// Count of actual (client, key) content comparisons `no_pending_means_converged`
     /// has made across the run - the checks it skips (not at head, exempted by a
@@ -403,16 +422,52 @@ impl Sim {
         let refs: Vec<&str> = channels.iter().map(String::as_str).collect();
         self.host.set_membership(&key, &refs);
     }
-    /// Move `key`'s real membership to exactly `channels`, then republish it to every
-    /// member at its current stamp - `publish({channel, records})` on an existing
-    /// record, which initializes a missing stamp but never advances one. The channels
-    /// it leaves are told nothing: they simply stop receiving its updates.
-    fn move_membership(&mut self, key: &RecordKey, channels: &[String]) {
-        let refs: Vec<&str> = channels.iter().map(String::as_str).collect();
+    /// Move `key`'s real membership to exactly `channels` in one external
+    /// settlement: a removal for every stored Channel it leaves, an add for
+    /// every one it names. The engine publishes it to each newly joined Channel
+    /// at its current stamp (initializing a missing one, never advancing it);
+    /// Channels it stays in or leaves are told nothing.
+    fn move_membership(&mut self, key: &RecordKey, channels: &[String]) -> Result<(), String> {
+        let stored = self.host.stored_memberships(key);
+        let mut intents: Vec<(String, bool)> = stored
+            .iter()
+            .filter(|channel| !channels.contains(channel))
+            .map(|channel| (channel.clone(), false))
+            .collect();
+        intents.extend(channels.iter().map(|channel| (channel.clone(), true)));
+        self.declare(key, &[], vec![], &intents)
+    }
+    /// One external settlement of `changes` and `key`'s ordered membership
+    /// intents after `writes`; the record's routing then follows its stored
+    /// memberships.
+    fn declare(
+        &mut self,
+        key: &RecordKey,
+        writes: &[(RecordKey, Option<serde_json::Value>)],
+        changes: Vec<RecordKey>,
+        intents: &[(String, bool)],
+    ) -> Result<(), String> {
+        let memberships = intents
+            .iter()
+            .map(|(channel, present)| MembershipIntent {
+                channel: channel.clone(),
+                model: key.model.clone(),
+                identity: key.identity.clone(),
+                present: *present,
+            })
+            .collect();
+        let changes = changes
+            .into_iter()
+            .map(|key| RecordRef {
+                model: key.model,
+                identity: key.identity,
+            })
+            .collect();
+        self.host.transact(writes, changes, memberships)?;
+        let stored = self.host.stored_memberships(key);
+        let refs: Vec<&str> = stored.iter().map(String::as_str).collect();
         self.host.set_membership(key, &refs);
-        for channel in &refs {
-            self.host.ensure_publish(key, channel);
-        }
+        Ok(())
     }
     pub fn apply(&mut self, action: Action) -> Result<(), String> {
         self.trace.push(action.clone());
@@ -654,7 +709,7 @@ impl Sim {
             }
             Action::MoveMembership { key, channels } => {
                 let k = parse_key(&key);
-                self.move_membership(&k, &channels);
+                self.move_membership(&k, &channels)?;
                 // Child membership follows the parent: a moved Entry takes its
                 // Comments to the same channels, so a client that follows the
                 // destination sees the pair together rather than a parent whose
@@ -669,9 +724,50 @@ impl Sim {
                         .filter_map(|(_, v)| v["id"].as_str().map(str::to_string))
                         .collect();
                     for comment_id in child_ids {
-                        self.move_membership(&schema::comment_key(&comment_id), &channels);
+                        self.move_membership(&schema::comment_key(&comment_id), &channels)?;
                     }
                 }
+            }
+            Action::Declare {
+                key,
+                touch,
+                memberships,
+            } => {
+                let k = parse_key(&key);
+                let id = k.identity["id"].clone();
+                let mut writes = vec![];
+                let mut changes = vec![];
+                if let Some(text) = touch {
+                    // A deleted Entry takes its Comments with it, as the real
+                    // handler's cascade does; each is a change of its own.
+                    if text.is_none() && k.model == "Entry" {
+                        for (_, value) in self.host.records() {
+                            if value["entryId"] == id
+                                && let Some(comment_id) = value["id"].as_str()
+                            {
+                                let child = schema::comment_key(comment_id);
+                                writes.push((child.clone(), None));
+                                changes.push(child);
+                            }
+                        }
+                    }
+                    let state = text.map(|t| {
+                        if k.model == "Entry" {
+                            json!({"id": id, "text": t, "note": null})
+                        } else {
+                            json!({"id": id, "entryId": "e1", "text": t})
+                        }
+                    });
+                    writes.push((k.clone(), state));
+                    changes.push(k.clone());
+                    if k.model == "Entry"
+                        && let Some(id) = id.as_str()
+                        && !self.known_entries.iter().any(|known| known == id)
+                    {
+                        self.known_entries.push(id.to_string());
+                    }
+                }
+                self.declare(&k, &writes, changes, &memberships)?;
             }
             Action::RejectNext { code } => self.host.reject_next(&code),
             Action::FailNext => self.host.fail_next(),
@@ -977,7 +1073,7 @@ impl Sim {
                     continue;
                 }
                 let key = schema::key_from_encoded(&encoded);
-                for channel in self.host.membership(&key) {
+                for channel in self.host.stored_memberships(&key) {
                     self.host.ensure_publish(&key, &channel);
                 }
             }

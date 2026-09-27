@@ -1,10 +1,10 @@
 # Transactional onStore Model hooks
 
-Status: design draft for [#17](https://github.com/zanminwang/axton/issues/17). The registration API, per-Model handlers, local transaction capabilities, and `upsert` / `delete` names are agreed. The user has also confirmed that changes contain incoming server data only, and the hook runs before that data is stored. The remaining engineering choices below are recommendations for review. No implementation is included.
+Status: reviewed implementation design for [#17](https://github.com/zanminwang/axton/issues/17). The user agreed the registration API, local capabilities, incoming-only payloads and before-storage ordering. This revision selects the engineering defaults for grouping, validation and recovery, and incorporates merged #134, #140, #162 and #163. No hook implementation is included. See the [implementation plan](../plans/2026-09-26-17-on-store-plan.md).
 
 ## 1. Goal and dependencies
 
-Let an application react to incoming server Model authority by deriving local data and changing Channel subscription intent in the same local transaction. Reuse the public transaction interface and the Rust-owned callback continuation from [#134](https://github.com/zanminwang/axton/issues/134). Implement only after that runtime cleanup is complete and reviewed.
+Let an application react to incoming server Model authority by deriving local data and changing Channel subscription intent in the same local transaction. Reuse the public transaction interface and the Rust-owned callback continuation from [#134](https://github.com/zanminwang/axton/issues/134). That cleanup is merged. Integrate after the separate worker recovery fix [#167](https://github.com/zanminwang/axton/issues/167), which preserves pending actions across pump failure; do not duplicate that fix.
 
 The hook participates in the commit; it is not a post-commit notification. Preserve the [guarantees](../../engineering/guarantees.md), especially Model authority, optimistic replay, completion timing and subscription identity. [#16](https://github.com/zanminwang/axton/issues/16) owns notification API changes, and [#144](https://github.com/zanminwang/axton/issues/144) owns same-WebSocket subscription reconciliation.
 
@@ -15,7 +15,7 @@ Add an optional generated `onStore` option to the existing generated client open
 TypeScript usage (the application supplies its existing open options):
 
 ```ts
-const client = await Client.open({
+const client = await GeneratedClient.open({
   ...openOptions,
   onStore: {
     async project(tx, changes) {
@@ -56,7 +56,7 @@ export type StoreChange<Identity, Model> =
     };
 
 export type StoreHandler<Identity, Model> = (
-  tx: Transaction,
+  tx: GeneratedTransaction,
   changes: ReadonlyArray<StoreChange<Identity, Model>>,
 ) => void | Promise<void>;
 
@@ -80,7 +80,7 @@ The handler receives the same local transaction capability surface as an ordinar
 
 It does not own begin/commit/rollback of the enclosing transaction. It cannot invoke remote Queries/Mutations, enqueue backend work, start Bootstrap or wait for subscription initialization/network acknowledgment. Capturing the outer client does not bypass transaction guards. Its handle expires when the callback scope finishes; unawaited/escaped work follows the normal transaction contract.
 
-Subscription methods must be usable in public local transactions as well as hooks. If their generated typed facade is missing after #134, add it using existing Rust subscription commands in #17; do not introduce a hook-only implementation. Do not change #134's active implementation branch for this design.
+Subscription methods must be usable in public local transactions as well as hooks. The generated transactional facade is currently missing: add `tx.channels.subscribe(name)` and `tx.channels.unsubscribe(name)` using the existing Rust transactional Channel command. Both resolve with no value after changing local intent; neither returns a live Subscription or waits for a connection. Do not reuse the standalone facade, whose subscribe returns a Subscription handle. No `tx.scopes` alias is needed for this new surface; repository-wide naming cleanup remains #152.
 
 Handler Model writes do not call `onStore` again. All handlers participating in one application transaction share its fate: a failure rolls back earlier handler writes and subscription changes as well. Application code may catch and recover within its handler subject to existing transaction/savepoint rules; swallowing a poisoned transaction operation cannot turn it into a successful commit.
 
@@ -114,7 +114,7 @@ Prepare changes from incoming server authority eligible for storage, using exist
 | Local CRUD, initial optimism, optimistic replay or hook writes | No hook of their own |
 | Receipt settlement without newly applied authority | No hook merely for queue deletion, rejection rollback or companion settlement |
 
-`store: false` is not a blanket hook-disable switch. Under Q7 it suppresses extra authority from explicit Model outputs, but mutation-input and handler-reported authority is mandatory and may still invoke hooks. A Query with no stored authority does not invoke hooks, including when its once result snapshot is persisted. Hook registration does not force a result to be stored.
+`store: false` is not a blanket hook-disable switch. Under Q7 it suppresses extra authority from explicit Model outputs, but Mutation-input authority is mandatory and may still invoke hooks. Under merged #140, an extra `ctx.touch` is not automatically returned to the caller: it triggers a hook only if authority subsequently reaches this client through a stored result or a subscribed Channel. Removing Channel membership does not manufacture a Model deletion. A Query with no stored authority does not invoke hooks, including when its once result snapshot is persisted. Hook registration does not force a result to be stored.
 
 For directly delivered authority, a candidate that is newer than the stored stamp produces an upsert/delete input. Older, Same, equal-stamp Conflict and known loader/validation failures produce no hook input; preserve their diagnostics. A newer stamp with equal field content still produces an input. Publishing an unchanged existing version normally reuses its stamp and therefore produces none. This is not an exactly-once application-event API, and a hook input is not evidence that a commit has occurred.
 
@@ -135,17 +135,17 @@ The unit proceeds as follows:
 3. Apply the selected incoming authority under existing storage, cascade and optimistic-replay rules; stage receipt settlement, once cache writes and delivery progress in the same transaction.
 4. Commit once if callbacks and application succeed; only then publish observer changes, successful Query results, durable Call outcomes and subscription work signals.
 
-The preparation/apply split must preserve per-record failure isolation for failures known before dispatch. Preparation may use reversible internal savepoints for storage-constraint validation, but must restore rows, stamps, queue state and reports before invoking callbacks. It must not expose a prepared server row to a callback's tx reads. A storage failure discovered after callbacks (including a constraint introduced by a callback) aborts the complete local unit; never commit callback effects while silently skipping their promised incoming application. This distinction must be reviewed against the existing failure-isolation guarantees and tested, rather than implemented by simply adding a callback before apply_records.
+The preparation/apply split must preserve per-record failure isolation for failures known before dispatch. Use a reversible internal savepoint to preflight the existing delivery application when registered Models could be affected. Capture the ordered successfully staged records, then restore rows, stamps, queue state, changed-table sets, Held keys, reports and completion bookkeeping before invoking callbacks. Capture acceptance at `stage_isolated`, not by comparing final rows: repeated identities and cascades make final-row diffs insufficient. Preflight must execute the same receipt companion/settlement ordering as real application without publishing notifications or consuming lane state. Keep the current single-pass path when there are no matching registrations. It must not expose a prepared server row to a callback's tx reads. A storage failure discovered after callbacks (including a constraint introduced by a callback) aborts the complete local unit; never commit callback effects while silently skipping their promised incoming application. Preserve known per-record failures and their normal path-specific outcome: for example, Bootstrap may commit successful records with their hooks while recording a failed coverage run with unchanged historical cursor. A later hook or post-hook application failure instead rolls back the entire unit. Never retry a preflight-rejected record after callbacks and commit it without the handler input it would have required. Test this distinction against the failure-isolation guarantees; simply adding a callback before `apply_records` is insufficient.
 
 A handler may unsubscribe the Channel whose already-admitted data is being processed. The current admitted data still applies; subscription changes govern future delivery. Progress writes must be conditional on the original subscription identity still existing. Never recreate a removed registration or update a newly created same-name registration with the old cursor. Unsubscribe/resubscribe creates a new identity/origin under the existing rules. Compute final subscription/Bootstrap notifications from committed state, not a pre-hook snapshot; an invalidated Bootstrap waiter follows existing closed/superseded behavior. Repeated subscribe without removing a registration remains a no-op.
 
 A failed hook or post-hook application rolls back the full transaction: hook writes, subscription changes, incoming data/stamps, settlement, cache and progress. No successful status or change event escapes rollback. Side effects through unrelated databases, network clients or logs cannot be rolled back.
 
-## 7. Failure and recovery recommendation
+## 7. Failure and recovery
 
 Classify callback failure separately as a local store-hook failure, with stable code `store_hook_failed` and Model/path context in a structured diagnostic. Preserve a same-process language cause when possible without treating it as a serializable engine value. It must not become a backend business rejection or a skipped record-read report.
 
-| Delivery | Proposed recovery |
+| Delivery | Recovery |
 | --- | --- |
 | Channel live/catch-up | Keep the prior durable cursor, report the local failure and use existing lane backoff/catch-up recovery. Never advance past the failed unit or spin immediately. |
 | Bootstrap historical | Keep prior historical progress; fail the affected run through existing Bootstrap failure reporting after rollback. Explicit Bootstrap retry starts recovery from committed progress. Failure-state bookkeeping is a separate guarded transaction, not progress advancement. |
@@ -153,13 +153,13 @@ Classify callback failure separately as a local store-hook failure, with stable 
 | Direct Query/Mutation | Reject the invocation with the local-application error. Do not automatically re-invoke business logic or enqueue it. The backend outcome may already be successful; starting a fresh Mutation is not a safe retry recipe. No new public response-retry handle or durable response inbox in this issue. |
 | Coalesced once fetch | All joined callers observe the local failure; no new cached success commits, and a previous valid cache entry survives the rollback. |
 
-This recommendation deliberately makes hook code part of the local transaction's success condition. A permanently throwing hook can stop its Channel or the currently frozen uplink batch; other already runnable clients/tasks should remain serviceable, but the single-batch uplink cannot advance past an uncommitted receipt. This is wider coupling than a per-record loader error and must be explicit in the final guarantee update. It does not change existing loader/validation failure isolation. Do not promise per-record hook failure isolation while sharing one callback transaction across the delivery.
+This contract makes hook code part of the local transaction's success condition. A permanently throwing hook can stop its Channel or the currently frozen uplink batch; other already runnable clients/tasks should remain serviceable, but the single-batch uplink cannot advance past an uncommitted receipt. This is wider coupling than a per-record loader error and must be explicit in the final guarantee update. It does not change existing loader/validation failure isolation. Do not promise per-record hook failure isolation while sharing one callback transaction across the delivery.
 
-The draft recommends this strict rollback behavior to preserve derived-data atomicity. Skipping the failing hook would commit incomplete local invariants; durable per-record repair jobs would add a new lifecycle/storage API. Review this consequence with the user before implementation. No exactly-once claim applies to callbacks: an aborted unit can invoke them again on retry.
+Strict rollback preserves the agreed atomicity of derived data. Skipping the failing hook would commit incomplete local invariants; durable per-record repair jobs would introduce a separate lifecycle/storage API. This is the selected engineering default, not a promise of per-record isolation for application hooks. No exactly-once claim applies to callbacks: an aborted unit can invoke them again on retry. An unfinished callback holds this client's one database transaction; ordinary database work waits, although host network effects may finish and their responses may queue. Close must cancel the callback capability and roll back without waiting for application code to resolve. There is no automatic callback timeout in this version.
 
 ## 8. Existing evidence and implementation boundaries
 
-Inspected current Axton sources: `crates/client/src/authority.rs` (Disposition and record savepoints), `mutate.rs` (truth versus visible row), `actions.rs` (direct authority and once commit), `push.rs` (receipt settlement), and `downlink_worker.rs` (Bootstrap failures). Recheck current main and #134's final interfaces before planning implementation. Preserve separately landed #162/#163 fixes.
+Inspected current Axton sources: `crates/client/src/authority.rs` (Disposition and record savepoints), `mutate.rs` (truth versus visible row), `actions.rs` (direct authority and once commit), `push.rs` (receipt settlement), and `downlink_worker.rs` (Bootstrap failures). This revision was checked against main `1fc412f`, including `runtime/transactions.rs`, `runtime/direct.rs`, `runtime/lanes.rs`, `runtime/protocol.rs`, `bootstrap.rs` and the TS/Dart callback bridges. Rebase onto the latest main including #167 before implementing; preserve #162/#163 replica and progress fences.
 
 Oasis is a behavioral reference, not the target transaction boundary. Its current `local-sync/client/local_sync/lib/src/downlink/downlink_page_processor.dart` uses one transaction per incoming change; its typed hook includes old/new snapshots and equal-content reapplications. Axton keeps its existing whole-page/receipt boundaries and record-stamp deduplication. Oasis application use in `mobile/lib/data/local_sync/runtime/open_local_sync.dart` demonstrates local derived writes and subscription intent updates. Do not copy its publication ownership/eviction mechanisms or legacy transaction Mutation surface.
 
@@ -174,4 +174,4 @@ No schema annotation, server-history storage, backend protocol version, business
 - Retry does not reexecute durable backend handlers; local hook failure never becomes backend rejection; no success or watcher update escapes rollback.
 - #134 bridge boundaries: owned callback commands make progress, ordinary tasks cannot enter the active transaction, async callbacks and stale/escaped handles fail correctly, close rolls back without orphaned waiters, supported SDKs agree.
 
-Use the [testing strategy](../../engineering/testing/strategy.md) and [running guide](../../engineering/testing/running.md). Preparation consists of source/test inspection and documentation checks only; no implementation tests have been executed. A separate implementation plan follows user review of this spec, not this draft alone.
+Use the [testing strategy](../../engineering/testing/strategy.md) and [running guide](../../engineering/testing/running.md). Preparation consists of source/test inspection and documentation checks only; no hook implementation tests have been executed. The [implementation plan](../plans/2026-09-26-17-on-store-plan.md) defines the runtime, authority, SDK and verification checkpoints; the [handoff](../plans/2026-09-26-17-on-store-handoff.md) supplies execution scope.

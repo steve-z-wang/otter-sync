@@ -11,6 +11,7 @@ import { createBackend, devAuth } from './generated/backend.ts';
 import { database } from './database.ts';
 import { mutations, queries } from './handlers.ts';
 import { loaders } from './loaders.ts';
+import { loads } from './loads.ts';
 
 const backend = createBackend<Tx>({
   database,
@@ -18,13 +19,14 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
+  loads,
   onError: error => console.error(error),
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);
 ```
 
-`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts` and `loaders.ts` contain the implementations below.
+`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts`, `loaders.ts` and `loads.ts` contain the implementations below.
 
 The generated `Options<Tx>` requires:
 
@@ -35,8 +37,9 @@ The generated `Options<Tx>` requires:
 | `mutations: Mutations<Tx>` | Implement each retained Mutation version |
 | `queries: Queries<Tx>` | Implement each retained Query version |
 | `loaders: Loaders<Tx>` | Implement the read function for each supported model version |
+| `loads: Loads<Tx>` | Implement the page handler of each retained Load version ([Load handlers](#load-handlers)) |
 
-`mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
+`mutations`, `queries` or `loads` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
 
 ## What your backend owns
 

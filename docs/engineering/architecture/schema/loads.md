@@ -52,7 +52,7 @@ Code: the grammar in [compiler/parse.rs](../../../../crates/compiler/src/parse.r
 - **The declaration, its outputs and its names are validated at the member, and Loads share the operation namespace.** Evidence: [compiler/tests/loads.rs](../../../../crates/compiler/tests/loads.rs); hand-written descriptors in [core/tests/loads.rs](../../../../crates/core/tests/loads.rs) `malformed_load_descriptors_are_refused`, `loads_never_route_as_actions`, `schemas_without_loads_serialize_unchanged`.
 - **Versions are retained, a retained Load cannot be removed or change kind, and other histories stay byte-identical.** Evidence: [compiler/tests/history.rs](../../../../crates/compiler/tests/history.rs) `same_version_breaking_load_changes_need_a_new_version`, `load_version_two_retains_version_one_and_its_model_reader`, `retained_loads_cannot_be_removed_or_change_kind`; [compiler/tests/cli.rs](../../../../crates/compiler/tests/cli.rs) `cli_retains_load_history_without_rewriting_other_histories`.
 
-The checkpoint 1 report of #173 records these passing under `cargo test -p axton-core -p axton-compiler --locked`, and a byte-identical comparison of generated outputs for schemas without Loads.
+Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked`); generated outputs for schemas without Loads were compared byte for byte with the pre-Load compiler the same day.
 
 ## 11. Risks and Technical Debt
 

@@ -1,8 +1,10 @@
 """Typecheck client snippets directly from the maintained Markdown sources.
 
 Snippets fenced with title="action-contract" are checked against the
-Mutation and Query fixture in integration/action-contract; the others against
-the round-trip Entry fixture.
+Mutation, Query and Load fixture in integration/action-contract; the others
+against the round-trip Entry fixture. The Load guide is its own fixture: its
+schema snippet is compiled, and its TypeScript and Dart snippets are checked
+against what that schema generates.
 
 Run after scripts/build.sh, npm ci at the root, and Dart package resolution.
 The real HTTP/SQLite behavior is covered by integration/e2e/run.sh.
@@ -22,6 +24,9 @@ SOURCES = {
 }
 BACKEND_SOURCES = ['website/docs/backend/api.md', 'website/docs/backend/database.md',
                    'website/docs/backend/setup.md']
+LOAD_GUIDE = 'website/docs/frontend/loads.md'
+TSC_FLAGS = ['--noEmit', '--strict', '--exactOptionalPropertyTypes', '--skipLibCheck', '--target', 'ES2022',
+             '--module', 'NodeNext', '--moduleResolution', 'NodeNext', '--allowImportingTsExtensions']
 
 
 def snippets(language, sources=None, *, context='ordinary'):
@@ -38,6 +43,36 @@ def snippets(language, sources=None, *, context='ordinary'):
             line = text[:match.start()].count('\n') + 1
             result.append((f'{source}:{line}', code))
     return result
+
+
+def check_load_guide():
+    """Compile the Load guide's schema, then check its client and backend
+    TypeScript and its Dart against the generated code."""
+    (source, schema), = snippets('text', [LOAD_GUIDE])
+    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
+        directory = Path(temp)
+        (directory / 'schema.model').write_text(schema)
+        subprocess.run([str(ROOT / 'target/debug/axton'), 'compile', str(directory), str(directory / 'generated'),
+                        '--backend-runtime', '../../../server/index.mts',
+                        '--client-runtime', '../../../client-js/index.mts'], cwd=ROOT, check=True)
+        print(f'Compiled schema from {source}')
+        ts = directory / 'examples.mts'
+        ts.write_text('''import type { Loads } from './generated/backend.ts';
+import type { GeneratedClient } from './generated/client.ts';
+type Tx = unknown;
+declare const client: GeneratedClient;
+declare function readTodoIds(tx: Tx, userId: string, projectId: string, after: string | null, limit: number): Promise<string[]>;
+''' + '\n'.join(f'// {source}\nasync function example{i}() {{\n{code.replace("export const", "const")}\n}}'
+                  for i, (source, code) in enumerate(snippets('ts', [LOAD_GUIDE]))))
+        subprocess.run([str(ROOT / 'node_modules/.bin/tsc'), *TSC_FLAGS, str(ts)], cwd=ROOT, check=True)
+        dart = directory / 'examples.dart'
+        dart.write_text('''// ignore_for_file: unused_local_variable
+import 'generated/generated.dart';
+late GeneratedClient client;
+''' + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}'
+                  for i, (source, code) in enumerate(snippets('dart', [LOAD_GUIDE]))))
+        subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/dart', check=True)
+    print(f"Typechecked {len(snippets('ts', [LOAD_GUIDE]))} TypeScript and {len(snippets('dart', [LOAD_GUIDE]))} Dart Load guide snippets.")
 
 
 def check():
@@ -116,13 +151,14 @@ declare const backend: ReturnType<typeof createBackend<Prisma.TransactionClient>
                         '--allowImportingTsExtensions', str(backend)], cwd=ROOT, check=True)
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/action-contract') as temp:
         backend = Path(temp) / 'backend.mts'
-        backend.write_text('''import { Todo, CallRejected, createBackend, devAuth, type MutationContext, type Mutations, type Queries, type Loaders, type TodoIdentity } from '../backend.ts';
+        backend.write_text('''import { Todo, CallRejected, createBackend, devAuth, type MutationContext, type Mutations, type Queries, type Loaders, type Loads, type TodoIdentity } from '../backend.ts';
 import type { Database } from '../../../packages/server/index.mts';
 type Tx = unknown;
 declare const database: Database<Tx>;
 declare const mutations: Mutations<Tx>;
 declare const queries: Queries<Tx>;
 declare const loaders: Loaders<Tx>;
+declare const loads: Loads<Tx>;
 declare function saveTodo(tx: Tx, todo: unknown): Promise<void>;
 declare function searchTodos(tx: Tx, userId: string, text: string, cursor: string | null): Promise<{ ids: string[]; next: string | null }>;
 declare function loadVisibleTodo(tx: Tx, userId: string, id: TodoIdentity): Promise<Todo | null>;
@@ -140,6 +176,7 @@ declare function loadVisibleTodo(tx: Tx, userId: string, id: TodoIdentity): Prom
             subprocess.run([str(ROOT / 'target/debug/axton'), 'compile', str(directory),
                             str(directory / 'generated')], cwd=ROOT, check=True)
             print(f'Compiled schema from {source}')
+    check_load_guide()
     print(f"Typechecked {len(snippets('ts')) + len(snippets('ts', BACKEND_SOURCES))} TypeScript, {len(snippets('ts', context='operation')) + len(snippets('ts', BACKEND_SOURCES, context='operation'))} Mutation/Query TypeScript, {len(snippets('dart'))} Dart and {len(snippets('dart', context='operation'))} Mutation/Query Dart documentation snippets.")
 
 

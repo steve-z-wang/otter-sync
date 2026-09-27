@@ -50,7 +50,7 @@ A handler or Loader throw, including a statement or lock timeout inside it, is a
 - **Existing stamps are never rewritten, and a page of 1,000 identities takes a fixed number of host round trips.** Evidence: `existing_stamps_are_read_without_rewriting_and_only_missing_ones_start_at_one`, `a_thousand_identity_page_takes_a_fixed_number_of_host_round_trips`, `repeated_identities_are_resolved_once_per_record_with_one_stamp_and_one_loader_read_per_model`; on PostgreSQL, `a 1,000-identity page resolves with one stamp and one Loader round trip`.
 - **The context is read-only, the answer is judged by the engine, and continuation state is bounded in both directions.** Evidence: `the_load_context_is_read_only_and_a_forged_settlement_is_refused`, `data_that_is_not_exactly_the_declared_identity_lists_is_an_invalid_handler_answer`, `continuation_state_is_bounded_portable_json_in_both_directions`, `unknown_operations_invalid_args_and_undeclared_contracts_are_saved_item_rejections`; the bridge in [host-contract.test.mjs](../../../../../integration/persistence/server/host-contract.test.mjs).
 
-The checkpoint 2 report of #173 records `cargo test -p axton-server --locked` and `bash integration/persistence/server/run.sh` (PostgreSQL 14.23) passing; commit loss and pool timeout are simulated with transaction wrappers, not a severed connection.
+Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked` and `bash integration/persistence/server/run.sh` on a disposable PostgreSQL 14 cluster); commit loss and pool timeout are simulated with transaction wrappers, not a severed connection.
 
 ## 11. Risks and Technical Debt
 

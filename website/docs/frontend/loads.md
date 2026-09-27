@@ -11,7 +11,7 @@ model Todo {
   id String
   projectId String
   title String
-  @@id([id])
+  @@id(id)
 }
 
 load ProjectTodos(projectId String) {
@@ -26,12 +26,8 @@ A `load` takes ordinary inputs, like a Query, and declares one or more outputs, 
 ```ts
 import type { Loads } from './generated/backend.ts';
 
-// Tx is your database transaction type.
-// Application-provided: one keyset page of Todo ids the user may read.
-declare function readTodoIds(
-  tx: Tx, userId: string, projectId: string, after: string | null, limit: number,
-): Promise<string[]>;
-
+// Tx is your database transaction type. readTodoIds(tx, userId, projectId,
+// after, limit) is your query for one keyset page of Todo ids the user may read.
 export const loads: Loads<Tx> = {
   async projectTodos({ ctx, args, continuation }) {
     const after = continuation === null
@@ -48,7 +44,7 @@ export const loads: Loads<Tx> = {
 
 Pass `loads` to `createBackend` beside `mutations`, `queries` and `loaders`; it is required when the schema declares a Load. Register a bare function for a Load that has only version 1, or `{ v1, v2 }` for retained versions. The handler receives `{ ctx, args, continuation }`: decoded arguments (a `DateTime` is a `Date`), and a `ctx` with `tx`, `userId`, the page's `callId` and the job's `loadId`, and no `touch` or `channel`. It returns `data`, one list of identities per declared output, and `next`. The generated `{Name}HandlerOutput` type (`ProjectTodosHandlerOutput`) names that return value.
 
-- **Continuation.** `continuation` is `null` for the first page and afterwards the previous page's `next`. Return `next: null` to finish, or `{ state }` to ask for another page; `{ state: null }` is a valid state, distinct from finishing. State is any portable JSON up to 64 KiB and 64 levels deep: no `undefined`, functions, `BigInt`, `NaN` or class instances. Encode dates and integers beyond the JavaScript safe range as strings. Invalid state fails the page with `load.invalid_continuation`.
+- **Continuation.** `continuation` is `null` for the first page and afterwards the previous page's `next`. Return `next: null` to finish, or `{ state }` to ask for another page; `{ state: null }` is a valid state, distinct from finishing. State is any portable JSON up to 64 KiB and 64 levels deep: no `undefined`, functions, `BigInt`, `NaN`, class instances or strings with a lone UTF-16 surrogate. Encode dates and integers beyond the JavaScript safe range as strings. Invalid state fails the page with `load.invalid_continuation`.
 - **Termination is yours.** AXTON never compares states and never ends a Load because a page was empty or repeated a state. A handler that always returns a `next` never finishes. A final empty page is fine.
 - **Consistency is yours.** Each page runs in its own database transaction; nothing holds a snapshot across pages. Choose a stable order (a keyset, as above), and decide how rows that change, move or are deleted between pages are treated, for example with a cutoff stored in the state.
 - **Read-only.** A Load must not change business data. AXTON cannot inspect your SQL, so this is your responsibility, as for Queries.
@@ -163,7 +159,7 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
 | `cancelled` | Stopped by `cancel()` |
 
 - **`retry()`** restarts a failed job from its last stored page with a new request; pages already stored stay. It may fail again if the cause remains. On a running job it does nothing; on a completed or cancelled job it fails with `load.not_retryable`: start a new Load instead. `wait()` on a failed job rejects at once with its error, so call `wait()` again after `retry()`.
-- **`cancel()`** stops a pending or failed job, with the error `load.cancelled`, and ignores any late response; stored pages stay. Cancelling a completed job changes nothing.
+- **`cancel()`** stops any job that is not complete or cancelled, with the error `load.cancelled`, and ignores any late response; stored pages stay. Cancelling a completed job changes nothing.
 - **`forget()`** removes a completed, failed or cancelled job (`load.not_terminal` for a running one); `get` then returns `null`, and later calls through an old handle fail with `load.not_found`. Jobs are never removed automatically.
 - **`dispose()`** stops this handle's observers only; the job continues. A handle you never dispose stays in memory until the client closes, because it keeps receiving status snapshots, so dispose handles you no longer watch. `get` returns a new handle each time; several handles to one job share its ID and state.
 
@@ -185,7 +181,7 @@ If the backend refuses a whole request with another 4xx status (not 408 or 429),
 
 ## Schema changes
 
-A compatible schema change keeps every job. A job whose Load or Model version is no longer in the schema fails with `load.contract_unavailable`. When a schema change [rebuilds the local database](storage.md#change-the-schema), Loads do not move to the new database: existing handles and `wait()` calls reject with `load.schema_changed`, the rebuild report lists the abandoned Load IDs, `get` returns `null` for them, and a `once` call starts fresh. While the old database stays open for unsent Mutations, Loads pause: starting, retrying or invalidating a Load fails with `load.schema_pending`, while `get`, `list`, `cancel` and `forget` still work.
+A compatible schema change keeps every job. A job whose Load or Model version is no longer in the schema fails with `load.contract_unavailable`. When a schema change [rebuilds the local database](storage.md#change-the-schema), Loads do not move to the new database: existing handles end with a `failed` status whose error is `load.schema_changed`, pending `wait()` calls and every later call through those handles reject with that code, the rebuild report lists the abandoned Load IDs (`abandonedLoads`), `get` returns `null` for them, and a `once` call starts fresh. While the old database stays open for unsent Mutations, Loads pause: starting, retrying or invalidating a Load fails with `load.schema_pending`, while `get`, `list`, `cancel` and `forget` still work.
 
 ## Background and device limits
 
@@ -197,7 +193,8 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 
 | Code | Meaning |
 | --- | --- |
-| `load.invalid_options` | `refresh` without `once`, an option that is not a Boolean, or a `list` limit outside 1 to 100; nothing was started |
+| `load.invalid_options` | `refresh` without `once`, an option that is not a Boolean, or a `list` limit outside 1 to 100; in TypeScript also options that are not an object or name another option; nothing was started |
+| `transaction_active` | A Load call from inside `client.transaction` or an `onStore` callback |
 | `load.unknown` | No Load of that name and version in this client's schema |
 | `load.invalid_args` | The start or invalidation arguments do not match the Load's inputs; nothing was written |
 | `load_version_unsupported`, `load.invalid`, `model_version_unsupported` | The backend does not retain this Load version, refused its arguments, or does not retain a Model version the client stores |
@@ -206,16 +203,16 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | `load.invalid_continuation` | The handler returned a `next` that is missing, malformed, not portable JSON or over its limits |
 | `load.record_unavailable` | A Loader returned `null` for an identity the page listed |
 | `load.page_too_large` | The page exceeded 1,000 identities or 1 MiB; change the handler's page size |
-| `load.store_failed` | A record could not be stored locally; the page was not stored |
+| `load.store_failed` | A record could not be stored locally; the page was not stored, and your `onError` receives an `AxtonReport` naming each refused record's Model and identity |
 | `load.hook_failed` | An `onStore` callback threw; the page and the callback's writes were rolled back |
 | `load.protocol_invalid` | The response for this page was malformed, or the backend refused the page's request on its own with a 4xx status |
-| `load.request_too_large` | The page's request exceeds 1 MiB even on its own, for example because of very large arguments or state |
+| `load.request_too_large` | The page's request exceeds 1 MiB even on its own: arguments that large fail the start and nothing is stored; a state that large fails the Load |
 | `load.unauthorized` | Credential refresh was refused |
 | `load.cancelled` | The job was cancelled |
 | `load.contract_unavailable` | The job's Load or Model version is no longer in the schema |
 | `load.schema_pending`, `load.schema_changed` | A local schema rebuild is pending, or replaced the database |
 | `load.not_retryable`, `load.not_terminal`, `load.not_found` | `retry()` of a completed or cancelled job, `forget()` of a running one, or a forgotten job |
-| `load.ledger_invalid` | A local job or once record is damaged |
+| `load.ledger_invalid` | A local job or once record is damaged; when a once record names a missing job, `invalidate` removes it so the next `once` call starts fresh |
 | `client_closed` | The client closed while waiting |
 
 `server.unavailable` and `transaction.conflict` are backend faults the client retries on its own; they never fail a Load.

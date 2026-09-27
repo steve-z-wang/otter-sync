@@ -24,7 +24,7 @@ Code: [client/loads.rs](../../../../../crates/client/src/loads.rs) (operations, 
 
 Arguments that do not normalize against the Load's inputs fail the start (plain, once or refresh) or the invalidation with `load.invalid_args` before anything is written.
 
-The first request is checked against the 1 MiB request bound before it is stored. A start with `once` decides from a committed read, so a join or reuse commits nothing, then decides again inside the write transaction, so concurrent same-key starts resolve to one job. The key is SHA-256 of canonical `{format: 1, name, version, args, models}`: invocation normalization of the arguments (object key order, UUID case and equivalent date offsets normalize; list order and explicit `null` do not; a no-argument Load uses `{}`) and the output Models' local read-contract versions. It never contains a continuation, call ID, job or run, the options or credentials.
+The first request is checked against the 1 MiB request bound before it is stored; arguments that push it over the bound fail the start with `load.request_too_large`, the code dispatch gives such a page, and nothing is written. A start with `once` decides from a committed read, so a join or reuse commits nothing, then decides again inside the write transaction, so concurrent same-key starts resolve to one job. The key is SHA-256 of canonical `{format: 1, name, version, args, models}`: invocation normalization of the arguments (object key order, UUID case and equivalent date offsets normalize; list order and explicit `null` do not; a no-argument Load uses `{}`) and the output Models' local read-contract versions. It never contains a continuation, call ID, job or run, the options or credentials.
 
 | Current mapping | `once: true` | `once: true, refresh: true` |
 | --- | --- | --- |
@@ -32,7 +32,8 @@ The first request is checked against the 1 MiB request bound before it is stored
 | Active (pending) | Return that job (`Joined`) | Join that job; no restart and no duplicate refresh |
 | Complete | Return the completed job (`Reused`); no request, page, `onStore` or Model change | Replace the mapping with a fresh job from the first page |
 | Failed | Return the failed job; no automatic retry | Replace the mapping with a fresh job from the first page |
-| Cancelled, forgotten or missing | Create and register a new job (a missing job is `load.ledger_invalid`) | Same |
+| Cancelled | Create and register a new job | Same |
+| Missing: the mapping names no job | `load.ledger_invalid`, until `invalidate_load` removes the mapping | Same |
 
 A refresh replaces the mapping on local acceptance, not on success: if it fails, later `once` callers see that failure, never an earlier completion. The replaced job keeps its history.
 
@@ -46,7 +47,7 @@ A refresh replaces the mapping on local acceptance, not on success: if it fails,
 | --- | --- |
 | Older, or equal with equal content, known stamp | No-op for that record; the page still commits |
 | `Diverged` pending replay | Reported; the page still commits |
-| A `readFailed`, `skipped` or `conflict` diagnostic in preparation | Refused before any callback: terminal `load.store_failed` |
+| A `readFailed`, `skipped` or `conflict` diagnostic in preparation | Refused before any callback: terminal `load.store_failed`; the runtime reports those records in a records report, as for other deliveries |
 | A callback throws | The whole page rolls back, callback writes included: terminal `load.hook_failed` with the Model and its identities |
 | A preparation, replay or commit error | Nothing advances; retried under the same call ID with class `local` |
 | A malformed correlated page, too many identities or bytes, an invalid `next` | Terminal `load.protocol_invalid`, `load.page_too_large` or `load.invalid_continuation` |
@@ -57,7 +58,7 @@ A terminal failure is recorded in its own short transaction after the rollback. 
 
 **Explicit retry.** `retry_load` on a failed job increments the run, freezes a fresh call ID and a new intent at the last committed continuation in one transaction; committed Models, callback writes and the page count stay, and replies to the old call are inert. It applies to a backend rejection as well as a local failure and promises nothing: a persisting failure fails the new run again. On a pending job it is idempotent. A complete or cancelled job is `load.not_retryable`, and a version that is no longer retained is `load.contract_unavailable`.
 
-**Cancel and forget.** Cancel moves a pending or failed job to `cancelled` with the error `load.cancelled`, clears its frozen page and fences late replies; committed pages stay, and cancelling a complete or cancelled job changes nothing. Forget removes a terminal job (`load.not_terminal` otherwise); `get` then answers null, and later management calls on that ID fail with `load.not_found`. `get` of a string that is not a UUID answers null. `list_loads` accepts a limit from 1 to 100 (`load.invalid_options` otherwise), newest first. No terminal job is removed automatically.
+**Cancel and forget.** Cancel moves a pending or failed job to `cancelled` with the error `load.cancelled`, clears its frozen page and fences late replies; committed pages stay, and cancelling a complete or cancelled job changes nothing. Forget removes a terminal job (`load.not_terminal` otherwise); `get` then answers null, and later management calls on that ID fail with `load.not_found` (the runtime answers `load.schema_changed` instead for a job a rebuild abandoned, see [Reconciliation](../storage/reconciliation.md#6-runtime-view)). `get` of a string that is not a UUID answers null. `list_loads` accepts a limit from 1 to 100 (`load.invalid_options` otherwise), newest first. No terminal job is removed automatically.
 
 **Schema changes.** Opening a client fails, in its opening transaction, every pending job whose frozen Load version is no longer retained or whose frozen output Model versions no longer match, with `load.contract_unavailable`; retained versions keep the exact row and frozen page. A pending incompatible rebuild and the rebuild itself follow [Reconciliation](../storage/reconciliation.md#6-runtime-view): jobs park, then the rebuild abandons them.
 
@@ -77,7 +78,7 @@ A terminal failure is recorded in its own short transaction after the rollback. 
 - **Once shares a job per key, and no old job can restore or erase a newer mapping** (N6, N7). Evidence: `once_starts_of_one_key_share_one_job_and_ordinary_starts_ignore_it`, `a_completed_once_hit_works_offline_across_reopen_without_applying_anything`, `the_once_key_normalizes_arguments_and_separates_versions_and_contracts`, `a_failed_once_job_is_returned_without_an_automatic_retry`, `refresh_joins_active_work_and_replaces_terminal_work_on_acceptance`, `invalidation_removes_mappings_across_versions_and_nothing_else`, `completion_after_invalidation_or_replacement_never_restores_a_mapping`, `cancel_removes_its_own_mapping_and_complete_cancel_keeps_it`, `a_mapping_to_a_missing_job_is_a_visible_ledger_error`.
 - **A compatible reopen keeps retained jobs and fails removed versions.** Evidence: `a_compatible_reopen_keeps_retained_jobs_and_fails_removed_versions`.
 
-The checkpoint 3 and 4 reports of #173 record these passing under `cargo test -p axton-sqlite --locked`; there is no multi-process race test for same-key starts, because one runtime actor serializes them.
+Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked`); there is no multi-process race test for same-key starts, because one runtime actor serializes them. The same rules over real HTTP, PostgreSQL and process kills are in [End-to-end](../../../testing/end-to-end.md).
 
 ## 11. Risks and Technical Debt
 

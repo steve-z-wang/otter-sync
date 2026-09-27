@@ -201,12 +201,14 @@ test("a newer live update that arrives before an older Load page keeps the newer
   let client: GeneratedClient | undefined;
   let writer: GeneratedClient | undefined;
   try {
-    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
-    await writer.mutations.call.addItem({ item: { id: "live-1", project: "live", title: "v1" } });
-    await writer.mutations.call.addItem({ item: { id: "live-2", project: "live", title: "v1" } });
+    // The subscription's origin is its first acknowledged head: it is ready
+    // before the writes it must receive live.
     client = await GeneratedClient.open({ path: reader.path, server: server(), onStore: hooks });
     const subscription = await client.scopes.subscribe("items:live");
     await wait(() => subscription.status.initialization === "ready", "the live subscription");
+    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
+    await writer.mutations.call.addItem({ item: { id: "live-1", project: "live", title: "v1" } });
+    await writer.mutations.call.addItem({ item: { id: "live-2", project: "live", title: "v1" } });
     await wait(async () => (await client!.models.item.get({ id: "live-1" }))?.title === "v1", "the subscribed row");
 
     // The page's Loader has read live-1 at v1 and waits before answering.
@@ -318,7 +320,8 @@ test("a client killed while applying a page the backend committed replays that e
     assert.equal((await first.exit).signal, "SIGKILL");
     const lost = pagesOf(loadId).find((page) => itemIds(page.answer)?.includes("crash-3"))!;
     assert.equal(lost.answer!.outcome.status, "succeeded", "the backend committed page 2 and the client received it");
-    const stamps = await stampsOf(ids);
+    // Pages 1 and 2 are stamped; page 3 is not requested yet.
+    const stamps = await stampsOf(ids.slice(0, 4));
     const since = proxy.loads().length;
 
     const second = child("resume", proxy.url, path, loadId);
@@ -328,7 +331,7 @@ test("a client killed while applying a page the backend committed replays that e
     assert.equal(done.status.phase, "complete");
     assert.equal((await second.exit).code, 0, second.stderr.join(""));
     await assertReplayed({ path, loadId, lost: { request: lost.request, answer: lost.answer! }, ids, pages: 4, since });
-    assert.deepEqual(await stampsOf(ids), stamps, "the replay allocated no stamp");
+    assert.deepEqual(await stampsOf(ids.slice(0, 4)), stamps, "the replay allocated no stamp");
   } finally { await cleanup(); }
 });
 
@@ -344,6 +347,7 @@ test("a client killed after the backend committed a page but before its response
     assert.equal(answer.outcome.status, "succeeded", "the backend committed page 2");
     first.kill();
     assert.equal((await first.exit).signal, "SIGKILL");
+    await held.clientGone;
     held.release();
     await proxy.until(() => exchange.dropped === "response", "the undelivered response");
     const request = (JSON.parse(exchange.body).loads as LoadRequestItem[]).find((item) => item.loadId === loadId)!;

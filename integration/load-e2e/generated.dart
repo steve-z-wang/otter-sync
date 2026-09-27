@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
 export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException;
+export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]}') as Map<String,dynamic>;
@@ -388,6 +389,21 @@ class QueuedQueries {
 class QueryInvalidations {
  final Client client; QueryInvalidations(this.client);
 }
+/// Loads resolve after durable local acceptance with a [Load] handle and need no connection; `once` reuses the job an earlier once start registered, [invalidate] removes that registration offline, [get] reattaches by ID and [list] shows the most recent jobs.
+class Loads {
+ final Client client; Loads(this.client);
+ late final LoadInvalidations invalidate = LoadInvalidations(client);
+ Future<Load> catalog({required String? shelf, bool once = false, bool refresh = false}) => client.startLoad('Catalog', 1, {'shelf': shelf}, once: once, refresh: refresh);
+ Future<Load> projectItems({required String project, bool once = false, bool refresh = false}) => client.startLoad('ProjectItems', 1, {'project': project}, once: once, refresh: refresh);
+ Future<Load?> get(String id) => client.getLoad(id);
+ Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);
+}
+/// Removes the once registrations of one Load argument set across its retained versions, offline; no job is cancelled and no Model deleted.
+class LoadInvalidations {
+ final Client client; LoadInvalidations(this.client);
+ Future<void> catalog({required String? shelf}) => client.invalidateLoad('Catalog', {'shelf': shelf});
+ Future<void> projectItems({required String project}) => client.invalidateLoad('ProjectItems', {'project': project});
+}
 class LiveModels { final Client port; LiveModels(this.port);
  late final ItemLiveModel item = ItemLiveModel(port);
  late final TagLiveModel tag = TagLiveModel(port);
@@ -427,6 +443,8 @@ class GeneratedClient {
  late final Mutations mutations = Mutations(client);
  /// Direct by default; `queries.enqueue` accepts durably.
  late final Queries queries = Queries(client);
+ /// Native Loads: resolve after durable local acceptance with a [Load] handle; `once` reuses a registered job and [Loads.invalidate] removes that registration.
+ late final Loads loads = Loads(client);
  GeneratedClient._(this.client, this.connection);
  /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
  static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {

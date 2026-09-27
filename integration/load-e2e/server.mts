@@ -183,7 +183,7 @@ export type Exchange = {
   /** `request`: cut before the backend saw it; `response`: the backend answered, the client never got it. */
   dropped?: "request" | "response";
 };
-type Rule = { match: (exchange: Exchange) => boolean; used: boolean; run: (exchange: Exchange) => Promise<void> };
+type Rule = { match: (exchange: Exchange) => boolean; used: boolean; run: (exchange: Exchange, socket: Socket) => Promise<void> };
 export type Proxy = Awaited<ReturnType<typeof createProxy>>;
 
 /**
@@ -227,7 +227,7 @@ async function createProxy(target: string) {
       return;
     }
     const rule = rules.find((candidate) => !candidate.used && candidate.match(exchange));
-    if (rule) { rule.used = true; await rule.run(exchange); }
+    if (rule) { rule.used = true; await rule.run(exchange, request.socket); }
     if (down || request.socket.destroyed) {
       exchange.dropped = "response";
       request.socket.destroy();
@@ -255,7 +255,7 @@ async function createProxy(target: string) {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address() as { port: number };
-  const rule = (match: (exchange: Exchange) => boolean, run: (exchange: Exchange) => Promise<void>) => { rules.push({ match, used: false, run }); };
+  const rule = (match: (exchange: Exchange) => boolean, run: Rule["run"]) => { rules.push({ match, used: false, run }); };
   const releases = new Set<() => void>();
   return {
     url: `http://127.0.0.1:${address.port}`,
@@ -277,15 +277,24 @@ async function createProxy(target: string) {
         waiters.add(check);
       });
     },
-    /** Hold the first matching answered exchange's response until released. */
+    /**
+     * Hold the first matching answered exchange's response until released;
+     * `clientGone` resolves when the client's connection has closed.
+     */
     holdResponse(match: (exchange: Exchange) => boolean) {
       let arrive!: (exchange: Exchange) => void;
       let release!: () => void;
+      let gone!: () => void;
       const arrived = new Promise<Exchange>((resolve) => { arrive = resolve; });
       const released = new Promise<void>((resolve) => { release = resolve; });
+      const clientGone = new Promise<void>((resolve) => { gone = resolve; });
       releases.add(release);
-      rule(match, async (exchange) => { arrive(exchange); await released; });
-      return { arrived, release };
+      rule(match, async (exchange, socket) => {
+        if (socket.destroyed) gone(); else socket.once("close", gone);
+        arrive(exchange);
+        await released;
+      });
+      return { arrived, release, clientGone };
     },
     /** Answer nothing for the first matching exchange and cut the network (`down()`). */
     dropResponseAndGoDown(match: (exchange: Exchange) => boolean) {

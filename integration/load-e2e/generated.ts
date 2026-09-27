@@ -4,6 +4,7 @@ export interface ReadPort { read(model:string,identity:object):Promise<Record<st
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
 export interface CallPort { invokeAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<Call<T>>; invokeDirectAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<T>; invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions&OnceOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
+import type { Load, LoadOptions, LoadStatus } from './client.ts';
 export const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]} as const;
 export type MutationName = string;
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
@@ -237,6 +238,29 @@ export function makeQueries(port:CallPort) { return {
  enqueue: {
  },
  invalidate: {
+ }
+}; }
+export interface CatalogInput {
+ shelf: string | null;
+}
+function encodeCatalogInput(args:CatalogInput):Record<string,unknown> { return {
+ shelf: args.shelf === null ? null : args.shelf,
+}; }
+export interface ProjectItemsInput {
+ project: string;
+}
+function encodeProjectItemsInput(args:ProjectItemsInput):Record<string,unknown> { return {
+ project: args.project,
+}; }
+/** Loads resolve after durable local acceptance with a `Load` handle and need no connection; `once` reuses the job an earlier once start registered, `invalidate` removes that registration offline, `get` reattaches by ID and `list` shows the most recent jobs. */
+export function makeLoads(port:{ startLoad<Name extends string>(name:Name,version:number,args:object,options?:LoadOptions):Promise<Load<Name>>; getLoad(id:string):Promise<Load|null>; listLoads(options?:{limit?:number}):Promise<LoadStatus[]>; invalidateLoad(name:string,args:object):Promise<void>; }) { return {
+ catalog: (args:CatalogInput, options?:LoadOptions):Promise<Load<'Catalog'>> => port.startLoad('Catalog',1,encodeCatalogInput(args),options),
+ projectItems: (args:ProjectItemsInput, options?:LoadOptions):Promise<Load<'ProjectItems'>> => port.startLoad('ProjectItems',1,encodeProjectItemsInput(args),options),
+ get: (id:string):Promise<Load|null> => port.getLoad(id),
+ list: (options?:{limit?:number}):Promise<LoadStatus[]> => port.listLoads(options),
+ invalidate: {
+  catalog: (args:CatalogInput):Promise<void> => port.invalidateLoad('Catalog',encodeCatalogInput(args)),
+  projectItems: (args:ProjectItemsInput):Promise<void> => port.invalidateLoad('ProjectItems',encodeProjectItemsInput(args)),
  }
 }; }
 export interface LiveModels { item:ItemLiveModel; tag:TagLiveModel; seen:SeenLiveModel; }

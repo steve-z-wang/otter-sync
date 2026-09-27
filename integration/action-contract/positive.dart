@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'generated.dart';
 
 const todo = Todo(id: 't', title: 'Task', state: Status.open, note: null);
@@ -189,7 +191,44 @@ Future<EditAndReadHandlerOutput> handleEditAndRead(
   return const EditAndReadHandlerOutput(todo: TodoIdentity(id: 'B'));
 }
 
+// Client Loads (#173): business inputs are named parameters; `once` and
+// `refresh` are call-site options, `callOnce`/`callRefresh` beside inputs
+// that already take those names.
+Future<void> useLoads(GeneratedClient client) async {
+  final Load job = await client.loads.projectTodos(projectId: 'p', status: Status.open, tags: ['a'], once: true);
+  final Load refreshed = await client.loads.projectTodos(projectId: 'p', status: null, tags: [], once: true, refresh: true);
+  final Load ordinary = await client.loads.projectTodos(projectId: 'p', status: null, tags: []);
+  final Load noArgs = await client.loads.recentTodos(once: true);
+  final Load flagged = await client.loads.flaggedTodos(once: true, refresh: 'yes', callOnce: true, callRefresh: false);
+  final LoadStatus status = job.status;
+  final String name = status.name;
+  final LoadPhase phase = status.phase;
+  final int pages = status.pages;
+  final LoadException? error = status.error;
+  final StreamSubscription<LoadStatus> observer = job.watch().listen((next) => next.phase);
+  await observer.cancel();
+  await job.wait();
+  await job.cancel();
+  await job.retry();
+  await job.forget();
+  job.dispose();
+  final Load? restored = await client.loads.get(job.id);
+  final List<LoadStatus> recent = await client.loads.list(limit: 10);
+  final List<LoadStatus> defaults = await client.loads.list();
+  await client.loads.invalidate.projectTodos(projectId: 'p', status: null, tags: []);
+  await client.loads.invalidate.recentTodos();
+  await client.loads.invalidate.flaggedTodos(once: false, refresh: 'no');
+  try {
+    await job.wait();
+  } on LoadException catch (thrown) {
+    thrown.code;
+    thrown.message;
+  }
+  [refreshed, ordinary, noArgs, flagged, name, phase, pages, error, restored, recent, defaults];
+}
+
 void main() {
+  useLoads;
   composite.id;
   oldInput.todo.id;
   oldOutput.count;

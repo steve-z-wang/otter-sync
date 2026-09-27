@@ -21,6 +21,13 @@ export {
   type ReportKind,
 } from "./connection.mts";
 export type { ServerOptions } from "./live.mts";
+export {
+  LoadError,
+  type Load,
+  type LoadOptions,
+  type LoadPhase,
+  type LoadStatus,
+} from "./loads.mts";
 export type {
   BootstrapPhase,
   BootstrapStatus,

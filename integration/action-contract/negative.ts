@@ -1,5 +1,5 @@
 import * as actionBackend from "./backend.ts";
-import type { Call, GeneratedClient } from "./client.ts";
+import type { Call, GeneratedClient, Load, LoadOptions } from "./client.ts";
 import type { AddTodoInput, AddTodoOutput, EditAndReadOutput, FindTodosOutput, Note, NoteCreate, Todo, TodoIdentity, TodoUpdate, ProjectIdentity, PingOutput } from './generated.ts';
 import type { AddNotesInput as AddNotesHandlerInput, AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, EditAndReadHandlerOutput, EditHandlerOutput, FindTodosHandlerOutput, LinkHandlerOutput, LoadContext, Loaders, Loads, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
 import type { Database } from '../../packages/server/index.mts';
@@ -249,3 +249,37 @@ declare const everyLoader: Loaders<{}>;
 // @ts-expect-error A schema that retains Loads requires the loads map.
 const withoutLoads = () => actionBackend.createBackend({ database, authenticate: () => 'alice', mutations: everyMutation, queries: everyQuery, loaders: everyLoader });
 void [effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
+
+// Client Loads (#173): typed business args, call-site options apart from them.
+declare const job: Load<'ProjectTodos'>;
+// @ts-expect-error Load args keep their declared types.
+client.loads.projectTodos({ projectId: 1, status: null, tags: [] });
+// @ts-expect-error Every Load arg is present, a nullable one too.
+client.loads.projectTodos({ projectId: 'p', tags: [] });
+// @ts-expect-error A Load has only its declared args.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [], cursor: 'x' });
+// @ts-expect-error Options are never business args.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [], once: true });
+// @ts-expect-error once is a Boolean.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [] }, { once: 'yes' });
+// @ts-expect-error A Load stores every declared Model: there is no store option.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [] }, { store: false });
+// @ts-expect-error LoadOptions holds only once and refresh.
+const cursorOption: LoadOptions = { once: true, cursor: 'x' };
+// @ts-expect-error A no-argument Load still takes its (empty) args object.
+client.loads.recentTodos();
+// @ts-expect-error A Load has no aggregate business result.
+job.wait().then(result => result.todos);
+// @ts-expect-error A handle exposes no result or cursor.
+void job.result;
+// @ts-expect-error The status name is the schema operation name.
+const otherName: 'RecentTodos' = job.status.name;
+// @ts-expect-error Invalidation takes only business args.
+client.loads.invalidate.projectTodos({ projectId: 'p', status: null, tags: [] }, { once: true });
+// @ts-expect-error list takes its limit as a number.
+client.loads.list({ limit: '10' });
+// @ts-expect-error A Load is started under loads, not queries.
+client.queries.projectTodos;
+// @ts-expect-error A Mutation is not a Load.
+client.loads.addTodo;
+void [cursorOption, otherName];

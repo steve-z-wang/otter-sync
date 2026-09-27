@@ -8,6 +8,8 @@ Simulation exercises these behaviors across clients and message sequences. Real-
 
 Applications use individual operations as they would ordinary API calls. This applies to mutations and loader reads: a failure attributable to one operation must be reported for that operation, without rejecting or blocking unrelated work merely because it shares a batch, page or channel. Explicit application transactions, including an incoming-authority `onStore` callback, and declared dependencies still define shared outcomes. A callback shares the enclosing local storage transaction: its failure rolls back that unit and may cause delivery retry or block its Channel or frozen batch if it keeps failing. This does not change isolation of known per-record loader/validation failures, which are identified before callbacks. Transport or database transaction failure may require retrying delivery; it must not be reported as business rejection of every operation in that delivery.
 
+A native Load page is one operation in this sense: its declared output is applied completely or not at all (N2), so a record failure fails that page, while sibling Loads that share its HTTP batch are unrelated work. The per-record isolation of D7 belongs to Channel delivery and Bootstrap and is unchanged.
+
 ## L. Local writes
 
 | ID | Required behavior |
@@ -67,7 +69,7 @@ A3–A5 replace the earlier checkpoint contract, under which accepted optimism w
 
 ## D. Distribution
 
-Convergence assumes valid backend records, correct change and membership declarations, and eventual delivery. D7 defines isolation when an individual load fails. Convergence means authoritative content agrees after pending work settles; direct-only local data is outside that comparison.
+Convergence assumes valid backend records, correct change and membership declarations, and eventual delivery. D7 defines isolation when an individual loader read fails on a Channel page, a receipt or a Bootstrap page; it is not the rule for native Load pages, which follow [N2](#n-native-loads). Convergence means authoritative content agrees after pending work settles; direct-only local data is outside that comparison.
 
 | ID | Required behavior |
 | --- | --- |
@@ -89,6 +91,16 @@ D10 is implemented ([#151](https://github.com/zanminwang/axton/issues/151)), as 
 That last pair is the D7 boundary in practice: completing a load says the interval and the barrier were processed, never that a record whose read failed is now correct. What Bootstrap does not do is also part of the contract - no discovery of records never added to the channel, no delivery of a record removed before its page is read, no removal events or move-out rules, no deletion of local content on unsubscribe or removal, and no maintained query results. A record removed and added back before its page is read moves above the origin and is covered by ordinary delivery ([#140](https://github.com/zanminwang/axton/issues/140)). Its argument assumes retained invalidation identities, monotonic publication cursors, eventual delivery and successful authoritative reads; retention ([#61](https://github.com/zanminwang/axton/issues/61)) and eviction ([#139](https://github.com/zanminwang/axton/issues/139)) must preserve or replace that contract, and eviction must invalidate affected completion evidence before dropping data.
 
 D7 and D8 are implemented for pages and receipts ([#95](https://github.com/zanminwang/axton/issues/95), [#51](https://github.com/zanminwang/axton/issues/51), [#122](https://github.com/zanminwang/axton/issues/122)). A model the client did not declare still fails the whole pull. Inside a push a loader refusal or failure is that mutation's rejection (P6). See [Server / Pull](architecture/server/engine/pull.md#9-architecture-decisions) and [Client / Pull](architecture/client/engine/pull.md).
+
+## N. Native Loads
+
+A native Load fills local Models in successive pages until the application backend reports completion ([#173](https://github.com/zanminwang/axton/issues/173)). Each page is one typed read operation whose complete declared output must be applicable to count as loaded, analogous to a Query result. This is an intentional operation contract of its own: D7 does not promise atomic Load pages, and N2 does not change Channel delivery or Bootstrap.
+
+| ID | Required behavior |
+| --- | --- |
+| N2 | A page's record authority, the writes of its `onStore` callbacks, its continuation and its page count commit in one local transaction or not at all. A record the client cannot apply, an equal-stamp record with different content, a missing or unavailable record and a callback failure each roll back the whole page and fail that job; an older or equal already-known stamp with equal content is a valid no-op and still lets the page commit, and a `Diverged` replay is reported without failing it. No sibling Load shares that page's fate, even in the same HTTP batch, and no success, completion or status event precedes the commit. |
+
+The client ledger and page application are implemented; the Load worker, backend executor and generated APIs are not yet, so N2 is not yet observable end to end. Evidence for the local unit: [sqlite/tests/loads.rs](../../crates/sqlite/tests/loads.rs) (`a_failing_hook_leaves_no_authority_hook_write_or_progress`, `a_successful_hook_commits_with_the_page`, `one_invalid_record_refuses_the_whole_page_before_any_hook`, `a_local_constraint_failure_has_the_same_no_progress_outcome`, `stamps_decide_content_and_only_divergent_equal_stamps_fail`, `a_diverged_replay_does_not_fail_the_page`, `a_malformed_correlated_page_fails_only_its_own_job`, `a_decoded_batch_fails_only_the_malformed_item`).
 
 ## R. Resilience
 

@@ -512,3 +512,205 @@ fn a_rebuild_resets_the_bootstrap_state_with_the_fresh_identity() {
     assert_eq!(state.error, None);
     assert!(c.bootstrap_tasks().unwrap().is_empty());
 }
+
+/// The Load schema with a required field added: incompatible, so it needs a
+/// fresh replica ([#173](https://github.com/zanminwang/axton/issues/173)).
+fn load_breaking() -> Schema {
+    let mut v = load_schema_value();
+    v["models"][0]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"due","nullable":false,"type":{"kind":"scalar","name":"string"}}));
+    Schema::from_value(v).unwrap()
+}
+fn load_args() -> Value {
+    json!({"projectId":"0190f0e0-1111-7222-8333-444455556666","since":null})
+}
+fn load_fence(c: &mut Client<SqliteStore>, id: &str) -> LoadFence {
+    let job = c.get_load(id).unwrap().unwrap();
+    LoadFence {
+        replica: c.replica_generation(),
+        load_id: job.id,
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    }
+}
+fn refused_pending<T: std::fmt::Debug>(result: Result<T>) {
+    let error = result.unwrap_err().to_string();
+    assert!(error.starts_with("load.schema_pending"), "{error}");
+}
+
+#[test]
+fn a_pending_rebuild_parks_loads_and_the_rebuild_abandons_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_at(&path, load_schema());
+    let active = c
+        .start_load("Entries", 1, &load_args(), LoadOptions::default())
+        .unwrap()
+        .job;
+    let once = LoadOptions {
+        once: true,
+        refresh: false,
+    };
+    let mapped = c.start_load("Entries", 1, &load_args(), once).unwrap().job;
+    let finished = c.start_load("Recent", 1, &json!({}), once).unwrap().job;
+    let frozen = load_fence(&mut c, &finished.id);
+    c.store_load_page(&frozen, reply(load_page(&frozen, &[], None)))
+        .unwrap();
+    let failed = c
+        .start_load("Entries", 2, &load_args(), LoadOptions::default())
+        .unwrap()
+        .job;
+    let frozen = load_fence(&mut c, &failed.id);
+    c.record_load_failure(
+        &frozen,
+        &LoadFailure::Backend(LoadError {
+            code: "handler.failed".into(),
+            message: "no".into(),
+        }),
+    )
+    .unwrap();
+    c.transaction(|tx| {
+        tx.enqueue(Mutation::new(
+            "Edit",
+            vec![create("Entry", "q", json!({"text":"queued","note":null}))],
+        ))
+        .map(|_| ())
+    })
+    .unwrap();
+    let frozen_push = c.freeze().unwrap().unwrap();
+    let in_flight = load_fence(&mut c, &active.id);
+    drop(c);
+
+    let mut c = open_at(&path, load_breaking());
+    assert!(c.schema_state().pending.is_some());
+    let generation = c.generation();
+    // No start, retry or invalidation persists anything or runs.
+    refused_pending(c.start_load("Entries", 1, &load_args(), LoadOptions::default()));
+    refused_pending(c.start_load("Entries", 1, &load_args(), once));
+    refused_pending(c.start_load(
+        "Entries",
+        1,
+        &load_args(),
+        LoadOptions {
+            once: true,
+            refresh: true,
+        },
+    ));
+    refused_pending(c.retry_load(&failed.id));
+    refused_pending(c.invalidate_load("Entries", &load_args()));
+    assert_eq!(c.generation(), generation, "nothing was committed");
+    assert_eq!(table_count(&mut c, "axton_load"), 4);
+    assert_eq!(table_count(&mut c, "axton_load_once"), 2);
+    // Existing jobs neither dispatch nor apply; answers in flight are inert.
+    assert!(
+        c.load_ready_pages(8, &Default::default())
+            .unwrap()
+            .pages
+            .is_empty()
+    );
+    let parked = load_fence(&mut c, &active.id);
+    assert_eq!(parked.call_id, in_flight.call_id);
+    let late = c
+        .store_load_page(&parked, reply(load_page(&parked, &[("a", "A", 1)], None)))
+        .unwrap();
+    assert!(matches!(late, LoadStored::Stale));
+    assert_eq!(
+        c.record_load_failure(&parked, &LoadFailure::transport("x"))
+            .unwrap(),
+        None
+    );
+    assert_eq!(c.get_load(&active.id).unwrap().unwrap().pages, 0);
+    // get and list read the old ledger; cancel and forget still work.
+    assert_eq!(c.list_loads(10).unwrap().len(), 4);
+    assert_eq!(
+        c.cancel_load(&mapped.id).unwrap().phase,
+        LoadPhase::Cancelled
+    );
+    c.forget_load(&mapped.id).unwrap();
+    assert!(c.get_load(&mapped.id).unwrap().is_none());
+    // The Mutation drain is unchanged.
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen_push);
+    let r = receipt(&mut c, 1, vec![authority_of("q", Some("queued"), 1)]);
+    c.acknowledge(1, r).unwrap();
+    assert_eq!(c.pending_count().unwrap(), 0);
+
+    let report = c.rebuild(false).unwrap();
+    assert_eq!(
+        report.abandoned_loads,
+        vec![active.id.clone(), finished.id.clone(), failed.id.clone()],
+        "every job left in the old file, oldest first"
+    );
+    assert!(c.replica_generation() > parked.replica);
+    assert!(
+        c.get_load(&active.id).unwrap().is_none(),
+        "no old job reaches the new replica"
+    );
+    assert_eq!(table_count(&mut c, "axton_load"), 0);
+    assert_eq!(table_count(&mut c, "axton_load_once"), 0);
+    let late = c
+        .store_load_page(&parked, reply(load_page(&parked, &[("a", "A", 1)], None)))
+        .unwrap();
+    assert!(
+        matches!(late, LoadStored::Stale),
+        "an old replica's answer is inert"
+    );
+    let fresh = c.start_load("Recent", 1, &json!({}), once).unwrap();
+    assert_eq!(
+        fresh.kind,
+        LoadStartKind::Created,
+        "no old completion satisfies once"
+    );
+    assert_ne!(fresh.job.id, finished.id);
+}
+
+#[test]
+fn an_incompatible_open_without_unsent_work_abandons_every_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_at(&path, load_schema());
+    let first = c
+        .start_load("Entries", 1, &load_args(), LoadOptions::default())
+        .unwrap()
+        .job
+        .id;
+    let second = c
+        .start_load(
+            "Recent",
+            1,
+            &json!({}),
+            LoadOptions {
+                once: true,
+                refresh: false,
+            },
+        )
+        .unwrap()
+        .job
+        .id;
+    drop(c);
+    let mut c = open_at(&path, load_breaking());
+    let report = c.schema_state().last_rebuild.clone().unwrap();
+    assert_eq!(report.abandoned_loads, vec![first.clone(), second]);
+    assert!(c.get_load(&first).unwrap().is_none());
+    assert_eq!(table_count(&mut c, "axton_load_once"), 0);
+    // A file from before the Load ledger reports none.
+    drop(c);
+    let other = dir.path().join("plain");
+    let mut c = open_at(&other, schema());
+    seed(&mut c, "A");
+    drop(c);
+    SqliteStore::open(&other)
+        .unwrap()
+        .execute_batch("DROP TABLE axton_load; DROP TABLE axton_load_once")
+        .unwrap();
+    let c = open_at(&other, breaking());
+    assert!(
+        c.schema_state()
+            .last_rebuild
+            .clone()
+            .unwrap()
+            .abandoned_loads
+            .is_empty()
+    );
+}

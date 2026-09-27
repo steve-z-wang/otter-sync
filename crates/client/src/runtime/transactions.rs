@@ -514,8 +514,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     StoreResult::Page(report) | StoreResult::Receipt(report) => {
                         serde_json::to_value(report)?
                     }
-                    StoreResult::Direct(_) => Value::Null,
-                    StoreResult::Bootstrap(_) => Value::Null,
+                    StoreResult::Direct(_) | StoreResult::Bootstrap(_) | StoreResult::Load(_) => {
+                        Value::Null
+                    }
                 };
                 self.client.commit_session()?;
                 Ok((value, result))

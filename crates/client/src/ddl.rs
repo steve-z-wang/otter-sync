@@ -17,6 +17,8 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_mutation_prerequisite",
     "axton_rejection",
     "axton_query_cache",
+    "axton_load",
+    "axton_load_once",
 ];
 
 /// Framework tables an earlier layout kept and this one cannot open in place:
@@ -145,6 +147,23 @@ CREATE TABLE IF NOT EXISTS axton_query_cache (
   generation TEXT NOT NULL, result TEXT
 );
 CREATE INDEX IF NOT EXISTS axton_query_cache_arguments ON axton_query_cache (contract, name, version, args);
+CREATE TABLE IF NOT EXISTS axton_load (
+  load_id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, ready INTEGER NOT NULL,
+  name TEXT NOT NULL, version INTEGER NOT NULL, args TEXT NOT NULL, models TEXT NOT NULL,
+  continuation TEXT, run INTEGER NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('pending','complete','failed','cancelled')),
+  pages INTEGER NOT NULL DEFAULT 0,
+  call_id TEXT UNIQUE, intent TEXT,
+  retry TEXT CHECK (retry IN ('transport','backend','local')),
+  attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+  CHECK ((call_id IS NULL AND intent IS NULL) OR (call_id IS NOT NULL AND intent IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS axton_load_ready ON axton_load (phase, ready);
+CREATE TABLE IF NOT EXISTS axton_load_once (
+  key TEXT PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL,
+  args TEXT NOT NULL, models TEXT NOT NULL, load_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS axton_load_once_arguments ON axton_load_once (name, version, args);
 ";
 
 /// What an existing file was laid out by, decided before anything is written.

@@ -201,7 +201,7 @@ pub(super) fn schema_json(state: &SchemaState) -> Value {
 }
 /// What a rebuild reports, as `rebuild` answers it and `status()` keeps it.
 pub(super) fn rebuild_json(report: &RebuildReport) -> Value {
-    json!({"oldFile":report.old_file,"newFile":report.new_file,"reason":report.reason,"leftPending":report.left_pending,"leftDirect":report.left_direct,"abandonedCalls":abandoned_json(&report.abandoned_calls)})
+    json!({"oldFile":report.old_file,"newFile":report.new_file,"reason":report.reason,"leftPending":report.left_pending,"leftDirect":report.left_direct,"abandonedCalls":abandoned_json(&report.abandoned_calls),"abandonedLoads":report.abandoned_loads})
 }
 fn abandoned_json(calls: &[AbandonedCall]) -> Vec<Value> {
     calls

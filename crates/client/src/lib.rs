@@ -11,6 +11,8 @@ pub mod downlink_worker;
 pub mod engine;
 pub mod ledger;
 pub mod live;
+mod load_ledger;
+pub mod loads;
 mod mutate;
 mod policies;
 mod push;
@@ -34,6 +36,12 @@ pub use bootstrap::{
 pub use connection::*;
 pub use downlink_worker::*;
 pub use live::*;
+pub use load_ledger::LoadLedgerIssue;
+pub use loads::{
+    LoadApply, LoadDiagnostic, LoadFailure, LoadFence, LoadJob, LoadJobError, LoadOnceKey,
+    LoadOptions, LoadPageStep, LoadPageTask, LoadPhase, LoadRetryClass, LoadSchedule,
+    LoadStartKind, LoadStarted, LoadStatus, LoadStored, load_once_key,
+};
 pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
@@ -219,6 +227,8 @@ pub struct Client<S: ClientStore> {
     schema: Schema,
     client_id: String,
     generation: u64,
+    /// The replica generation Load fences carry: a rebuild replaces it.
+    replica: u64,
     watchers: Vec<(BTreeSet<String>, Sender<()>)>,
     session: Option<Session>,
     /// Physical rollback failure after the logical session has been taken.
@@ -275,6 +285,9 @@ pub struct RebuildReport {
     /// Live observers can terminate calls left in the prior file. A frozen
     /// call may have executed remotely; its outcome is unknown.
     pub abandoned_calls: Vec<AbandonedCall>,
+    /// Every Load job of the prior file, oldest first. None of them, nor any
+    /// once mapping, continues in the new replica.
+    pub abandoned_loads: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AbandonedCall {
@@ -406,6 +419,7 @@ impl<S: ClientStore> Client<S> {
         store.begin()?;
         let opened = (|| {
             ddl::reconcile(&mut store, &schema)?;
+            Self::reconcile_loads(&mut store, &schema)?;
             schema_store::write_descriptor(&mut store, &schema)?;
             query_cache::prune(&mut store, &query_contract)?;
             let row = store.query("SELECT client_id, generation FROM axton_client", &[])?;
@@ -444,6 +458,7 @@ impl<S: ClientStore> Client<S> {
             schema,
             client_id,
             generation,
+            replica: 1,
             watchers: vec![],
             session: None,
             physical_rollback_failure: None,
@@ -588,6 +603,7 @@ impl<S: ClientStore> Client<S> {
             // An older framework table predates Action identity columns.
             vec![]
         };
+        let abandoned_loads = abandoned_loads(&mut old)?;
         let mut client = Self::open(factory(&new_file)?, schema.clone())?;
         if !channels.is_empty() || next_subscription.is_some() {
             client.write(|e| {
@@ -609,6 +625,7 @@ impl<S: ClientStore> Client<S> {
             left_pending,
             left_direct,
             abandoned_calls,
+            abandoned_loads,
         });
         Ok(client)
     }
@@ -647,6 +664,7 @@ impl<S: ClientStore> Client<S> {
             .clone()
             .ok_or_else(|| invalid("rebuild produced no report"))?;
         fresh.watchers = std::mem::take(&mut self.watchers);
+        fresh.replica = self.replica + 1;
         *self = fresh;
         let tables: BTreeSet<String> = self.schema.models.iter().map(|m| m.name.clone()).collect();
         self.notify(tables);
@@ -1145,6 +1163,24 @@ fn count_rows<S: ClientStore>(store: &mut S, table: &str) -> Result<usize> {
         .and_then(|r| r[0].as_u64())
         .map(|n| n as usize)
         .ok_or_else(|| invalid("count failed"))
+}
+
+/// The job IDs of a prior file's Load ledger, oldest first; none when the
+/// file predates it. A damaged row names no job and cannot hold the rebuild.
+fn abandoned_loads<S: ClientStore>(store: &mut S) -> Result<Vec<String>> {
+    let tables = store.query_committed(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='axton_load'",
+        &[],
+    )?;
+    if tables.rows.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(store
+        .query_committed("SELECT load_id FROM axton_load ORDER BY seq", &[])?
+        .rows
+        .iter()
+        .filter_map(|r| r[0].as_str().map(str::to_owned))
+        .collect())
 }
 
 /// Rows the server never confirmed: visible rows without stamp evidence.

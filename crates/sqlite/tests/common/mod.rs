@@ -171,3 +171,74 @@ pub fn table_count(c: &mut Client<SqliteStore>, table: &str) -> u64 {
         .as_u64()
         .unwrap()
 }
+/// The Entry schema with native Loads ([#173](https://github.com/zanminwang/axton/issues/173)):
+/// `Entries` v1 and v2 (a `projectId` UUID and a nullable `since` date-time),
+/// the no-argument `Recent` and `Tagged` (a string list), each filling the
+/// `entries` list of Entry identities at read contract 1.
+pub fn load_schema_value() -> Value {
+    let fields = json!([
+        {"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},
+        {"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},
+        {"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}
+    ]);
+    let input = |name: &str, scalar: &str, nullable: bool, list: bool| {
+        json!({"kind":"value","name":name,"type":{"kind":"scalar","name":scalar},
+            "nullable":nullable,"list":list,"required":true,
+            "cardinality": if list { "list" } else { "single" }})
+    };
+    let load = |name: &str, version: u64, inputs: Value| {
+        json!({"name":name,"version":version,"inputs":inputs,
+            "outputs":[{"name":"entries","kind":"model","cardinality":"list","source":"handlerIdentity",
+                "model":"Entry","modelReadVersion":1,
+                "handlerType":{"kind":"identity","model":"Entry","fields":[
+                    {"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
+            "input":{"models":[],"enums":[]},"outputEnums":[]})
+    };
+    let project = json!([
+        input("projectId", "uuid", false, false),
+        input("since", "dateTime", true, false)
+    ]);
+    json!({
+        "enums":[],
+        "models":[{"name":"Entry","version":1,"identity":["id"],"fields":fields}],
+        "resultModels":[{"name":"Entry","version":1,"identity":["id"],"fields":fields,"enums":[]}],
+        "loads":[
+            load("Entries", 1, project.clone()),
+            load("Entries", 2, project),
+            load("Recent", 1, json!([])),
+            load("Tagged", 1, json!([input("tags", "string", false, true)]))
+        ]
+    })
+}
+pub fn load_schema() -> Schema {
+    Schema::from_value(load_schema_value()).unwrap()
+}
+/// A successful page answering `fence`: the Entry identities `entries` as
+/// `(id, text, stamp)` with their records, and `next` as the continuation
+/// state (`None` completes the job).
+pub fn load_page(
+    fence: &LoadFence,
+    entries: &[(&str, &str, u64)],
+    next: Option<Value>,
+) -> LoadPageResponse {
+    LoadPageResponse {
+        load_id: fence.load_id.clone(),
+        call_id: fence.call_id.clone(),
+        outcome: LoadOutcome::Succeeded {
+            data: json!({"entries": entries.iter().map(|(id, _, _)| json!({"id": id})).collect::<Vec<_>>()}),
+            next: next.map(|state| Continuation { state }),
+        },
+        records: entries
+            .iter()
+            .map(|(id, text, stamp)| authority_of(id, Some(text), *stamp))
+            .collect(),
+    }
+}
+/// The correlated reply a decoded response carries for a well-formed `page`.
+pub fn reply(page: LoadPageResponse) -> LoadPageReply {
+    LoadPageReply {
+        load_id: page.load_id.clone(),
+        call_id: page.call_id.clone(),
+        page: Ok(page),
+    }
+}

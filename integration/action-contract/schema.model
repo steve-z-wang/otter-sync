@@ -26,6 +26,12 @@ mutation RemoveTodo(todo Todo.delete)
 mutation Search(query String?)
 mutation DeleteTodo(todo Todo.delete)
 mutation SendEmail(to String, subject String, body String)
+// Model operands are mutation targets, never results (#140): Edit has no
+// result, and EditAndRead's todo output is independent of its todo input.
+mutation Edit(todo Todo.update)
+mutation EditAndRead(todo Todo.update) {
+ todo Todo
+}
 // GetTodos v1 is retained as a Mutation; v2 is the same read as a Query.
 @version(2) query GetTodos() { todos Todo[] }
 @version(2) mutation StateList() { states Status[] }

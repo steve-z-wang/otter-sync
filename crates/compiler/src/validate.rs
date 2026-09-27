@@ -4,7 +4,7 @@
 //! assembled here: [`crate::generate`] renders [`Validated`].
 use crate::parse::{ActionInputDecl, Declarations, FieldDecl, ModelDecl, Pos, SlotDecl, at};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The validated schema: every declaration resolved and every rule applied,
 /// in source order. Plain data with no JSON; [`crate::generate`] turns it into
@@ -207,9 +207,10 @@ pub enum ActionInput {
         slot: Slot,
     },
 }
+/// Every output is explicit and supplied by the handler: a value, or the
+/// identity of a Model record the server resolves through its Loader.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionOutputSource {
-    InputIdentity { input: String },
     HandlerValue,
     HandlerModelIdentity,
 }
@@ -217,7 +218,6 @@ pub enum ActionOutputSource {
 pub enum ActionOutputType {
     Value(FieldType),
     Model(String),
-    DeleteIdentity(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionOutput {
@@ -609,7 +609,6 @@ const GENERATED_NAMES: &[&str] = &[
     "LivePort",
     "Mutate",
     "MutatePort",
-    "MutationContext",
     "MutationHandlerCall",
     "MutationHandlers",
     "MutationName",
@@ -617,7 +616,6 @@ const GENERATED_NAMES: &[&str] = &[
     "PendingMutation",
     "Present",
     "Queries",
-    "QueryContext",
     "QueryHandlerCall",
     "QueryHandlers",
     "QueuedQueries",
@@ -636,6 +634,20 @@ const GENERATED_NAMES: &[&str] = &[
     "Transaction",
     "TxModels",
     "WritePort",
+];
+
+/// Top-level type names the generated TypeScript backend declares for handler
+/// calls, Channel membership and touch. A model or enum with one of these names
+/// would collide with them in the generated backend file.
+const GENERATED_BACKEND_NAMES: &[&str] = &[
+    "Channel",
+    "HandlerCall",
+    "ModelMembership",
+    "MutationContext",
+    "QueryContext",
+    "RecordRef",
+    "Touch",
+    "TransactionCall",
 ];
 
 pub fn validate(d: &Declarations) -> Result<Validated, String> {
@@ -680,6 +692,12 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                 format!("{name} is a name the generated client uses; choose another"),
             ));
         }
+        if GENERATED_BACKEND_NAMES.contains(name) {
+            return Err(at(
+                *pos,
+                format!("{name} is a type name the generated backend declares; choose another"),
+            ));
+        }
     }
     for m in &d.models {
         if axton_core::reserved_model_name(&m.name) {
@@ -713,6 +731,31 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
             if f.nullable || f.list {
                 return Err(at(f.pos, "identity fields must be non-nullable scalars"));
             }
+        }
+    }
+    // The generated backend addresses a Model by its lower-first accessor in
+    // `touch` and in every Channel handle, beside the Channel's own `add` and
+    // `remove` for mixed record lists ([#140](https://github.com/zanminwang/axton/issues/140)).
+    let mut accessors: BTreeMap<String, &str> = BTreeMap::new();
+    for m in &d.models {
+        let accessor = format!("{}{}", m.name[..1].to_ascii_lowercase(), &m.name[1..]);
+        if accessor == "add" || accessor == "remove" {
+            return Err(at(
+                m.pos,
+                format!(
+                    "model {} generates the accessor {accessor}, which a Channel reserves for mixed record lists; rename the model",
+                    m.name
+                ),
+            ));
+        }
+        if let Some(other) = accessors.insert(accessor.clone(), &m.name) {
+            return Err(at(
+                m.pos,
+                format!(
+                    "models {other} and {} both generate the accessor {accessor}; rename one",
+                    m.name
+                ),
+            ));
         }
     }
     // Structure: relations, inverses, requirements and field types per model.
@@ -1188,24 +1231,10 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                         list: f.list,
                     });
                 }
+                // A Model operand declares a mutation target, never a
+                // result: outputs are explicit and form their own namespace.
                 ActionInputDecl::Model(s) => {
                     let slot = validate_action_slot(s, &decl.inputs, &models)?;
-                    let model = model(&s.model).unwrap();
-                    output_names.insert(s.name.as_str());
-                    outputs.push(ActionOutput {
-                        name: s.name.clone(),
-                        ty: if slot.operation == Operation::Delete {
-                            ActionOutputType::DeleteIdentity(s.model.clone())
-                        } else {
-                            ActionOutputType::Model(s.model.clone())
-                        },
-                        cardinality: slot.cardinality,
-                        source: ActionOutputSource::InputIdentity {
-                            input: s.name.clone(),
-                        },
-                        model_read_version: (slot.operation != Operation::Delete)
-                            .then_some(model.version),
-                    });
                     inputs.push(ActionInput::Model { slot });
                 }
             }

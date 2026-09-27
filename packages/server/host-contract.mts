@@ -39,7 +39,11 @@ export type SaveCallRequest = {
 };
 /** The channel's current head cursor. */
 export type HeadRequest = { op: "head"; channel: string };
-/** Invalidation rows after `after`, at most `limit` of them, in cursor order. */
+/**
+ * Invalidation rows after `after` whose record is still a member of the
+ * channel, at most `limit` of them, in cursor order. Membership filters before
+ * the limit; a removed record's row stays but is not answered.
+ */
 export type ScanRequest = {
   op: "scan";
   channel: string;
@@ -106,6 +110,34 @@ export type PublishRequest = {
   identityKey: string;
   stamp: number;
 };
+/**
+ * Write-lock one existing record row without changing its stamp, so a
+ * concurrent Repeatable Read writer of the row restarts instead of acting on
+ * a stale snapshot. Never creates a row: an absent record answers `null`.
+ */
+export type LockRecordRequest = {
+  op: "lockRecord";
+  model: string;
+  identityKey: string;
+};
+/** The Channels this record is a persistent member of. */
+export type MembershipsRequest = {
+  op: "memberships";
+  model: string;
+  identityKey: string;
+};
+/**
+ * Make the record a member of `channel` (`present: true`, creating the Channel
+ * at head zero if needed) or not (`false`). Idempotent both ways; never
+ * allocates a cursor. The record's metadata must exist to add it.
+ */
+export type SetMembershipRequest = {
+  op: "setMembership";
+  channel: string;
+  model: string;
+  identityKey: string;
+  present: boolean;
+};
 
 export type HostRequest =
   | ClaimRequest
@@ -122,7 +154,10 @@ export type HostRequest =
   | LoadRequest
   | AdvanceStampRequest
   | EnsureStampRequest
-  | PublishRequest;
+  | PublishRequest
+  | LockRecordRequest
+  | MembershipsRequest
+  | SetMembershipRequest;
 
 export type HostOperation = HostRequest["op"];
 
@@ -166,20 +201,39 @@ export type Invalidation = {
 export type Stamped = number;
 /** The answer to `publish`: the allocated cursor and the stamp the request named. */
 export type Published = { cursor: number; stamp: number };
-/** A record a handler names: an additional change or a publication member. */
+/** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
+export type Locked = number | null;
+/** The answer to `memberships`: unique Channel names, sorted by the database. */
+export type Memberships = string[];
+/** A record a handler names: an additional changed record. */
 export type HostRecordRef = {
   model: string;
   identity: Record<string, unknown>;
 };
 /**
- * One publication a handler asked for. `records` absent means the mutation's
- * final change set; present and empty means nothing.
+ * One persistent Channel membership declaration: the record should
+ * (`present`) or should not be a member of `channel`. Intents are ordered; the
+ * last one per Channel/record pair is the desired state.
  */
-export type PublicationIntent = { channel: string; records?: HostRecordRef[] };
+export type MembershipIntent = {
+  channel: string;
+  model: string;
+  identity: Record<string, unknown>;
+  present: boolean;
+};
+/**
+ * The effects one settlement carries, shared by Mutation handlers, legacy
+ * handlers and `backend.transaction`: changed records beyond any input
+ * targets and ordered membership intents. There is no implicit publication.
+ */
+export type SettlementEffects = {
+  changes: HostRecordRef[];
+  memberships: MembershipIntent[];
+};
 /**
  * The answer to `handle`: the records the handler changed beyond the uploaded
- * operations and the publications it asked for, a rejection code, or a
- * failure carrying a thrown handler error — never more than one of these.
+ * operations and its membership intents, a rejection code, or a failure
+ * carrying a thrown handler error — never more than one of these.
  *
  * "Never more than one" is not something this union can enforce. TypeScript
  * only applies its excess-property check to object literals, so a value that
@@ -189,15 +243,9 @@ export type PublicationIntent = { channel: string; records?: HostRecordRef[] };
  * as a rejection or a failure.
  */
 export type Handled =
-  | { changes: HostRecordRef[]; publications: PublicationIntent[] }
-  | { rejection: string }
-  | { error: string };
+  SettlementEffects | { rejection: string } | { error: string };
 export type HandledAction =
-  | {
-      outputs: Record<string, unknown>;
-      changes: HostRecordRef[];
-      publications: PublicationIntent[];
-    }
+  | ({ outputs: Record<string, unknown> } & SettlementEffects)
   | { rejection: string }
   | { error: string };
 /**
@@ -228,6 +276,9 @@ export type HostResponse = {
   advanceStamp: Stamped;
   ensureStamp: Stamped;
   publish: Published;
+  lockRecord: Locked;
+  memberships: Memberships;
+  setMembership: Acknowledged;
 };
 
 /**
@@ -250,6 +301,9 @@ const OPERATIONS: Record<HostOperation, true> = {
   advanceStamp: true,
   ensureStamp: true,
   publish: true,
+  lockRecord: true,
+  memberships: true,
+  setMembership: true,
 };
 
 export const HOST_OPERATIONS: readonly HostOperation[] = Object.keys(

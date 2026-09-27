@@ -32,3 +32,12 @@ CREATE TABLE IF NOT EXISTS axton_invalidation (
  PRIMARY KEY(channel,model,identity_key),
  UNIQUE(channel,cursor)
 );
+CREATE TABLE IF NOT EXISTS axton_membership (
+ channel text NOT NULL REFERENCES axton_channel(channel),
+ model text NOT NULL,
+ identity_key text NOT NULL,
+ PRIMARY KEY(model, identity_key, channel),
+ FOREIGN KEY(model, identity_key) REFERENCES axton_record(model, identity_key)
+);
+CREATE INDEX IF NOT EXISTS axton_membership_channel
+ ON axton_membership(channel, model, identity_key);

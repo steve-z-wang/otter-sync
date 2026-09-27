@@ -29,6 +29,43 @@
         "version": 1
       }
     },
+    "Pin": {
+      "1": {
+        "enums": [],
+        "fields": [
+          {
+            "name": "todo",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "at",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          },
+          {
+            "name": "label",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "todo",
+          "at"
+        ],
+        "name": "Pin",
+        "version": 1
+      }
+    },
     "Todo": {
       "1": {
         "enums": [

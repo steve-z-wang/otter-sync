@@ -186,6 +186,68 @@ impl Sim {
             }
         })
     }
+    /// One step of a membership sequence over the known Entries: an external
+    /// settlement of random touches and ordered add/remove intents (including
+    /// pairs that cancel), a client edit, a pull, or delivery with drops,
+    /// duplicates, crashes and restarts. `None` when the chosen step has
+    /// nothing to act on.
+    pub fn membership_step(&mut self) -> Option<Action> {
+        let running = self.running();
+        let client = if running.is_empty() {
+            None
+        } else {
+            Some(*self.rng.pick(&running))
+        };
+        Some(match self.rng.below(20) {
+            0..6 => {
+                let id = self.rng.pick(&self.known_entries).clone();
+                let touch = match self.rng.below(6) {
+                    0 | 1 => None,
+                    2 => Some(None),
+                    _ => Some(Some(format!("m{}", self.rng.below(1000)))),
+                };
+                let intents = (0..self.rng.below(4))
+                    .map(|_| (self.pick_channel(), self.rng.chance(1, 2)))
+                    .collect();
+                Action::Declare {
+                    key: format!("Entry:{id}"),
+                    touch,
+                    memberships: intents,
+                }
+            }
+            6..8 => {
+                // A client edits only a record it holds.
+                let client = client?;
+                let id = self.rng.pick(&self.known_entries).clone();
+                let key = crate::schema::entry_key(&id);
+                if !matches!(self.client(client).read(&key), Ok(Some(_))) {
+                    return None;
+                }
+                Action::Enqueue {
+                    client,
+                    mutation: MutationSpec::Edit {
+                        id,
+                        text: format!("c{}", self.rng.below(1000)),
+                    },
+                }
+            }
+            8 => Action::Freeze { client: client? },
+            9..11 => Action::Pull { client: client? },
+            11..16 => Action::Deliver,
+            16 => Action::Drop,
+            17 => Action::Duplicate,
+            18 => Action::Crash { client: client? },
+            _ => {
+                let crashed = self.crashed();
+                if crashed.is_empty() {
+                    return Some(Action::Deliver);
+                }
+                Action::Restart {
+                    client: *self.rng.pick(&crashed),
+                }
+            }
+        })
+    }
     fn pick_mutation(&mut self, _client: usize) -> MutationSpec {
         let roll = self.rng.below(6);
         match roll {

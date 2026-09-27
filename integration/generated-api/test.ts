@@ -1,4 +1,4 @@
-import type {Handlers,Loaders,EntryV1} from './backend.ts';
+import {Book,Comment,Entry as EntryRef,type Handlers,type Loaders,type EntryV1,type MutationContext,type QueryContext,type HandlerCall,type TransactionCall,type AddBookInput} from './backend.ts';
 import {strict as assert} from 'node:assert';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
@@ -64,20 +64,53 @@ if(false){
  const bad:Entry={...row,status:'typo'};
 
  type Tx={rows:Map<string,object>};
- const shorthand:Handlers<Tx>['addBook']=async({input,tx,changes,publish})=>{tx.rows.set(input.book.id,input.book);changes.add(input.book);publish({channel:'c'})};
+ const shorthand:Handlers<Tx>['addBook']=async({input,tx,channel,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);channel('c').book.add(input.book)};
  const grouped:Handlers<Tx>['editEntry']={
-  async v1({input,publish}){publish({channel:'c',records:[input.target]})},
-  // A record added after the publication call still joins the default publication; explicit records may name an empty set.
-  async v2({input,changes,publish}){publish({channel:'c'});changes.add(input.entry);publish({channel:'audit',records:[]});changes.records.map(r=>r.model)},
+  async v1({input,channel}){channel('c').entry.add(input.target.identity)},
+  // Legacy slot handlers declare through the same handles; mixed lists take explicit references and may be empty.
+  async v2({input,channel,touch}){touch.entry(input.entry.identity);channel('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);channel('audit').remove([])},
   // @ts-expect-error v3 is not a retained version of EditEntry
   async v3(){},
  };
  // @ts-expect-error a mutation with two retained versions cannot register a bare function
  const bare:Handlers<Tx>['editEntry']=async()=>{};
  // @ts-expect-error every retained version must be registered
- const partial:Handlers<Tx>['editEntry']={v2:async({input,publish})=>{publish({channel:'c',records:[input.entry]})}};
- // @ts-expect-error handlers publish through `publish`; there is no notify and no return value
+ const partial:Handlers<Tx>['editEntry']={v2:async({input,channel})=>{channel('c').entry.add(input.entry.identity)}};
+ // @ts-expect-error handlers declare through `channel` and `touch`; there is no notify and no return value
  const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({channel:'c',records:[]})};
+ // @ts-expect-error the old publish API is gone
+ const published:Handlers<Tx>['addBook']=async({publish})=>{publish({channel:'c'})};
+ // @ts-expect-error the old changes collector is gone
+ const changed:Handlers<Tx>['addBook']=async({changes})=>{changes.add({model:'Book',identity:{id:'b'}})};
+
+ // The generated declaration API, per schema: resource before verb.
+ const declare=(ctx:MutationContext<Tx>,queryCtx:QueryContext<Tx>,call:HandlerCall<Tx,AddBookInput>,external:TransactionCall<Tx>)=>{
+  ctx.channel('project:1').book.add({id:'A'});
+  ctx.channel('project:1').book.remove({id:'A'});
+  ctx.touch.book({id:'A'});
+  // @ts-expect-error missing identity
+  ctx.channel('project:1').book.add({});
+  // @ts-expect-error old API is gone
+  ctx.publish({channel:'project:1'});
+  // @ts-expect-error Query has no membership writer
+  queryCtx.channel('project:1').book.add({id:'A'});
+  // @ts-expect-error Query has no change declaration
+  queryCtx.touch.book({id:'A'});
+  // A Channel handle is an ordinary value; every Model is a property beside add and remove.
+  const project=ctx.channel('project:1');
+  project.add([Book({id:'A'}),Comment({id:'c'}),EntryRef({id:row.id})]);
+  project.comment.remove({id:'c'});
+  call.channel('project:1').entry.add({id:row.id});
+  call.touch.counter({id:'n'});
+  external.channel('project:1').remove([Book({id:'A'})]);
+  external.touch.draft({id:row.id});
+  // @ts-expect-error a raw identity names no Model
+  project.add([{id:'A'}]);
+  // @ts-expect-error a UUID identity is a string
+  external.touch.entry({id:1});
+  // @ts-expect-error the Channel's mixed verbs take references, not identities
+  project.remove({id:'A'});
+ };
  // @ts-expect-error a handler has no return value to select a channel with
  const returned:Handlers<Tx>['addBook']=async()=>({channel:'c'});
  // @ts-expect-error loaders receive no channel

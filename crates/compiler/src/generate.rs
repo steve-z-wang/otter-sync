@@ -137,10 +137,8 @@ fn action(v: &Validated, a: &Action) -> Value {
         let (kind, ty, model) = match &output.ty {
             ActionOutputType::Value(ty) => ("value", Some(field_type(ty)), None),
             ActionOutputType::Model(name) => ("model", None, Some(name)),
-            ActionOutputType::DeleteIdentity(name) => ("deleteIdentity", None, Some(name)),
         };
         let source = match &output.source {
-            ActionOutputSource::InputIdentity { input } => json!({"inputIdentity":input}),
             ActionOutputSource::HandlerValue => json!("handlerValue"),
             ActionOutputSource::HandlerModelIdentity => json!("handlerIdentity"),
         };

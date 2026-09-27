@@ -92,7 +92,7 @@ Executed 2026-09-16: `cargo test -p axton-sqlite --locked` and `cargo test -p ax
 
 **Accepted limitation.** Only lifecycle dependents are rejected with their parent; a sequence dependent of a rejected mutation is still sent. This matches guarantee P5 as written and is noted because the two dependency kinds are easy to confuse ([Dependencies](push/dependencies.md)).
 
-**Accepted limitation.** The server reads back the change set it knows about: uploaded targets and `changes.add`. A server-side cascade the handler does not register (a database `ON DELETE CASCADE`, for example) is not in the receipt; a locally cascaded child whose parent's receipt state is `null` is deleted with it, but a child the server removed while the parent survived is corrected only when a channel delivers it.
+**Accepted limitation.** The receipt carries the uploaded targets only ([#140](https://github.com/zanminwang/axton/issues/140)): records a handler touches beyond them, and a server-side cascade (a database `ON DELETE CASCADE`, for example), are not in it; a locally cascaded child whose parent's receipt state is `null` is deleted with it, but a child the server removed while the parent survived is corrected only when a channel delivers it.
 
 **Resolved ([#122](https://github.com/zanminwang/axton/issues/122)): a replay failure is no longer silent.** When staged authority leaves a pending operation with nothing to apply to (an update over a deleted base, a create over an existing one), the visible row is the base, the mutation stays queued and is sent, `record_status` marks it `diverged` until it completes or is rejected, and the receipt's `ApplyReport` (or the page's) carries a `diverged` report with the ordinal ([Pull](pull.md)).
 

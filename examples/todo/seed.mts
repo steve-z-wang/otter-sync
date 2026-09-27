@@ -18,20 +18,23 @@ export const SEED_TODOS = [
 ] as const;
 
 /**
- * Creates the demo users and tasks when they are missing and publishes them on
- * `todo:demo` in one backend transaction, so connected phones are woken once
- * it commits. Existing rows are left untouched, so an ordinary restart never
- * resets edits made through the app.
+ * Creates the demo users and tasks when they are missing, touches them and
+ * enrolls them on `todo:demo` in one backend transaction, so connected phones
+ * are woken once it commits. Existing rows are left untouched, so an ordinary
+ * restart never resets edits made through the app; touching them again gives
+ * each a new stamp and position, and enrolling an existing member does nothing.
  */
 export async function seed(backend: Backend): Promise<void> {
-  await backend.transaction(async ({ tx, changes, publish }) => {
+  await backend.transaction(async ({ tx, channel, touch }) => {
+    const demo = channel(CHANNEL);
     for (const user of SEED_USERS) {
       await tx.user.upsert({
         where: { id: user.id },
         create: user,
         update: {},
       });
-      changes.add({ model: "User", identity: { id: user.id } });
+      touch.user({ id: user.id });
+      demo.user.add({ id: user.id });
     }
     for (const todo of SEED_TODOS) {
       await tx.todo.upsert({
@@ -39,8 +42,8 @@ export async function seed(backend: Backend): Promise<void> {
         create: todo,
         update: {},
       });
-      changes.add({ model: "Todo", identity: { id: todo.id } });
+      touch.todo({ id: todo.id });
+      demo.todo.add({ id: todo.id });
     }
-    publish({ channel: CHANNEL });
   });
 }

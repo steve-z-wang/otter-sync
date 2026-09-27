@@ -35,7 +35,7 @@ Local-first apps read and write data on the device, so everyday interactions don
 
 Clients push mutations over HTTP. On connection, they catch up from saved progress over HTTP, then receive ongoing record updates over WebSocket. AXTON manages this as one connection.
 
-On your server, **handlers** process writes and **loaders** read records to send to clients. After a handler runs, AXTON reads the changed records back through your loaders and returns them to the client in the receipt. A **channel** groups record changes for other clients to subscribe to; `publish` sends a mutation's changes there.
+On your server, **handlers** process writes and **loaders** read records to send to clients. After a handler runs, AXTON reads the records the mutation targeted back through your loaders and returns them to the client in the receipt. A **channel** is a set of records other clients subscribe to: add a record to it once, and every later change to that record reaches its subscribers.
 
 Writes update local SQLite immediately, so reads see changes before sync completes. Changes to local data update query subscriptions (`watch`). If the backend rejects a mutation, its local changes roll back.
 
@@ -125,13 +125,13 @@ const mutations: Mutations<Tx> = {
   async addTodo({ ctx, args }) {
     await ctx.tx.todo.create({ data: args.todo });
 
-    // The new todo is read back for the caller's result regardless;
-    // publishing distributes it to subscribers of the "todos" channel.
-    ctx.publish({ channel: "todos" });
+    // The new todo is read back for the caller regardless. Adding it to the
+    // "todos" channel once sends it, and every later change, to subscribers.
+    ctx.channel("todos").todo.add(args.todo);
   },
 };
 
-// Answer a read. A Query's context has no changes or publish.
+// Answer a read. A Query's context has no touch or channel.
 const queries: Queries<Tx> = {
   async searchTodos({ ctx, args }) {
     const rows = await ctx.tx.todo.findMany({

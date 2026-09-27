@@ -169,7 +169,8 @@ These examples use the [operation fixture](https://github.com/zanminwang/axton/b
     const call = await client.mutations.addTodo({ todo, gone: [], status: null, tags: [] });
     console.log(call.status);
     const outcome = await call.wait();
-    if (outcome.error === null) console.log(outcome.result.todo.title);
+    // The result holds only AddTodo's declared outputs; the created Todo is local authority by now.
+    if (outcome.error === null) console.log(outcome.result.count, await client.models.todo.get({ id: 'todo-1' }));
     else console.error(outcome.error.code, outcome.error.execution);
     const page = await client.queries.findTodos({ text: 'design', cursor: null });
     console.log(page.todos, page.nextCursor);
@@ -186,7 +187,7 @@ These examples use the [operation fixture](https://github.com/zanminwang/axton/b
     );
     final outcome = await call.wait();
     if (outcome is CallSuccess<AddTodoOutput>) {
-      print(outcome.result.todo.title);
+      print([outcome.result.count, await client.models.todo.get(const TodoIdentity(id: 'todo-1'))]);
     } else if (outcome is CallFailure<AddTodoOutput>) {
       print(outcome.error.code);
     }
@@ -206,7 +207,7 @@ The overrides use the other route. `mutations.call` waits for the final Mutation
     const queued = await client.queries.enqueue.findTodos({ text: 'design', cursor: null });
     const later = await queued.wait();
     const email = await client.mutations.sendEmail({ to: 'team@example.test', subject: 'Todo', body: 'Created' });
-    console.log(confirmed.todo.title, later.error, email.status);
+    console.log(confirmed.count, later.error, email.status);
     ```
 
 === "Flutter"
@@ -225,7 +226,7 @@ The overrides use the other route. `mutations.call` waits for the final Mutation
       subject: 'Todo',
       body: 'Created',
     );
-    print([confirmed.todo.title, later, email.status]);
+    print([confirmed.count, later, email.status]);
     ```
 
 A durable call returns a `Call<Output>` with exactly two members: `status` (`pending`, `succeeded` or `failed`) and `wait()`. Its return confirms local acceptance, not backend success. Initial validation or local commit failure rejects before a handle exists. `wait()` resolves to a `CallOutcome`: `{ result, error }` in TypeScript, with `error` null on success, and `CallSuccess` or `CallFailure` in Dart. A pending network retry keeps waiting. `CallError.code` is a stable machine code, and `execution` is `rejected` for a known rejection or `unknown` when the outcome cannot be observed. A timeout with unknown execution does not prove the backend did nothing. TypeScript exports `Call`, `CallStatus`, `CallOutcome`, `CallError` and `CallOptions`; Dart exports `Call`, `CallStatus`, `CallOutcome`, `CallSuccess`, `CallFailure`, `CallError` and `CallStore`.
@@ -234,7 +235,7 @@ A direct call does not enter the durable queue and infers no local optimism. It 
 
 TypeScript sets `connection.directTimeoutMs` in milliseconds (an integer from 1 to 2,147,483,647); Dart sets `directTimeout` on `open` or `connect` to a positive `Duration`. Both default to 30 seconds. See [server connection](runtime.md#server-connection) for option placement. Queued calls use background retry instead of this direct timeout.
 
-The created `todo` result is the Loader snapshot for that invocation. A later call in the same batch can change the batch-final authority, and a pending local edit can change what `client.models.todo.get(...)` shows. The result retains its own snapshot; applying server authority replays pending edits over the new base. Model creates/updates imply full Model results bound to the input identity; deletes confirm identities. A handler selects an explicit Model output by returning an identity object with every `@@id` field. Optional outputs can be null, lists preserve order and duplicates, and no outputs means void. Results held by live calls are kept in client memory; reopening preserves pending work and completion state, but does not restore a past business result to a new handle. The backend retains committed outcomes of both kinds for replay without a TTL or automatic pruning.
+A result holds only the outputs the operation declares. A Model input is not a result: once a call completes, the backend's authority for each Model it created, updated or deleted is already applied locally, whatever the outputs or `store` say, so read it from `client.models`. An output may share an input's name and still name a different record; the fixture's `EditAndRead(todo Todo.update) { todo Todo }` can edit one Todo and return another. A handler selects an explicit Model output by returning an identity object with every `@@id` field. A Model output is the Loader snapshot for that invocation: a later call in the same batch can change the batch-final authority, and a pending local edit can change what `client.models.todo.get(...)` shows, while the result retains its own snapshot. Records the backend handler changed beyond the Model inputs are not returned to the caller; they arrive through the Channels they belong to. Optional outputs can be null, lists preserve order and duplicates, and no outputs means void. Results held by live calls are kept in client memory; reopening preserves pending work and completion state, but does not restore a past business result to a new handle. The backend retains committed outcomes of both kinds for replay without a TTL or automatic pruning.
 
 ### Storing Model results
 
@@ -261,7 +262,7 @@ By default, Model records returned by explicit Model outputs also update the mat
     print([suggestions.todos, page.mainTodo]);
     ```
 
-`store` only controls these output records. Records a Mutation writes (its Model operands and changes the handler reports) are always reconciled, a record also returned by a stored output is stored, and an already stored row is left unchanged by an unstored read. A Query with `store: false` creates, updates or deletes no local row from its outputs. The option does not change backend behavior: the outcome is still saved for replay, and a retry keeps the original choice. A call ID replayed with a different `store` is rejected with `call.identity_conflict`. Output names `toWire`, `toString`, `hashCode`, `runtimeType` and `noSuchMethod` are reserved for Model outputs a handler selects, because they would collide with the Dart selector. In Dart, each operation's `{Name}Store` selector extends `CallStore`; its parameter is `store` unless the operation has a business input named `store`, as `OpenTodo` does; it is then `outputStore`.
+`store` only controls these output records. Records a Mutation's Model inputs target are always reconciled, a record also returned by a stored output is stored, and an already stored row is left unchanged by an unstored read. A Query with `store: false` creates, updates or deletes no local row from its outputs. The option does not change backend behavior: the outcome is still saved for replay, and a retry keeps the original choice. A call ID replayed with a different `store` is rejected with `call.identity_conflict`. Output names `toWire`, `toString`, `hashCode`, `runtimeType` and `noSuchMethod` are reserved for Model outputs a handler selects, because they would collide with the Dart selector. In Dart, each operation's `{Name}Store` selector extends `CallStore`; its parameter is `store` unless the operation has a business input named `store`, as `OpenTodo` does; it is then `outputStore`.
 
 The TypeScript/React Native call observer requires a working `WeakRef`; a runtime without it rejects durable invocation with `CallError` code `action.unsupported_runtime`. Dart uses `WeakReference`. SDKs keep active waits strongly until they settle, while otherwise allowing unobserved handles to be collected. Exceptions from a diagnostic `onError` callback after authority commits are reported through the runtime's uncaught-error channel (`reportError` or an asynchronous throw in JavaScript; the current Zone in Dart). They do not replace the call result, retry the handler or become transport errors.
 

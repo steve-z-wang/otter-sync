@@ -154,14 +154,17 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
                 if sim.stale_reads.contains(&(i, key.encoded().unwrap())) {
                     continue;
                 }
-                // A record's invalidation history on this channel can outlive its
-                // membership (a record can move to other channels entirely, and a
-                // change can be published outside membership). Once `channel` is no
-                // longer among the record's real members, being at its head proves
-                // nothing about this record: the client's copy is retained data that
-                // only another channel it follows could refresh.
-                if sim.host.has_membership(&key)
-                    && !sim.host.membership(&key).iter().any(|m| m == &channel)
+                // A record's invalidation row on this channel outlives its
+                // membership: removal keeps the row, and the scan skips it. Once
+                // `channel` is no longer among the record's stored memberships,
+                // being at its head proves nothing about this record: the
+                // client's copy is retained data that only another channel it
+                // follows could refresh.
+                if !sim
+                    .host
+                    .stored_memberships(&key)
+                    .iter()
+                    .any(|m| m == &channel)
                 {
                     continue;
                 }

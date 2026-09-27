@@ -46,7 +46,7 @@ The Rust runtime processes the sync protocol and nothing else. The rules below a
 | --- | --- | --- |
 | Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever channel asked. | Authenticates the request and passes `userId` through. There is no channel-level policy. |
 | Unique constraints and identities | Your database schema. `@@unique` and `@@id` are enforced on the client only; the client's local database refuses a violating write, but nothing checks the server. | Decodes identities and patches by shape. A duplicate that your database allows is stored. |
-| Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself, report them with `changes.add` and publish them to each channel that delivered them. | Reads the parent back as deleted and delivers it; a child the handler did not report stays on other clients until a channel delivers it. |
+| Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself and touch them (`ctx.touch.todo(identity)`), leaving them in the Channels that delivered them so those Channels receive the deletion. | Reads the parent back as deleted and delivers it; a child the handler did not touch stays on other clients until a Channel delivers it. |
 | Client identity | Each signed-in user gets their own local client database. A client id is bound to the first user that pushed with it; a push from another user with the same client id answers `403 client.owner_mismatch`, and there is no reassignment. | Stores the owner with the client row. |
 | Backend language | TypeScript on Node, through the generated `createBackend`. The Dart package is a client SDK; there is no Dart or Rust-hosted backend. | Runs the same Rust engine inside the Node addon. |
 | Prerequisite expressions | `@requires(Name(field: self))` is the only supported form: every argument is `self`, the value of the annotated field. The runner that satisfies prerequisites is client code. | Never sees prerequisites; they gate when the client sends a durable call, not what the backend receives. |
@@ -55,7 +55,7 @@ These are accepted limits of the current runtime, not planned features. See [dep
 
 ## Handlers
 
-A handler receives `{ ctx, args }`: `ctx` holds trusted framework context and `args` holds decoded caller inputs. A create operand is always a complete record: fields the caller omitted were filled from their [creation defaults](../schema/reference.md#creation-defaults) by the client, and the server never fills a missing value. In the snippets, `Tx` stands for the transaction type supplied by your database adapter. A Mutation handler writes to your database and returns explicit output values; a Query handler reads and returns them. AXTON resolves Model outputs through the corresponding versioned Loader in the same transaction. For a durable Mutation, it also reads final changed records into the receipt, independently of each invocation's result snapshot. Database work and framework metadata share the transaction; external effects such as sending email do not become atomic with it. Use an application outbox or equivalent design where that distinction matters.
+A handler receives `{ ctx, args }`: `ctx` holds trusted framework context and `args` holds decoded caller inputs. A create operand is always a complete record: fields the caller omitted were filled from their [creation defaults](../schema/reference.md#creation-defaults) by the client, and the server never fills a missing value. In the snippets, `Tx` stands for the transaction type supplied by your database adapter. A Mutation handler writes to your database and returns explicit output values; a Query handler reads and returns them. AXTON resolves Model outputs through the corresponding versioned Loader in the same transaction. For a durable Mutation, it also reads the batch-final state of each Model input into the receipt, independently of each invocation's result snapshot. Database work and framework metadata share the transaction; external effects such as sending email do not become atomic with it. Use an application outbox or equivalent design where that distinction matters.
 
 ```ts title="action-contract"
 import { CallRejected, type Mutations } from './generated/backend.ts';
@@ -65,13 +65,28 @@ const handleAddTodoV2: Mutations<Tx>['addTodo']['v2'] =
   async ({ ctx, args }) => {
     if (!args.todo.title.trim()) throw new CallRejected('todo.title_empty');
     await saveTodo(ctx.tx, args.todo);
-    ctx.changes.add(args.todo);
-    ctx.publish({ channel: 'todos' });
+    // The new Todo joins the Channel once; its later changes reach it with no enrollment.
+    ctx.channel('todos').todo.add(args.todo);
     return { relatedTodo: null, matches: [], count: 1, state: null };
   };
 ```
 
-The implicit `todo` result resolves through the `Todo` Loader at this invocation. Explicit `relatedTodo` and `matches` are identity-selected Model outputs; `count` and `state` are ordinary outputs. The client that queued this Mutation receives its result and batch-final record authority without a subscription. Other clients learn of the change through a published channel.
+The `todo` input is already a change: AXTON stamps it and returns its authority to the caller, which completes without a subscription, whatever the outputs or the call's `store` option. It is not part of the result. The result holds only the declared outputs: `relatedTodo` and `matches` are identity-selected Model outputs that the Loader resolves at this invocation, and `count` and `state` are ordinary outputs. Other clients learn of the change through the `todos` Channel.
+
+An output is independent of the inputs even when the names match. The fixture's `EditAndRead(todo Todo.update) { todo Todo }` may edit one Todo and return another:
+
+```ts title="action-contract"
+import { type Mutations } from './generated/backend.ts';
+
+const handleEditAndRead: Mutations<Tx>['editAndRead'] =
+  async ({ ctx, args }) => {
+    await saveTodo(ctx.tx, args.todo);
+    // The result names the Todo to show; it need not be the one edited.
+    return { todo: { id: 'todo-summary' } };
+  };
+```
+
+A missing output field fails the call; AXTON never fills it from an input. An operation without outputs, such as `Edit(todo Todo.update)`, returns nothing, and its caller inspects its local Model once the call completes.
 
 ```ts title="action-contract"
 import { type Queries } from './generated/backend.ts';
@@ -91,12 +106,12 @@ Returning identity objects lets the Loader resolve the visible records in order,
 | `tx` | Yes | Yes | Your database transaction object |
 | `userId` | Yes | Yes | Authenticated caller; use it for business authorization |
 | `callId` | Yes | Yes | Stable identity of this invocation, including retries |
-| `changes` | Yes | No | The records this Mutation changed; `changes.add(record)` reports an additional record |
-| `publish` | Yes | No | Synchronous function for publishing records to a channel; see [Publishing](#publishing) |
+| `touch` | Yes | No | `touch.todo(identity)` declares a record this Mutation changed beyond its Model inputs; see [Channels](#channels) |
+| `channel(name)` | Yes | No | A handle for adding records to or removing them from a Channel; see [Channels](#channels) |
 
-A handler returns the generated explicit output shape, or no value when the operation has no explicit outputs. On durable Mutation delivery, AXTON allocates a **stamp** for each changed record and reads its batch-final content through the Loader into the receipt. Report every business record changed beyond the inferred Model operands with `changes.add`. Reporting is not publishing; other clients receive records only through channels the handler publishes.
+A handler returns the generated explicit output shape, or no value when the operation has no explicit outputs. AXTON allocates a **stamp** for each changed record, the Model inputs plus the records the handler touched, and on durable delivery reads the inputs' batch-final content through the Loader into the receipt. Touch every other business record the handler changed: a touched record is delivered to its Channels, but it is not returned to the caller, so the caller need not know its Model.
 
-A Query's context has no `changes` or `publish`, in its type and at runtime. The engine also refuses any Query settlement that reports changes or publications: that call fails with `query.effects_forbidden`, its savepoint rolls back before any stamp, readback or publication, and adjacent calls in the batch are unaffected. This is not a SQL sandbox. `ctx.tx` is still your application's transaction, and the framework cannot inspect the SQL a handler runs or other clients it has captured, so keeping a Query free of business side effects is your application's responsibility. Framework metadata is still written: each Query outcome is saved by call ID like a Mutation's, so retrying the same call ID replays the saved result and a new invocation reads again.
+A Query's context has no `touch` or `channel`, in its type and at runtime. The engine also refuses any Query settlement that reports changes or memberships: that call fails with `query.effects_forbidden`, its savepoint rolls back before any stamp, readback or publication, and adjacent calls in the batch are unaffected. This is not a SQL sandbox. `ctx.tx` is still your application's transaction, and the framework cannot inspect the SQL a handler runs or other clients it has captured, so keeping a Query free of business side effects is your application's responsibility. Framework metadata is still written: each Query outcome is saved by call ID like a Mutation's, so retrying the same call ID replays the saved result and a new invocation reads again.
 
 A loader is channel-independent: the row it returns for a record is the row every client receives for it, in the receipt, in a catch-up page and on the live stream, at the same stamp. What a loader may vary by is `userId`.
 
@@ -164,32 +179,42 @@ A row object must match the generated model type exactly. Include every non-iden
 
 Loaders run during synchronization and calls, not when the app calls local `get`, `query` or `watch`. A malformed result is never skipped silently: the affected record arrives as an error change, or the call being read back is rejected with `loader.invalid`, and `onError` hears about it.
 
-## Publishing
+## Channels
 
-In a Mutation handler, `ctx.publish({ channel })` distributes the Mutation's final change set, including records added with `ctx.changes.add` after the call. `ctx.publish({ channel, records })` distributes exactly `records`: a subset, or records the Mutation did not change (an empty array publishes nothing). Publishing does not broadcast the supplied object's field values; subscribers receive what the Loader returns.
+A Channel distributes records to the clients subscribed to it. Its members are stored with your data: add a record once, and every later change to it reaches the Channel, whichever handler or job makes the change.
 
 ```ts title="action-contract"
 import { Todo, type MutationContext } from './generated/backend.ts';
 
-function announce(ctx: MutationContext<unknown>) {
-  ctx.publish({ channel: 'todos' });
-  ctx.publish({ channel: 'archive', records: [Todo({ id: 'todo-1' })] });
+function organize(ctx: MutationContext<unknown>) {
+  const board = ctx.channel('board:1');
+  board.todo.add({ id: 'todo-1' });
+  board.todo.remove({ id: 'todo-2' });
+  board.add([Todo({ id: 'todo-3' }), Todo({ id: 'todo-4' })]);
+  ctx.touch.todo({ id: 'todo-5' });
 }
 ```
 
 | Interface | Shape |
 | --- | --- |
-| `RecordRef` | `{ model: string, identity: object }` |
-| `PublishArgs` | `{ channel: string, records?: readonly (RecordRef | object)[] }` |
-| `Changes` | `{ records: readonly RecordRef[], add(record: RecordRef | object): void }` |
-| Generated model reference function | `Todo(identity: TodoIdentity): RecordRef` |
-| Handler `publish` | `(args: PublishArgs) => void` |
+| `ctx.channel(name)` | `Channel`: a handle for the Channel named `name`; it creates nothing, sends nothing and checks no subscriber |
+| `channel.todo.add(identity)`, `channel.todo.remove(identity)` | `ModelMembership<TodoIdentity>`, one per Model |
+| `channel.add(records)`, `channel.remove(records)` | `(records: readonly RecordRef[]) => void`, for several Models at once |
+| `ctx.touch.todo(identity)` | `Touch`: declare a changed record, one method per Model |
+| `RecordRef` | The generated union `{ model: 'Todo', identity: TodoIdentity } \| …` |
+| Generated reference function | `Todo(identity: TodoIdentity)`, the only way to put a record in a mixed list |
 
-The channel must be nonblank. Decoded Model operands such as `args.todo` carry record-reference metadata and can be passed to `ctx.changes.add` and `ctx.publish` directly. Spreading or cloning an operand can lose this metadata; use the generated Model reference function when constructing a reference yourself.
+Every call is synchronous and returns nothing. It validates at the call and copies only the identity fields, so `channel.todo.add(args.todo)` works and later edits to the passed object change nothing. A mixed list is checked whole before anything is declared; an untagged `{ id }` cannot name its Model and fails. The channel name must be nonblank. The handles work only while the handler runs: a handle kept after it returns, or after it throws, refuses every call. Returning from the handler commits nothing yet; if the call is later rejected, its declarations roll back with it.
 
-Publish to every channel that distributes a changed record, including when its Loader should now return null. AXTON does not infer publications from writes to your database. Several calls are allowed; none is required, and a handler that publishes nothing can still complete its call result and durable receipt.
+- **Adding** a record that is not a member delivers its current state to the Channel, even when nothing changed. Adding a member does nothing.
+- **Removing** a member stops later deliveries there. Clients keep the rows they have, and no removal event is sent; a response already on its way may still arrive. Removing a non-member does nothing.
+- **The last declaration wins** for each Channel and record in one call: removing then re-adding a member, or adding then removing a non-member, changes nothing.
+- **Touching** gives the record a new stamp once per call, however often it is declared, and delivers it to every Channel it is a member of. A record with no membership is still stamped but reaches no Channel.
+- **Deletion** is a change: touch the deleted record (or delete it through a Model input) and leave it enrolled, so its Loader answers `null` in each Channel and subscribers delete it. A record deleted and removed from a Channel in the same call sends that Channel nothing. Membership belongs to the identity, so a record later created again with the same identity is delivered to the same Channels; use a new identity, or remove the old memberships, for a fresh lifecycle.
 
-A change allocates one **stamp** per record; publishing allocates a **cursor** in each channel and carries that same stamp to all of them. Publishing an unchanged record reuses its current stamp (a record that has never been stamped gets its first one). Stamps prevent older content delivered later, on any channel, from overwriting newer content. See [concepts](../concepts.md).
+Membership decides where a record is delivered, not who may see it: the Loader still runs for each subscriber and answers `null` for a record that user must not see. Channel names are not access control ([#22](https://github.com/zanminwang/axton/issues/22)).
+
+A change allocates one **stamp** per record; delivering it allocates a **cursor** in each of its Channels and carries that same stamp to all of them. Adding an unchanged record reuses its current stamp (a record that has never been stamped gets its first one). Stamps prevent older content delivered later, on any Channel, from overwriting newer content. The membership table starts empty; AXTON never infers membership from earlier deliveries, so an existing database re-enrolls its records explicitly. See [concepts](../concepts.md).
 
 ## Authentication
 
@@ -206,7 +231,7 @@ A change allocates one **stamp** per record; publishing allocates a **cursor** i
 | `onError(error)` | Log server failures that are returned to the client as a generic server error |
 | `EngineError` | A failure from the native engine: `code` (stable), `message` (readable, may change), `details` (fields the code promises) |
 
-Codes must match `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`, such as `todo.title_empty`. A recognized business rejection rolls back that call's business writes, stamps and publications. For a queued call, `wait()` returns a `CallError` outcome and any optimistic Model change rolls back; the durable rejection remains inspectable until dismissed. For a direct call, the promise rejects with `CallError`. An unknown transport outcome can be retried with the same call identity; it is not evidence that the handler did nothing.
+Codes must match `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`, such as `todo.title_empty`. A recognized business rejection rolls back that call's business writes, stamps, memberships and deliveries. For a queued call, `wait()` returns a `CallError` outcome and any optimistic Model change rolls back; the durable rejection remains inspectable until dismissed. For a direct call, the promise rejects with `CallError`. An unknown transport outcome can be retried with the same call identity; it is not evidence that the handler did nothing.
 
 Business codes come from `CallRejected` or `translateRejection`; `action_version_unsupported`, `handler.failed`, `loader.failed`, `model_version_unsupported` and `query.effects_forbidden` identify framework failures attributable to one call. A durable receipt records each call's outcome. Independent valid calls in the batch can commit. A direct response carries the same final outcome for that call.
 
@@ -220,7 +245,7 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | `client.owner_mismatch` | 403 | The client identity belongs to another user |
 | `gap`, `overlap` | 409 | The batch sequence is not the next one and not a retry of the last |
 | `model_version_unsupported` | 409 | Pull and live subscribe: a Model read contract this backend does not serve. During a call it is a per-call failure. |
-| `handler.invalid` | 500 `{ code: "server" }` | The handler's settlement could not be used: an invalid rejection code, or a change or publication naming a record without a model or an object identity |
+| `handler.invalid` | 500 `{ code: "server" }` | The handler's settlement could not be used: an invalid rejection code, or a change or membership naming a record without a model or an object identity |
 | anything else | 500 `{ code: "server" }` | A server-side failure; the `EngineError` or thrown error goes to `onError` |
 
 ## Listener
@@ -240,25 +265,25 @@ Generated clients use all three routes automatically from one `server` configura
 
 ## Background writes
 
-Writes outside handlers have no readback and no receipt; they reach clients only through channels. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `changes` and `publish` a Mutation handler receives. When the body returns, the framework allocates one new stamp per record in `changes` and carries out the publications inside that same transaction; once it commits, the live subscribers of the published channels are woken.
+Writes outside handlers have no readback and no receipt; they reach clients only through Channels. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `touch` and `channel` a Mutation handler receives. When the body returns, the framework allocates one new stamp per touched record and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Channels are woken.
 
 ```ts
-await backend.transaction(async ({ tx, changes, publish }) => {
+await backend.transaction(async ({ tx, channel, touch }) => {
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From a job' } });
-  changes.add(Entry({ id: 'entry-1' }));
-  publish({ channel: 'book:demo' });
+  touch.entry({ id: 'entry-1' });
+  channel('book:demo').entry.add({ id: 'entry-1' });
 });
 ```
 
-`tx` is the transaction of the shim passed as `database`, and `Entry` is the generated reference function. The body's return value is returned. If the body throws, the transaction rolls back and nobody is woken; the error propagates so the driver can retry serialization failures, which run the whole body again. Do not call `backend.transaction` from a handler: a handler already has a transaction.
+`tx` is the transaction of the shim passed as `database`. The body's return value is returned. If the body throws, the transaction rolls back and nobody is woken; the error propagates so the driver can retry serialization failures, which run the whole body again. Do not call `backend.transaction` from a handler: a handler already has a transaction.
 
 | `TransactionCall<Tx>` member | Contract |
 | --- | --- |
 | `tx` | The application transaction; write business data through it |
-| `changes` | The records this body changed; `changes.add(record)` registers one, and each gets a new stamp when the body returns |
-| `publish(args)` | `{ channel }` publishes the final change set; `{ channel, records }` exactly those records, a record outside `changes` at its current stamp |
+| `touch` | `touch.entry(identity)` declares a changed record; each gets one new stamp when the body returns |
+| `channel(name)` | The same Channel handle as in a handler, for adding and removing members |
 
-Same objects and rules as a Mutation handler's, with two differences: the change set starts empty, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A body that registers changes without publishing still advances their stamps; a body that publishes an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
+Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A touched record advances its stamp even without a Channel; adding an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
 
 ## Extension points
 

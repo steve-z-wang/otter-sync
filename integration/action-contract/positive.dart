@@ -75,10 +75,9 @@ Future<void> useClient(GeneratedClient client) async {
   final CallStatus status = action.status;
   final CallOutcome<AddTodoOutput> outcome = await action.wait();
   if (outcome is CallSuccess<AddTodoOutput>) {
-    final Todo full = outcome.result.todo;
+    // Operands are targets, not results: only explicit outputs are present.
     final Todo? related = outcome.result.relatedTodo;
     final List<Todo> matches = outcome.result.matches;
-    full.id;
     related?.id;
     matches.length;
   } else if (outcome is CallFailure<AddTodoOutput>) {
@@ -88,8 +87,17 @@ Future<void> useClient(GeneratedClient client) async {
   final AddTodoOutput direct = await client.mutations.call.addTodo(
     todo: created, gone: [], status: Status.open, tags: [],
   );
-  final RemoveTodoOutput removed = await client.mutations.call.removeTodo(todo: deleted);
-  final String removedId = removed.todo.id;
+  // A delete operand has no implicit result.
+  await client.mutations.call.removeTodo(todo: deleted);
+  // Explicit results (#140): Edit returns no business value; EditAndRead
+  // returns the loaded Todo its handler selected, independent of the input.
+  await client.mutations.call.edit(todo: const EditTodoUpdate(id: 'A', title: Present('Renamed')));
+  final Call<EditOutput> editCall = await client.mutations.edit(todo: const EditTodoUpdate(id: 'A'));
+  final EditAndReadOutput read = await client.mutations.call.editAndRead(
+    todo: const EditAndReadTodoUpdate(id: 'A', state: Present(Status.closed)),
+    store: const EditAndReadStore.outputs(todo: false),
+  );
+  final String readTitle = read.todo.title;
   await client.mutations.call.ping();
   final Call<void> searched = await client.mutations.search(query: null);
   await client.mutations.call.search(query: 'term');
@@ -136,7 +144,8 @@ Future<void> useClient(GeneratedClient client) async {
   stream.hashCode;
   status.name;
   direct.count;
-  removedId.length;
+  editCall.status;
+  readTitle.length;
   selected.length;
   // Creation defaults (#27): create inputs may omit defaulted fields; a
   // defaulted nullable field uses Present to send an explicit null.
@@ -166,6 +175,20 @@ Future<AddNotesHandlerOutput> handleNotes(
   return AddNotesHandlerOutput(saved: NoteIdentity(id: id));
 }
 
+Future<EditHandlerOutput> handleEdit(
+  MutationHandlerCall<Object, EditInput> call,
+) async {
+  call.args.todo.id;
+}
+
+Future<EditAndReadHandlerOutput> handleEditAndRead(
+  MutationHandlerCall<Object, EditAndReadInput> call,
+) async {
+  call.args.todo.id;
+  // The handler supplies the output identity; it is never taken from the input.
+  return const EditAndReadHandlerOutput(todo: TodoIdentity(id: 'B'));
+}
+
 void main() {
   composite.id;
   oldInput.todo.id;
@@ -176,6 +199,8 @@ void main() {
   oldStateListOutput.states.length;
   handle;
   handleNotes;
+  handleEdit;
+  handleEditAndRead;
   find;
   useClient;
 }

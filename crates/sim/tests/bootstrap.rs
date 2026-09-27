@@ -32,6 +32,18 @@ fn edit(sim: &mut Sim, client: usize, id: &str, text: &str) {
     })
     .unwrap();
 }
+/// One application transaction for `key` (see `Action::Declare`).
+fn declare(sim: &mut Sim, key: &str, touch: Option<Option<&str>>, memberships: &[(&str, bool)]) {
+    sim.apply(Action::Declare {
+        key: key.into(),
+        touch: touch.map(|text| text.map(str::to_string)),
+        memberships: memberships
+            .iter()
+            .map(|(channel, present)| (channel.to_string(), *present))
+            .collect(),
+    })
+    .unwrap();
+}
 /// Ask for one historical page and deliver everything the network holds.
 fn load(sim: &mut Sim, client: usize) {
     sim.apply(Action::LoadPull { client }).unwrap();
@@ -195,10 +207,14 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
         channel: "a".into(),
     })
     .unwrap();
-    // Before the scan runs, the record is published again: its one retained
-    // position moves above the origin.
-    sim.host.ensure_publish(&entry_key("moving"), "a");
+    // Before the scan runs, the record is removed and re-added in separate
+    // settlements: its one retained position moves above the origin at its
+    // unchanged stamp.
+    let stamp = sim.host.stamp(&entry_key("moving"));
+    declare(&mut sim, "Entry:moving", None, &[("a", false)]);
+    declare(&mut sim, "Entry:moving", None, &[("a", true)]);
     assert!(sim.host.head("a") > origin);
+    assert_eq!(sim.host.stamp(&entry_key("moving")), stamp);
 
     // The interval is still the one the subscription committed, and it covers
     // only what stayed inside it.
@@ -223,4 +239,85 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
     );
     assert_eq!(sim.bootstrap_phase(1, "a"), BootstrapPhase::Complete);
     sim.check().unwrap();
+}
+
+/// Bootstrap covers membership in each page's snapshot. Sixty removed records
+/// (more than a page) sit below sixty-five members: the walk skips them, pages
+/// the members in two bounded pages, and terminates at its origin. A crash
+/// and restart between pages resumes from committed progress, and a
+/// duplicated page request and page change nothing. A record removed and
+/// re-added before its page runs moves above the origin and arrives through
+/// ordinary delivery; the removed records never reach the new client, and the
+/// client that already held them keeps them.
+#[test]
+fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates() {
+    let mut sim = Sim::new(9, 2);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        channel: "a".into(),
+    })
+    .unwrap();
+    for i in 0..125 {
+        declare(
+            &mut sim,
+            &format!("Entry:e{i:03}"),
+            Some(Some(&format!("text {i}"))),
+            &[("a", true)],
+        );
+    }
+    sim.settle();
+    for i in 0..60 {
+        declare(&mut sim, &format!("Entry:e{i:03}"), None, &[("a", false)]);
+    }
+    let origin = sim.host.head("a");
+    assert_eq!(origin, 125, "removal allocated no position");
+    sim.apply(Action::SubscribeAtHead {
+        client: 1,
+        channel: "a".into(),
+    })
+    .unwrap();
+    sim.apply(Action::Bootstrap {
+        client: 1,
+        channel: "a".into(),
+    })
+    .unwrap();
+
+    // First page, asked for twice: the duplicate answer is fenced.
+    sim.apply(Action::LoadPull { client: 1 }).unwrap();
+    sim.apply(Action::Duplicate).unwrap();
+    sim.drain();
+    let first = progress(&mut sim, 1, "a");
+    assert!(
+        first > 60 && first < origin,
+        "a full page of members stops at its last cursor: {first}"
+    );
+    assert_eq!(sim.read_text(1, &entry_key("e060")), Some("text 60".into()));
+    // A member of the remaining interval moves above the origin.
+    declare(&mut sim, "Entry:e124", None, &[("a", false)]);
+    declare(&mut sim, "Entry:e124", None, &[("a", true)]);
+    // Crash between pages; the reopened client resumes from its progress.
+    sim.apply(Action::Crash { client: 1 }).unwrap();
+    sim.apply(Action::Restart { client: 1 }).unwrap();
+    assert_eq!(progress(&mut sim, 1, "a"), first);
+    load(&mut sim, 1);
+    assert_eq!(progress(&mut sim, 1, "a"), origin);
+    sim.settle();
+    assert_eq!(sim.bootstrap_phase(1, "a"), BootstrapPhase::Complete);
+    for i in 0..125 {
+        let key = entry_key(&format!("e{i:03}"));
+        let expected = (i >= 60).then(|| format!("text {i}"));
+        assert_eq!(
+            sim.read_text(1, &key),
+            expected,
+            "e{i:03} on the new client"
+        );
+        assert_eq!(
+            sim.read_text(0, &key),
+            Some(format!("text {i}")),
+            "e{i:03} kept by the client that already held it"
+        );
+    }
+    sim.check().unwrap();
+    assert_eq!(sim.conflicts, 0);
+    assert!(sim.reports.is_empty(), "{:?}", sim.reports);
 }

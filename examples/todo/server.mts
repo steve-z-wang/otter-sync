@@ -57,7 +57,7 @@ export async function createExample() {
   let calls = 0;
   const mutations: Mutations<Tx> = {
     async addTodo({ args, ctx }) {
-      const { tx, userId, publish, changes } = ctx;
+      const { tx, userId } = ctx;
       calls++;
       const { todo } = args;
       const title = titleForInsert(todo.title);
@@ -72,15 +72,18 @@ export async function createExample() {
         throw new CallRejected("todo.id_conflict");
       }
       await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
-      changes.add({ model: "Todo", identity: { id: todo.id } });
-      publish({ channel: CHANNEL });
+      // The created input is already a change the caller receives authority for.
+      // Joining the demo Channel once is what distributes it, and every later
+      // change to it, to the other subscribers.
+      ctx.channel(CHANNEL).todo.add({ id: todo.id });
     },
     async setTodoDone({ args, ctx }) {
-      const { tx, publish, changes } = ctx;
+      const { tx } = ctx;
       calls++;
       const { id, done } = args.todo;
       // An empty patch is a no-op (#49): the record is still read back and
-      // published at a new stamp, but nothing is written.
+      // distributed at a new stamp, but nothing is written. The Todo is already
+      // a member of the demo Channel, so no enrollment is needed here.
       if (typeof done === "boolean") {
         try {
           await tx.todo.update({ where: { id }, data: { done } });
@@ -89,8 +92,9 @@ export async function createExample() {
           throw new CallRejected("todo.missing");
         }
       }
-      changes.add({ model: "Todo", identity: { id } });
-      publish({ channel: CHANNEL });
+      // The explicit `todo` output: its identity, which the framework reads
+      // through the Loader for the caller's result.
+      return { todo: { id } };
     },
   };
   const loaders: Loaders<Tx> = {
@@ -135,7 +139,7 @@ export async function createExample() {
       await seed(backend);
     },
     /**
-     * Publish the seed users and tasks again, creating nothing new: what a
+     * Touch the seed users and tasks again, creating nothing new: what a
      * backend job does when it wants existing rows redistributed. An app meets
      * them instead through `subscription.bootstrap()`
      * ([#151](https://github.com/zanminwang/axton/issues/151)), which is what

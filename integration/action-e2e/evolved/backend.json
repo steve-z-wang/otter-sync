@@ -42,18 +42,7 @@
       "kind": "mutation",
       "name": "AddTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 1,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -109,18 +98,7 @@
       "kind": "mutation",
       "name": "AddTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 2,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -160,17 +138,7 @@
       "kind": "mutation",
       "name": "DeleteTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "deleteIdentity",
-          "model": "Todo",
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -361,6 +329,7 @@
           }
         }
       ],
+      "kind": "mutation",
       "name": "SearchTodos",
       "outputEnums": [],
       "outputs": [
@@ -752,18 +721,7 @@
       "kind": "mutation",
       "name": "UpdateTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 1,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -814,18 +772,7 @@
       "kind": "mutation",
       "name": "UpdateTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 2,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -946,18 +893,7 @@
         "kind": "mutation",
         "name": "AddTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 1,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -1013,18 +949,7 @@
         "kind": "mutation",
         "name": "AddTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 2,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -1064,17 +989,7 @@
         "kind": "mutation",
         "name": "DeleteTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "deleteIdentity",
-            "model": "Todo",
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -1265,6 +1180,7 @@
             }
           }
         ],
+        "kind": "mutation",
         "name": "SearchTodos",
         "outputEnums": [],
         "outputs": [
@@ -1656,18 +1572,7 @@
         "kind": "mutation",
         "name": "UpdateTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 1,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,
@@ -1718,18 +1623,7 @@
         "kind": "mutation",
         "name": "UpdateTodo",
         "outputEnums": [],
-        "outputs": [
-          {
-            "cardinality": "single",
-            "kind": "model",
-            "model": "Todo",
-            "modelReadVersion": 2,
-            "name": "todo",
-            "source": {
-              "inputIdentity": "todo"
-            }
-          }
-        ],
+        "outputs": [],
         "prerequisites": [],
         "requirements": [],
         "sequence": null,

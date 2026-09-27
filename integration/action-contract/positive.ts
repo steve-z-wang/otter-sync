@@ -1,6 +1,7 @@
 import type { Call, CallOutcome, GeneratedClient } from './client.ts';
-import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, MutationContext, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import { Project, Todo } from './backend.ts';
+import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, EditOutput, EditAndReadOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
+import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, MutationContext, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
 
 const created: TodoCreate = { id: 't', title: 'Task', state: 'open', note: null };
 const patch: TodoUpdate<'title'> = { id: 't', title: 'Renamed' };
@@ -33,15 +34,23 @@ async function clientContract(client: GeneratedClient) {
   const status: 'pending' | 'succeeded' | 'failed' = call.status;
   const outcome: CallOutcome<AddTodoOutput> = await call.wait();
   if (outcome.error === null) {
-    const todo: string = outcome.result.todo.title;
-    void todo;
+    // Operands are targets, not results: only explicit outputs are present.
+    const related: string | undefined = outcome.result.relatedTodo?.title;
+    void related;
   } else {
     const code: string = outcome.error.code;
     void code;
   }
   const final: AddTodoOutput = await client.mutations.call.addTodo(input);
-  const removed = await client.mutations.call.removeTodo({ todo: { id: 't' } });
-  const removedId: string = removed.todo.id;
+  // A delete operand has no implicit result.
+  const removed: void = await client.mutations.call.removeTodo({ todo: { id: 't' } });
+  // Explicit results (#140): Edit returns no business value; EditAndRead
+  // returns the loaded Todo its handler selected, independent of the input.
+  const edited: EditOutput = await client.mutations.call.edit({ todo: { id: 'A', title: 'Renamed' } });
+  const editedCall: Call<void> = await client.mutations.edit({ todo: { id: 'A' } });
+  const read: EditAndReadOutput = await client.mutations.call.editAndRead({ todo: { id: 'A', state: 'closed' } });
+  const readTitle: string = read.todo.title;
+  await client.mutations.editAndRead({ todo: { id: 'A' } }, { store: { todo: false } });
   const noOutput: PingOutput = await client.mutations.call.ping({});
   await client.mutations.call.deleteTodo({ todo: deletion });
   const email: Call<void> = await client.mutations.sendEmail({ to: 'team@example.test', subject: 'Todo', body: 'Created' });
@@ -82,13 +91,17 @@ async function clientContract(client: GeneratedClient) {
   const saved = await client.mutations.call.addNotes({ note: draft, many: [{ memo: 'x' }, { id: 'given', memo: null }] });
   const savedAt: Date = saved.saved.at;
   await client.mutations.addNotes({ note: { memo: null }, maybe: null, many: [] });
-  void [status, final, removedId, noOutput, email, rows, suggestion, openOutcome, queuedOutcome, savedAt];
+  void [status, final, removed, edited, editedCall, readTitle, noOutput, email, rows, suggestion, openOutcome, queuedOutcome, savedAt];
 }
 
 type Tx = { db: unknown };
 const pingHandlerResult: PingHandlerOutput = undefined;
 const removeHandlerResult: RemoveTodoHandlerOutput = undefined;
-const mutationContext = (ctx: MutationContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.changes, ctx.publish];
+const editHandlerResult: EditHandlerOutput = undefined;
+// The handler supplies the output identity; input A and output B are independent.
+const output: EditAndReadHandlerOutput = { todo: { id: "B" } };
+// A composite identity names every component; a mixed list takes explicit references.
+const mutationContext = (ctx: MutationContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.channel('tenant:t').project.add({ tenantId: 't', id: 'p' }), ctx.touch.todo({ id: 't' }), ctx.channel('tenant:t').remove([Project({ tenantId: 't', id: 'p' }), Todo({ id: 't' })])];
 const queryContext = (ctx: QueryContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId];
 const findOutput: FindTodosHandlerOutput = { todos: [{ id: 't' }], nextCursor: null };
 const oldGetTodos: GetTodosV1HandlerOutput = { todos: [] };
@@ -100,9 +113,11 @@ const handlers: Mutations<Tx> = {
   openTodo: { async v1({ args }) { void args.store; return { mainTodo: { id: 't' }, suggestions: [], related: null, count: 0 }; } },
   search: { async v1({ args }) { void args.query; } },
   deleteTodo: { async v1({ args }) { void args.todo.id; } },
+  edit: async ({ args }) => { void args.todo.id; },
+  editAndRead: async ({ args }) => { void args.todo.id; return output; },
   sendEmail: { async v1({ args }) { void args.to; void args.subject; void args.body; } },
   // v1 of GetTodos stays a Mutation; its v2 is registered as a Query.
-  getTodos: async ({ ctx }) => { ctx.changes.add({ model: 'Todo', identity: { id: 't' } }); return oldGetTodos; },
+  getTodos: async ({ ctx }) => { ctx.touch.todo({ id: 't' }); return oldGetTodos; },
   stateList: { async v1() { return oldStateListOutput; }, async v2() { return stateListOutput; } },
   // Handlers receive the expanded create: every defaulted field is present.
   addNotes: async ({ args }) => { const id: string = args.note.id; const at: Date = args.note.at; const pinned: boolean = args.note.pinned; const tag: string | null = args.note.tag; const ids: string[] = args.many.map(n => n.id); void [at, pinned, tag, ids, args.maybe?.id]; return { saved: { id } }; },
@@ -116,4 +131,4 @@ const loaders: Loaders<Tx> = {
   project: async () => [],
   note: async () => [],
 };
-void [handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, oldStateListOutput];
+void [handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput];

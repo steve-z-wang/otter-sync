@@ -15,15 +15,18 @@ const fields = [
   { name: 'id', type: { kind: 'scalar', name: 'string' }, nullable: false },
   { name: 'title', type: { kind: 'scalar', name: 'string' }, nullable: false },
 ];
+// An explicit `todo` output: the handler returns the identity, the Loader reads it.
+const todoOutput = { name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: 'handlerIdentity', handlerType: { kind: 'identity', model: 'Todo', fields: [{ name: 'id', type: { kind: 'scalar', name: 'string' } }] } };
 const config = { schema: {
   enums: [], models: [{ name: 'Todo', version: 1, identity: ['id'], fields }],
   resultModels: [{ name: 'Todo', version: 1, identity: ['id'], fields, enums: [] }],
-  actions: [{ name: 'Add', version: 1, inputs: [{ kind: 'model', name: 'todo', model: 'Todo', operation: 'create', cardinality: 'single' }], outputs: [{ name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: { inputIdentity: 'todo' } }] }],
+  actions: [{ name: 'Add', version: 1, inputs: [{ kind: 'model', name: 'todo', model: 'Todo', operation: 'create', cardinality: 'single' }], outputs: [todoOutput] }],
 }, mutations: [], loaders: ['Todo'] };
 let handlers = 0, loaders = 0;
 const handler = async ({ ctx, args }) => {
   handlers++;
   await ctx.tx.$executeRawUnsafe('INSERT INTO action_todo(id,title) VALUES($1,$2)', args.todo.id, args.todo.title);
+  return { todo: { id: args.todo.id } };
 };
 const loader = async ({ tx, ids }) => {
   loaders++;
@@ -246,7 +249,7 @@ test('read-only identity holds its stamp lock through Loader read and commit', a
   const database = pg(pool);
   const schema = { enums: [], models: config.schema.models, resultModels: config.schema.resultModels, actions: [
     { name: 'Find', version: 1, inputs: [], outputs: [{ name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: 'handlerIdentity', handlerType: { kind: 'identity', model: 'Todo', fields: [{ name: 'id', type: { kind: 'scalar', name: 'string' } }] } }] },
-    { name: 'Edit', version: 1, inputs: [{ kind: 'model', name: 'todo', model: 'Todo', operation: 'update', cardinality: 'single', allowedPatchFields: ['title'] }], outputs: [{ name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: { inputIdentity: 'todo' } }] },
+    { name: 'Edit', version: 1, inputs: [{ kind: 'model', name: 'todo', model: 'Todo', operation: 'update', cardinality: 'single', allowedPatchFields: ['title'] }], outputs: [todoOutput] },
   ] };
   await db.$executeRawUnsafe("INSERT INTO action_todo(id,title) VALUES('lock','old')");
   await database.transaction(async tx => database.persistence(tx).call({ op: 'ensureStamp', model: 'Todo', identityKey: '{"id":"lock"}' }));
@@ -254,7 +257,7 @@ test('read-only identity holds its stamp lock through Loader read and commit', a
   const loading = new Promise(resolve => { enteredLoad = resolve; });
   const release = new Promise(resolve => { releaseLoad = resolve; });
   const advancing = new Promise(resolve => { enteredAdvance = resolve; });
-  const read = createBackend({ config: { schema, mutations: [], loaders: ['Todo'] }, native, database, authenticate: () => 'alice', mutations: { async find() { return { todo: { id: 'lock' } }; }, async edit() {} }, loaders: { async todo({ tx }) {
+  const read = createBackend({ config: { schema, mutations: [], loaders: ['Todo'] }, native, database, authenticate: () => 'alice', mutations: { async find() { return { todo: { id: 'lock' } }; }, async edit() { return { todo: { id: 'lock' } }; } }, loaders: { async todo({ tx }) {
     enteredLoad();
     await release;
     return database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', ['lock']);
@@ -266,6 +269,7 @@ test('read-only identity holds its stamp lock through Loader read and commit', a
   const write = createBackend({ config: { schema, mutations: [], loaders: ['Todo'] }, native, database: writerDatabase, authenticate: () => 'alice', mutations: { async find() { return { todo: { id: 'lock' } }; }, async edit({ ctx }) {
     writerPid = Number((await database.driver.query(ctx.tx, 'SELECT pg_backend_pid() AS pid', []))[0].pid);
     await database.driver.query(ctx.tx, 'UPDATE action_todo SET title=$1 WHERE id=$2', ['new', 'lock']);
+    return { todo: { id: 'lock' } };
   } }, loaders: { async todo({ tx }) { return database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', ['lock']); } } });
   const body = (clientId, callId, name, args) => JSON.stringify({ clientId, batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId, name, version: 1, args }] });
   try {
@@ -340,7 +344,7 @@ test('store policy is part of the saved call identity and replays without Loader
 });
 
 test('a forged Query settlement rolls back its own transaction writes and keeps adjacent calls', async () => {
-  // The TypeScript runtime gives a Query no changes/publish. A host that forges
+  // The TypeScript runtime gives a Query no touch or Channel handles. A host that forges
   // them anyway (a defect or another language host) is refused by the shared
   // Rust executor; this wrapper forges them on the settlement it forwards.
   const forging = {
@@ -353,7 +357,8 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
     const request = JSON.parse(raw);
     if (request.op !== 'handleAction' || request.name !== 'Leak') return answer;
     const settled = JSON.parse(answer);
-    return JSON.stringify({ ...settled, changes: [{ model: 'Todo', identity: { id: `leak-${request.callId}` } }], publications: [{ channel: 'todos' }] });
+    const leaked = { model: 'Todo', identity: { id: `leak-${request.callId}` } };
+    return JSON.stringify({ ...settled, changes: [leaked], memberships: [{ channel: 'todos', ...leaked, present: true }] });
   };
   const leakConfig = { schema: { ...config.schema, actions: [
     ...config.schema.actions,
@@ -367,7 +372,7 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
         await database.driver.query(ctx.tx, 'INSERT INTO action_todo(id,title) VALUES($1,$2)', [`leak-${ctx.callId}`, 'forbidden']);
         return { n: 1 };
       };
-      const add = async ({ ctx, args }) => { await database.driver.query(ctx.tx, 'INSERT INTO action_todo(id,title) VALUES($1,$2)', [args.todo.id, args.todo.title]); };
+      const add = async ({ ctx, args }) => { await database.driver.query(ctx.tx, 'INSERT INTO action_todo(id,title) VALUES($1,$2)', [args.todo.id, args.todo.title]); return { todo: { id: args.todo.id } }; };
       const todo = async ({ tx, ids }) => Promise.all(ids.map(async ({ id }) => (await database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', [id]))[0] ?? null));
       const app = createBackend({ config: leakConfig, native: forging, database, authenticate: () => 'alice', mutations: { add }, queries: { leak }, loaders: { todo } });
       const ids = [0, 1, 2].map(n => `01890f47-1234-7123-8123-1234567891${index}${n}`);

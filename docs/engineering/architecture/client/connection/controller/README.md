@@ -17,4 +17,4 @@ Pause, resume, wake and stop are `connection` tasks that reach both lanes; `Clie
 
 ## Decision: no HTTP polling fallback
 
-The downlink lane is the only path that pulls pages; the push lane never pulls. This was decided and is not open. The consequence when a WebSocket cannot be established (a proxy that blocks upgrades, for example): pushes still succeed and complete from their receipts, with the server's content for the records they changed; the downlink lane retries with backoff indefinitely, and other clients' changes arrive only once the socket connects.
+The downlink lane is the only path that pulls pages; the push lane never pulls. This was decided and is not open. The consequence when a WebSocket cannot be established (a proxy that blocks upgrades, for example): pushes still succeed and complete from their receipts, with the server's content for the records they targeted; the downlink lane retries with backoff indefinitely, and other clients' changes arrive only once the socket connects.

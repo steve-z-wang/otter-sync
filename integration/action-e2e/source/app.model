@@ -4,13 +4,19 @@ model Todo {
  @@id(id)
 }
 
+// No business outputs: each input is still a change the caller receives
+// authority for, and the call completes once that authority is applied locally.
 mutation AddTodo(todo Todo.create)
 mutation UpdateTodo(todo Todo.update<title>)
 mutation DeleteTodo(todo Todo.delete)
+// Edits one Todo and returns another: the explicit output shares the input's
+// name but not its identity (#140).
+mutation EditAndShow(todo Todo.update<title>, shown String) { todo Todo }
 mutation SendEmail(to String, subject String, body String) { messageId String }
 // SearchTodos v1 is retained as a Mutation; v2 is the same read as a Query.
 @version(2) query SearchTodos(query String?) { todos Todo[] first Todo? count Int labels String[] hint String? }
-// Retitles the matching Todos and returns them: explicit outputs that overlap its own changes.
+// Retitles the matching Todos, touches each as an explicit extra change, and
+// returns them through explicit outputs.
 mutation RetitleTodos(query String, title String) { todos Todo[] first Todo? }
 // Query once (#158): Model plus scalar, list and date metadata; and a
 // parameterless scalar-only Query.
@@ -28,3 +34,7 @@ model Note {
  @@id(id)
 }
 mutation AddNote(note Note.create) { saved Note }
+// Retitles a Todo and rewrites a Note through an explicit extra touch. The Note
+// is not caller authority, so a caller that declares only Todo can run it; the
+// Note reaches its own Channel's subscribers (#140).
+mutation AnnotateTodo(todo Todo.update<title>, note UUID, body String)

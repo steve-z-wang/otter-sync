@@ -52,6 +52,10 @@ expected=(
   'missing_required_argument:82'
   'argument_type_not_assignable:83'
   'argument_type_not_assignable:84'
+  'missing_required_argument:89'
+  'argument_type_not_assignable:90'
+  'use_of_void_result:91'
+  'use_of_void_result:92'
 )
 failed=0
 for pair in "${expected[@]}"; do

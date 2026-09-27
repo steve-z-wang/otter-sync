@@ -239,26 +239,6 @@
         "outputs": [
           {
             "cardinality": "single",
-            "kind": "model",
-            "model": "Note",
-            "modelReadVersion": 1,
-            "name": "note",
-            "source": {
-              "inputIdentity": "note"
-            }
-          },
-          {
-            "cardinality": "optional",
-            "kind": "model",
-            "model": "Note",
-            "modelReadVersion": 1,
-            "name": "changed",
-            "source": {
-              "inputIdentity": "changed"
-            }
-          },
-          {
-            "cardinality": "single",
             "kind": "value",
             "name": "stamp",
             "source": "handlerValue",

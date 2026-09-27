@@ -232,6 +232,37 @@ fn after_closed_no_event_produces_an_action_and_a_late_page_is_not_sent() {
     assert_eq!(subscriptions.handle(LiveEvent::Closed).unwrap(), vec![]);
 }
 
+/// A scan filters removed Channel members before its limit, so a page can
+/// advance over positions whose records all left the Channel and carry no
+/// change. It is still progress: it is sent, it moves the cursor, and at the
+/// head it ends the drain, so removed positions cannot stall a live stream.
+#[test]
+fn a_page_that_advances_over_removed_positions_without_changes_is_progress() {
+    let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
+    let holes = String::from_utf8(
+        PullPage {
+            cursors: BTreeMap::from([(
+                "a".to_string(),
+                CursorRange {
+                    from: 3,
+                    to: 9,
+                    head: 9,
+                },
+            )]),
+            changes: vec![],
+        }
+        .encode()
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        subscriptions.handle(pulled(&holes)).unwrap(),
+        vec![LiveAction::Send { frame: holes }]
+    );
+    assert!(!subscriptions.is_pulling());
+    assert_eq!(subscriptions.scopes()[0].cursor, 9);
+}
+
 #[test]
 fn invalid_page_progression_is_an_error() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));

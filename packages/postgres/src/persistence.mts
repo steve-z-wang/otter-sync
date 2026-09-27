@@ -5,6 +5,8 @@ import type {
   Head,
   HostRequest,
   Invalidation,
+  Locked,
+  Memberships,
   Published,
   Stamped,
 } from "../../server/host-contract.mts";
@@ -17,6 +19,54 @@ const safe = (n: unknown): number => {
   if (!Number.isSafeInteger(number) || number < 0)
     throw new Error("Stored counter outside safe range");
   return number;
+};
+
+/** A stored stamp: a safe positive integer. */
+const storedStamp = (n: unknown): number => {
+  const number = Number(n);
+  if (!Number.isSafeInteger(number) || number < 1)
+    throw new Error("Stored stamp outside safe positive range");
+  return number;
+};
+
+/**
+ * A Channel name is a string that is non-empty after JS `trim()`. The engine
+ * applies its own check (`check_channel` in crates/core, Rust `trim()`) at
+ * settlement; the two trims differ on a few code points such as U+FEFF and
+ * U+0085, so this is a guard, not the same rule.
+ */
+const channelName = (channel: unknown): string => {
+  if (typeof channel !== "string" || channel.trim() === "")
+    throw new Error(`Invalid membership channel ${JSON.stringify(channel)}`);
+  return channel;
+};
+
+/**
+ * The membership operations name exactly these fields: a request carrying
+ * another, or an empty or non-string model or identity key, is refused before
+ * any SQL runs.
+ */
+const MEMBERSHIP_FIELDS = {
+  lockRecord: ["op", "model", "identityKey"],
+  memberships: ["op", "model", "identityKey"],
+  setMembership: ["op", "channel", "model", "identityKey", "present"],
+} as const;
+const checkMembershipRequest = (
+  r: { op: keyof typeof MEMBERSHIP_FIELDS } & Record<string, unknown>,
+): void => {
+  const allowed: readonly string[] = MEMBERSHIP_FIELDS[r.op];
+  for (const field of Object.keys(r))
+    if (!allowed.includes(field))
+      throw new Error(`Unknown ${r.op} field ${field}`);
+  if (typeof r.model !== "string" || r.model === "")
+    throw new Error(`${r.op}: model must be a non-empty string`);
+  if (typeof r.identityKey !== "string" || r.identityKey === "")
+    throw new Error(`${r.op}: identityKey must be a non-empty string`);
+  if (r.op === "setMembership") {
+    channelName(r.channel);
+    if (typeof r.present !== "boolean")
+      throw new Error("setMembership: present must be a boolean");
+  }
 };
 
 /**
@@ -143,6 +193,41 @@ export async function answer<Tx>(
       );
       const published: Published = { cursor, stamp };
       return published;
+    }
+    case "lockRecord": {
+      checkMembershipRequest(r);
+      const rows = await q(SQL.LOCK_RECORD, r.model, r.identityKey);
+      if (rows.length > 1)
+        throw new Error(
+          `Locked more than one record row for ${r.model} ${r.identityKey}`,
+        );
+      const locked: Locked = rows.length ? storedStamp(rows[0]!.stamp) : null;
+      return locked;
+    }
+    case "memberships": {
+      checkMembershipRequest(r);
+      const rows = await q(SQL.MEMBERSHIPS, r.model, r.identityKey);
+      const memberships: Memberships = rows.map((row) =>
+        channelName(row.channel),
+      );
+      if (new Set(memberships).size !== memberships.length)
+        throw new Error(
+          `Duplicate membership channel for ${r.model} ${r.identityKey}`,
+        );
+      return memberships;
+    }
+    case "setMembership": {
+      // Membership never allocates a cursor: adding ensures the Channel row
+      // at head zero, removing leaves the Channel and its history alone.
+      checkMembershipRequest(r);
+      if (r.present) {
+        await q(SQL.ENSURE_CHANNEL, r.channel);
+        await q(SQL.INSERT_MEMBERSHIP, r.channel, r.model, r.identityKey);
+      } else {
+        await q(SQL.DELETE_MEMBERSHIP, r.channel, r.model, r.identityKey);
+      }
+      const acknowledged: Acknowledged = null;
+      return acknowledged;
     }
     case "savepoint":
     case "rollback":

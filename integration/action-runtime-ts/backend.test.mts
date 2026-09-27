@@ -3,16 +3,19 @@ import test from "node:test";
 import {
   CallRejected,
   Moment,
+  Pin,
   createBackend,
   type MutationHandlerCall,
   type Mutations,
   type Queries,
   type Loaders,
   type PutV1Input,
+  type Channel,
+  type Touch,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
 
-test("generated backend decodes Date values and keeps canonical Model references", async () => {
+test("generated backend decodes Date values and declares canonical identities through its handles", async () => {
   const first = "2026-01-01T00:00:00.000Z";
   const second = "2026-01-02T00:00:00.000Z";
   const seen: unknown[] = [];
@@ -23,24 +26,29 @@ test("generated backend decodes Date values and keeps canonical Model references
     assert.deepEqual(args.statuses, ["open", "closed"]);
     assert.equal(args.note, null);
     ctx.tx.rows.set(args.todo.id, args.todo);
-    ctx.changes.add(args.todo);
-    ctx.changes.add(Moment({ at: new Date(first) }));
-    ctx.changes.add(Moment({ at: new Date(second) }));
-    ctx.changes.add({
-      model: "Moment",
-      identity: { at: new Date("2026-01-03T00:00:00.000Z") },
-    });
-    ctx.changes.add({
-      model: "Moment",
-      identity: { at: new Date("2026-01-04T00:00:00.000Z") },
-    });
-    ctx.publish({ channel: "todos", records: [args.todo] });
-    return { echoed: new Date(args.when.getTime()), status: args.todo.status };
+    // The input Todo is inferred by the engine; touches name extra records.
+    const moment = { at: new Date(first) };
+    ctx.touch.moment(moment);
+    moment.at = new Date(second);
+    ctx.touch.moment(moment);
+    ctx.touch.moment({ at: new Date(second) });
+    const channel = ctx.channel("todos");
+    channel.todo.add(args.todo);
+    channel.add([
+      Moment({ at: new Date("2026-01-03T00:00:00.000Z") }),
+      Pin({ todo: args.todo.id, at: args.todo.at }),
+    ]);
+    channel.pin.remove({ todo: args.todo.id, at: args.todo.at });
+    return {
+      todo: { id: args.todo.id },
+      echoed: new Date(args.when.getTime()),
+      status: args.todo.status,
+    };
   };
   const mutations: Mutations<Tx> = {
     put: { v1: put, v2: put },
     async change({ args }) {
-      return { echoed: args.at };
+      return { todo: null, echoed: args.at };
     },
     async clear() {},
     async ping() {},
@@ -48,7 +56,9 @@ test("generated backend decodes Date values and keeps canonical Model references
       return { todo: null };
     },
     async mark() {},
-    async removeMoment() {},
+    async removeMoment({ args }) {
+      return { at: args.moment.at };
+    },
   };
   const queries: Queries<Tx> = {
     find: {
@@ -63,6 +73,9 @@ test("generated backend decodes Date values and keeps canonical Model references
     },
     async moment({ ids }) {
       assert.equal(ids[0]?.at.getUTCFullYear(), 2026);
+      return ids.map(() => null);
+    },
+    async pin({ ids }) {
       return ids.map(() => null);
     },
   };
@@ -148,25 +161,36 @@ test("generated backend decodes Date values and keeps canonical Model references
   });
   await backend.action("alice", "{}");
   for (const handled of seen.slice(0, 2) as {
-    outputs: { echoed: string; status: string };
+    outputs: { todo: { id: string }; echoed: string; status: string };
     changes: { model: string; identity: Record<string, unknown> }[];
-    publications: { records: { identity: Record<string, unknown> }[] }[];
+    memberships: {
+      channel: string;
+      model: string;
+      identity: Record<string, unknown>;
+      present: boolean;
+    }[];
   }[]) {
+    assert.deepEqual(handled.outputs.todo, { id: "one" });
     assert.equal(handled.outputs.echoed, first);
     assert.equal(handled.outputs.status, "open");
-    assert.deepEqual(
-      handled.changes.map((ref) => ref.identity),
-      [
-        { id: "one" },
-        { at: first },
-        { at: second },
-        { at: "2026-01-03T00:00:00.000Z" },
-        { at: "2026-01-04T00:00:00.000Z" },
-      ],
-    );
-    assert.deepEqual(handled.publications[0]?.records?.[0]?.identity, {
-      id: "one",
+    // Each declaration copied its identity at the call, once per record.
+    assert.deepEqual(handled.changes, [
+      { model: "Moment", identity: { at: first } },
+      { model: "Moment", identity: { at: second } },
+    ]);
+    // Only identity fields, in declaration order; the engine reduces them.
+    const intent = (model: string, identity: object, present: boolean) => ({
+      channel: "todos",
+      model,
+      identity,
+      present,
     });
+    assert.deepEqual(handled.memberships, [
+      intent("Todo", { id: "one" }, true),
+      intent("Moment", { at: "2026-01-03T00:00:00.000Z" }, true),
+      intent("Pin", { todo: "one", at: first }, true),
+      intent("Pin", { todo: "one", at: first }, false),
+    ]);
   }
   assert.ok(CallRejected.prototype instanceof Error);
 });
@@ -219,20 +243,31 @@ const loaders: Loaders<Tx> = {
   async moment({ ids }) {
     return ids.map(() => null);
   },
+  async pin({ ids }) {
+    return ids.map(() => null);
+  },
 };
 function mutationHandlers(): Mutations<Tx> {
   const none = async () => {};
   return {
     put: {
-      v1: async ({ args }) => ({ echoed: args.when, status: "open" }),
-      v2: async ({ args }) => ({ echoed: args.when, status: "open" }),
+      v1: async ({ args }) => ({
+        todo: { id: args.todo.id },
+        echoed: args.when,
+        status: "open",
+      }),
+      v2: async ({ args }) => ({
+        todo: { id: args.todo.id },
+        echoed: args.when,
+        status: "open",
+      }),
     },
-    change: async ({ args }) => ({ echoed: args.at }),
+    change: async ({ args }) => ({ todo: null, echoed: args.at }),
     clear: none,
     ping: none,
     find: async () => ({ todo: null }),
     mark: none,
-    removeMoment: none,
+    removeMoment: async ({ args }) => ({ at: args.moment.at }),
   };
 }
 
@@ -256,7 +291,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
       ...mutationHandlers(),
       find: async ({ ctx, args }) => {
         seen.push({ kind: "mutation", keys: Object.keys(ctx).sort() });
-        ctx.changes.add({ model: "Todo", identity: { id: "one" } });
+        ctx.touch.todo({ id: "one" });
         assert.ok(args.at instanceof Date);
         return { todo: { id: "one" } };
       },
@@ -268,10 +303,10 @@ test("Query handlers receive no effect capabilities and settle without effects",
           assert.equal(ctx.userId, "alice");
           assert.equal(ctx.callId, "Find-2");
           assert.ok(args.at instanceof Date);
-          // @ts-expect-error a Query context has no changes
-          assert.equal(ctx.changes, undefined);
-          // @ts-expect-error a Query context has no publish
-          assert.equal(ctx.publish, undefined);
+          // @ts-expect-error a Query context has no membership writer
+          assert.equal(ctx.channel, undefined);
+          // @ts-expect-error a Query context has no change declaration
+          assert.equal(ctx.touch, undefined);
           return { todo: { id: "one" } };
         },
       },
@@ -281,16 +316,16 @@ test("Query handlers receive no effect capabilities and settle without effects",
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "changes", "publish", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "channel", "touch", "tx", "userId"] },
     { kind: "query", keys: ["callId", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
     {
       outputs: { todo: { id: "one" } },
       changes: [{ model: "Todo", identity: { id: "one" } }],
-      publications: [],
+      memberships: [],
     },
-    { outputs: { todo: { id: "one" } }, changes: [], publications: [] },
+    { outputs: { todo: { id: "one" } }, changes: [], memberships: [] },
   ]);
 });
 
@@ -362,4 +397,85 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
   ];
   for (const [options, message] of cases)
     assert.throws(() => start(options), message);
+});
+
+test("declaration handles close when the handler or external body settles, even when it throws", async () => {
+  const escaped: {
+    channel: (name: string) => Channel;
+    touch: Touch;
+  }[] = [];
+  const answers: unknown[] = [];
+  const settled: string[] = [];
+  const at = "2026-01-01T00:00:00.000Z";
+  const call = (ordinal: number) => ({
+    op: "handleAction",
+    name: "Find",
+    version: 1,
+    owner: "alice",
+    callId: `find-${ordinal}`,
+    ordinal,
+    arguments: { at },
+  });
+  const native = {
+    ...nativeHost([call(1), call(2)], answers),
+    async settleExternal(_config: string, settlement: string) {
+      settled.push(settlement);
+      return "[]";
+    },
+  };
+  const backend = createBackend<Tx>({
+    database,
+    authenticate: () => "alice",
+    mutations: {
+      ...mutationHandlers(),
+      find: async ({ ctx }) => {
+        escaped.push({ channel: ctx.channel, touch: ctx.touch });
+        ctx.channel("found").todo.add({ id: "one" });
+        if (ctx.callId === "find-2") throw new Error("after declaring");
+        return { todo: null };
+      },
+    },
+    queries: { find: { v2: async () => ({ todo: null }) } },
+    loaders,
+    native,
+    onError: () => {},
+  });
+  await backend.action("alice", "{}");
+  assert.deepEqual(answers, [
+    {
+      outputs: { todo: null },
+      changes: [],
+      memberships: [
+        { channel: "found", model: "Todo", identity: { id: "one" }, present: true },
+      ],
+    },
+    { error: "after declaring" },
+  ]);
+  // The external body answers its own value; its declarations settle after it.
+  const value = await backend.transaction(async ({ channel, touch }) => {
+    escaped.push({ channel, touch });
+    touch.pin({ todo: "one", at: new Date(at) });
+    channel("found").todo.remove({ id: "one" });
+    return { arbitrary: [1, 2] };
+  });
+  assert.deepEqual(value, { arbitrary: [1, 2] });
+  assert.deepEqual(JSON.parse(settled[0]!), {
+    changes: [{ model: "Pin", identity: { todo: "one", at } }],
+    memberships: [
+      { channel: "found", model: "Todo", identity: { id: "one" }, present: false },
+    ],
+  });
+  await assert.rejects(
+    backend.transaction(async ({ channel, touch }) => {
+      escaped.push({ channel, touch });
+      throw new Error("body failed");
+    }),
+    /body failed/,
+  );
+  assert.equal(settled.length, 1, "a failed body settles nothing");
+  assert.equal(escaped.length, 4);
+  for (const { channel, touch } of escaped) {
+    assert.throws(() => channel("late"), /closed/);
+    assert.throws(() => touch.todo({ id: "late" }), /closed/);
+  }
 });

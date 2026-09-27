@@ -67,6 +67,10 @@ pub(crate) async fn process_bootstrap(
         }
         // The interval is finished when the scan ran out of rows or reached
         // the origin; otherwise the page stops at its last historical cursor.
+        // The scan answers only rows whose record is still a member, filtered
+        // before the limit, so removed positions are holes: a short scan has
+        // covered every eligible row up to the head, and a full one advances
+        // to a cursor it actually returned.
         to = if rows.len() < limits::PULL_CHANGES || previous >= request.until {
             request.until
         } else {

@@ -58,18 +58,7 @@
       "kind": "mutation",
       "name": "AddTodo",
       "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "single",
-          "kind": "model",
-          "model": "Todo",
-          "modelReadVersion": 1,
-          "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
-        }
-      ],
+      "outputs": [],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -123,13 +112,24 @@
       "outputs": [
         {
           "cardinality": "single",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
           "kind": "model",
           "model": "Todo",
           "modelReadVersion": 1,
           "name": "todo",
-          "source": {
-            "inputIdentity": "todo"
-          }
+          "source": "handlerIdentity"
         }
       ],
       "prerequisites": [],

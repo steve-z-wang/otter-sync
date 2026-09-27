@@ -34,6 +34,14 @@ const requestedPaths = async (body: () => Promise<void>) => {
   try { await body(); } finally { globalThis.fetch = original; }
   return paths;
 };
+/** The record's server stamp, or null before any settlement touched it. */
+const serverStamp = async (id: string, model = "Todo"): Promise<number | null> => {
+  const row = (await fixture.pool.query("SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2", [model, JSON.stringify({ id })])).rows[0];
+  return row ? Number(row.stamp) : null;
+};
+/** The Channel's head: the last publication position it allocated. */
+const channelHead = async (channel: string) =>
+  Number((await fixture.pool.query("SELECT head FROM axton_channel WHERE channel=$1", [channel])).rows[0]?.head ?? 0);
 const post = async (kind: "mutations" | "pull" | "actions", body: string, target = url) => {
   const response = await fetch(`${target}/sync/${kind}`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body });
   if (response.status !== 200) throw Error(`HTTP ${response.status}: ${await response.text()}`);
@@ -121,14 +129,15 @@ test("direct result retains Loader snapshot while independent durable optimism r
     const created = await client.mutations.addTodo({ todo: { id: "direct", title: "A" } });
     assert.equal((await created.wait()).error, null);
     await client.connection!.pause();
-    const pending = await client.mutations.updateTodo({ todo: { id: "direct", title: "B" } });
+    // EditAndShow returns the record it edits here, so each result is that record's snapshot.
+    const pending = await client.mutations.editAndShow({ todo: { id: "direct", title: "B" }, shown: "direct" });
     assert.equal(pending.status, "pending");
     assert.equal((await client.models.todo.get({ id: "direct" }))?.title, "B");
     const result = await client.queries.searchTodos({ query: "A" });
     assert.equal(result.todos[0]?.title, "A", "result is the committed Loader snapshot");
     assert.equal((await client.models.todo.get({ id: "direct" }))?.title, "B", "direct authority replays the independent pending edit");
     assert.equal((await client.syncState()).pending, 1, "direct call did not drain the durable queue");
-    const later = await client.mutations.updateTodo({ todo: { id: "direct", title: "C" } });
+    const later = await client.mutations.editAndShow({ todo: { id: "direct", title: "C" }, shown: "direct" });
     const frozen = await client.client.freeze();
     assert.ok(frozen);
     assert.equal(JSON.parse(frozen).mutations.length, 2, "both invocations are frozen in one batch");
@@ -356,29 +365,169 @@ test("a direct Mutation resolves after the backend commits and its authority app
     let done: Awaited<ReturnType<typeof client.mutations.call.addTodo>> | undefined;
     const paths = await requestedPaths(async () => { done = await client!.mutations.call.addTodo({ todo: { id: "direct-m", title: "  direct  " } }); });
     assert.deepEqual(paths, ["/sync/actions"], "a direct Mutation never enters the queue");
-    assert.deepEqual(done, { todo: { id: "direct-m", title: "direct" } }, "the input-bound result is the committed Loader snapshot");
+    assert.equal(done, undefined, "AddTodo declares no output: there is no result, and no input fills one");
     assert.deepEqual((await fixture.pool.query("SELECT title FROM action_e2e_todo WHERE id='direct-m'")).rows, [{ title: "direct" }]);
     assert.equal((await client.models.todo.get({ id: "direct-m" }))?.title, "direct", "authority applied before resolving");
     assert.equal((await client.readSql("SELECT count(*) AS n FROM axton_mutation"))[0]!.n, 0, "no queue row and no optimism");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("store:false cannot suppress authority a Mutation's own changes require", async () => {
+test("explicit extra touches are stamped once and are not caller authority; outputs follow store", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-mutation-store-"));
   let client: GeneratedClient | undefined;
   try {
     await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('retitle-a','retitleq a'),('retitle-b','retitleq b')");
     client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
     const direct = await client.mutations.call.retitleTodos({ query: "retitleq", title: "retitleq direct" }, { store: false });
-    assert.deepEqual(direct.todos.map((todo) => todo.title), ["retitleq direct", "retitleq direct"]);
-    assert.equal((await client.models.todo.get({ id: "retitle-a" }))?.title, "retitleq direct", "handler-reported changes are required authority");
-    assert.equal((await client.models.todo.get({ id: "retitle-b" }))?.title, "retitleq direct");
-    const durable = await client.mutations.retitleTodos({ query: "retitleq", title: "retitleq durable" }, { store: { todos: false, first: false } });
+    assert.deepEqual(direct.todos.map((todo) => todo.title), ["retitleq direct", "retitleq direct"], "the result is the Loader snapshot");
+    assert.equal(await client.models.todo.get({ id: "retitle-a" }), null, "a touch alone is not caller authority, and store:false stores no output");
+    assert.equal(await serverStamp("retitle-a"), 1, "the touch stamped the record once");
+    const durable = await client.mutations.retitleTodos({ query: "retitleq", title: "retitleq durable" });
     const outcome = await durable.wait();
     assert.equal(outcome.error, null);
     assert.equal(outcome.result!.first?.title, "retitleq durable");
-    assert.equal((await client.models.todo.get({ id: "retitle-b" }))?.title, "retitleq durable", "the durable route applies the same required authority");
+    assert.equal((await client.models.todo.get({ id: "retitle-b" }))?.title, "retitleq durable", "the default store policy stores the explicit outputs");
+    assert.equal(await serverStamp("retitle-b"), 2, "one stamp per settlement");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("an edit of A that explicitly returns B: A is reconciled, the result is B, and only A is stamped", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-a-b-"));
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    for (const [id, title] of [["ab-a", "A"], ["ab-b", "B"]]) assert.equal((await (await client.mutations.addTodo({ todo: { id, title } })).wait()).error, null);
+    await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('ab-c','C only on the server')");
+    const stampA = await serverStamp("ab-a");
+    const stampB = await serverStamp("ab-b");
+    const head = await channelHead("todos:demo");
+
+    // Direct: authority for input A is applied before the call resolves.
+    const direct = await client.mutations.call.editAndShow({ todo: { id: "ab-a", title: "  A1  " }, shown: "ab-b" });
+    assert.deepEqual(direct, { todo: { id: "ab-b", title: "B" } }, "result.todo is B's Loader snapshot, not the input A");
+    assert.equal((await client.models.todo.get({ id: "ab-a" }))?.title, "A1", "local A holds the server's normalized authority");
+    assert.equal(await serverStamp("ab-a"), stampA + 1, "A advanced exactly one stamp");
+    assert.equal(await serverStamp("ab-b"), stampB, "an output-only read does not stamp B");
+    assert.equal(await channelHead("todos:demo"), head + 1, "one position for A on its Channel, none for B");
+
+    // Durable: the optimistic A is replaced by the committed authority on completion.
+    await client.connection!.pause();
+    const call = await client.mutations.editAndShow({ todo: { id: "ab-a", title: "  A2  " }, shown: "ab-b" });
+    assert.equal((await client.models.todo.get({ id: "ab-a" }))?.title, "  A2  ", "optimistic A");
+    await client.connection!.resume();
+    const outcome = await call.wait();
+    assert.equal(outcome.error, null);
+    assert.deepEqual(outcome.result, { todo: { id: "ab-b", title: "B" } });
+    assert.equal((await client.models.todo.get({ id: "ab-a" }))?.title, "A2", "local A corrected once the call completed");
+    assert.equal(await serverStamp("ab-a"), stampA + 2);
+    assert.equal(await serverStamp("ab-b"), stampB);
+
+    // store:false suppresses storing the output, never the input's authority.
+    const unstored = await client.mutations.call.editAndShow({ todo: { id: "ab-a", title: " A3 " }, shown: "ab-c" }, { store: false });
+    assert.equal(unstored.todo.title, "C only on the server");
+    assert.equal(await client.models.todo.get({ id: "ab-c" }), null, "the unstored output did not reach the local Model");
+    assert.equal(await serverStamp("ab-c"), null, "reading an output allocates no stamp");
+    assert.equal((await client.models.todo.get({ id: "ab-a" }))?.title, "A3", "input authority is mandatory");
+    const unstoredDurable = await (await client.mutations.editAndShow({ todo: { id: "ab-a", title: " A4 " }, shown: "ab-c" }, { store: false })).wait();
+    assert.equal(unstoredDurable.result!.todo.title, "C only on the server");
+    assert.equal(await client.models.todo.get({ id: "ab-c" }), null);
+    assert.equal((await client.models.todo.get({ id: "ab-a" }))?.title, "A4");
+    const stored = await client.mutations.call.editAndShow({ todo: { id: "ab-a", title: "A5" }, shown: "ab-c" });
+    assert.equal((await client.models.todo.get({ id: "ab-c" }))?.title, stored.todo.title, "the default policy stores the output");
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a retried A-returns-B call replays its saved result without new stamps or positions on both routes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-a-b-retry-"));
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    for (const [id, title] of [["abr-a", "A"], ["abr-b", "B"]]) assert.equal((await (await client.mutations.addTodo({ todo: { id, title } })).wait()).error, null);
+    const direct = JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890c1", name: "EditAndShow", version: 1, args: { todo: { id: "abr-a", title: "A1" }, shown: "abr-b" } }, models: { Todo: 1, Note: 1 } });
+    const first = await post("actions", direct);
+    assert.deepEqual(first.completion.outcome.result, { todo: { id: "abr-b", title: "B" } });
+    assert.deepEqual(first.records.map((record: { identity: object }) => record.identity), [{ id: "abr-a" }, { id: "abr-b" }], "caller authority: input A, and output B under the default store policy");
+    await fixture.pool.query("UPDATE action_e2e_todo SET title='B later' WHERE id='abr-b'");
+    const stamp = await serverStamp("abr-a");
+    const handled = fixture.handlerCalls;
+    const retried = await post("actions", direct);
+    assert.deepEqual(retried, first, "the saved result still names B as it was");
+    assert.equal(fixture.handlerCalls, handled, "the handler did not run again");
+    assert.equal(await serverStamp("abr-a"), stamp, "the retry allocated no stamp");
+
+    // Durable: the frozen batch replays its receipt.
+    await client.connection!.pause();
+    const call = await client.mutations.editAndShow({ todo: { id: "abr-a", title: "A2" }, shown: "abr-b" });
+    const frozen = await client.client.freeze();
+    assert.ok(frozen);
+    const receipt = await post("mutations", frozen);
+    const stamped = await serverStamp("abr-a");
+    const heads = (await fixture.pool.query("SELECT channel, head FROM axton_channel ORDER BY channel")).rows;
+    await fixture.pool.query("UPDATE action_e2e_todo SET title='B latest' WHERE id='abr-b'");
+    const replayed = await post("mutations", frozen);
+    assert.deepEqual(replayed, receipt, "the stored receipt, including result B, is replayed");
+    assert.equal(fixture.handlerCalls, handled + 1, "the durable handler ran once");
+    assert.equal(await serverStamp("abr-a"), stamped, "no stamp on replay");
+    assert.deepEqual((await fixture.pool.query("SELECT channel, head FROM axton_channel ORDER BY channel")).rows, heads, "no position on replay");
+    await client.client.acknowledge(JSON.parse(frozen).batchSequence, replayed);
+    const outcome = await call.wait();
+    assert.deepEqual(outcome.result, { todo: { id: "abr-b", title: "B later" } });
+    assert.equal((await client.models.todo.get({ id: "abr-a" }))?.title, "A2");
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a no-output edit completes on both routes once local A holds its reconciled authority", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-no-output-"));
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    assert.equal((await (await client.mutations.addTodo({ todo: { id: "plain-a", title: "A" } })).wait()).error, null);
+    const stamp = await serverStamp("plain-a");
+    const direct = await client.mutations.call.updateTodo({ todo: { id: "plain-a", title: "  direct  " } });
+    assert.equal(direct, undefined, "no declared output, no result");
+    assert.equal((await client.models.todo.get({ id: "plain-a" }))?.title, "direct", "the server's trimmed title is local when the call resolves");
+    await client.connection!.pause();
+    const call = await client.mutations.updateTodo({ todo: { id: "plain-a", title: "  durable  " } });
+    await client.connection!.resume();
+    const outcome = await call.wait();
+    assert.deepEqual(outcome, { result: undefined, error: null });
+    assert.equal((await client.models.todo.get({ id: "plain-a" }))?.title, "durable", "completion follows the local application of A's authority");
+    assert.equal(await serverStamp("plain-a"), stamp + 2, "one stamp per edit");
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a touch of a Model the caller never declared commits and reaches a different subscriber on both routes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-extra-"));
+  const note = "0b6f4bd4-5a1d-4c8e-9a51-3f1f0e7d2c11";
+  let reader: GeneratedClient | undefined;
+  try {
+    await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('extra-a','A')");
+    await fixture.pool.query("INSERT INTO action_e2e_note(id,body,mood,created_at,tag) VALUES($1,'before','calm','2026-01-01T00:00:00.000Z',NULL)", [note]);
+    reader = await GeneratedClient.open({ path: join(directory, "reader.sqlite"), server: server() });
+    const subscription = await reader.scopes.subscribe("notes:demo");
+    await wait(async () => subscription.status.initialization === "ready", "the reader's origin");
+    // Enrollment outside any handler: adding an absent member delivers its current state.
+    await fixture.backend.transaction(async ({ channel }) => { channel("notes:demo").note.add({ id: note }); });
+    await wait(async () => (await reader!.models.note.get({ id: note }))?.body === "before", "the enrolled Note");
+    const noteStamp = await serverStamp(note, "Note");
+
+    // The initiating caller declares only Todo: its descriptor has no Note.
+    const args = (body: string) => ({ todo: { id: "extra-a", title: ` ${body} ` }, note, body });
+    const direct = await post("actions", JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890d1", name: "AnnotateTodo", version: 1, args: args("direct") }, models: { Todo: 1 } }));
+    assert.equal(direct.completion.outcome.error ?? null, null, JSON.stringify(direct.completion));
+    assert.deepEqual(direct.records.map((record: { model: string; identity: object; state: object }) => [record.model, record.identity, record.state]), [["Todo", { id: "extra-a" }, { title: "direct" }]], "only the input is caller authority");
+    await wait(async () => (await reader!.models.note.get({ id: note }))?.body === "direct", "the touched Note on the reader's Channel");
+    assert.equal(await serverStamp(note, "Note"), noteStamp + 1);
+
+    const push = JSON.stringify({ clientId: "extra-touch-client", batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId: "01890f47-1234-7123-8123-1234567890d2", name: "AnnotateTodo", version: 1, args: args("durable") }] });
+    const receipt = await post("mutations", push);
+    assert.deepEqual(receipt.rejections ?? [], []);
+    assert.deepEqual(receipt.records.map((record: { model: string }) => record.model), ["Todo"], "the receipt carries no Note");
+    await wait(async () => (await reader!.models.note.get({ id: note }))?.body === "durable", "the durable touch on the reader's Channel");
+    assert.equal(await serverStamp(note, "Note"), noteStamp + 2);
+    assert.deepEqual(await post("mutations", push), receipt, "a retried batch replays its receipt");
+    assert.equal(await serverStamp(note, "Note"), noteStamp + 2, "and touches nothing again");
+  } finally { await reader?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("create defaults are generated once by the client and reach both routes unchanged", async () => {

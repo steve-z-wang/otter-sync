@@ -1,6 +1,6 @@
 # Database
 
-AXTON's backend runs on PostgreSQL. Your business tables, AXTON's four metadata tables and every sync operation share one database transaction, so a push commits business writes, stamps, publications and the receipt together. Local client storage is SQLite regardless.
+AXTON's backend runs on PostgreSQL. Your business tables, AXTON's six metadata tables and every sync operation share one database transaction, so a push commits business writes, stamps, Channel memberships, publications and the receipt together. Local client storage is SQLite regardless.
 
 `@axton/postgres` (`packages/postgres`) holds every statement AXTON runs, the metadata migration and one small driver interface. You pick the shim for the tool your application already uses to talk to PostgreSQL; handlers and loaders receive that tool's own transaction object.
 
@@ -23,7 +23,7 @@ const database = prisma(db, { retries: 3, timeout: 20_000 });
 
 ## Apply the migration
 
-Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to your database with your deployment's migration process before accepting sync traffic. It creates the tables prefixed `axton_` (`axton_client`, `axton_channel`, `axton_record`, `axton_invalidation`) and nothing else: your business tables and the database itself are yours to create. The [getting-started runner](../getting-started.md) handles a disposable database for the example.
+Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to your database with your deployment's migration process before accepting sync traffic. It creates the tables prefixed `axton_` (`axton_client`, `axton_call`, `axton_channel`, `axton_record`, `axton_invalidation`, `axton_membership`) and nothing else: your business tables and the database itself are yours to create. Applied to a database from before Channel membership existed, it adds an empty `axton_membership` table; AXTON never infers membership from earlier deliveries, so add your records to their Channels again ([Channels](api.md#channels)). The [getting-started runner](../getting-started.md) handles a disposable database for the example.
 
 ## The driver interface
 
@@ -51,6 +51,6 @@ Run the driver conformance suite ([driver-conformance.test.mjs](https://github.c
 
 ## What the persistence does
 
-The driver runs AXTON's statements; the operations they answer are the persistence half of the [backend interface](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/backend-interface.md). `claim` locks the client row with `SELECT … FOR UPDATE`, so retries of one client serialize and a retried `(clientId, sequence)` replays its stored receipt. `claimCall` and `saveCall` store each Mutation's and Query's immutable outcome by call ID in the application's transaction with business writes. A duplicate call ID replays that outcome without re-running the handler or Loader. `advanceStamp` and `ensureStamp` allocate a record's stamp with atomic upserts; `publish` allocates channel cursors and `scan` joins each invalidation with the record's current stamp. Per-call savepoints use real `SAVEPOINT` statements. Counters are `bigint` in the database and narrowed to JavaScript safe integers on the way out.
+The driver runs AXTON's statements; the operations they answer are the persistence half of the [backend interface](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/backend-interface.md). `claim` locks the client row with `SELECT … FOR UPDATE`, so retries of one client serialize and a retried `(clientId, sequence)` replays its stored receipt. `claimCall` and `saveCall` store each Mutation's and Query's immutable outcome by call ID in the application's transaction with business writes. A duplicate call ID replays that outcome without re-running the handler or Loader. `advanceStamp` and `ensureStamp` allocate a record's stamp with atomic upserts; `lockRecord`, `memberships` and `setMembership` guard a record and maintain its Channel memberships; `publish` allocates channel cursors and `scan` joins each invalidation of a current member with the record's current stamp. Per-call savepoints use real `SAVEPOINT` statements. Counters are `bigint` in the database and narrowed to JavaScript safe integers on the way out.
 
 There is no TTL or automatic pruning for saved call responses or client rows. Invalidation rows also grow with records × channels ([#61](https://github.com/zanminwang/axton/issues/61)).

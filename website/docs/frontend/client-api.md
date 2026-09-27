@@ -175,7 +175,7 @@ For a `Comment.book` relationship, `client.models.comment.book(commentIdentity)`
 | API | Reads | Network |
 | --- | --- | --- |
 | `client.models.entry.get(identity)` | The local database | Never |
-| `client.fetch.entry(identity, options?)` | One record, through the backend's Loader for `Entry` | One request per call |
+| `client.fetch.entry(identity, options?)` | One record, through the backend's Loader for `Entry` | One request per call (overlapping identical calls share one) |
 | `client.queries.<name>(args, options?)` | A named business read that your Query handler implements ([Mutations and Queries](#mutations-and-queries)) | One direct request, unless [`once`](#reuse-a-query-result-with-once) reuses a saved result |
 
 === "TypeScript"
@@ -202,7 +202,7 @@ For a `Comment.book` relationship, `client.models.comment.book(commentIdentity)`
 The call returns `Promise<Entry | null>` / `Future<Entry?>`: the complete record, with its identity, as the Loader returned it for this call. It is `null` when the Loader answered `null` for that identity: no readable record exists. The result is a snapshot, not a live record. It never contains pending local edits, which stay pending and are replayed as usual.
 
 - **Storage.** By default (`store: true`) the call resolves only after the record is stored locally and any `onStore` callback for that Model has committed with it. A `null` result deletes the local row. A newer local copy is kept, and the call still returns its own snapshot. With `store: false` the record is returned without changing local data or running `onStore`. `store` is the only option and must be a boolean.
-- **Every call reads the backend.** No result is saved. A call for the same identity with the same `store` choice as a call still in flight shares that call: one request, one Loader call and one local store, and each caller receives its own object. A later call makes a new request.
+- **Every call reads the backend.** No result is cached on the client. The backend records each call's response, a `store: false` preview included, so a retry of the same call ID replays it, as for a direct Query; those records are not pruned automatically ([Database](../backend/database.md#what-the-persistence-does)). A call for the same identity with the same `store` choice as a call still in flight shares that call: one request, one Loader call and one local store, and each caller receives its own object. A later call makes a new request.
 - **No offline fallback.** A local row does not satisfy the call. Without a connection it rejects with `fetch.unavailable`; it is never queued. It uses the connection's direct timeout and credential refresh ([Server connection](runtime.md#server-connection)).
 - **No subscription.** A Fetch joins no Channel and changes no subscription, cursor or `bootstrap()` progress.
 - **Permissions stay in the Loader.** Return `null` for a record this user may not see if the app should treat it as absent, which deletes a stored copy; throw `CallRejected` if it should be an error, which deletes nothing.

@@ -166,7 +166,7 @@ Pass `server` when opening the generated client, or call `client.connect` after 
 | `refreshAuth` | `() => Promise<void>`, in connection options | Named async callback on `connect` / `open` |
 | Direct timeout | `connection.directTimeoutMs` on `open`, or `directTimeoutMs` on `connect`: integer milliseconds, 1–2,147,483,647; default 30,000 | `directTimeout` on `open` / `connect`: positive `Duration`; default 30 seconds |
 
-Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A TypeScript host that supplies its own HTTP carrier implements `Transport`: it receives an `HttpRoute` (`push`, `pull`, `action` or `fetch`) and the request body, and the built-in carrier posts them to `/sync/mutations`, `/sync/pull`, `/sync/actions` and `/sync/fetch`. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
+Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A platform host build (such as the Node and React Native packages) supplies the HTTP carrier; `open` and `connect` take no carrier. Such a TypeScript carrier implements `Transport`: it receives an `HttpRoute` (`push`, `pull`, `action` or `fetch`) and the request body, and the built-in carrier posts them to `/sync/mutations`, `/sync/pull`, `/sync/actions` and `/sync/fetch`. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
 
 ### Catch-up and live updates
 

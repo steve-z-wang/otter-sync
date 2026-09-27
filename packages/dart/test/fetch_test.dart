@@ -267,10 +267,10 @@ void main() {
     'joined callers share one request and decode independent maps',
     () async {
       final client = await open();
+      final gate = Completer<void>();
+      gates[1] = gate;
       try {
         await connect(client);
-        final gate = Completer<void>();
-        gates[1] = gate;
         final waiting = [fetch(client, 'a'), fetch(client, 'a')];
         await Future<void>.delayed(const Duration(milliseconds: 50));
         gate.complete();
@@ -281,6 +281,8 @@ void main() {
         (results[0]!['tags'] as List).add('mutated');
         expect(results[1]!['tags'], ['v1']);
       } finally {
+        // A failed step must not leave the fake server's request held.
+        if (!gate.isCompleted) gate.complete();
         await client.close();
       }
     },
@@ -426,6 +428,8 @@ void main() {
         expect(requests, hasLength(1));
         expect(hooks, 0);
       } finally {
+        // A failed step must not leave the fake server's request held.
+        if (!gate.isCompleted) gate.complete();
         await client.close();
       }
     },

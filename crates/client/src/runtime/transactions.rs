@@ -7,14 +7,14 @@
 //! clears, and the callback's result decides commit or rollback only once
 //! every submitted command has run.
 use super::*;
-use crate::ClientStore;
+use crate::{ClientStore, PreparedStore, StoreChange, StoreDelivery, StoreResult};
 use std::collections::VecDeque;
 
 const INVALID_SCOPE: &str = "invalid transaction scope";
 const CLOSED: &str = "transaction_closed";
 
 pub(super) struct Transaction {
-    pub(super) request_id: String,
+    pub(super) owner: TransactionOwner,
     transaction_id: String,
     effect_id: String,
     /// Open savepoints, innermost last.
@@ -27,6 +27,27 @@ pub(super) struct Transaction {
     finishing: Option<(bool, Option<String>)>,
     /// Submitted commands of the callback, in order.
     pub(super) lane: VecDeque<Continuation>,
+}
+pub(super) enum TransactionOwner {
+    Application {
+        request_id: String,
+    },
+    Authority {
+        prepared: Box<PreparedStore>,
+        continuation: StoreContinuation,
+        pending: VecDeque<(String, Vec<StoreChange>)>,
+    },
+}
+pub(super) enum StoreContinuation {
+    Ack { request_id: String },
+    Pull { request_id: String },
+}
+impl StoreContinuation {
+    pub(super) fn request_id(&self) -> &str {
+        match self {
+            Self::Ack { request_id } | Self::Pull { request_id } => request_id,
+        }
+    }
 }
 struct Scope {
     token: String,
@@ -65,7 +86,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             },
         });
         self.transaction = Some(Transaction {
-            request_id,
+            owner: TransactionOwner::Application { request_id },
             transaction_id,
             effect_id,
             scopes: vec![],
@@ -73,6 +94,96 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             structural: None,
             finishing: None,
             lane: VecDeque::new(),
+        });
+    }
+    pub(super) fn has_store_hook_candidate(&self, models: impl Iterator<Item = String>) -> bool {
+        self.client.store_hooks_active()
+            && models
+                .into_iter()
+                .any(|model| self.store_hooks.contains(&model))
+    }
+    pub(super) fn open_store(
+        &mut self,
+        delivery: StoreDelivery,
+        continuation: StoreContinuation,
+        now: u64,
+        entropy: u64,
+    ) {
+        let request_id = continuation.request_id().to_string();
+        if let Err(error) = self.client.begin_session() {
+            self.complete(request_id, Err(error.to_string()));
+            return;
+        }
+        let prepared = match self.client.prepare_store(delivery) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = self.client.rollback_session();
+                self.complete(request_id, Err(error.to_string()));
+                return;
+            }
+        };
+        let pending: VecDeque<_> = prepared
+            .changes()
+            .iter()
+            .filter(|(model, changes)| self.store_hooks.contains(*model) && !changes.is_empty())
+            .map(|(model, changes)| (model.clone(), changes.clone()))
+            .collect();
+        if pending.is_empty() {
+            self.finish_store_owner(prepared, continuation, now, entropy);
+            return;
+        }
+        let transaction_id = match self.issue() {
+            Ok(id) => format!("tx{id}"),
+            Err(error) => {
+                let _ = self.client.rollback_session();
+                self.complete(request_id, Err(error));
+                return;
+            }
+        };
+        let effect_id = match self.issue() {
+            Ok(id) => id.to_string(),
+            Err(error) => {
+                let _ = self.client.rollback_session();
+                self.complete(request_id, Err(error));
+                return;
+            }
+        };
+        self.transaction = Some(Transaction {
+            owner: TransactionOwner::Authority {
+                prepared: Box::new(prepared),
+                continuation,
+                pending,
+            },
+            transaction_id,
+            effect_id,
+            scopes: vec![],
+            failure: None,
+            structural: None,
+            finishing: None,
+            lane: VecDeque::new(),
+        });
+        self.emit_next_store_callback();
+    }
+    fn emit_next_store_callback(&mut self) {
+        let Some(open) = &mut self.transaction else {
+            return;
+        };
+        let TransactionOwner::Authority { pending, .. } = &mut open.owner else {
+            return;
+        };
+        let Some((model, changes)) = pending.pop_front() else {
+            return;
+        };
+        let effect_id = open.effect_id.clone();
+        self.effects
+            .insert(effect_id.clone(), effects::EffectKind::Callback);
+        self.events.push(Event::Effect {
+            effect_id,
+            operation: Operation::StoreCallback {
+                transaction_id: open.transaction_id.clone(),
+                model,
+                changes,
+            },
         });
     }
     /// Admit one command of the callback: onto the lane when it names the
@@ -161,6 +272,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     Value::Null
                 })
             }
+            TransactionCommand::Enqueue { .. }
+                if matches!(
+                    self.transaction.as_ref().map(|t| &t.owner),
+                    Some(TransactionOwner::Authority { .. })
+                ) =>
+            {
+                Err(crate::invalid("store hook cannot enqueue"))
+            }
             _ => commands::execute_in_session(&mut self.client, &command.command),
         };
         outcome.map_err(|e| {
@@ -214,6 +333,61 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         for command in open.lane {
             self.complete(command.request_id, Err(CLOSED.into()));
         }
+        if matches!(open.owner, TransactionOwner::Authority { .. }) {
+            if let Some(refusal) = refusal {
+                let _ = self.client.rollback_session();
+                if let TransactionOwner::Authority { continuation, .. } = open.owner {
+                    self.fail(
+                        continuation.request_id().to_string(),
+                        refusal,
+                        json!({"code":"store_hook_failed"}),
+                    );
+                }
+            } else if let TransactionOwner::Authority {
+                prepared,
+                continuation,
+                pending,
+            } = open.owner
+            {
+                if !pending.is_empty() {
+                    let transaction_id = self.issue().map(|id| format!("tx{id}"));
+                    let effect_id = self.issue().map(|id| id.to_string());
+                    match (transaction_id, effect_id) {
+                        (Ok(transaction_id), Ok(effect_id)) => {
+                            self.transaction = Some(Transaction {
+                                owner: TransactionOwner::Authority {
+                                    prepared,
+                                    continuation,
+                                    pending,
+                                },
+                                transaction_id,
+                                effect_id,
+                                scopes: vec![],
+                                failure: None,
+                                structural: None,
+                                finishing: None,
+                                lane: VecDeque::new(),
+                            });
+                            self.emit_next_store_callback();
+                        }
+                        _ => {
+                            let _ = self.client.rollback_session();
+                            self.fail(
+                                continuation.request_id().to_string(),
+                                "runtime identifiers exhausted",
+                                json!({"code":"store_hook_failed"}),
+                            );
+                        }
+                    }
+                } else {
+                    self.finish_store_owner(*prepared, continuation, now, entropy);
+                }
+            }
+            return;
+        }
+        let TransactionOwner::Application { request_id } = open.owner else {
+            unreachable!()
+        };
         let outcome = match refusal {
             Some(refusal) => {
                 if let Err(e) = self.client.rollback_session() {
@@ -234,6 +408,45 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 committed.map(|()| Value::Null)
             }
         };
-        self.complete(open.request_id, outcome);
+        self.complete(request_id, outcome);
+    }
+    fn finish_store_owner(
+        &mut self,
+        prepared: PreparedStore,
+        continuation: StoreContinuation,
+        now: u64,
+        entropy: u64,
+    ) {
+        let generation = self.client.generation();
+        let result = self
+            .client
+            .apply_prepared_store(prepared)
+            .and_then(|result| {
+                let value = match result {
+                    StoreResult::Page(report) | StoreResult::Receipt(report) => {
+                        serde_json::to_value(report)?
+                    }
+                    _ => unreachable!("Ack/Pull are the only checkpoint-2 store owners"),
+                };
+                self.client.commit_session()?;
+                Ok(value)
+            });
+        if result.is_err() {
+            let _ = self.client.rollback_session();
+        }
+        self.committed_since(generation);
+        if self.client.generation() != generation {
+            self.wake_lanes(now, entropy);
+        }
+        match result {
+            Ok(value) => {
+                self.seam_completions(&value);
+                self.complete(continuation.request_id().to_string(), Ok(value));
+            }
+            Err(error) => self.complete(
+                continuation.request_id().to_string(),
+                Err(error.to_string()),
+            ),
+        }
     }
 }

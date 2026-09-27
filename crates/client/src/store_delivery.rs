@@ -6,12 +6,12 @@ use crate::query_cache::QueryCacheKey;
 use crate::store::ClientStore;
 use crate::{ApplyReport, BootstrapApply, BootstrapState, Client};
 use axton_core::{BootstrapPage, DirectActionResponse, PullPage, PushReceipt, Result, invalid};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// One incoming Model snapshot selected for storage.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum StoreChange {
     Upsert { identity: Value, row: Value },

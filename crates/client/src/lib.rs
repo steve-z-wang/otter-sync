@@ -935,6 +935,20 @@ impl<S: ClientStore> Client<S> {
     pub fn declared_models(&self) -> std::collections::BTreeMap<String, u64> {
         declared_models(&self.schema)
     }
+    /// Hook names belong to the requested schema. A pending rebuild may be
+    /// draining a replica whose stored schema differs from that request.
+    pub(crate) fn target_store_hook_models(&self) -> BTreeSet<String> {
+        self.origin
+            .as_ref()
+            .map_or(&self.schema, |origin| &origin.target)
+            .models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect()
+    }
+    pub(crate) fn store_hooks_active(&self) -> bool {
+        self.schema_state.pending.is_none()
+    }
     pub fn subscription_generation(&self) -> u64 {
         self.pulls.generation
     }

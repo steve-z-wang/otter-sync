@@ -31,7 +31,7 @@
 //! unknown `kind`, a missing or mistyped field - is still admitted under its
 //! request id and completes that request with the decoding error, in its
 //! turn, so no SDK waiter is left without an answer.
-use crate::{Mutation, QuerySpec, Readiness, RecordKey, Report};
+use crate::{Mutation, QuerySpec, Readiness, RecordKey, Report, StoreChange};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -551,6 +551,14 @@ pub enum Operation {
     Callback {
         transaction_id: String,
         request_id: String,
+    },
+    /// Run the registered Model's store handler. The reply uses the normal
+    /// callbackResult envelope; Rust owns replay and final settlement.
+    #[serde(rename_all = "camelCase")]
+    StoreCallback {
+        transaction_id: String,
+        model: String,
+        changes: Vec<StoreChange>,
     },
     /// `POST` `body` to the route: `push` is `/sync/mutations`, `pull` is
     /// `/sync/pull`, `action` is `/sync/actions`. Answer `ok` with

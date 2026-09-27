@@ -109,7 +109,7 @@ pub use protocol::*;
 
 use crate::{Client, ClientStore, Result, Schema, StoreFactory};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 /// One open client and everything the runtime decided about it. See the
@@ -122,6 +122,7 @@ pub struct ClientRuntime<S: ClientStore> {
     connection: Option<lanes::Connection>,
     tasks: tasks::Tasks,
     transaction: Option<transactions::Transaction>,
+    store_hooks: BTreeSet<String>,
     /// Every effect the host may still answer, by id, and what it was issued
     /// for. A result for an id that is not here is ignored.
     effects: BTreeMap<String, effects::EffectKind>,
@@ -177,6 +178,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             connection: None,
             tasks: tasks::Tasks::default(),
             transaction: None,
+            store_hooks: BTreeSet::new(),
             effects: BTreeMap::new(),
             ready: VecDeque::new(),
             directs: direct::Directs::default(),
@@ -188,6 +190,26 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             events: vec![],
             lifecycle: Lifecycle::Open,
         }
+    }
+    /// Register schema Models whose incoming authority requires a callback.
+    /// Names are validated once and remain fixed for the runtime lifetime.
+    pub fn with_store_hooks(client: Client<S>, models: Vec<String>) -> Result<Self> {
+        Self::new(client).register_store_hooks(models)
+    }
+    /// Configure an opened runtime before any task is admitted.
+    pub fn register_store_hooks(mut self, models: Vec<String>) -> Result<Self> {
+        if self.admitted != 0 || self.lifecycle != Lifecycle::Open || self.transaction.is_some() {
+            return Err(crate::invalid("store hooks are fixed at runtime open"));
+        }
+        let declared = self.client.target_store_hook_models();
+        let mut hooks = BTreeSet::new();
+        for model in models {
+            if !declared.contains(&model) || !hooks.insert(model.clone()) {
+                return Err(crate::invalid(format!("invalid store hook Model {model}")));
+            }
+        }
+        self.store_hooks = hooks;
+        Ok(self)
     }
     /// What a successful open answers: the client id and the schema check's
     /// outcome, as the SDKs report it in `status()`.

@@ -26,6 +26,44 @@ fn harness() -> Harness<SqliteStore> {
         _dir: dir,
     }
 }
+fn hooked_harness(models: &[&str]) -> Harness<SqliteStore> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut descriptor = serde_json::to_value(schema()).unwrap();
+    let second = descriptor["models"][0].clone();
+    descriptor["models"][0]["name"] = json!("Alpha");
+    let mut second = second;
+    second["name"] = json!("Entry");
+    descriptor["models"].as_array_mut().unwrap().push(second);
+    let schema = Schema::from_value(descriptor).unwrap();
+    let client = Client::open(SqliteStore::open(dir.path().join("db")).unwrap(), schema).unwrap();
+    Harness {
+        runtime: ClientRuntime::with_store_hooks(
+            client,
+            models.iter().map(|s| s.to_string()).collect(),
+        )
+        .unwrap(),
+        _dir: dir,
+    }
+}
+
+#[test]
+fn store_hook_registration_freezes_after_first_task_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::open(SqliteStore::open(dir.path().join("db")).unwrap(), schema()).unwrap();
+    let mut runtime = ClientRuntime::new(client);
+    runtime
+        .receive(
+            serde_json::from_value(json!({"type":"task","requestId":"1","command":read("e")}))
+                .unwrap(),
+            NOW,
+            ENTROPY,
+        )
+        .unwrap();
+    let error = ClientRuntime::register_store_hooks(runtime, vec!["Entry".into()])
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("fixed at runtime open"));
+}
 impl<S: ClientStore + 'static> Harness<S> {
     fn submit(&mut self, input: Value) -> std::result::Result<(), BridgeError> {
         let input: Input = serde_json::from_value(input).unwrap();
@@ -119,6 +157,165 @@ fn failed(id: &str, error: &str) -> Value {
 }
 fn row(text: &str) -> Value {
     json!({"id":"e","text":text,"note":null})
+}
+
+#[test]
+fn authority_hooks_rotate_capabilities_and_commit_after_all_models() {
+    let mut h = hooked_harness(&["Entry", "Alpha"]);
+    h.task(
+        "1",
+        json!({"kind":"channel","channel":"feed","subscribed":true}),
+    );
+    assert_eq!(h.run(), vec![done("1", Value::Null)]);
+    common::acknowledge(h.runtime.client(), &[("feed", 0)]);
+    let page = json!({
+        "cursors":{"feed":{"from":0,"to":2,"head":2}},
+        "changes":[
+            {"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"entry","note":null}},
+            {"model":"Alpha","identity":{"id":"e"},"stamp":2,"state":{"text":"alpha","note":null}}
+        ]
+    });
+    h.task("2", json!({"kind":"pull","page":page}));
+    let first = h.run();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(first[0]["operation"]["kind"], "storeCallback", "{first:?}");
+    assert_eq!(first[0]["operation"]["model"], "Alpha");
+    assert_eq!(
+        first[0]["operation"]["changes"].as_array().unwrap().len(),
+        1
+    );
+    let alpha = Open {
+        effect: first[0]["effectId"].as_str().unwrap().into(),
+        transaction: first[0]["operation"]["transactionId"]
+            .as_str()
+            .unwrap()
+            .into(),
+    };
+    h.task("3", read("e"));
+    assert!(h.run().is_empty());
+    h.command("4", &alpha.transaction, None, read("e"));
+    assert_eq!(h.run(), vec![done("4", Value::Null)]);
+    h.callback(&alpha, true, None);
+    let second = h.run();
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_eq!(second[0]["operation"]["kind"], "storeCallback");
+    assert_eq!(second[0]["operation"]["model"], "Entry");
+    let entry = Open {
+        effect: second[0]["effectId"].as_str().unwrap().into(),
+        transaction: second[0]["operation"]["transactionId"]
+            .as_str()
+            .unwrap()
+            .into(),
+    };
+    assert_ne!(alpha.effect, entry.effect);
+    assert_ne!(alpha.transaction, entry.transaction);
+    h.callback(&alpha, true, None);
+    h.command("5", &alpha.transaction, None, read("e"));
+    assert_eq!(h.run(), vec![failed("5", "transaction_closed")]);
+    h.callback(&entry, true, None);
+    assert_eq!(
+        h.run(),
+        vec![
+            done(
+                "2",
+                json!({"applied":2,"stale":false,"cursors":{"feed":2},"completions":[],"reports":[]})
+            ),
+            done("3", row("entry"))
+        ]
+    );
+    assert_eq!(h.committed(), Some(row("entry")));
+}
+
+#[test]
+fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
+    for close in [false, true] {
+        let mut h = hooked_harness(&["Entry"]);
+        h.task(
+            "1",
+            json!({"kind":"channel","channel":"feed","subscribed":true}),
+        );
+        h.run();
+        common::acknowledge(h.runtime.client(), &[("feed", 0)]);
+        let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+        h.task("2", json!({"kind":"pull","page":page}));
+        let first = h.run();
+        let hook = Open {
+            effect: first[0]["effectId"].as_str().unwrap().into(),
+            transaction: first[0]["operation"]["transactionId"]
+                .as_str()
+                .unwrap()
+                .into(),
+        };
+        h.command(
+            "3",
+            &hook.transaction,
+            None,
+            json!({"kind":"enqueue","mutation":{"name":"Edit","operations":[]}}),
+        );
+        assert_eq!(h.run(), vec![failed("3", "store hook cannot enqueue")]);
+        if close {
+            h.submit(json!({"type":"close"})).unwrap();
+            let events = h.run();
+            assert_eq!(
+                events[0],
+                json!({"type":"cancelEffect","effectId":hook.effect})
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event == &failed("2", "client_closed")
+                        || event["requestId"] == "2"
+                            && event["details"]["code"] == "client_closed")
+            );
+            assert_eq!(h.submit(json!({"type":"callbackResult","effectId":hook.effect,"transactionId":hook.transaction,"ok":true})), Err(BridgeError::Closed));
+        } else {
+            h.callback(&hook, true, None);
+            let events = h.run();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["requestId"], "2");
+            assert_eq!(events[0]["details"]["code"], "store_hook_failed");
+            assert_eq!(events[0]["ok"], false);
+        }
+        assert_eq!(h.committed(), None);
+    }
+}
+
+#[test]
+fn ack_authority_uses_the_registered_hook_before_settlement() {
+    let mut h = hooked_harness(&["Entry"]);
+    h.task("seed", create("e", "start"));
+    assert_eq!(h.run(), vec![done("seed", Value::Null)]);
+    h.task(
+        "1",
+        json!({"kind":"enqueue","mutation":common::mutation("local")}),
+    );
+    let queued = h.run();
+    assert_eq!(queued[0]["ok"], true, "{queued:?}");
+    h.task("2", json!({"kind":"freeze"}));
+    let frozen = h.run();
+    let push: Value = serde_json::from_str(frozen[0]["value"].as_str().unwrap()).unwrap();
+    let receipt = json!({"clientId":h.runtime.client().client_id(),"batchSequence":push["batchSequence"],"rejections":[],"records":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+    h.task(
+        "3",
+        json!({"kind":"ack","sequence":push["batchSequence"],"receipt":receipt}),
+    );
+    let events = h.run();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["operation"]["kind"], "storeCallback");
+    assert_eq!(h.committed().unwrap()["text"], "local");
+    let hook = Open {
+        effect: events[0]["effectId"].as_str().unwrap().into(),
+        transaction: events[0]["operation"]["transactionId"]
+            .as_str()
+            .unwrap()
+            .into(),
+    };
+    h.callback(&hook, true, None);
+    let events = h.run();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["requestId"], "3");
+    assert_eq!(events[0]["ok"], true);
+    assert_eq!(h.committed().unwrap()["text"], "server");
 }
 
 #[test]
@@ -818,4 +1015,63 @@ fn an_incompatible_schema_keeps_its_file_until_the_work_is_settled_and_rebuilt()
         "the fresh file is empty"
     );
     assert!(path.exists(), "the old file is kept");
+}
+
+#[test]
+fn pending_rebuild_drains_old_authority_then_activates_target_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db-hooks");
+    let (schema, mut target) = schemas();
+    let mut alpha = schema["models"][0].clone();
+    alpha["name"] = json!("Alpha");
+    target["models"].as_array_mut().unwrap().push(alpha);
+    let mut old = at(&path, &schema);
+    old.call("seed", create("e", "old"));
+    old.call(
+        "edit",
+        json!({"kind":"enqueue","mutation":common::mutation("local")}),
+    );
+    let push: Value = serde_json::from_str(
+        old.call("freeze", json!({"kind":"freeze"})).0["value"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let client_id = old.runtime.client().client_id().to_string();
+    old.close();
+    let client = Client::open_at(
+        &path,
+        Schema::from_value(target).unwrap(),
+        Box::new(|p| SqliteStore::open(p)),
+        false,
+    )
+    .unwrap();
+    let mut h = Harness {
+        runtime: ClientRuntime::with_store_hooks(client, vec!["Entry".into(), "Alpha".into()])
+            .unwrap(),
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    assert!(h.runtime.opened()["schema"]["pending"].is_object());
+    let receipt = json!({"clientId":client_id,"batchSequence":push["batchSequence"],"rejections":[],"records":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+    let (acked, events) = h.call(
+        "ack",
+        json!({"kind":"ack","sequence":push["batchSequence"],"receipt":receipt}),
+    );
+    assert_eq!(acked["ok"], true, "{events:?}");
+    assert!(
+        events
+            .iter()
+            .all(|event| event["operation"]["kind"] != "storeCallback")
+    );
+    assert_eq!(h.call("rebuild", json!({"kind":"rebuild"})).0["ok"], true);
+    h.call(
+        "channel",
+        json!({"kind":"channel","channel":"feed","subscribed":true}),
+    );
+    common::acknowledge(h.runtime.client(), &[("feed", 0)]);
+    h.task("pull", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Alpha","identity":{"id":"a"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+    let events = h.run();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["operation"]["kind"], "storeCallback");
+    assert_eq!(events[0]["operation"]["model"], "Alpha");
 }

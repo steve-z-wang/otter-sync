@@ -324,6 +324,45 @@ impl Parser {
         }
         Ok(DefaultExpr::Number(text))
     }
+    /// `(name Type, slot Model.operation, …)` of an operation declaration.
+    fn operation_inputs(&mut self) -> Result<Vec<ActionInputDecl>, String> {
+        self.need("(")?;
+        let mut inputs = vec![];
+        while !self.eat(")") {
+            let input_pos = self.pos();
+            let input_name = self.ident()?;
+            let input_type = self.ident()?;
+            let input = if self.peek() == "." {
+                ActionInputDecl::Model(self.slot(input_name, input_type, input_pos)?)
+            } else {
+                ActionInputDecl::Value(
+                    self.field_after_header(input_name, input_type, input_pos, true)?,
+                )
+            };
+            inputs.push(input);
+            if self.peek() == "<eof>" {
+                return Err(self.err("expected )"));
+            }
+            if self.peek() != ")" {
+                self.need(",")?;
+            }
+        }
+        Ok(inputs)
+    }
+    /// The outputs of an operation after its opening `{`, through the `}`.
+    fn operation_outputs(&mut self) -> Result<Vec<ActionOutputDecl>, String> {
+        let mut outputs = vec![];
+        while !self.eat("}") {
+            if self.peek() == "<eof>" {
+                return Err(self.err("expected }"));
+            }
+            outputs.push(ActionOutputDecl {
+                field: self.field(true)?,
+            });
+            self.eat(",");
+        }
+        Ok(outputs)
+    }
     fn slot(&mut self, name: String, model: String, pos: Pos) -> Result<SlotDecl, String> {
         self.need(".")?;
         let operation = self.ident()?;
@@ -451,6 +490,7 @@ pub struct Declarations {
     pub models: Vec<ModelDecl>,
     pub mutations: Vec<MutationDecl>,
     pub actions: Vec<ActionDecl>,
+    pub loads: Vec<LoadDecl>,
     pub prerequisites: Vec<PrerequisiteDecl>,
     /// Position of the end of input, for diagnostics that have no declaration.
     pub end: Pos,
@@ -524,6 +564,16 @@ pub struct ActionDecl {
     pub inputs: Vec<ActionInputDecl>,
     pub outputs: Vec<ActionOutputDecl>,
     pub sequence: Option<SequenceDecl>,
+    pub pos: Pos,
+}
+/// `load Name(inputs) { outputs }`: a native paged read. Inputs share the
+/// operation grammar; validation refuses Model operands and non-list outputs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadDecl {
+    pub name: String,
+    pub version: u64,
+    pub inputs: Vec<ActionInputDecl>,
+    pub outputs: Vec<ActionOutputDecl>,
     pub pos: Pos,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -616,46 +666,50 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
         if (leading_version_seen || leading_sequence.is_some())
             && operation.is_none()
             && kind != "model"
+            && kind != "load"
         {
             return Err(p.err(format!("declaration directives are unsupported on {kind}")));
         }
         if kind == "model" && leading_sequence.is_some() {
             return Err(p.err("sequence requires mutation"));
         }
+        // `load Name(inputs) { outputs }`: braces and at least one output are
+        // required, and no sequence policy applies to a read.
+        if kind == "load" {
+            if let Some(sequence) = &leading_sequence {
+                return Err(at(
+                    sequence.pos,
+                    format!("Load {name} cannot declare @sequence"),
+                ));
+            }
+            let inputs = p.operation_inputs()?;
+            if p.peek() != "{" {
+                return Err(p.err(format!("expected {{ with the outputs of Load {name}")));
+            }
+            p.need("{")?;
+            if p.peek() == "}" {
+                return Err(at(
+                    p.pos(),
+                    format!("Load {name} requires at least one output"),
+                ));
+            }
+            let outputs = p.operation_outputs()?;
+            d.loads.push(LoadDecl {
+                name,
+                version: leading_version,
+                inputs,
+                outputs,
+                pos,
+            });
+            continue;
+        }
         if let Some(operation) = operation {
-            p.need("(")?;
-            let mut inputs = vec![];
-            while !p.eat(")") {
-                let input_pos = p.pos();
-                let input_name = p.ident()?;
-                let input_type = p.ident()?;
-                let input = if p.peek() == "." {
-                    ActionInputDecl::Model(p.slot(input_name, input_type, input_pos)?)
-                } else {
-                    ActionInputDecl::Value(
-                        p.field_after_header(input_name, input_type, input_pos, true)?,
-                    )
-                };
-                inputs.push(input);
-                if p.peek() == "<eof>" {
-                    return Err(p.err("expected )"));
-                }
-                if p.peek() != ")" {
-                    p.need(",")?;
-                }
-            }
-            let mut outputs = vec![];
-            if p.eat("{") {
-                while !p.eat("}") {
-                    if p.peek() == "<eof>" {
-                        return Err(p.err("expected }"));
-                    }
-                    outputs.push(ActionOutputDecl {
-                        field: p.field(true)?,
-                    });
-                    p.eat(",");
-                }
-            }
+            let inputs = p.operation_inputs()?;
+            let outputs = if p.eat("{") {
+                p.operation_outputs()?
+            } else {
+                vec![]
+            };
             d.actions.push(ActionDecl {
                 name,
                 kind: operation,

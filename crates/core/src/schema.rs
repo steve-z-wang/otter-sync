@@ -12,6 +12,10 @@ pub struct Schema {
     pub models: Vec<ModelDescriptor>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<crate::ActionDescriptor>,
+    /// Every retained native Load version, separate from `actions` so no
+    /// Action route can resolve one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loads: Vec<crate::LoadDescriptor>,
     #[serde(
         default,
         rename = "resultModels",
@@ -284,6 +288,7 @@ impl Schema {
             }
         }
         self.validate_actions()?;
+        self.validate_loads()?;
         Ok(())
     }
     /// A creation default must suit its field: generators by scalar type,

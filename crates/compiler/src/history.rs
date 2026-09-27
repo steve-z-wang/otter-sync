@@ -34,69 +34,25 @@ pub fn reconcile_action_history(current: &Value, history: Option<&Value>) -> Res
     if result["formatVersion"] != 1 || !result["actions"].is_object() {
         return Err("unsupported operation history format".into());
     }
-    let actions = list(current, "actions")?;
-    for name in result["actions"].as_object().unwrap().keys() {
-        if !actions.iter().any(|a| a["name"] == *name) {
-            return Err(format!("retained operation {name} cannot be removed"));
-        }
-    }
-    for action in actions {
-        let name = action["name"].as_str().ok_or("unnamed operation")?;
-        let version = action["version"]
-            .as_u64()
-            .ok_or("invalid operation version")?;
-        let snapshot = capture_action(current, action)?;
-        let versions = result["actions"]
-            .as_object_mut()
-            .unwrap()
-            .entry(name)
-            .or_insert(json!({}))
-            .as_object_mut()
-            .ok_or("invalid operation history versions")?;
-        if versions.is_empty() && version != 1 {
-            return Err(format!(
-                "{name}: initial operation history must begin at version 1"
-            ));
-        }
-        let latest = versions
-            .keys()
-            .map(|v| {
-                v.parse::<u64>()
-                    .map_err(|_| "invalid retained operation version")
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .max()
-            .unwrap_or(0);
-        if version < latest {
-            return Err(format!("{name}: version cannot decrease from {latest}"));
-        }
-        if let Some(old) = versions.get(&version.to_string()) {
+    retain_versions(
+        &mut result["actions"],
+        "operation",
+        list(current, "actions")?,
+        |action| capture_action(current, action),
+        |label, old, snapshot| {
             // Kind is part of the retained backend contract: reclassifying a
             // published version would change how saved calls are executed.
-            let (old_kind, new_kind) = (retained_kind(old)?, retained_kind(&snapshot)?);
+            let (old_kind, new_kind) = (retained_kind(old)?, retained_kind(snapshot)?);
             if old_kind != new_kind {
                 return Err(format!(
-                    "{name} v{version}: kind changed from {} to {}; increase @version",
+                    "{label}: kind changed from {} to {}; increase @version",
                     kind_name(old_kind),
                     kind_name(new_kind)
                 ));
             }
-            if old["outputs"] != snapshot["outputs"]
-                || old["outputEnums"] != snapshot["outputEnums"]
-            {
-                return Err(format!(
-                    "{name} v{version}: incompatible output change; increase @version"
-                ));
-            }
-            if !action_inputs_compatible(old, &snapshot)? {
-                return Err(format!(
-                    "{name} v{version}: incompatible input change; increase @version"
-                ));
-            }
-        }
-        versions.insert(version.to_string(), snapshot);
-    }
+            same_version_contract(label, old, snapshot)
+        },
+    )?;
     for versions in result["actions"].as_object().unwrap().values() {
         for snapshot in versions
             .as_object()
@@ -118,6 +74,124 @@ pub fn reconcile_action_history(current: &Value, history: Option<&Value>) -> Res
         }
     }
     Ok(result)
+}
+
+/// Retain every published native Load version in `history/loads.json`, the
+/// `actions.json` envelope under `loads`. A same-version change must keep
+/// outputs (Model lists and their read versions) exactly and inputs
+/// compatibly; a retained Load name cannot be removed, so it cannot become a
+/// Query or Mutation either ([#173](https://github.com/zanminwang/axton/issues/173)).
+pub fn reconcile_load_history(current: &Value, history: Option<&Value>) -> Result<Value, String> {
+    let mut result = history
+        .cloned()
+        .unwrap_or(json!({"formatVersion":1,"loads":{}}));
+    if result["formatVersion"] != 1 || !result["loads"].is_object() {
+        return Err("unsupported load history format".into());
+    }
+    let loads = current["loads"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    retain_versions(
+        &mut result["loads"],
+        "load",
+        loads,
+        |load| capture_load(current, load),
+        same_version_contract,
+    )?;
+    Ok(result)
+}
+
+/// The version rules every retained operation kind shares: a retained name
+/// stays declared, a new name begins at version 1, versions never decrease,
+/// and `same_version` judges a republished version before it is replaced.
+fn retain_versions(
+    retained: &mut Value,
+    noun: &str,
+    operations: &[Value],
+    capture: impl Fn(&Value) -> Result<Value, String>,
+    same_version: impl Fn(&str, &Value, &Value) -> Result<(), String>,
+) -> Result<(), String> {
+    for name in retained.as_object().unwrap().keys() {
+        if !operations.iter().any(|a| a["name"] == *name) {
+            return Err(format!("retained {noun} {name} cannot be removed"));
+        }
+    }
+    for operation in operations {
+        let name = operation["name"]
+            .as_str()
+            .ok_or_else(|| format!("unnamed {noun}"))?;
+        let version = operation["version"]
+            .as_u64()
+            .ok_or_else(|| format!("invalid {noun} version"))?;
+        let snapshot = capture(operation)?;
+        let versions = retained
+            .as_object_mut()
+            .unwrap()
+            .entry(name)
+            .or_insert(json!({}))
+            .as_object_mut()
+            .ok_or_else(|| format!("invalid {noun} history versions"))?;
+        if versions.is_empty() && version != 1 {
+            return Err(format!(
+                "{name}: initial {noun} history must begin at version 1"
+            ));
+        }
+        let latest = versions
+            .keys()
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| format!("invalid retained {noun} version"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+        if version < latest {
+            return Err(format!("{name}: version cannot decrease from {latest}"));
+        }
+        if let Some(old) = versions.get(&version.to_string()) {
+            same_version(&format!("{name} v{version}"), old, &snapshot)?;
+        }
+        versions.insert(version.to_string(), snapshot);
+    }
+    Ok(())
+}
+
+/// Outputs never change within a version; inputs follow the operand rules.
+fn same_version_contract(label: &str, old: &Value, snapshot: &Value) -> Result<(), String> {
+    if old["outputs"] != snapshot["outputs"] || old["outputEnums"] != snapshot["outputEnums"] {
+        return Err(format!(
+            "{label}: incompatible output change; increase @version"
+        ));
+    }
+    if !action_inputs_compatible(old, snapshot)? {
+        return Err(format!(
+            "{label}: incompatible input change; increase @version"
+        ));
+    }
+    Ok(())
+}
+
+/// A Load's retained contract: the descriptor itself, its outputs bound to
+/// retained Model read contracts. Call-site options never appear in it.
+fn capture_load(config: &Value, load: &Value) -> Result<Value, String> {
+    for output in list(load, "outputs")? {
+        if let Some(models) = config["backendModels"].as_array()
+            && !models.iter().any(|model| {
+                model["name"] == output["model"] && model["version"] == output["modelReadVersion"]
+            })
+        {
+            return Err(format!(
+                "load output {} has no retained Model read contract",
+                output["name"]
+            ));
+        }
+    }
+    Ok(json!({
+        "name":load["name"],"version":load["version"],"inputs":load["inputs"],
+        "outputs":load["outputs"],"input":load["input"],"outputEnums":load["outputEnums"],
+    }))
 }
 
 /// A retained snapshot's kind; snapshots written before kinds existed are Mutations.

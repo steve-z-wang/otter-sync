@@ -19,6 +19,24 @@ pub mod limits {
     /// A pull page carries at most this many changes. A page holding exactly
     /// this many continues: the channel may hold more beyond `to`.
     pub const PULL_CHANGES: usize = 50;
+    /// A Load batch carries between one and this many page requests.
+    pub const LOAD_BATCH_ITEMS: usize = 8;
+    /// The canonical bytes of one Load batch request.
+    pub const LOAD_REQUEST_BYTES: usize = 1024 * 1024;
+    /// The canonical bytes of one answered page: IDs, outcome and records.
+    pub const LOAD_PAGE_BYTES: usize = 1024 * 1024;
+    /// The bytes of one Load batch response: eight pages at
+    /// [`LOAD_PAGE_BYTES`] plus a 64 KiB allowance for the envelope, so a
+    /// full batch of maximal pages stays encodable.
+    pub const LOAD_RESPONSE_BYTES: usize = 8 * LOAD_PAGE_BYTES + 64 * 1024;
+    /// Identity entries one page returns across all declared lists.
+    pub const LOAD_PAGE_IDENTITIES: usize = 1000;
+    /// The canonical bytes of one continuation state.
+    pub const LOAD_STATE_BYTES: usize = 64 * 1024;
+    /// Nested arrays and objects in one continuation state.
+    pub const LOAD_STATE_DEPTH: usize = 64;
+    /// UTF-8 bytes of one Load item error message.
+    pub const LOAD_ERROR_MESSAGE_BYTES: usize = 1024;
 }
 
 pub fn counter(value: u64) -> Result<u64> {
@@ -213,7 +231,7 @@ impl AuthorityRecord {
         self.error.is_some()
     }
 }
-fn decode_record(value: &Value) -> Result<AuthorityRecord> {
+pub(crate) fn decode_record(value: &Value) -> Result<AuthorityRecord> {
     if !value.is_object() {
         return Err(invalid("record must be an object"));
     }

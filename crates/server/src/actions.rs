@@ -34,7 +34,7 @@ fn rejected(call_id: &str, code: &str) -> ActionResponse {
     }
 }
 
-fn call_error(error: &Error) -> bool {
+pub(crate) fn call_error(error: &Error) -> bool {
     !matches!(
         error.code.as_str(),
         code::HOST
@@ -57,13 +57,13 @@ fn canonical_intent(call: &ActionIntent, models: &BTreeMap<String, u64>) -> Resu
     canonical_json(&identity).map_err(internal)
 }
 
-fn current_authority(
+pub(crate) fn current_authority(
     config: &Config,
     models: &BTreeMap<String, u64>,
     mut record: AuthorityRecord,
 ) -> Result<AuthorityRecord> {
     if record.error.is_some() {
-        return Err(storage_invalid("saved Action authority carries an error"));
+        return Err(storage_invalid("saved authority record carries an error"));
     }
     let version = *models
         .get(&record.model)

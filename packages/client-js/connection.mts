@@ -1,7 +1,7 @@
 import { reportCallbackError, type EffectOutcome } from "./bridge.mts";
 import type { RecordValue } from "./values.mts";
 
-/** One HTTP POST: `kind` is the route (`push`, `pull` or `action`). Errors carry `status` when the server answered. */
+/** One HTTP POST: `kind` is the route (`push`, `pull`, `action` or `load`); an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
   kind: string,
   body: string,

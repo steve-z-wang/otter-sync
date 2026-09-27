@@ -33,6 +33,14 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
             .find(|m| m.name == n)
             .map(|m| m.pos);
     }
+    if let Some(n) = owner.strip_prefix("Load ") {
+        let n = n.split(' ').next()?;
+        return declarations
+            .loads
+            .iter()
+            .find(|l| l.name == n)
+            .map(|l| l.pos);
+    }
     let action = owner
         .strip_prefix("Mutation ")
         .or_else(|| owner.strip_prefix("Query "))?
@@ -44,6 +52,22 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
         .find(|a| a.name == action)
         .map(|a| a.pos)
 }
+
+/// Names the generated clients and backend declare beside Loads, and only
+/// when the schema declares one ([#173](https://github.com/zanminwang/axton/issues/173)).
+pub(crate) const LOAD_HELPERS: &[&str] = &[
+    "JsonValue",
+    "Load",
+    "LoadContext",
+    "LoadError",
+    "LoadException",
+    "LoadHandlerCall",
+    "LoadNext",
+    "LoadOptions",
+    "LoadPhase",
+    "LoadStatus",
+    "Loads",
+];
 
 /// Members of the generated Dart `{Name}Store` selector (and `Object`).
 const STORE_SELECTOR_MEMBERS: &[&str] = &[
@@ -131,6 +155,40 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         if current != Some(version) {
             add(format!("{n}V{version}"), format!("model {n}"))?;
             add(format!("{n}V{version}Identity"), format!("model {n}"))?;
+        }
+    }
+    // Beside the shared Load names, exactly the per-version backend handler
+    // types: `{Name}Input` and `{Name}HandlerOutput`, `V{n}`-prefixed for a
+    // retained version.
+    let loads = values(config, "loads");
+    if !loads.is_empty() {
+        for helper in LOAD_HELPERS {
+            add((*helper).into(), "load helper".into())?;
+        }
+    }
+    let load_versions = || {
+        loads
+            .iter()
+            .filter_map(|load| Some((load["name"].as_str()?, load["version"].as_u64()?)))
+    };
+    let mut load_latest = BTreeMap::<&str, u64>::new();
+    for (n, version) in load_versions() {
+        load_latest
+            .entry(n)
+            .and_modify(|v| *v = (*v).max(version))
+            .or_insert(version);
+    }
+    for (n, version) in load_versions() {
+        let prefix = if version == load_latest[n] {
+            n.to_owned()
+        } else {
+            format!("{n}V{version}")
+        };
+        for suffix in ["Input", "HandlerOutput"] {
+            add(
+                format!("{prefix}{suffix}"),
+                format!("Load {n} v{version} {suffix}"),
+            )?;
         }
     }
     // Model-only schemas still emit every per-model type (such as

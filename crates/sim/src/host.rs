@@ -9,7 +9,7 @@ use axton_server::{
     host::{
         Acknowledged, Claimed, ClaimedCall, Handled, Head, HostRequest,
         Invalidation as ContractInvalidation, Loaded, Locked, MembershipIntent, Memberships,
-        Published, RecordRef, Scanned, Stamped,
+        Published, RecordRef, Scanned, Stamped, Stamps,
     },
 };
 use serde_json::{Map, Value, json};
@@ -823,6 +823,9 @@ impl Host for MemHost {
                 HostRequest::HandleAction { .. } => {
                     return Err("sim Action handlers are not configured".into());
                 }
+                HostRequest::HandleLoad { .. } => {
+                    return Err("sim Load handlers are not configured".into());
+                }
                 HostRequest::AdvanceStamp {
                     model,
                     identity_key,
@@ -836,6 +839,19 @@ impl Host for MemHost {
                 } => {
                     let key = key_from_identity_key(&model, &identity_key)?;
                     response!(Stamped(ensure(&mut s.tables, &key)))
+                }
+                // `SQL.READ_STAMPS`: an existing stamp is read, never rewritten;
+                // only a record without one is initialized at 1.
+                HostRequest::ReadStamps {
+                    model,
+                    identity_keys,
+                } => {
+                    let mut stamps: Stamps = Vec::with_capacity(identity_keys.len());
+                    for identity_key in identity_keys {
+                        let key = key_from_identity_key(&model, &identity_key)?;
+                        stamps.push(Stamped(ensure(&mut s.tables, &key)));
+                    }
+                    response!(stamps)
                 }
                 HostRequest::Publish {
                     channel,
@@ -1315,6 +1331,34 @@ mod tests {
             host,
             json!({"op":"ensureStamp","model":"Entry","identityKey":identity_key}),
         )
+    }
+
+    #[test]
+    fn read_stamps_keeps_existing_stamps_and_initializes_only_missing_ones() {
+        let host = MemHost::new();
+        let keys = |ids: &[&str]| -> Value {
+            ids.iter()
+                .map(|id| entry_key(id).encoded_identity().unwrap())
+                .collect()
+        };
+        host.transaction(|| {
+            ensure_stamp(&host, "e1")?;
+            call(
+                &host,
+                json!({"op":"advanceStamp","model":"Entry","identityKey":entry_key("e1").encoded_identity().unwrap()}),
+            )?;
+            assert_eq!(
+                call(
+                    &host,
+                    json!({"op":"readStamps","model":"Entry","identityKeys":keys(&["e1","e2"])})
+                )?,
+                json!([2, 1])
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(host.stamp(&entry_key("e1")), 2, "not rewritten");
+        assert_eq!(host.stamp(&entry_key("e2")), 1);
     }
 
     #[test]

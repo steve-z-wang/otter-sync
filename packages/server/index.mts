@@ -9,7 +9,11 @@ import {
   type RuntimeChannel,
   type RuntimeTouch,
 } from "./effects.mts";
-import type { HostRequest, SettlementEffects } from "./host-contract.mts";
+import type {
+  HostRequest,
+  LoadNext,
+  SettlementEffects,
+} from "./host-contract.mts";
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export type {
@@ -18,7 +22,15 @@ export type {
   RuntimeModelMembership,
   RuntimeTouch,
 } from "./effects.mts";
+export type { JsonValue, LoadNext } from "./host-contract.mts";
 const require = createRequire(import.meta.url);
+/** What escaped one Load item's transaction, as the carrier observed it. */
+export type LoadFault =
+  | { kind: "engine"; code: string; message: string }
+  | { kind: "conflict" }
+  | { kind: "unavailable" };
+/** One Load item as its transaction ended: its committed page or its fault. */
+export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
   validateConfig(config: string): void;
   processPush(
@@ -37,6 +49,21 @@ export type Native = {
     config: string,
     owner: string,
     request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  /** Structurally validates a `{loads:[…]}` batch; answers each item's canonical JSON in order. */
+  validateLoadBatch(request: string): string[];
+  /**
+   * The one bounded `{"loads":[…]}` response: the items `validateLoadBatch`
+   * answered and, in the same order, each one's committed page or the fault
+   * that escaped its transaction. The engine classifies every fault.
+   */
+  encodeLoadBatch(items: string[], answers: LoadItemAnswer[]): string;
+  /** Executes or replays one validated Load page item in the callback's transaction. */
+  processLoad(
+    config: string,
+    owner: string,
+    item: string,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
   /** Settles a business change made outside a handler: the same `{changes, memberships}` a handler answers with. */
@@ -158,10 +185,16 @@ function typedNative(native: Native): Native {
     | "processPush"
     | "processAction"
     | "processPull"
+    | "processLoad"
     | "settleExternal"
     | "negotiateLive"
     | "pullLive";
-  type Sync = "validateConfig" | "liveEvent" | "liveClose";
+  type Sync =
+    | "validateConfig"
+    | "validateLoadBatch"
+    | "encodeLoadBatch"
+    | "liveEvent"
+    | "liveClose";
   const wrap =
     <K extends Async>(key: K) =>
     (...args: Parameters<Native[K]>): ReturnType<Native[K]> =>
@@ -186,6 +219,9 @@ function typedNative(native: Native): Native {
     processPush: wrap("processPush"),
     processAction: wrap("processAction"),
     processPull: wrap("processPull"),
+    validateLoadBatch: wrapSync("validateLoadBatch"),
+    encodeLoadBatch: wrapSync("encodeLoadBatch"),
+    processLoad: wrap("processLoad"),
     settleExternal: wrap("settleExternal"),
     negotiateLive: wrap("negotiateLive"),
     pullLive: wrap("pullLive"),
@@ -275,6 +311,30 @@ export interface QueryContext<Tx> {
   userId: string;
   callId: string;
 }
+/**
+ * Trusted framework context of one Load page. Like a Query it carries no
+ * `channel` or `touch`: a Load reads without business side effects, and the
+ * framework cannot inspect arbitrary SQL on `tx`. `callId` is the page's
+ * durable call ID and `loadId` its job.
+ */
+export interface LoadContext<Tx> {
+  tx: Tx;
+  userId: string;
+  callId: string;
+  loadId: string;
+}
+/**
+ * One page of a Load: `continuation` is `null` on the first page and the
+ * previous `next` wrapper afterwards. Answers the declared identity lists and
+ * `next` (`null` completes the traversal). `next.state` must be portable
+ * JSON: no undefined, BigInt, non-finite or unsafe-integer numbers, cycles
+ * or class instances, at most 64 levels deep and 64 KiB encoded.
+ */
+export type LoadHandler<Tx, Args = any, Data = any> = (call: {
+  ctx: LoadContext<Tx>;
+  args: Args;
+  continuation: LoadNext;
+}) => Promise<{ data: Data; next: LoadNext }>;
 export type MutationHandler<Tx, Args = any, Outputs = any> = (call: {
   ctx: MutationContext<Tx>;
   args: Args;
@@ -288,6 +348,8 @@ export type MutationHandlerRegistration<Tx> =
   MutationHandler<Tx> | { [version: `v${number}`]: MutationHandler<Tx> };
 export type QueryHandlerRegistration<Tx> =
   QueryHandler<Tx> | { [version: `v${number}`]: QueryHandler<Tx> };
+export type LoadHandlerRegistration<Tx> =
+  LoadHandler<Tx> | { [version: `v${number}`]: LoadHandler<Tx> };
 /** Every retained version of one model's read contract, or a bare function as shorthand for a v1-only model. */
 export type LoaderRegistration<Tx> =
   Loader<Tx> | { [version: `v${number}`]: Loader<Tx> };
@@ -297,7 +359,7 @@ export type LoaderRegistration<Tx> =
  * for the latest version. Refused at startup, naming the key and version.
  */
 function versioned<F>(
-  kind: "handler" | "loader" | "mutation" | "query",
+  kind: "handler" | "loader" | "mutation" | "query" | "load",
   name: string,
   key: string,
   versions: readonly number[],
@@ -331,7 +393,7 @@ function versioned<F>(
   for (const found of Object.keys(registration))
     if (!/^v[1-9][0-9]*$/.test(found) || !table.has(Number(found.slice(1))))
       throw new Error(
-        `Unknown ${kind} ${key}.${found} for ${name}: retained ${kind === "mutation" || kind === "query" ? `${kind} ` : ""}versions are ${list}`,
+        `Unknown ${kind} ${key}.${found} for ${name}: retained ${kind === "mutation" || kind === "query" || kind === "load" ? `${kind} ` : ""}versions are ${list}`,
       );
   return table;
 }
@@ -366,6 +428,8 @@ export interface BackendOptions<T> {
   mutations?: Record<string, MutationHandlerRegistration<T>> | undefined;
   /** Every retained Query version, by lower-camel name. */
   queries?: Record<string, QueryHandlerRegistration<T>> | undefined;
+  /** Every retained Load version, by lower-camel name. */
+  loads?: Record<string, LoadHandlerRegistration<T>> | undefined;
   loaders: Record<string, LoaderRegistration<T>>;
   loaderHooks?: Record<
     string,
@@ -398,6 +462,90 @@ function callbackJson(value: unknown): string {
     return item;
   });
 }
+/** Portable continuation bounds; the engine rechecks them independently. */
+const LOAD_STATE_BYTES = 64 * 1024;
+const LOAD_STATE_DEPTH = 64;
+/**
+ * Why a Load handler's `next` is not `null` or `{state}` with portable JSON
+ * state, or `undefined` when it is. Checked before `callbackJson`, which
+ * would silently turn a safe BigInt into a number or call `toJSON`. A value
+ * that throws while it is inspected (a getter, a Proxy trap) is not portable.
+ */
+function continuationProblem(next: unknown): string | undefined {
+  try {
+    return inspectContinuation(next);
+  } catch (error) {
+    return `next throws when read: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+function inspectContinuation(next: unknown): string | undefined {
+  if (next === null) return undefined;
+  if (
+    typeof next !== "object" ||
+    Array.isArray(next) ||
+    Object.getPrototypeOf(next) !== Object.prototype ||
+    Reflect.ownKeys(next).length !== 1 ||
+    !Object.hasOwn(next, "state")
+  )
+    return "next must be null or exactly {state}";
+  const open = new Set<object>();
+  const visit = (value: unknown, depth: number): string | undefined => {
+    switch (typeof value) {
+      case "string":
+      case "boolean":
+        return undefined;
+      case "number":
+        if (!Number.isFinite(value)) return "a non-finite number";
+        if (Number.isInteger(value) && !Number.isSafeInteger(value))
+          return "an integer outside the safe range";
+        return undefined;
+      case "object":
+        break;
+      default:
+        return `a ${typeof value} value`;
+    }
+    if (value === null) return undefined;
+    if (depth + 1 > LOAD_STATE_DEPTH)
+      return `nesting deeper than ${LOAD_STATE_DEPTH}`;
+    if (open.has(value)) return "a cycle";
+    const prototype = Object.getPrototypeOf(value);
+    if (Array.isArray(value)) {
+      if (prototype !== Array.prototype) return "a class instance";
+    } else if (prototype !== Object.prototype && prototype !== null)
+      return "a class instance";
+    if (Object.getOwnPropertySymbols(value).length) return "a symbol key";
+    if (typeof (value as { toJSON?: unknown }).toJSON === "function")
+      return "custom JSON serialization";
+    open.add(value);
+    try {
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index++) {
+          if (!Object.hasOwn(value, index)) return "an array hole";
+          const problem = visit(value[index], depth + 1);
+          if (problem) return problem;
+        }
+      } else
+        for (const key of Object.keys(value)) {
+          const problem = visit(
+            (value as Record<string, unknown>)[key],
+            depth + 1,
+          );
+          if (problem) return problem;
+        }
+    } finally {
+      open.delete(value);
+    }
+    return undefined;
+  };
+  const state = (next as { state: unknown }).state;
+  const problem = visit(state, 0);
+  if (problem) return `state holds ${problem}`;
+  if (Buffer.byteLength(JSON.stringify(state), "utf8") > LOAD_STATE_BYTES)
+    return `state exceeds ${LOAD_STATE_BYTES} bytes`;
+  return undefined;
+}
+/** At most this many Load items of one request hold a database transaction at once. */
+const LOAD_ITEM_TRANSACTIONS = 4;
 class WakeHub {
   private listeners = new Map<string, Set<() => void>>();
   subscribe(scope: string, wake: () => void): () => void {
@@ -459,6 +607,12 @@ class Session {
 }
 /** The retained backend business kind of an operation; omitted is `mutation`. */
 type CallKind = "mutation" | "query";
+/** Where each operation kind registers its handlers. */
+const REGISTRATION_GROUP = {
+  mutation: "mutations",
+  query: "queries",
+  load: "loads",
+} as const;
 type MutationSlot = {
   name: string;
   operation: string;
@@ -512,6 +666,16 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             fields?: { name: string; type: unknown }[];
           }[];
         };
+      }[];
+      loads?: {
+        name: string;
+        version: number;
+        inputs?: {
+          kind: string;
+          name: string;
+          list?: boolean;
+          type?: unknown;
+        }[];
       }[];
     };
     mutations?: MutationDescriptor[];
@@ -577,24 +741,52 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     );
   }
   const operations = descriptor.schema?.actions ?? [];
+  const loadDescriptors = descriptor.schema?.loads ?? [];
+  /** Every retained operation version with its kind; Loads share the operation namespace. */
+  const retainedOperations = [
+    ...operations.map((action) => ({
+      name: action.name,
+      version: action.version,
+      kind: (action.kind ?? "mutation") as CallKind | "load",
+    })),
+    ...loadDescriptors.map((load) => ({
+      name: load.name,
+      version: load.version,
+      kind: "load" as const,
+    })),
+  ];
+  const retainedVersions = (key: string) =>
+    retainedOperations.filter(
+      (operation) => lowerFirst(operation.name) === key,
+    );
   /** Each retained version of an operation key with its kind, e.g. "Find v1 (mutation), v2 (query)". */
   const retainedKinds = (key: string): string | undefined => {
-    const versions = operations.filter(
-      (action) => lowerFirst(action.name) === key,
-    );
+    const versions = retainedVersions(key);
     if (!versions.length) return undefined;
     return `${versions[0]!.name} ${versions
-      .map((action) => [action.version, action.kind ?? "mutation"] as const)
+      .map((operation) => [operation.version, operation.kind] as const)
       .sort(([a], [b]) => a - b)
       .map(([version, kind]) => `v${version} (${kind})`)
       .join(", ")}`;
   };
+  /** The registration groups the retained kinds of `key` belong in, except `except`. */
+  const groupsFor = (key: string, except?: string): string =>
+    [
+      ...new Set(
+        retainedVersions(key).map(
+          (operation) => REGISTRATION_GROUP[operation.kind],
+        ),
+      ),
+    ]
+      .filter((group) => group !== except)
+      .sort()
+      .join(" or ");
   for (const key of Object.keys(options.handlers ?? {}))
     if (![...retained.keys()].some((name) => lowerFirst(name) === key)) {
       const kinds = retainedKinds(key);
       throw new Error(
         kinds
-          ? `Handler ${key} names ${kinds}; register each version under mutations or queries by its kind`
+          ? `Handler ${key} names ${kinds}; register each version under ${retainedVersions(key).some((operation) => operation.kind === "load") ? "mutations, queries or loads" : "mutations or queries"} by its kind`
           : `Unknown handler ${key}: no retained mutation ${key}`,
       );
     }
@@ -635,17 +827,49 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       for (const [version, handler] of table)
         actionHandlers.set(`${name}:${version}`, handler);
     }
-    const group = kind === "mutation" ? "mutations" : "queries";
+    const group = REGISTRATION_GROUP[kind];
     for (const key of Object.keys(map ?? {}))
       if (![...versions.keys()].some((name) => lowerFirst(name) === key)) {
         const kinds = retainedKinds(key);
         throw new Error(
           kinds
-            ? `${group}.${key}: ${kinds} retains no ${kind} version; register it under ${group === "mutations" ? "queries" : "mutations"}`
+            ? `${group}.${key}: ${kinds} retains no ${kind} version; register it under ${groupsFor(key, group)}`
             : `Unknown ${kind} ${key}: no retained ${kind} ${key}`,
         );
       }
   }
+  // Every retained Load version registers under `loads`, like an operation
+  // under its kind's map.
+  const loadHandlers = new Map<string, LoadHandler<T>>();
+  const loadVersions = new Map<string, number[]>();
+  for (const load of loadDescriptors)
+    loadVersions.set(
+      load.name,
+      [...(loadVersions.get(load.name) ?? []), load.version].sort(
+        (a, b) => a - b,
+      ),
+    );
+  for (const [name, list] of loadVersions)
+    for (const [version, handler] of versioned<LoadHandler<T>>(
+      "load",
+      name,
+      lowerFirst(name),
+      list,
+      options.loads?.[lowerFirst(name)],
+    ))
+      loadHandlers.set(`${name}:${version}`, handler);
+  for (const key of Object.keys(options.loads ?? {}))
+    if (![...loadVersions.keys()].some((name) => lowerFirst(name) === key)) {
+      const kinds = retainedKinds(key);
+      throw new Error(
+        kinds
+          ? `loads.${key}: ${kinds} retains no load version; register it under ${groupsFor(key, "loads")}`
+          : `Unknown load ${key}: no retained load ${key}`,
+      );
+    }
+  const loadTable = new Map(
+    loadDescriptors.map((load) => [`${load.name}:${load.version}`, load]),
+  );
   const actionTable = new Map(
     (descriptor.schema?.actions ?? []).map((action) => [
       `${action.name}:${action.version}`,
@@ -790,6 +1014,72 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           } finally {
             effects?.close();
           }
+        } else if (req.op === "handleLoad") {
+          const load = loadTable.get(`${req.name}:${req.version}`);
+          const handler = loadHandlers.get(`${req.name}:${req.version}`);
+          if (!load || !handler)
+            throw new Error(`Missing Load handler ${req.name} v${req.version}`);
+          const args = { ...req.arguments };
+          for (const input of load.inputs ?? [])
+            if (input.kind === "value")
+              args[input.name] = decodeActionValue(
+                input.list ? { kind: "list", element: input.type } : input.type,
+                args[input.name],
+              );
+          const label = `${req.name} v${req.version}`;
+          const invalid = (problem: string) => {
+            const error = new Error(
+              `invalid Load handler answer for ${label}: ${problem}`,
+            );
+            onError(error);
+            return callbackJson({ error: error.message });
+          };
+          // The handler's answer is judged inside its error boundary, like
+          // the call itself: reading it can throw (a getter, a Proxy), and
+          // whatever it answered is this page's saved outcome, never a host
+          // fault. A continuation that is not portable JSON is refused
+          // before `callbackJson` could coerce it; any other unencodable
+          // answer is a failure. A Load context has no declaration handles:
+          // its answer carries identities and a continuation, never changes
+          // or memberships.
+          try {
+            const page: unknown = await handler({
+              ctx: {
+                tx,
+                userId: req.owner,
+                callId: req.callId,
+                loadId: req.loadId,
+              },
+              args,
+              continuation: req.continuation,
+            });
+            if (
+              page === null ||
+              typeof page !== "object" ||
+              Array.isArray(page)
+            )
+              return invalid("expected {data, next}");
+            const { data, next } = page as { data: unknown; next: unknown };
+            const problem = continuationProblem(next);
+            if (problem !== undefined) {
+              onError(
+                new Error(`invalid Load continuation for ${label}: ${problem}`),
+              );
+              return callbackJson({ rejection: "load.invalid_continuation" });
+            }
+            let answer: string;
+            try {
+              answer = callbackJson({ data, next });
+            } catch (error) {
+              return invalid(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+            return answer;
+          } catch (error) {
+            if (isRetryableTransactionError(error)) throw error;
+            return callbackJson(refusal(error));
+          }
         } else if (req.op === "load") {
           // Dispatch is by model name and contract version; a version that
           // was not registered is a defect, never another version's loader.
@@ -864,6 +1154,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             case "release":
             case "advanceStamp":
             case "ensureStamp":
+            case "readStamps":
             case "publish":
             case "lockRecord":
             case "memberships":
@@ -992,6 +1283,65 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         );
     return receipt;
   };
+  /**
+   * One Load page in its own application transaction: the engine's page JSON
+   * once it committed, or what escaped the transaction boundary. The carrier
+   * only reports what it observed; the engine classifies it in
+   * `encodeLoadBatch` (a commit whose result is unknown, a pool or driver
+   * failure and a conflict are `retryable`, so the client resends the same
+   * call ID and the saved claim decides what committed; a deterministic
+   * engine defect is an unsaved `failed` item, so the job stops).
+   */
+  const loadItem = async (
+    owner: string,
+    item: string,
+  ): Promise<LoadItemAnswer> => {
+    try {
+      return {
+        page: await run((tx, session) =>
+          native.processLoad(config, owner, item, host(tx, session)),
+        ),
+      };
+    } catch (error) {
+      onError(error);
+      return {
+        fault:
+          error instanceof EngineError
+            ? { kind: "engine", code: error.code, message: error.message }
+            : isRetryableTransactionError(error)
+              ? { kind: "conflict" }
+              : { kind: "unavailable" },
+      };
+    }
+  };
+  /**
+   * One `POST /sync/loads` batch: validated whole by the engine, then each
+   * item in its own transaction, at most `LOAD_ITEM_TRANSACTIONS` at once.
+   * Transport grouping only: items share no transaction, and the engine
+   * writes the one bounded response after every item has committed or
+   * rolled back.
+   */
+  const loads = async (
+    owner: string,
+    request: Uint8Array | string,
+  ): Promise<string> => {
+    const items = native.validateLoadBatch(text(request));
+    const answers: LoadItemAnswer[] = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const index = next++;
+        answers[index] = await loadItem(owner, items[index]!);
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(LOAD_ITEM_TRANSACTIONS, items.length) },
+        worker,
+      ),
+    );
+    return native.encodeLoadBatch(items, answers);
+  };
   /** @internal Raw protocol seams used by the framework's own tests; not part of the supported surface. */
   const api = {
     push: (owner: string, request: Uint8Array | string) =>
@@ -1006,6 +1356,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       run((tx, session) =>
         native.processPull(config, owner, text(request), host(tx, session)),
       ).then(reportInvalidPage),
+    loads,
     negotiateLive: (
       owner: string,
       request: Uint8Array | string,
@@ -1106,6 +1457,7 @@ interface HttpBackend {
   push(owner: string, request: Uint8Array | string): Promise<string>;
   pull(owner: string, request: Uint8Array | string): Promise<string>;
   action(owner: string, request: Uint8Array | string): Promise<string>;
+  loads(owner: string, request: Uint8Array | string): Promise<string>;
 }
 function createHttpHandler(options: {
   backend: HttpBackend;
@@ -1125,7 +1477,8 @@ function createHttpHandler(options: {
     if (
       path !== "/sync/mutations" &&
       path !== "/sync/pull" &&
-      path !== "/sync/actions"
+      path !== "/sync/actions" &&
+      path !== "/sync/loads"
     ) {
       send(404, { code: "not_found" });
       return;
@@ -1170,7 +1523,9 @@ function createHttpHandler(options: {
         ? options.backend.push(owner, bytes)
         : path === "/sync/actions"
           ? options.backend.action(owner, bytes)
-          : options.backend.pull(owner, bytes));
+          : path === "/sync/loads"
+            ? options.backend.loads(owner, bytes)
+            : options.backend.pull(owner, bytes));
       send(200, result);
     } catch (error) {
       const status =

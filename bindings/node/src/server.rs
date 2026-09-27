@@ -76,6 +76,73 @@ pub async fn process_action(
 ) -> Result<String> {
     axton_server::process_action(&config(&config_json)?, &owner, request_json.as_bytes(), &CallbackHost(callback)).await.map_err(reason)
 }
+/// Structural validation of one `POST /sync/loads` envelope; answers each
+/// item's canonical JSON in request order. The carrier runs each item through
+/// `process_load` in its own transaction and never accepts a looser envelope.
+#[napi]
+pub fn validate_load_batch(request_json: String) -> Result<Vec<String>> {
+    axton_server::validate_load_batch(request_json.as_bytes()).map_err(reason)
+}
+/// What escaped one Load item's transaction: `kind` is `engine` (with the
+/// engine error's `code` and `message`), `conflict` or `unavailable`.
+#[napi(object)]
+pub struct LoadFault {
+    pub kind: String,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+/// One Load item as its transaction ended: exactly one of the page
+/// `processLoad` answered, or the fault that escaped the transaction.
+#[napi(object)]
+pub struct LoadItemAnswer {
+    pub page: Option<String>,
+    pub fault: Option<LoadFault>,
+}
+/// The one bounded `{"loads":[…]}` response to a batch: the canonical items
+/// `validateLoadBatch` answered and each item's answer, in the same order.
+/// The engine classifies every fault (`retryable` or unsaved `failed`) and
+/// checks every page against its item.
+#[napi]
+pub fn encode_load_batch(items: Vec<String>, answers: Vec<LoadItemAnswer>) -> Result<String> {
+    let answers = answers
+        .into_iter()
+        .map(|answer| match answer {
+            LoadItemAnswer { page: Some(page), fault: None } => {
+                Ok(axton_server::LoadItemAnswer::Page(page))
+            }
+            LoadItemAnswer { page: None, fault: Some(fault) } => Ok(axton_server::LoadItemAnswer::Fault(
+                match (fault.kind.as_str(), fault.code, fault.message) {
+                    ("engine", Some(code), Some(message)) => {
+                        axton_server::LoadFault::Engine { code, message }
+                    }
+                    ("conflict", None, None) => axton_server::LoadFault::Conflict,
+                    ("unavailable", None, None) => axton_server::LoadFault::Unavailable,
+                    (kind, _, _) => return Err(internal(format!("invalid Load fault {kind}"))),
+                },
+            )),
+            _ => Err(internal("a Load answer is exactly one page or fault")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    axton_server::encode_load_batch(&items, answers).map_err(reason)
+}
+/// Executes or replays one Load page (one validated batch item) in the
+/// host's transaction and answers its page JSON.
+#[napi]
+pub async fn process_load(
+    config_json: String,
+    owner: String,
+    item_json: String,
+    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
+) -> Result<String> {
+    axton_server::process_load(
+        &config(&config_json)?,
+        &owner,
+        item_json.as_bytes(),
+        &CallbackHost(callback),
+    )
+    .await
+    .map_err(reason)
+}
 #[napi]
 pub async fn process_pull(
     config_json: String,

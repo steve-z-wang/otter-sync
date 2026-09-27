@@ -4,8 +4,12 @@ use crate::authority::{StageEntry, StageMode};
 use crate::engine::Engine;
 use crate::query_cache::QueryCacheKey;
 use crate::store::ClientStore;
-use crate::{ApplyReport, BootstrapApply, BootstrapState, Client};
-use axton_core::{BootstrapPage, DirectActionResponse, PullPage, PushReceipt, Result, invalid};
+use crate::{
+    ApplyReport, BootstrapApply, BootstrapState, Client, LoadApply, LoadFailure, LoadFence,
+};
+use axton_core::{
+    BootstrapPage, DirectActionResponse, LoadPageResponse, PullPage, PushReceipt, Result, invalid,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -39,6 +43,12 @@ pub enum StoreDelivery {
         sequence: u64,
         receipt: PushReceipt,
     },
+    /// One normalized native Load page for the frozen page `fence` names
+    /// ([`Client::load_page_step`]).
+    Load {
+        fence: LoadFence,
+        page: LoadPageResponse,
+    },
 }
 
 /// Result of replaying a prepared delivery in the host transaction.
@@ -48,6 +58,7 @@ pub enum StoreResult {
     Bootstrap(crate::BootstrapApply),
     Direct(ApplyReport),
     Receipt(ApplyReport),
+    Load(LoadApply),
 }
 impl StoreResult {
     pub fn as_page(&self) -> Option<&ApplyReport> {
@@ -70,6 +81,7 @@ pub struct PreparedStore {
     session_id: u64,
     page_guards: Vec<(String, u64, u64)>,
     bootstrap_admitted: Option<BootstrapState>,
+    load_refusal: Option<LoadFailure>,
 }
 impl PreparedStore {
     pub fn accepted(&self) -> &[usize] {
@@ -77,6 +89,12 @@ impl PreparedStore {
     }
     pub fn changes(&self) -> &BTreeMap<String, Vec<StoreChange>> {
         &self.changes
+    }
+    /// A Load page preparation refused: a record could not be applied. The
+    /// caller runs no hook, rolls the session back and records the failure;
+    /// such a preparation cannot be replayed.
+    pub fn load_refusal(&self) -> Option<&LoadFailure> {
+        self.load_refusal.as_ref()
     }
 }
 
@@ -156,6 +174,13 @@ impl<S: ClientStore> Client<S> {
             StoreDelivery::Receipt { sequence, receipt } => self.staged(mode, |e| {
                 e.acknowledge(*sequence, receipt).map(StoreResult::Receipt)
             }),
+            StoreDelivery::Load { fence, page } => {
+                let current = self.load_current(fence);
+                self.staged(mode, |e| {
+                    e.apply_load_page_body(fence, page, current)
+                        .map(StoreResult::Load)
+                })
+            }
         }
     }
 
@@ -209,6 +234,11 @@ impl<S: ClientStore> Client<S> {
         } else {
             vec![]
         };
+        let load_refusal = if let StoreResult::Load(LoadApply::Refused(refusal)) = &result {
+            Some(refusal.clone())
+        } else {
+            None
+        };
         let bootstrap_admitted = if let StoreResult::Bootstrap(
             BootstrapApply::Applied { state, .. } | BootstrapApply::Failed { state, .. },
         ) = result
@@ -225,6 +255,7 @@ impl<S: ClientStore> Client<S> {
             session_id,
             page_guards,
             bootstrap_admitted,
+            load_refusal,
         })
     }
 
@@ -239,6 +270,10 @@ impl<S: ClientStore> Client<S> {
             .id;
         if current != prepared.session_id {
             return Err(invalid("prepared delivery belongs to another transaction"));
+        }
+        if prepared.load_refusal.is_some() {
+            let _ = self.rollback_session();
+            return Err(invalid("a refused Load page cannot be stored"));
         }
         let count = prepared.entries.len();
         let mode = StageMode::Replay {

@@ -1239,6 +1239,115 @@
     "Project",
     "Note"
   ],
+  "loads": [
+    {
+      "input": {
+        "enums": [
+          {
+            "name": "Status",
+            "values": [
+              "open",
+              "closed",
+              "archived"
+            ]
+          }
+        ],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "projectId",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "status",
+          "nullable": true,
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "name": "Status"
+          }
+        },
+        {
+          "cardinality": "list",
+          "kind": "value",
+          "list": true,
+          "name": "tags",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "name": "ProjectTodos",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
+          "kind": "model",
+          "model": "Todo",
+          "modelReadVersion": 2,
+          "name": "todos",
+          "source": "handlerIdentity"
+        },
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "tenantId",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Project"
+          },
+          "kind": "model",
+          "model": "Project",
+          "modelReadVersion": 1,
+          "name": "projects",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    }
+  ],
   "models": [
     {
       "enums": [],
@@ -2673,6 +2782,115 @@
           "closed",
           "archived"
         ]
+      }
+    ],
+    "loads": [
+      {
+        "input": {
+          "enums": [
+            {
+              "name": "Status",
+              "values": [
+                "open",
+                "closed",
+                "archived"
+              ]
+            }
+          ],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "projectId",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "status",
+            "nullable": true,
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "name": "Status"
+            }
+          },
+          {
+            "cardinality": "list",
+            "kind": "value",
+            "list": true,
+            "name": "tags",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "name": "ProjectTodos",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Todo"
+            },
+            "kind": "model",
+            "model": "Todo",
+            "modelReadVersion": 2,
+            "name": "todos",
+            "source": "handlerIdentity"
+          },
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "tenantId",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Project"
+            },
+            "kind": "model",
+            "model": "Project",
+            "modelReadVersion": 1,
+            "name": "projects",
+            "source": "handlerIdentity"
+          }
+        ],
+        "version": 1
       }
     ],
     "models": [

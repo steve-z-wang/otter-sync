@@ -824,11 +824,11 @@ test("a terminal snapshot ends its observer; a throwing observer is reported and
 });
 
 /** Run a module script and answer its exit code and output. */
-function script(source) {
+function script(source, flags = []) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--input-type=module", "-e", source],
+      [...flags, "--input-type=module", "-e", source],
       { timeout: 20000 },
       (error, stdout, stderr) =>
         resolve({
@@ -1161,4 +1161,43 @@ test("transaction Channel helpers commit local intent without a Subscription han
     await client.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("cancelled raw store callback releases decoded changes while user work is unresolved", async () => {
+  const { code, stdout, stderr } = await script(`
+    import { Bridge } from ${JSON.stringify(bridgeModule)};
+    let wake;
+    const outbox = [];
+    let reference;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const carrier = {
+      runtimeOpen(request, notify) {
+        wake = notify;
+        outbox.push({type:'taskCompleted',requestId:JSON.parse(request).requestId,
+          ok:true,value:{clientId:'c',schema:{}}});
+        setImmediate(() => wake('1'));
+        return '1';
+      },
+      runtimeSubmit(_id, message) {
+        if (JSON.parse(message).type === 'close') outbox.push({type:'runtimeClosed'});
+        setImmediate(() => wake('1'));
+      },
+      runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
+    };
+    const { bridge } = await Bridge.open(carrier, {path:'unused',schema:{},
+      onStore:{Entry:(_tx,changes)=>{reference=new WeakRef(changes);return gate;}}});
+    outbox.push({type:'effect',effectId:'e',operation:{kind:'storeCallback',
+      transactionId:'t',model:'Entry',changes:[{kind:'delete',identity:{id:'x'}}]}});
+    wake('1');
+    await new Promise(setImmediate);
+    outbox.push({type:'cancelEffect',effectId:'e'});
+    wake('1');
+    await bridge.close();
+    for(let i=0;i<8;i++){await new Promise(setImmediate);global.gc();}
+    process.stdout.write(reference.deref()===undefined?'collected':'retained');
+    release();
+  `, ["--expose-gc"]);
+  assert.equal(code, 0, stderr);
+  assert.equal(stdout, "collected");
 });

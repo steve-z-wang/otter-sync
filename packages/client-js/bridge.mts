@@ -76,6 +76,35 @@ export type RawStoreHandler = (
   changes: readonly RawStoreChange[],
   cancellation: AbortSignal,
 ) => void | Promise<void>;
+type StorePending = {
+  controller: AbortController;
+  payload: {
+    model: string;
+    handler: RawStoreHandler | undefined;
+    changes: RawStoreChange[] | undefined;
+  };
+};
+
+/** Invoke once, then clear the host's payload reference before user work waits. */
+function startStoreInvocation(
+  pending: StorePending,
+  transactionId: string,
+): Promise<void> {
+  return Promise.resolve().then(() => {
+    if (pending.controller.signal.aborted) return;
+    const { model, handler, changes } = pending.payload;
+    pending.payload.handler = undefined;
+    pending.payload.changes = undefined;
+    if (!handler || !changes) throw Error(`missing store hook for ${model}`);
+    return handler(transactionId, changes, pending.controller.signal);
+  });
+}
+
+function cancelStorePending(pending: StorePending): void {
+  pending.controller.abort();
+  pending.payload.handler = undefined;
+  pending.payload.changes = undefined;
+}
 type Event = { type: string; [field: string]: any };
 /** A task's failure: the runtime's message, and its machine-readable reason when it gave one. */
 export type TaskError = Error & {
@@ -125,7 +154,7 @@ export class Bridge {
   #routes = new Map<string, Route>();
   #callbacks = new Map<string, Callback>();
   #storeHandlers = new Map<string, RawStoreHandler>();
-  #storeCallbacks = new Map<string, AbortController>();
+  #storeCallbacks = new Map<string, StorePending>();
   #storeCauses = new Map<string, unknown>();
   #reportedStoreCauses = new Set<string>();
   #listeners = new Map<BridgeEventType, Set<(event: any) => void>>();
@@ -546,19 +575,31 @@ export class Bridge {
       changes: RawStoreChange[];
     },
   ): void {
-    const controller = new AbortController();
-    this.#storeCallbacks.set(effectId, controller);
-    const { transactionId, model, changes } = operation;
-    const handler = this.#storeHandlers.get(model);
-    // Only this short invocation closure sees `changes`. The completion
-    // continuations retain ids and cancellation, never an unresolved payload.
-    const invoke = () => {
-      if (controller.signal.aborted) return;
-      if (!handler) throw Error(`missing store hook for ${model}`);
-      return handler(transactionId, changes, controller.signal);
+    const pending: StorePending = {
+      controller: new AbortController(),
+      payload: {
+        model: operation.model,
+        handler: this.#storeHandlers.get(operation.model),
+        changes: operation.changes,
+      },
     };
-    void Promise.resolve()
-      .then(invoke)
+    this.#storeCallbacks.set(effectId, pending);
+    this.#finishStoreCallback(
+      effectId,
+      operation.transactionId,
+      pending.controller,
+      startStoreInvocation(pending, operation.transactionId),
+    );
+  }
+
+  /** Completion closures have no lexical access to the decoded payload. */
+  #finishStoreCallback(
+    effectId: string,
+    transactionId: string,
+    controller: AbortController,
+    running: Promise<void>,
+  ): void {
+    void running
       .then(
         () => {
           if (!controller.signal.aborted)
@@ -588,7 +629,8 @@ export class Bridge {
   }
 
   #cancelStoreCallback(effectId: string): void {
-    this.#storeCallbacks.get(effectId)?.abort();
+    const pending = this.#storeCallbacks.get(effectId);
+    if (pending) cancelStorePending(pending);
     this.#storeCallbacks.delete(effectId);
     this.#storeCauses.delete(effectId);
   }
@@ -606,7 +648,8 @@ export class Bridge {
     const routes = [...this.#routes.values()];
     this.#routes.clear();
     this.#callbacks.clear();
-    for (const controller of this.#storeCallbacks.values()) controller.abort();
+    for (const pending of this.#storeCallbacks.values())
+      cancelStorePending(pending);
     this.#storeCallbacks.clear();
     this.#storeHandlers.clear();
     this.#storeCauses.clear();

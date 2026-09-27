@@ -330,6 +330,36 @@ typedef RawStoreHandler =
       StoreCancellation cancellation,
     );
 
+/// Owns decoded changes only until the handler is called or cancelled.
+class _StoreInvocation {
+  _StoreInvocation(this.model, this.transactionId, this.handler, this.changes);
+  final String model;
+  final String transactionId;
+  final StoreCancellation cancellation = StoreCancellation();
+  RawStoreHandler? handler;
+  List<Map<String, dynamic>>? changes;
+
+  Future<void> start() {
+    if (cancellation.cancelled) return Future<void>.value();
+    final callback = handler;
+    final delivered = changes;
+    handler = null;
+    changes = null;
+    if (callback == null || delivered == null) {
+      return Future<void>.error(StateError('missing store hook for $model'));
+    }
+    return Future<void>.sync(
+      () => callback(transactionId, delivered, cancellation),
+    );
+  }
+
+  void cancel() {
+    cancellation.cancel();
+    handler = null;
+    changes = null;
+  }
+}
+
 String _storeFailureMessage(Object error) {
   try {
     final message = error.toString();
@@ -375,7 +405,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   final Carrier _carrier;
   final Map<String, RawStoreHandler> _storeHandlers;
   final Zone _storeZone;
-  final _storeCallbacks = <String, StoreCancellation>{};
+  final _storeCallbacks = <String, _StoreInvocation>{};
   final _storeCauses = <String, (Object, StackTrace)>{};
   final _reportedStoreCauses = <String>{};
 
@@ -802,44 +832,68 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   }
 
   void _storeCallback(String effectId, Map<String, dynamic> operation) {
-    final cancellation = StoreCancellation();
-    _storeCallbacks[effectId] = cancellation;
     final transactionId = operation['transactionId'] as String;
     final model = operation['model'] as String;
     final changes = (operation['changes'] as List)
         .map((change) => Map<String, dynamic>.from(change as Map))
         .toList();
-    final handler = _storeHandlers[model];
-    _storeZone.scheduleMicrotask(() {
-      if (cancellation.cancelled) return;
-      Future<void>.sync(() {
-        if (handler == null) throw StateError('missing store hook for $model');
-        return handler(transactionId, changes, cancellation);
-      }).then(
-        (_) {
-          if (!cancellation.cancelled) {
-            _submitQuietly(
-              callbackResultEnvelope(effectId, transactionId, ok: true),
-            );
-          }
-          _storeCallbacks.remove(effectId);
-        },
-        onError: (Object error, StackTrace stack) {
-          if (!cancellation.cancelled) {
-            _storeCauses[effectId] = (error, stack);
-            _submitQuietly(
-              callbackResultEnvelope(
-                effectId,
-                transactionId,
-                ok: false,
-                error: _storeFailureMessage(error),
-              ),
-            );
-          }
-          _storeCallbacks.remove(effectId);
-        },
-      );
-    });
+    final invocation = _StoreInvocation(
+      model,
+      transactionId,
+      _storeHandlers[model],
+      changes,
+    );
+    _storeCallbacks[effectId] = invocation;
+    _storeZone.scheduleMicrotask(
+      () => _startStoreCallback(effectId, transactionId, invocation),
+    );
+  }
+
+  void _startStoreCallback(
+    String effectId,
+    String transactionId,
+    _StoreInvocation invocation,
+  ) {
+    if (invocation.cancellation.cancelled) return;
+    _finishStoreCallback(
+      effectId,
+      transactionId,
+      invocation.cancellation,
+      invocation.start(),
+    );
+  }
+
+  /// Completion listeners have no access to the decoded change list.
+  void _finishStoreCallback(
+    String effectId,
+    String transactionId,
+    StoreCancellation cancellation,
+    Future<void> running,
+  ) {
+    running.then(
+      (_) {
+        if (!cancellation.cancelled) {
+          _submitQuietly(
+            callbackResultEnvelope(effectId, transactionId, ok: true),
+          );
+        }
+        _storeCallbacks.remove(effectId);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!cancellation.cancelled) {
+          _storeCauses[effectId] = (error, stack);
+          _submitQuietly(
+            callbackResultEnvelope(
+              effectId,
+              transactionId,
+              ok: false,
+              error: _storeFailureMessage(error),
+            ),
+          );
+        }
+        _storeCallbacks.remove(effectId);
+      },
+    );
   }
 
   /// `runtimeClosed`: fail what never completed, detach (after which no wake

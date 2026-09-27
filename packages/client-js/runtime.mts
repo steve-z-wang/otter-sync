@@ -72,6 +72,23 @@ export type StoreHook<Tx = import("./transaction.mts").Transaction> = (
   tx: Tx,
   changes: readonly RawStoreChange[],
 ) => void | Promise<void>;
+
+/** Clear the payload before a hook's Promise can become long lived. */
+class StoreHookInvocation<Tx> {
+  #hook: StoreHook<Tx> | undefined;
+  #changes: readonly RawStoreChange[] | undefined;
+  constructor(hook: StoreHook<Tx>, changes: readonly RawStoreChange[]) {
+    this.#hook = hook;
+    this.#changes = changes;
+  }
+  run = (tx: Tx): void | Promise<void> => {
+    const hook = this.#hook!;
+    const changes = this.#changes!;
+    this.#hook = undefined;
+    this.#changes = undefined;
+    return hook(tx, changes);
+  };
+}
 import type { ServerOptions, ServerConnection } from "./live.mts";
 import { Subscriptions, type Subscription } from "./subscriptions.mts";
 export type {
@@ -279,22 +296,17 @@ export function createClient<
       const handlers = Object.fromEntries(
         Object.entries(onStore ?? {}).map(([model, hook]) => [
           model,
-          async (
+          (
             transactionId: string,
             changes: readonly RawStoreChange[],
             cancellation: AbortSignal,
-          ) => {
-            client.#transactions++;
-            try {
-              await client.#runTransactionBody(
-                transactionId,
-                (tx) => hook(tx, changes),
-                cancellation,
-              );
-            } finally {
-              client.#transactions--;
-            }
-          },
+          ) =>
+            client.#runStoreTransaction(
+              transactionId,
+              hook,
+              changes,
+              cancellation,
+            ),
         ]),
       );
       const { bridge, opened } = await Bridge.open(native, {
@@ -346,6 +358,24 @@ export function createClient<
         cancellation?.removeEventListener("abort", cancel);
         if (this.#activePublicTx === tx) this.#activePublicTx = undefined;
       }
+    }
+    /** Store invocation and completion bookkeeping use separate frames. */
+    #runStoreTransaction(
+      transactionId: string,
+      hook: StoreHook<Tx>,
+      changes: readonly RawStoreChange[],
+      cancellation: AbortSignal,
+    ): Promise<void> {
+      this.#transactions++;
+      const invocation = new StoreHookInvocation(hook, changes);
+      return this.#trackStoreTransaction(
+        this.#runTransactionBody(transactionId, invocation.run, cancellation),
+      );
+    }
+    #trackStoreTransaction(running: Promise<void>): Promise<void> {
+      return running.finally(() => {
+        this.#transactions--;
+      });
     }
     read(model: string, identity: object): Promise<RecordValue | null> {
       return this.#task({ kind: "read", key: { model, identity } });

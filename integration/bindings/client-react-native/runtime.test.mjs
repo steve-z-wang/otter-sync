@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,6 +16,41 @@ async function within(promise) {
 }
 test('shared runtime accepts the mobile transaction and native carrier', () => {
   assert.equal(typeof runtime?.createClient, 'function');
+});
+test('cancelled mobile store callback releases decoded changes while user work is unresolved', async () => {
+  const runtimePath=fileURLToPath(new URL('../../../packages/client-js/runtime.mts',import.meta.url));
+  const txPath=fileURLToPath(new URL('../../../packages/client-react-native/transaction.mts',import.meta.url));
+  const source=`
+    import {createClient} from ${JSON.stringify(runtimePath)};
+    import {Transaction} from ${JSON.stringify(txPath)};
+    let wake; const outbox=[]; let reference; let release;
+    const gate=new Promise(resolve=>{release=resolve});
+    const carrier={
+      runtimeOpen(request,notify){wake=notify;outbox.push({type:'taskCompleted',
+        requestId:JSON.parse(request).requestId,ok:true,value:{clientId:'c',schema:{}}});
+        setImmediate(()=>wake('1'));return '1'},
+      runtimeSubmit(_id,message){if(JSON.parse(message).type==='close')
+        outbox.push({type:'runtimeClosed'});setImmediate(()=>wake('1'))},
+      runtimeDrain:()=>JSON.stringify(outbox.splice(0)),runtimeDetach(){},
+    };
+    const Client=createClient(carrier,Transaction,()=>{throw Error('unused')});
+    const client=await Client.open({path:'unused',schema:{},onStore:{Entry:(_tx,changes)=>{
+      reference=new WeakRef(changes);return gate;
+    }}});
+    outbox.push({type:'effect',effectId:'e',operation:{kind:'storeCallback',
+      transactionId:'t',model:'Entry',changes:[{kind:'delete',identity:{id:'x'}}]}});
+    wake('1');await new Promise(setImmediate);
+    outbox.push({type:'cancelEffect',effectId:'e'});wake('1');
+    await client.close();
+    for(let i=0;i<8;i++){await new Promise(setImmediate);global.gc();}
+    process.stdout.write(reference.deref()===undefined?'collected':'retained');
+    release();
+  `;
+  const {error,stdout,stderr}=await new Promise(resolve=>execFile(process.execPath,
+    ['--expose-gc','--input-type=module','-e',source],{timeout:20000},
+    (error,stdout,stderr)=>resolve({error,stdout,stderr})));
+  assert.equal(error,null,stderr);
+  assert.equal(stdout,'collected');
 });
 test('mobile store callback runs without a public task and uses transaction channels', async () => {
   let wake;

@@ -10,6 +10,21 @@ import 'dart:async';
 typedef StoreHook =
     FutureOr<void> Function(Transaction tx, List<Map<String, dynamic>> changes);
 
+/// A hook body keeps no decoded payload after handing it to user code.
+class _StoreHookInvocation {
+  _StoreHookInvocation(this.hook, this.changes);
+  StoreHook? hook;
+  List<Map<String, dynamic>>? changes;
+
+  FutureOr<void> run(Transaction tx) {
+    final callback = hook!;
+    final delivered = changes!;
+    hook = null;
+    changes = null;
+    return callback(tx, delivered);
+  }
+}
+
 /// Typed generated model APIs delegate to this generic native client.
 class Client implements WritePort, MutatePort {
   /// The Rust-owned runtime: it orders every task and owns the database.
@@ -134,7 +149,7 @@ class Client implements WritePort, MutatePort {
                 StoreCancellation cancellation,
               ) => client._runTransactionBody(
                 transactionId,
-                (tx) => entry.value(tx, changes),
+                _StoreHookInvocation(entry.value, changes).run,
                 cancellation,
               ),
       },

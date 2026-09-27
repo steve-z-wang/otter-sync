@@ -30,7 +30,7 @@ The tree stops at three levels: AXTON, a component, a part. A part that has inte
 - ★ **[Protocol](architecture/protocol/README.md)** — Language-independent push, pull, receipt and subscription message formats.
   - **[Common](architecture/protocol/common.md)** — Shared fields, counters and encoding conventions.
   - **[Push](architecture/protocol/push.md)** — Durable call batches, receipts carrying per-call outcomes and record authority.
-  - **[Direct calls](architecture/protocol/actions.md)** — Request/response envelope and replay by call ID.
+  - **[Direct calls](architecture/protocol/actions.md)** — Request/response envelope and replay by call ID, including Model Fetch.
   - **[Pull](architecture/protocol/pull.md)** — Requests, record changes, cursors and pagination.
   - **[Subscriptions](architecture/protocol/subscriptions.md)** — WebSocket subscription requests and acknowledgments.
 - **[Compiler (Rust)](architecture/compiler/README.md)** — Compile schemas and generate typed interfaces.

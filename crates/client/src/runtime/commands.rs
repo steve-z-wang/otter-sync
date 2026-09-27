@@ -5,7 +5,7 @@
 //! A task runs only while no application transaction is open, so its reads
 //! use the committed reader and each of its writes owns its own local
 //! transaction. A callback's commands run inside the session it owns. The
-//! lifecycles - `transaction`, `connect`, `connection`, `invoke`,
+//! lifecycles - `transaction`, `connect`, `connection`, `invoke`, `fetch`,
 //! `runPrerequisites`, `rebuild`, `scopeSubscribe`, `scopeBootstrap`, `watch`
 //! and `unwatch` - are the runtime's own and never reach [`execute`].
 use super::protocol::{Command, TransactionCommand};
@@ -127,6 +127,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Connect { .. }
         | Command::Connection { .. }
         | Command::Invoke { .. }
+        | Command::Fetch { .. }
         | Command::RunPrerequisites { .. }
         | Command::Rebuild { .. }
         | Command::ScopeSubscribe { .. }

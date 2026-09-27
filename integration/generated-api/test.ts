@@ -5,8 +5,8 @@ import {createRequire} from 'node:module';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {GeneratedClient,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
-import type {StoreHooks, StoreChange, EntryIdentity} from './generated.ts';
+import {GeneratedClient,CallError,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
+import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
 import {Client as RawClient} from '../../packages/client-js/index.mts';
 import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,Mutate,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
@@ -29,6 +29,8 @@ const externalHooks: StoreHooks = {
   }
   // @ts-expect-error remote actions are unavailable in a store transaction
   void tx.queries;
+  // @ts-expect-error Fetch is unavailable in a store transaction
+  void tx.fetch;
  },
 };
 const typedChange: StoreChange<EntryIdentity, Entry> = {kind:'upsert',identity:{id:row.id},row};
@@ -72,6 +74,8 @@ if(false){
  new GeneratedTransaction(writes).mutate;
  // @ts-expect-error actions are unavailable in local transactions
  new GeneratedTransaction(writes).actions;
+ // @ts-expect-error Fetch is unavailable in local transactions
+ new GeneratedTransaction(writes).fetch;
  const rawTx={} as RawTransaction;
  // @ts-expect-error raw transactions cannot enqueue named mutations
  rawTx.mutate;
@@ -297,3 +301,96 @@ try{
   assert.deepEqual(delivered,[`${row.id}:2026-01-01T00:00:00.000Z`,`delete:${row.id}`]);
  }finally{await adapted.close();}
 }finally{rawClass.open=originalRawOpen;}
+
+// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): one
+// typed method per Model; the result is the complete snapshot or null.
+async function checkFetch(client: GeneratedClient, id: string) {
+  const result: Entry | null = await client.fetch.entry({ id });
+  const preview: Entry | null = await client.fetch.entry({ id }, { store: false });
+  // @ts-expect-error Fetch storage accepts a boolean, not an output map
+  await client.fetch.entry({ id }, { store: { entry: false } });
+  // @ts-expect-error no persistent once option
+  await client.fetch.entry({ id }, { once: true });
+  return [result, preview];
+}
+async function checkFetchShapes(client:GeneratedClient,at:Date){
+ const placed:Placement|null=await client.fetch.placement({shelf:'s',at});
+ const stored:Entry|null=await client.fetch.entry({id:'e'},{store:true});
+ const when:Date|undefined=stored?.at;
+ const status:Status|undefined=stored?.status;
+ const tags:string[]|undefined=stored?.tags;
+ const nullable:string|null|undefined=stored?.note;
+ return [placed,when,status,tags,nullable];
+}
+void [checkFetch,checkFetchShapes];
+
+// The generated facade over the native runtime and a real HTTP route: default
+// storage with onStore, `store: false`, a composite DateTime identity, absence,
+// a typed backend refusal and joined callers with independent objects.
+const fetchDirectory=await mkdtemp(join(tmpdir(),'generated-fetch-'));
+const fetchRequests:{path:string|undefined;authorization:string|undefined;body:{callId:string;model:string;version:number;identity:Record<string,unknown>;store?:boolean}}[]=[];
+let releaseFetch=()=>{};
+const heldFetch=new Promise<void>(resolve=>{releaseFetch=resolve;});
+const fetchServer=createServer(async(request,response)=>{
+ const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk as Buffer);
+ const body=JSON.parse(Buffer.concat(chunks).toString()) as typeof fetchRequests[number]['body'];
+ fetchRequests.push({path:request.url,authorization:request.headers.authorization,body});
+ if(body.model==='Book')await heldFetch;
+ const identity=body.identity;
+ const state:Record<string,unknown>|null=
+  body.model==='Placement'?{label:'placed'}:
+  body.model==='Book'?{title:'remote book'}:
+  body.model==='Entry'&&identity.id!=='00000000-0000-4000-8000-000000000000'?{title:'remote',note:null,at:'2026-02-03T04:05:06.000Z',tags:['x'],status:'archived'}:
+  null;
+ const outcome=body.model==='Counter'
+  ?{status:'failed',code:'loader.failed',execution:'rejected'}
+  :{status:'succeeded',result:state===null?null:{...identity,...state}};
+ const records=body.model==='Counter'||body.store===false?[]:[{model:body.model,identity,stamp:1,state}];
+ response.end(JSON.stringify({completion:{callId:body.callId,outcome},records}));
+});
+await new Promise<void>(resolve=>fetchServer.listen(0,'127.0.0.1',()=>resolve()));
+const fetchAddress=fetchServer.address();
+const fetchPort=typeof fetchAddress==='object'&&fetchAddress!==null?fetchAddress.port:0;
+const storedChanges:string[]=[];
+const fetching=await GeneratedClient.open({
+ path:join(fetchDirectory,'state.sqlite'),
+ server:{url:`http://127.0.0.1:${fetchPort}`,token:'secret'},
+ onStore:{entry:(_tx,changes)=>{for(const change of changes)storedChanges.push(change.kind==='upsert'?`${change.row.status}@${change.row.at.toISOString()}`:'delete');}},
+});
+try{
+ const entry=await fetching.fetch.entry({id:row.id});
+ assert.ok(entry?.at instanceof Date);
+ assert.equal(entry.at.toISOString(),'2026-02-03T04:05:06.000Z');
+ assert.equal(entry.status,'archived');
+ assert.deepEqual(entry.tags,['x']);
+ assert.equal((await fetching.models.entry.get({id:row.id}))?.title,'remote','stored by default');
+ assert.deepEqual(storedChanges,['archived@2026-02-03T04:05:06.000Z'],'onStore ran with decoded rows');
+ assert.deepEqual({path:fetchRequests[0]!.path,authorization:fetchRequests[0]!.authorization},{path:'/sync/fetch',authorization:'Bearer secret'});
+ assert.equal(fetchRequests[0]!.body.version,2,'the Model read version the schema declares');
+ const other='123e4567-e89b-42d3-a456-426614174999';
+ const preview=await fetching.fetch.entry({id:other},{store:false});
+ assert.equal(preview?.title,'remote');
+ assert.equal(fetchRequests[1]!.body.store,false);
+ assert.equal(await fetching.models.entry.get({id:other}),null,'store false writes nothing');
+ assert.equal(storedChanges.length,1,'store false runs no onStore');
+ const at=new Date('2026-03-04T05:06:07.000Z');
+ const placed=await fetching.fetch.placement({shelf:'s',at});
+ assert.ok(placed?.at instanceof Date);
+ assert.equal(placed.at.getTime(),at.getTime());
+ assert.equal(placed.label,'placed');
+ assert.equal(new Date(fetchRequests[2]!.body.identity.at as string).getTime(),at.getTime());
+ assert.equal((await fetching.models.placement.get({shelf:'s',at}))?.label,'placed');
+ assert.equal(await fetching.fetch.entry({id:'00000000-0000-4000-8000-000000000000'}),null);
+ await assert.rejects(fetching.fetch.counter({id:'n'}),(error:unknown)=>error instanceof CallError&&error.code==='loader.failed'&&error.execution==='rejected');
+ const joined=[fetching.fetch.book({id:'b'}),fetching.fetch.book({id:'b'})];
+ await until(()=>fetchRequests.some(request=>request.body.model==='Book'),'the joined request');
+ releaseFetch();
+ const [first,second]=await Promise.all(joined);
+ assert.equal(fetchRequests.filter(request=>request.body.model==='Book').length,1,'joined callers share one request');
+ assert.deepEqual(first,second);
+ assert.notEqual(first,second,'each caller decodes its own object');
+}finally{
+ await fetching.close();
+ await new Promise<void>(resolve=>fetchServer.close(()=>resolve()));
+ await rm(fetchDirectory,{recursive:true,force:true});
+}

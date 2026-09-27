@@ -9,6 +9,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `GeneratedClient.open` | Open a local database and optionally start background sync | [Generated client](frontend/client-api.md#open-a-client) |
 | `onStore`, `StoreHooks`, `StoreChange` | React to typed incoming Model changes inside their local storage transaction | [React to incoming records](frontend/client-api.md#react-to-incoming-records) |
 | `client.models.<model>` | Read, query, watch and follow relations in local data | [Model APIs](frontend/client-api.md#model-apis) |
+| `client.fetch.<model>` | Read one record from the backend through its Loader, stored locally by default | [Fetch a record](frontend/client-api.md#fetch-a-record-from-the-backend) |
 | `client.transaction` | Commit local reads and direct writes together | [Transactions](frontend/client-api.md#transactions) |
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |
 | `tx.channels.subscribe / unsubscribe` | Change local Channel intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
@@ -41,11 +42,12 @@ Use this index to find the interface you call or implement. Local Model examples
 | React Native `databasePath` | Resolve a persistent local database path | [React Native setup](frontend/platforms.md#react-native) |
 | `Client`, `Transaction`, `QuerySpec`, `RecordValue` | Access the generic runtime beneath generated APIs | [Client runtime](frontend/runtime.md) |
 | `ServerOptions`, `SyncServer`, `ConnectionOptions` | Configure the backend connection and refresh credentials | [Server connection](frontend/runtime.md#server-connection) |
+| `Transport`, `HttpRoute` (TypeScript) | Type the HTTP carrier a platform host build supplies (not passed to `open`/`connect`): it receives the route `push`, `pull`, `action` or `fetch` | [Server connection](frontend/runtime.md#server-connection) |
 | `RuntimeConnection`, `AuthenticationExpired` | Control Dart sync and identify authentication failures | [Connections](frontend/runtime.md#connection-controls) |
 | `syncState`, `models.<name>.syncState`, `dismissRejection`, `drop` | Inspect a record's pending work and handle rejected or unsent calls | [Recovery APIs](frontend/runtime.md#pending-work-and-recovery) |
 | `pendingTasks`, `runPrerequisites`, `setReadiness` | Complete prerequisite I/O before a durable call can be sent | [Prerequisites](frontend/runtime.md#prerequisites) |
 | `freeze`, `acknowledge`, `applyPull` | Exercise the engine protocol in tests and tooling | [Protocol primitives](frontend/runtime.md#protocol-primitives) |
-| `ReadPort`, `WritePort`, `LivePort`, model factories and codecs | Bind generated facades to a compatible runtime | [Generated extension points](frontend/client-api.md#extension-points) |
+| `ReadPort`, `WritePort`, `LivePort`, `FetchPort`, `FetchOptions`, model factories and codecs | Bind generated facades to a compatible runtime | [Generated extension points](frontend/client-api.md#extension-points) |
 | `loaderHooks`, `Native` | Prepare a loader call or supply the native backend binding | [Backend extension points](backend/api.md#extension-points) |
 | Compiler command and `.model` declarations | Generate and evolve the interface contract | [Schema compiler](schema/reference.md) |
 

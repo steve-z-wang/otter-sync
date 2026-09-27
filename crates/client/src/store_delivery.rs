@@ -5,7 +5,9 @@ use crate::engine::Engine;
 use crate::query_cache::QueryCacheKey;
 use crate::store::ClientStore;
 use crate::{ApplyReport, BootstrapApply, BootstrapState, Client};
-use axton_core::{BootstrapPage, DirectActionResponse, PullPage, PushReceipt, Result, invalid};
+use axton_core::{
+    BootstrapPage, DirectActionResponse, FetchResponse, PullPage, PushReceipt, Result, invalid,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -39,6 +41,11 @@ pub enum StoreDelivery {
         sequence: u64,
         receipt: PushReceipt,
     },
+    /// One validated Model Fetch response: a single-record delivery that is
+    /// stored whole or refused whole ([`crate::Client::apply_fetch_response`]).
+    Fetch {
+        response: FetchResponse,
+    },
 }
 
 /// Result of replaying a prepared delivery in the host transaction.
@@ -48,6 +55,7 @@ pub enum StoreResult {
     Bootstrap(crate::BootstrapApply),
     Direct(ApplyReport),
     Receipt(ApplyReport),
+    Fetch(ApplyReport),
 }
 impl StoreResult {
     pub fn as_page(&self) -> Option<&ApplyReport> {
@@ -155,6 +163,9 @@ impl<S: ClientStore> Client<S> {
             }),
             StoreDelivery::Receipt { sequence, receipt } => self.staged(mode, |e| {
                 e.acknowledge(*sequence, receipt).map(StoreResult::Receipt)
+            }),
+            StoreDelivery::Fetch { response } => self.staged(mode, |e| {
+                e.apply_fetch_body(response).map(StoreResult::Fetch)
             }),
         }
     }

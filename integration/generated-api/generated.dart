@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:axton/axton.dart';
 export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException;
 class Present<T> { final T value; const Present(this.value); }
-final Map<String,dynamic> schema = jsonDecode('{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q \'single\' \\"double\\" \'\'\' \\"\\"\\" \$dollar \${x} \\\\ back\\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2}]}') as Map<String,dynamic>;
+final Map<String,dynamic> schema = jsonDecode('{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q \'single\' \\"double\\" \'\'\' \\"\\"\\" \$dollar \${x} \\\\ back\\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]}') as Map<String,dynamic>;
 enum Mood { calm, busy }
 enum Status { active, @Deprecated('archive with RemoveEntries instead') archived }
 /// What a fresh create of Draft accepts: a complete [Draft], or a [DraftCreate] that may omit fields with creation defaults.
@@ -115,6 +115,47 @@ class EntryPatch {
  if (at != null) 'at': at!.value.toUtc().toIso8601String(),
  if (tags != null) 'tags': tags!.value.map((e) => e).toList(),
  if (status != null) 'status': status!.value.name,
+ };
+}
+/// What a fresh create of Placement accepts: a complete [Placement], or a [PlacementCreate] that may omit fields with creation defaults.
+abstract interface class PlacementCreateInput { Map<String,dynamic> toCreateRecord(); }
+class Placement implements PlacementCreateInput {
+ final String shelf;
+ final DateTime at;
+ final String label;
+ const Placement({required this.shelf,required this.at,required this.label});
+ Map<String,dynamic> toRecord() => {
+ 'shelf': shelf,
+ 'at': at.toUtc().toIso8601String(),
+ 'label': label,
+ };
+ factory Placement.fromRecord(Map<String,dynamic> row) => Placement(
+ shelf: row['shelf'] as String,
+ at: DateTime.parse(row['at'] as String),
+ label: row['label'] as String,
+ );
+ @override
+ Map<String,dynamic> toCreateRecord() => toRecord();
+ PlacementIdentity get identity => PlacementIdentity(shelf: shelf,at: at);
+}
+class PlacementIdentity {
+ final String shelf;
+ final DateTime at;
+ const PlacementIdentity({required this.shelf,required this.at});
+ Map<String,dynamic> toRecord() => {
+ 'shelf': shelf,
+ 'at': at.toUtc().toIso8601String(),
+ };
+ factory PlacementIdentity.fromRecord(Map<String,dynamic> row) => PlacementIdentity(
+ shelf: row['shelf'] as String,
+ at: DateTime.parse(row['at'] as String),
+ );
+}
+class PlacementPatch {
+ final Present<String>? label;
+ const PlacementPatch({this.label});
+ Map<String,dynamic> toRecord() => {
+ if (label != null) 'label': label!.value,
  };
 }
 /// What a fresh create of Book accepts: a complete [Book], or a [BookCreate] that may omit fields with creation defaults.
@@ -265,6 +306,18 @@ class EntryCreate implements EntryCreateInput {
  'status': status.name,
  };
 }
+class PlacementCreate implements PlacementCreateInput {
+ final String shelf;
+ final DateTime at;
+ final String label;
+ const PlacementCreate({required this.shelf,required this.at,required this.label});
+ @override
+ Map<String,dynamic> toCreateRecord() => {
+ 'shelf': shelf,
+ 'at': at.toUtc().toIso8601String(),
+ 'label': label,
+ };
+}
 class BookCreate implements BookCreateInput {
  final String id;
  final String title;
@@ -390,6 +443,19 @@ class EntryFilter {
 }
 enum EntryOrderField {byId('id'),byTitle('title'),byNote('note'),byAt('at'); final String wireName; const EntryOrderField(this.wireName);}
 class EntryOrder { final EntryOrderField field; final bool descending; const EntryOrder(this.field,{this.descending=false}); Map<String,dynamic> toRecord()=>{'field':field.wireName,'direction':descending?'descending':'ascending'}; }
+class PlacementFilter {
+ final Present<String>? shelf;
+ final Present<DateTime>? at;
+ final Present<String>? label;
+ const PlacementFilter({this.shelf,this.at,this.label});
+ Map<String,dynamic> toRecord()=>{
+ if(shelf!=null)'shelf':shelf!.value,
+ if(at!=null)'at':at!.value.toUtc().toIso8601String(),
+ if(label!=null)'label':label!.value,
+};
+}
+enum PlacementOrderField {byShelf('shelf'),byAt('at'),byLabel('label'); final String wireName; const PlacementOrderField(this.wireName);}
+class PlacementOrder { final PlacementOrderField field; final bool descending; const PlacementOrder(this.field,{this.descending=false}); Map<String,dynamic> toRecord()=>{'field':field.wireName,'direction':descending?'descending':'ascending'}; }
 class BookFilter {
  final Present<String>? id;
  final Present<String>? title;
@@ -454,6 +520,20 @@ class EntryTxModel extends EntryModel { final WritePort writer; EntryTxModel(thi
  Future<void> update(EntryIdentity identity, EntryPatch patch) => writer.direct({'model':'Entry','op':'update','identity':identity.toRecord(),'values':patch.toRecord()});
  Future<void> delete(EntryIdentity identity) => writer.direct({'model':'Entry','op':'delete','identity':identity.toRecord()});
 }
+class PlacementModel { final ReadPort port; PlacementModel(this.port);
+ Future<Placement?> get(PlacementIdentity identity) async { final row=await port.read('Placement',identity.toRecord()); return row == null ? null : Placement.fromRecord(row); }
+ Future<List<Placement>> query({PlacementFilter? where,List<PlacementOrder> orderBy=const [],int? limit}) async => (await port.querySpec('Placement',{'filter':where?.toRecord()??{},'orderBy':orderBy.map((o)=>o.toRecord()).toList(),if(limit!=null)'limit':limit})).map(Placement.fromRecord).toList();
+}
+class PlacementLiveModel extends PlacementTxModel { final Client client; PlacementLiveModel(this.client) : super(client);
+ Stream<List<Placement>> watch({PlacementFilter? where}) => client.watch('Placement', where:where?.toRecord()??{}).map((rows) => rows.map(Placement.fromRecord).toList());
+ /// This record's sync state: its pending mutations and retained rejections. Local only.
+ Future<SyncState> syncState(PlacementIdentity identity) async => SyncState.fromRecord(await client.recordSyncState('Placement', identity.toRecord()));
+}
+class PlacementTxModel extends PlacementModel { final WritePort writer; PlacementTxModel(this.writer) : super(writer);
+ Future<void> create(PlacementCreateInput value) { final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['shelf','at']) if (state.containsKey(key)) key: state.remove(key)}; return writer.direct({'model':'Placement','op':'create','identity':identity,'values':state}); }
+ Future<void> update(PlacementIdentity identity, PlacementPatch patch) => writer.direct({'model':'Placement','op':'update','identity':identity.toRecord(),'values':patch.toRecord()});
+ Future<void> delete(PlacementIdentity identity) => writer.direct({'model':'Placement','op':'delete','identity':identity.toRecord()});
+}
 class BookModel { final ReadPort port; BookModel(this.port);
  Future<Book?> get(BookIdentity identity) async { final row=await port.read('Book',identity.toRecord()); return row == null ? null : Book.fromRecord(row); }
  Future<List<Book>> query({BookFilter? where,List<BookOrder> orderBy=const [],int? limit}) async => (await port.querySpec('Book',{'filter':where?.toRecord()??{},'orderBy':orderBy.map((o)=>o.toRecord()).toList(),if(limit!=null)'limit':limit})).map(Book.fromRecord).toList();
@@ -509,6 +589,7 @@ class Mutate { final MutatePort port; Mutate(this.port);
 class LiveModels { final Client port; LiveModels(this.port);
  late final DraftLiveModel draft = DraftLiveModel(port);
  late final EntryLiveModel entry = EntryLiveModel(port);
+ late final PlacementLiveModel placement = PlacementLiveModel(port);
  late final BookLiveModel book = BookLiveModel(port);
  late final CommentLiveModel comment = CommentLiveModel(port);
  late final CounterLiveModel counter = CounterLiveModel(port);
@@ -516,6 +597,7 @@ class LiveModels { final Client port; LiveModels(this.port);
 class TxModels { final WritePort port; TxModels(this.port);
  late final DraftTxModel draft = DraftTxModel(port);
  late final EntryTxModel entry = EntryTxModel(port);
+ late final PlacementTxModel placement = PlacementTxModel(port);
  late final BookTxModel book = BookTxModel(port);
  late final CommentTxModel comment = CommentTxModel(port);
  late final CounterTxModel counter = CounterTxModel(port);
@@ -529,6 +611,15 @@ class Channels { final Client client; Channels(this.client);
  Future<Subscription> subscribe(String channel) => client.subscribe(channel);
  Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
 }
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+class FetchModels { final Client _client; FetchModels(this._client);
+ Future<Draft?> draft(DraftIdentity identity, {bool store = true}) => _client.fetchModel('Draft', 1, identity.toRecord(), Draft.fromRecord, store: store);
+ Future<Entry?> entry(EntryIdentity identity, {bool store = true}) => _client.fetchModel('Entry', 2, identity.toRecord(), Entry.fromRecord, store: store);
+ Future<Placement?> placement(PlacementIdentity identity, {bool store = true}) => _client.fetchModel('Placement', 1, identity.toRecord(), Placement.fromRecord, store: store);
+ Future<Book?> book(BookIdentity identity, {bool store = true}) => _client.fetchModel('Book', 1, identity.toRecord(), Book.fromRecord, store: store);
+ Future<Comment?> comment(CommentIdentity identity, {bool store = true}) => _client.fetchModel('Comment', 1, identity.toRecord(), Comment.fromRecord, store: store);
+ Future<Counter?> counter(CounterIdentity identity, {bool store = true}) => _client.fetchModel('Counter', 1, identity.toRecord(), Counter.fromRecord, store: store);
+}
 sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
 final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
 final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
@@ -536,10 +627,11 @@ typedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, Li
 class StoreHooks {
  final StoreHandler<DraftIdentity,Draft>? draft;
  final StoreHandler<EntryIdentity,Entry>? entry;
+ final StoreHandler<PlacementIdentity,Placement>? placement;
  final StoreHandler<BookIdentity,Book>? book;
  final StoreHandler<CommentIdentity,Comment>? comment;
  final StoreHandler<CounterIdentity,Counter>? counter;
- const StoreHooks({this.draft,this.entry,this.book,this.comment,this.counter});
+ const StoreHooks({this.draft,this.entry,this.placement,this.book,this.comment,this.counter});
 }
 class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
 class GeneratedClient {
@@ -549,6 +641,8 @@ class GeneratedClient {
  late final Channels channels = Channels(client);
  /// Each legacy mutation runs in its own local transaction and returns its ordinal.
  late final Mutate mutate = Mutate(client);
+ /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
+ late final FetchModels fetch = FetchModels(client);
  GeneratedClient._(this.client, this.connection);
  /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
  static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
@@ -557,6 +651,8 @@ class GeneratedClient {
   if (draftHook != null) rawHooks['Draft'] = (tx, changes) => draftHook(GeneratedTransaction(tx), changes.map<StoreChange<DraftIdentity,Draft>>((change) { final identity=DraftIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<DraftIdentity,Draft>(identity,Draft.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<DraftIdentity,Draft>(identity); }).toList());
   final entryHook = onStore?.entry;
   if (entryHook != null) rawHooks['Entry'] = (tx, changes) => entryHook(GeneratedTransaction(tx), changes.map<StoreChange<EntryIdentity,Entry>>((change) { final identity=EntryIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<EntryIdentity,Entry>(identity,Entry.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<EntryIdentity,Entry>(identity); }).toList());
+  final placementHook = onStore?.placement;
+  if (placementHook != null) rawHooks['Placement'] = (tx, changes) => placementHook(GeneratedTransaction(tx), changes.map<StoreChange<PlacementIdentity,Placement>>((change) { final identity=PlacementIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<PlacementIdentity,Placement>(identity,Placement.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<PlacementIdentity,Placement>(identity); }).toList());
   final bookHook = onStore?.book;
   if (bookHook != null) rawHooks['Book'] = (tx, changes) => bookHook(GeneratedTransaction(tx), changes.map<StoreChange<BookIdentity,Book>>((change) { final identity=BookIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<BookIdentity,Book>(identity,Book.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<BookIdentity,Book>(identity); }).toList());
   final commentHook = onStore?.comment;

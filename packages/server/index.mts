@@ -33,6 +33,13 @@ export type Native = {
     request: string,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
+  /** Serves one Model Fetch (`POST /sync/fetch`) through its versioned Loader. */
+  processFetch(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
   processPull(
     config: string,
     owner: string,
@@ -157,6 +164,7 @@ function typedNative(native: Native): Native {
   type Async =
     | "processPush"
     | "processAction"
+    | "processFetch"
     | "processPull"
     | "settleExternal"
     | "negotiateLive"
@@ -185,6 +193,7 @@ function typedNative(native: Native): Native {
     validateConfig: wrapSync("validateConfig"),
     processPush: wrap("processPush"),
     processAction: wrap("processAction"),
+    processFetch: wrap("processFetch"),
     processPull: wrap("processPull"),
     settleExternal: wrap("settleExternal"),
     negotiateLive: wrap("negotiateLive"),
@@ -1002,6 +1011,10 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       run((tx, session) =>
         native.processAction(config, owner, text(request), host(tx, session)),
       ),
+    fetch: (owner: string, request: Uint8Array | string) =>
+      run((tx, session) =>
+        native.processFetch(config, owner, text(request), host(tx, session)),
+      ),
     pull: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
         native.processPull(config, owner, text(request), host(tx, session)),
@@ -1106,6 +1119,7 @@ interface HttpBackend {
   push(owner: string, request: Uint8Array | string): Promise<string>;
   pull(owner: string, request: Uint8Array | string): Promise<string>;
   action(owner: string, request: Uint8Array | string): Promise<string>;
+  fetch(owner: string, request: Uint8Array | string): Promise<string>;
 }
 function createHttpHandler(options: {
   backend: HttpBackend;
@@ -1125,7 +1139,8 @@ function createHttpHandler(options: {
     if (
       path !== "/sync/mutations" &&
       path !== "/sync/pull" &&
-      path !== "/sync/actions"
+      path !== "/sync/actions" &&
+      path !== "/sync/fetch"
     ) {
       send(404, { code: "not_found" });
       return;
@@ -1170,7 +1185,9 @@ function createHttpHandler(options: {
         ? options.backend.push(owner, bytes)
         : path === "/sync/actions"
           ? options.backend.action(owner, bytes)
-          : options.backend.pull(owner, bytes));
+          : path === "/sync/fetch"
+            ? options.backend.fetch(owner, bytes)
+            : options.backend.pull(owner, bytes));
       send(200, result);
     } catch (error) {
       const status =

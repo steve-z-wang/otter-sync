@@ -9,6 +9,7 @@ mod defaults;
 mod downlink;
 pub mod downlink_worker;
 pub mod engine;
+mod fetch;
 pub mod ledger;
 pub mod live;
 mod mutate;

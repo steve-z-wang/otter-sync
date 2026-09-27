@@ -186,6 +186,16 @@ export interface LiveModels { user:UserLiveModel; todo:TodoLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { user:new UserLiveModel(port), todo:new TodoLiveModel(port) }; }
 export interface TxModels { user:UserTxModel; todo:TodoTxModel; }
 export function txModels(port:WritePort):TxModels { return { user:new UserTxModel(port), todo:new TodoTxModel(port) }; }
+export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
+/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
+export interface FetchModels {
+ user(identity:UserIdentity, options?:{store?:boolean}):Promise<User|null>;
+ todo(identity:TodoIdentity, options?:{store?:boolean}):Promise<Todo|null>;
+}
+export function fetchModels(port:FetchPort):FetchModels { return {
+ user:(identity,options)=>port.fetchModel('User',1,encodeUserIdentity(identity),decodeUser,options),
+ todo:(identity,options)=>port.fetchModel('Todo',1,encodeTodoIdentity(identity),decodeTodo,options),
+}; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {

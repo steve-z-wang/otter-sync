@@ -213,7 +213,7 @@ impl AuthorityRecord {
         self.error.is_some()
     }
 }
-fn decode_record(value: &Value) -> Result<AuthorityRecord> {
+pub(crate) fn decode_record(value: &Value) -> Result<AuthorityRecord> {
     if !value.is_object() {
         return Err(invalid("record must be an object"));
     }

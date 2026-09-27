@@ -1106,17 +1106,36 @@ fn add_new_read_fields(
         {
             continue;
         }
-        let added = if field.nullable {
-            Value::Null
-        } else {
-            field
-                .default
-                .clone()
-                .ok_or_else(|| invalid("new Model result field has no default"))?
-        };
+        let added = read_field_fallback(field)
+            .ok_or_else(|| invalid("new Model result field has no default"))?;
         object.insert(field.name.clone(), added);
     }
     Ok(())
+}
+/// The value a reader supplies for a read field its producer's same-version
+/// contract did not carry: `null` when nullable, else the field's internal
+/// literal default. `None` means the snapshot is incomplete.
+pub(crate) fn read_field_fallback(field: &FieldDescriptor) -> Option<Value> {
+    if field.nullable {
+        Some(Value::Null)
+    } else {
+        field.default.clone()
+    }
+}
+/// A schema holding only this retained read contract, so identity and state
+/// codecs validate against the read version rather than the local Model.
+pub(crate) fn read_schema(schema: &Schema, descriptor: &ModelReadDescriptor) -> Schema {
+    let mut local = schema.clone();
+    local.models = vec![ModelDescriptor {
+        name: descriptor.name.clone(),
+        version: descriptor.version,
+        identity: descriptor.identity.clone(),
+        fields: descriptor.fields.clone(),
+        relations: vec![],
+        unique: vec![],
+    }];
+    local.enums = descriptor.enums.clone();
+    local
 }
 fn normalize_result_model(
     schema: &Schema,
@@ -1125,16 +1144,7 @@ fn normalize_result_model(
     value: &Value,
 ) -> Result<Value> {
     let descriptor = schema.result_model(model, version)?;
-    let mut local = schema.clone();
-    local.models = vec![ModelDescriptor {
-        name: descriptor.name.clone(),
-        version,
-        identity: descriptor.identity.clone(),
-        fields: descriptor.fields.clone(),
-        relations: vec![],
-        unique: vec![],
-    }];
-    local.enums = descriptor.enums.clone();
+    let local = read_schema(schema, descriptor);
     let object = value
         .as_object()
         .ok_or_else(|| invalid("Model result must be object"))?;
@@ -1169,16 +1179,7 @@ pub fn materialize_action_model(
     state: &Value,
 ) -> Result<Value> {
     let descriptor = schema.result_model(model, version)?;
-    let mut local = schema.clone();
-    local.models = vec![ModelDescriptor {
-        name: descriptor.name.clone(),
-        version,
-        identity: descriptor.identity.clone(),
-        fields: descriptor.fields.clone(),
-        relations: vec![],
-        unique: vec![],
-    }];
-    local.enums = descriptor.enums.clone();
+    let local = read_schema(schema, descriptor);
     let key = local.record_key(model, identity)?;
     let fields = state
         .as_object()

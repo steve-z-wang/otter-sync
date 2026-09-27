@@ -31,5 +31,6 @@ A handler writes to the application's database, may touch extra changed records 
 |---|---|
 | Push | [server/lib.rs](../../../../../crates/server/src/lib.rs) (`process_push`, `decode`); input-target readback in [server/readback.rs](../../../../../crates/server/src/readback.rs) (`read_back`) |
 | Operations | [server/actions.rs](../../../../../crates/server/src/actions.rs) (`execute_action`, `process_action_push`); host dispatch in [server/index.mts](../../../../../packages/server/index.mts) |
+| Model Fetch | [server/fetch.rs](../../../../../crates/server/src/fetch.rs) (`process_fetch`); the call ledger protocol it shares with Operations in [server/calls.rs](../../../../../crates/server/src/calls.rs) ([Direct calls](../../protocol/actions.md#model-fetch)) |
 | Pull | [server/lib.rs](../../../../../crates/server/src/lib.rs) (`process_pull`) |
 | Publish | shared settlement in [server/settlement.rs](../../../../../crates/server/src/settlement.rs) (`settle_changes`); the external path in [server/lib.rs](../../../../../crates/server/src/lib.rs) (`settle_external`); the declaration collector `createEffects` in [server/effects.mts](../../../../../packages/server/effects.mts); `transaction` and `WakeHub` in [server/index.mts](../../../../../packages/server/index.mts) |

@@ -1,9 +1,15 @@
 import { reportCallbackError, type EffectOutcome } from "./bridge.mts";
 import type { RecordValue } from "./values.mts";
 
-/** One HTTP POST: `kind` is the route (`push`, `pull` or `action`). Errors carry `status` when the server answered. */
+/**
+ * The backend route of one HTTP effect: `push` posts to `/sync/mutations`,
+ * `pull` to `/sync/pull`, `action` to `/sync/actions` and `fetch` (one Model
+ * Fetch) to `/sync/fetch`.
+ */
+export type HttpRoute = "push" | "pull" | "action" | "fetch";
+/** One HTTP POST: `kind` is the route. Errors carry `status` when the server answered. */
 export type Transport = (
-  kind: string,
+  kind: HttpRoute,
   body: string,
   signal?: AbortSignal,
 ) => Promise<string>;
@@ -238,7 +244,7 @@ export function startConnection(
     void effects.answer(effectId, failure(error));
   const uninstall = [
     effects.handle(owner, "http", (effectId, operation) => {
-      const { route, body } = operation as { route: string; body: string };
+      const { route, body } = operation as { route: HttpRoute; body: string };
       const abort = new AbortController();
       Promise.resolve()
         .then(() => network.push(route, body, abort.signal))

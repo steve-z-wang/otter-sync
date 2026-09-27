@@ -3,6 +3,7 @@ import { Client, type ClientSyncState, type Connection, type ConnectionOptions, 
 export { CallError, type Call, type CallOptions, type CallOutcome, type CallStatus, type OnceOptions, type ServerOptions, type Connection, type ConnectionOptions, type BootstrapPhase, type BootstrapStatus, type Subscription, type SubscriptionStatus } from "../../../../../packages/client-js/index.mts";
 import { schema, liveModels, makeMutations, makeQueries, GeneratedTransaction, Mutate, type LiveModels, type StoreHooks, type StoreChange } from "./generated.ts";
 import { decodeEntry, decodeEntryIdentity, type Entry, type EntryIdentity } from "./generated.ts";
+import { fetchModels, type FetchModels } from "./generated.ts";
 export * from "./generated.ts";
 /** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
 export class Scopes { readonly #client: Client;
@@ -26,7 +27,9 @@ export class GeneratedClient {
  readonly queries: ReturnType<typeof makeQueries>;
  readonly scopes: Scopes;
  readonly channels: Channels;
- private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.mutate = new Mutate(client); this.scopes = new Scopes(client); this.channels = new Channels(client); }
+ /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */
+ readonly fetch: FetchModels;
+ private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.mutate = new Mutate(client); this.scopes = new Scopes(client); this.channels = new Channels(client); this.fetch = fetchModels(client); }
  /** Each legacy mutation runs in its own local transaction and returns its ordinal. */
  readonly mutate: Mutate;
  /** Opens the local database at `path`. With a server, the connection starts immediately and retries on its own. */

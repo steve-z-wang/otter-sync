@@ -347,6 +347,18 @@ export interface LiveModels { todo:TodoLiveModel; moment:MomentLiveModel; pin:Pi
 export function liveModels(port:LivePort):LiveModels { return { todo:new TodoLiveModel(port), moment:new MomentLiveModel(port), pin:new PinLiveModel(port) }; }
 export interface TxModels { todo:TodoTxModel; moment:MomentTxModel; pin:PinTxModel; }
 export function txModels(port:WritePort):TxModels { return { todo:new TodoTxModel(port), moment:new MomentTxModel(port), pin:new PinTxModel(port) }; }
+export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
+/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
+export interface FetchModels {
+ todo(identity:TodoIdentity, options?:{store?:boolean}):Promise<Todo|null>;
+ moment(identity:MomentIdentity, options?:{store?:boolean}):Promise<Moment|null>;
+ pin(identity:PinIdentity, options?:{store?:boolean}):Promise<Pin|null>;
+}
+export function fetchModels(port:FetchPort):FetchModels { return {
+ todo:(identity,options)=>port.fetchModel('Todo',1,encodeTodoIdentity(identity),decodeTodo,options),
+ moment:(identity,options)=>port.fetchModel('Moment',1,encodeMomentIdentity(identity),decodeMoment,options),
+ pin:(identity,options)=>port.fetchModel('Pin',1,encodePinIdentity(identity),decodePin,options),
+}; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {

@@ -3,7 +3,7 @@ import { httpTransport } from "./transport.mts";
 import type { SocketEvents, Transport } from "./connection.mts";
 
 export type ServerConnection = {
-  /** HTTP: `push` to `/sync/mutations`, `pull` to `/sync/pull`. */
+  /** HTTP: `push` to `/sync/mutations`, `pull` to `/sync/pull`, `action` to `/sync/actions`, `fetch` to `/sync/fetch`. */
   readonly push: Transport;
   /** Open `/sync/live`, send the subscribe frame once open, deliver frames until aborted or closed. */
   open(subscribe: string, signal: AbortSignal, on: SocketEvents): void;

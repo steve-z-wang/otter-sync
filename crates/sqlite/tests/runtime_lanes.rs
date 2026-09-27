@@ -544,6 +544,80 @@ fn frozen_push_receipt_waits_for_hook_commit_and_retries_locally_after_failure()
 }
 
 #[test]
+fn invalid_hook_candidate_receipts_retry_over_network_with_the_frozen_batch() {
+    for invalid_case in [
+        "missing_rejections",
+        "wrong_client",
+        "wrong_batch",
+        "bad_completion",
+    ] {
+        let mut h = hooked_host();
+        assert_eq!(h.call("seed", create("e", "base"))["ok"], true);
+        h.task(
+            "call",
+            json!({"kind":"submitAction","name":"Rename","version":1,
+            "args":{"entry":{"id":"e","text":"local"}}}),
+        );
+        h.run();
+        h.connect(false);
+        let (http, body) = h.http("push");
+        let mut valid: Value =
+            serde_json::from_str(&receipt(h.client().client_id(), &body)).unwrap();
+        valid["completions"][0]["outcome"]["result"] = json!({"text":"server"});
+        valid["records"] = json!([{"model":"Entry","identity":{"id":"e"},"stamp":1,
+            "state":{"text":"server","note":null}}]);
+        let mut bad = valid.clone();
+        match invalid_case {
+            "missing_rejections" => {
+                bad.as_object_mut().unwrap().remove("rejections");
+            }
+            "wrong_client" => bad["clientId"] = json!("another-client"),
+            "wrong_batch" => bad["batchSequence"] = json!(99),
+            "bad_completion" => bad["completions"][0]["outcome"]["result"] = json!({"text":7}),
+            _ => unreachable!(),
+        }
+        h.ok(&http, &bad.to_string());
+        let events = h.run();
+        assert!(
+            events
+                .iter()
+                .all(|event| event["operation"]["kind"] != "storeCallback"
+                    && event["type"] != "callCompleted"),
+            "{invalid_case}: {events:?}"
+        );
+        assert_eq!(h.client().pending_count().unwrap(), 1);
+        let timer = h.one("timer", None).0;
+        h.fire(&timer);
+        h.run();
+        let (retry_http, retry_body) = h.http("push");
+        assert_eq!(
+            retry_body, body,
+            "{invalid_case}: frozen identities changed"
+        );
+        h.ok(&retry_http, &valid.to_string());
+        let events = h.run();
+        let callback = events
+            .iter()
+            .find(|event| event["operation"]["kind"] == "storeCallback")
+            .unwrap_or_else(|| panic!("{invalid_case}: {events:?}"));
+        h.submit(
+            json!({"type":"callbackResult","effectId":callback["effectId"],
+            "transactionId":callback["operation"]["transactionId"],"ok":true}),
+        );
+        let events = h.run();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "callCompleted")
+                .count(),
+            1
+        );
+        assert_eq!(h.client().pending_count().unwrap(), 0);
+        assert_eq!(h.text("e"), Some(json!("server")));
+    }
+}
+
+#[test]
 fn streamed_page_yields_to_hook_then_advances_cursor_after_commit() {
     let mut h = hooked_host();
     h.connect(false);
@@ -561,6 +635,22 @@ fn streamed_page_yields_to_hook_then_advances_cursor_after_commit() {
     assert_eq!(h.client().cursor("book").unwrap(), Some(1));
     assert_eq!(h.text("e"), Some(json!("server")));
     assert!(errors(&events).is_empty(), "{events:?}");
+    h.frame(
+        &socket,
+        &json!({"cursors":{"book":{"from":1,"to":2,"head":2}},
+        "changes":[{"model":"Entry","identity":{"id":"e"},"stamp":1,
+            "state":{"text":"server","note":null}}]})
+        .to_string(),
+    );
+    let duplicate = h.run();
+    assert_eq!(h.client().cursor("book").unwrap(), Some(2));
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert!(
+        duplicate
+            .iter()
+            .all(|event| event["operation"]["kind"] != "storeCallback"),
+        "equal-stamp authority should not call the hook twice: {duplicate:?}"
+    );
 }
 
 #[test]
@@ -620,7 +710,12 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
     for (recreate, ok) in [(false, true), (true, true), (false, false), (true, false)] {
         let mut h = hooked_host();
         h.connect(false);
-        let socket = h.streaming(0);
+        h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+        let registration = h.run();
+        let observer = h.completion(&registration, "subscribe")["value"]["observerId"].clone();
+        let socket = h.socket();
+        h.frame(&socket, &ack(&[("book", 0)]));
+        h.run();
         let old = h
             .client()
             .subscription_state("book")
@@ -649,6 +744,16 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
         let events = h.run();
         let state = h.client().subscription_state("book").unwrap();
         if ok {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["type"] == "observerChanged"
+                        && event["observerId"] == observer
+                        && event["snapshot"]["closed"] == true)
+                    .count(),
+                1,
+                "old subscription observer must close once: {events:?}"
+            );
             assert_eq!(h.text("e"), Some(json!("server")));
             if recreate {
                 let state = state.unwrap();
@@ -658,6 +763,13 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
                 assert!(state.is_none());
             }
         } else {
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event["observerId"] != observer
+                        || event["snapshot"]["closed"] != true),
+                "{events:?}"
+            );
             assert_eq!(h.text("e"), None);
             let state = state.unwrap();
             assert_eq!(state.subscription_id, old);
@@ -678,7 +790,7 @@ fn terminal_bootstrap_hook_unsubscribe_keeps_authority_without_old_run_progress(
     for recreate in [false, true] {
         let mut h = hooked_host();
         h.connect(false);
-        let (old, _, _) = h.subscribe("subscribe", "book");
+        let (old, observer, _) = h.subscribe("subscribe", "book");
         h.bootstrap("load", old);
         h.run();
         let socket = h.socket();
@@ -709,6 +821,22 @@ fn terminal_bootstrap_hook_unsubscribe_keeps_authority_without_old_run_progress(
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
         let events = h.run();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "observerChanged"
+                    && event["observerId"] == observer
+                    && event["snapshot"]["closed"] == true)
+                .count(),
+            1,
+            "old bootstrap observer must close once: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event["requestId"] != "load" || event["ok"] != true),
+            "old bootstrap must not report success: {events:?}"
+        );
         assert_eq!(h.text("e"), Some(json!("historical")));
         let state = h.client().subscription_state("book").unwrap();
         if recreate {
@@ -928,6 +1056,9 @@ fn hooked_live_commit_keeps_notifications_and_barrier_retry_after_scan_failure()
     let (mut h, _, fail_barrier) = hooked_fault_host();
     h.connect(false);
     let socket = h.streaming(0);
+    h.task("watch", json!({"kind":"watch","model":"Entry"}));
+    let watched = h.run();
+    let observer = h.completion(&watched, "watch")["value"]["observerId"].clone();
     let subscription = h
         .client()
         .subscription_state("book")
@@ -989,9 +1120,38 @@ fn hooked_live_commit_keeps_notifications_and_barrier_retry_after_scan_failure()
             .any(|error| error.contains("injected barrier scan failure")),
         "{events:?}"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "observerChanged"
+                && event["observerId"] == observer
+                && event["snapshot"]["rows"] == json!([{"id":"e","text":"server","note":null}]))
+            .count(),
+        1,
+        "committed authority should publish the changed watch once: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["snapshot"]["status"]["bootstrap"]["phase"] != "complete"),
+        "barrier completion should await retry: {events:?}"
+    );
     let timer = h.one("timer", None).0;
     h.fire(&timer);
     let events = h.run();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "observerChanged"
+                && event["snapshot"]["status"]["bootstrap"]["phase"] == "complete")
+            .count(),
+        1,
+        "barrier retry should publish exactly one completion: {events:?}"
+    );
+    assert!(
+        events.iter().all(|event| event["observerId"] != observer),
+        "committed watch must not republish on barrier retry: {events:?}"
+    );
     assert_eq!(
         h.client()
             .bootstrap_state("book", subscription)
@@ -1926,6 +2086,26 @@ fn a_rebuild_fences_old_lane_io_and_reopens_in_the_same_intent() {
     h.frame(&socket, &ack(&[("book", 5)]));
     h.run();
     assert_eq!(h.client().cursor("book").unwrap(), Some(5));
+    h.task(
+        "fresh call",
+        json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+    );
+    let events = h.run();
+    let call = h.completion(&events, "fresh call")["value"]["callId"].clone();
+    let (fresh_push, body) = h.http("push");
+    let answer = receipt(h.client().client_id(), &body);
+    h.ok(&fresh_push, &answer);
+    let events = h.run();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "callCompleted"
+                && event["callId"] == call
+                && event["outcome"]["status"] == "succeeded")
+            .count(),
+        1
+    );
+    assert_eq!(h.client().pending_count().unwrap(), 0);
 }
 
 /// A record the replaced replica's I/O would write if it reached the fresh

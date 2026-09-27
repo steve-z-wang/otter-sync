@@ -71,6 +71,31 @@ pub(super) struct PushLane {
     /// callback/application against these bytes after lane backoff.
     receipt: Option<String>,
 }
+impl PushLane {
+    fn rebuilt(&mut self) {
+        self.cycling = false;
+        self.waiting = false;
+        self.receipt = None;
+    }
+}
+#[cfg(test)]
+mod receipt_reset_tests {
+    use super::PushLane;
+
+    #[test]
+    fn replica_rebuild_drops_the_old_admitted_receipt() {
+        let mut lane = PushLane {
+            cycling: true,
+            waiting: true,
+            receipt: Some("old receipt".into()),
+            ..Default::default()
+        };
+        lane.rebuilt();
+        assert!(!lane.cycling);
+        assert!(!lane.waiting);
+        assert!(lane.receipt.is_none());
+    }
+}
 #[derive(Default)]
 pub(super) struct DownlinkLane {
     /// Pump the worker on the next lane unit.
@@ -458,11 +483,17 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 )
             });
         if candidate {
-            if let Some(connection) = &mut self.connection {
-                connection.push.receipt = Some(body.clone());
-            }
-            match self.lanes.cycle.receipt_delivery(body.as_bytes()) {
-                Ok(delivery) => self.open_store(delivery, StoreContinuation::Push, now, entropy),
+            match self
+                .lanes
+                .cycle
+                .receipt_delivery(&mut self.client, body.as_bytes())
+            {
+                Ok(delivery) => {
+                    if let Some(connection) = &mut self.connection {
+                        connection.push.receipt = Some(body);
+                    }
+                    self.open_store(delivery, StoreContinuation::Push, now, entropy);
+                }
                 Err(error) => {
                     self.error(error.to_string());
                     self.push_failed(now, entropy);
@@ -817,8 +848,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         connection
             .waiters
             .retain(|waiter| matches!(waiter, Waiter::Direct { .. }));
-        connection.push.cycling = false;
-        connection.push.waiting = false;
+        connection.push.rebuilt();
         connection.downlink.outstanding = 0;
         connection.downlink.failures = 0;
         // Whatever was in flight on the push lane is gone with the replica.

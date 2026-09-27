@@ -1024,6 +1024,13 @@ impl<S: ClientStore> Client<S> {
     pub fn acknowledge(&mut self, sequence: u64, receipt: PushReceipt) -> Result<ApplyReport> {
         self.write(|e| e.acknowledge(sequence, &receipt))
     }
+    pub(crate) fn validate_push_receipt(
+        &mut self,
+        sequence: u64,
+        receipt: &PushReceipt,
+    ) -> Result<()> {
+        self.view(|e| e.validate_receipt(sequence, receipt))
+    }
     pub fn set_readiness(&mut self, key: &str, value: Readiness) -> Result<()> {
         self.write(|e| {
             match value {

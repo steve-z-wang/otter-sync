@@ -15,7 +15,17 @@ pub struct SyncCycle {
 impl SyncCycle {
     /// Validate a received push receipt against the still-frozen action and
     /// keep that action until local authority and settlement commit.
-    pub(crate) fn receipt_delivery(&self, bytes: &[u8]) -> Result<StoreDelivery> {
+    pub(crate) fn receipt_delivery<S: ClientStore>(
+        &self,
+        client: &mut Client<S>,
+        bytes: &[u8],
+    ) -> Result<StoreDelivery> {
+        let (sequence, receipt) = self.decode_push_receipt(bytes)?;
+        client.validate_push_receipt(sequence, &receipt)?;
+        Ok(StoreDelivery::Receipt { sequence, receipt })
+    }
+
+    fn decode_push_receipt(&self, bytes: &[u8]) -> Result<(u64, PushReceipt)> {
         let action = self
             .active
             .as_ref()
@@ -37,10 +47,7 @@ impl SyncCycle {
         } else {
             PushReceipt::decode(bytes)?
         };
-        Ok(StoreDelivery::Receipt {
-            sequence: request.batch_sequence,
-            receipt,
-        })
+        Ok((request.batch_sequence, receipt))
     }
     pub(crate) fn receipt_committed(&mut self) {
         self.active = None;
@@ -99,21 +106,8 @@ impl SyncCycle {
             .clone()
             .ok_or_else(|| invalid("no transport action"))?;
         let report = if action.kind == "push" {
-            let raw: serde_json::Value = serde_json::from_str(&action.body)?;
-            let action_batch = raw["mutations"]
-                .as_array()
-                .is_some_and(|calls| calls.iter().any(|call| call.get("callId").is_some()));
-            let request = if action_batch {
-                PushRequest::decode_action_envelope(action.body.as_bytes())?
-            } else {
-                PushRequest::decode(action.body.as_bytes())?
-            };
-            let receipt = if action_batch {
-                PushReceipt::decode_action_envelope(bytes)?
-            } else {
-                PushReceipt::decode(bytes)?
-            };
-            let report = client.acknowledge(request.batch_sequence, receipt)?;
+            let (sequence, receipt) = self.decode_push_receipt(bytes)?;
+            let report = client.acknowledge(sequence, receipt)?;
             self.completed = false;
             report
         } else {

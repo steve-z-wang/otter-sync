@@ -21,6 +21,7 @@ pub mod rows;
 pub mod runtime;
 pub mod schema_store;
 pub mod store;
+mod store_delivery;
 pub mod subscriptions;
 pub mod transport;
 
@@ -36,6 +37,7 @@ pub use live::*;
 pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
+pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
 
@@ -199,9 +201,11 @@ impl ApplyReport {
 
 /// A transaction the host holds open across calls, with its own savepoint stack.
 struct Session {
+    id: u64,
     changed: BTreeSet<String>,
     savepoints: Vec<String>,
     counter: u64,
+    pull_pages: Vec<BTreeMap<String, u64>>,
 }
 
 pub struct Client<S: ClientStore> {
@@ -211,6 +215,7 @@ pub struct Client<S: ClientStore> {
     generation: u64,
     watchers: Vec<(BTreeSet<String>, Sender<()>)>,
     session: Option<Session>,
+    session_serial: u64,
     last_changed: BTreeSet<String>,
     last_bootstrap: BTreeSet<String>,
     pulls: PullLedger,
@@ -304,7 +309,7 @@ fn strip_marks(changed: &mut BTreeSet<String>, prefix: &str) -> BTreeSet<String>
 /// resubscribe reset the cursor, and the next pull from that cursor delivers
 /// everything. Nothing here is durable; a process restart cannot have a
 /// request in flight.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct PullLedger {
     epochs: BTreeMap<String, u64>,
     issued: std::collections::VecDeque<IssuedPull>,
@@ -314,6 +319,7 @@ struct PullLedger {
 }
 /// One request: the cursor it asked from on every channel, and the epoch each
 /// channel's subscription was at.
+#[derive(Clone)]
 struct IssuedPull {
     cursors: BTreeMap<String, u64>,
     epochs: BTreeMap<String, u64>,
@@ -433,6 +439,7 @@ impl<S: ClientStore> Client<S> {
             session: None,
             last_changed: BTreeSet::new(),
             last_bootstrap: BTreeSet::new(),
+            session_serial: 0,
             pulls: PullLedger::default(),
             schema_state: SchemaState::default(),
             origin: None,
@@ -749,10 +756,13 @@ impl<S: ClientStore> Client<S> {
             return Err(invalid("transaction already active"));
         }
         self.store.begin()?;
+        self.session_serial += 1;
         self.session = Some(Session {
+            id: self.session_serial,
             changed: BTreeSet::new(),
             savepoints: vec![],
             counter: 0,
+            pull_pages: vec![],
         });
         Ok(())
     }
@@ -795,6 +805,9 @@ impl<S: ClientStore> Client<S> {
             return Err(e);
         }
         self.generation += 1;
+        for cursors in &session.pull_pages {
+            self.pulls.stale(cursors);
+        }
         let mut changed = session.changed;
         changed.insert("axton_client".into());
         self.notify(changed);

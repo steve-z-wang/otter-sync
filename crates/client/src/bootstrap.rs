@@ -12,6 +12,7 @@
 //! the run completes once `B = S` and `L >= H`
 //! ([#151](https://github.com/zanminwang/axton/issues/151)).
 use crate::bootstrap_ledger::{LedgerIssue, Loaded};
+use crate::engine::Engine;
 use crate::store::ClientStore;
 use crate::{ApplyReport, Client, Report, ReportKind};
 use axton_core::{BootstrapPage, BootstrapRequest, Result, invalid};
@@ -410,51 +411,10 @@ impl<S: ClientStore> Client<S> {
             return Ok(BootstrapApply::Stale);
         }
         self.write(|e| {
-            let Some(row) = e.bootstrap_row(scope)?.filter(|row| answered(Some(row))) else {
-                return Ok(BootstrapApply::Stale);
-            };
-            validate(page, expected_after)?;
-            let report = e.apply_records(&page.records)?;
-            let mut state = row.state;
-            let failures: Vec<BootstrapRecordFailure> = report
-                .reports
-                .iter()
-                .filter_map(BootstrapRecordFailure::of)
-                .collect();
-            if !failures.is_empty() {
-                // The authority that did apply stays: it is coverage the retry
-                // need not fetch again. The continuation marker does not move,
-                // so the retry revisits this page.
-                state.state = BootstrapPhase::Failed;
-                state.error = Some(BootstrapError::new(
-                    RECORDS_FAILED,
-                    format!(
-                        "{} of {} records on the bootstrap page ({}, {}] for {scope} could not be applied",
-                        failures.len(),
-                        page.records.len(),
-                        page.from,
-                        page.to
-                    ),
-                    failures,
-                ));
-                written(e.set_bootstrap(&state, state.run)?)?;
-                e.mark_bootstrap(scope);
-                return Ok(BootstrapApply::Failed { state, report });
-            }
-            state.cursor = page.to;
-            state.state = BootstrapPhase::Loading;
-            if page.terminal() {
-                state.barrier = Some(page.head);
-                state.state = BootstrapPhase::CatchingUp;
-                if row.subscription.cursor.is_some_and(|delivered| delivered >= page.head) {
-                    state.state = BootstrapPhase::Complete;
-                }
-            }
-            written(e.set_bootstrap(&state, state.run)?)?;
-            e.mark_bootstrap(scope);
-            Ok(BootstrapApply::Applied { state, report })
+            e.apply_bootstrap_page_body(scope, subscription_id, run, expected_after, page)
         })
     }
+
     /// Fail the run `run` names with a bounded error, keeping its progress and
     /// its barrier: how a caller records a failure the ledger cannot see for
     /// itself, such as a protocol-invalid response or a terminal transport
@@ -539,6 +499,99 @@ impl<S: ClientStore> Client<S> {
 /// The row was read in this transaction, and one writer holds it: a write that
 /// finds nothing means the file changed underneath, so the transaction is
 /// refused rather than half applied.
+impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn apply_bootstrap_prepared_body(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &BootstrapPage,
+        admitted: Option<&BootstrapState>,
+    ) -> Result<BootstrapApply> {
+        let Some(original) = admitted else {
+            return Ok(BootstrapApply::Stale);
+        };
+        if self
+            .bootstrap_row(scope)?
+            .as_ref()
+            .is_some_and(|row| answers(row, subscription_id, run, expected_after, page))
+        {
+            return self.apply_bootstrap_page_body(
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
+            );
+        }
+        // A hook removed or replaced the original registration. Its already
+        // admitted authority still lands, but the old run receives no progress.
+        let report = self.apply_records(&page.records)?;
+        Ok(BootstrapApply::Applied {
+            state: original.clone(),
+            report,
+        })
+    }
+
+    pub(crate) fn apply_bootstrap_page_body(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &BootstrapPage,
+    ) -> Result<BootstrapApply> {
+        let Some(row) = self
+            .bootstrap_row(scope)?
+            .filter(|row| answers(row, subscription_id, run, expected_after, page))
+        else {
+            return Ok(BootstrapApply::Stale);
+        };
+        validate(page, expected_after)?;
+        let report = self.apply_records(&page.records)?;
+        let mut state = row.state;
+        let failures: Vec<BootstrapRecordFailure> = report
+            .reports
+            .iter()
+            .filter_map(BootstrapRecordFailure::of)
+            .collect();
+        if !failures.is_empty() {
+            state.state = BootstrapPhase::Failed;
+            state.error = Some(BootstrapError::new(
+                RECORDS_FAILED,
+                format!(
+                    "{} of {} records on the bootstrap page ({}, {}] for {scope} could not be applied",
+                    failures.len(),
+                    page.records.len(),
+                    page.from,
+                    page.to
+                ),
+                failures,
+            ));
+            written(self.set_bootstrap(&state, state.run)?)?;
+            self.mark_bootstrap(scope);
+            return Ok(BootstrapApply::Failed { state, report });
+        }
+        state.cursor = page.to;
+        state.state = BootstrapPhase::Loading;
+        if page.terminal() {
+            state.barrier = Some(page.head);
+            state.state = BootstrapPhase::CatchingUp;
+            if row
+                .subscription
+                .cursor
+                .is_some_and(|delivered| delivered >= page.head)
+            {
+                state.state = BootstrapPhase::Complete;
+            }
+        }
+        written(self.set_bootstrap(&state, state.run)?)?;
+        self.mark_bootstrap(scope);
+        Ok(BootstrapApply::Applied { state, report })
+    }
+}
+
 fn written(affected: bool) -> Result<()> {
     if affected {
         return Ok(());

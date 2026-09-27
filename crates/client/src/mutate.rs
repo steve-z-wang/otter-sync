@@ -490,6 +490,53 @@ impl<S: ClientStore> Engine<'_, S> {
         self.insert_mutation_ordered(ordinal, &mutation, &ordered)?;
         Ok(ordinal)
     }
+    /// Append a local companion to queued call `ordinal`, after everything
+    /// the call already wrote: a fresh create gets its generated values, the
+    /// operation is normalized and applied, a delete cascades to its
+    /// descendants, and each record's base is held first. The operations are
+    /// stored as the call's companions in the order they were applied, so
+    /// they settle with its outcome and are never sent. The call must be the
+    /// latest one, unsent and a canonical Action call, with no independent
+    /// write journaled after it: a companion then never settles out of local
+    /// order.
+    pub(crate) fn append_companion(
+        &mut self,
+        ordinal: u64,
+        mut operation: Operation,
+    ) -> Result<()> {
+        let owner = self
+            .queued_one(ordinal)?
+            .ok_or_else(|| invalid("companion owner is not queued"))?;
+        if owner.mutation.call_id.is_none() || owner.push.is_some() {
+            return Err(invalid("companion owner is not an unsent Mutation call"));
+        }
+        if self.last_ordinal()? != ordinal || self.independent_writes_after(ordinal)? {
+            return Err(invalid(
+                "a companion must follow its Mutation before any later write",
+            ));
+        }
+        crate::defaults::fill_operation(self.schema, &mut operation);
+        normalize(self.schema, &mut operation)?;
+        let key = self
+            .schema
+            .record_key(&operation.model, &operation.identity)?;
+        self.hold_truth(&key)?;
+        if operation.op == OperationKind::Delete {
+            for child in self.descendants(&key)? {
+                self.hold_truth(&child)?;
+                let cascade = Operation {
+                    model: child.model,
+                    identity: child.identity,
+                    op: OperationKind::Delete,
+                    values: None,
+                };
+                self.apply_main(&cascade)?;
+                self.append_op(ordinal, OpKind::Companion, &cascade)?;
+            }
+        }
+        self.apply_main(&operation)?;
+        self.append_op(ordinal, OpKind::Companion, &operation)
+    }
     /// A local write that is never sent: it moves the truth along with the row.
     pub fn direct(&mut self, mut operation: Operation) -> Result<()> {
         crate::defaults::fill_operation(self.schema, &mut operation);

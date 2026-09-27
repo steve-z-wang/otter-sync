@@ -242,12 +242,27 @@ impl<S: ClientStore> Engine<'_, S> {
     /// Append a cascade delete to a queued call: an effect of a wire delete,
     /// or a companion when the delete it extends is the call's companion.
     pub(crate) fn add_cascade(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
+        self.append_op(ordinal, kind, op)
+    }
+    /// Store `op` at the next position of queued call `ordinal`: after every
+    /// operation the call already holds.
+    pub(crate) fn append_op(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
         let next = self.scalar(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM axton_mutation_operation WHERE ordinal=?",
             &[json!(ordinal)],
         )?;
         let position = as_u64(&next.unwrap_or(json!(0)))?;
         self.insert_op(ordinal, position, kind, op)
+    }
+    /// Whether an independent direct write was journaled after call
+    /// `ordinal`, i.e. placed after every operation of that call.
+    pub(crate) fn independent_writes_after(&mut self, ordinal: u64) -> Result<bool> {
+        Ok(self
+            .scalar(
+                "SELECT 1 FROM axton_local_write WHERE disposition='independent' AND ordinal>=? LIMIT 1",
+                &[json!(ordinal)],
+            )?
+            .is_some())
     }
     /// The operations of one queued call with their positions and kinds.
     pub(crate) fn call_ops(&mut self, ordinal: u64) -> Result<Vec<QueuedOp>> {

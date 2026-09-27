@@ -396,6 +396,68 @@ fn low_level_enqueue_create_stores_concrete_values_before_replay() {
     assert_eq!(rows(&mut client)[0], row);
 }
 
+/// A Mutation submitted inside a transaction and its local companion create
+/// are both fresh creates: each omitted field is generated once, before the
+/// call and the companion are stored, and nothing is generated again on
+/// freeze, reopen or retry.
+#[test]
+fn a_transaction_mutation_and_its_companion_create_generate_values_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut client = open(&path);
+    let call = client
+        .transaction(|tx| {
+            let call = tx.submit_mutation(
+                "Add",
+                1,
+                json!({"todo":{"title":"sent"}}),
+                ActionCallOptions::default(),
+            )?;
+            tx.append_companion(call.ordinal, local_create(json!({"title":"local"})))?;
+            Ok(call)
+        })
+        .unwrap();
+    let stored = client
+        .read_sql("SELECT call_id, args FROM axton_mutation", &[])
+        .unwrap();
+    assert_eq!(stored[0]["call_id"], call.call_id);
+    let args: Value = serde_json::from_str(stored[0]["args"].as_str().unwrap()).unwrap();
+    let todo = &args["todo"];
+    let sent = assert_uuid_v4(&todo["id"]);
+    assert_client_millis(&todo["createdAt"]);
+    assert_eq!(todo["done"], false);
+    let companion = client
+        .read_sql(
+            "SELECT identity, \"values\" FROM axton_mutation_operation WHERE kind='companion'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(companion.len(), 1);
+    let identity: Value = serde_json::from_str(companion[0]["identity"].as_str().unwrap()).unwrap();
+    let local = assert_uuid_v4(&identity["id"]);
+    assert_ne!(local, sent, "each create generates its own id");
+    let values: Value = serde_json::from_str(companion[0]["values"].as_str().unwrap()).unwrap();
+    assert_client_millis(&values["createdAt"]);
+    assert_eq!(values["status"], "open");
+    // The visible rows are exactly the stored values.
+    let mut visible = rows(&mut client);
+    visible.sort_by_key(|r| r["title"].as_str().unwrap().to_string());
+    assert_eq!(&visible[1], todo);
+    assert_eq!(visible[0]["id"], local);
+    assert_eq!(visible[0]["createdAt"], values["createdAt"]);
+    // Only the expanded business args are sent, the same bytes after reopen.
+    let bytes = client.freeze().unwrap().unwrap();
+    let request = PushRequest::decode_actions(&bytes, &schema()).unwrap();
+    assert_eq!(request.mutations[0].raw["args"], args);
+    assert!(!String::from_utf8(bytes.clone()).unwrap().contains(&local));
+    drop(client);
+    let mut client = open(&path);
+    assert_eq!(client.freeze().unwrap().unwrap(), bytes);
+    let mut again = rows(&mut client);
+    again.sort_by_key(|r| r["title"].as_str().unwrap().to_string());
+    assert_eq!(again, visible);
+}
+
 #[test]
 fn servers_and_loaders_never_synthesize_defaults() {
     let schema = schema();

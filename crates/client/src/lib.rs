@@ -219,12 +219,15 @@ struct Session {
     savepoints: Vec<SessionSavepoint>,
     counter: u64,
     pull_pages: Vec<BTreeMap<String, u64>>,
+    /// Ordinals of the calls submitted in this transaction.
+    submitted: BTreeSet<u64>,
 }
 
 struct SessionSavepoint {
     name: String,
     changed: BTreeSet<String>,
     pull_pages_len: usize,
+    submitted: BTreeSet<u64>,
 }
 
 pub struct Client<S: ClientStore> {
@@ -772,6 +775,7 @@ impl<S: ClientStore> Client<S> {
         body: impl FnOnce(&mut ClientTransaction<'_, S>) -> Result<T>,
     ) -> Result<T> {
         self.write(|engine| {
+            let mut submitted = BTreeSet::new();
             let mut tx = ClientTransaction {
                 engine: Engine::new(
                     &mut *engine.store,
@@ -780,6 +784,7 @@ impl<S: ClientStore> Client<S> {
                     false,
                 ),
                 depth: 0,
+                submitted: &mut submitted,
             };
             body(&mut tx)
         })
@@ -797,6 +802,7 @@ impl<S: ClientStore> Client<S> {
             savepoints: vec![],
             counter: 0,
             pull_pages: vec![],
+            submitted: BTreeSet::new(),
         });
         Ok(())
     }
@@ -816,6 +822,7 @@ impl<S: ClientStore> Client<S> {
         let mut tx = ClientTransaction {
             engine: Engine::new(store, schema, &mut session.changed, false),
             depth: 0,
+            submitted: &mut session.submitted,
         };
         body(&mut tx)
     }
@@ -875,6 +882,7 @@ impl<S: ClientStore> Client<S> {
             name,
             changed: session.changed.clone(),
             pull_pages_len: session.pull_pages.len(),
+            submitted: session.submitted.clone(),
         });
         Ok(())
     }
@@ -901,6 +909,7 @@ impl<S: ClientStore> Client<S> {
         self.store.rollback_to(&savepoint.name)?;
         session.changed = savepoint.changed;
         session.pull_pages.truncate(savepoint.pull_pages_len);
+        session.submitted = savepoint.submitted;
         Ok(())
     }
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
@@ -1215,6 +1224,9 @@ fn count_direct<S: ClientStore>(store: &mut S, schema: &Schema) -> Result<usize>
 pub struct ClientTransaction<'a, S: ClientStore> {
     pub(crate) engine: Engine<'a, S>,
     depth: u64,
+    /// Ordinals of the calls [`Self::submit_mutation`] queued in this
+    /// transaction and not rolled back: the only calls that take companions.
+    submitted: &'a mut BTreeSet<u64>,
 }
 impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
@@ -1225,6 +1237,7 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         self.depth += 1;
         let name = format!("tx_{}", self.depth);
         self.engine.store.savepoint(&name)?;
+        let submitted = self.submitted.clone();
         let result = body(self);
         self.depth -= 1;
         match result {
@@ -1234,6 +1247,8 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             }
             Err(e) => {
                 self.engine.store.rollback_to(&name)?;
+                // Calls made in the discarded scope are gone with it.
+                *self.submitted = submitted;
                 Err(e)
             }
         }
@@ -1261,6 +1276,47 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     }
     pub fn enqueue(&mut self, mutation: Mutation) -> Result<u64> {
         self.savepoint(|tx| tx.engine.enqueue(mutation))
+    }
+    /// Submit a named Mutation as part of this transaction. Its args are
+    /// made canonical once (generated values filled, normalized, bindings
+    /// and store policy validated) and its call ID, args and inferred
+    /// optimism are written here, so they commit or roll back with the rest
+    /// of the transaction; nothing is sendable before commit. Queries are
+    /// refused: only the standalone entry queues them.
+    pub fn submit_mutation(
+        &mut self,
+        name: &str,
+        version: u64,
+        args: Value,
+        options: ActionCallOptions,
+    ) -> Result<SubmittedCall> {
+        let schema = self.engine.schema;
+        let action = schema.action(name, version)?;
+        if action.kind == CallKind::Query {
+            return Err(invalid(format!(
+                "Query {name} v{version} cannot be submitted in a transaction"
+            )));
+        }
+        let mutation = actions::fresh_call(schema, action, args, options)?;
+        let call_id = mutation.call_id.clone().unwrap_or_default();
+        let ordinal = self.enqueue(mutation)?;
+        self.submitted.insert(ordinal);
+        Ok(SubmittedCall { call_id, ordinal })
+    }
+    /// Record `operation` as a local companion of call `ordinal`: applied
+    /// now, stored with the call and settled with its outcome, never sent.
+    /// The call must be the latest this transaction submitted, and no
+    /// independent write may have followed it, so the companion keeps its
+    /// place in local order. Reserved for the runtime's companion
+    /// capability; it is not an application API.
+    #[doc(hidden)]
+    pub fn append_companion(&mut self, ordinal: u64, operation: Operation) -> Result<()> {
+        if !self.submitted.contains(&ordinal) {
+            return Err(invalid(
+                "a companion belongs to a Mutation submitted in this transaction",
+            ));
+        }
+        self.savepoint(|tx| tx.engine.append_companion(ordinal, operation))
     }
     pub fn query(&mut self, model: &str, filter: &Value) -> Result<Vec<Value>> {
         let filter: BTreeMap<String, Value> = serde_json::from_value(filter.clone())?;

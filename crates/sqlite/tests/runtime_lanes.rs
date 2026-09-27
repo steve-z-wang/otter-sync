@@ -458,6 +458,59 @@ fn direct_mutation_hook_failure_rolls_back_authority_without_resending() {
 }
 
 #[test]
+fn closing_during_direct_mutation_hook_rolls_back_and_fails_unavailable_once() {
+    let mut h = hooked_host();
+    assert_eq!(h.call("seed", create("e", "base"))["ok"], true);
+    h.connect(false);
+    h.task("direct", rename("server"));
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &renamed(&body, "server"));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"))
+        .clone();
+    let transaction = callback["operation"]["transactionId"].clone();
+    let effect = callback["effectId"].clone();
+    h.submit(json!({"type":"transactionCommand","requestId":"hook-write",
+        "transactionId":transaction,"command":create("local", "uncommitted")}));
+    assert!(h.run().contains(&done("hook-write", Value::Null)));
+    assert_eq!(h.text("local"), None);
+    assert_eq!(h.text("e"), Some(json!("base")));
+
+    h.submit(json!({"type":"close"}));
+    let closed = h.run();
+    let unavailable = failed_with(
+        "direct",
+        "action.unavailable",
+        json!({"code":"action.unavailable"}),
+    );
+    assert_eq!(
+        closed
+            .iter()
+            .filter(|event| event["requestId"] == "direct")
+            .collect::<Vec<_>>(),
+        vec![&unavailable],
+        "{closed:?}"
+    );
+    assert!(cancelled(&closed, effect.as_str().unwrap()), "{closed:?}");
+    assert_eq!(closed.last(), Some(&json!({"type":"runtimeClosed"})));
+    assert_eq!(h.text("local"), None);
+    assert_eq!(h.text("e"), Some(json!("base")));
+    let stale: Input = serde_json::from_value(json!({"type":"transactionCommand",
+        "requestId":"stale","transactionId":transaction,"command":create("late", "late")}))
+    .unwrap();
+    assert!(h.runtime.receive(stale, h.now, ENTROPY).is_err());
+    let stale_result: Input = serde_json::from_value(json!({"type":"callbackResult",
+        "effectId":effect,"transactionId":transaction,"ok":true}))
+    .unwrap();
+    assert!(h.runtime.receive(stale_result, h.now, ENTROPY).is_err());
+    assert_eq!(h.text("late"), None);
+}
+
+#[test]
 fn frozen_push_receipt_waits_for_hook_commit_and_retries_locally_after_failure() {
     let mut h = hooked_host();
     assert_eq!(h.call("seed", create("e", "base"))["ok"], true);
@@ -703,6 +756,84 @@ fn joined_once_refresh_hook_failure_keeps_prior_cache_and_rejects_both_callers()
         "prior"
     );
     assert!(h.outstanding("http", Some("action")).is_empty());
+}
+
+#[test]
+fn closing_during_joined_once_hook_preserves_prior_cache_and_fails_each_caller_once() {
+    let mut h = hooked_query_host();
+    h.connect(false);
+    let once = || json!({"kind":"invoke","name":"Find","version":1,"args":{},"once":true});
+    h.task("initial", once());
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &found(&body, "prior", 1));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap();
+    h.submit(
+        json!({"type":"callbackResult","effectId":callback["effectId"],
+        "transactionId":callback["operation"]["transactionId"],"ok":true}),
+    );
+    assert!(completed(&h.run(), "initial"));
+    let key = h
+        .client()
+        .query_cache_key("Find", 1, &json!({}), &ActionStore::All)
+        .unwrap();
+    let prior = h.client().query_cache_entry(&key).unwrap();
+    assert_eq!(
+        prior.as_ref().unwrap().result.as_ref().unwrap()["entry"]["text"],
+        "prior"
+    );
+
+    let refresh = json!({"kind":"invoke","name":"Find","version":1,"args":{},
+        "once":true,"refresh":true});
+    h.task("refresh", refresh.clone());
+    h.task("joined", refresh);
+    h.run();
+    let (http, body) = h.http("action");
+    h.ok(&http, &found(&body, "new", 2));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|event| event["operation"]["kind"] == "storeCallback")
+        .unwrap_or_else(|| panic!("{events:?}"))
+        .clone();
+    let transaction = callback["operation"]["transactionId"].clone();
+    let effect = callback["effectId"].clone();
+    h.submit(json!({"type":"transactionCommand","requestId":"hook-write",
+        "transactionId":transaction,"command":create("local", "uncommitted")}));
+    assert!(h.run().contains(&done("hook-write", Value::Null)));
+    assert_eq!(h.text("local"), None);
+
+    h.submit(json!({"type":"close"}));
+    let closed = h.run();
+    for id in ["refresh", "joined"] {
+        let unavailable = failed_with(
+            id,
+            "action.unavailable",
+            json!({"code":"action.unavailable"}),
+        );
+        assert_eq!(
+            closed
+                .iter()
+                .filter(|event| event["requestId"] == id)
+                .collect::<Vec<_>>(),
+            vec![&unavailable],
+            "{closed:?}"
+        );
+    }
+    assert!(cancelled(&closed, effect.as_str().unwrap()), "{closed:?}");
+    assert_eq!(closed.last(), Some(&json!({"type":"runtimeClosed"})));
+    assert_eq!(h.text("local"), None);
+    assert_eq!(h.text("e"), Some(json!("prior")));
+    assert_eq!(h.client().query_cache_entry(&key).unwrap(), prior);
+    let stale: Input = serde_json::from_value(json!({"type":"transactionCommand",
+        "requestId":"stale","transactionId":transaction,"command":create("late", "late")}))
+    .unwrap();
+    assert!(h.runtime.receive(stale, h.now, ENTROPY).is_err());
+    assert_eq!(h.text("late"), None);
 }
 
 #[test]

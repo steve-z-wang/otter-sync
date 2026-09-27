@@ -394,9 +394,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 TransactionOwner::Application { request_id } => {
                     self.complete(request_id, Err("client_closed".into()))
                 }
-                TransactionOwner::Authority { continuation, .. } => {
-                    continuation.fail(self, "client_closed".into(), None, None, 0, 0)
-                }
+                TransactionOwner::Authority { continuation, .. } => match continuation {
+                    // The direct flight still owns its caller (and any joined
+                    // once callers). The common direct-close path below settles
+                    // them as unavailable after this session is rolled back.
+                    StoreContinuation::Direct { .. } => {}
+                    continuation => {
+                        continuation.fail(self, "client_closed".into(), None, None, 0, 0)
+                    }
+                },
             }
             for command in transaction.lane {
                 self.complete(command.request_id, Err("client_closed".into()));

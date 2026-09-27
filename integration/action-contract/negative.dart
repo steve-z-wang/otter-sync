@@ -95,3 +95,20 @@ Future<void> explicitResultMisuse(GeneratedClient client) async {
   edited.hashCode;
   removed.hashCode;
 }
+
+Future<void> loadMisuse(GeneratedClient client, Load job) async {
+  await client.loads.projectTodos(projectId: 1, status: null, tags: []); // arg type
+  await client.loads.projectTodos(projectId: 'p', tags: []); // required nullable arg
+  await client.loads.projectTodos(projectId: 'p', status: null, tags: [], cursor: 'x'); // undeclared arg
+  await client.loads.projectTodos(projectId: 'p', status: null, tags: [], once: 'yes'); // once is a bool
+  await client.loads.projectTodos(projectId: 'p', status: null, tags: [], store: false); // no store option
+  await client.loads.flaggedTodos(once: true, refresh: 'x', once: true); // the input owns once
+  await client.loads.invalidate.projectTodos(projectId: 'p', status: null, tags: [], once: true); // no options
+  final LoadStatus result = await job.wait(); // no aggregate result
+  final String phase = job.status.phase; // a LoadPhase, not a string
+  await client.loads.list(limit: '10'); // limit is an int
+  client.queries.projectTodos; // a Load is not a Query
+  client.loads.addTodo; // a Mutation is not a Load
+  result.hashCode;
+  phase.hashCode;
+}

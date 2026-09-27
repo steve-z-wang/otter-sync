@@ -347,3 +347,115 @@ test("every generated route forwards store options beside encoded args", async (
     options: "invalidate",
   });
 });
+
+test("generated Loads encode typed args, keep options apart and apply both Model lists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-generated-loads-"));
+  const native = createRequire(import.meta.url)(
+    "../../bindings/node/axton-node.node",
+  );
+  const intents: Record<string, unknown>[] = [];
+  const InjectedClient = createClient(native, Transaction, () => ({
+    open() {},
+    async push(kind: string, bodyText: string) {
+      assert.equal(kind, "load");
+      const body = JSON.parse(bodyText) as {
+        loads: { loadId: string; callId: string }[];
+      };
+      intents.push(...(body.loads as unknown as Record<string, unknown>[]));
+      return JSON.stringify({
+        loads: body.loads.map((intent) => ({
+          loadId: intent.loadId,
+          callId: intent.callId,
+          outcome: {
+            status: "succeeded",
+            data: {
+              todos: [{ id: "one" }],
+              moments: [{ at: "2026-02-03T04:05:06.000Z" }],
+            },
+            next: null,
+          },
+          records: [
+            {
+              model: "Todo",
+              identity: { id: "one" },
+              stamp: 1,
+              state: {
+                title: "loaded",
+                at: "2026-01-01T00:00:00.000Z",
+                status: "closed",
+                note: null,
+              },
+            },
+            {
+              model: "Moment",
+              identity: { at: "2026-02-03T04:05:06.000Z" },
+              stamp: 1,
+              state: { title: "m" },
+            },
+          ],
+        })),
+      });
+    },
+  }));
+  const originalOpen = Client.open;
+  Client.open = ((options: Parameters<typeof Client.open>[0]) =>
+    InjectedClient.open(options)) as typeof Client.open;
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({
+      path: join(directory, "state.sqlite"),
+    });
+    const since = new Date("2026-01-02T03:04:05.000Z");
+    const job = await client.loads.todoPages(
+      { since, statuses: ["open", "closed"] },
+      { once: true },
+    );
+    assert.equal(job.status.name, "TodoPages");
+    assert.equal(job.status.phase, "waiting");
+    const joined = await client.loads.todoPages(
+      { since, statuses: ["open", "closed"] },
+      { once: true },
+    );
+    assert.equal(joined.id, job.id);
+    await client.connect({ url: "http://unused", token: "token" });
+    await job.wait();
+    assert.equal(
+      (await client.models.todo.get({ id: "one" }))?.title,
+      "loaded",
+    );
+    assert.equal(
+      (
+        await client.models.moment.get({
+          at: new Date("2026-02-03T04:05:06.000Z"),
+        })
+      )?.title,
+      "m",
+    );
+    assert.equal(intents.length, 1);
+    assert.deepEqual(intents[0]!.args, {
+      since: since.toISOString(),
+      statuses: ["open", "closed"],
+    });
+    assert.equal("once" in intents[0]!, false);
+    assert.equal((await client.loads.get(job.id))?.status.phase, "complete");
+    assert.deepEqual(
+      (await client.loads.list({ limit: 1 })).map((s) => s.id),
+      [job.id],
+    );
+    await client.loads.invalidate.todoPages({
+      since,
+      statuses: ["open", "closed"],
+    });
+    const fresh = await client.loads.todoPages(
+      { since, statuses: ["open", "closed"] },
+      { once: true },
+    );
+    assert.notEqual(fresh.id, job.id);
+    await fresh.wait();
+    for (const handle of [job, joined, fresh]) handle.dispose();
+  } finally {
+    Client.open = originalOpen;
+    await client?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

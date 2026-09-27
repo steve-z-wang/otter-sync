@@ -1,0 +1,94 @@
+{
+  "formatVersion": 1,
+  "loads": {
+    "NotesSince": {
+      "1": {
+        "input": {
+          "enums": [
+            {
+              "name": "Mood",
+              "values": [
+                "calm",
+                "loud"
+              ]
+            }
+          ],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "since",
+            "nullable": true,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          },
+          {
+            "cardinality": "list",
+            "kind": "value",
+            "list": true,
+            "name": "moods",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "name": "Mood"
+            }
+          }
+        ],
+        "name": "NotesSince",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Note"
+            },
+            "kind": "model",
+            "model": "Note",
+            "modelReadVersion": 1,
+            "name": "notes",
+            "source": "handlerIdentity"
+          },
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Note"
+            },
+            "kind": "model",
+            "model": "Note",
+            "modelReadVersion": 1,
+            "name": "pinned",
+            "source": "handlerIdentity"
+          }
+        ],
+        "version": 1
+      }
+    }
+  }
+}

@@ -262,6 +262,7 @@ class RuntimeConnection {
       'push' => _network.push(body, effect.cancelled),
       'pull' => _network.pull(body, effect.cancelled),
       'action' => _network.action(body, effect.cancelled),
+      'load' => _network.load(body, effect.cancelled),
       final route => Future.error(StateError('unknown route $route')),
     };
     sent.then(
@@ -297,11 +298,15 @@ class RuntimeConnection {
     unawaited(effect.cancelled.then((_) => timer.cancel()));
   }
 
-  /// `refreshAuth`: run the application's refresh once.
+  /// `refreshAuth`: run the application's refresh once. A refresh that
+  /// fails with a 401 or 403 ([HttpFailure], [AuthenticationExpired]) carries
+  /// that status: the runtime reads it as an explicit refusal, and any other
+  /// failure as transient.
   void _refresh(Effect effect) => _run(() {
     Future<void>.sync(_refreshAuth!).then(
       (_) => effect.succeed(),
-      onError: (Object error) => effect.fail(_message(error)),
+      onError: (Object error) =>
+          effect.fail(_message(error), status: statusOf(error)),
     );
   });
 }

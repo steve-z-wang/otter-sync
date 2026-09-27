@@ -4,7 +4,37 @@ import 'dart:convert';
 import 'package:test/test.dart';
 import 'generated.dart';
 import '../action-contract/generated.dart' as composite;
+import 'package:axton/axton.dart' show WritePort, SubmitMutationPort;
 void main(){
+ test('transaction Mutations queue typed args and run local through the companion port',()async{
+  final port=_ScriptedTransaction();
+  final mutations=TransactionMutations(port);
+  final id='123e4567-e89b-42d3-a456-426614174001';
+  final entry=Entry(id:id,title:'hello',note:null,at:DateTime.utc(2026),tags:const ['x'],status:Status.active);
+  CompanionContext? context;
+  Composition? seen;
+  final Call<PublishEntryOutput> call=await mutations.publishEntry(entry:entry,composition:id,store:const PublishEntryStore.outputs(published:false),local:(local)async{
+   context=local;
+   seen=await local.models.composition.get(CompositionIdentity(id:id));
+   await local.models.composition.delete(CompositionIdentity(id:id));
+  });
+  expect(seen?.title,'draft',reason:'the callback reads through its own port');
+  expect(port.companions,[{'model':'Composition','op':'delete','identity':{'id':id}}]);
+  expect(port.outer,isEmpty,reason:'companion writes never use the outer transaction port');
+  expect(port.submitted.single['name'],'PublishEntry');
+  expect(port.submitted.single['version'],1);
+  expect(port.submitted.single['args'],{'entry':entry.toRecord(),'composition':id},reason:'business args only');
+  expect(port.submitted.single['store'],{'published':false});
+  expect(port.submitted.single['local'],isTrue);
+  expect(context,isA<CompanionContext>());
+  final outcome=await call.wait();
+  expect((outcome as CallSuccess<PublishEntryOutput>).result.published.at,DateTime.utc(2026));
+  final Call<RenameOutput> renamed=await mutations.rename(id:id,title:'x');
+  expect(port.submitted.last['local'],isFalse,reason:'no callback, no companion');
+  expect(port.submitted.last['store'],isNull);
+  expect(port.submitted.last['args'],{'id':id,'title':'x'});
+  expect(renamed.status,CallStatus.pending);
+ });
  test('store hook variants expose typed identities and rows',(){
   final hooks=StoreHooks(entry:(tx,changes)async{
    for(final change in changes){
@@ -341,4 +371,41 @@ Future<void> _until(bool Function() predicate,String what)async{
   await Future<void>.delayed(const Duration(milliseconds:5));
  }
  throw StateError('$what timed out');
+}
+
+/// Stands in for the runtime's raw transaction: records each submission and
+/// runs the `local` callback against a separate companion port.
+final class _ScriptedTransaction implements SubmitMutationPort {
+ final submitted=<Map<String,Object?>>[];
+ final outer=<Map<String,dynamic>>[];
+ final companions=<Map<String,dynamic>>[];
+ @override
+ Future<Call<T>> submitMutation<T>(String name,int version,Map<String,dynamic> args,T Function(dynamic) decode,{CallStore? store,Future<void> Function(WritePort local)? local})async{
+  submitted.add({'name':name,'version':version,'args':args,'store':store?.toWire(),'local':local!=null});
+  await local?.call(_CompanionPort(companions));
+  final at=DateTime.utc(2026).toIso8601String();
+  return _ScriptedCall(decode(name=='PublishEntry'?{'published':{'id':args['composition'],'title':'hello','note':null,'at':at,'tags':['x'],'status':'active'}}:null));
+ }
+}
+final class _CompanionPort implements WritePort {
+ final List<Map<String,dynamic>> writes;
+ _CompanionPort(this.writes);
+ @override
+ Future<void> direct(Map<String,dynamic> operation)async=>writes.add(operation);
+ @override
+ Future<Map<String,dynamic>?> read(String model,Map<String,dynamic> identity)async=>{'id':identity['id'],'title':'draft','body':'text'};
+ @override
+ Future<List<Map<String,dynamic>>> querySpec(String model,Map<String,dynamic> query)async=>const [];
+ @override
+ Future<Map<String,dynamic>?> related(String model,Map<String,dynamic> identity,String relation)async=>null;
+ @override
+ Future<List<Map<String,dynamic>>> referencing(String model,Map<String,dynamic> identity,String source,String relation)async=>const [];
+}
+final class _ScriptedCall<T> implements Call<T> {
+ final T result;
+ _ScriptedCall(this.result);
+ @override
+ CallStatus get status=>CallStatus.pending;
+ @override
+ Future<CallOutcome<T>> wait()async=>CallSuccess<T>(result);
 }

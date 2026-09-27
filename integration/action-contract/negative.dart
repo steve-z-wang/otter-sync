@@ -11,7 +11,7 @@ Future<void> misuse(GeneratedClient client, Call<AddTodoOutput> call) async {
   await client.mutations.addTodo(todo: created, gone: [], status: null, tags: [], patch: AddTodoPatchUpdate(id: 't', state: Present(Status.open))); // invalid patch field
   await client.mutations.call.addTodo(todo: created, gone: [], status: null, tags: [null]); // non-null list member
   await client.transaction((tx) async {
-    tx.mutations; // Mutations excluded from application transaction
+    tx.mutations.call; // an application transaction queues Mutations; no direct route
     tx.models.todo.watch(); // watch excluded from transaction
   });
   call.result; // no framework result field
@@ -111,4 +111,30 @@ Future<void> loadMisuse(GeneratedClient client, Load job) async {
   client.loads.addTodo; // a Mutation is not a Load
   result.hashCode;
   phase.hashCode;
+}
+
+Future<void> transactionMisuse(GeneratedClient client, GeneratedTransaction storeTx) async {
+  await client.transaction((tx) async {
+    tx.loads; // no Load inside a transaction
+    tx.fetch; // no Fetch inside a transaction
+    tx.mutations.findTodos; // a Query is not a transaction Mutation
+    tx.mutations.getTodos; // GetTodos is a Query in its latest version
+    tx.mutations.projectTodos; // a Load is not a transaction Mutation
+    await tx.mutations.ping(once: true); // no once control in a transaction
+    await tx.mutations.addTodo(todo: created, gone: [], status: null, tags: [], local: (TodoTxModel todos) async {}); // the callback receives the companion context
+    await tx.mutations.addTodo(todo: created, gone: [], status: null, tags: [], local: (local) async {
+      local.mutations; // the callback queues no Mutation
+      local.loads; // the callback starts no Load
+      local.fetch; // the callback fetches nothing
+      local.queries; // the callback runs no Query
+      local.channels; // the callback modifies no Channel
+      local.transaction; // the callback opens no savepoint and has no raw port
+      local.models.todo.watch(); // the callback cannot watch
+    });
+  });
+  await client.mutations.ping(local: (local) async {}); // the durable route takes no local callback
+  await client.mutations.call.ping(local: (local) async {}); // the direct route takes no local callback
+  await client.queries.enqueue.getTodos(local: (local) async {}); // queued Queries take no local callback
+  storeTx.mutations; // onStore queues no Mutation
+  storeTx.loads; // onStore starts no Load
 }

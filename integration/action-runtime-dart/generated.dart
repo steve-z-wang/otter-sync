@@ -350,6 +350,17 @@ class StoreHooks {
  const StoreHooks({this.note});
 }
 class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
+/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints.
+class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
+/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
+class TransactionMutations {
+ final SubmitMutationPort _port; TransactionMutations(this._port);
+ Future<Call<EchoOutput>> echo({required DateTime at, required List<Mood> moods, required DateTime? maybe, EchoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<EchoOutput>('Echo', 1, {'at': _dartActionEncode(at), 'moods': _dartActionEncode(moods), 'maybe': _dartActionEncode(maybe)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<PingOutput>> ping({PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<TouchOutput>> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+}
+/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.
+class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
@@ -375,7 +386,7 @@ class GeneratedClient {
   return GeneratedClient._(client, connection);
   } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
  }
- Future<T> transaction<T>(Future<T> Function(GeneratedTransaction tx) body) => client.transaction((tx) => body(GeneratedTransaction(tx)));
+ Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.

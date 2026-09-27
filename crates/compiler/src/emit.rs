@@ -484,6 +484,7 @@ pub fn typescript(v: &Value) -> String {
         .unwrap();
     }
     o.push_str("}\nexport class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }\n");
+    crate::emit_transactions::ts_generated(v, &mut o);
     o
 }
 /// The typed shape of a record's sync state. Mutation names are the schema's,
@@ -854,7 +855,7 @@ fn store_keys(action: &Value) -> Vec<&str> {
 }
 /// The Dart named parameter carrying the store selector. It is `store`
 /// unless a business input already uses that name.
-fn dart_store_param(action: &Value) -> String {
+pub(crate) fn dart_store_param(action: &Value) -> String {
     let taken = |name: &str| arr(action, "inputs").iter().any(|i| i["name"] == name);
     let mut name = if taken("store") {
         "outputStore".to_string()
@@ -882,21 +883,24 @@ fn dart_once_params(action: &Value) -> (String, String) {
 /// when a business input already uses the plain name, then `$`-suffixed
 /// until unique, so the final parameter list never collides.
 pub(crate) fn dart_option_params(mut taken: Vec<String>) -> (String, String) {
-    let mut pick = |base: &str, fallback: &str| {
-        let mut name = if taken.iter().any(|t| t == base) {
-            fallback.to_string()
-        } else {
-            base.to_string()
-        };
-        while taken.contains(&name) {
-            name.push('$');
-        }
-        taken.push(name.clone());
-        name
-    };
-    let once = pick("once", "callOnce");
-    let refresh = pick("refresh", "callRefresh");
+    let once = dart_unique_param(&mut taken, "once", "callOnce");
+    let refresh = dart_unique_param(&mut taken, "refresh", "callRefresh");
     (once, refresh)
+}
+/// A Dart named parameter for a call-site control beside the `taken` names:
+/// `base`, or `fallback` when a business input already uses `base`, then
+/// `$`-suffixed until unique. The chosen name joins `taken`.
+pub(crate) fn dart_unique_param(taken: &mut Vec<String>, base: &str, fallback: &str) -> String {
+    let mut name = if taken.iter().any(|t| t == base) {
+        fallback.to_string()
+    } else {
+        base.to_string()
+    };
+    while taken.contains(&name) {
+        name.push('$');
+    }
+    taken.push(name.clone());
+    name
 }
 /// The typed per-Action store selector shared by both Dart entry points.
 fn dart_store_class(o: &mut String, name: &str, action: &Value) {
@@ -998,6 +1002,16 @@ pub fn client_typescript(v: &Value, runtime: &str) -> String {
     } else {
         "schema, liveModels, makeMutations, makeQueries, GeneratedTransaction, type LiveModels, type StoreHooks, type StoreChange"
     };
+    let transaction = crate::emit_transactions::transaction_type(v);
+    let imports = if transaction == "GeneratedTransaction" {
+        imports.to_string()
+    } else {
+        imports.replacen(
+            "GeneratedTransaction, ",
+            &format!("GeneratedTransaction, {transaction}, "),
+            1,
+        )
+    };
     writeln!(o, "import {{ {imports} }} from \"./generated.ts\";").unwrap();
     crate::emit_loads::ts_client_imports(v, runtime, &mut o);
     for model in arr(&v["schema"], "models") {
@@ -1035,7 +1049,7 @@ pub fn client_typescript(v: &Value, runtime: &str) -> String {
     o.push_str("  if (\"transport\" in options || \"live\" in options) throw Error(\"transport/live connection options were removed; use server: {url, token}\");\n  const client = await Client.open({ path: options.path, schema, onStore: rawHooks, ...(options.migration === undefined ? {} : { migration: options.migration }), ...(options.discardPending === undefined ? {} : { discardPending: options.discardPending }) });\n");
     o.push_str("  try {\n  const connection = options.server === undefined ? undefined : await client.connect(options.server, options.connection ?? {});\n");
     o.push_str("  return new GeneratedClient(client, connection);\n  } catch (error) { await client.close().catch(() => {}); throw error; }\n }\n");
-    o.push_str(" transaction<T>(body: (tx: GeneratedTransaction) => Promise<T>): Promise<T> { return this.client.transaction((tx) => body(new GeneratedTransaction(tx))); }\n");
+    writeln!(o, " transaction<T>(body: (tx: {transaction}) => Promise<T>): Promise<T> {{ return this.client.transaction((tx) => body(new {transaction}(tx))); }}").unwrap();
     o.push_str(" /** This device's durable client identity. */\n get clientId(): string { return this.client.clientId; }\n /** The client's sync state: a local snapshot, not a network probe. */\n syncState(): Promise<ClientSyncState> { return this.client.syncState(); }\n /** Leave an incompatible database behind for a fresh file; refused while unsent work remains unless `discardPending`. */\n rebuild(options: { discardPending?: boolean } = {}): Promise<RebuildReport> { return this.client.rebuild(options); }\n");
     o.push_str(" /** Remove a handled rejection from the local inbox; it is not retried. */\n dismissRejection(ordinal: number): Promise<void> { return this.client.dismissRejection(ordinal); }\n");
     o.push_str(" /** Remove unsent work and recompute local state; frozen work cannot be dropped. */\n drop(ordinal: number): Promise<void> { return this.client.drop(ordinal); }\n");
@@ -2000,23 +2014,7 @@ fn dart_action_runtime(v: &Value, o: &mut String) {
             let output = format!("{name}Output");
             let params = dart_action_params(action);
             let arguments = dart_action_arguments(action);
-            let outputs = arr(action, "outputs");
-            let decoder = if outputs.is_empty() {
-                "(_) {}".to_string()
-            } else {
-                let fields = outputs
-                    .iter()
-                    .map(|field| {
-                        let key = s(field, "name");
-                        let value = format!("row['{key}']");
-                        format!("{key}: {}", dart_action_decode_field(field, &value))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "(value) {{ final row = (value as Map).cast<String,dynamic>(); return {output}({fields}); }}"
-                )
-            };
+            let decoder = dart_action_decoder(action, name);
             let store = dart_store_param(action);
             let mut controls = format!("{name}Store? {store}");
             let mut forwarded = format!("store: {store}");
@@ -2065,8 +2063,27 @@ fn dart_action_runtime(v: &Value, o: &mut String) {
     }
     o.push_str("}\n");
 }
+/// The Dart closure decoding an operation's `{name}Output` from its wire value.
+pub(crate) fn dart_action_decoder(action: &Value, name: &str) -> String {
+    let outputs = arr(action, "outputs");
+    if outputs.is_empty() {
+        return "(_) {}".to_string();
+    }
+    let fields = outputs
+        .iter()
+        .map(|field| {
+            let key = s(field, "name");
+            let value = format!("row['{key}']");
+            format!("{key}: {}", dart_action_decode_field(field, &value))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "(value) {{ final row = (value as Map).cast<String,dynamic>(); return {name}Output({fields}); }}"
+    )
+}
 /// The business args map of a Dart operation call.
-fn dart_action_arguments(action: &Value) -> String {
+pub(crate) fn dart_action_arguments(action: &Value) -> String {
     arr(action, "inputs")
         .iter()
         .map(|arg| {
@@ -2080,7 +2097,7 @@ fn dart_action_arguments(action: &Value) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-fn dart_action_params(action: &Value) -> String {
+pub(crate) fn dart_action_params(action: &Value) -> String {
     arr(action, "inputs")
         .iter()
         .map(|arg| {
@@ -2463,6 +2480,7 @@ pub fn dart(v: &Value) -> String {
         writeln!(o, " const StoreHooks({{{hook_parameters}}});\n}}").unwrap();
     }
     o.push_str("class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }\n");
+    crate::emit_transactions::dart_generated(v, &mut o);
     o.push_str("class GeneratedClient {\n /// The runtime handle (internal); application code uses the members below.\n final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);\n late final Scopes scopes = Scopes(client);\n late final Channels channels = Channels(client);\n");
     if !mutate_methods.is_empty() {
         o.push_str(" /// Each legacy mutation runs in its own local transaction and returns its ordinal.\n late final Mutate mutate = Mutate(client);\n");
@@ -2485,7 +2503,9 @@ pub fn dart(v: &Value) -> String {
         writeln!(o, "  final {key}Hook = onStore?.{key};\n  if ({key}Hook != null) rawHooks['{n}'] = (tx, changes) => {key}Hook(GeneratedTransaction(tx), changes.map<StoreChange<{n}Identity,{n}>>((change) {{ final identity={n}Identity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<{n}Identity,{n}>(identity,{n}.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<{n}Identity,{n}>(identity); }}).toList());").unwrap();
     }
     o.push_str("  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks);\n  try {\n  final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);\n  return GeneratedClient._(client, connection);\n  } catch (_) { try { await client.close(); } catch (_) {} rethrow; }\n }\n");
-    o.push_str(" Future<T> transaction<T>(Future<T> Function(GeneratedTransaction tx) body) => client.transaction((tx) => body(GeneratedTransaction(tx)));\n /// This device's durable client identity.\n String get clientId => client.clientId;\n /// The client's sync state: a local snapshot, not a network probe.\n Future<Map<String,dynamic>> syncState() => client.syncState();\n /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].\n Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);\n /// Remove a handled rejection from the local inbox; it is not retried.\n Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);\n /// Remove unsent work and recompute local state; frozen work cannot be dropped.\n Future<void> drop(int ordinal) => client.drop(ordinal);\n Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();\n /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`.\n Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);\n Future<void> runPrerequisites(Map<String, Future<void> Function(Map<String,dynamic>)> handlers) => client.runPrerequisites(handlers);\n /// Start the background connection when `open` was called without a server.\n Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);\n /// Escape hatch: an untyped structured query.\n Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);\n /// Escape hatch: read-only SQL over the local database.\n Future<List<Map<String,dynamic>>> readSql(String sql, {List<dynamic> parameters = const []}) => client.readSql(sql, parameters: parameters);\n Future<void> close() => client.close();\n}\n");
+    let transaction = crate::emit_transactions::transaction_type(v);
+    writeln!(o, " Future<T> transaction<T>(Future<T> Function({transaction} tx) body) => client.transaction((tx) => body({transaction}(tx)));").unwrap();
+    o.push_str(" /// This device's durable client identity.\n String get clientId => client.clientId;\n /// The client's sync state: a local snapshot, not a network probe.\n Future<Map<String,dynamic>> syncState() => client.syncState();\n /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].\n Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);\n /// Remove a handled rejection from the local inbox; it is not retried.\n Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);\n /// Remove unsent work and recompute local state; frozen work cannot be dropped.\n Future<void> drop(int ordinal) => client.drop(ordinal);\n Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();\n /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`.\n Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);\n Future<void> runPrerequisites(Map<String, Future<void> Function(Map<String,dynamic>)> handlers) => client.runPrerequisites(handlers);\n /// Start the background connection when `open` was called without a server.\n Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);\n /// Escape hatch: an untyped structured query.\n Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);\n /// Escape hatch: read-only SQL over the local database.\n Future<List<Map<String,dynamic>>> readSql(String sql, {List<dynamic> parameters = const []}) => client.readSql(sql, parameters: parameters);\n Future<void> close() => client.close();\n}\n");
     o
 }
 fn upper(name: &str) -> String {

@@ -5,8 +5,9 @@ import {createRequire} from 'node:module';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {GeneratedClient,CallError,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
-import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status} from './generated.ts';
+import {GeneratedClient,CallError,type Call,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
+import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status, Composition, PublishEntryOutput, RenameOutput, SubmitMutationOptions, SubmitMutationPort} from './generated.ts';
+import {ApplicationTransaction,CompanionContext} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
 import {Client as RawClient} from '../../packages/client-js/index.mts';
 import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,Mutate,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
@@ -394,3 +395,107 @@ try{
  await new Promise<void>(resolve=>fetchServer.close(()=>resolve()));
  await rm(fetchDirectory,{recursive:true,force:true});
 }
+
+// Transactional Mutation enqueue: `tx.mutations` queues typed Mutations in an
+// application transaction and returns each one's Call; a Mutation's `local`
+// callback gets Models only. A scripted port stands in for the runtime's raw
+// transaction, so this checks the generated facade, not the runtime.
+const compositionId='123e4567-e89b-42d3-a456-426614174001';
+const compositionRow={id:compositionId,title:'draft',body:'text'};
+function scriptedTransaction(){
+ const submitted:{name:string;version:number;args:object;options:SubmitMutationOptions|undefined}[]=[];
+ const outer:object[]=[];
+ const companions:object[]=[];
+ const companionPort:WritePort={...reads,async read(){return compositionRow},async direct(op){companions.push(op);}};
+ const port:WritePort&SubmitMutationPort&{channels:GeneratedTransaction['channels']}={
+  ...reads,
+  async direct(op){outer.push(op);},
+  channels:{async subscribe(){},async unsubscribe(){}},
+  async submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>{
+   submitted.push({name,version,args,options});
+   await options?.local?.(companionPort);
+   const result=decode(name==='PublishEntry'?{published:encodeEntry(row)}:null);
+   return {status:'pending',async wait(){return {result,error:null};}};
+  },
+ };
+ return {port,submitted,outer,companions};
+}
+// Typed shapes: the callback returns any value, including one or several Calls.
+async function transactionShapes(client:GeneratedClient){
+ const scalar:Call<RenameOutput>=await client.transaction(tx=>tx.mutations.rename({id:compositionId,title:'t'}));
+ const published:Call<PublishEntryOutput>=await client.transaction(async tx=>{
+  const composition=await tx.models.composition.get({id:compositionId});
+  if(!composition)throw Error('Composition not found');
+  return await tx.mutations.publishEntry({entry:row,composition:composition.id},{local:async local=>{await local.models.composition.delete({id:composition.id});}});
+ });
+ const pair:{first:Call<PublishEntryOutput>;second:Call<void>}=await client.transaction(async tx=>{
+  const first=await tx.mutations.publishEntry({entry:row,composition:compositionId},{store:{published:false},local:async local=>{await local.models.composition.update({id:compositionId},{title:'published'});}});
+  const second=await tx.mutations.rename({id:compositionId,title:'t'},{store:false});
+  return {first,second};
+ });
+ const counted:number=await client.transaction(async tx=>{await tx.models.composition.create(compositionRow);await tx.channels.subscribe('c');return 1;});
+ const nothing:void=await client.transaction(async tx=>{await tx.models.composition.delete({id:compositionId});});
+ const outcome=await published.wait();
+ const at:Date|undefined=outcome.result?.published.at;
+ return [scalar,pair,counted,nothing,at];
+}
+void transactionShapes;
+async function checkTransactionMutations(){
+ const scripted=scriptedTransaction();
+ const tx=new ApplicationTransaction(scripted.port);
+ let context:CompanionContext|undefined;
+ let seen:Composition|null=null;
+ const call:Call<PublishEntryOutput>=await tx.mutations.publishEntry({entry:row,composition:compositionId},{store:{published:false},local:async local=>{
+  context=local;
+  seen=await local.models.composition.get({id:compositionId});
+  await local.models.composition.delete({id:compositionId});
+ }});
+ assert.deepEqual(seen,compositionRow,'the callback reads through its own port');
+ assert.deepEqual(scripted.companions,[{model:'Composition',op:'delete',identity:{id:compositionId}}]);
+ assert.deepEqual(scripted.outer,[],'companion writes never use the outer transaction port');
+ const [publish]=scripted.submitted;
+ assert.deepEqual({name:publish!.name,version:publish!.version},{name:'PublishEntry',version:1});
+ assert.deepEqual(publish!.args,{entry:{...encodeEntry(row)},composition:compositionId},'business args only');
+ assert.deepEqual(Object.keys(publish!.options!).sort(),['local','store']);
+ assert.deepEqual(publish!.options!.store,{published:false});
+ const outcome=await call.wait();
+ assert.ok(outcome.result?.published.at instanceof Date,'the Call decodes the declared output');
+ // Without a callback nothing but the store policy is passed.
+ const renamed:Call<void>=await tx.mutations.rename({id:compositionId,title:'x'});
+ assert.equal((await renamed.wait()).result,undefined);
+ assert.equal(scripted.submitted[1]!.options,undefined);
+ await tx.mutations.rename({id:compositionId,title:'y'},{store:false});
+ assert.deepEqual(scripted.submitted[2]!.options,{store:false});
+ assert.deepEqual(scripted.submitted[2]!.args,{id:compositionId,title:'y'});
+ // Type hiding is backed by absent members at runtime.
+ assert.equal('call' in tx.mutations,false,'no direct route in a transaction');
+ assert.deepEqual(Object.keys(tx.mutations).sort(),['publishEntry','rename']);
+ assert.ok(context instanceof CompanionContext);
+ for(const member of ['mutations','channels','transaction','savepoint'])assert.equal(member in context,false,member);
+ assert.equal('watch' in context.models.composition,false);
+ await tx.models.composition.delete({id:compositionId});
+ assert.deepEqual(scripted.outer,[{model:'Composition',op:'delete',identity:{id:compositionId}}],'ordinary writes stay independent');
+ // The generated client passes the application facade to `transaction` and
+ // the local-only facade to onStore.
+ let hooks:Record<string,(tx:unknown,changes:unknown[])=>void|Promise<void>>|undefined;
+ let storeTx:unknown;
+ rawClass.open=async options=>{hooks=options.onStore;return {async close(){},transaction:(body:(raw:unknown)=>Promise<unknown>)=>body(scripted.port)};};
+ try{
+  const adapted=await GeneratedClient.open({path:'unused-for-captured-adapter',onStore:{composition:(tx)=>{storeTx=tx;}}});
+  try{
+   const returned=await adapted.transaction(async tx=>{
+    assert.ok(tx instanceof ApplicationTransaction);
+    const first=await tx.mutations.rename({id:compositionId,title:'1'});
+    const second=await tx.mutations.rename({id:compositionId,title:'2'});
+    return {first,second,label:'value'};
+   });
+   assert.equal(returned.label,'value','the callback value is returned unchanged');
+   assert.equal(scripted.submitted.length,5);
+   await hooks!.Composition!(scripted.port,[]);
+   assert.ok(storeTx instanceof GeneratedTransaction);
+   assert.equal(storeTx instanceof ApplicationTransaction,false);
+   assert.equal('mutations' in (storeTx as object),false,'onStore queues no Mutation');
+  }finally{await adapted.close();}
+ }finally{rawClass.open=originalRawOpen;}
+}
+await checkTransactionMutations();

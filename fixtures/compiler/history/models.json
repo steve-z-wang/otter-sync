@@ -65,6 +65,42 @@
         "version": 1
       }
     },
+    "Composition": {
+      "1": {
+        "enums": [],
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "uuid"
+            }
+          },
+          {
+            "name": "title",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "body",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Composition",
+        "version": 1
+      }
+    },
     "Counter": {
       "1": {
         "enums": [],

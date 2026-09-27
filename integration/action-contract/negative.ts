@@ -20,8 +20,8 @@ call.status = 'failed';
 call.output;
 // @ts-expect-error No cancel method exists on a call handle.
 call.cancel();
-// @ts-expect-error No Mutation can run inside an application transaction.
-client.transaction(async tx => tx.mutations.addTodo(input));
+// @ts-expect-error An application transaction queues Mutations; it has no direct route.
+client.transaction(async tx => tx.mutations.call.addTodo(input));
 // @ts-expect-error No Query can run inside an application transaction.
 client.transaction(async tx => tx.queries.findTodos({ text: 'x', cursor: null }));
 // @ts-expect-error The retired actions namespace does not exist.
@@ -283,3 +283,54 @@ client.queries.projectTodos;
 // @ts-expect-error A Mutation is not a Load.
 client.loads.addTodo;
 void [cursorOption, otherName];
+
+// Transactional Mutation enqueue (#173 Loads included): the application
+// transaction queues typed Mutations only, a Mutation's `local` callback has
+// Models only, and onStore queues nothing. The runtime refuses the same misuse.
+declare const storeTransaction: import('./client.ts').GeneratedTransaction;
+client.transaction(async tx => {
+  // @ts-expect-error A Load is not started inside a transaction.
+  void tx.loads;
+  // @ts-expect-error Fetch is unavailable inside a transaction.
+  void tx.fetch;
+  // @ts-expect-error A Query is not queued as a transaction Mutation.
+  void tx.mutations.findTodos;
+  // @ts-expect-error GetTodos is a Query in its latest version.
+  void tx.mutations.getTodos;
+  // @ts-expect-error A Load is not a transaction Mutation.
+  void tx.mutations.projectTodos;
+  // @ts-expect-error Options are never business args.
+  await tx.mutations.sendEmail({ to: 'a', subject: 's', body: 'b', local: async () => {} });
+  // @ts-expect-error The store option names only store-eligible outputs.
+  await tx.mutations.addTodo(input, { store: { count: false } });
+  // @ts-expect-error Mutations accept no once control, in a transaction too.
+  await tx.mutations.ping({}, { once: true });
+  return tx.mutations.addTodo(input, {
+    local: async local => {
+      // @ts-expect-error The callback queues no Mutation.
+      void local.mutations;
+      // @ts-expect-error The callback starts no Load.
+      void local.loads;
+      // @ts-expect-error The callback fetches nothing.
+      void local.fetch;
+      // @ts-expect-error The callback runs no Query.
+      void local.queries;
+      // @ts-expect-error The callback modifies no Channel.
+      void local.channels;
+      // @ts-expect-error The callback opens no savepoint and has no raw port.
+      void local.transaction;
+      // @ts-expect-error The callback cannot watch.
+      local.models.todo.watch({}, () => {});
+    },
+  });
+});
+// @ts-expect-error The client-level durable route takes no local callback.
+client.mutations.addTodo(input, { local: async () => {} });
+// @ts-expect-error The direct route takes no local callback.
+client.mutations.call.addTodo(input, { local: async () => {} });
+// @ts-expect-error Queued Queries take no local callback.
+client.queries.enqueue.findTodos({ text: 'x', cursor: null }, { local: async () => {} });
+// @ts-expect-error onStore queues no Mutation.
+void storeTransaction.mutations;
+// @ts-expect-error onStore starts no Load.
+void storeTransaction.loads;

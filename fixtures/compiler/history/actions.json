@@ -1,0 +1,174 @@
+{
+  "actions": {
+    "PublishEntry": {
+      "1": {
+        "input": {
+          "enums": [
+            {
+              "name": "Status",
+              "values": [
+                "active",
+                "archived"
+              ]
+            }
+          ],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "uuid"
+                  }
+                },
+                {
+                  "name": "title",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "note",
+                  "nullable": true,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "at",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "dateTime"
+                  }
+                },
+                {
+                  "name": "tags",
+                  "nullable": false,
+                  "type": {
+                    "element": {
+                      "kind": "scalar",
+                      "name": "string"
+                    },
+                    "kind": "list"
+                  }
+                },
+                {
+                  "name": "status",
+                  "nullable": false,
+                  "type": {
+                    "kind": "enum",
+                    "name": "Status"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Entry"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Entry",
+            "name": "entry",
+            "operation": "create"
+          },
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "composition",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "uuid"
+            }
+          }
+        ],
+        "kind": "mutation",
+        "name": "PublishEntry",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "single",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "uuid"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Entry"
+            },
+            "kind": "model",
+            "model": "Entry",
+            "modelReadVersion": 2,
+            "name": "published",
+            "source": "handlerIdentity"
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    },
+    "Rename": {
+      "1": {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "id",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "uuid"
+            }
+          },
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "title",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "kind": "mutation",
+        "name": "Rename",
+        "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    }
+  },
+  "formatVersion": 1
+}

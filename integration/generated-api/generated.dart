@@ -4,7 +4,8 @@ import 'dart:convert';
 import 'package:axton/axton.dart';
 export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException;
 class Present<T> { final T value; const Present(this.value); }
-final Map<String,dynamic> schema = jsonDecode('{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q \'single\' \\"double\\" \'\'\' \\"\\"\\" \$dollar \${x} \\\\ back\\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]}') as Map<String,dynamic>;
+abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
+final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"single","kind":"value","list":false,"name":"composition","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}}],"kind":"mutation","name":"PublishEntry","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":2,"name":"published","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Rename","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q \'single\' \\"double\\" \'\'\' \\"\\"\\" \$dollar \${x} \\\\ back\\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]}') as Map<String,dynamic>;
 enum Mood { calm, busy }
 enum Status { active, @Deprecated('archive with RemoveEntries instead') archived }
 /// What a fresh create of Draft accepts: a complete [Draft], or a [DraftCreate] that may omit fields with creation defaults.
@@ -270,6 +271,46 @@ class CounterPatch {
  if (index != null) 'index': index!.value == null ? null : index!.value!,
  };
 }
+/// What a fresh create of Composition accepts: a complete [Composition], or a [CompositionCreate] that may omit fields with creation defaults.
+abstract interface class CompositionCreateInput { Map<String,dynamic> toCreateRecord(); }
+class Composition implements CompositionCreateInput {
+ final String id;
+ final String title;
+ final String body;
+ const Composition({required this.id,required this.title,required this.body});
+ Map<String,dynamic> toRecord() => {
+ 'id': id,
+ 'title': title,
+ 'body': body,
+ };
+ factory Composition.fromRecord(Map<String,dynamic> row) => Composition(
+ id: row['id'] as String,
+ title: row['title'] as String,
+ body: row['body'] as String,
+ );
+ @override
+ Map<String,dynamic> toCreateRecord() => toRecord();
+ CompositionIdentity get identity => CompositionIdentity(id: id);
+}
+class CompositionIdentity {
+ final String id;
+ const CompositionIdentity({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': id,
+ };
+ factory CompositionIdentity.fromRecord(Map<String,dynamic> row) => CompositionIdentity(
+ id: row['id'] as String,
+ );
+}
+class CompositionPatch {
+ final Present<String>? title;
+ final Present<String>? body;
+ const CompositionPatch({this.title,this.body});
+ Map<String,dynamic> toRecord() => {
+ if (title != null) 'title': title!.value,
+ if (body != null) 'body': body!.value,
+ };
+}
 class DraftCreate implements DraftCreateInput {
  final String? id;
  final String? body;
@@ -349,6 +390,18 @@ class CounterCreate implements CounterCreateInput {
  Map<String,dynamic> toCreateRecord() => {
  'id': id,
  'index': index == null ? null : index!,
+ };
+}
+class CompositionCreate implements CompositionCreateInput {
+ final String id;
+ final String title;
+ final String body;
+ const CompositionCreate({required this.id,required this.title,required this.body});
+ @override
+ Map<String,dynamic> toCreateRecord() => {
+ 'id': id,
+ 'title': title,
+ 'body': body,
  };
 }
 Map<String,dynamic> addDraft({required DraftCreateInput draft}) { final operations=<Map<String,dynamic>>[];
@@ -492,6 +545,19 @@ class CounterFilter {
 }
 enum CounterOrderField {byId('id'),byIndex('index'); final String wireName; const CounterOrderField(this.wireName);}
 class CounterOrder { final CounterOrderField field; final bool descending; const CounterOrder(this.field,{this.descending=false}); Map<String,dynamic> toRecord()=>{'field':field.wireName,'direction':descending?'descending':'ascending'}; }
+class CompositionFilter {
+ final Present<String>? id;
+ final Present<String>? title;
+ final Present<String>? body;
+ const CompositionFilter({this.id,this.title,this.body});
+ Map<String,dynamic> toRecord()=>{
+ if(id!=null)'id':id!.value,
+ if(title!=null)'title':title!.value,
+ if(body!=null)'body':body!.value,
+};
+}
+enum CompositionOrderField {byId('id'),byTitle('title'),byBody('body'); final String wireName; const CompositionOrderField(this.wireName);}
+class CompositionOrder { final CompositionOrderField field; final bool descending; const CompositionOrder(this.field,{this.descending=false}); Map<String,dynamic> toRecord()=>{'field':field.wireName,'direction':descending?'descending':'ascending'}; }
 class DraftModel { final ReadPort port; DraftModel(this.port);
  Future<Draft?> get(DraftIdentity identity) async { final row=await port.read('Draft',identity.toRecord()); return row == null ? null : Draft.fromRecord(row); }
  Future<List<Draft>> query({DraftFilter? where,List<DraftOrder> orderBy=const [],int? limit}) async => (await port.querySpec('Draft',{'filter':where?.toRecord()??{},'orderBy':orderBy.map((o)=>o.toRecord()).toList(),if(limit!=null)'limit':limit})).map(Draft.fromRecord).toList();
@@ -578,6 +644,247 @@ class CounterTxModel extends CounterModel { final WritePort writer; CounterTxMod
  Future<void> update(CounterIdentity identity, CounterPatch patch) => writer.direct({'model':'Counter','op':'update','identity':identity.toRecord(),'values':patch.toRecord()});
  Future<void> delete(CounterIdentity identity) => writer.direct({'model':'Counter','op':'delete','identity':identity.toRecord()});
 }
+class CompositionModel { final ReadPort port; CompositionModel(this.port);
+ Future<Composition?> get(CompositionIdentity identity) async { final row=await port.read('Composition',identity.toRecord()); return row == null ? null : Composition.fromRecord(row); }
+ Future<List<Composition>> query({CompositionFilter? where,List<CompositionOrder> orderBy=const [],int? limit}) async => (await port.querySpec('Composition',{'filter':where?.toRecord()??{},'orderBy':orderBy.map((o)=>o.toRecord()).toList(),if(limit!=null)'limit':limit})).map(Composition.fromRecord).toList();
+}
+class CompositionLiveModel extends CompositionTxModel { final Client client; CompositionLiveModel(this.client) : super(client);
+ Stream<List<Composition>> watch({CompositionFilter? where}) => client.watch('Composition', where:where?.toRecord()??{}).map((rows) => rows.map(Composition.fromRecord).toList());
+ /// This record's sync state: its pending mutations and retained rejections. Local only.
+ Future<SyncState> syncState(CompositionIdentity identity) async => SyncState.fromRecord(await client.recordSyncState('Composition', identity.toRecord()));
+}
+class CompositionTxModel extends CompositionModel { final WritePort writer; CompositionTxModel(this.writer) : super(writer);
+ Future<void> create(CompositionCreateInput value) { final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['id']) if (state.containsKey(key)) key: state.remove(key)}; return writer.direct({'model':'Composition','op':'create','identity':identity,'values':state}); }
+ Future<void> update(CompositionIdentity identity, CompositionPatch patch) => writer.direct({'model':'Composition','op':'update','identity':identity.toRecord(),'values':patch.toRecord()});
+ Future<void> delete(CompositionIdentity identity) => writer.direct({'model':'Composition','op':'delete','identity':identity.toRecord()});
+}
+/// Public Action lifecycle types are owned by the SDK.
+typedef DraftDelete = DraftIdentity;
+class DraftUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? body;
+ final Present<Mood>? mood;
+ final Present<DateTime>? created;
+ final Present<String?>? note;
+ final Present<String?>? memo;
+ const DraftUpdate({required this.id,this.body,this.mood,this.created,this.note,this.memo});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (body != null) 'body': _dartActionEncode(body!.value),
+ if (mood != null) 'mood': _dartActionEncode(mood!.value),
+ if (created != null) 'created': _dartActionEncode(created!.value),
+ if (note != null) 'note': _dartActionEncode(note!.value),
+ if (memo != null) 'memo': _dartActionEncode(memo!.value),
+ };
+}
+typedef EntryDelete = EntryIdentity;
+class EntryUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? title;
+ final Present<String?>? note;
+ final Present<DateTime>? at;
+ final Present<List<String>>? tags;
+ final Present<Status>? status;
+ const EntryUpdate({required this.id,this.title,this.note,this.at,this.tags,this.status});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ if (note != null) 'note': _dartActionEncode(note!.value),
+ if (at != null) 'at': _dartActionEncode(at!.value),
+ if (tags != null) 'tags': _dartActionEncode(tags!.value),
+ if (status != null) 'status': _dartActionEncode(status!.value),
+ };
+}
+typedef PlacementDelete = PlacementIdentity;
+class PlacementUpdate implements _DartActionRecord {
+ final String shelf;
+ final DateTime at;
+ final Present<String>? label;
+ const PlacementUpdate({required this.shelf,required this.at,this.label});
+ Map<String,dynamic> toRecord() => {
+ 'shelf': _dartActionEncode(shelf),
+ 'at': _dartActionEncode(at),
+ if (label != null) 'label': _dartActionEncode(label!.value),
+ };
+}
+typedef BookDelete = BookIdentity;
+class BookUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? title;
+ const BookUpdate({required this.id,this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ };
+}
+typedef CommentDelete = CommentIdentity;
+class CommentUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? bookId;
+ final Present<String>? text;
+ const CommentUpdate({required this.id,this.bookId,this.text});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (bookId != null) 'bookId': _dartActionEncode(bookId!.value),
+ if (text != null) 'text': _dartActionEncode(text!.value),
+ };
+}
+typedef CounterDelete = CounterIdentity;
+class CounterUpdate implements _DartActionRecord {
+ final String id;
+ final Present<int?>? index;
+ const CounterUpdate({required this.id,this.index});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (index != null) 'index': _dartActionEncode(index!.value),
+ };
+}
+typedef CompositionDelete = CompositionIdentity;
+class CompositionUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? title;
+ final Present<String>? body;
+ const CompositionUpdate({required this.id,this.title,this.body});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ if (body != null) 'body': _dartActionEncode(body!.value),
+ };
+}
+class EntryV1Identity implements _DartActionRecord {
+ final String id;
+ const EntryV1Identity({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ };
+}
+class PublishEntryInput implements _DartActionRecord {
+ final Entry entry;
+ final String composition;
+ const PublishEntryInput({required this.entry,required this.composition});
+ Map<String,dynamic> toRecord() => {
+ 'entry': _dartActionEncode(entry),
+ 'composition': _dartActionEncode(composition),
+ };
+}
+class PublishEntryOutput implements _DartActionRecord {
+ final Entry published;
+ const PublishEntryOutput({required this.published});
+ Map<String,dynamic> toRecord() => {
+ 'published': _dartActionEncode(published),
+ };
+}
+class PublishEntryHandlerOutput implements _DartActionRecord {
+ final EntryIdentity published;
+ const PublishEntryHandlerOutput({required this.published});
+ Map<String,dynamic> toRecord() => {
+ 'published': _dartActionEncode(published),
+ };
+}
+class RenameInput implements _DartActionRecord {
+ final String id;
+ final String title;
+ const RenameInput({required this.id,required this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ 'title': _dartActionEncode(title),
+ };
+}
+typedef RenameOutput = void;
+typedef RenameHandlerOutput = void;
+abstract interface class MutationHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
+abstract interface class MutationHandlers<Ctx> {
+ MutationPublishEntryHandlers<Ctx> get publishEntry;
+ MutationRenameHandlers<Ctx> get rename;
+}
+abstract interface class MutationPublishEntryHandlers<Ctx> {
+ Future<PublishEntryHandlerOutput> v1(MutationHandlerCall<Ctx, PublishEntryInput> call);
+}
+abstract interface class MutationRenameHandlers<Ctx> {
+ Future<RenameHandlerOutput> v1(MutationHandlerCall<Ctx, RenameInput> call);
+}
+abstract interface class QueryHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
+abstract interface class QueryHandlers<Ctx> {
+}
+dynamic _dartActionEncode(dynamic value) {
+ if (value == null) return null;
+ if (value is DateTime) return value.toUtc().toIso8601String();
+ if (value is Enum) return value.name;
+ if (value is List) return value.map(_dartActionEncode).toList();
+ if (value is _DartActionRecord) return value.toRecord();
+ if (value is Draft) return value.toRecord();
+ if (value is DraftCreateInput) return value.toCreateRecord();
+ if (value is DraftIdentity) return value.toRecord();
+ if (value is Entry) return value.toRecord();
+ if (value is EntryCreateInput) return value.toCreateRecord();
+ if (value is EntryIdentity) return value.toRecord();
+ if (value is Placement) return value.toRecord();
+ if (value is PlacementCreateInput) return value.toCreateRecord();
+ if (value is PlacementIdentity) return value.toRecord();
+ if (value is Book) return value.toRecord();
+ if (value is BookCreateInput) return value.toCreateRecord();
+ if (value is BookIdentity) return value.toRecord();
+ if (value is Comment) return value.toRecord();
+ if (value is CommentCreateInput) return value.toCreateRecord();
+ if (value is CommentIdentity) return value.toRecord();
+ if (value is Counter) return value.toRecord();
+ if (value is CounterCreateInput) return value.toCreateRecord();
+ if (value is CounterIdentity) return value.toRecord();
+ if (value is Composition) return value.toRecord();
+ if (value is CompositionCreateInput) return value.toCreateRecord();
+ if (value is CompositionIdentity) return value.toRecord();
+ return value;
+}
+/// Which explicit Model outputs of PublishEntry also update local Models.
+final class PublishEntryStore extends CallStore {
+ /// Store every eligible output (the default).
+ const PublishEntryStore.all() : _mode = 0, published = null;
+ /// Store no output; results are returned unchanged.
+ const PublishEntryStore.none() : _mode = 1, published = null;
+ /// Choose outputs by name; null leaves an output at the default (stored).
+ const PublishEntryStore.outputs({this.published}) : _mode = 2;
+ final int _mode;
+ final bool? published;
+ @override
+ Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (published != null) 'published': published!} };
+}
+/// Which explicit Model outputs of Rename also update local Models.
+final class RenameStore extends CallStore {
+ /// Store every eligible output (the default).
+ const RenameStore.all() : _mode = 0;
+ /// Store no output; results are returned unchanged.
+ const RenameStore.none() : _mode = 1;
+ final int _mode;
+ @override
+ Object? toWire() => _mode == 0 ? null : false;
+}
+/// Mutations resolve after local acceptance (durable); [call] waits for the backend outcome.
+class Mutations {
+ final Client client; Mutations(this.client);
+ late final DirectMutations call = DirectMutations(client);
+ Future<Call<PublishEntryOutput>> publishEntry({required EntryCreateInput entry, required String composition, PublishEntryStore? store}) => client.invokeAction<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'composition': _dartActionEncode(composition)}, (value) { final row = (value as Map).cast<String,dynamic>(); return PublishEntryOutput(published: Entry.fromRecord((row['published'] as Map).cast<String,dynamic>())); }, store: store);
+ Future<Call<RenameOutput>> rename({required String id, required String title, RenameStore? store}) => client.invokeAction<RenameOutput>('Rename', 1, {'id': _dartActionEncode(id), 'title': _dartActionEncode(title)}, (_) {}, store: store);
+}
+/// Mutations that wait for the backend outcome and applied authority.
+class DirectMutations {
+ final Client client; DirectMutations(this.client);
+ Future<PublishEntryOutput> publishEntry({required EntryCreateInput entry, required String composition, PublishEntryStore? store}) => client.invokeDirectAction<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'composition': _dartActionEncode(composition)}, (value) { final row = (value as Map).cast<String,dynamic>(); return PublishEntryOutput(published: Entry.fromRecord((row['published'] as Map).cast<String,dynamic>())); }, store: store);
+ Future<RenameOutput> rename({required String id, required String title, RenameStore? store}) => client.invokeDirectAction<RenameOutput>('Rename', 1, {'id': _dartActionEncode(id), 'title': _dartActionEncode(title)}, (_) {}, store: store);
+}
+/// Queries resolve with the backend result (direct); `once` reuses a saved complete result, [enqueue] accepts them durably and [invalidate] discards saved results.
+class Queries {
+ final Client client; Queries(this.client);
+ late final QueuedQueries enqueue = QueuedQueries(client);
+ late final QueryInvalidations invalidate = QueryInvalidations(client);
+}
+/// Queries accepted durably; each reads when it executes.
+class QueuedQueries {
+ final Client client; QueuedQueries(this.client);
+}
+/// Discards the saved `once` results of one Query argument set, for every store policy.
+class QueryInvalidations {
+ final Client client; QueryInvalidations(this.client);
+}
 class Mutate { final MutatePort port; Mutate(this.port);
  Future<int> addDraft({required DraftCreateInput draft}) => port.mutate(_addDraft(draft:draft));
  Future<int> createEntry({required EntryCreateInput entry}) => port.mutate(_createEntry(entry:entry));
@@ -593,6 +900,7 @@ class LiveModels { final Client port; LiveModels(this.port);
  late final BookLiveModel book = BookLiveModel(port);
  late final CommentLiveModel comment = CommentLiveModel(port);
  late final CounterLiveModel counter = CounterLiveModel(port);
+ late final CompositionLiveModel composition = CompositionLiveModel(port);
 }
 class TxModels { final WritePort port; TxModels(this.port);
  late final DraftTxModel draft = DraftTxModel(port);
@@ -601,6 +909,7 @@ class TxModels { final WritePort port; TxModels(this.port);
  late final BookTxModel book = BookTxModel(port);
  late final CommentTxModel comment = CommentTxModel(port);
  late final CounterTxModel counter = CounterTxModel(port);
+ late final CompositionTxModel composition = CompositionTxModel(port);
 }
 /// The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration.
 class Scopes { final Client client; Scopes(this.client);
@@ -619,6 +928,7 @@ class FetchModels { final Client _client; FetchModels(this._client);
  Future<Book?> book(BookIdentity identity, {bool store = true}) => _client.fetchModel('Book', 1, identity.toRecord(), Book.fromRecord, store: store);
  Future<Comment?> comment(CommentIdentity identity, {bool store = true}) => _client.fetchModel('Comment', 1, identity.toRecord(), Comment.fromRecord, store: store);
  Future<Counter?> counter(CounterIdentity identity, {bool store = true}) => _client.fetchModel('Counter', 1, identity.toRecord(), Counter.fromRecord, store: store);
+ Future<Composition?> composition(CompositionIdentity identity, {bool store = true}) => _client.fetchModel('Composition', 1, identity.toRecord(), Composition.fromRecord, store: store);
 }
 sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
 final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
@@ -631,9 +941,20 @@ class StoreHooks {
  final StoreHandler<BookIdentity,Book>? book;
  final StoreHandler<CommentIdentity,Comment>? comment;
  final StoreHandler<CounterIdentity,Counter>? counter;
- const StoreHooks({this.draft,this.entry,this.placement,this.book,this.comment,this.counter});
+ final StoreHandler<CompositionIdentity,Composition>? composition;
+ const StoreHooks({this.draft,this.entry,this.placement,this.book,this.comment,this.counter,this.composition});
 }
 class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
+/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints.
+class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
+/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
+class TransactionMutations {
+ final SubmitMutationPort _port; TransactionMutations(this._port);
+ Future<Call<PublishEntryOutput>> publishEntry({required EntryCreateInput entry, required String composition, PublishEntryStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'composition': _dartActionEncode(composition)}, (value) { final row = (value as Map).cast<String,dynamic>(); return PublishEntryOutput(published: Entry.fromRecord((row['published'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<RenameOutput>> rename({required String id, required String title, RenameStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RenameOutput>('Rename', 1, {'id': _dartActionEncode(id), 'title': _dartActionEncode(title)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+}
+/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.
+class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
@@ -641,6 +962,10 @@ class GeneratedClient {
  late final Channels channels = Channels(client);
  /// Each legacy mutation runs in its own local transaction and returns its ordinal.
  late final Mutate mutate = Mutate(client);
+ /// Durable by default; `mutations.call` waits for the backend outcome.
+ late final Mutations mutations = Mutations(client);
+ /// Direct by default; `queries.enqueue` accepts durably.
+ late final Queries queries = Queries(client);
  /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
  late final FetchModels fetch = FetchModels(client);
  GeneratedClient._(this.client, this.connection);
@@ -659,13 +984,15 @@ class GeneratedClient {
   if (commentHook != null) rawHooks['Comment'] = (tx, changes) => commentHook(GeneratedTransaction(tx), changes.map<StoreChange<CommentIdentity,Comment>>((change) { final identity=CommentIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<CommentIdentity,Comment>(identity,Comment.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<CommentIdentity,Comment>(identity); }).toList());
   final counterHook = onStore?.counter;
   if (counterHook != null) rawHooks['Counter'] = (tx, changes) => counterHook(GeneratedTransaction(tx), changes.map<StoreChange<CounterIdentity,Counter>>((change) { final identity=CounterIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<CounterIdentity,Counter>(identity,Counter.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<CounterIdentity,Counter>(identity); }).toList());
+  final compositionHook = onStore?.composition;
+  if (compositionHook != null) rawHooks['Composition'] = (tx, changes) => compositionHook(GeneratedTransaction(tx), changes.map<StoreChange<CompositionIdentity,Composition>>((change) { final identity=CompositionIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<CompositionIdentity,Composition>(identity,Composition.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<CompositionIdentity,Composition>(identity); }).toList());
   final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks);
   try {
   final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
   return GeneratedClient._(client, connection);
   } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
  }
- Future<T> transaction<T>(Future<T> Function(GeneratedTransaction tx) body) => client.transaction((tx) => body(GeneratedTransaction(tx)));
+ Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.

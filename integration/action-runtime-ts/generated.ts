@@ -385,3 +385,21 @@ export interface StoreHooks {
  readonly pin?: StoreHandler<PinIdentity, Pin>;
 }
 export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }
+/** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */
+export type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };
+export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }
+/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints. */
+export class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }
+/** Transaction-only option: `local` runs inside the open transaction and its Model writes belong to that Mutation. */
+export type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };
+/** Mutations queued in an application transaction: each resolves with its `Call` after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route. */
+export function makeTransactionMutations(port:SubmitMutationPort) { const submit=(options:(CallOptions & CompanionOptions)|undefined):SubmitMutationOptions|undefined => { if (options===undefined) return undefined; const {local,...rest}=options; return local===undefined ? rest : {...rest,local:(companion:WritePort)=>local(new CompanionContext(companion))}; }; return {
+ change: (args:ChangeInput, options?:ChangeOptions & CompanionOptions):Promise<Call<ChangeOutput>> => port.submitMutation('Change',1,encodeChangeInput(args),decodeChangeOutput,submit(options)),
+ clear: (args:ClearInput, options?:ClearOptions & CompanionOptions):Promise<Call<ClearOutput>> => port.submitMutation('Clear',1,encodeClearInput(args),decodeClearOutput,submit(options)),
+ mark: (args:MarkInput, options?:MarkOptions & CompanionOptions):Promise<Call<MarkOutput>> => port.submitMutation('Mark',1,encodeMarkInput(args),decodeMarkOutput,submit(options)),
+ ping: (args:PingInput, options?:PingOptions & CompanionOptions):Promise<Call<PingOutput>> => port.submitMutation('Ping',1,encodePingInput(args),decodePingOutput,submit(options)),
+ put: (args:PutInput, options?:PutOptions & CompanionOptions):Promise<Call<PutOutput>> => port.submitMutation('Put',2,encodePutInput(args),decodePutOutput,submit(options)),
+ removeMoment: (args:RemoveMomentInput, options?:RemoveMomentOptions & CompanionOptions):Promise<Call<RemoveMomentOutput>> => port.submitMutation('RemoveMoment',1,encodeRemoveMomentInput(args),decodeRemoveMomentOutput,submit(options)),
+}; }
+/** The application transaction: local Models and Channels, and `mutations`, which queue typed Mutations in the same local commit. */
+export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; constructor(transaction:WritePort & SubmitMutationPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); } }

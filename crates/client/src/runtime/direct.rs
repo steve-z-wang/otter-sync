@@ -1,6 +1,7 @@
-//! Direct Query and Mutation calls and Query once flights as runtime tasks
-//! ([#134](https://github.com/zanminwang/axton/issues/134),
-//! [#158](https://github.com/zanminwang/axton/issues/158)).
+//! Direct Query and Mutation calls, Query once flights and Model Fetches as
+//! runtime tasks ([#134](https://github.com/zanminwang/axton/issues/134),
+//! [#158](https://github.com/zanminwang/axton/issues/158),
+//! [#153](https://github.com/zanminwang/axton/issues/153)).
 //!
 //! An `invoke` task prepares the exact request without touching the database
 //! (or asks the Query once cache first), asks the host for one `http`
@@ -23,18 +24,40 @@
 //! completes with its own outcome. Closing the client fails every call with
 //! `action.unavailable`, a response in hand included, and nothing is applied
 //! after [`Event::RuntimeClosed`].
+//!
+//! A `fetch` task shares that lifecycle - frozen body, `fetch` route effect,
+//! deadline, one shared refresh, response admission, stop and close - under
+//! its own codes (`fetch.*`, [`Failure`]). Identical overlapping Fetches join
+//! one flight, keyed in memory by replica, Model, read version, canonical
+//! identity and store policy; the flight and every joined caller are released
+//! on every terminal path, so a later call reads again. A read failure claims
+//! nothing about side effects. A stored response is validated first, then
+//! applied as one single-record delivery - through the onStore transaction
+//! when its Model has a hook - and every joined caller answers after that
+//! commit. A draining replica refuses Fetch (`fetch.schema_pending`) and a
+//! rebuild fails the old replica's Fetches (`fetch.schema_changed`).
 use super::effects::{EffectKind, Ready, Waiter};
 use super::transactions::StoreContinuation;
 use super::*;
 use crate::{
     ActionCallOptions, ApplyReport, ClientStore, QueryOnce, QueryOnceOptions, StoreDelivery,
 };
+use std::fmt::Display;
 
 pub(super) const UNAVAILABLE: &str = "action.unavailable";
 pub(super) const EXECUTION_UNKNOWN: &str = "action.execution_unknown";
 pub(super) const OBSERVATION_FAILED: &str = "action.observation_failed";
 pub(super) const INVALID_OPTIONS: &str = "action.invalid_options";
 const TIMED_OUT: &str = "direct call timed out";
+
+const FETCH_INVALID_OPTIONS: &str = "fetch.invalid_options";
+const FETCH_UNAVAILABLE: &str = "fetch.unavailable";
+const FETCH_TIMEOUT: &str = "fetch.timeout";
+const FETCH_TRANSPORT_FAILED: &str = "fetch.transport_failed";
+const FETCH_INVALID_RESPONSE: &str = "fetch.invalid_response";
+pub(super) const FETCH_STORE_FAILED: &str = "fetch.store_failed";
+const FETCH_SCHEMA_PENDING: &str = "fetch.schema_pending";
+const FETCH_SCHEMA_CHANGED: &str = "fetch.schema_changed";
 
 /// The `details` of a direct failure with no known cause: `{"code"}`.
 pub(super) fn code(error: &str) -> Value {
@@ -48,6 +71,71 @@ pub(super) fn transport_failure(cause: &EffectError) -> Value {
         details["status"] = json!(status);
     }
     details
+}
+
+/// The `details` of a failure with a known cause message: `{"code","message"}`.
+fn caused(error: &str, cause: impl Display) -> Value {
+    json!({ "code": error, "message": cause.to_string() })
+}
+
+/// Why a direct call ended before its response applied. An Action call and a
+/// Fetch name the same lifecycle facts with their own codes.
+#[derive(Clone)]
+pub(super) enum Failure {
+    /// No connection, `stop` before the response, or close.
+    Unavailable,
+    /// The deadline passed first.
+    Timeout,
+    /// The request failed, or the credential refresh it waited for did.
+    Transport(EffectError),
+    /// The runtime could not issue the request's effect.
+    Lost,
+    /// A rebuild replaced the replica the call belongs to.
+    Replaced,
+}
+impl Failure {
+    /// Action calls: unavailable, otherwise an unknown execution.
+    fn action(&self) -> (&'static str, Value) {
+        match self {
+            Self::Unavailable => (UNAVAILABLE, code(UNAVAILABLE)),
+            Self::Timeout => (
+                EXECUTION_UNKNOWN,
+                transport_failure(&EffectError {
+                    message: TIMED_OUT.into(),
+                    status: None,
+                }),
+            ),
+            Self::Transport(cause) => (EXECUTION_UNKNOWN, transport_failure(cause)),
+            Self::Lost | Self::Replaced => (EXECUTION_UNKNOWN, code(EXECUTION_UNKNOWN)),
+        }
+    }
+    /// Fetches: a read claims nothing about side effects.
+    fn fetch(&self) -> (&'static str, Value) {
+        match self {
+            Self::Unavailable => (FETCH_UNAVAILABLE, code(FETCH_UNAVAILABLE)),
+            Self::Timeout => (FETCH_TIMEOUT, caused(FETCH_TIMEOUT, TIMED_OUT)),
+            Self::Transport(cause) => {
+                let mut details = caused(FETCH_TRANSPORT_FAILED, &cause.message);
+                if let Some(status) = cause.status {
+                    details["status"] = json!(status);
+                }
+                (FETCH_TRANSPORT_FAILED, details)
+            }
+            Self::Lost => (FETCH_TRANSPORT_FAILED, code(FETCH_TRANSPORT_FAILED)),
+            Self::Replaced => (FETCH_SCHEMA_CHANGED, code(FETCH_SCHEMA_CHANGED)),
+        }
+    }
+}
+
+/// What joins one Fetch flight: the same replica, Model, read version,
+/// canonical identity and normalized store policy.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct FetchKey {
+    replica: u64,
+    model: String,
+    version: u64,
+    identity: String,
+    store: bool,
 }
 
 /// One direct call in flight, by the request id of its task.
@@ -65,6 +153,8 @@ pub(super) struct Call {
     applying: bool,
     /// The Query once flight this call fetches for, if any.
     flight: Option<String>,
+    /// The Fetch flight this call is, if it is a Fetch.
+    fetch: Option<FetchKey>,
 }
 
 #[derive(Default)]
@@ -72,6 +162,13 @@ pub(super) struct Directs {
     calls: BTreeMap<String, Call>,
     /// The requests joined to a flight another call fetches, by flight id.
     joined: BTreeMap<String, Vec<String>>,
+    /// Fetch flights: each key to the request id of the call that owns it.
+    fetches: BTreeMap<FetchKey, String>,
+    /// The requests joined to a Fetch flight, by its owner's request id.
+    fetch_joined: BTreeMap<String, Vec<String>>,
+    /// The replica generation: every rebuild starts a new one, so no Fetch
+    /// flight of a replaced replica can be joined.
+    replica: u64,
 }
 
 /// One `invoke` as the task named it.
@@ -130,7 +227,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .map_err(|e| e.to_string())?;
             let body = prepared.encode().map_err(|e| e.to_string())?;
             let body = String::from_utf8(body).map_err(|_| "utf8".to_string())?;
-            self.send_direct(request_id, prepared.call.call_id, body, None)?;
+            self.send_direct(request_id, prepared.call.call_id, body, None, None)?;
             return Ok(None);
         }
         let decision = self
@@ -171,6 +268,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     request.call.call_id,
                     body,
                     Some(flight_id.clone()),
+                    None,
                 ) {
                     self.client.fail_query_once(&flight_id);
                     return Err(error);
@@ -186,6 +284,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         call_id: String,
         body: String,
         flight: Option<String>,
+        fetch: Option<FetchKey>,
     ) -> std::result::Result<(), String> {
         let timeout = self
             .connection
@@ -198,7 +297,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     request_id: request_id.to_string(),
                 },
                 Operation::Http {
-                    route: HttpRoute::Action,
+                    route: route(&fetch),
                     body: body.clone(),
                 },
             )
@@ -219,6 +318,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 retried: false,
                 applying: false,
                 flight,
+                fetch,
             },
         );
         Ok(())
@@ -253,28 +353,30 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     call.retried = true;
                     self.join_refresh(Waiter::Direct { request_id });
                 } else {
-                    self.fail_direct(&request_id, EXECUTION_UNKNOWN, transport_failure(&error));
+                    self.fail_call(&request_id, Failure::Transport(error));
                 }
             }
         }
     }
     /// The refresh succeeded: send the same body once more.
     pub(super) fn resend_direct(&mut self, request_id: &str) {
-        let Some(body) = self.directs.calls.get(request_id).map(|c| c.body.clone()) else {
+        let Some((body, route)) = self
+            .directs
+            .calls
+            .get(request_id)
+            .map(|c| (c.body.clone(), route(&c.fetch)))
+        else {
             return;
         };
         let http = self.issue_effect(
             EffectKind::DirectHttp {
                 request_id: request_id.to_string(),
             },
-            Operation::Http {
-                route: HttpRoute::Action,
-                body,
-            },
+            Operation::Http { route, body },
         );
         match (http, self.directs.calls.get_mut(request_id)) {
             (Some(http), Some(call)) => call.http = Some(http),
-            _ => self.fail_direct(request_id, EXECUTION_UNKNOWN, code(EXECUTION_UNKNOWN)),
+            _ => self.fail_call(request_id, Failure::Lost),
         }
     }
     /// The deadline passed first: the request is abandoned and its execution
@@ -282,12 +384,20 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     pub(super) fn direct_timeout(&mut self, request_id: String) {
         if let Some(call) = self.directs.calls.get_mut(&request_id) {
             call.timer = None;
-            let details = transport_failure(&EffectError {
-                message: TIMED_OUT.into(),
-                status: None,
-            });
-            self.fail_direct(&request_id, EXECUTION_UNKNOWN, details);
+            self.fail_call(&request_id, Failure::Timeout);
         }
+    }
+    /// Fail one call - and every caller joined to it - for a lifecycle
+    /// `failure`, under the codes of its kind.
+    pub(super) fn fail_call(&mut self, request_id: &str, failure: Failure) {
+        let Some(call) = self.directs.calls.get(request_id) else {
+            return;
+        };
+        let (error, details) = match call.fetch {
+            Some(_) => failure.fetch(),
+            None => failure.action(),
+        };
+        self.fail_direct(request_id, error, details);
     }
     /// Fail one call - and every caller joined to its flight - with `error`
     /// and its `details`, abandoning its effects and releasing its flight.
@@ -305,12 +415,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
         self.ready
             .retain(|r| !matches!(r, Ready::ApplyDirect { request_id: r, .. } if r == request_id));
-        let joined = match &call.flight {
-            Some(flight) => {
+        let joined = match (&call.flight, &call.fetch) {
+            (Some(flight), _) => {
                 self.client.fail_query_once(flight);
                 self.directs.joined.remove(flight).unwrap_or_default()
             }
-            None => vec![],
+            (None, Some(key)) => self.release_fetch(key, request_id),
+            (None, None) => vec![],
         };
         self.fail(request_id.to_string(), error, details.clone());
         for joined in joined {
@@ -319,7 +430,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// Fail every call still waiting on the network (`stop`); a response that
     /// already arrived is local work and still applies.
-    pub(super) fn fail_directs_in_flight(&mut self, error: &str) {
+    pub(super) fn fail_directs_in_flight(&mut self, failure: Failure) {
         let waiting: Vec<String> = self
             .directs
             .calls
@@ -328,21 +439,35 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .map(|(id, _)| id.clone())
             .collect();
         for request_id in waiting {
-            self.fail_direct(&request_id, error, code(error));
+            self.fail_call(&request_id, failure.clone());
         }
     }
     /// Fail every call and joined caller (close, rebuild).
-    pub(super) fn fail_directs(&mut self, error: &str) {
+    pub(super) fn fail_directs(&mut self, failure: Failure) {
         let all: Vec<String> = self.directs.calls.keys().cloned().collect();
         for request_id in all {
-            self.fail_direct(&request_id, error, code(error));
+            self.fail_call(&request_id, failure.clone());
         }
         // Joined callers whose fetcher is already gone.
+        let (error, details) = failure.action();
         for (_, joined) in std::mem::take(&mut self.directs.joined) {
             for request_id in joined {
-                self.fail(request_id, error, code(error));
+                self.fail(request_id, error, details.clone());
             }
         }
+        let (error, details) = failure.fetch();
+        self.directs.fetches.clear();
+        for (_, joined) in std::mem::take(&mut self.directs.fetch_joined) {
+            for request_id in joined {
+                self.fail(request_id, error, details.clone());
+            }
+        }
+    }
+    /// A rebuild replaced the replica: every call of the old one fails, and
+    /// no later Fetch can join an old flight.
+    pub(super) fn fence_directs(&mut self) {
+        self.directs.replica += 1;
+        self.fail_directs(Failure::Replaced);
     }
     /// Apply one response in one local transaction, then settle: every
     /// completion is announced after the commit, and the task - with every
@@ -354,6 +479,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         now: u64,
         entropy: u64,
     ) {
+        if self
+            .directs
+            .calls
+            .get(&request_id)
+            .is_some_and(|call| call.fetch.is_some())
+        {
+            return self.apply_fetch(request_id, response, now, entropy);
+        }
         let candidate = serde_json::from_str::<Value>(&response)
             .ok()
             .and_then(|raw| raw["records"].as_array().cloned())
@@ -465,5 +598,165 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Err((error, details)) => self.fail(id, *error, details.clone()),
             }
         }
+    }
+
+    // --- Model Fetch --------------------------------------------------------
+
+    /// `fetch {model, version, identity, store?}`: refuse invalid options
+    /// before any I/O, join an identical flight, or send a new request. The
+    /// task parks unless it was refused.
+    pub(super) fn fetch(
+        &mut self,
+        request_id: &str,
+        model: &str,
+        version: u64,
+        identity: &Value,
+        store: &Option<Value>,
+    ) {
+        let refuse = |error: &str, cause: &dyn Display| (error.to_string(), caused(error, cause));
+        let started = (|| {
+            let store = match store {
+                None => true,
+                Some(Value::Bool(store)) => *store,
+                Some(_) => {
+                    return Err(refuse(
+                        FETCH_INVALID_OPTIONS,
+                        &"Fetch store must be a boolean",
+                    ));
+                }
+            };
+            // A replica draining for an incompatible schema neither stores
+            // nor reads the application's schema.
+            if !self.client.store_hooks_active() {
+                return Err((FETCH_SCHEMA_PENDING.into(), code(FETCH_SCHEMA_PENDING)));
+            }
+            let request = self
+                .client
+                .prepare_fetch(model, version, identity, store)
+                .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+            let key = FetchKey {
+                replica: self.directs.replica,
+                model: request.model.clone(),
+                version: request.version,
+                identity: crate::canonical_json(&request.identity)
+                    .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?,
+                store,
+            };
+            if let Some(owner) = self.directs.fetches.get(&key).cloned() {
+                self.directs
+                    .fetch_joined
+                    .entry(owner)
+                    .or_default()
+                    .push(request_id.to_string());
+                return Ok(());
+            }
+            if self.connection.is_none() {
+                return Err((FETCH_UNAVAILABLE.into(), code(FETCH_UNAVAILABLE)));
+            }
+            let body = request
+                .encode()
+                .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))
+                .and_then(|body| {
+                    String::from_utf8(body).map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))
+                })?;
+            self.send_direct(request_id, request.call_id, body, None, Some(key.clone()))
+                .map_err(|_| (FETCH_UNAVAILABLE.to_string(), code(FETCH_UNAVAILABLE)))?;
+            self.directs.fetches.insert(key, request_id.to_string());
+            Ok(())
+        })();
+        if let Err((error, details)) = started {
+            self.fail(request_id.to_string(), error, details);
+        }
+    }
+    /// Forget one Fetch flight and answer the callers joined to it.
+    fn release_fetch(&mut self, key: &FetchKey, owner: &str) -> Vec<String> {
+        if self.directs.fetches.get(key).map(String::as_str) == Some(owner) {
+            self.directs.fetches.remove(key);
+        }
+        self.directs.fetch_joined.remove(owner).unwrap_or_default()
+    }
+    /// Validate one Fetch response against its frozen request, then store its
+    /// authority as one delivery - through the onStore transaction when its
+    /// Model has a hook - before any caller hears the outcome. A response
+    /// without authority (`store: false`, or the backend's refusal) stores
+    /// nothing.
+    fn apply_fetch(&mut self, request_id: String, response: String, now: u64, entropy: u64) {
+        let Some(call) = self.directs.calls.get(&request_id) else {
+            return;
+        };
+        if !self.client.store_hooks_active() {
+            return self.fail_direct(
+                &request_id,
+                FETCH_SCHEMA_PENDING,
+                code(FETCH_SCHEMA_PENDING),
+            );
+        }
+        let (request, response) = match self
+            .client
+            .decode_fetch(call.body.as_bytes(), response.as_bytes())
+        {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                return self.fail_direct(
+                    &request_id,
+                    FETCH_INVALID_RESPONSE,
+                    caused(FETCH_INVALID_RESPONSE, error),
+                );
+            }
+        };
+        if !response.records.is_empty()
+            && self.has_store_hook_candidate(std::iter::once(request.model))
+        {
+            return self.open_store(
+                StoreDelivery::Fetch { response },
+                StoreContinuation::Fetch { request_id },
+                now,
+                entropy,
+            );
+        }
+        let generation = self.client.generation();
+        let applied = self.client.apply_fetch_response(&response);
+        self.committed_since(generation);
+        match applied {
+            Ok(report) => self.finish_fetch(request_id, report),
+            Err(error) => self.fail_direct(
+                &request_id,
+                FETCH_STORE_FAILED,
+                caused(FETCH_STORE_FAILED, error),
+            ),
+        }
+    }
+    /// The response's authority committed (or there was none): release the
+    /// flight and answer the owner and every joined caller with the
+    /// invocation's own outcome, never a reread of the local row. A Fetch is
+    /// no durable call, so no `callCompleted` is announced.
+    pub(super) fn finish_fetch(&mut self, request_id: String, mut report: ApplyReport) {
+        let Some(call) = self.directs.calls.remove(&request_id) else {
+            return;
+        };
+        let joined = match &call.fetch {
+            Some(key) => self.release_fetch(key, &request_id),
+            None => vec![],
+        };
+        let completions = std::mem::take(&mut report.completions);
+        self.settled(&report);
+        let outcome = completions
+            .iter()
+            .find(|completion| completion.call_id == call.call_id)
+            .map(|completion| json!({ "outcome": completion.outcome }));
+        for id in std::iter::once(request_id).chain(joined) {
+            match &outcome {
+                Some(value) => self.complete(id, Ok(value.clone())),
+                None => self.fail(id, FETCH_INVALID_RESPONSE, code(FETCH_INVALID_RESPONSE)),
+            }
+        }
+    }
+}
+
+/// The route of a direct call's request.
+fn route(fetch: &Option<FetchKey>) -> HttpRoute {
+    match fetch {
+        Some(_) => HttpRoute::Fetch,
+        None => HttpRoute::Action,
     }
 }

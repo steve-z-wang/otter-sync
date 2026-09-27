@@ -279,7 +279,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if let Some(refresh) = self.connection.as_ref().and_then(|c| c.refreshing.clone()) {
             self.cancel_effect(&refresh);
         }
-        self.fail_directs_in_flight(direct::UNAVAILABLE);
+        self.fail_directs_in_flight(direct::Failure::Unavailable);
         self.connection = None;
         self.lanes.connection.stop();
         // Enqueue work only: no database access, no actions.

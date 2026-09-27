@@ -3893,3 +3893,873 @@ fn a_committed_callback_transaction_wakes_the_lanes() {
         "the registered Scope is followed"
     );
 }
+
+// --- Model Fetch (#153) ------------------------------------------------------
+
+/// `fetch` of `Entry` `id` at its local read version with `extra` options.
+fn fetch_of(id: &str, extra: Value) -> Value {
+    let mut command = json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":id}});
+    for (k, v) in extra.as_object().unwrap() {
+        command[k] = v.clone();
+    }
+    command
+}
+fn fetch(id: &str) -> Value {
+    fetch_of(id, json!({}))
+}
+fn fetch_request(body: &str) -> Value {
+    serde_json::from_str(body).unwrap()
+}
+/// The Loader's answer to one frozen Fetch body: `text` at `stamp`, or
+/// stamped absence, with authority only when the request stores.
+fn fetched(body: &str, text: Option<&str>, stamp: u64) -> String {
+    let request = fetch_request(body);
+    let identity = request["identity"].clone();
+    let state = text.map_or(Value::Null, |text| json!({"text":text,"note":null}));
+    let result = text.map_or(
+        Value::Null,
+        |text| json!({"id":identity["id"],"text":text,"note":null}),
+    );
+    let records = if request["store"] == false {
+        json!([])
+    } else {
+        json!([{"model":"Entry","identity":identity,"stamp":stamp,"state":state}])
+    };
+    json!({"completion":{"callId":request["callId"],"outcome":{"status":"succeeded","result":result}},"records":records})
+        .to_string()
+}
+/// The task value of a successful Fetch of `Entry` `id`.
+fn snapshot(id: &str, text: Option<&str>) -> Value {
+    let result = text.map_or(Value::Null, |text| json!({"id":id,"text":text,"note":null}));
+    json!({"outcome":{"status":"succeeded","result":result}})
+}
+
+/// Overlapping identical Fetches share one request and one call ID; each
+/// task keeps its own request ID. Nothing enters the Mutation queue, and a
+/// later call reads again under a new call ID.
+#[test]
+fn fetch_joins_overlapping_identical_requests_and_reads_again_after_completion() {
+    let mut h = host();
+    h.connect(false);
+    h.task("first", fetch("e"));
+    h.task("second", fetch_of("e", json!({"store":true})));
+    let events = h.run();
+    assert!(!completed(&events, "first") && !completed(&events, "second"));
+    let (http, body) = h.http("fetch");
+    assert_eq!(h.outstanding("http", None).len(), 1, "{:?}", h.open);
+    assert_eq!(h.client().pending_count().unwrap(), 0);
+    h.ok(&http, &fetched(&body, Some("server"), 3));
+    let events = h.run();
+    assert_eq!(
+        h.completion(&events, "first"),
+        &done("first", snapshot("e", Some("server")))
+    );
+    assert_eq!(
+        h.completion(&events, "second"),
+        &done("second", snapshot("e", Some("server")))
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(h.client().pending_count().unwrap(), 0);
+    assert!(h.outstanding("http", Some("push")).is_empty());
+
+    h.task("third", fetch("e"));
+    h.run();
+    let (_, again) = h.http("fetch");
+    assert_ne!(
+        fetch_request(&again)["callId"],
+        fetch_request(&body)["callId"]
+    );
+}
+
+/// A Fetch failure with its code and, when known, its cause's message.
+fn fetch_failed(id: &str, code: &str, message: Option<&str>) -> Value {
+    let mut details = json!({ "code": code });
+    if let Some(message) = message {
+        details["message"] = json!(message);
+    }
+    failed_with(id, code, details)
+}
+/// The code of a failed task, asserting the error names it too.
+fn fetch_code(completion: &Value) -> String {
+    assert_eq!(completion["ok"], false, "{completion}");
+    assert_eq!(
+        completion["error"], completion["details"]["code"],
+        "{completion}"
+    );
+    completion["details"]["code"].as_str().unwrap().to_string()
+}
+/// The store callbacks asked for.
+fn store_callbacks(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "effect" && e["operation"]["kind"] == "storeCallback")
+        .cloned()
+        .collect()
+}
+impl<S: ClientStore + 'static> Host<S> {
+    /// Answer the one outstanding Fetch request with `text` at `stamp`.
+    fn answer_fetch(&mut self, text: Option<&str>, stamp: u64) -> String {
+        let (http, body) = self.http("fetch");
+        self.ok(&http, &fetched(&body, text, stamp));
+        body
+    }
+    /// Run one Fetch to its completion, answering its request.
+    fn fetch_now(&mut self, id: &str, command: Value, text: Option<&str>, stamp: u64) -> Value {
+        self.task(id, command);
+        self.run();
+        self.answer_fetch(text, stamp);
+        let events = self.run();
+        self.completion(&events, id).clone()
+    }
+    fn stamp(&mut self, id: &str) -> u64 {
+        let key = RecordKey {
+            model: "Entry".into(),
+            identity: json!({ "id": id }),
+        };
+        self.client().record_stamp(&key).unwrap()
+    }
+    /// Answer an open store callback, after its `writes` ran in it.
+    fn finish_hook(&mut self, callback: &Value, ok: bool) -> Vec<Value> {
+        let mut result = json!({"type":"callbackResult","effectId":callback["effectId"],
+            "transactionId":callback["operation"]["transactionId"],"ok":ok});
+        if !ok {
+            result["error"] = json!("refused");
+        }
+        self.submit(result);
+        self.run()
+    }
+    /// Write `Entry` `id` from inside the open store callback.
+    fn hook_write(&mut self, callback: &Value, request: &str, id: &str) {
+        self.submit(json!({"type":"transactionCommand","requestId":request,
+            "transactionId":callback["operation"]["transactionId"],"command":create(id, "hook")}));
+        let events = self.run();
+        assert_eq!(self.completion(&events, request)["ok"], true, "{events:?}");
+    }
+}
+
+/// Distinct identities and storage policies never join; an explicit `true`
+/// and an omitted `store` do, and so do composite identities that differ
+/// only in property order or numeric spelling. Concurrent independent
+/// requests each complete with their own snapshot, in any order.
+#[test]
+fn fetch_flights_are_keyed_by_identity_policy_and_canonical_composite_identity() {
+    let mut schema = schema_value();
+    schema["models"].as_array_mut().unwrap().push(json!({
+        "name":"Slot","identity":["tenant","n"],"fields":[
+            {"name":"tenant","nullable":false,"type":{"kind":"scalar","name":"string"}},
+            {"name":"n","nullable":false,"type":{"kind":"scalar","name":"int"}},
+            {"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}]
+    }));
+    let mut h = host_with(schema);
+    h.connect(false);
+    h.task("a", fetch("a"));
+    h.task("b", fetch("b"));
+    h.task("a-preview", fetch_of("a", json!({"store":false})));
+    h.task("a-explicit", fetch_of("a", json!({"store":true})));
+    h.task(
+        "slot",
+        json!({"kind":"fetch","model":"Slot","version":1,"identity":{"tenant":"t","n":1}}),
+    );
+    h.task(
+        "slot-respelled",
+        json!({"kind":"fetch","model":"Slot","version":1,"identity":{"n":1.0,"tenant":"t"}}),
+    );
+    let events = h.run();
+    assert!(
+        !events.iter().any(|e| e["type"] == "taskCompleted"),
+        "{events:?}"
+    );
+    let requests: BTreeMap<String, (String, Value)> = h
+        .outstanding("http", Some("fetch"))
+        .into_iter()
+        .map(|(id, op)| {
+            let request = fetch_request(op["body"].as_str().unwrap());
+            let name = format!(
+                "{}{}",
+                request["identity"]["id"].as_str().unwrap_or("slot"),
+                if request["store"] == false {
+                    "-preview"
+                } else {
+                    ""
+                }
+            );
+            (name, (id, request))
+        })
+        .collect();
+    assert_eq!(
+        requests.keys().collect::<Vec<_>>(),
+        ["a", "a-preview", "b", "slot"],
+        "one request per distinct key"
+    );
+    let slot = &requests["slot"].1;
+    assert_eq!(slot["identity"], json!({"n":1,"tenant":"t"}));
+    let call_ids: std::collections::BTreeSet<_> = requests
+        .values()
+        .map(|(_, r)| r["callId"].to_string())
+        .collect();
+    assert_eq!(call_ids.len(), 4);
+
+    // Answered in reverse order of submission: each caller gets its own.
+    let answer = |h: &mut Host, name: &str, text: &str| {
+        let (http, request) = &requests[name];
+        h.ok(http, &fetched(&request.to_string(), Some(text), 2));
+        h.run()
+    };
+    let events = answer(&mut h, "a-preview", "preview");
+    assert_eq!(
+        h.completion(&events, "a-preview"),
+        &done("a-preview", snapshot("a", Some("preview")))
+    );
+    assert_eq!(h.text("a"), None, "a preview stores nothing");
+    let events = answer(&mut h, "b", "bee");
+    assert_eq!(
+        h.completion(&events, "b"),
+        &done("b", snapshot("b", Some("bee")))
+    );
+    let events = answer(&mut h, "a", "ay");
+    for id in ["a", "a-explicit"] {
+        assert_eq!(
+            h.completion(&events, id),
+            &done(id, snapshot("a", Some("ay")))
+        );
+    }
+    assert_eq!(h.text("a"), Some(json!("ay")));
+    let (http, request) = &requests["slot"];
+    h.ok(
+        http,
+        &json!({"completion":{"callId":request["callId"],"outcome":{"status":"succeeded","result":{"tenant":"t","n":1,"label":"x"}}},
+            "records":[{"model":"Slot","identity":{"tenant":"t","n":1},"stamp":1,"state":{"label":"x"}}]})
+        .to_string(),
+    );
+    let events = h.run();
+    let outcome =
+        json!({"outcome":{"status":"succeeded","result":{"label":"x","n":1,"tenant":"t"}}});
+    assert_eq!(
+        h.completion(&events, "slot"),
+        &done("slot", outcome.clone())
+    );
+    assert_eq!(
+        h.completion(&events, "slot-respelled"),
+        &done("slot-respelled", outcome)
+    );
+    // Every flight was released: the same key reads again.
+    assert!(h.outstanding("http", Some("fetch")).is_empty());
+    h.task("again", fetch("b"));
+    h.run();
+    h.http("fetch");
+}
+
+/// Invalid options, identities, Models and versions are refused before any
+/// request, and so is a Fetch without a connection. Fetch is no command of a
+/// transaction.
+#[test]
+fn fetch_options_and_identities_are_refused_before_any_request() {
+    let mut h = host();
+    let offline = h.call("offline", fetch("e"));
+    assert_eq!(offline, fetch_failed("offline", "fetch.unavailable", None));
+    h.connect(false);
+    let refused = [
+        fetch_of("e", json!({"store":"yes"})),
+        fetch_of("e", json!({"store":null})),
+        fetch_of("e", json!({"store":{"entry":false}})),
+        json!({"kind":"fetch","model":"Entry","version":1,"identity":{}}),
+        json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":7}}),
+        json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e","text":"x"}}),
+        json!({"kind":"fetch","model":"Entry","version":1,"identity":"e"}),
+        json!({"kind":"fetch","model":"Nope","version":1,"identity":{"id":"e"}}),
+        fetch_of("e", json!({"version":2})),
+    ];
+    for (n, command) in refused.into_iter().enumerate() {
+        let id = format!("bad{n}");
+        let completion = h.call(&id, command.clone());
+        assert_eq!(
+            fetch_code(&completion),
+            "fetch.invalid_options",
+            "{command}"
+        );
+        assert!(completion["details"]["message"].is_string(), "{completion}");
+    }
+    assert!(
+        h.outstanding("http", Some("fetch")).is_empty(),
+        "{:?}",
+        h.open
+    );
+    // Not a transaction command.
+    let (effect, transaction) = h.begin("tx");
+    h.submit(json!({"type":"transactionCommand","requestId":"inside","transactionId":transaction,"command":fetch("e")}));
+    let events = h.run();
+    assert!(
+        h.completion(&events, "inside")["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("unknown variant `fetch`"),
+        "{events:?}"
+    );
+    h.submit(
+        json!({"type":"callbackResult","effectId":effect,"transactionId":transaction,"ok":true}),
+    );
+    h.run();
+    assert!(h.outstanding("http", Some("fetch")).is_empty());
+}
+
+/// A backend refusal is the invocation's outcome with its code; a malformed
+/// or foreign response is `fetch.invalid_response`. Neither deletes the row.
+#[test]
+fn fetch_keeps_backend_refusals_and_refuses_invalid_responses_without_deleting() {
+    let mut h = host();
+    h.connect(false);
+    let stored = h.fetch_now("seed", fetch("e"), Some("server"), 2);
+    assert_eq!(stored["ok"], true);
+    for code in [
+        "loader.failed",
+        "model_version_unsupported",
+        "call.identity_conflict",
+    ] {
+        h.task(code, fetch("e"));
+        h.run();
+        let (http, body) = h.http("fetch");
+        h.ok(
+            &http,
+            &json!({"completion":{"callId":fetch_request(&body)["callId"],"outcome":{"status":"failed","code":code,"execution":"rejected"}},"records":[]})
+                .to_string(),
+        );
+        let events = h.run();
+        assert_eq!(
+            h.completion(&events, code),
+            &done(
+                code,
+                json!({"outcome":{"status":"failed","code":code,"execution":"rejected"}})
+            )
+        );
+    }
+    let invalid = [
+        // Another call's completion.
+        |body: &str| {
+            fetched(body, Some("x"), 3).replace(
+                fetch_request(body)["callId"].as_str().unwrap(),
+                "123e4567-e89b-42d3-a456-426614174000",
+            )
+        },
+        // A state the schema refuses.
+        |body: &str| {
+            json!({"completion":{"callId":fetch_request(body)["callId"],"outcome":{"status":"succeeded","result":{"id":"e","text":5,"note":null}}},
+                "records":[{"model":"Entry","identity":{"id":"e"},"stamp":3,"state":{"text":5,"note":null}}]}).to_string()
+        },
+        // Authority for another identity.
+        |body: &str| {
+            json!({"completion":{"callId":fetch_request(body)["callId"],"outcome":{"status":"succeeded","result":null}},
+                "records":[{"model":"Entry","identity":{"id":"other"},"stamp":3,"state":null}]}).to_string()
+        },
+        // No authority while storing.
+        |body: &str| {
+            json!({"completion":{"callId":fetch_request(body)["callId"],"outcome":{"status":"succeeded","result":null}},"records":[]}).to_string()
+        },
+        |_: &str| "not json".to_string(),
+    ];
+    for (n, answer) in invalid.into_iter().enumerate() {
+        let id = format!("invalid{n}");
+        h.task(&id, fetch("e"));
+        h.run();
+        let (http, body) = h.http("fetch");
+        h.ok(&http, &answer(&body));
+        let events = h.run();
+        assert_eq!(
+            fetch_code(h.completion(&events, &id)),
+            "fetch.invalid_response"
+        );
+    }
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(h.stamp("e"), 2);
+    assert!(h.outstanding("http", Some("fetch")).is_empty());
+}
+
+/// Stored authority follows the shared stamp rules: an older or identical
+/// stamp is a successful no-op that still answers with this invocation's
+/// snapshot; an equal-stamp conflict rejects; stamped absence deletes and
+/// keeps older content from resurrecting the row; a pending optimistic
+/// write stays visible over the new base while the Fetch answers the
+/// server's value.
+#[test]
+fn fetch_applies_the_shared_stamp_rules_and_answers_its_own_snapshot() {
+    let mut h = host();
+    h.connect(false);
+    assert_eq!(
+        h.fetch_now("stored", fetch("e"), Some("server"), 5),
+        done("stored", snapshot("e", Some("server")))
+    );
+    assert_eq!(
+        h.fetch_now("older", fetch("e"), Some("old"), 3),
+        done("older", snapshot("e", Some("old")))
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(
+        h.fetch_now("same", fetch("e"), Some("server"), 5),
+        done("same", snapshot("e", Some("server")))
+    );
+    let conflict = h.fetch_now("conflict", fetch("e"), Some("other"), 5);
+    assert_eq!(fetch_code(&conflict), "fetch.store_failed");
+    assert!(
+        conflict["details"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("conflicts"),
+        "{conflict}"
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(h.stamp("e"), 5);
+
+    // Stamped absence deletes; older content cannot bring the row back.
+    h.fetch_now("d", fetch("d"), Some("here"), 1);
+    assert_eq!(h.text("d"), Some(json!("here")));
+    assert_eq!(
+        h.fetch_now("gone", fetch("d"), None, 2),
+        done("gone", snapshot("d", None))
+    );
+    assert_eq!(h.text("d"), None);
+    assert_eq!(h.stamp("d"), 2);
+    h.fetch_now("zombie", fetch("d"), Some("zombie"), 1);
+    assert_eq!(h.text("d"), None);
+
+    // A pending optimistic write stays visible and is still sent.
+    h.task(
+        "edit",
+        json!({"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"text":"optimistic"}}]}}),
+    );
+    h.run();
+    assert_eq!(h.text("e"), Some(json!("optimistic")));
+    assert_eq!(
+        h.fetch_now("under", fetch("e"), Some("newer"), 6),
+        done("under", snapshot("e", Some("newer")))
+    );
+    assert_eq!(h.text("e"), Some(json!("optimistic")));
+    assert_eq!(h.stamp("e"), 6);
+    assert_eq!(h.client().pending_count().unwrap(), 1);
+}
+
+/// A default Fetch of a hooked Model resolves only after its onStore
+/// transaction commits: the callback sees the change, its own writes commit
+/// with the authority, and no outcome is announced while it runs. A stale
+/// or identical response opens no callback.
+#[test]
+fn fetch_resolves_only_after_its_on_store_transaction_commits() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("f", fetch("e"));
+    h.run();
+    h.answer_fetch(Some("server"), 2);
+    let events = h.run();
+    let callbacks = store_callbacks(&events);
+    assert_eq!(callbacks.len(), 1, "{events:?}");
+    let callback = callbacks[0].clone();
+    assert_eq!(
+        callback["operation"]["changes"],
+        json!([{"kind":"upsert","identity":{"id":"e"},"row":{"id":"e","text":"server","note":null}}])
+    );
+    assert_eq!(callback["operation"]["model"], "Entry");
+    assert!(!completed(&events, "f"));
+    h.hook_write(&callback, "audit", "audit");
+    assert!(h.run().is_empty(), "the callback still holds the writer");
+    let events = h.finish_hook(&callback, true);
+    assert_eq!(
+        h.completion(&events, "f"),
+        &done("f", snapshot("e", Some("server")))
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(h.text("audit"), Some(json!("hook")));
+    // Stale and identical authority: valid no-ops without a callback.
+    for (id, text, stamp) in [("older", "old", 1), ("same", "server", 2)] {
+        h.task(id, fetch("e"));
+        h.run();
+        h.answer_fetch(Some(text), stamp);
+        let events = h.run();
+        assert!(store_callbacks(&events).is_empty(), "{events:?}");
+        assert_eq!(
+            h.completion(&events, id),
+            &done(id, snapshot("e", Some(text)))
+        );
+    }
+    assert_eq!(h.text("e"), Some(json!("server")));
+}
+
+/// A refused onStore callback rolls back its own writes and the incoming
+/// authority, and every joined caller rejects with the same cause. A failed
+/// commit rejects the same way.
+#[test]
+fn a_refused_on_store_rolls_back_and_rejects_every_joined_fetch() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("one", fetch("e"));
+    h.task("two", fetch("e"));
+    h.run();
+    h.answer_fetch(Some("server"), 2);
+    let events = h.run();
+    let callback = store_callbacks(&events)[0].clone();
+    h.hook_write(&callback, "audit", "audit");
+    let events = h.finish_hook(&callback, false);
+    for id in ["one", "two"] {
+        assert_eq!(
+            h.completion(&events, id),
+            &failed_with(
+                id,
+                "fetch.store_failed",
+                json!({"code":"fetch.store_failed","message":"refused","model":"Entry","path":"fetch","callbackEffectId":callback["effectId"]})
+            )
+        );
+    }
+    assert_eq!(h.text("e"), None);
+    assert_eq!(h.text("audit"), None);
+    assert_eq!(h.stamp("e"), 0);
+    // The flight was released: the next call reads again.
+    h.task("again", fetch("e"));
+    h.run();
+    h.http("fetch");
+
+    let (mut h, fail_commit, _) = hooked_fault_host();
+    h.connect(false);
+    h.task("commit", fetch("e"));
+    h.run();
+    h.answer_fetch(Some("server"), 2);
+    let events = h.run();
+    let callback = store_callbacks(&events)[0].clone();
+    fail_commit.store(true, Ordering::SeqCst);
+    let events = h.finish_hook(&callback, true);
+    let completion = h.completion(&events, "commit");
+    assert_eq!(fetch_code(completion), "fetch.store_failed");
+    assert!(completion["details"].get("callbackEffectId").is_none());
+    assert_eq!(h.text("e"), None);
+}
+
+/// `store: false` returns the same snapshot shape without a callback,
+/// without touching the local row and without committing anything.
+#[test]
+fn fetch_without_storage_calls_no_hook_and_changes_no_row() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("stored", fetch("e"));
+    h.run();
+    h.answer_fetch(Some("server"), 2);
+    let events = h.run();
+    let callback = store_callbacks(&events)[0].clone();
+    h.finish_hook(&callback, true);
+    let generation = h.client().generation();
+    h.task("preview", fetch_of("e", json!({"store":false})));
+    h.run();
+    let (http, body) = h.http("fetch");
+    assert_eq!(fetch_request(&body)["store"], false);
+    h.ok(&http, &fetched(&body, Some("preview"), 9));
+    let events = h.run();
+    assert!(store_callbacks(&events).is_empty(), "{events:?}");
+    assert_eq!(
+        h.completion(&events, "preview"),
+        &done("preview", snapshot("e", Some("preview")))
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+    assert_eq!(h.stamp("e"), 2);
+    assert_eq!(h.client().generation(), generation, "nothing committed");
+    // Absence without storage deletes nothing.
+    h.task("absent", fetch_of("e", json!({"store":false})));
+    h.run();
+    h.answer_fetch(None, 9);
+    let events = h.run();
+    assert_eq!(
+        h.completion(&events, "absent"),
+        &done("absent", snapshot("e", None))
+    );
+    assert_eq!(h.text("e"), Some(json!("server")));
+}
+
+/// A flight stays joinable while its reply waits for the writer: a caller
+/// admitted before the reply joins it, the reply is stored once through one
+/// callback, and both callers answer after that commit. A call admitted
+/// while the callback runs waits, then reads again.
+#[test]
+fn a_fetch_joined_while_its_reply_waits_for_the_writer_shares_one_store() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("first", fetch("e"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    let (effect, transaction) = h.begin("tx");
+    h.task("joined", fetch("e"));
+    h.ok(&http, &fetched(&body, Some("server"), 2));
+    let events = h.run();
+    assert!(
+        !events.iter().any(|e| e["type"] == "taskCompleted") && store_callbacks(&events).is_empty(),
+        "everything waits for the application callback: {events:?}"
+    );
+    h.submit(
+        json!({"type":"callbackResult","effectId":effect,"transactionId":transaction,"ok":true}),
+    );
+    let events = h.run();
+    assert_eq!(h.completion(&events, "tx")["ok"], true);
+    assert!(
+        h.outstanding("http", Some("fetch")).is_empty(),
+        "joined, not sent"
+    );
+    let callbacks = store_callbacks(&events);
+    assert_eq!(callbacks.len(), 1, "{events:?}");
+    h.task("later", fetch("e"));
+    assert!(h.run().is_empty());
+    let events = h.finish_hook(&callbacks[0], true);
+    for id in ["first", "joined"] {
+        assert_eq!(
+            h.completion(&events, id),
+            &done(id, snapshot("e", Some("server")))
+        );
+    }
+    assert!(store_callbacks(&events).is_empty());
+    assert!(!completed(&events, "later"));
+    let (_, again) = h.http("fetch");
+    assert_ne!(
+        fetch_request(&again)["callId"],
+        fetch_request(&body)["callId"]
+    );
+}
+
+/// The deadline, a refused or repeated 401 and a transport failure reject
+/// the owner and every joined caller and release the flight; a late reply is
+/// fenced. A 401 refreshes once and resends the same frozen body under the
+/// same deadline.
+#[test]
+fn fetch_deadline_refresh_and_late_replies_release_every_flight() {
+    let mut h = host();
+    h.connect(true);
+    h.task("slow", fetch("e"));
+    h.task("slow-joined", fetch("e"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    let (timer, _) = h.one("timer", None);
+    h.fire(&timer);
+    let events = h.run();
+    assert!(cancelled(&events, &http));
+    for id in ["slow", "slow-joined"] {
+        assert!(
+            events.contains(&fetch_failed(
+                id,
+                "fetch.timeout",
+                Some("direct call timed out")
+            )),
+            "{events:?}"
+        );
+    }
+    h.ok(&http, &fetched(&body, Some("late"), 2));
+    assert_eq!(h.run(), Vec::<Value>::new());
+    assert_eq!(h.text("e"), None);
+
+    h.task("auth", fetch("e"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    let (timer, _) = h.one("timer", None);
+    h.fail(&http, "unauthorized", Some(401));
+    h.run();
+    let (refresh, _) = h.one("refreshAuth", None);
+    h.answer(&refresh, json!({"ok":true,"value":null}));
+    h.run();
+    let (retry, resent) = h.http("fetch");
+    assert_eq!(resent, body, "the same call ID and bytes");
+    assert_eq!(h.one("timer", None).0, timer);
+    h.ok(&retry, &fetched(&body, Some("auth"), 2));
+    let events = h.run();
+    assert_eq!(
+        h.completion(&events, "auth"),
+        &done("auth", snapshot("e", Some("auth")))
+    );
+
+    h.task("twice", fetch("e"));
+    h.run();
+    let (http, _) = h.http("fetch");
+    h.fail(&http, "unauthorized", Some(401));
+    h.run();
+    let (refresh, _) = h.one("refreshAuth", None);
+    h.answer(&refresh, json!({"ok":true,"value":null}));
+    h.run();
+    let (http, _) = h.http("fetch");
+    h.fail(&http, "unauthorized", Some(401));
+    let events = h.run();
+    assert!(events.contains(&failed_with(
+        "twice",
+        "fetch.transport_failed",
+        json!({"code":"fetch.transport_failed","message":"unauthorized","status":401})
+    )));
+
+    h.task("refused", fetch("e"));
+    h.run();
+    let (http, _) = h.http("fetch");
+    h.fail(&http, "unauthorized", Some(401));
+    h.run();
+    let (refresh, _) = h.one("refreshAuth", None);
+    h.fail(&refresh, "no credentials", None);
+    let events = h.run();
+    assert!(events.contains(&fetch_failed(
+        "refused",
+        "fetch.transport_failed",
+        Some("no credentials")
+    )));
+
+    h.task("down", fetch("e"));
+    h.task("down-joined", fetch("e"));
+    h.run();
+    let (http, _) = h.http("fetch");
+    h.fail(&http, "HTTP 503", Some(503));
+    let events = h.run();
+    for id in ["down", "down-joined"] {
+        assert!(events.contains(&failed_with(
+            id,
+            "fetch.transport_failed",
+            json!({"code":"fetch.transport_failed","message":"HTTP 503","status":503})
+        )));
+    }
+    assert!(h.outstanding("http", None).is_empty(), "{:?}", h.open);
+    assert!(h.outstanding("timer", None).is_empty(), "{:?}", h.open);
+    assert_eq!(h.text("e"), Some(json!("auth")));
+}
+
+/// Stop fails Fetches still waiting on the network, joined callers
+/// included; a reply admitted before the stop still stores and answers.
+/// Close fails every Fetch, a reply in hand included, and applies nothing.
+#[test]
+fn fetch_stop_and_close_release_flights_and_fence_late_replies() {
+    let mut h = host();
+    h.connect(false);
+    h.task("waiting", fetch("w"));
+    h.task("waiting-joined", fetch("w"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    h.task("stop", json!({"kind":"connection","event":"stop"}));
+    let events = h.run();
+    assert!(cancelled(&events, &http));
+    for id in ["waiting", "waiting-joined"] {
+        assert!(events.contains(&fetch_failed(id, "fetch.unavailable", None)));
+    }
+    h.ok(&http, &fetched(&body, Some("late"), 1));
+    assert_eq!(h.run(), Vec::<Value>::new());
+    assert_eq!(h.text("w"), None);
+
+    h.connect(false);
+    h.task("admitted", fetch("a"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    h.task("stop", json!({"kind":"connection","event":"stop"}));
+    h.ok(&http, &fetched(&body, Some("kept"), 1));
+    let events = h.run();
+    let stopped = position(&events, |e| *e == done("stop", Value::Null));
+    let answered = position(&events, |e| e["requestId"] == "admitted");
+    assert!(stopped < answered, "{events:?}");
+    assert_eq!(
+        events[answered],
+        done("admitted", snapshot("a", Some("kept")))
+    );
+    assert_eq!(h.text("a"), Some(json!("kept")));
+
+    h.connect(false);
+    h.task("out", fetch("o"));
+    h.task("in-hand", fetch("i"));
+    h.run();
+    let requests = h.outstanding("http", Some("fetch"));
+    let (in_hand, in_hand_body) = requests
+        .iter()
+        .find(|(_, op)| fetch_request(op["body"].as_str().unwrap())["identity"]["id"] == "i")
+        .map(|(id, op)| (id.clone(), op["body"].as_str().unwrap().to_string()))
+        .unwrap();
+    let (out, out_body) = requests
+        .iter()
+        .find(|(id, _)| **id != in_hand)
+        .map(|(id, op)| (id.clone(), op["body"].as_str().unwrap().to_string()))
+        .unwrap();
+    h.ok(&in_hand, &fetched(&in_hand_body, Some("in hand"), 1));
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    for id in ["out", "in-hand"] {
+        assert!(
+            events.contains(&fetch_failed(id, "fetch.unavailable", None)),
+            "{events:?}"
+        );
+    }
+    assert_eq!(events.last().unwrap(), &json!({"type":"runtimeClosed"}));
+    assert_eq!(h.text("i"), None, "nothing applies after close");
+    let late: Input = serde_json::from_value(json!({"type":"effectResult","effectId":out,"outcome":{"ok":true,"value":{"status":200,"body":fetched(&out_body, Some("late"), 1)}}})).unwrap();
+    assert!(h.runtime.receive(late, h.now, ENTROPY).is_err());
+}
+
+/// Close while a Fetch's onStore callback runs rolls the callback's writes
+/// and the authority back and fails the owner and its joined caller once.
+#[test]
+fn closing_during_a_fetch_callback_rolls_back_and_fails_each_caller_once() {
+    let mut h = hooked_host();
+    h.connect(false);
+    h.task("one", fetch("e"));
+    h.task("two", fetch("e"));
+    h.run();
+    h.answer_fetch(Some("server"), 2);
+    let events = h.run();
+    let callback = store_callbacks(&events)[0].clone();
+    h.hook_write(&callback, "audit", "audit");
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    for id in ["one", "two"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e["type"] == "taskCompleted" && e["requestId"] == id)
+                .count(),
+            1,
+            "{events:?}"
+        );
+        assert!(events.contains(&fetch_failed(id, "fetch.unavailable", None)));
+    }
+    assert!(cancelled(&events, callback["effectId"].as_str().unwrap()));
+    assert_eq!(events.last().unwrap(), &json!({"type":"runtimeClosed"}));
+    assert_eq!(h.text("e"), None);
+    assert_eq!(h.text("audit"), None);
+}
+
+/// While an incompatible schema waits for old Mutations to drain, Fetch is
+/// refused before any request - it could only store without onStore or read
+/// under the old schema - and the drain still progresses. After the rebuild,
+/// a Fetch reads and stores under the new replica.
+#[test]
+fn fetch_is_refused_while_a_schema_drains_and_runs_on_the_rebuilt_replica() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Host::of(pending_rebuild(dir.path()), Some(dir));
+    h.connect(false);
+    for (id, command) in [
+        ("stored", fetch("e")),
+        ("preview", fetch_of("e", json!({"store":false}))),
+    ] {
+        let completion = h.call(id, command);
+        assert_eq!(completion, fetch_failed(id, "fetch.schema_pending", None));
+    }
+    assert!(h.outstanding("http", Some("fetch")).is_empty());
+    // The drain goes on.
+    let (push, body) = h.http("push");
+    let pending = h.client().pending_count().unwrap();
+    assert!(pending > 0);
+    // The batch out holds the plain mutation: a plain receipt settles it.
+    let batch: Value = serde_json::from_str(&body).unwrap();
+    let answer = json!({"clientId":h.client().client_id(),"batchSequence":batch["batchSequence"],"rejections":[],
+        "records":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"unsent","note":null}}]});
+    h.ok(&push, &answer.to_string());
+    let events = h.run();
+    assert!(h.client().pending_count().unwrap() < pending, "{events:?}");
+    h.task("rebuild", json!({"kind":"rebuild","discardPending":true}));
+    h.task("fresh", fetch("e"));
+    let events = h.run();
+    assert_eq!(h.completion(&events, "rebuild")["ok"], true);
+    let (http, body) = h.http("fetch");
+    let request = fetch_request(&body);
+    h.ok(
+        &http,
+        &json!({"completion":{"callId":request["callId"],"outcome":{"status":"succeeded","result":{"id":"e","text":"new","note":null,"due":"soon"}}},
+            "records":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"new","note":null,"due":"soon"}}]})
+        .to_string(),
+    );
+    let events = h.run();
+    assert_eq!(
+        h.completion(&events, "fresh"),
+        &done(
+            "fresh",
+            json!({"outcome":{"status":"succeeded","result":{"id":"e","text":"new","note":null,"due":"soon"}}})
+        )
+    );
+    assert_eq!(h.text("e"), Some(json!("new")));
+}

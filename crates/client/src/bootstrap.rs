@@ -466,17 +466,30 @@ impl<S: ClientStore> Client<S> {
         run: u64,
         error: BootstrapError,
     ) -> Result<bool> {
+        Ok(self
+            .fail_bootstrap_state(scope, subscription_id, run, error)?
+            .is_some())
+    }
+    /// The same guarded transition with the state produced inside its write.
+    /// The worker can announce it without a fallible read after commit.
+    pub(crate) fn fail_bootstrap_state(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        error: BootstrapError,
+    ) -> Result<Option<BootstrapState>> {
         self.write(|e| {
             let row = e.bootstrap_of(scope, subscription_id)?;
             let mut state = row.state;
             if state.run != run || !state.state.active() {
-                return Ok(false);
+                return Ok(None);
             }
             state.state = BootstrapPhase::Failed;
             state.error = Some(error);
             written(e.set_bootstrap(&state, run)?)?;
             e.mark_bootstrap(scope);
-            Ok(true)
+            Ok(Some(state))
         })
     }
     /// Complete every named run whose fixed barrier ordinary delivery has

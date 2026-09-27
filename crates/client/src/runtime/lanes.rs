@@ -75,6 +75,9 @@ pub(super) struct DownlinkLane {
     socket: Option<(String, u64)>,
     /// Catch-up requests of that session not answered yet.
     outstanding: u64,
+    /// Consecutive worker pump errors; a timer retries even when no socket or
+    /// external event remains to wake the lane.
+    failures: u32,
 }
 
 impl<S: ClientStore + 'static> ClientRuntime<S> {
@@ -484,6 +487,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.committed_since(generation);
         match pumped {
             Ok(actions) => {
+                if let Some(connection) = &mut self.connection {
+                    connection.downlink.failures = 0;
+                }
                 let waits = actions
                     .iter()
                     .any(|action| matches!(action, DownlinkAction::Wait { .. }));
@@ -500,8 +506,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
             }
             Err(e) => {
-                // A pump that failed on the open session ends it; with none
-                // open there is nothing to retry until something arrives.
+                // End a host socket that was open, then retry the worker on a
+                // bounded timer. It may still owe actions or barrier work
+                // even when there was no socket to close.
                 self.error(e.to_string());
                 let socket = self
                     .connection
@@ -510,6 +517,30 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 if let Some((_, epoch)) = socket {
                     self.abandon_session(epoch);
                     self.enqueue_downlink(DownlinkEvent::Closed { epoch }, now, entropy);
+                }
+                if let Some(timer) = self
+                    .connection
+                    .as_mut()
+                    .and_then(|c| c.downlink.timer.take())
+                {
+                    self.cancel_effect(&timer);
+                }
+                let Some(connection) = &mut self.connection else {
+                    return;
+                };
+                if connection.paused {
+                    connection.downlink.dirty = false;
+                    return;
+                }
+                let delay = ConnectionDriver::backoff(connection.downlink.failures, entropy);
+                connection.downlink.failures = connection.downlink.failures.saturating_add(1);
+                connection.downlink.dirty = false;
+                let timer = self.issue_effect(
+                    EffectKind::DownlinkTimer,
+                    Operation::Timer { millis: delay },
+                );
+                if let Some(connection) = &mut self.connection {
+                    connection.downlink.timer = timer;
                 }
             }
         }
@@ -689,6 +720,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         connection.push.cycling = false;
         connection.push.waiting = false;
         connection.downlink.outstanding = 0;
+        connection.downlink.failures = 0;
         // Whatever was in flight on the push lane is gone with the replica.
         self.lanes.connection.complete(true, now, 0);
         self.wake_lanes(now, entropy);

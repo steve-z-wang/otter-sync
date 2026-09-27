@@ -260,6 +260,17 @@ fn snapshot(query: &mut dyn FnMut(&str) -> Vec<Value>) -> Value {
     Value::Object(tables)
 }
 
+/// [`snapshot`] taken on the writer connection, in a fresh session that is
+/// then rolled back. Beginning the session fails if an earlier transaction
+/// is still open on the writer, so a rollback that returned `Ok` but left the
+/// writer open cannot pass a check built on this.
+fn writer_snapshot(client: &mut Local) -> Value {
+    client.begin_session().unwrap();
+    let rows = snapshot(&mut |sql| client.session_sql(sql, &[]).unwrap());
+    client.rollback_session().unwrap();
+    rows
+}
+
 // The child-only mode.
 
 /// Where the child stops and waits to be killed.
@@ -399,7 +410,7 @@ fn child_process_entry() {
             let _prepared = hooked(&mut client);
             // The hook fails: its write rolls back with the transaction.
             client.rollback_session().unwrap();
-            let after = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
+            let after = writer_snapshot(&mut client);
             assert_eq!(after, before);
             park(json!({"event":"rolled_back","report":report,"before":before}));
         }
@@ -422,7 +433,7 @@ fn child_process_entry() {
             assert_ne!(during, before);
             // The commit fails: the whole receipt transaction rolls back.
             client.rollback_session().unwrap();
-            let after = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
+            let after = writer_snapshot(&mut client);
             assert_eq!(after, before);
             park(json!({"event":"rolled_back","report":report,"before":before}));
         }

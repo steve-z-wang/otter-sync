@@ -1042,3 +1042,119 @@ fn cli_refuses_invalid_retained_operation_kinds_before_writes() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cli_retains_load_history_without_rewriting_other_histories() {
+    let (root, input) = workspace("load-history");
+    let out = root.join("out");
+    let model = input.join("test.model");
+    let operations = "model Todo { id String title String @@id(id) } mutation Save { todo Todo.create } query Count() { n Int }";
+    fs::write(&model, operations).unwrap();
+    let first = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let histories = [
+        input.join("history/actions.json"),
+        input.join("history/models.json"),
+        input.join("history/mutations.json"),
+    ];
+    let before: Vec<_> = histories.iter().map(|p| fs::read(p).unwrap()).collect();
+    let loads = input.join("history/loads.json");
+    assert!(!loads.exists());
+    let schema_before = fs::read(out.join("schema.json")).unwrap();
+    assert!(!String::from_utf8_lossy(&schema_before).contains("\"loads\""));
+
+    let with_load = format!("{operations} load AllTodos() {{ todos Todo[] }}");
+    fs::write(&model, &with_load).unwrap();
+    let second = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let after: Vec<_> = histories.iter().map(|p| fs::read(p).unwrap()).collect();
+    assert_eq!(before, after);
+    let history: serde_json::Value = serde_json::from_slice(&fs::read(&loads).unwrap()).unwrap();
+    assert_eq!(history["formatVersion"], 1);
+    assert_eq!(history["loads"]["AllTodos"]["1"]["name"], "AllTodos");
+    let client: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("schema.json")).unwrap()).unwrap();
+    assert_eq!(client["loads"][0]["name"], "AllTodos");
+    assert!(
+        client["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["name"] != "AllTodos")
+    );
+    let backend: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
+    assert_eq!(backend["schema"]["loads"], client["loads"]);
+    assert!(axton_core::Schema::from_value(client).is_ok());
+
+    // Removing or reclassifying a retained Load writes nothing.
+    let retained = fs::read(&loads).unwrap();
+    let generated = fs::read(out.join("backend.json")).unwrap();
+    for replacement in [
+        operations.to_string(),
+        format!("{operations} query AllTodos() {{ todos Todo[] }}"),
+    ] {
+        fs::write(&model, &replacement).unwrap();
+        let refused = axton(&[input.as_os_str(), out.as_os_str()]);
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("retained load AllTodos cannot be removed"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        assert_eq!(fs::read(&loads).unwrap(), retained);
+        assert_eq!(fs::read(out.join("backend.json")).unwrap(), generated);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cli_load_history_options_require_explicit_initialization() {
+    let (root, input) = workspace("load-options");
+    let out = root.join("out");
+    let path = root.join("load-history.json");
+    fs::write(
+        input.join("test.model"),
+        "model Todo { id String @@id(id) } load AllTodos() { todos Todo[] }",
+    )
+    .unwrap();
+    let explicit = [
+        input.as_os_str(),
+        out.as_os_str(),
+        "--load-history".as_ref(),
+        path.as_os_str(),
+    ];
+    let missing = axton(&explicit);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("missing load history"));
+    assert!(!out.exists());
+    let initialize = [
+        input.as_os_str(),
+        out.as_os_str(),
+        "--load-history".as_ref(),
+        path.as_os_str(),
+        "--initialize-load-history".as_ref(),
+    ];
+    let first = axton(&initialize);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(path.exists());
+    assert!(!input.join("history/loads.json").exists());
+    let again = axton(&initialize);
+    assert!(!again.status.success());
+    assert!(String::from_utf8_lossy(&again.stderr).contains("load history already exists"));
+    assert!(axton(&explicit).status.success());
+    fs::remove_dir_all(root).unwrap();
+}

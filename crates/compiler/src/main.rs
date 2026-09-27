@@ -10,7 +10,7 @@ fn read_json(path: &Path) -> Result<Value, String> {
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().collect();
     if args.len() < 4 || args[1] != "compile" {
-        return Err("usage: axton compile INPUT_DIR OUTPUT_DIR [--mutation-history FILE] [--initialize-mutation-history] [--model-history FILE] [--initialize-model-history] [--action-history FILE] [--initialize-action-history] [--schema-fence FILE] [--backend-runtime SPEC] [--client-runtime SPEC]".into());
+        return Err("usage: axton compile INPUT_DIR OUTPUT_DIR [--mutation-history FILE] [--initialize-mutation-history] [--model-history FILE] [--initialize-model-history] [--action-history FILE] [--initialize-action-history] [--load-history FILE] [--initialize-load-history] [--schema-fence FILE] [--backend-runtime SPEC] [--client-runtime SPEC]".into());
     }
     let input = Path::new(&args[2]);
     let out = Path::new(&args[3]);
@@ -18,6 +18,7 @@ fn run() -> Result<(), String> {
     let mut history_path = input.join("history").join("mutations.json");
     let mut model_history_path = input.join("history").join("models.json");
     let mut action_history_path = input.join("history").join("actions.json");
+    let mut load_history_path = input.join("history").join("loads.json");
     let superseded = out.join("mutation-history.json");
     let mut fence_path = out.join("schema.json");
     let mut backend_runtime = String::from("@axton/server");
@@ -28,14 +29,17 @@ fn run() -> Result<(), String> {
     let mut explicit_model_history = false;
     let mut initialize_actions = false;
     let mut explicit_action_history = false;
+    let mut initialize_loads = false;
+    let mut explicit_load_history = false;
     let mut index = 4;
     while index < args.len() {
         match args[index].as_str() {
             "--initialize-mutation-history" => initialize = true,
             "--initialize-model-history" => initialize_models = true,
             "--initialize-action-history" => initialize_actions = true,
-            "--mutation-history" | "--model-history" | "--action-history" | "--schema-fence"
-            | "--backend-runtime" | "--client-runtime" => {
+            "--initialize-load-history" => initialize_loads = true,
+            "--mutation-history" | "--model-history" | "--action-history" | "--load-history"
+            | "--schema-fence" | "--backend-runtime" | "--client-runtime" => {
                 let value = args.get(index + 1).ok_or("missing option value")?;
                 match args[index].as_str() {
                     "--mutation-history" => {
@@ -49,6 +53,10 @@ fn run() -> Result<(), String> {
                     "--action-history" => {
                         action_history_path = PathBuf::from(value);
                         explicit_action_history = true;
+                    }
+                    "--load-history" => {
+                        load_history_path = PathBuf::from(value);
+                        explicit_load_history = true;
                     }
                     "--schema-fence" => fence_path = PathBuf::from(value),
                     "--backend-runtime" => backend_runtime = value.clone(),
@@ -122,6 +130,18 @@ fn run() -> Result<(), String> {
             return Err("missing operation history; restore it or initialize explicitly".into());
         }
     }
+    // Native Loads keep their own history beside the operation history; a
+    // schema without Loads neither reads nor writes it.
+    let has_loads = config["loads"].as_array().is_some_and(|l| !l.is_empty());
+    let track_loads = has_loads || load_history_path.exists();
+    if has_loads {
+        if initialize_loads && load_history_path.exists() {
+            return Err("load history already exists; initialization refused".into());
+        }
+        if explicit_load_history && !load_history_path.exists() && !initialize_loads {
+            return Err("missing load history; restore it or initialize explicitly".into());
+        }
+    }
     if initialize
         && config["mutations"]
             .as_array()
@@ -185,12 +205,35 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    let load_history = if track_loads {
+        let previous_loads = if load_history_path.exists() {
+            Some(read_json(&load_history_path)?)
+        } else {
+            None
+        };
+        Some(axton_compiler::reconcile_load_history(
+            &config,
+            previous_loads.as_ref(),
+        )?)
+    } else {
+        None
+    };
     let historical = retained(&history, "mutations");
     config["backendMutations"] = serde_json::json!(historical);
     config["schema"]["clientPolicies"] = serde_json::json!(historical);
     if let Some(action_history) = &action_history {
         config["actions"] = serde_json::json!(retained(action_history, "actions"));
         config["schema"]["actions"] = config["actions"].clone();
+    }
+    if let Some(load_history) = &load_history {
+        let loads = retained(load_history, "loads");
+        if loads.is_empty() {
+            config.as_object_mut().unwrap().remove("loads");
+            config["schema"].as_object_mut().unwrap().remove("loads");
+        } else {
+            config["loads"] = serde_json::json!(loads);
+            config["schema"]["loads"] = config["loads"].clone();
+        }
     }
     config["schema"]["resultModels"] = config["backendModels"].clone();
     // The merged schema, retained versions included, is what clients and the
@@ -240,12 +283,23 @@ fn run() -> Result<(), String> {
             serde_json::to_string_pretty(action_history).unwrap(),
         ));
     }
+    if let Some(load_history) = &load_history {
+        files.push((
+            load_history_path.clone(),
+            serde_json::to_string_pretty(load_history).unwrap(),
+        ));
+    }
     fs::create_dir_all(out).map_err(|e| e.to_string())?;
     for parent in [
         history_path.parent(),
         model_history_path.parent(),
         if track_actions {
             action_history_path.parent()
+        } else {
+            None
+        },
+        if track_loads {
+            load_history_path.parent()
         } else {
             None
         },

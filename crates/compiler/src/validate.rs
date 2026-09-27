@@ -2,7 +2,9 @@
 //! from source reports the offending declaration; the core descriptor check
 //! near the end is a backstop at the end of the input. No descriptor is
 //! assembled here: [`crate::generate`] renders [`Validated`].
-use crate::parse::{ActionInputDecl, Declarations, FieldDecl, ModelDecl, Pos, SlotDecl, at};
+use crate::parse::{
+    ActionInputDecl, Declarations, FieldDecl, LoadDecl, ModelDecl, Pos, SlotDecl, at,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +24,9 @@ pub struct Validated {
     pub prerequisites: Vec<Prerequisite>,
     pub mutations: Vec<Mutation>,
     pub actions: Vec<Action>,
+    /// Native Loads, in source order: separate from `actions` so no Action
+    /// route or kind can describe one.
+    pub loads: Vec<Load>,
     /// Every `@deprecated`, in source order. A generated-code notice only
     /// ([#91](https://github.com/zanminwang/axton/issues/91)): Generate keeps
     /// it beside the descriptors, never inside them, so no runtime reads it.
@@ -193,6 +198,15 @@ pub struct Action {
     pub inputs: Vec<ActionInput>,
     pub outputs: Vec<ActionOutput>,
     pub sequence: Option<Sequence>,
+}
+/// `load Name(inputs) { outputs }`: value inputs only, and every output a
+/// non-null list of Model identities the handler enumerates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Load {
+    pub name: String,
+    pub version: u64,
+    pub inputs: Vec<ActionInput>,
+    pub outputs: Vec<ActionOutput>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionInput {
@@ -407,6 +421,7 @@ fn create_default(
             .collect(),
         models: vec![],
         actions: vec![],
+        loads: vec![],
         result_models: vec![],
         requirements: vec![],
         prerequisites: vec![],
@@ -575,6 +590,141 @@ fn validate_action_slot(
         cardinality: cardinality(&s.cardinality),
         allowed_patch_fields,
         bindings,
+    })
+}
+
+/// Generated method names of declared operations, with the name and position
+/// that first claimed each. A clash is reported at the later declaration.
+#[derive(Default)]
+struct OperationNames(BTreeMap<String, (Pos, String)>);
+impl OperationNames {
+    fn insert(&mut self, name: &str, pos: Pos) -> Result<(), String> {
+        let Some((first, first_name)) = self.0.get(&method_name(name)) else {
+            self.0.insert(method_name(name), (pos, name.to_string()));
+            return Ok(());
+        };
+        let (pos, name) = if (first.line, first.col) > (pos.line, pos.col) {
+            (*first, first_name.as_str())
+        } else {
+            (pos, name)
+        };
+        Err(at(
+            pos,
+            format!(
+                "duplicate operation {name}: a name is declared once across mutation, query and load"
+            ),
+        ))
+    }
+}
+/// The generated method name of an operation: its first letter lowered.
+fn method_name(name: &str) -> String {
+    format!("{}{}", name[..1].to_ascii_lowercase(), &name[1..])
+}
+/// Members of the generated Dart route classes (and `Object`): no operation
+/// method may take one of these names.
+const ROUTE_MEMBERS: &[&str] = &[
+    "client",
+    "toString",
+    "hashCode",
+    "runtimeType",
+    "noSuchMethod",
+];
+fn validate_load(
+    decl: &LoadDecl,
+    enums: &[Enum],
+    models: &[Model],
+    declared_names: &[(&str, Pos)],
+    operation_names: &mut OperationNames,
+) -> Result<Load, String> {
+    let name = &decl.name;
+    // `client.loads.get`, `.list` and `.invalidate` manage jobs and once reuse.
+    if axton_core::RESERVED_LOAD_NAMES
+        .iter()
+        .any(|r| name.eq_ignore_ascii_case(r))
+        || ROUTE_MEMBERS.contains(&method_name(name).as_str())
+    {
+        return Err(at(decl.pos, format!("Load name {name} is reserved")));
+    }
+    if declared_names.iter().any(|(declared, _)| declared == name) {
+        return Err(at(
+            decl.pos,
+            format!("Load {name} collides with a model or enum"),
+        ));
+    }
+    operation_names.insert(name, decl.pos)?;
+    let mut inputs = Vec::new();
+    let mut input_names = BTreeSet::new();
+    for input in &decl.inputs {
+        match input {
+            ActionInputDecl::Model(s) => {
+                return Err(at(
+                    s.pos,
+                    format!(
+                        "Load {name} cannot take Model operand {}; Model operands belong to mutations",
+                        s.name
+                    ),
+                ));
+            }
+            ActionInputDecl::Value(f) => {
+                if !input_names.insert(f.name.as_str()) {
+                    return Err(at(f.pos, format!("duplicate Load input {}", f.name)));
+                }
+                inputs.push(ActionInput::Value {
+                    name: f.name.clone(),
+                    ty: action_value_type(f, enums, "Load")?,
+                    nullable: f.nullable,
+                    list: f.list,
+                });
+            }
+        }
+    }
+    let mut outputs = Vec::new();
+    let mut output_names = BTreeSet::new();
+    for output in &decl.outputs {
+        let f = &output.field;
+        if !output_names.insert(f.name.as_str()) {
+            return Err(at(f.pos, format!("duplicate Load output {}", f.name)));
+        }
+        reject_operation_default(f)?;
+        let Some(model) = models.iter().find(|m| m.name == f.type_name) else {
+            // A value type is never a Load output; an unknown one says so first.
+            action_value_type(f, enums, "Load")?;
+            return Err(at(
+                f.pos,
+                format!(
+                    "Load {name} output {} must be a non-null list of Model identities",
+                    f.name
+                ),
+            ));
+        };
+        if !f.attributes.is_empty() || f.deprecated.is_some() {
+            return Err(at(
+                f.pos,
+                format!("unsupported Load output directive on {}", f.name),
+            ));
+        }
+        if !f.list || f.nullable {
+            return Err(at(
+                f.pos,
+                format!(
+                    "Load {name} output {} must be a non-null list of Model identities",
+                    f.name
+                ),
+            ));
+        }
+        outputs.push(ActionOutput {
+            name: f.name.clone(),
+            ty: ActionOutputType::Model(model.name.clone()),
+            cardinality: Cardinality::List,
+            source: ActionOutputSource::HandlerModelIdentity,
+            model_read_version: Some(model.version),
+        });
+    }
+    Ok(Load {
+        name: name.clone(),
+        version: decl.version,
+        inputs,
+        outputs,
     })
 }
 
@@ -1142,7 +1292,8 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         m.sequence = sequence;
     }
     let mut actions = Vec::new();
-    let mut action_names = BTreeSet::new();
+    // Mutations, Queries and Loads share one namespace of generated method names.
+    let mut operation_names = OperationNames::default();
     for decl in &d.actions {
         let label = kind_label(decl.kind);
         // `mutations.call` and `queries.enqueue` select the other delivery
@@ -1160,16 +1311,8 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
         // Generated Dart route classes hold `client` and inherit `Object`
         // members; an operation method cannot reuse those names.
-        let method = format!("{}{}", decl.name[..1].to_ascii_lowercase(), &decl.name[1..]);
-        if [
-            "client",
-            "toString",
-            "hashCode",
-            "runtimeType",
-            "noSuchMethod",
-        ]
-        .contains(&method.as_str())
-        {
+        let method = method_name(&decl.name);
+        if ROUTE_MEMBERS.contains(&method.as_str()) {
             return Err(at(
                 decl.pos,
                 format!(
@@ -1184,17 +1327,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                 format!("{label} {} collides with a model or enum", decl.name),
             ));
         }
-        // Mutations and Queries share one operation namespace.
-        let generated_name = format!("{}{}", decl.name[..1].to_ascii_lowercase(), &decl.name[1..]);
-        if !action_names.insert(generated_name) {
-            return Err(at(
-                decl.pos,
-                format!(
-                    "duplicate operation {}: a name is declared once across mutation and query",
-                    decl.name
-                ),
-            ));
-        }
+        operation_names.insert(&decl.name, decl.pos)?;
         if decl.kind == axton_core::CallKind::Query {
             if let Some(s) = &decl.sequence {
                 return Err(at(
@@ -1378,6 +1511,16 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
         actions[i].sequence = Some(Sequence { after: calls });
     }
+    let mut loads = Vec::new();
+    for decl in &d.loads {
+        loads.push(validate_load(
+            decl,
+            &enums,
+            &models,
+            &declared_names,
+            &mut operation_names,
+        )?);
+    }
     for (c, pos) in unique_constraints.iter().zip(&constraint_pos) {
         let m = model(&c.model).unwrap();
         if c.fields.is_empty()
@@ -1397,6 +1540,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         prerequisites,
         mutations,
         actions,
+        loads,
         deprecations: {
             let mut list = vec![];
             for e in &d.enums {

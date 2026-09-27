@@ -60,6 +60,7 @@ impl ModelContract {
         Schema {
             enums: self.enums.clone(),
             actions: vec![],
+            loads: vec![],
             result_models: vec![],
             models: vec![axton_core::ModelDescriptor {
                 name: self.name.clone(),

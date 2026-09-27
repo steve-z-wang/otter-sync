@@ -163,7 +163,6 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
 - **`forget()`** removes a completed, failed or cancelled job (`load.not_terminal` for a running one); `get` then returns `null`, and later calls through an old handle fail with `load.not_found`. Jobs are never removed automatically.
 - **`dispose()`** stops this handle's observers only; the job continues. A handle you never dispose stays in memory until the client closes, because it keeps receiving status snapshots, so dispose handles you no longer watch. `get` returns a new handle each time; several handles to one job share its ID and state.
 
-<!-- txm-draft: verify against implementation -->
 Closing the client rejects pending `wait()` calls with `client_closed` and keeps every job; reopening resumes them. Load calls are not allowed inside `client.transaction`, a Mutation's `local` callback or an `onStore` callback.
 
 ## Keep loaded records current
@@ -188,7 +187,6 @@ A compatible schema change keeps every job. A job whose Load or Model version is
 
 Loads run while the client is open. A mobile app that is suspended or closed makes no progress; its jobs continue when the app opens the client again. AXTON does not schedule background execution.
 
-<!-- txm-draft: verify against implementation -->
 ## Errors
 
 These codes appear as `status.error.code` and on the error `wait()` or a management call throws.

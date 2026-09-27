@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Delegate implementation only when the user authorizes it.
 
+**Implementation note:** implemented on `codex/transaction-mutations` from `a05e4e4`; execution evidence is in the owning documents' quality requirements and the testing docs, not in this plan.
+
 **Goal:** Atomically read local data, enqueue typed Mutations and apply per-Mutation local companions, preserving independent later writes through acceptance, rejection and restart.
 
 **Architecture:** Extend the Rust-owned application transaction with named Mutation submission and a restricted companion capability. Reuse the durable queue and settlement machinery, correcting its ordering where needed; generated SDKs carry typed commands and callbacks. Each Mutation retains its own Call; the transaction returns the callback's ordinary value after commit.

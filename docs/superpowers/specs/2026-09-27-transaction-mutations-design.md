@@ -1,6 +1,6 @@
 # Transactional Mutation enqueue and local companions
 
-Status: agreed product contract, recorded for design review; not implemented. `local` is the selected callback option spelling for this proposal. This document extends the local-only transaction boundary established by [#145's design](2026-09-23-145-local-transactions-design.md); it does not reopen remote execution inside transactions.
+Status: implemented on branch `codex/transaction-mutations` (see the [plan](../plans/2026-09-27-transaction-mutations-plan.md)); the owning architecture documents and frontend guides are the API reference, and this document remains the design record. `local` is the selected callback option spelling for this proposal. This document extends the local-only transaction boundary established by [#145's design](2026-09-23-145-local-transactions-design.md); it does not reopen remote execution inside transactions.
 
 Implementation sequence: [plan](../plans/2026-09-27-transaction-mutations-plan.md).
 
@@ -85,7 +85,7 @@ The implementation must preserve canonical validation of the schema-derived Muta
 
 ## 5. Building Block View
 
-Current code inspected at base commit `39f629c`:
+Current code inspected at base commit `39f629c` (the implementation is based on `a05e4e4`, which added native Loads, [#173](https://github.com/zanminwang/axton/issues/173)):
 
 - [SDK transaction](../../../packages/client-js/transaction.mts) exposes local reads, direct writes and Channel intent, with callback lifetime and failure checks; it exposes no typed Mutation API.
 - [Rust transaction interface](../../../crates/client/src/lib.rs) retains low-level `ClientTransaction::enqueue` and `Mutation.companion`.

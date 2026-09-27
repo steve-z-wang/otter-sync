@@ -22,10 +22,9 @@ Durable [Loads](loads.md) are not carried into a rebuilt database: the rebuild r
 
 Before switching, the runtime looks at the old database's unsent calls. If there are any, it keeps that database open so they can still be sent; `syncState().schema.pending` reports how many remain and why the schema is incompatible. When they are sent, call `rebuild()`. If they cannot be sent, call `rebuild({ discardPending: true })`: the report tells you how many queued calls and local-only records stay in the old file. Nothing is copied between schemas, and the runtime never deletes an old file; delete numbered files you no longer need. See [opening and schema changes](runtime.md#opening-and-schema-changes). Update backend tables separately through your database's migration process.
 
-<!-- txm-draft: verify against implementation -->
 ## Transactions that queue Mutations
 
-A [transaction that queues Mutations](client-api.md#queue-mutations-in-a-transaction) saves its local writes, each queued Mutation and each Mutation's `local` changes in one local commit. If the app stops before that commit, none of them are saved; after it, all of them survive a restart. AXTON stores the `local` changes, not the callback, so reopening resumes the queued Mutation and later applies its outcome to those changes without running your code again: acceptance keeps them and rejection undoes them. Later local writes keep their place either way, and newer server data for the same record still replaces them.
+A [transaction that queues Mutations](client-api.md#queue-mutations-in-a-transaction) saves its local writes, each queued Mutation and each Mutation's `local` changes in one local commit. If the app is killed before that commit, none of them are saved; after it, all of them survive a restart. AXTON stores the `local` changes, not the callback, so reopening resumes the queued Mutation and later applies its outcome to those changes without running your code again: acceptance keeps them and rejection undoes them. Later local writes keep their place either way, and newer server data for the same record still replaces them.
 
 ## Recover pending work
 

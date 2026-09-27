@@ -717,6 +717,40 @@ fn a_pump_that_fails_after_a_rebuild_announces_the_reset_on_the_next_one() {
 }
 
 #[test]
+fn a_failed_pump_still_delivers_the_close_it_already_decided() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    lane.saved("a", 0);
+    let (epoch, _) = opened(&lane.send(DownlinkEvent::Start)[0]);
+    lane.enqueue(DownlinkEvent::Closed { epoch });
+    lane.enqueue(DownlinkEvent::Wake);
+
+    // The close is decided before the historical scheduler reads this table.
+    let mut other = axton_sqlite::SqliteStore::open(dir.path().join("db")).unwrap();
+    other
+        .execute_batch("ALTER TABLE axton_subscription RENAME TO held")
+        .unwrap();
+    assert!(
+        lane.worker
+            .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
+            .is_err()
+    );
+    other
+        .execute_batch("ALTER TABLE held RENAME TO axton_subscription")
+        .unwrap();
+
+    let actions = lane.drain();
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| matches!(a, DownlinkAction::Close { epoch: e, .. } if *e == epoch))
+            .count(),
+        1,
+        "the host still receives the abandoned session's close: {actions:?}"
+    );
+}
+
+#[test]
 fn an_enqueued_page_commits_nothing_until_the_pump_applies_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut lane = Lane::new(dir.path());

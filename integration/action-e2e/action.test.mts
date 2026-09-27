@@ -869,3 +869,41 @@ test("Model Fetch reads through the real Loader: stored by default, shared only 
     assert.equal((await client.syncState()).pending, 0, "Fetch never enqueues");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("the PublishEntry backend fixture stores Entry, media and placement together, or rejects them all while switched", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-publish-fixture-"));
+  let client: GeneratedClient | undefined;
+  const input = (id: string) => ({
+    entry: { id, title: `title ${id}`, body: "body" },
+    media: [{ id: `${id}-m1`, entryId: id, url: "one.jpg" }, { id: `${id}-m2`, entryId: id, url: "two.jpg" }],
+    placement: { id: `${id}-p`, entryId: id, journal: "daily", position: 1 },
+  });
+  const stored = async (id: string) => ({
+    entries: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_entry WHERE id=$1", [id])).rows[0].n),
+    media: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_media WHERE entry_id=$1", [id])).rows[0].n),
+    placements: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_placement WHERE entry_id=$1", [id])).rows[0].n),
+  });
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    const accepted = await (await client.mutations.publishEntry(input("publish-ok"))).wait();
+    assert.equal(accepted.error, null);
+    assert.deepEqual(fixture.publishes.at(-1), input("publish-ok"), "the handler receives exactly the business input");
+    assert.deepEqual(await stored("publish-ok"), { entries: 1, media: 2, placements: 1 });
+    assert.equal((await client.models.entry.get({ id: "publish-ok" }))?.title, "title publish-ok");
+    assert.equal((await client.models.media.get({ id: "publish-ok-m2" }))?.url, "two.jpg");
+    assert.equal((await client.models.placement.get({ id: "publish-ok-p" }))?.journal, "daily");
+
+    fixture.rejectPublish = true;
+    try {
+      const rejected = await (await client.mutations.publishEntry(input("publish-no"))).wait();
+      assert.equal(rejected.error?.code, "publish.rejected");
+      assert.equal(rejected.error?.execution, "rejected");
+    } finally { fixture.rejectPublish = false; }
+    assert.deepEqual(fixture.publishes.at(-1), input("publish-no"));
+    assert.deepEqual(await stored("publish-no"), { entries: 0, media: 0, placements: 0 }, "a rejection stores nothing");
+    assert.equal(await client.models.entry.get({ id: "publish-no" }), null, "rejection removes the optimism");
+    assert.equal(await client.models.media.get({ id: "publish-no-m1" }), null);
+    assert.equal(await client.models.placement.get({ id: "publish-no-p" }), null);
+    assert.equal((await client.syncState()).pending, 0);
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});

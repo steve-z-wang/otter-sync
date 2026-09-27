@@ -4,6 +4,10 @@ export { CallError, type Call, type CallOptions, type CallOutcome, type CallStat
 import { schema, liveModels, makeMutations, makeQueries, GeneratedTransaction, type LiveModels, type StoreHooks, type StoreChange } from "./generated.ts";
 import { decodeTodo, decodeTodoIdentity, type Todo, type TodoIdentity } from "./generated.ts";
 import { decodeNote, decodeNoteIdentity, type Note, type NoteIdentity } from "./generated.ts";
+import { decodeComposition, decodeCompositionIdentity, type Composition, type CompositionIdentity } from "./generated.ts";
+import { decodeEntry, decodeEntryIdentity, type Entry, type EntryIdentity } from "./generated.ts";
+import { decodeMedia, decodeMediaIdentity, type Media, type MediaIdentity } from "./generated.ts";
+import { decodePlacement, decodePlacementIdentity, type Placement, type PlacementIdentity } from "./generated.ts";
 import { fetchModels, type FetchModels } from "./generated.ts";
 export * from "./generated.ts";
 /** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
@@ -38,6 +42,14 @@ export class GeneratedClient {
   if (todoHook) rawHooks['Todo'] = (tx, changes) => todoHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<TodoIdentity,Todo> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeTodoIdentity(change.identity),row:decodeTodo(change.row)} : {kind:'delete',identity:decodeTodoIdentity(change.identity)}));
   const noteHook = options.onStore?.note;
   if (noteHook) rawHooks['Note'] = (tx, changes) => noteHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<NoteIdentity,Note> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeNoteIdentity(change.identity),row:decodeNote(change.row)} : {kind:'delete',identity:decodeNoteIdentity(change.identity)}));
+  const compositionHook = options.onStore?.composition;
+  if (compositionHook) rawHooks['Composition'] = (tx, changes) => compositionHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<CompositionIdentity,Composition> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeCompositionIdentity(change.identity),row:decodeComposition(change.row)} : {kind:'delete',identity:decodeCompositionIdentity(change.identity)}));
+  const entryHook = options.onStore?.entry;
+  if (entryHook) rawHooks['Entry'] = (tx, changes) => entryHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<EntryIdentity,Entry> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeEntryIdentity(change.identity),row:decodeEntry(change.row)} : {kind:'delete',identity:decodeEntryIdentity(change.identity)}));
+  const mediaHook = options.onStore?.media;
+  if (mediaHook) rawHooks['Media'] = (tx, changes) => mediaHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<MediaIdentity,Media> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeMediaIdentity(change.identity),row:decodeMedia(change.row)} : {kind:'delete',identity:decodeMediaIdentity(change.identity)}));
+  const placementHook = options.onStore?.placement;
+  if (placementHook) rawHooks['Placement'] = (tx, changes) => placementHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<PlacementIdentity,Placement> => change.kind === 'upsert' ? {kind:'upsert',identity:decodePlacementIdentity(change.identity),row:decodePlacement(change.row)} : {kind:'delete',identity:decodePlacementIdentity(change.identity)}));
   if ("transport" in options || "live" in options) throw Error("transport/live connection options were removed; use server: {url, token}");
   const client = await Client.open({ path: options.path, schema, onStore: rawHooks, ...(options.migration === undefined ? {} : { migration: options.migration }), ...(options.discardPending === undefined ? {} : { discardPending: options.discardPending }) });
   try {

@@ -22,8 +22,7 @@ Code: [client/loads.rs](../../../../../crates/client/src/loads.rs) (operations, 
 
 **Start and reuse.** A start without `once` creates a fresh job, never reads or writes a mapping and never registers its outcome. `refresh` without `once` is `load.invalid_options`, raised before anything else; an unknown name or version is `load.unknown`.
 
-<!-- load-draft: verify against implementation -->
-Arguments that do not normalize against the Load's inputs fail the start with `load.invalid_args` before anything is written; until that code lands, the refusal is the uncoded engine error (for example `invalid UUID`), which the SDKs rethrow unchanged.
+Arguments that do not normalize against the Load's inputs fail the start (plain, once or refresh) or the invalidation with `load.invalid_args` before anything is written.
 
 The first request is checked against the 1 MiB request bound before it is stored. A start with `once` decides from a committed read, so a join or reuse commits nothing, then decides again inside the write transaction, so concurrent same-key starts resolve to one job. The key is SHA-256 of canonical `{format: 1, name, version, args, models}`: invocation normalization of the arguments (object key order, UUID case and equivalent date offsets normalize; list order and explicit `null` do not; a no-argument Load uses `{}`) and the output Models' local read-contract versions. It never contains a continuation, call ID, job or run, the options or credentials.
 

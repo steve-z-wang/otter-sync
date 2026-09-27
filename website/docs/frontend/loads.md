@@ -199,7 +199,7 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | --- | --- |
 | `load.invalid_options` | `refresh` without `once`, an option that is not a Boolean, or a `list` limit outside 1 to 100; nothing was started |
 | `load.unknown` | No Load of that name and version in this client's schema |
-| `load.invalid_args` | The start arguments do not match the Load's inputs; nothing was started <!-- load-draft: verify against implementation --> |
+| `load.invalid_args` | The start or invalidation arguments do not match the Load's inputs; nothing was written |
 | `load_version_unsupported`, `load.invalid`, `model_version_unsupported` | The backend does not retain this Load version, refused its arguments, or does not retain a Model version the client stores |
 | `handler.failed`, `loader.failed`, a `CallRejected` code | The handler or a Loader threw or rejected |
 | `handler.invalid`, `loader.invalid`, `loader.unregistered` | The handler returned something other than identity lists (a full record, for example), a Loader returned malformed rows, or no Loader is registered |

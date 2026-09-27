@@ -3,10 +3,10 @@
 //! Loader reads, and replayed from its saved outcome.
 mod support;
 
-use axton_core::Continuation;
+use axton_core::{Continuation, LoadBatchRequest, LoadBatchResponse, limits};
 use axton_server::{
-    Config, Host, HostResult, code, host::HostRequest, process_action, process_load,
-    validate_load_batch,
+    Config, Host, HostResult, LoadFault, LoadItemAnswer, code, encode_load_batch,
+    host::HostRequest, process_action, process_load, validate_load_batch,
 };
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
@@ -369,6 +369,44 @@ fn loader_refusal_and_unreadable_rows_are_saved_page_failures() {
 }
 
 #[test]
+fn a_loader_failure_a_miscounted_answer_and_an_unregistered_loader_are_saved_page_failures() {
+    for (loaded, expected) in [
+        (json!({"error":"TypeError: boom"}), code::LOADER_FAILED),
+        (json!([{"id":"t1","title":"T1"}]), code::LOADER_INVALID),
+    ] {
+        let backend = Backend::new();
+        seed_todos(&backend, 2);
+        backend.script("ProjectTodos", answer_of_two());
+        let host = Replacing {
+            backend: &backend,
+            op: "load",
+            answer: Ok(loaded.clone()),
+        };
+        let failed = page_as(&host, &config(), "alice", &item(1, Value::Null));
+        assert_eq!(outcome_code(&failed), expected, "{loaded}");
+        assert_eq!(saved(&backend, 1), Some(failed), "{loaded}");
+        assert_eq!(
+            backend.stamp("Todo", "t1"),
+            None,
+            "{loaded}: stamps roll back"
+        );
+    }
+    // A Model whose Loader is not registered fails before any read.
+    let mut unregistered = config();
+    unregistered.loaders.retain(|model| model != "Project");
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        answer(ids(&["t1"]), ids(&["p1"]), Value::Null),
+    );
+    let failed = page_as(&backend, &unregistered, "alice", &item(1, Value::Null));
+    assert_eq!(outcome_code(&failed), code::LOADER_UNREGISTERED);
+    assert_eq!(saved(&backend, 1), Some(failed));
+    assert_eq!(backend.stamp("Todo", "t1"), None);
+}
+
+#[test]
 fn handler_rejection_and_failure_roll_back_its_writes_before_saving() {
     for (answer, expected) in [
         (json!({"rejection":"project.closed"}), "project.closed"),
@@ -471,12 +509,28 @@ fn continuation_state_is_bounded_portable_json_in_both_directions() {
             "{state}"
         );
     }
-    // A malformed wrapper is not a continuation at all.
-    let backend = Backend::new();
-    backend.script(
-        "ProjectTodos",
+    // A missing or malformed wrapper is the same saved rejection whatever
+    // host bridge produced it, and it is judged before the data.
+    for answered in [
         answer(json!([]), json!([]), json!({"state":1,"more":2})),
-    );
+        answer(json!([]), json!([]), json!({})),
+        answer(json!([]), json!([]), json!(1)),
+        json!({"data":{"todos":[],"projects":[]}}),
+        json!({"data":[],"next":{"state":1,"more":2}}),
+    ] {
+        let backend = Backend::new();
+        backend.script("ProjectTodos", answered.clone());
+        let failed = page(&backend, &item(1, Value::Null));
+        assert_eq!(
+            outcome_code(&failed),
+            code::LOAD_INVALID_CONTINUATION,
+            "{answered}"
+        );
+        assert_eq!(saved(&backend, 1), Some(failed), "{answered}");
+    }
+    // Data that is not an object, with a valid `next`, is an invalid answer.
+    let backend = Backend::new();
+    backend.script("ProjectTodos", json!({"data":[],"next":null}));
     assert_eq!(
         outcome_code(&page(&backend, &item(1, Value::Null))),
         code::HANDLER_INVALID
@@ -683,7 +737,13 @@ impl Host for Replacing<'_> {
 fn infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes() {
     let cases = [
         ("saveCall", Err("connection reset".to_string()), code::HOST),
-        ("load", Err("statement timeout".to_string()), code::HOST),
+        // A retryable database error the bridge rethrows from a Loader (a
+        // Loader's own throw is a saved `loader.failed`).
+        (
+            "load",
+            Err("serialization failure rethrown by the bridge".to_string()),
+            code::HOST,
+        ),
         ("readStamps", Ok(json!([1])), code::HOST_INVALID),
         ("readStamps", Ok(json!([0, 1])), code::HOST_INVALID),
         ("handleLoad", Err("pool timeout".to_string()), code::HOST),
@@ -772,4 +832,192 @@ fn the_batch_validator_is_structural_and_answers_canonical_items_in_order() {
         let error = validate_load_batch(refused.to_string().as_bytes()).unwrap_err();
         assert_eq!(error.code, code::REQUEST_INVALID, "{refused}");
     }
+}
+
+/// A title length that makes the one-record page of `t1` encode to exactly
+/// `limits::LOAD_PAGE_BYTES - slack` bytes.
+fn title_for(slack: usize) -> usize {
+    let backend = Backend::new();
+    backend.seed("Todo", "t1", json!({"id":"t1","title":""}), None);
+    backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
+    let empty = page(&backend, &item(1, Value::Null)).to_string().len();
+    limits::LOAD_PAGE_BYTES - slack - empty
+}
+
+#[test]
+fn a_replayed_page_that_outgrows_the_page_bound_answers_an_unsaved_page_too_large() {
+    let backend = Backend::new();
+    let title = "x".repeat(title_for(4));
+    backend.seed("Todo", "t1", json!({"id":"t1","title":title}), None);
+    backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
+    let first = page(&backend, &item(1, Value::Null));
+    assert_eq!(first["outcome"]["status"], "succeeded");
+    assert_eq!(first.to_string().len(), limits::LOAD_PAGE_BYTES - 4);
+    let saved_page = saved(&backend, 1);
+    // A compatible read-contract change adds `"note":null` to the record.
+    let note = json!({"name":"note","type":{"kind":"scalar","name":"string"},"nullable":true});
+    let upgraded = config_with(json!([field("id"), field("title"), note]));
+    backend.clear_log();
+    let replay = page_as(&backend, &upgraded, "alice", &item(1, Value::Null));
+    assert_eq!(outcome_code(&replay), code::LOAD_PAGE_TOO_LARGE);
+    assert_eq!(backend.ops(), ["claimCall"], "no handler, Loader or save");
+    assert_eq!(saved(&backend, 1), saved_page, "the saved page is kept");
+    // Under the contract it was saved for, it still replays.
+    assert_eq!(page(&backend, &item(1, Value::Null)), first);
+}
+
+/// `count` distinct items of the `ProjectTodos` Load, canonical as the
+/// batch validator answers them, and the request the client froze.
+fn batch_items(count: u64) -> (Vec<String>, LoadBatchRequest) {
+    let items: Vec<Value> = (1..=count)
+        .map(|n| {
+            let mut one = item(n, Value::Null);
+            one["loadId"] = json!(id(0x100 + n));
+            one
+        })
+        .collect();
+    let body = json!({ "loads": items }).to_string();
+    (
+        validate_load_batch(body.as_bytes()).unwrap(),
+        LoadBatchRequest::decode_envelope(body.as_bytes()).unwrap(),
+    )
+}
+fn process(backend: &Backend, item: &str) -> String {
+    run(process_load(&config(), "alice", item.as_bytes(), backend)).unwrap()
+}
+fn decoded(response: &str) -> Vec<Value> {
+    serde_json::from_str::<Value>(response).unwrap()["loads"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn faults_are_classified_in_rust_into_bounded_unsaved_items() {
+    let (items, request) = batch_items(6);
+    let backend = Backend::new();
+    backend.script("ProjectTodos", answer(json!([]), json!([]), Value::Null));
+    let engine = |code: &str, message: String| {
+        LoadItemAnswer::Fault(LoadFault::Engine {
+            code: code.into(),
+            message,
+        })
+    };
+    let answers = vec![
+        LoadItemAnswer::Page(process(&backend, &items[0])),
+        engine(code::HOST, "connection reset by 10.0.0.7".into()),
+        engine(code::STORAGE_INVALID, "é".repeat(2000)),
+        engine("Not A Code", "defect".into()),
+        LoadItemAnswer::Fault(LoadFault::Conflict),
+        LoadItemAnswer::Fault(LoadFault::Unavailable),
+    ];
+    let response = encode_load_batch(&items, answers).unwrap();
+    let loads = decoded(&response);
+    let outcome = |n: usize| {
+        let outcome = &loads[n]["outcome"];
+        (
+            outcome["status"].as_str().unwrap().to_string(),
+            outcome["error"]["code"].as_str().unwrap_or("").to_string(),
+        )
+    };
+    assert_eq!(outcome(0), ("succeeded".into(), "".into()));
+    assert_eq!(
+        outcome(1),
+        ("retryable".into(), code::SERVER_UNAVAILABLE.into())
+    );
+    assert!(
+        !response.contains("10.0.0.7"),
+        "no host text reaches the client"
+    );
+    assert_eq!(outcome(2), ("failed".into(), code::STORAGE_INVALID.into()));
+    assert!(
+        loads[2]["outcome"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .len()
+            <= 1024
+    );
+    assert_eq!(outcome(3), ("failed".into(), code::INTERNAL.into()));
+    assert_eq!(
+        outcome(4),
+        ("retryable".into(), code::TRANSACTION_CONFLICT.into())
+    );
+    assert_eq!(
+        outcome(5),
+        ("retryable".into(), code::SERVER_UNAVAILABLE.into())
+    );
+    for (n, load) in loads.iter().enumerate() {
+        let item: Value = serde_json::from_str(&items[n]).unwrap();
+        assert_eq!(
+            (&load["loadId"], &load["callId"]),
+            (&item["loadId"], &item["callId"])
+        );
+    }
+    // The client accepts the envelope and every item on its own terms.
+    let replies = LoadBatchResponse::decode(response.as_bytes(), &request).unwrap();
+    assert!(replies.iter().all(|reply| reply.page.is_ok()));
+    // The answers must pair with the items.
+    let error = encode_load_batch(&items, vec![]).unwrap_err();
+    assert_eq!(error.code, code::INTERNAL);
+}
+
+#[test]
+fn a_page_that_answers_another_item_or_is_malformed_fails_only_its_own_item() {
+    let (items, _) = batch_items(3);
+    let backend = Backend::new();
+    backend.script("ProjectTodos", answer(json!([]), json!([]), Value::Null));
+    // The first item is answered with its sibling's page.
+    let second = process(&backend, &items[1]);
+    let answers = vec![
+        LoadItemAnswer::Page(second.clone()),
+        LoadItemAnswer::Page(second),
+        LoadItemAnswer::Page(r#"{"loadId":1}"#.into()),
+    ];
+    let loads = decoded(&encode_load_batch(&items, answers).unwrap());
+    assert_eq!(loads[0]["outcome"]["error"]["code"], code::INTERNAL);
+    assert_eq!(loads[0]["records"], json!([]));
+    assert_eq!(loads[1]["outcome"]["status"], "succeeded");
+    assert_eq!(loads[2]["outcome"]["error"]["code"], code::INTERNAL);
+}
+
+#[test]
+fn the_response_holds_eight_full_pages_within_its_bound_and_an_oversized_page_fails_alone() {
+    let (items, request) = batch_items(8);
+    let title = "x".repeat(title_for(0));
+    let backend = Backend::new();
+    backend.seed("Todo", "t1", json!({"id":"t1","title":title}), None);
+    backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
+    let pages: Vec<String> = items.iter().map(|item| process(&backend, item)).collect();
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.len() == limits::LOAD_PAGE_BYTES)
+    );
+    let full = encode_load_batch(
+        &items,
+        pages.iter().cloned().map(LoadItemAnswer::Page).collect(),
+    )
+    .unwrap();
+    assert!(full.len() > 8 * limits::LOAD_PAGE_BYTES);
+    assert!(full.len() <= limits::LOAD_RESPONSE_BYTES);
+    let replies = LoadBatchResponse::decode(full.as_bytes(), &request).unwrap();
+    assert!(replies.iter().all(|reply| reply.page.is_ok()));
+    // A page past the page bound (here grown by a byte) is replaced by an
+    // unsaved `load.page_too_large`; its siblings keep their pages.
+    let mut grown: Value = serde_json::from_str(&pages[3]).unwrap();
+    grown["records"][0]["state"]["title"] = json!(format!("{title}y"));
+    let mut answers: Vec<LoadItemAnswer> = pages.into_iter().map(LoadItemAnswer::Page).collect();
+    answers[3] = LoadItemAnswer::Page(axton_core::canonical_json(&grown).unwrap());
+    let loads = decoded(&encode_load_batch(&items, answers).unwrap());
+    assert_eq!(
+        loads[3]["outcome"]["error"]["code"],
+        code::LOAD_PAGE_TOO_LARGE
+    );
+    assert_eq!(loads[3]["records"], json!([]));
+    assert!(
+        loads
+            .iter()
+            .enumerate()
+            .all(|(n, load)| n == 3 || load["outcome"]["status"] == "succeeded")
+    );
 }

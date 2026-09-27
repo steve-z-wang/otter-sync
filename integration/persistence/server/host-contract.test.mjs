@@ -184,6 +184,18 @@ test('a Load continuation that is not bounded portable JSON is a saved rejection
  assert.equal(errors.length,1);
  const notObject=await replay([request],{onError:()=>{},page:()=>null});
  assert.equal(typeof notObject.answers[0][1].error,'string');
+ // Reading the answer is inside the handler's error boundary: a throwing
+ // getter is the handler's failure, and a continuation that throws while it
+ // is inspected is not portable. Neither escapes as a host fault.
+ const getter=await replay([request],{onError:()=>{},page:()=>({data:{tasks:[]},get next(){throw new Error('getter boom');}})});
+ assert.deepEqual(getter.answers[0][1],{error:'getter boom'});
+ const rejectingGetter=await replay([request],{page:()=>({data:{tasks:[]},get next(){throw new MutationRejected('tasks.gone');}})});
+ assert.deepEqual(rejectingGetter.answers[0][1],{rejection:'tasks.gone'});
+ const trapped=new Proxy({},{ownKeys(){throw new Error('trap');}});
+ const proxied=await replay([request],{onError:()=>{},page:()=>({data:{tasks:[]},next:trapped})});
+ assert.deepEqual(proxied.answers[0][1],{rejection:'load.invalid_continuation'});
+ const deepTrap=await replay([request],{onError:()=>{},page:()=>({data:{tasks:[]},next:{state:{a:trapped}}})});
+ assert.deepEqual(deepTrap.answers[0][1],{rejection:'load.invalid_continuation'});
 });
 
 test('the same handle request settles as the fixture rejection when the handler refuses',async()=>{

@@ -63,7 +63,7 @@ pub(crate) fn current_authority(
     mut record: AuthorityRecord,
 ) -> Result<AuthorityRecord> {
     if record.error.is_some() {
-        return Err(storage_invalid("saved Action authority carries an error"));
+        return Err(storage_invalid("saved authority record carries an error"));
     }
     let version = *models
         .get(&record.model)

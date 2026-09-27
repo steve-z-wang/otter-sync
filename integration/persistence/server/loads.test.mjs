@@ -9,6 +9,7 @@ import { Pool } from 'pg';
 import { drizzle as drizzleOrm } from 'drizzle-orm/node-postgres';
 import { createBackend, devAuth, MutationRejected } from '../../../packages/server/index.mts';
 import { prisma, pg, drizzle, answer } from '../../../packages/postgres/index.mts';
+import { READ_STAMPS } from '../../../packages/postgres/src/sql.mts';
 const require = createRequire(import.meta.url);
 const { PrismaClient } = require('../../bindings/node/generated/client');
 const native = require('../../../bindings/node/axton-node.node');
@@ -227,6 +228,36 @@ test('transaction faults are retryable items with nothing saved, and a resend le
   assert.equal(defect.outcome.error.code, 'host.invalid');
   assert.deepEqual(await saved(fourth.callId), []);
   assert.equal(reported.length, 4, 'every fault reaches onError');
+});
+
+test('an inconsistent readStamps answer is a deterministic defect, never a retryable fault', async () => {
+  const { database } = shims.find(shim => shim.name === 'pg');
+  await seed('stale', 'stale', 'alice', 2);
+  // The persistence looks each stamp up by key: reordered rows still answer
+  // in request order, and a missing row answers `null` in its position.
+  const tamper = change => ({ ...database.driver, query: async (tx, sql, params) => {
+    const rows = await database.driver.query(tx, sql, params);
+    return sql === READ_STAMPS ? change(rows) : rows;
+  } });
+  const keys = ['stale-1', 'stale-2'].map(id => JSON.stringify({ id }));
+  const read = (driver, request) => database.transaction(tx => answer(driver, tx, request));
+  assert.deepEqual(await read(tamper(rows => [...rows].reverse()), { op: 'readStamps', model: 'Todo', identityKeys: keys }), [1, 1]);
+  assert.deepEqual(await read(tamper(rows => rows.slice(1)), { op: 'readStamps', model: 'Todo', identityKeys: keys }), [null, 1]);
+  assert.deepEqual(await read(tamper(rows => rows.map(row => ({ ...row, stamp: 0 }))), { op: 'readStamps', model: 'Todo', identityKeys: keys }), [null, null]);
+  assert.deepEqual(await read(database.driver, { op: 'readStamps', model: 'Todo', identityKeys: [keys[0], keys[0]] }), [], 'a request the engine cannot send');
+  // End to end, the engine refuses the answer as `host.invalid`: an unsaved
+  // failed item the client stops on.
+  const missing = tamper(rows => rows.slice(1));
+  const broken = { ...database, persistence: tx => ({ call: request => answer(missing, tx, request) }) };
+  const reported = [];
+  const app = createBackend({ config, native, database: broken, authenticate: () => 'alice', onError: error => reported.push(error), loaders: loaders(database, { handled: [], loaded: [] }),
+    loads: { async projectTodos() { return { data: { todos: [{ id: 'stale-1' }, { id: 'stale-2' }] }, next: null }; } } });
+  const item = page('stale');
+  const [defect] = outcomes(await app.loads('alice', batch(item)));
+  assert.equal(defect.outcome.status, 'failed');
+  assert.equal(defect.outcome.error.code, 'host.invalid');
+  assert.deepEqual(await saved(item.callId), []);
+  assert.equal(reported.length, 1);
 });
 
 test('at most four item transactions of one request run at once', async () => {

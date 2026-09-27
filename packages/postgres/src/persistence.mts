@@ -168,6 +168,10 @@ export async function answer<Tx>(
       return stamped;
     }
     case "readStamps": {
+      // A deterministic inconsistency is answered, never thrown: a thrown
+      // error reads as an unavailable database, which the client would
+      // retry forever. The engine refuses a missing position or a `null`
+      // stamp as `host.invalid`, an unsaved `failed` page.
       if (
         typeof r.model !== "string" ||
         r.model === "" ||
@@ -175,19 +179,24 @@ export async function answer<Tx>(
         r.identityKeys.some((key) => typeof key !== "string" || key === "") ||
         new Set(r.identityKeys).size !== r.identityKeys.length
       )
-        throw new Error("readStamps: a model and unique identity keys");
+        return [];
       const rows = await q(
         SQL.READ_STAMPS,
         r.model,
         JSON.stringify(r.identityKeys),
       );
-      if (
-        rows.length !== r.identityKeys.length ||
-        rows.some((row, index) => row.identity_key !== r.identityKeys[index])
-      )
-        throw new Error(`readStamps answered rows out of order for ${r.model}`);
-      const stamps: Stamps = rows.map((row) => storedStamp(row.stamp));
-      return stamps;
+      // Each stamp is looked up by its key, so a missing or foreign row
+      // answers `null` in its position rather than someone else's stamp.
+      const byKey = new Map<unknown, unknown>(
+        rows.map((row) => [row.identity_key, row.stamp]),
+      );
+      const stamps: (number | null)[] = r.identityKeys.map((key) => {
+        const stamp = Number(byKey.get(key));
+        return byKey.has(key) && Number.isSafeInteger(stamp) && stamp >= 1
+          ? stamp
+          : null;
+      });
+      return stamps as Stamps;
     }
     case "publish": {
       // Distribution allocates only the channel cursor. The record row is

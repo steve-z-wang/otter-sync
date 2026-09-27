@@ -1,0 +1,122 @@
+{
+  "formatVersion": 1,
+  "loads": {
+    "Catalog": {
+      "1": {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "shelf",
+            "nullable": true,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "name": "Catalog",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Item"
+            },
+            "kind": "model",
+            "model": "Item",
+            "modelReadVersion": 1,
+            "name": "items",
+            "source": "handlerIdentity"
+          }
+        ],
+        "version": 1
+      }
+    },
+    "ProjectItems": {
+      "1": {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "project",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "name": "ProjectItems",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Item"
+            },
+            "kind": "model",
+            "model": "Item",
+            "modelReadVersion": 1,
+            "name": "items",
+            "source": "handlerIdentity"
+          },
+          {
+            "cardinality": "list",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Tag"
+            },
+            "kind": "model",
+            "model": "Tag",
+            "modelReadVersion": 1,
+            "name": "tags",
+            "source": "handlerIdentity"
+          }
+        ],
+        "version": 1
+      }
+    }
+  }
+}

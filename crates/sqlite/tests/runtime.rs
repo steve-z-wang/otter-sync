@@ -1619,6 +1619,44 @@ fn a_local_callback_admits_only_its_own_local_commands() {
     assert_eq!(h.entry("x"), None);
 }
 
+/// The local callback's own token does not lift the scope rule: its command
+/// in a scope other than the innermost one is refused, fails the submission
+/// even though the callback ends well, and fails the transaction as a
+/// structural failure that rolling the savepoint back does not clear.
+#[test]
+fn a_local_callback_command_outside_its_scope_fails_its_submission_and_the_transaction() {
+    let mut h = mutation_harness();
+    h.task("seed", create("draft", "local"));
+    assert_eq!(h.run(), vec![done("seed", Value::Null)]);
+    let a = h.begin("tx");
+    h.command("sp", &a.transaction, None, json!({"kind":"savepoint"}));
+    let scope = h.run()[0]["value"]["scope"].as_str().unwrap().to_string();
+    let local = h.local("s", &a.transaction, Some(&scope), publish("p"));
+    // The outer scope, then a scope that was never opened.
+    h.companion("outer", &local, None, delete("draft"));
+    h.companion("unknown", &local, Some("sp999"), read("draft"));
+    assert_eq!(
+        h.run(),
+        vec![
+            failed("outer", "invalid transaction scope"),
+            failed("unknown", "invalid transaction scope")
+        ]
+    );
+    h.finish_local(&local, true, None);
+    assert_eq!(h.run(), vec![failed("s", "invalid transaction scope")]);
+    h.command(
+        "rb",
+        &a.transaction,
+        Some(&scope),
+        json!({"kind":"rollbackSavepoint","scope":scope}),
+    );
+    assert_eq!(h.run(), vec![done("rb", Value::Null)]);
+    h.callback(&a, true, None);
+    assert_eq!(h.run(), vec![failed("tx", "invalid transaction scope")]);
+    assert_eq!(h.pending(), 0);
+    assert_eq!(h.entry("draft").unwrap()["text"], "local");
+}
+
 /// A `callbackResult` ends the local callback only when it names that
 /// callback's effect, transaction and companion token; the outer callback's
 /// result never ends it, and its end never ends the outer transaction.

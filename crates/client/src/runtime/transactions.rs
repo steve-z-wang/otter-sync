@@ -509,9 +509,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.pop_scope();
                 self.client.session_release().map(|()| Some(Value::Null))
             }
-            TransactionCommand::RollbackSavepoint { .. } => {
-                let (restored, calls) = self.pop_scope().unwrap_or((None, 0));
-                self.client.session_rollback_savepoint().map(|()| {
+            // The scope check above guarantees an open scope; without one,
+            // no call is announced rolled back.
+            TransactionCommand::RollbackSavepoint { .. } => match self.pop_scope() {
+                None => Err(crate::invalid("no open savepoint to roll back")),
+                Some((restored, calls)) => self.client.session_rollback_savepoint().map(|()| {
                     let mut discarded = vec![];
                     if let Some(open) = &mut self.transaction {
                         open.failure = restored;
@@ -519,8 +521,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     }
                     self.call_transitions(discarded, CallTransition::RolledBack);
                     Some(Value::Null)
-                })
-            }
+                }),
+            },
             TransactionCommand::Enqueue { .. } if authority => {
                 Err(crate::invalid("store hook cannot enqueue"))
             }
@@ -535,13 +537,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 store,
                 local,
             } => self.submit_mutation(&command.request_id, name, *version, args, store, local),
-            // The local callback's writes are its call's companions.
+            // The local callback's writes are its call's companions (`own`
+            // guarantees an open local callback).
             TransactionCommand::Direct { operation } if own => {
-                let ordinal = open.local.as_ref().map_or(0, |local| local.call.ordinal);
-                let operation = operation.clone();
-                self.client
-                    .session(|tx| tx.append_companion(ordinal, operation))
-                    .map(|()| Some(Value::Null))
+                match open.local.as_ref().map(|local| local.call.ordinal) {
+                    None => Err(crate::invalid("companion write without its local callback")),
+                    Some(ordinal) => {
+                        let operation = operation.clone();
+                        self.client
+                            .session(|tx| tx.append_companion(ordinal, operation))
+                            .map(|()| Some(Value::Null))
+                    }
+                }
             }
             _ => commands::execute_in_session(&mut self.client, &command.command).map(Some),
         };

@@ -1,6 +1,6 @@
 # Local storage
 
-AXTON stores cached records, queued Mutation and Query intent, durable Load jobs, channel progress and rejection details in a local SQLite file. <!-- load-draft: verify against implementation --> It does not persist completed business result objects on the client. This page explains how to manage the file and recover from storage or synchronization failures.
+AXTON stores cached records, queued Mutation and Query intent, durable Load jobs, channel progress and rejection details in a local SQLite file. It does not persist completed business result objects on the client. This page explains how to manage the file and recover from storage or synchronization failures.
 
 ## Choose a database path
 

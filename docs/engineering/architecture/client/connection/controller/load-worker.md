@@ -1,53 +1,61 @@
-<!-- load-draft: verify against implementation -->
 # Load worker
 
 ## 1. Introduction and Goals
 
-The Load worker decides when native [Load](../../../schema/loads.md) pages are requested. One worker per client runtime discovers jobs with a ready page in SQLite, groups them into bounded `POST /sync/loads` batches, and hands each response to the [Load engine](../../engine/loads.md) for application. It is a Rust state machine driven by the [runtime](../../runtime.md), not a thread per job and not a JavaScript or Dart loop. Mutation ordering, push sequences and Channel cursors are untouched.
+The Load worker decides when native [Load](../../../schema/loads.md) pages are requested ([#173](https://github.com/zanminwang/axton/issues/173)). One worker per client runtime reads jobs with a ready page from SQLite, groups them into bounded `POST /sync/loads` batches, and queues each answer for the [Load engine](../../engine/loads.md) to apply. It is a pure Rust state machine driven by the [runtime](../../runtime.md), not a thread per job and not a JavaScript or Dart loop. Mutation ordering, push sequences and Channel cursors are untouched.
 
 ## 3. Context and Scope
 
-Inputs: ready jobs and their frozen page requests from the ledger, connection controls (`start`, `pause`, `resume`, `stop`), effect results and timers. Outputs: `http` effects on the `load` route, `timer` effects for backoff and per-attempt deadlines, `refreshAuth` requests shared with the other lanes, and page applications as runtime units ([Runtime](../../runtime.md#6-runtime-view)).
+Inputs: ready pages from the ledger (`load_ready_pages`), connection controls, effect results, the clock and entropy. Outputs: `http` effects on the `load` route, a per-attempt deadline `timer` for each batch, one backoff `timer` for the earliest due job, `refreshAuth` requests shared with the other lanes, and queued outcomes that the runtime applies as lane units ([Runtime](../../runtime.md#6-runtime-view)).
 
 ## 5. Building Block View
 
-<!-- load-draft: TODO confirm name -->
-The worker (planned `LoadWorker` in `crates/client/src/load_worker.rs`) keeps in memory only the batches in flight, the pages received and waiting to apply, and each job's due time; every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its scheduler reads are bounded; it never materializes every job body.
+`LoadWorker` in [client/load_worker.rs](../../../../../../crates/client/src/load_worker.rs) keeps in memory only the batches in flight, the outcomes waiting to apply and each job's backoff (`{call_id, attempts, due}`). Every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its reads are bounded: one scan reads at most the batch size plus the pages it must skip plus 20 damaged rows. The runtime glue is [client/runtime/loads.rs](../../../../../../crates/client/src/runtime/loads.rs); lane readiness and alternation are in [client/runtime/tasks.rs](../../../../../../crates/client/src/runtime/tasks.rs).
 
-| Limit (initial private default) | Value |
+| Limit (internal default) | Value |
 | --- | --- |
-| Items per batch | 8 |
+| Items per batch | 8 (`LOAD_BATCH_ITEMS`), within the 1 MiB request bound |
 | HTTP batches in flight | 2 |
-| Outstanding pages per job (request, awaiting response or awaiting apply) | 1 |
-| Backoff | 1 s base, 30 s cap, with the existing jitter |
+| Outstanding pages per job (requested, answered or applying) | 1 |
+| Outcomes waiting for the writer | at most 16, because a batch keeps its slot until every outcome is consumed |
+| Backoff (`load_backoff`) | 1 s doubling, ±20 % jitter, capped at 30 s after jitter |
+| Attempt deadline | the connection's `directTimeoutMs` (30 s by default) |
 
-These constants are not public settings.
+These are not public settings.
 
 ## 6. Runtime View
 
-**Batching and fairness.** When a batch slot is free, the worker takes ready jobs in oldest-ready order, up to 8, and sends them at once; it adds no artificial delay to fill a batch, so a lone job goes alone. After a page commits, its job goes back behind the ready peers. A job in backoff keeps no other job from being dispatched. A batch slot is released only after all of its outcomes have been applied or moved into per-job retry or failure state, which bounds how many received pages can wait behind the local writer.
+**Batching and fairness.** A dispatch reads the oldest ready pages, skipping jobs in flight, jobs backing off and damaged rows, and sends up to 8 at once; a page that would pass the 1 MiB request bound waits for the next batch, and nothing waits for a batch to fill. After a page commits, its job gets a fresh ready position behind its peers. A job in backoff holds back no other job. A page with persisted attempts that the worker has no backoff for, after a reopen, first waits a fresh delay from those attempts.
 
-**Lane units.** Load dispatch and page application are lane units in the runtime's admission order, alternating with push and Downlink turns: at most one page application per turn before yielding. Network waits hold no SQLite writer; an application waits in the shared scheduler while another transaction, an `onStore` callback included, holds the writer. A slow Load batch does not hold up the second batch, a push receipt, live delivery or foreground reads.
+**Lane units.** The runtime runs the worker when an outcome is queued, or when it wants to dispatch and the connection is running, not paused, with no pending rebuild. A Load turn applies one queued outcome, else dispatches one batch. When Load and the other lanes both have work, turns alternate; the Downlink-before-push order is unchanged. Network waits hold no writer; an application waits in the shared scheduler while any transaction, an `onStore` callback included, holds it. A Load page commit wakes neither the push nor the Downlink lane; a Load task commit does, like any task commit.
 
-**Failures.** Transport failures, `429`, server availability errors and `retryable` items back the affected job off (1 s base, 30 s cap, jitter) and resend the same frozen call ID. Each attempt has a finite deadline, scheduled by the worker as its own `timer` because no push or pull deadline applies; there is no overall offline timeout, because waiting for connectivity is not failure. Attempts are persisted, deadlines are not: after reopen a bounded delay is recomputed. A `401` joins the shared credential refresh; an explicit refresh refusal fails the job with `load.unauthorized`, while a transient refresh error backs off like a transport failure. A `failed` item fails only its own job, never the siblings that shared its request. `Retry-After` is not honored yet.
+**Failures.** A deadline, a transport failure, an envelope that does not correlate (reported, with every page counted as a transport failure) and a `retryable` item keep the frozen call ID and back the job off from its persisted attempts. A `401` joins the one shared credential refresh and resends the same body once; a second `401` backs off; a `401` without `refreshAuth` backs off, as on the push lane. A refresh that fails with status 401 or 403 is an explicit refusal and fails the batch's jobs with `load.unauthorized`; any other refresh failure backs off. A `failed` item fails only its own job. A ledger read error is reported and retried after 1 s. `Retry-After` is not honored.
 
-**Controls and close.** `pause` and `stop` abandon Load I/O with `cancelEffect`, like the other lanes ([Scheduling](scheduling.md#6-runtime-view)); `resume` asks again. The job's phase is `waiting` while offline, paused or backing off, and `loading` while a request is out or a received page is admitted for application. Client close rejects process-local waiters with `client_closed` and leaves every job durable for reopen.
+<!-- load-draft: verify against implementation -->
+Every other HTTP failure currently backs off under the frozen call, a whole-request `400`, `404` or `413` included: the client validated the envelope before sending, so such a status points at a backend or protocol mismatch, and no job is failed for a failure its batch shares. Whether some of these statuses should fail the batch's jobs instead is under review.
 
-**Rebuild.** While an incompatible rebuild waits for old Mutations to drain, the worker dispatches and applies nothing and treats responses that arrive as inert; Load never delays that drain. A rebuild fences every page in flight by the new replica generation ([Reconciliation](../../storage/reconciliation.md#6-runtime-view)).
+**Controls and close.** `pause` and `stop` cancel unanswered batches and the backoff timer without counting an attempt ([Scheduling](scheduling.md#6-runtime-view)); `resume`, `connect` and `wake` look again, and answers already admitted still apply. A stored pending job is projected as `loading` while a page is requested, answered or applying, `waiting` while offline, paused, backing off or behind a pending rebuild, and `pending` otherwise. Close rejects process-local waiters with `client_closed` and leaves every job durable; after reopen it resumes with its persisted attempts.
+
+**Rebuild.** While an incompatible rebuild waits for old Mutations to drain, the ledger yields no ready page and the worker is offline for Loads, so it dispatches and applies nothing; Load never delays that drain. A rebuild resets the worker and fences every answer by the new replica generation ([Reconciliation](../../storage/reconciliation.md#6-runtime-view)).
 
 ## 9. Architecture Decisions
 
 **One shared worker, opportunistic batching.** One worker bounds concurrency for every job together and batches whatever is ready at dispatch time. A per-job loop would multiply requests and duplicate retry policy per SDK; an artificial batching delay would add latency to every lone Load.
 
+**Slots are released on consumption.** Holding a batch's slot until each of its outcomes was applied, recorded or found stale bounds how many answers can wait behind a long `onStore` callback, without a separate queue limit.
+
 ## 10. Quality Requirements
 
-- **Nine ready jobs produce a batch of eight and an independent batch of one; no job has two pages in flight; unconsumed outcomes stop request growth.**
-- **A job in backoff cannot delay other ready jobs; a slow batch does not block a push receipt, live delivery or reads.**
+- **Batches are bounded and never wait to fill; a job never has two pages in flight; unconsumed outcomes stop request growth.** Evidence: [sqlite/tests/load_worker.rs](../../../../../../crates/sqlite/tests/load_worker.rs) `nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill`, `a_job_never_has_two_pages_in_flight`, `sixteen_unconsumed_outcomes_hold_both_slots_until_each_batch_is_consumed`, `a_batch_stops_at_the_request_byte_bound`, `damaged_rows_are_reported_once_and_skipped`.
+- **Backoff is bounded, holds back no other job and survives reopen.** Evidence: `backoff_doubles_from_one_second_is_jittered_and_capped`, `a_job_backing_off_holds_back_no_ready_job_and_goes_again_when_due`, `persisted_attempts_wait_a_fresh_bounded_delay_after_reopen`, `an_uncorrelated_response_keeps_every_frozen_call_and_a_pause_counts_no_attempt`.
+- **Through the runtime, a slow batch holds back no lane, answers wait behind a callback within the bound, Load and Downlink pages alternate, 401 shares one refresh, and pause, stop and stale answers change nothing.** Evidence: [sqlite/tests/runtime_loads.rs](../../../../../../crates/sqlite/tests/runtime_loads.rs) `nine_ready_jobs_go_out_as_eight_and_one_and_a_slow_batch_holds_back_no_lane`, `sixteen_answers_waiting_behind_a_hook_stop_further_requests`, `load_pages_and_downlink_pages_alternate_one_application_per_turn`, `a_401_shares_one_refresh_and_only_an_explicit_refusal_is_unauthorized`, `a_lost_response_or_a_deadline_resends_the_same_call_and_late_answers_are_inert`, `pause_abandons_without_backoff_resume_resends_and_stop_keeps_the_job`, `stale_timer_callback_and_refresh_answers_change_nothing`.
 
-Evidence: to be recorded from the worker and runtime tests of [#173](https://github.com/zanminwang/axton/issues/173).
+The checkpoint 4 report of #173 records these passing under `cargo test -p axton-sqlite --locked`. No real-HTTP end-to-end run exists yet.
 
 ## 11. Risks and Technical Debt
 
 **Accepted limitation: tail latency.** A response returns after all of its items finish, so one slow page delays up to seven siblings; streaming responses and adaptive batching are deferred ([Server / Engine / Loads](../../../server/engine/loads.md#11-risks-and-technical-debt)).
 
 **Accepted limitation: no background execution.** The worker runs while the client runtime runs. A mobile app that is suspended makes no progress until it resumes; jobs stay durable.
+
+**Accepted limitation: a ledger read retry can be cancelled.** A read error re-arms a 1 s timer, which a later backoff timer can replace; the next commit, `connect`, `resume` or `wake` scans again.

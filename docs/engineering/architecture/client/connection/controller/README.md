@@ -6,7 +6,6 @@ The controller decides when the client talks to the server. Rust owns the decisi
 - [Push lane](push-lane.md) — Freeze a batch, send it, hand the receipt to the engine, repeat.
 - [Downlink worker](downlink-worker.md) — Own inbound delivery: subscribe over WebSocket, catch up over HTTP from the durable cursor, queue and commit pages, recover from gaps and subscription changes.
   - [Live session](live-session.md) — One socket attempt of the worker: wire subscription, epoch and handshake order.
-<!-- load-draft: verify against implementation -->
 - [Load worker](load-worker.md) — Schedule ready native Load pages into bounded HTTP batches, fairly and with per-job backoff, independent of both lanes.
 
 ## How the parts work together
@@ -17,7 +16,6 @@ The lanes meet in the engine, not in the controller. A receipt completes its bat
 
 Pause, resume, wake and stop are `connection` tasks that reach both lanes; `Client.close` closes the connection first. Errors from either lane reach the application through `onError` as runtime `report`s, and when the application supplied `refreshAuth`, a 401 on either lane - or on a direct call - asks for one `refreshAuth` effect, shared by everything that hit it together. The refresh itself runs in the host because it needs the application's callback and the platform's credential store; the runtime only decides when to ask and what waits for it.
 
-<!-- load-draft: verify against implementation -->
 The [Load worker](load-worker.md) is a third, independent piece of work. It sends native Load pages over `POST /sync/loads`, shares the connection's pause, resume, stop and credential refresh, and never touches the push queue or a Channel cursor.
 
 ## Decision: no HTTP polling fallback

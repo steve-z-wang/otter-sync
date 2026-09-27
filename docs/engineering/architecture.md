@@ -20,14 +20,12 @@ The compiler is a tool, the SDKs and connections carry bytes, storage and persis
 
 The tree stops at three levels: AXTON, a component, a part. A part that has internal structure keeps its own tree in its README and owns every page below it; nothing deeper appears here.
 
-- **[Schema](architecture/schema/README.md)** — User-written, language-independent definitions of Models, fields, identities, Mutations, Queries and Loads. <!-- load-draft: verify against implementation -->
-  - **[Types](architecture/schema/types.md)** — Scalar and enum types, lists and nullability.
+- **[Schema](architecture/schema/README.md)** — User-written, language-independent definitions of Models, fields, identities, Mutations, Queries and Loads.   - **[Types](architecture/schema/types.md)** — Scalar and enum types, lists and nullability.
   - **[Models](architecture/schema/models.md)** — Fields, identities, unique constraints and read-contract versions.
   - **[Relations](architecture/schema/relations.md)** — References, inverse relations and deletion rules.
   - **[Slot mutations](architecture/schema/mutations.md)** — The low-level slot block: operation groups, argument bindings, versions and sequencing.
   - **[Mutations and Queries](architecture/schema/actions.md)** — Versioned backend operations: business kind, inputs, outputs and delivery defaults.
   - **[Prerequisites](architecture/schema/prerequisites.md)** — Prerequisite declarations and references.
-  <!-- load-draft: verify against implementation -->
   - **[Loads](architecture/schema/loads.md)** — Versioned, read-only paged operations that fill local Models: declaration, identity-list outputs, versions and names.
 - ★ **[Protocol](architecture/protocol/README.md)** — Language-independent push, pull, receipt and subscription message formats.
   - **[Common](architecture/protocol/common.md)** — Shared fields, counters and encoding conventions.
@@ -35,7 +33,6 @@ The tree stops at three levels: AXTON, a component, a part. A part that has inte
   - **[Direct calls](architecture/protocol/actions.md)** — Request/response envelope and replay by call ID.
   - **[Pull](architecture/protocol/pull.md)** — Requests, record changes, cursors and pagination.
   - **[Subscriptions](architecture/protocol/subscriptions.md)** — WebSocket subscription requests and acknowledgments.
-  <!-- load-draft: verify against implementation -->
   - **[Loads](architecture/protocol/loads.md)** — Batched native Load pages, per-item outcomes, correlation and bounds.
 - **[Compiler (Rust)](architecture/compiler/README.md)** — Compile schemas and generate typed interfaces.
   - **[Parse](architecture/compiler/parse.md)** — Convert schema text into structured definitions.

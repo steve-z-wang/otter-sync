@@ -11,7 +11,6 @@ The engine is the client's sync logic. It has no memory between calls: every ope
   - [Batching](push/batching.md) — Freeze eligible mutations and preserve their bytes for retries.
 - [Pull](pull.md) — Apply server changes and advance cursors.
 - [Settlement](settlement.md) — Complete a batch from its receipt: stage the returned authority by stamp, roll back rejections and replay pending changes.
-<!-- load-draft: verify against implementation -->
 - [Loads](loads.md) — Durable native Load jobs and once mappings: frozen pages, atomic page application, explicit retry and rebuild abandonment.
 
 ## How the parts work together
@@ -49,5 +48,5 @@ Two counters keep this honest and never mix: the channel cursor orders pages wit
 | Push / Dependencies | [client/policies.rs](../../../../../crates/client/src/policies.rs), [client/queue.rs](../../../../../crates/client/src/queue.rs); eligibility checks in [client/push.rs](../../../../../crates/client/src/push.rs) |
 | Push / Batching | [client/push.rs](../../../../../crates/client/src/push.rs); push assignment in [client/queue.rs](../../../../../crates/client/src/queue.rs) |
 | Pull | [client/downlink.rs](../../../../../crates/client/src/downlink.rs), [client/ledger.rs](../../../../../crates/client/src/ledger.rs); the authority applier in [client/authority.rs](../../../../../crates/client/src/authority.rs); incoming-page dispositions in [client/transport.rs](../../../../../crates/client/src/transport.rs) (`receive_downlink`) |
-| Loads | planned `crates/client/src/loads.rs` and `load_ledger.rs`; page application in [client/store_delivery.rs](../../../../../crates/client/src/store_delivery.rs) <!-- load-draft: verify against implementation --> |
+| Loads | [client/loads.rs](../../../../../crates/client/src/loads.rs), [client/load_ledger.rs](../../../../../crates/client/src/load_ledger.rs); page application in [client/store_delivery.rs](../../../../../crates/client/src/store_delivery.rs) |
 | Settlement | [client/push.rs](../../../../../crates/client/src/push.rs) (`acknowledge`, `mark_rejected`); the authority applier in [client/authority.rs](../../../../../crates/client/src/authority.rs) (`stage_authority`, `rebuild_held`); replay in [client/mutate.rs](../../../../../crates/client/src/mutate.rs) (`rebuild`) |

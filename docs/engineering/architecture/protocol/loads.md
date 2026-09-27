@@ -1,13 +1,12 @@
-<!-- load-draft: verify against implementation -->
 # Loads
 
 ## 1. Introduction and Goals
 
-`POST /sync/loads` carries pages of native [Loads](../schema/loads.md). One request batches ready pages of independent Load jobs, and one response answers each page with its own outcome. The batch is transport grouping only: each item has its own identity, its own backend transaction and its own local application ([guarantees N2, N3, N5](../../guarantees.md#n-native-loads)).
+`POST /sync/loads` carries pages of native [Loads](../schema/loads.md) ([#173](https://github.com/zanminwang/axton/issues/173)). One request batches ready pages of independent Load jobs, and one response answers each page with its own outcome. The batch is transport grouping only: each item has its own identity, its own backend transaction and its own local application ([guarantees N2, N3, N5](../../guarantees.md#n-native-loads)).
 
 ## 3. Context and Scope
 
-The request envelope is `{loads: [...]}`:
+The request envelope is exactly `{loads: [...]}` with 1 to 8 items:
 
 ```json
 {
@@ -27,50 +26,51 @@ The request envelope is `{loads: [...]}`:
 | `name`, `version` | The retained Load contract; the request carries no kind |
 | `args` | Canonical normalized business arguments, fixed for the job |
 | `continuation` | `null` for the first page, otherwise the previous page's non-null `next` wrapper `{state}` |
-| `models` | The Model read contracts the page's outputs resolve through |
+| `models` | A nonempty map of the Model read contracts the client stores the page's authority at |
 
-The response envelope is `{loads: [...]}` with exactly one item per request item, each carrying `loadId`, `callId`, an `outcome` and `records`:
+No other member is accepted, so call-site options such as `once` can never reach the wire. The response envelope is `{loads: [...]}` with exactly one item per request item, each carrying `loadId`, `callId`, an `outcome` and `records`:
 
 | `outcome.status` | Shape | Meaning |
 | --- | --- | --- |
-| `succeeded` | `{status, data, next}` with `records` of authority | `data` holds the declared identity lists; `next` is `null` (the job completes when this page commits) or `{state}` |
-| `failed` | `{status, error: {code, message}}` with `records: []` | A terminal rejection of this page; saved and replayed for the same call ID, except deterministic defects, which are unsaved ([Server / Engine / Loads](../server/engine/loads.md#6-runtime-view)) |
-| `retryable` | `{status, error}` with `records: []` | The item's transaction rolled back or its commit is uncertain; nothing terminal was saved, and the client resends the same call ID |
+| `succeeded` | `{status, data, next}` with `records` of authority | `data` holds exactly the declared identity lists; `next` is required: `null` (the job completes when this page commits) or `{state}` |
+| `failed` | `{status, error: {code, message}}` with `records: []` | A terminal rejection of this page. Saved and replayed for the same call ID, except for deterministic defects and identity conflicts, which are unsaved ([Server / Engine / Loads](../server/engine/loads.md#6-runtime-view)) |
+| `retryable` | `{status, error: {code, message}}` with `records: []` | The item's transaction rolled back or its commit is uncertain; nothing terminal was saved, and the client resends the same call ID |
 
-A `succeeded` outcome's `data`, `next` and `records` are saved together and replayed unchanged, so the client can enforce the identity bound, attribute failures and check that identities and records correspond.
+An error message is at most 1,024 bytes. A `succeeded` page's `data`, `next` and `records` are saved together and replayed unchanged. Each distinct `(model, identity)` of `data` has exactly one record with state, and there is no other record: no error record, no deletion and nothing unrequested. Identity lists keep order and duplicates.
 
 ### Continuation
 
-`Continuation` is `{state}` and rejects unknown fields. `state` is portable JSON: no undefined, functions, cycles, non-finite numbers, BigInt or class instances with custom serialization. Integers outside the JavaScript safe range and dates are encoded by the application as strings. The canonical state is at most 64 KiB and nests at most 64 levels. Both sides validate it in Rust; a violation is the item's `load.invalid_continuation`.
+`Continuation` is exactly `{state}` and rejects unknown members; `{state: null}` is a continuation, distinct from `null`. `state` is portable JSON: no undefined, functions, cycles, non-finite numbers, BigInt or class instances with custom serialization. Every integral number must be within ±(2^53−1), including integral doubles such as `1e300`, and normalizes to an integer (`1.0` is `1`). Dates are application-encoded strings. The canonical state is at most 64 KiB and nests at most 64 levels, counting arrays and objects. Both sides validate it in Rust; a violation is the item's `load.invalid_continuation`.
 
 ## 5. Building Block View
 
-<!-- load-draft: TODO confirm name -->
-Wire types (`LoadIntent`, `LoadNext`, `LoadBatchRequest`, `LoadBatchResponse`, `LoadPageResponse`) and the batch validator live in the core Load module (planned `crates/core/src/loads.rs`) and are re-exported from `axton_core`. The HTTP route is served beside the others in [server/index.mts](../../../../packages/server/index.mts); the client asks for it as the `load` route of an `http` effect ([Runtime](../client/runtime.md#3-context-and-scope)).
+The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `LoadOutcome`, `LoadError`, `LoadPageResponse`, `LoadBatchResponse`, `LoadPageReply`, `LoadItemError`) and their validators are in [core/loads.rs](../../../../crates/core/src/loads.rs), re-exported from `axton_core`; the bounds are the `LOAD_*` constants of `limits` in [core/protocol.rs](../../../../crates/core/src/protocol.rs). The server's envelope validator and response encoder are in [server/loads.rs](../../../../crates/server/src/loads.rs); the HTTP route is in [server/index.mts](../../../../packages/server/index.mts). The client asks for the route as the `load` route of an `http` effect ([Runtime](../client/runtime.md#3-context-and-scope)).
 
 ## 6. Runtime View
 
-**Correlation.** Outcomes correlate by `loadId` and `callId`, never by array position. Before any item runs, the server validates the complete envelope in Rust: unique load and call IDs, item count and byte bounds. Envelope validation is structural; an unknown name or version, or invalid business arguments, is an item rejection that does not stop its siblings. Before any page is applied, the client validates the whole response the same way: a malformed envelope, or a duplicate, extra or missing correlation, rejects the envelope and applies nothing, and every page keeps its frozen identity for a later resend. Once correlation is valid, a malformed item fails only its own job.
+**Correlation.** Outcomes correlate by `loadId` and `callId`, never by array position. Load IDs and call IDs are canonical lowercase UUIDs, each unique within the envelope.
 
-**Bounds.** These are initial implementation defaults, not negotiated wire fields:
+**What the envelope refuses.** A request is refused whole (`request.invalid`, HTTP 400) for its byte bound, a shape other than `{loads: [object…]}`, an item count outside 1 to 8, an invalid or duplicate ID, a blank name, a non-positive version, an empty `models` map or an unknown member. An unknown name or version, invalid business arguments, an invalid continuation and undeclared read contracts are item rejections, so siblings still run. A response is refused whole only for its byte bound, its shape, its item count, an item without UUID IDs, an object `outcome` and an array `records`, or a duplicate, unrequested, missing or extra correlation. The client then applies nothing, and every page keeps its frozen identity for a resend. Everything else about an item - an unknown status, a missing `next`, an invalid error, a malformed record, records on an unsuccessful page, content that does not match the request - fails only that item, which the client records as `load.protocol_invalid`, `load.page_too_large` or `load.invalid_continuation` by kind.
+
+**Bounds.** These are implementation defaults in `limits`, not negotiated wire fields:
 
 | Bound | Value |
 | --- | --- |
 | Items per batch | 8 |
 | Request body | 1 MiB |
-| Identity entries per page, across declared lists | 1,000 |
-| Encoded page outcome | 1 MiB |
-| Batch response | 8 MiB |
+| Identity entries per page, across declared lists, duplicates included | 1,000 |
+| Canonical page (IDs, outcome and records) | 1 MiB |
+| Batch response | 8 MiB of pages plus a 64 KiB envelope allowance (8,454,144 bytes) |
 | Continuation state | 64 KiB, depth 64 |
+| Error message | 1,024 bytes |
 
-<!-- load-draft: TODO confirm name -->
-A bound is never met by silent truncation. An oversized successful page is saved as the item's `load.page_too_large`; other size violations are typed terminal item failures (codes to be confirmed).
+A bound is never met by silent truncation. A page with more than 1,000 identities or over 1 MiB is the item's `load.page_too_large`. Because every page is bounded, eight full pages always fit one response; the envelope bound is a guard.
 
-**Whole-request failures.** Authentication and envelope failures fail the whole request with the transport's ordinary statuses ([Server transport](../server/connection/transport.md)); the client retries the frozen pages. Every item-level outcome, including a rejection, answers `200`.
+**Whole-request failures.** Authentication and envelope failures fail the whole request with the transport's ordinary statuses ([Server transport](../server/connection/transport.md)); the client keeps the frozen pages. Every item outcome, a rejection included, answers `200`.
 
 ## 10. Quality Requirements
 
-- **Correlation is by ID, every request item has exactly one response item, and a bad envelope applies nothing.** Required behavior: [guarantees N3–N5](../../guarantees.md#n-native-loads).
-- **`null`, `{state: null}` and nested states round-trip unchanged.**
+- **`null`, `{state: null}` and nested states round-trip unchanged; state bounds are exact.** Evidence: [core/tests/loads.rs](../../../../crates/core/tests/loads.rs) `first_and_end_null_stays_distinct_from_a_null_state`, `nested_states_round_trip_as_normalized_portable_json`, `continuation_state_is_bounded_portable_json`.
+- **Envelopes are structural and bounded, correlation is by ID, and a malformed page fails only its own item.** Evidence: `request_envelopes_are_structural_and_bounded`, `only_correlation_structure_rejects_a_response_envelope`, `a_malformed_page_shape_fails_only_its_own_item`, `pages_carry_declared_identity_lists_and_matching_authority`, `eight_maximal_pages_fit_one_response`, `server_encoding_bounds_item_errors_instead_of_refusing_the_batch`, `loads_never_route_as_actions`.
 
-Evidence: to be recorded from the core wire tests of [#173](https://github.com/zanminwang/axton/issues/173).
+The checkpoint 1 report of #173 records these passing under `cargo test -p axton-core -p axton-compiler --locked`; the server side of the envelope is in [Server / Engine / Loads](../server/engine/loads.md#10-quality-requirements).

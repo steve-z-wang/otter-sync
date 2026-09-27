@@ -379,6 +379,148 @@
     {
       "input": {
         "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "body",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Entry"
+          },
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "entryId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "url",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Media"
+          },
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "entryId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "journal",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "position",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "int"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Placement"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Entry",
+          "name": "entry",
+          "operation": "create"
+        },
+        {
+          "cardinality": "list",
+          "kind": "model",
+          "model": "Media",
+          "name": "media",
+          "operation": "create"
+        },
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Placement",
+          "name": "placement",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "PublishEntry",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
         "models": []
       },
       "inputs": [
@@ -962,11 +1104,261 @@
       "relations": [],
       "unique": [],
       "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Composition",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Entry",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "entryId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "url",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Media",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "entryId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "journal",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "position",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "int"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Placement",
+      "relations": [],
+      "unique": [],
+      "version": 1
     }
   ],
   "prerequisites": [],
   "requirements": [],
   "resultModels": [
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Composition",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Entry",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "entryId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "url",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Media",
+      "version": 1
+    },
     {
       "enums": [
         {
@@ -1023,6 +1415,48 @@
         "id"
       ],
       "name": "Note",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "entryId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "journal",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "position",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "int"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Placement",
       "version": 1
     },
     {

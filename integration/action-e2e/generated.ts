@@ -4,7 +4,7 @@ export interface ReadPort { read(model:string,identity:object):Promise<Record<st
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
 export interface CallPort { invokeAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<Call<T>>; invokeDirectAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<T>; invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions&OnceOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
-export const schema = {"actions":[{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Note","name":"note","operation":"create"}],"kind":"mutation","name":"AddNote","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"saved","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"create"}],"kind":"mutation","name":"AddTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"AnnotateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"query","name":"CountTodos","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"delete"}],"kind":"mutation","name":"DeleteTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"shown","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"EditAndShow","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todo","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"RetitleTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"to","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"subject","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SendEmail","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"messageId","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"TodoPage","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"single","kind":"value","name":"asOf","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"optional","kind":"value","name":"next","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"}],"kind":"mutation","name":"UpdateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","relations":[],"unique":[],"version":1},{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":""},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"calm"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"inbox"},"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","version":1}]} as const;
+export const schema = {"actions":[{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Note","name":"note","operation":"create"}],"kind":"mutation","name":"AddNote","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"saved","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"create"}],"kind":"mutation","name":"AddTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"AnnotateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"query","name":"CountTodos","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"delete"}],"kind":"mutation","name":"DeleteTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"shown","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"EditAndShow","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todo","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media"},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"list","kind":"model","model":"Media","name":"media","operation":"create"},{"cardinality":"single","kind":"model","model":"Placement","name":"placement","operation":"create"}],"kind":"mutation","name":"PublishEntry","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"RetitleTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"to","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"subject","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SendEmail","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"messageId","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"TodoPage","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"single","kind":"value","name":"asOf","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"optional","kind":"value","name":"next","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"}],"kind":"mutation","name":"UpdateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","relations":[],"unique":[],"version":1},{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":""},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"calm"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"inbox"},"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","version":1}]} as const;
 export type MutationName = string;
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
 export interface Rejection { ordinal:number; code:string; [key:string]:unknown; }
@@ -101,6 +101,181 @@ export function encodeNoteWhere(value:Partial<Note>):Record<string,unknown> { re
  ...(value.createdAt !== undefined ? { createdAt: value.createdAt.toISOString() } : {}),
  ...(value.tag !== undefined ? { tag: value.tag == null ? null : value.tag } : {}),
 }; }
+export interface Composition {
+ id: string;
+ title: string;
+ body: string;
+}
+export interface CompositionIdentity {
+ id: string;
+}
+export interface CompositionPatch {
+ title?: string;
+ body?: string;
+}
+export interface CompositionCreate {
+ id: string;
+ title: string;
+ body: string;
+}
+export function decodeComposition(row:Record<string,unknown>):Composition { return {
+ id: row.id as string,
+ title: row.title as string,
+ body: row.body as string,
+}; }
+export function decodeCompositionIdentity(row:Record<string,unknown>):CompositionIdentity { return {
+ id: row.id as string,
+}; }
+export function encodeComposition(value:Composition):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeCompositionIdentity(value:CompositionIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeCompositionPatch(value:CompositionPatch):Record<string,unknown> { return {
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
+export function encodeCompositionWhere(value:Partial<Composition>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
+export interface Entry {
+ id: string;
+ title: string;
+ body: string;
+}
+export interface EntryIdentity {
+ id: string;
+}
+export interface EntryPatch {
+ title?: string;
+ body?: string;
+}
+export interface EntryCreate {
+ id: string;
+ title: string;
+ body: string;
+}
+export function decodeEntry(row:Record<string,unknown>):Entry { return {
+ id: row.id as string,
+ title: row.title as string,
+ body: row.body as string,
+}; }
+export function decodeEntryIdentity(row:Record<string,unknown>):EntryIdentity { return {
+ id: row.id as string,
+}; }
+export function encodeEntry(value:Entry):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeEntryIdentity(value:EntryIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeEntryPatch(value:EntryPatch):Record<string,unknown> { return {
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
+export function encodeEntryWhere(value:Partial<Entry>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
+export interface Media {
+ id: string;
+ entryId: string;
+ url: string;
+}
+export interface MediaIdentity {
+ id: string;
+}
+export interface MediaPatch {
+ entryId?: string;
+ url?: string;
+}
+export interface MediaCreate {
+ id: string;
+ entryId: string;
+ url: string;
+}
+export function decodeMedia(row:Record<string,unknown>):Media { return {
+ id: row.id as string,
+ entryId: row.entryId as string,
+ url: row.url as string,
+}; }
+export function decodeMediaIdentity(row:Record<string,unknown>):MediaIdentity { return {
+ id: row.id as string,
+}; }
+export function encodeMedia(value:Media):Record<string,unknown> { return {
+ id: value.id,
+ entryId: value.entryId,
+ url: value.url,
+}; }
+export function encodeMediaIdentity(value:MediaIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeMediaPatch(value:MediaPatch):Record<string,unknown> { return {
+ ...(value.entryId !== undefined ? { entryId: value.entryId } : {}),
+ ...(value.url !== undefined ? { url: value.url } : {}),
+}; }
+export function encodeMediaWhere(value:Partial<Media>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.entryId !== undefined ? { entryId: value.entryId } : {}),
+ ...(value.url !== undefined ? { url: value.url } : {}),
+}; }
+export interface Placement {
+ id: string;
+ entryId: string;
+ journal: string;
+ position: number;
+}
+export interface PlacementIdentity {
+ id: string;
+}
+export interface PlacementPatch {
+ entryId?: string;
+ journal?: string;
+ position?: number;
+}
+export interface PlacementCreate {
+ id: string;
+ entryId: string;
+ journal: string;
+ position: number;
+}
+export function decodePlacement(row:Record<string,unknown>):Placement { return {
+ id: row.id as string,
+ entryId: row.entryId as string,
+ journal: row.journal as string,
+ position: row.position as number,
+}; }
+export function decodePlacementIdentity(row:Record<string,unknown>):PlacementIdentity { return {
+ id: row.id as string,
+}; }
+export function encodePlacement(value:Placement):Record<string,unknown> { return {
+ id: value.id,
+ entryId: value.entryId,
+ journal: value.journal,
+ position: value.position,
+}; }
+export function encodePlacementIdentity(value:PlacementIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodePlacementPatch(value:PlacementPatch):Record<string,unknown> { return {
+ ...(value.entryId !== undefined ? { entryId: value.entryId } : {}),
+ ...(value.journal !== undefined ? { journal: value.journal } : {}),
+ ...(value.position !== undefined ? { position: value.position } : {}),
+}; }
+export function encodePlacementWhere(value:Partial<Placement>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.entryId !== undefined ? { entryId: value.entryId } : {}),
+ ...(value.journal !== undefined ? { journal: value.journal } : {}),
+ ...(value.position !== undefined ? { position: value.position } : {}),
+}; }
 export function encodeTodoCreate(value:TodoCreate):Record<string,unknown> { return {
  id: value.id,
  title: value.title,
@@ -117,6 +292,39 @@ export function encodeNoteCreate(value:NoteCreate):Record<string,unknown> { retu
 }; }
 export function encodeNoteCreateIdentity(value:NoteCreate):Record<string,unknown> { return {
  ...(value.id !== undefined ? { id: value.id } : {}),
+}; }
+export function encodeCompositionCreate(value:CompositionCreate):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeCompositionCreateIdentity(value:CompositionCreate):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeEntryCreate(value:EntryCreate):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeEntryCreateIdentity(value:EntryCreate):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeMediaCreate(value:MediaCreate):Record<string,unknown> { return {
+ id: value.id,
+ entryId: value.entryId,
+ url: value.url,
+}; }
+export function encodeMediaCreateIdentity(value:MediaCreate):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodePlacementCreate(value:PlacementCreate):Record<string,unknown> { return {
+ id: value.id,
+ entryId: value.entryId,
+ journal: value.journal,
+ position: value.position,
+}; }
+export function encodePlacementCreateIdentity(value:PlacementCreate):Record<string,unknown> { return {
+ id: value.id,
 }; }
 export class TodoModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
  async get(identity:TodoIdentity):Promise<Todo|null> { const row=await this.port.read('Todo',encodeTodoIdentity(identity)); return row===null ? null : decodeTodo(row); }
@@ -146,10 +354,74 @@ export class NoteLiveModel extends NoteTxModel<LivePort> {
  /** This record's sync state: its pending mutations and retained rejections. Local only. */
  async syncState(identity:NoteIdentity):Promise<SyncState> { return (await this.port.syncState('Note',encodeNoteIdentity(identity))) as SyncState; }
 }
+export class CompositionModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:CompositionIdentity):Promise<Composition|null> { const row=await this.port.read('Composition',encodeCompositionIdentity(identity)); return row===null ? null : decodeComposition(row); }
+ async query(options:{where?:Partial<Composition>;orderBy?:{field:'id' | 'title' | 'body';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Composition[]> { return (await this.port.querySpec('Composition',{filter:encodeCompositionWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeComposition); }
+}
+export class CompositionTxModel<P extends WritePort=WritePort> extends CompositionModel<P> {
+ create(value:CompositionCreate):Promise<void> { return this.port.direct({model:'Composition',op:'create',identity:encodeCompositionCreateIdentity(value),values:encodeCompositionPatch(value)}); }
+ update(identity:CompositionIdentity, patch:CompositionPatch):Promise<void> { return this.port.direct({model:'Composition',op:'update',identity:encodeCompositionIdentity(identity),values:encodeCompositionPatch(patch)}); }
+ delete(identity:CompositionIdentity):Promise<void> { return this.port.direct({model:'Composition',op:'delete',identity:encodeCompositionIdentity(identity)}); }
+}
+export class CompositionLiveModel extends CompositionTxModel<LivePort> {
+ watch(options:{where?:Partial<Composition>}, listener:(rows:Composition[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Composition',encodeCompositionWhere(options.where??{}),(rows)=>listener(rows.map(decodeComposition)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:CompositionIdentity):Promise<SyncState> { return (await this.port.syncState('Composition',encodeCompositionIdentity(identity))) as SyncState; }
+}
+export class EntryModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:EntryIdentity):Promise<Entry|null> { const row=await this.port.read('Entry',encodeEntryIdentity(identity)); return row===null ? null : decodeEntry(row); }
+ async query(options:{where?:Partial<Entry>;orderBy?:{field:'id' | 'title' | 'body';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Entry[]> { return (await this.port.querySpec('Entry',{filter:encodeEntryWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeEntry); }
+}
+export class EntryTxModel<P extends WritePort=WritePort> extends EntryModel<P> {
+ create(value:EntryCreate):Promise<void> { return this.port.direct({model:'Entry',op:'create',identity:encodeEntryCreateIdentity(value),values:encodeEntryPatch(value)}); }
+ update(identity:EntryIdentity, patch:EntryPatch):Promise<void> { return this.port.direct({model:'Entry',op:'update',identity:encodeEntryIdentity(identity),values:encodeEntryPatch(patch)}); }
+ delete(identity:EntryIdentity):Promise<void> { return this.port.direct({model:'Entry',op:'delete',identity:encodeEntryIdentity(identity)}); }
+}
+export class EntryLiveModel extends EntryTxModel<LivePort> {
+ watch(options:{where?:Partial<Entry>}, listener:(rows:Entry[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Entry',encodeEntryWhere(options.where??{}),(rows)=>listener(rows.map(decodeEntry)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:EntryIdentity):Promise<SyncState> { return (await this.port.syncState('Entry',encodeEntryIdentity(identity))) as SyncState; }
+}
+export class MediaModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:MediaIdentity):Promise<Media|null> { const row=await this.port.read('Media',encodeMediaIdentity(identity)); return row===null ? null : decodeMedia(row); }
+ async query(options:{where?:Partial<Media>;orderBy?:{field:'id' | 'entryId' | 'url';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Media[]> { return (await this.port.querySpec('Media',{filter:encodeMediaWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeMedia); }
+}
+export class MediaTxModel<P extends WritePort=WritePort> extends MediaModel<P> {
+ create(value:MediaCreate):Promise<void> { return this.port.direct({model:'Media',op:'create',identity:encodeMediaCreateIdentity(value),values:encodeMediaPatch(value)}); }
+ update(identity:MediaIdentity, patch:MediaPatch):Promise<void> { return this.port.direct({model:'Media',op:'update',identity:encodeMediaIdentity(identity),values:encodeMediaPatch(patch)}); }
+ delete(identity:MediaIdentity):Promise<void> { return this.port.direct({model:'Media',op:'delete',identity:encodeMediaIdentity(identity)}); }
+}
+export class MediaLiveModel extends MediaTxModel<LivePort> {
+ watch(options:{where?:Partial<Media>}, listener:(rows:Media[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Media',encodeMediaWhere(options.where??{}),(rows)=>listener(rows.map(decodeMedia)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:MediaIdentity):Promise<SyncState> { return (await this.port.syncState('Media',encodeMediaIdentity(identity))) as SyncState; }
+}
+export class PlacementModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:PlacementIdentity):Promise<Placement|null> { const row=await this.port.read('Placement',encodePlacementIdentity(identity)); return row===null ? null : decodePlacement(row); }
+ async query(options:{where?:Partial<Placement>;orderBy?:{field:'id' | 'entryId' | 'journal' | 'position';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Placement[]> { return (await this.port.querySpec('Placement',{filter:encodePlacementWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodePlacement); }
+}
+export class PlacementTxModel<P extends WritePort=WritePort> extends PlacementModel<P> {
+ create(value:PlacementCreate):Promise<void> { return this.port.direct({model:'Placement',op:'create',identity:encodePlacementCreateIdentity(value),values:encodePlacementPatch(value)}); }
+ update(identity:PlacementIdentity, patch:PlacementPatch):Promise<void> { return this.port.direct({model:'Placement',op:'update',identity:encodePlacementIdentity(identity),values:encodePlacementPatch(patch)}); }
+ delete(identity:PlacementIdentity):Promise<void> { return this.port.direct({model:'Placement',op:'delete',identity:encodePlacementIdentity(identity)}); }
+}
+export class PlacementLiveModel extends PlacementTxModel<LivePort> {
+ watch(options:{where?:Partial<Placement>}, listener:(rows:Placement[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Placement',encodePlacementWhere(options.where??{}),(rows)=>listener(rows.map(decodePlacement)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:PlacementIdentity):Promise<SyncState> { return (await this.port.syncState('Placement',encodePlacementIdentity(identity))) as SyncState; }
+}
 export type TodoUpdate<K extends keyof TodoPatch = keyof TodoPatch> = TodoIdentity & Partial<Pick<TodoPatch, K>>;
 export type TodoDelete = TodoIdentity;
 export type NoteUpdate<K extends keyof NotePatch = keyof NotePatch> = NoteIdentity & Partial<Pick<NotePatch, K>>;
 export type NoteDelete = NoteIdentity;
+export type CompositionUpdate<K extends keyof CompositionPatch = keyof CompositionPatch> = CompositionIdentity & Partial<Pick<CompositionPatch, K>>;
+export type CompositionDelete = CompositionIdentity;
+export type EntryUpdate<K extends keyof EntryPatch = keyof EntryPatch> = EntryIdentity & Partial<Pick<EntryPatch, K>>;
+export type EntryDelete = EntryIdentity;
+export type MediaUpdate<K extends keyof MediaPatch = keyof MediaPatch> = MediaIdentity & Partial<Pick<MediaPatch, K>>;
+export type MediaDelete = MediaIdentity;
+export type PlacementUpdate<K extends keyof PlacementPatch = keyof PlacementPatch> = PlacementIdentity & Partial<Pick<PlacementPatch, K>>;
+export type PlacementDelete = PlacementIdentity;
 export interface AddNoteInput {
  note: NoteCreate;
 }
@@ -182,6 +454,12 @@ export interface EditAndShowInput {
 export interface EditAndShowOutput {
  todo: Todo;
 }
+export interface PublishEntryInput {
+ entry: EntryCreate;
+ media: MediaCreate[];
+ placement: PlacementCreate;
+}
+export type PublishEntryOutput = void;
 export interface RetitleTodosInput {
  query: string;
  title: string;
@@ -253,6 +531,12 @@ function encodeEditAndShowInput(args:EditAndShowInput):Record<string,unknown> { 
 function decodeEditAndShowOutput(value:unknown):EditAndShowOutput { const row=value as Record<string,unknown>; return {
  todo: decodeTodo(row.todo as Record<string,unknown>),
 }; }
+function encodePublishEntryInput(args:PublishEntryInput):Record<string,unknown> { return {
+ entry: encodeEntryCreate(args.entry),
+ media: args.media.map(value => encodeMediaCreate(value)),
+ placement: encodePlacementCreate(args.placement),
+}; }
+function decodePublishEntryOutput(_value:unknown):void { return undefined; }
 function encodeRetitleTodosInput(args:RetitleTodosInput):Record<string,unknown> { return {
  query: args.query,
  title: args.title,
@@ -304,6 +588,8 @@ export type CountTodosOptions = { store?: boolean };
 export type DeleteTodoOptions = { store?: boolean };
 /** Invocation options for EditAndShow; `store` selects which explicit Model outputs also update local Models. */
 export type EditAndShowOptions = CallOptions<'todo'>;
+/** Invocation options for PublishEntry; `store` selects which explicit Model outputs also update local Models. */
+export type PublishEntryOptions = { store?: boolean };
 /** Invocation options for RetitleTodos; `store` selects which explicit Model outputs also update local Models. */
 export type RetitleTodosOptions = CallOptions<'todos'|'first'>;
 /** Invocation options for SearchTodos; `store` selects which explicit Model outputs also update local Models. */
@@ -321,6 +607,7 @@ export function makeMutations(port:CallPort) { return {
  annotateTodo: (args:AnnotateTodoInput, options?:AnnotateTodoOptions):Promise<Call<AnnotateTodoOutput>> => port.invokeAction('AnnotateTodo',1,encodeAnnotateTodoInput(args),decodeAnnotateTodoOutput,options),
  deleteTodo: (args:DeleteTodoInput, options?:DeleteTodoOptions):Promise<Call<DeleteTodoOutput>> => port.invokeAction('DeleteTodo',1,encodeDeleteTodoInput(args),decodeDeleteTodoOutput,options),
  editAndShow: (args:EditAndShowInput, options?:EditAndShowOptions):Promise<Call<EditAndShowOutput>> => port.invokeAction('EditAndShow',1,encodeEditAndShowInput(args),decodeEditAndShowOutput,options),
+ publishEntry: (args:PublishEntryInput, options?:PublishEntryOptions):Promise<Call<PublishEntryOutput>> => port.invokeAction('PublishEntry',1,encodePublishEntryInput(args),decodePublishEntryOutput,options),
  retitleTodos: (args:RetitleTodosInput, options?:RetitleTodosOptions):Promise<Call<RetitleTodosOutput>> => port.invokeAction('RetitleTodos',1,encodeRetitleTodosInput(args),decodeRetitleTodosOutput,options),
  sendEmail: (args:SendEmailInput, options?:SendEmailOptions):Promise<Call<SendEmailOutput>> => port.invokeAction('SendEmail',1,encodeSendEmailInput(args),decodeSendEmailOutput,options),
  updateTodo: (args:UpdateTodoInput, options?:UpdateTodoOptions):Promise<Call<UpdateTodoOutput>> => port.invokeAction('UpdateTodo',1,encodeUpdateTodoInput(args),decodeUpdateTodoOutput,options),
@@ -330,6 +617,7 @@ export function makeMutations(port:CallPort) { return {
   annotateTodo: (args:AnnotateTodoInput, options?:AnnotateTodoOptions):Promise<AnnotateTodoOutput> => port.invokeDirectAction('AnnotateTodo',1,encodeAnnotateTodoInput(args),decodeAnnotateTodoOutput,options),
   deleteTodo: (args:DeleteTodoInput, options?:DeleteTodoOptions):Promise<DeleteTodoOutput> => port.invokeDirectAction('DeleteTodo',1,encodeDeleteTodoInput(args),decodeDeleteTodoOutput,options),
   editAndShow: (args:EditAndShowInput, options?:EditAndShowOptions):Promise<EditAndShowOutput> => port.invokeDirectAction('EditAndShow',1,encodeEditAndShowInput(args),decodeEditAndShowOutput,options),
+  publishEntry: (args:PublishEntryInput, options?:PublishEntryOptions):Promise<PublishEntryOutput> => port.invokeDirectAction('PublishEntry',1,encodePublishEntryInput(args),decodePublishEntryOutput,options),
   retitleTodos: (args:RetitleTodosInput, options?:RetitleTodosOptions):Promise<RetitleTodosOutput> => port.invokeDirectAction('RetitleTodos',1,encodeRetitleTodosInput(args),decodeRetitleTodosOutput,options),
   sendEmail: (args:SendEmailInput, options?:SendEmailOptions):Promise<SendEmailOutput> => port.invokeDirectAction('SendEmail',1,encodeSendEmailInput(args),decodeSendEmailOutput,options),
   updateTodo: (args:UpdateTodoInput, options?:UpdateTodoOptions):Promise<UpdateTodoOutput> => port.invokeDirectAction('UpdateTodo',1,encodeUpdateTodoInput(args),decodeUpdateTodoOutput,options),
@@ -351,25 +639,37 @@ export function makeQueries(port:CallPort) { return {
   todoPage: (args:TodoPageInput):Promise<void> => port.invalidateQuery('TodoPage',1,encodeTodoPageInput(args)),
  }
 }; }
-export interface LiveModels { todo:TodoLiveModel; note:NoteLiveModel; }
-export function liveModels(port:LivePort):LiveModels { return { todo:new TodoLiveModel(port), note:new NoteLiveModel(port) }; }
-export interface TxModels { todo:TodoTxModel; note:NoteTxModel; }
-export function txModels(port:WritePort):TxModels { return { todo:new TodoTxModel(port), note:new NoteTxModel(port) }; }
+export interface LiveModels { todo:TodoLiveModel; note:NoteLiveModel; composition:CompositionLiveModel; entry:EntryLiveModel; media:MediaLiveModel; placement:PlacementLiveModel; }
+export function liveModels(port:LivePort):LiveModels { return { todo:new TodoLiveModel(port), note:new NoteLiveModel(port), composition:new CompositionLiveModel(port), entry:new EntryLiveModel(port), media:new MediaLiveModel(port), placement:new PlacementLiveModel(port) }; }
+export interface TxModels { todo:TodoTxModel; note:NoteTxModel; composition:CompositionTxModel; entry:EntryTxModel; media:MediaTxModel; placement:PlacementTxModel; }
+export function txModels(port:WritePort):TxModels { return { todo:new TodoTxModel(port), note:new NoteTxModel(port), composition:new CompositionTxModel(port), entry:new EntryTxModel(port), media:new MediaTxModel(port), placement:new PlacementTxModel(port) }; }
 export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
 /** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
 export interface FetchModels {
  todo(identity:TodoIdentity, options?:{store?:boolean}):Promise<Todo|null>;
  note(identity:NoteIdentity, options?:{store?:boolean}):Promise<Note|null>;
+ composition(identity:CompositionIdentity, options?:{store?:boolean}):Promise<Composition|null>;
+ entry(identity:EntryIdentity, options?:{store?:boolean}):Promise<Entry|null>;
+ media(identity:MediaIdentity, options?:{store?:boolean}):Promise<Media|null>;
+ placement(identity:PlacementIdentity, options?:{store?:boolean}):Promise<Placement|null>;
 }
 export function fetchModels(port:FetchPort):FetchModels { return {
  todo:(identity,options)=>port.fetchModel('Todo',1,encodeTodoIdentity(identity),decodeTodo,options),
  note:(identity,options)=>port.fetchModel('Note',1,encodeNoteIdentity(identity),decodeNote,options),
+ composition:(identity,options)=>port.fetchModel('Composition',1,encodeCompositionIdentity(identity),decodeComposition,options),
+ entry:(identity,options)=>port.fetchModel('Entry',1,encodeEntryIdentity(identity),decodeEntry,options),
+ media:(identity,options)=>port.fetchModel('Media',1,encodeMediaIdentity(identity),decodeMedia,options),
+ placement:(identity,options)=>port.fetchModel('Placement',1,encodePlacementIdentity(identity),decodePlacement,options),
 }; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {
  readonly todo?: StoreHandler<TodoIdentity, Todo>;
  readonly note?: StoreHandler<NoteIdentity, Note>;
+ readonly composition?: StoreHandler<CompositionIdentity, Composition>;
+ readonly entry?: StoreHandler<EntryIdentity, Entry>;
+ readonly media?: StoreHandler<MediaIdentity, Media>;
+ readonly placement?: StoreHandler<PlacementIdentity, Placement>;
 }
 export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }
 /** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */

@@ -312,21 +312,36 @@ void main() {
   });
 
   test(
-    'client close waits for connection setup and remains idempotent',
+    'client close settles connection setup and remains idempotent',
     () async {
       final fixture = await Fixture.create('axton-dart-close-');
       final client = await fixture.open();
       final errors = <Object>[];
       try {
-        final starting = client.connect(
-          SyncServer(url: 'http://127.0.0.1:1', token: () => 'secret'),
-          onError: errors.add,
-        );
-        await Future.wait([starting, client.close()]);
+        final starting = client
+            .connect(
+              SyncServer(url: 'http://127.0.0.1:1', token: () => 'secret'),
+              onError: errors.add,
+            )
+            .then<Object>((connection) => connection, onError: (Object e) => e);
+        final closing = client.close();
+        final outcome = await starting;
+        await closing;
         await Future<void>.delayed(Duration.zero);
         expect(errors, isEmpty);
         await client.close();
-        await (await starting).close();
+        if (outcome is RuntimeConnection) {
+          await outcome.close();
+        } else {
+          expect(
+            outcome,
+            isA<StateError>().having(
+              (e) => e.message,
+              'message',
+              'client_closed',
+            ),
+          );
+        }
         await expectLater(
           client.connect(
             SyncServer(url: 'http://127.0.0.1:1', token: () => 'secret'),

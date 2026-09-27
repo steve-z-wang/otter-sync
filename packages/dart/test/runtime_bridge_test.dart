@@ -667,6 +667,87 @@ void main() {
     gate.complete();
   });
 
+  test('close cancels connection setup before its completion', () async {
+    String? connectingId;
+    final carrier = FakeCarrier((envelope) {
+      if ((envelope['command'] as Map?)?['kind'] == 'connect') {
+        connectingId = envelope['requestId'] as String;
+        return const [];
+      }
+      if (envelope['type'] == 'close') {
+        return [
+          {
+            'type': 'taskCompleted',
+            'requestId': connectingId,
+            'ok': false,
+            'error': 'client_closed',
+          },
+          {'type': 'runtimeClosed'},
+        ];
+      }
+      return null;
+    });
+    final client = await Client.open(
+      path: 'unused',
+      schema: const {},
+      carrier: carrier,
+    );
+    final errors = <Object>[];
+    final starting = client.connect(
+      SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
+      onError: errors.add,
+    );
+    final closing = client.close();
+    await expectLater(
+      starting,
+      throwsA(
+        isA<StateError>().having((e) => e.message, 'message', 'client_closed'),
+      ),
+    );
+    await closing;
+    await client.close();
+    expect(errors, isEmpty);
+    expect(Bridge.attached, isNot(contains(carrier.runtime)));
+    await expectLater(
+      client.connect(SyncServer(url: 'http://127.0.0.1:1', token: () => 't')),
+      throwsA(
+        isA<StateError>().having((e) => e.message, 'message', 'client_closed'),
+      ),
+    );
+  });
+
+  test('close cleans up a connection that completed first', () async {
+    final carrier = FakeCarrier((envelope) {
+      if ((envelope['command'] as Map?)?['kind'] == 'connect') {
+        return [completed(envelope['requestId'] as String)];
+      }
+      return null;
+    });
+    final client = await Client.open(
+      path: 'unused',
+      schema: const {},
+      carrier: carrier,
+    );
+    final errors = <Object>[];
+    final starting = client.connect(
+      SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
+      onError: errors.add,
+    );
+    final closing = client.close();
+    final connection = await starting;
+    await closing;
+    await connection.close();
+    await client.close();
+    expect(errors, isEmpty);
+    expect(Bridge.attached, isNot(contains(carrier.runtime)));
+    await expectLater(
+      client.connect(SyncServer(url: 'http://127.0.0.1:1', token: () => 't')),
+      throwsA(
+        isA<StateError>().having((e) => e.message, 'message', 'client_closed'),
+      ),
+    );
+  });
+
   test('a callback whose task close already refused never runs', () async {
     // The runtime refused the transaction in the batch that asked for its
     // callback: the effect, its cancellation, the refusal and the end.

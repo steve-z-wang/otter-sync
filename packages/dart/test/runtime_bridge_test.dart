@@ -861,12 +861,14 @@ void main() {
             input['transactionId'] as String,
             input['scope'] as String?,
             input['command'] as Map<String, dynamic>,
+            companionId: input['companionId'] as String?,
           ),
           'callbackResult' => Bridge.callbackResultEnvelope(
             input['effectId'] as String,
             input['transactionId'] as String,
             ok: input['ok'] as bool,
             error: input['error'] as String?,
+            companionId: input['companionId'] as String?,
           ),
           'effectResult' => Bridge.effectResultEnvelope(
             input['effectId'] as String,
@@ -906,11 +908,19 @@ void main() {
             expect(operation['transactionId'], isA<String>());
             expect(operation['requestId'], isA<String>());
           }
+          if (operation['kind'] == 'mutationLocal') {
+            expect(operation['transactionId'], isA<String>());
+            expect(operation['companionId'], isA<String>());
+            expect(operation['requestId'], isA<String>());
+          }
         case 'cancelEffect':
           expect(event['effectId'], isA<String>());
         case 'callCompleted':
           expect(event['callId'], isA<String>());
           expect(event.containsKey('outcome'), isTrue);
+        case 'transactionCallState':
+          expect(event['callId'], isA<String>());
+          expect(event['state'], anyOf('committed', 'rolledBack'));
         case 'observerChanged':
           expect(event['observerId'], isA<String>());
           expect(event.containsKey('snapshot'), isTrue);
@@ -927,6 +937,7 @@ void main() {
       'effect',
       'cancelEffect',
       'callCompleted',
+      'transactionCallState',
       'observerChanged',
       'report',
       'runtimeClosed',

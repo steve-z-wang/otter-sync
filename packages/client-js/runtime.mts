@@ -110,6 +110,7 @@ import {
   type CallOptions,
   type QueryOptions,
 } from "./actions.mts";
+import type { MutationPort } from "./local.mts";
 import {
   Loads,
   type Load,
@@ -272,6 +273,7 @@ export function createClient<
   native: NativeCarrier,
   Transaction: (new (
     send: (command: RecordValue, scope?: string) => Promise<any>,
+    mutations: MutationPort,
   ) => Tx) & {
     /**
      * `inCallback()` identifies the callback's own async context. Without
@@ -331,6 +333,11 @@ export function createClient<
         this.#deliverCompletions([
           { callId: event.callId, outcome: event.outcome },
         ]),
+      );
+      // A transaction's Calls become durable at its commit or end with its
+      // rollback, whether or not anybody observes them.
+      bridge.on("transactionCallState", (event) =>
+        this.#actions.transition(event.callId, event.state),
       );
     }
     /**
@@ -423,8 +430,24 @@ export function createClient<
       body: (tx: Tx) => T | Promise<T>,
       cancellation?: AbortSignal,
     ): Promise<T> {
-      const tx = new Transaction((command, scope) =>
-        this.#bridge.transactionCommand(transactionId, scope, command),
+      const tx = new Transaction(
+        (command, scope) =>
+          this.#bridge.transactionCommand(transactionId, scope, command),
+        {
+          submit: (command, scope, decode, local) => {
+            this.#actions.assertSupported();
+            let call!: Call<any>;
+            return this.#bridge
+              .submitMutation(transactionId, scope, command, local, {
+                // Routed while the answer is dispatched: the transaction's
+                // rollback may follow it in the same batch.
+                settled: ({ callId }: { callId: string }) => {
+                  call = this.#actions.register(callId, decode, true);
+                },
+              })
+              .then(() => call);
+          },
+        },
       );
       const cancel = () => tx.cancel();
       cancellation?.addEventListener("abort", cancel, { once: true });
@@ -1017,6 +1040,7 @@ export function createClient<
       } finally {
         this.#closed = true;
         this.#subscriptions.closed();
+        this.#actions.ended();
       }
     }
   };

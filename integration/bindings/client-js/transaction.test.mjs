@@ -60,3 +60,28 @@ test('unawaited nested scope poisons transaction without releasing another scope
 test('late savepoint callback after transaction closes cannot issue stack commands',async()=>{
  const calls=[];let release;const gate=new Promise(r=>release=r);const tx=new Transaction(async r=>{calls.push(r.kind);});const scope=tx.savepoint(async()=>{await gate;});await new Promise(r=>setImmediate(r));await assert.rejects(tx.finish(),/unawaited/);release();await assert.rejects(scope,/closed/);assert.deepEqual(calls,['savepoint']);
 });
+test('outer commands are refused without reaching the runtime while a local submission is unfinished',async()=>{
+ const sent=[];let answer;
+ const tx=new Transaction(async command=>{sent.push(command);return null;},{submit:(command,scope,decode,local)=>{sent.push({...command,scope,run:typeof local});return new Promise(resolve=>{answer=resolve;});}});
+ const submission=tx.submitMutation('Publish',1,{id:'p'},value=>value,{store:false,local:async()=>{}});
+ for(const refused of [tx.read('Entry',{id:'e'}),tx.direct({}),tx.submitMutation('Ping',1,{},value=>value),tx.channels.subscribe('book'),tx.savepoint(async()=>{})])
+  await assert.rejects(refused,/invalid transaction capability/);
+ answer('call');
+ assert.equal(await submission,'call');
+ // Settled: the parent handle is admitted again; a submission without a callback blocks nothing.
+ const plain=tx.submitMutation('Ping',1,{},value=>value);
+ await tx.read('Entry',{id:'e'});
+ answer('plain');
+ assert.equal(await plain,'plain');
+ assert.deepEqual(sent,[
+  {kind:'submitMutation',name:'Publish',version:1,args:{id:'p'},store:false,local:true,scope:undefined,run:'function'},
+  {kind:'submitMutation',name:'Ping',version:1,args:{},scope:undefined,run:'undefined'},
+  {kind:'read',key:{model:'Entry',identity:{id:'e'}}},
+ ]);
+ // The refusal fails the transaction whatever the callback caught.
+ await assert.rejects(tx.finish(),/invalid transaction capability/);
+});
+
+// Mutations in a transaction through the native runtime (shared with React Native).
+import { mutationTests } from './mutations-harness.mjs';
+mutationTests(test, Transaction, { savepoints: true, exactGuard: true });

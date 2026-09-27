@@ -2,7 +2,12 @@ import { requireNativeModule } from "expo-modules-core";
 import { createClient, type NativeCarrier } from "../client-js/runtime.mts";
 import { Transaction } from "./transaction.mts";
 import { createServerConnection } from "./live.mts";
-export { Transaction } from "./transaction.mts";
+export {
+  Transaction,
+  LocalTransaction,
+  type LocalCallback,
+  type MutationOptions,
+} from "./transaction.mts";
 export {
   CallError,
   type Call,

@@ -2,7 +2,13 @@ import { createRequire } from "node:module";
 import { createClient, type NativeCarrier } from "./runtime.mts";
 import { Transaction } from "./transaction.mts";
 import { createServerConnection } from "./live.mts";
-export { Transaction, type QuerySpec } from "./transaction.mts";
+export {
+  Transaction,
+  LocalTransaction,
+  type LocalCallback,
+  type MutationOptions,
+  type QuerySpec,
+} from "./transaction.mts";
 export {
   CallError,
   type Call,

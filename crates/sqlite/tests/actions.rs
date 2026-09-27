@@ -1665,6 +1665,73 @@ fn duplicates_and_failed_companions_leave_no_partial_writes() {
         title(&mut client, "Composition", "c2").as_deref(),
         Some("raw")
     );
+
+    // A failed companion keeps no recovery metadata either: the call commits
+    // with neither a companion row nor a before image of the records the
+    // failed companions touched.
+    let images = client.before_image_count().unwrap();
+    let ping = client
+        .transaction(|tx| {
+            let call = tx.submit_mutation(
+                "Ping",
+                1,
+                json!({"label":"z"}),
+                ActionCallOptions::default(),
+            )?;
+            for failure in [
+                retitle("gone", "x"),
+                local_op(
+                    "Composition",
+                    OperationKind::Update,
+                    "c2",
+                    Some(json!({"title":7})),
+                ),
+            ] {
+                assert!(tx.append_companion(call.ordinal, failure).is_err());
+            }
+            Ok(call)
+        })
+        .unwrap();
+    assert_eq!(client.pending_count().unwrap(), before + 1);
+    assert_eq!(client.before_image_count().unwrap(), images);
+    assert_eq!(
+        count(
+            &mut client,
+            &format!(
+                "SELECT COUNT(*) AS n FROM axton_mutation_operation WHERE ordinal={}",
+                ping.ordinal
+            )
+        ),
+        0
+    );
+    // A companion delete of a missing record is no failure: like a direct
+    // delete it removes nothing, and it is kept with its call.
+    let absent = client
+        .transaction(|tx| {
+            let call = tx.submit_mutation(
+                "Ping",
+                1,
+                json!({"label":"absent"}),
+                ActionCallOptions::default(),
+            )?;
+            tx.append_companion(
+                call.ordinal,
+                local_op("Composition", OperationKind::Delete, "gone", None),
+            )?;
+            Ok(call)
+        })
+        .unwrap();
+    assert!(!exists(&mut client, "Composition", "gone"));
+    assert_eq!(
+        count(
+            &mut client,
+            &format!(
+                "SELECT COUNT(*) AS n FROM axton_mutation_operation WHERE ordinal={} AND kind='companion'",
+                absent.ordinal
+            )
+        ),
+        1
+    );
 }
 
 /// Rolling back an existing savepoint discards the calls and companions
@@ -1737,4 +1804,63 @@ fn savepoint_rollback_discards_its_calls_and_their_companions() {
         ]
     );
     assert_eq!(raw, 2);
+}
+
+/// The runtime's session keeps the same rule as `Client::transaction`:
+/// rolling back a session savepoint discards the calls submitted in it, so a
+/// raw row that reuses a discarded ordinal takes no companion, while a call
+/// from a released scope keeps taking them.
+#[test]
+fn a_session_savepoint_rollback_discards_its_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir.path().join("db"));
+    let ping = |label: &str| {
+        let args = json!({ "label": label });
+        move |tx: &mut ClientTransaction<'_, SqliteStore>| {
+            tx.submit_mutation("Ping", 1, args, ActionCallOptions::default())
+        }
+    };
+    client.begin_session().unwrap();
+    client.session(ping("kept")).unwrap();
+    client.session_savepoint().unwrap();
+    let discarded = client.session(ping("gone")).unwrap();
+    client
+        .session(|tx| tx.append_companion(discarded.ordinal, retitle("c2", "discarded")))
+        .unwrap();
+    client.session_rollback_savepoint().unwrap();
+    assert!(
+        client
+            .session(|tx| tx.append_companion(discarded.ordinal, retitle("c2", "x")))
+            .is_err()
+    );
+    let raw = client
+        .session(|tx| {
+            let mut forged = Mutation::new("Ping", vec![]);
+            forged.call_id = Some(uuid::Uuid::new_v4().to_string());
+            forged.args = Some(json!({"label":"raw"}));
+            tx.enqueue(forged)
+        })
+        .unwrap();
+    assert_eq!(raw, discarded.ordinal, "the discarded ordinal is reused");
+    assert!(
+        client
+            .session(|tx| tx.append_companion(raw, retitle("c2", "x")))
+            .is_err()
+    );
+    client.session_savepoint().unwrap();
+    let released = client.session(ping("released")).unwrap();
+    client.session_release().unwrap();
+    client
+        .session(|tx| tx.append_companion(released.ordinal, retitle("c2", "released")))
+        .unwrap();
+    client.commit_session().unwrap();
+    assert_eq!(client.pending_count().unwrap(), 3);
+    assert_eq!(
+        title(&mut client, "Composition", "c2").as_deref(),
+        Some("released")
+    );
+    assert_eq!(
+        queued_ops(&mut client),
+        vec![op_row("companion", "Composition", "c2", "update")]
+    );
 }

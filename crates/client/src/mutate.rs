@@ -354,7 +354,7 @@ impl<S: ClientStore> Engine<'_, S> {
                         continue;
                     }
                     self.hold_truth(&child)?;
-                    self.add_cascade(
+                    self.append_op(
                         queued.ordinal,
                         kind,
                         &Operation {
@@ -450,28 +450,15 @@ impl<S: ClientStore> Engine<'_, S> {
         // still reflects only earlier mutations.
         for (index, op) in all.iter_mut().enumerate() {
             normalize(self.schema, op)?;
-            let key = self.schema.record_key(&op.model, &op.identity)?;
-            self.hold_truth(&key)?;
-            let (own, cascade_kind) = if index < wire {
+            let (own, cascade) = if index < wire {
                 (OpKind::Wire, OpKind::Effect)
             } else {
                 (OpKind::Companion, OpKind::Companion)
             };
-            if op.op == OperationKind::Delete {
-                for child in self.descendants(&key)? {
-                    self.hold_truth(&child)?;
-                    let cascade = Operation {
-                        model: child.model,
-                        identity: child.identity,
-                        op: OperationKind::Delete,
-                        values: None,
-                    };
-                    self.apply_main(&cascade)?;
-                    ordered.push((cascade_kind, cascade));
-                }
-            }
-            self.apply_main(op)?;
-            ordered.push((own, op.clone()));
+            self.apply_in_order(op, own, cascade, |_, kind, op| {
+                ordered.push((kind, op));
+                Ok(())
+            })?;
         }
         let of = |kind: OpKind| -> Vec<Operation> {
             ordered
@@ -517,25 +504,42 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         crate::defaults::fill_operation(self.schema, &mut operation);
         normalize(self.schema, &mut operation)?;
-        let key = self
-            .schema
-            .record_key(&operation.model, &operation.identity)?;
+        self.apply_in_order(
+            &operation,
+            OpKind::Companion,
+            OpKind::Companion,
+            |engine, kind, op| engine.append_op(ordinal, kind, &op),
+        )
+    }
+    /// Apply one queued operation in local order and hand every write to
+    /// `record` as it happens: each record's base is held first, a delete's
+    /// cascade to its descendants comes before the delete (as `cascade`),
+    /// then the operation itself (as `own`). Queued calls and appended
+    /// companions share it, so a cascade is stored at its trigger either way.
+    fn apply_in_order(
+        &mut self,
+        op: &Operation,
+        own: OpKind,
+        cascade: OpKind,
+        mut record: impl FnMut(&mut Self, OpKind, Operation) -> Result<()>,
+    ) -> Result<()> {
+        let key = self.schema.record_key(&op.model, &op.identity)?;
         self.hold_truth(&key)?;
-        if operation.op == OperationKind::Delete {
+        if op.op == OperationKind::Delete {
             for child in self.descendants(&key)? {
                 self.hold_truth(&child)?;
-                let cascade = Operation {
+                let delete = Operation {
                     model: child.model,
                     identity: child.identity,
                     op: OperationKind::Delete,
                     values: None,
                 };
-                self.apply_main(&cascade)?;
-                self.append_op(ordinal, OpKind::Companion, &cascade)?;
+                self.apply_main(&delete)?;
+                record(self, cascade, delete)?;
             }
         }
-        self.apply_main(&operation)?;
-        self.append_op(ordinal, OpKind::Companion, &operation)
+        self.apply_main(op)?;
+        record(self, own, op.clone())
     }
     /// A local write that is never sent: it moves the truth along with the row.
     pub fn direct(&mut self, mut operation: Operation) -> Result<()> {

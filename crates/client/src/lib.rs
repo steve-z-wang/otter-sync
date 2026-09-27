@@ -906,10 +906,12 @@ impl<S: ClientStore> Client<S> {
             .savepoints
             .pop()
             .ok_or_else(|| invalid("no savepoint"))?;
+        // The scope's calls are discarded even when the physical rollback
+        // fails: nothing may attach a companion to them afterwards.
+        session.submitted = savepoint.submitted;
         self.store.rollback_to(&savepoint.name)?;
         session.changed = savepoint.changed;
         session.pull_pages.truncate(savepoint.pull_pages_len);
-        session.submitted = savepoint.submitted;
         Ok(())
     }
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
@@ -1246,9 +1248,10 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
                 Ok(v)
             }
             Err(e) => {
-                self.engine.store.rollback_to(&name)?;
-                // Calls made in the discarded scope are gone with it.
+                // Calls made in the discarded scope are gone with it, even
+                // when the physical rollback fails and fails the rest.
                 *self.submitted = submitted;
+                self.engine.store.rollback_to(&name)?;
                 Err(e)
             }
         }

@@ -237,15 +237,12 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(())
     }
     pub fn add_effect(&mut self, ordinal: u64, op: &Operation) -> Result<()> {
-        self.add_cascade(ordinal, OpKind::Effect, op)
-    }
-    /// Append a cascade delete to a queued call: an effect of a wire delete,
-    /// or a companion when the delete it extends is the call's companion.
-    pub(crate) fn add_cascade(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
-        self.append_op(ordinal, kind, op)
+        self.append_op(ordinal, OpKind::Effect, op)
     }
     /// Store `op` at the next position of queued call `ordinal`: after every
-    /// operation the call already holds.
+    /// operation the call already holds. A cascade delete appended later is
+    /// an effect of a wire delete, or a companion when the delete it extends
+    /// is the call's companion.
     pub(crate) fn append_op(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
         let next = self.scalar(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM axton_mutation_operation WHERE ordinal=?",

@@ -1,6 +1,6 @@
 # Durable Load Operations
 
-Status: implementation contract for #173. Only preparation and review have been done; no Load implementation code exists yet. The 2026-09-27 once amendment and the [review resolutions](#review-resolutions-2026-09-27) are user-authorized and supersede conflicting earlier statements.
+Status: implemented on branch `codex/173-load` for #173; this document remains the contract the implementation was reviewed against. The 2026-09-27 once amendment and the [review resolutions](#review-resolutions-2026-09-27) are user-authorized and supersede conflicting earlier statements.
 
 Baseline: `ed566eb77f9b0b47f2c128bd212261d08687e324`. Planning branch: `codex/load-operations`. Implementation branch: `codex/173-load`.
 

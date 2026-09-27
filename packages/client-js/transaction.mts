@@ -27,6 +27,26 @@ export class Transaction {
   constructor(send: (command: RecordValue, scope?: string) => Promise<any>) {
     this.#send = send;
   }
+  /** Runtime cancellation fences an escaped handle before user code settles. */
+  cancel(): void {
+    this.#open = false;
+  }
+  /** Local Channel intent inside this transaction; no Subscription handle. */
+  get channels(): {
+    subscribe(channel: string): Promise<void>;
+    unsubscribe(channel: string): Promise<void>;
+  } {
+    return {
+      subscribe: (channel) =>
+        this.#call({ kind: "channel", channel, subscribed: true }).then(
+          () => {},
+        ),
+      unsubscribe: (channel) =>
+        this.#call({ kind: "channel", channel, subscribed: false }).then(
+          () => {},
+        ),
+    };
+  }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
     try {
       return await this.#publicContext.run(this.#publicToken, body);

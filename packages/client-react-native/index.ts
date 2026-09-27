@@ -13,6 +13,9 @@ export {
   type CallStatus,
 } from "../client-js/actions.mts";
 export type { QuerySpec, RecordValue } from "../client-js/values.mts";
+export type { RawStoreChange } from "../client-js/runtime.mts";
+export type StoreHook =
+  import("../client-js/runtime.mts").StoreHook<Transaction>;
 export type {
   Connection,
   ConnectionOptions,

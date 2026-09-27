@@ -6,6 +6,10 @@ import 'port.dart';
 import 'subscriptions.dart';
 import 'dart:async';
 
+/// A raw Model store hook; generated clients decode changes before calling it.
+typedef StoreHook =
+    FutureOr<void> Function(Transaction tx, List<Map<String, dynamic>> changes);
+
 /// Typed generated model APIs delegate to this generic native client.
 class Client implements WritePort, MutatePort {
   /// The Rust-owned runtime: it orders every task and owns the database.
@@ -52,6 +56,9 @@ class Client implements WritePort, MutatePort {
       );
     }
     final message = error is StateError ? error.message : null;
+    if (error is TaskFailure && error.details['code'] == 'store_hook_failed') {
+      return CallError('store_hook_failed', cause: error.cause ?? error);
+    }
     if (message == 'action.invalid_options') {
       return CallError(message!, execution: 'rejected', cause: error);
     }
@@ -107,7 +114,10 @@ class Client implements WritePort, MutatePort {
 
     /// Test seam: the carrier to drive instead of the library's C ABI.
     Carrier? carrier,
+    Map<String, StoreHook>? onStore,
   }) async {
+    final hooks = Map<String, StoreHook>.of(onStore ?? const {});
+    late Client client;
     final bridge = await Bridge.open(
       path: path,
       schema: schema,
@@ -115,8 +125,22 @@ class Client implements WritePort, MutatePort {
       migration: migration,
       discardPending: discardPending,
       carrier: carrier,
+      onStore: {
+        for (final entry in hooks.entries)
+          entry.key:
+              (
+                String transactionId,
+                List<Map<String, dynamic>> changes,
+                StoreCancellation cancellation,
+              ) => client._runTransactionBody(
+                transactionId,
+                (tx) => entry.value(tx, changes),
+                cancellation,
+              ),
+      },
     );
-    return Client._(bridge, bridge.opened['clientId'] as String);
+    client = Client._(bridge, bridge.opened['clientId'] as String);
+    return client;
   }
 
   /// Rust runs [body] as the callback of a local transaction it owns: ordinary
@@ -126,27 +150,35 @@ class Client implements WritePort, MutatePort {
     if (_inTransaction) throw StateError('transaction_active');
     late T result;
     await _bridge.transaction((transactionId) async {
-      final tx = Transaction._(this, transactionId);
-      try {
-        final token = Object();
-        _activeTxToken = token;
-        try {
-          result = await runZoned(
-            () => body(tx),
-            zoneValues: {_txZoneKey: token},
-          );
-        } finally {
-          _activeTxToken = null;
-        }
-      } catch (error, stack) {
-        try {
-          await tx._finish();
-        } catch (_) {}
-        Error.throwWithStackTrace(error, stack);
-      }
-      await tx._finish();
+      result = await _runTransactionBody(transactionId, body);
     });
     return result;
+  }
+
+  Future<T> _runTransactionBody<T>(
+    String transactionId,
+    FutureOr<T> Function(Transaction tx) body, [
+    StoreCancellation? cancellation,
+  ]) async {
+    final tx = Transaction._(this, transactionId);
+    cancellation?.onCancel(tx._cancel);
+    final token = Object();
+    _activeTxToken = token;
+    try {
+      final result = await runZoned(
+        () => Future<T>.sync(() => body(tx)),
+        zoneValues: {_txZoneKey: token},
+      );
+      await tx._finish();
+      return result;
+    } catch (error, stack) {
+      try {
+        await tx._finish();
+      } catch (_) {}
+      Error.throwWithStackTrace(error, stack);
+    } finally {
+      if (identical(_activeTxToken, token)) _activeTxToken = null;
+    }
   }
 
   Future<Map<String, dynamic>?> read(
@@ -400,6 +432,12 @@ class Client implements WritePort, MutatePort {
       final code = details?['code'] as String? ?? error.message;
       if (_unknownExecution.contains(code)) {
         throw ActionTransportException(code, _directCause(details));
+      }
+      if (code == 'store_hook_failed') {
+        throw ActionTransportException(
+          code,
+          error is TaskFailure ? error.cause ?? error : error,
+        );
       }
       // The runtime is gone: no call can be made.
       if (error.message == 'client_closed') {
@@ -674,6 +712,9 @@ class Transaction implements WritePort {
   final String _transactionId;
   bool _open = true;
   Transaction._(this._client, this._transactionId);
+  void _cancel() => _open = false;
+
+  late final channels = TransactionChannels._(this);
 
   /// Settles once every command submitted so far has settled.
   Future<void> _tail = Future<void>.value();
@@ -862,5 +903,26 @@ class Transaction implements WritePort {
       ),
     );
     return run;
+  }
+}
+
+/// Local Channel intent in a transaction; no live Subscription handle.
+class TransactionChannels {
+  final Transaction _tx;
+  const TransactionChannels._(this._tx);
+  Future<void> subscribe(String channel) async {
+    await _tx._send({
+      'kind': 'channel',
+      'channel': channel,
+      'subscribed': true,
+    });
+  }
+
+  Future<void> unsubscribe(String channel) async {
+    await _tx._send({
+      'kind': 'channel',
+      'channel': channel,
+      'subscribed': false,
+    });
   }
 }

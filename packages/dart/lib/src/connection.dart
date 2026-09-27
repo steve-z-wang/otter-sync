@@ -67,7 +67,33 @@ void deliverDiagnostic(
       }
     case 'error' || 'protocol':
       deliver(StateError(diagnostic['message'] as String));
+    case 'storeHook':
+      deliver(
+        StoreHookFailure(
+          model: diagnostic['model'] as String,
+          path: diagnostic['path'] as String,
+          message: diagnostic['message'] as String,
+          cause: diagnostic['cause'],
+        ),
+      );
   }
+}
+
+/// A store callback failure reported from a delivery lane.
+class StoreHookFailure implements Exception {
+  const StoreHookFailure({
+    required this.model,
+    required this.path,
+    required this.message,
+    this.cause,
+  });
+  final String code = 'store_hook_failed';
+  final String model;
+  final String path;
+  final String message;
+  final Object? cause;
+  @override
+  String toString() => 'StoreHookFailure($model, $path: $message)';
 }
 
 /// The `prerequisite` effect handler for [handlers]: run the application's

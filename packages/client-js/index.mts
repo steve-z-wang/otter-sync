@@ -13,6 +13,7 @@ export {
   type CallStatus,
 } from "./actions.mts";
 export type { RecordValue } from "./values.mts";
+export type { RawStoreChange, StoreHook } from "./runtime.mts";
 export type { Connection, ConnectionOptions } from "./connection.mts";
 export {
   AxtonReport,

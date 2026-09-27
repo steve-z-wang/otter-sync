@@ -15,6 +15,71 @@ async function within(promise) {
 test('shared runtime accepts the mobile transaction and native carrier', () => {
   assert.equal(typeof runtime?.createClient, 'function');
 });
+test('mobile store callback runs without a public task and uses transaction channels', async () => {
+  let wake;
+  const outbox=[];
+  const admitted=[];
+  let opened;
+  const carrier={
+    runtimeOpen(request, notify) {
+      opened=JSON.parse(request); wake=notify;
+      outbox.push({type:'taskCompleted',requestId:opened.requestId,ok:true,value:{clientId:'c',schema:{}}});
+      setImmediate(()=>wake('1'));
+      return '1';
+    },
+    runtimeSubmit(_id,message) {
+      const input=JSON.parse(message); admitted.push(input);
+      if(input.type==='transactionCommand')
+        outbox.push({type:'taskCompleted',requestId:input.requestId,ok:true,value:null});
+      if(input.type==='close') outbox.push({type:'runtimeClosed'});
+      setImmediate(()=>wake('1'));
+    },
+    runtimeDrain:()=>JSON.stringify(outbox.splice(0)), runtimeDetach() {},
+  };
+  const Client=runtime.createClient(carrier,Transaction,()=>{throw Error('no network');});
+  let callback;
+  let held;
+  let entered;
+  let release;
+  const started=new Promise(resolve=>entered=resolve);
+  const gate=new Promise(resolve=>release=resolve);
+  const onStore={Entry:async(tx,changes)=>{
+    if(changes[0]?.identity?.id==='hold') {
+      held=tx; entered(); await gate; return;
+    }
+    if(changes[0]?.identity?.id==='unawaited') {
+      void tx.channels.subscribe('x'); return;
+    }
+    assert.deepEqual(changes,[{kind:'delete',identity:{id:'e'}}]);
+    assert.equal(await within(client.mutate({name:'M',operations:[]}).then(()=>'',e=>e.message)),'transaction_active');
+    assert.equal(await tx.channels.subscribe('project:p1'),undefined);
+    callback=tx;
+  }};
+  const client=await Client.open({path:'unused',schema:{},onStore});
+  onStore.Entry=()=>{throw Error('changed handler');};
+  assert.deepEqual(opened.storeHooks,['Entry']);
+  assert.equal('onStore' in opened,false);
+  outbox.push({type:'effect',effectId:'store',operation:{kind:'storeCallback',transactionId:'tx',model:'Entry',changes:[{kind:'delete',identity:{id:'e'}}]}});
+  wake('1');
+  await new Promise(resolve=>setImmediate(resolve));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(admitted.find(x=>x.type==='transactionCommand').command,{kind:'channel',channel:'project:p1',subscribed:true});
+  assert.deepEqual(admitted.find(x=>x.type==='callbackResult'),{type:'callbackResult',effectId:'store',transactionId:'tx',ok:true});
+  await assert.rejects(callback.read('Entry',{id:'e'}),/closed/);
+  outbox.push({type:'effect',effectId:'held',operation:{kind:'storeCallback',transactionId:'tx2',model:'Entry',changes:[{kind:'delete',identity:{id:'hold'}}]}});
+  wake('1');
+  await started;
+  outbox.push({type:'cancelEffect',effectId:'held'});
+  wake('1');
+  await assert.rejects(held.read('Entry',{id:'hold'}),/closed/);
+  release();
+  outbox.push({type:'effect',effectId:'unawaited',operation:{kind:'storeCallback',transactionId:'tx3',model:'Entry',changes:[{kind:'delete',identity:{id:'unawaited'}}]}});
+  wake('1');
+  await new Promise(resolve=>setImmediate(resolve));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(admitted.find(x=>x.type==='callbackResult'&&x.effectId==='unawaited').error,/unawaited transaction operation/);
+  await client.close();
+});
 {
   const native = createRequire(import.meta.url)('../../../bindings/node/axton-node.node');
   const Client = runtime.createClient(native, Transaction, () => { throw Error('network not configured'); });

@@ -64,8 +64,14 @@ import {
   type NativeCarrier,
   type TaskError,
   type TaskHooks,
+  type RawStoreChange,
 } from "./bridge.mts";
 export type { NativeCarrier } from "./bridge.mts";
+export type { RawStoreChange } from "./bridge.mts";
+export type StoreHook<Tx = import("./transaction.mts").Transaction> = (
+  tx: Tx,
+  changes: readonly RawStoreChange[],
+) => void | Promise<void>;
 import type { ServerOptions, ServerConnection } from "./live.mts";
 import { Subscriptions, type Subscription } from "./subscriptions.mts";
 export type {
@@ -134,6 +140,13 @@ const INVOKE_CODES: Record<string, "unknown" | "rejected"> = {
  * error for `actionError` to map.
  */
 function invokeError(error: unknown): unknown {
+  const details = (error as TaskError | null)?.details;
+  if (details?.code === "store_hook_failed")
+    return new CallError(
+      "store_hook_failed",
+      "unknown",
+      (error as Error & { cause?: unknown }).cause ?? error,
+    );
   const message = (error as { message?: unknown } | null)?.message;
   if (message === "client_closed")
     return new CallError("action.unavailable", "unknown", error);
@@ -168,6 +181,7 @@ function directCause(error: unknown): unknown {
 export function createClient<
   Tx extends {
     finish(): Promise<void>;
+    cancel(): void;
     runCallback<T>(body: () => Promise<T>): Promise<T>;
     inCallback(): boolean;
     direct(operation: object): Promise<void>;
@@ -258,9 +272,37 @@ export function createClient<
       migration?: { defaults?: RecordValue; replayPull?: boolean };
       /** Rebuild at once when the schema is incompatible, leaving unsent work in the old file. */
       discardPending?: boolean;
+      onStore?: Record<string, StoreHook<Tx>>;
     }) {
-      const { bridge, opened } = await Bridge.open(native, options);
-      return new Client(bridge, opened.clientId);
+      const { onStore, ...wire } = options;
+      let client!: Client;
+      const handlers = Object.fromEntries(
+        Object.entries(onStore ?? {}).map(([model, hook]) => [
+          model,
+          async (
+            transactionId: string,
+            changes: readonly RawStoreChange[],
+            cancellation: AbortSignal,
+          ) => {
+            client.#transactions++;
+            try {
+              await client.#runTransactionBody(
+                transactionId,
+                (tx) => hook(tx, changes),
+                cancellation,
+              );
+            } finally {
+              client.#transactions--;
+            }
+          },
+        ]),
+      );
+      const { bridge, opened } = await Bridge.open(native, {
+        ...wire,
+        onStore: handlers,
+      });
+      client = new Client(bridge, opened.clientId);
+      return client;
     }
     /**
      * Run `body` as the callback of a local transaction the runtime owns. The
@@ -273,27 +315,37 @@ export function createClient<
       this.#transactions++;
       try {
         await this.#bridge.transaction(async (transactionId) => {
-          const tx = new Transaction((command, scope) =>
-            this.#bridge.transactionCommand(transactionId, scope, command),
-          );
-          try {
-            this.#activePublicTx = tx;
-            try {
-              result = await tx.runCallback(() => body(tx));
-            } finally {
-              this.#activePublicTx = undefined;
-            }
-            await tx.finish();
-          } catch (error) {
-            // No unawaited command outlives the callback that issued it.
-            await tx.finish().catch(() => {});
-            throw error;
-          }
+          result = await this.#runTransactionBody(transactionId, body);
         });
       } finally {
         this.#transactions--;
       }
       return result;
+    }
+    /** The same language-side transaction checks for public and store callbacks. */
+    async #runTransactionBody<T>(
+      transactionId: string,
+      body: (tx: Tx) => T | Promise<T>,
+      cancellation?: AbortSignal,
+    ): Promise<T> {
+      const tx = new Transaction((command, scope) =>
+        this.#bridge.transactionCommand(transactionId, scope, command),
+      );
+      const cancel = () => tx.cancel();
+      cancellation?.addEventListener("abort", cancel, { once: true });
+      if (cancellation?.aborted) tx.cancel();
+      this.#activePublicTx = tx;
+      try {
+        const result = await tx.runCallback(() => Promise.resolve(body(tx)));
+        await tx.finish();
+        return result;
+      } catch (error) {
+        await tx.finish().catch(() => {});
+        throw error;
+      } finally {
+        cancellation?.removeEventListener("abort", cancel);
+        if (this.#activePublicTx === tx) this.#activePublicTx = undefined;
+      }
     }
     read(model: string, identity: object): Promise<RecordValue | null> {
       return this.#task({ kind: "read", key: { model, identity } });

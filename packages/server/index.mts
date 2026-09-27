@@ -24,6 +24,13 @@ export type {
 } from "./effects.mts";
 export type { JsonValue, LoadNext } from "./host-contract.mts";
 const require = createRequire(import.meta.url);
+/** What escaped one Load item's transaction, as the carrier observed it. */
+export type LoadFault =
+  | { kind: "engine"; code: string; message: string }
+  | { kind: "conflict" }
+  | { kind: "unavailable" };
+/** One Load item as its transaction ended: its committed page or its fault. */
+export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
   validateConfig(config: string): void;
   processPush(
@@ -46,6 +53,12 @@ export type Native = {
   ): Promise<string>;
   /** Structurally validates a `{loads:[…]}` batch; answers each item's canonical JSON in order. */
   validateLoadBatch(request: string): string[];
+  /**
+   * The one bounded `{"loads":[…]}` response: the items `validateLoadBatch`
+   * answered and, in the same order, each one's committed page or the fault
+   * that escaped its transaction. The engine classifies every fault.
+   */
+  encodeLoadBatch(items: string[], answers: LoadItemAnswer[]): string;
   /** Executes or replays one validated Load page item in the callback's transaction. */
   processLoad(
     config: string,
@@ -177,7 +190,11 @@ function typedNative(native: Native): Native {
     | "negotiateLive"
     | "pullLive";
   type Sync =
-    "validateConfig" | "validateLoadBatch" | "liveEvent" | "liveClose";
+    | "validateConfig"
+    | "validateLoadBatch"
+    | "encodeLoadBatch"
+    | "liveEvent"
+    | "liveClose";
   const wrap =
     <K extends Async>(key: K) =>
     (...args: Parameters<Native[K]>): ReturnType<Native[K]> =>
@@ -203,6 +220,7 @@ function typedNative(native: Native): Native {
     processAction: wrap("processAction"),
     processPull: wrap("processPull"),
     validateLoadBatch: wrapSync("validateLoadBatch"),
+    encodeLoadBatch: wrapSync("encodeLoadBatch"),
     processLoad: wrap("processLoad"),
     settleExternal: wrap("settleExternal"),
     negotiateLive: wrap("negotiateLive"),
@@ -450,9 +468,17 @@ const LOAD_STATE_DEPTH = 64;
 /**
  * Why a Load handler's `next` is not `null` or `{state}` with portable JSON
  * state, or `undefined` when it is. Checked before `callbackJson`, which
- * would silently turn a safe BigInt into a number or call `toJSON`.
+ * would silently turn a safe BigInt into a number or call `toJSON`. A value
+ * that throws while it is inspected (a getter, a Proxy trap) is not portable.
  */
 function continuationProblem(next: unknown): string | undefined {
+  try {
+    return inspectContinuation(next);
+  } catch (error) {
+    return `next throws when read: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+function inspectContinuation(next: unknown): string | undefined {
   if (next === null) return undefined;
   if (
     typeof next !== "object" ||
@@ -518,29 +544,8 @@ function continuationProblem(next: unknown): string | undefined {
     return `state exceeds ${LOAD_STATE_BYTES} bytes`;
   return undefined;
 }
-/** Deterministic engine defects: answered as unsaved `failed` Load items, never retried. */
-const LOAD_DEFECTS: ReadonlySet<string> = new Set([
-  "storage.invalid",
-  "host.invalid",
-  "internal",
-  "request.invalid",
-  "principal.invalid",
-  "config.invalid",
-]);
 /** At most this many Load items of one request hold a database transaction at once. */
 const LOAD_ITEM_TRANSACTIONS = 4;
-const LOAD_ERROR_MESSAGE_BYTES = 1024;
-/** At most `LOAD_ERROR_MESSAGE_BYTES` of UTF-8, cut between code points. */
-function boundedMessage(message: string): string {
-  let bytes = 0;
-  let end = 0;
-  for (const point of message) {
-    bytes += Buffer.byteLength(point, "utf8");
-    if (bytes > LOAD_ERROR_MESSAGE_BYTES) break;
-    end += point.length;
-  }
-  return message.slice(0, end);
-}
 class WakeHub {
   private listeners = new Map<string, Set<() => void>>();
   subscribe(scope: string, wake: () => void): () => void {
@@ -1021,11 +1026,24 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                 input.list ? { kind: "list", element: input.type } : input.type,
                 args[input.name],
               );
-          // A Load context has no declaration handles: its answer carries
-          // identities and a continuation, never changes or memberships.
-          let page: unknown;
+          const label = `${req.name} v${req.version}`;
+          const invalid = (problem: string) => {
+            const error = new Error(
+              `invalid Load handler answer for ${label}: ${problem}`,
+            );
+            onError(error);
+            return callbackJson({ error: error.message });
+          };
+          // The handler's answer is judged inside its error boundary, like
+          // the call itself: reading it can throw (a getter, a Proxy), and
+          // whatever it answered is this page's saved outcome, never a host
+          // fault. A continuation that is not portable JSON is refused
+          // before `callbackJson` could coerce it; any other unencodable
+          // answer is a failure. A Load context has no declaration handles:
+          // its answer carries identities and a continuation, never changes
+          // or memberships.
           try {
-            page = await handler({
+            const page: unknown = await handler({
               ctx: {
                 tx,
                 userId: req.owner,
@@ -1035,42 +1053,32 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               args,
               continuation: req.continuation,
             });
+            if (
+              page === null ||
+              typeof page !== "object" ||
+              Array.isArray(page)
+            )
+              return invalid("expected {data, next}");
+            const { data, next } = page as { data: unknown; next: unknown };
+            const problem = continuationProblem(next);
+            if (problem !== undefined) {
+              onError(
+                new Error(`invalid Load continuation for ${label}: ${problem}`),
+              );
+              return callbackJson({ rejection: "load.invalid_continuation" });
+            }
+            let answer: string;
+            try {
+              answer = callbackJson({ data, next });
+            } catch (error) {
+              return invalid(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+            return answer;
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
             return callbackJson(refusal(error));
-          }
-          // An answer the bridge cannot carry faithfully is that page's
-          // saved rejection, never a transaction abort: a continuation that
-          // is not portable JSON is refused before `callbackJson` could
-          // coerce it, and any other unencodable answer is a failure.
-          const label = `${req.name} v${req.version}`;
-          if (
-            page === null ||
-            typeof page !== "object" ||
-            Array.isArray(page)
-          ) {
-            const invalid = new Error(
-              `invalid Load handler answer for ${label}: expected {data, next}`,
-            );
-            onError(invalid);
-            return callbackJson({ error: invalid.message });
-          }
-          const { data, next } = page as { data: unknown; next: unknown };
-          const problem = continuationProblem(next);
-          if (problem !== undefined) {
-            onError(
-              new Error(`invalid Load continuation for ${label}: ${problem}`),
-            );
-            return callbackJson({ rejection: "load.invalid_continuation" });
-          }
-          try {
-            return callbackJson({ data, next });
-          } catch (error) {
-            const invalid = new Error(
-              `invalid Load handler answer for ${label}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            onError(invalid);
-            return callbackJson({ error: invalid.message });
           }
         } else if (req.op === "load") {
           // Dispatch is by model name and contract version; a version that
@@ -1276,61 +1284,49 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     return receipt;
   };
   /**
-   * One Load page in its own application transaction. A committed outcome is
-   * the engine's page JSON; anything that escapes the transaction boundary
-   * (a commit whose result is unknown, a pool or driver failure) is
-   * `retryable`, so the client resends the same call ID and the saved claim
-   * decides what committed. A deterministic engine defect is an unsaved
-   * `failed` item, so the job stops instead of retrying forever.
+   * One Load page in its own application transaction: the engine's page JSON
+   * once it committed, or what escaped the transaction boundary. The carrier
+   * only reports what it observed; the engine classifies it in
+   * `encodeLoadBatch` (a commit whose result is unknown, a pool or driver
+   * failure and a conflict are `retryable`, so the client resends the same
+   * call ID and the saved claim decides what committed; a deterministic
+   * engine defect is an unsaved `failed` item, so the job stops).
    */
-  const loadItem = async (owner: string, item: string): Promise<string> => {
+  const loadItem = async (
+    owner: string,
+    item: string,
+  ): Promise<LoadItemAnswer> => {
     try {
-      return await run((tx, session) =>
-        native.processLoad(config, owner, item, host(tx, session)),
-      );
+      return {
+        page: await run((tx, session) =>
+          native.processLoad(config, owner, item, host(tx, session)),
+        ),
+      };
     } catch (error) {
       onError(error);
-      const { loadId, callId } = JSON.parse(item) as {
-        loadId: string;
-        callId: string;
+      return {
+        fault:
+          error instanceof EngineError
+            ? { kind: "engine", code: error.code, message: error.message }
+            : isRetryableTransactionError(error)
+              ? { kind: "conflict" }
+              : { kind: "unavailable" },
       };
-      const outcome =
-        error instanceof EngineError && LOAD_DEFECTS.has(error.code)
-          ? {
-              status: "failed",
-              error: {
-                code: error.code,
-                message: boundedMessage(error.message),
-              },
-            }
-          : {
-              status: "retryable",
-              error: isRetryableTransactionError(error)
-                ? {
-                    code: "transaction.conflict",
-                    message: "the page transaction kept conflicting; resend it",
-                  }
-                : {
-                    code: "server.unavailable",
-                    message:
-                      "the page transaction did not complete; resend the same call ID",
-                  },
-            };
-      return JSON.stringify({ loadId, callId, outcome, records: [] });
     }
   };
   /**
    * One `POST /sync/loads` batch: validated whole by the engine, then each
    * item in its own transaction, at most `LOAD_ITEM_TRANSACTIONS` at once.
-   * Transport grouping only: items share no transaction, and the response is
-   * assembled after every item has committed or rolled back.
+   * Transport grouping only: items share no transaction, and the engine
+   * writes the one bounded response after every item has committed or
+   * rolled back.
    */
   const loads = async (
     owner: string,
     request: Uint8Array | string,
   ): Promise<string> => {
     const items = native.validateLoadBatch(text(request));
-    const answers: string[] = new Array(items.length);
+    const answers: LoadItemAnswer[] = new Array(items.length);
     let next = 0;
     const worker = async () => {
       while (next < items.length) {
@@ -1344,7 +1340,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         worker,
       ),
     );
-    return `{"loads":[${answers.join(",")}]}`;
+    return native.encodeLoadBatch(items, answers);
   };
   /** @internal Raw protocol seams used by the framework's own tests; not part of the supported surface. */
   const api = {

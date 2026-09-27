@@ -8,16 +8,18 @@
 //! An HTTP batch is transport grouping only: the host validates the envelope
 //! once with [`validate_load_batch`] and runs [`process_load`] for each item
 //! in its own transaction, so no two items share a transaction, a savepoint
-//! or a push sequence.
+//! or a push sequence. It then hands every item's page, or the [`LoadFault`]
+//! that escaped its transaction, to [`encode_load_batch`], which classifies
+//! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
 use crate::host::{Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, Stamps};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
 use axton_core::{
-    AuthorityRecord, Continuation, LoadBatchRequest, LoadError, LoadIntent, LoadItemErrorKind,
-    LoadOutcome, LoadPageResponse, RecordKey, canonical_json, limits, normalize_load_args,
-    validate_load_data,
+    AuthorityRecord, Continuation, LoadBatchRequest, LoadBatchResponse, LoadError, LoadIntent,
+    LoadItemErrorKind, LoadNext, LoadOutcome, LoadPageResponse, RecordKey, canonical_json, limits,
+    normalize_load_args, validate_load_data,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -74,7 +76,7 @@ pub async fn process_load(
         if !page.answers(&intent) {
             return Err(storage_invalid("saved Load page answers another request"));
         }
-        return encode(&current(config, &intent, page)?);
+        return replayed(config, &intent, current(config, &intent, page)?);
     }
     if claimed.response.is_some() {
         return Err(storage_invalid("fresh call already completed"));
@@ -191,13 +193,16 @@ async fn execute_fresh(
         HandledLoad::Failed { .. } => return Err(Error::code(code::HANDLER_FAILED)),
         HandledLoad::Settled { data, next } => (data, next),
     };
-    // Rechecked here whatever the host bridge already did: the page's next
-    // request is only ever a bounded portable state.
-    let next = next
-        .as_ref()
-        .map(Continuation::normalized)
-        .transpose()
-        .map_err(|error| Error::new(code::LOAD_INVALID_CONTINUATION, error.to_string()))?;
+    // Judged here whatever the host bridge already did, before the data: a
+    // missing or malformed `next` wrapper and a state past the portable
+    // bounds are all the page's `load.invalid_continuation`.
+    let next = returned_next(next)?;
+    if !data.is_object() {
+        return Err(Error::new(
+            code::HANDLER_INVALID,
+            "Load handler data must be an object",
+        ));
+    }
     let entries: usize = load
         .outputs
         .iter()
@@ -265,6 +270,19 @@ async fn execute_fresh(
             )),
         })?;
     Ok(page)
+}
+
+/// The handler's `next` member as a continuation: `null` or exactly
+/// `{state}`, with the state normalized within the portable bounds.
+fn returned_next(next: Option<Value>) -> Result<LoadNext> {
+    let invalid = |message: String| Error::new(code::LOAD_INVALID_CONTINUATION, message);
+    let next = next.ok_or_else(|| invalid("Load handler answered no next continuation".into()))?;
+    serde_json::from_value::<LoadNext>(next)
+        .map_err(|error| invalid(format!("invalid Load continuation: {error}")))?
+        .as_ref()
+        .map(Continuation::normalized)
+        .transpose()
+        .map_err(|error| invalid(error.to_string()))
 }
 
 /// The authority of one Model's distinct identities: one batched stamp read
@@ -369,6 +387,146 @@ fn current(
     })
 }
 
+/// A replayed page as answered now. Renormalized authority can outgrow the
+/// page bound the saved page met (a compatible contract change adds a
+/// member to every record), so a succeeded page is held to the client's
+/// per-item rule again: one it would refuse as too large answers an unsaved
+/// `load.page_too_large` instead, and the saved page stays as it was.
+fn replayed(config: &Config, intent: &LoadIntent, page: LoadPageResponse) -> Result<String> {
+    if matches!(page.outcome, LoadOutcome::Succeeded { .. })
+        && let Err(error) = page.clone().normalize(&config.schema, intent)
+    {
+        return match error.kind {
+            LoadItemErrorKind::PageTooLarge => encode(&failed(
+                intent,
+                &Error::new(code::LOAD_PAGE_TOO_LARGE, error.message),
+            )),
+            _ => Err(storage_invalid(format!(
+                "saved Load page no longer reads back: {}",
+                error.message
+            ))),
+        };
+    }
+    encode(&page)
+}
+
 fn encode(page: &LoadPageResponse) -> Result<String> {
     canonical_json(&serde_json::to_value(page).map_err(internal)?).map_err(internal)
+}
+
+/// What escaped one Load item's transaction, as its carrier observed it.
+/// Nothing of the item committed, or its commit result is unknown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadFault {
+    /// [`process_load`] answered this error.
+    Engine { code: String, message: String },
+    /// The database kept refusing the transaction with a serialization
+    /// failure or deadlock after the carrier's own retries.
+    Conflict,
+    /// Anything else escaped the transaction boundary: a commit whose result
+    /// is unknown, a pool, driver or connection failure.
+    Unavailable,
+}
+
+/// One batch item as its transaction ended: the page [`process_load`]
+/// answered (committed), or the fault that escaped it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadItemAnswer {
+    Page(String),
+    Fault(LoadFault),
+}
+
+/// The unsaved outcome of a fault. A host failure, a conflict and an
+/// unknown commit are `retryable`: the client resends the same call ID and
+/// the saved claim decides what committed. Every other engine error is a
+/// deterministic defect (`host.invalid`, `storage.invalid`, `internal`,
+/// `request.invalid`, `principal.invalid`, `config.invalid`) that a resend
+/// would reproduce, so it is `failed` and the job stops. No database text
+/// reaches the client for a retryable fault.
+pub fn load_fault_outcome(fault: &LoadFault) -> LoadOutcome {
+    let retryable = |code: &str, message: &str| LoadOutcome::Retryable {
+        error: LoadError::bounded(code, message),
+    };
+    match fault {
+        LoadFault::Engine { code, .. } if code == code::HOST => retryable(
+            code::SERVER_UNAVAILABLE,
+            "the page transaction did not complete; resend the same call ID",
+        ),
+        LoadFault::Engine { code, message } => LoadOutcome::Failed {
+            error: LoadError::bounded(code.clone(), message.clone()),
+        },
+        LoadFault::Conflict => retryable(
+            code::TRANSACTION_CONFLICT,
+            "the page transaction kept conflicting; resend it",
+        ),
+        LoadFault::Unavailable => retryable(
+            code::SERVER_UNAVAILABLE,
+            "the page transaction did not complete; resend the same call ID",
+        ),
+    }
+}
+
+/// The one `{"loads":[…]}` response to a batch, from the canonical items
+/// [`validate_load_batch`] answered and each item's [`LoadItemAnswer`], in
+/// the same order. Every item answers its own request: a fault becomes its
+/// [`load_fault_outcome`]; a page is decoded under the client's item rules
+/// and must answer its item, and one that does not, or that is succeeded
+/// past [`limits::LOAD_PAGE_BYTES`], becomes an unsaved `failed` item
+/// (`internal` or `load.page_too_large`) without costing its siblings. The
+/// response is written by [`LoadBatchResponse::encode`], so it holds 1..=8
+/// canonical, unique correlations within [`limits::LOAD_RESPONSE_BYTES`].
+pub fn encode_load_batch(items: &[String], answers: Vec<LoadItemAnswer>) -> Result<String> {
+    if items.len() != answers.len() {
+        return Err(internal(format!(
+            "{} Load answers for {} items",
+            answers.len(),
+            items.len()
+        )));
+    }
+    let mut loads = Vec::with_capacity(items.len());
+    for (item, answer) in items.iter().zip(answers) {
+        let intent = decode_item(item.as_bytes())?;
+        let unsaved = |outcome| LoadPageResponse {
+            load_id: intent.load_id.clone(),
+            call_id: intent.call_id.clone(),
+            outcome,
+            records: vec![],
+        };
+        loads.push(match answer {
+            LoadItemAnswer::Fault(fault) => unsaved(load_fault_outcome(&fault)),
+            LoadItemAnswer::Page(page) => match answered_page(&intent, &page) {
+                Ok(page) => page,
+                Err(error) => unsaved(LoadOutcome::Failed {
+                    error: LoadError::bounded(error.code, error.message),
+                }),
+            },
+        });
+    }
+    let bytes = LoadBatchResponse { loads }
+        .encode()
+        .map_err(|error| internal(format!("Load response: {error}")))?;
+    String::from_utf8(bytes).map_err(internal)
+}
+
+/// One engine page, checked before it joins the response.
+fn answered_page(intent: &LoadIntent, page: &str) -> Result<LoadPageResponse> {
+    let value: Value = serde_json::from_str(page).map_err(internal)?;
+    let page = LoadPageResponse::decode_item(&value)
+        .map_err(|error| internal(format!("malformed Load page: {}", error.message)))?;
+    if !page.answers(intent) {
+        return Err(internal("Load page answers another item"));
+    }
+    if matches!(page.outcome, LoadOutcome::Succeeded { .. }) {
+        let bytes = encode(&page)?.len();
+        if bytes > limits::LOAD_PAGE_BYTES {
+            return Err(Error::new(
+                code::LOAD_PAGE_TOO_LARGE,
+                format!(
+                    "Load page encodes to {bytes} bytes; at most {} are allowed",
+                    limits::LOAD_PAGE_BYTES
+                ),
+            ));
+        }
+    }
+    Ok(page)
 }

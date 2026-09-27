@@ -76,6 +76,13 @@ pub mod code {
     /// A call ID already names a different saved request, of this or another
     /// operation kind. Answered without saving anything.
     pub const CALL_IDENTITY_CONFLICT: &str = "call.identity_conflict";
+    /// A Load item's transaction did not complete, or its commit result is
+    /// unknown. Answered as that item's unsaved `retryable` outcome: the
+    /// client resends the same call ID.
+    pub const SERVER_UNAVAILABLE: &str = "server.unavailable";
+    /// A Load item's transaction kept failing with a serialization conflict
+    /// or deadlock. Answered as that item's unsaved `retryable` outcome.
+    pub const TRANSACTION_CONFLICT: &str = "transaction.conflict";
     /// Encoding a response failed.
     pub const INTERNAL: &str = "internal";
 }

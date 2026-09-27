@@ -568,12 +568,25 @@ impl TryFrom<HandledActionWire> for HandledAction {
 /// continuation, a rejection code, or a failure carrying a thrown handler
 /// error. A Load context has no declaration handles, so an answer carrying
 /// `changes`, `memberships` or anything else is refused.
+///
+/// `data` and `next` are carried as answered (`next` is `None` when the
+/// member is absent): the engine judges them, so a missing or malformed
+/// continuation is the page's `load.invalid_continuation` and malformed data
+/// its `handler.invalid`, whichever host bridge produced them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, try_from = "HandledLoadWire")]
 pub enum HandledLoad {
-    Settled { data: Value, next: LoadNext },
-    Rejected { rejection: String },
-    Failed { error: String },
+    Settled {
+        data: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next: Option<Value>,
+    },
+    Rejected {
+        rejection: String,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -606,11 +619,7 @@ impl TryFrom<HandledLoadWire> for HandledLoad {
                     error: error.into(),
                 })
                 .ok_or_else(|| "invalid handler error".into()),
-            (Some(data), Some(next), None, None) if data.is_object() => Ok(Self::Settled {
-                data,
-                next: serde_json::from_value(next)
-                    .map_err(|error| format!("invalid Load continuation: {error}"))?,
-            }),
+            (Some(data), next, None, None) => Ok(Self::Settled { data, next }),
             _ => Err("invalid Load handler settlement".into()),
         }
     }

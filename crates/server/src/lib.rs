@@ -15,7 +15,10 @@ use axton_core::{
 };
 pub use error::{Error, code};
 use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
-pub use loads::{process_load, validate_load_batch};
+pub use loads::{
+    LoadFault, LoadItemAnswer, encode_load_batch, load_fault_outcome, process_load,
+    validate_load_batch,
+};
 use readback::Outcome;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};

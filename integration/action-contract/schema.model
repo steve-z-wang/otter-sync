@@ -56,3 +56,8 @@ model Note {
  @@id(id)
 }
 mutation AddNotes(note Note.create, maybe Note.create?, many Note.create[]) { saved Note }
+// A Load fills Model lists page by page (#173); its handler answers identities.
+load ProjectTodos(projectId String, status Status?, tags String[]) {
+ todos Todo[]
+ projects Project[]
+}

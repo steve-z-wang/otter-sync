@@ -218,7 +218,7 @@ fn a_response_of_the_wrong_type_is_refused_per_operation() {
         ("rollback", json!({})),
         ("release", json!({})),
         ("handle", json!({"channel": "shared"})),
-        ("handleLoad", json!({"data": [], "next": null})),
+        ("handleLoad", json!({"next": null})),
         ("load", json!({"0": null})),
         ("advanceStamp", json!("4")),
         ("ensureStamp", json!(0)),
@@ -616,20 +616,33 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
         decode(json!({"data": {"tasks": []}, "next": {"state": null}})).unwrap(),
         HandledLoad::Settled {
             data: json!({"tasks": []}),
-            next: Some(axton_core::Continuation { state: Value::Null }),
+            next: Some(json!({"state": null})),
         },
         "a null state is a continuation, not the end"
     );
+    // `data` and `next` are carried as answered: the engine judges them, so
+    // a missing or malformed wrapper is the page's `load.invalid_continuation`
+    // and malformed data its `handler.invalid`, whatever the host bridge.
+    for (answer, next) in [
+        (json!({"data": {}}), None),
+        (json!({"data": {}, "next": {}}), Some(json!({}))),
+        (json!({"data": {}, "next": 1}), Some(json!(1))),
+        (json!({"data": [], "next": null}), Some(Value::Null)),
+    ] {
+        let decoded = decode(answer.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            HandledLoad::Settled {
+                data: answer["data"].clone(),
+                next
+            }
+        );
+    }
     for refused in [
         json!({"data": {}, "next": null, "changes": []}),
         json!({"data": {}, "next": null, "memberships": []}),
         json!({"data": {}, "next": null, "outputs": {}}),
-        json!({"data": {}}),
         json!({"next": null}),
-        json!({"data": [], "next": null}),
-        json!({"data": {}, "next": {}}),
-        json!({"data": {}, "next": {"state": 1, "more": 2}}),
-        json!({"data": {}, "next": 1}),
         json!({"data": {}, "next": null, "rejection": "tasks.refused"}),
         json!({"rejection": "Not A Code"}),
         json!({"error": 7}),
@@ -648,7 +661,7 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
             ..
         }
     ));
-    let error = serde_json::from_value::<HandledLoad>(json!({"data": [], "next": null}))
+    let error = serde_json::from_value::<HandledLoad>(json!({"next": null}))
         .map_err(|error| request.invalid_response(error))
         .unwrap_err();
     assert_eq!(error.code, axton_server::code::HANDLER_INVALID);

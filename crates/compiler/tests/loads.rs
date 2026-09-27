@@ -253,6 +253,7 @@ fn load_only_generated_names_are_reserved_only_beside_a_load() {
         "LoadNext",
         "JsonValue",
         "LoadContext",
+        "LoadHandlerCall",
     ] {
         let model = format!("model {name} {{ id String @@id(id) }}\n");
         compile(&format!("{model}{MODELS}")).unwrap();
@@ -267,14 +268,41 @@ fn load_only_generated_names_are_reserved_only_beside_a_load() {
 }
 
 #[test]
-fn no_per_load_contract_identifier_is_reserved_yet() {
-    // The emitters declare no per-Load type yet, so none is reserved.
-    for name in ["TodosInput", "TodosOutput", "TodosV1Input"] {
+fn exactly_the_emitted_per_load_backend_identifiers_are_reserved() {
+    // The backend declares `{Name}Input` and `{Name}HandlerOutput` per
+    // current Load and `{Name}V{n}…` per retained version; nothing else.
+    for name in ["TodosInput", "TodosHandlerOutput"] {
+        let error = compile(&format!(
+            "model {name} {{ id String @@id(id) }}\n{MODELS}load Todos() {{ todos Todo[] }}"
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains(&format!("generated identifier {name}")),
+            "{name}: {error}"
+        );
+    }
+    for name in ["TodosOutput", "TodosV1Input", "TodosV1HandlerOutput"] {
         compile(&format!(
             "model {name} {{ id String @@id(id) }}\n{MODELS}load Todos() {{ todos Todo[] }}"
         ))
         .unwrap();
     }
+    // A retained version reserves its versioned names.
+    let mut retained: Value =
+        compile(&source("@version(2) load Todos() { todos Todo[] }")).unwrap();
+    let mut old = retained["loads"][0].clone();
+    old["version"] = json!(1);
+    retained["loads"] = json!([old, retained["loads"][0].clone()]);
+    assert!(axton_compiler::check_action_names(&retained).is_ok());
+    retained["schema"]["models"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"TodosV1HandlerOutput","identity":["id"],"fields":[]}));
+    let error = axton_compiler::check_action_names(&retained).unwrap_err();
+    assert!(
+        error.contains("TodosV1HandlerOutput") && error.contains("Load Todos v1"),
+        "{error}"
+    );
     let value: Value = compile(&source("load Todos() { todos Todo[] }")).unwrap();
     assert!(axton_compiler::check_action_names(&value).is_ok());
     // A hand-built config is checked without panicking on missing members.
@@ -291,4 +319,98 @@ fn no_per_load_contract_identifier_is_reserved_yet() {
     }))
     .unwrap_err();
     assert!(error.contains("LoadStatus"), "{error}");
+}
+
+#[test]
+fn the_backend_declares_typed_load_handlers_beside_loaders() {
+    let config = compile(&source(
+        "load ProjectTodos(projectId UUID, status Status?, tags String[], at DateTime) {\n  todos Todo[]\n  notes Note[]\n}\nload AllNotes() { notes Note[] }",
+    ))
+    .unwrap();
+    let ts = axton_compiler::backend_typescript(&config, "@axton/server");
+    for expected in [
+        // Enum inputs name the generated enum type.
+        "import type { Todo as TodoRecord, TodoIdentity, TodoPatch, Note as NoteRecord, NoteIdentity, NotePatch, Status } from \"./generated.ts\";\n",
+        "export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n",
+        "export type LoadNext = null | { state: JsonValue };\n",
+        "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n}\n",
+        "export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n",
+        "export interface ProjectTodosInput {\n projectId: string;\n status: Status | null;\n tags: string[];\n at: Date;\n}\n",
+        "export interface ProjectTodosHandlerOutput {\n data: {\n  todos: TodoIdentity[];\n  notes: NoteIdentity[];\n };\n next: LoadNext;\n}\n",
+        "export interface AllNotesInput {\n}\n",
+        "export interface Loads<Tx> {\n allNotes: { v1(call: LoadHandlerCall<Tx, AllNotesInput>): Promise<AllNotesHandlerOutput> } | ((call: LoadHandlerCall<Tx, AllNotesInput>) => Promise<AllNotesHandlerOutput>);\n projectTodos: { v1(call: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> } | ((call: LoadHandlerCall<Tx, ProjectTodosInput>) => Promise<ProjectTodosHandlerOutput>);\n}\n",
+        // A schema with Loads requires the `loads` map.
+        "\"loaders\" | \"loads\"> & { handlers?: Handlers<Tx>; mutations?: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx>; loads: Loads<Tx> };\n",
+        " loaders: options.loaders as unknown as BackendOptions<Tx>[\"loaders\"], loads: options.loads as unknown as BackendOptions<Tx>[\"loads\"] });\n",
+    ] {
+        assert!(ts.contains(expected), "{expected}\n---\n{ts}");
+    }
+    // A Load context has no effect handles.
+    let context = &ts[ts.find("export interface LoadContext<Tx>").unwrap()..];
+    let context = &context[..context.find('}').unwrap()];
+    assert!(!context.contains("channel") && !context.contains("touch"));
+    // Handler types belong to the backend artifact only.
+    assert!(!axton_compiler::typescript(&config).contains("LoadHandlerCall"));
+}
+
+#[test]
+fn retained_load_versions_register_together_with_their_own_contracts() {
+    let mut config = compile(
+        "enum Status { open done archived }\nmodel Todo { id UUID title String status Status @@id(id) @@version(2) }\n@version(2) load Todos(status Status) { todos Todo[] }",
+    )
+    .unwrap();
+    // The retained v1 reads Todo v1 and accepts the enum values of its time.
+    let mut old = config["loads"][0].clone();
+    old["version"] = json!(1);
+    old["input"]["enums"] = json!([{"name":"Status","values":["open","done"]}]);
+    old["outputs"][0]["modelReadVersion"] = json!(1);
+    config["loads"] = json!([old, config["loads"][0].clone()]);
+    let mut current = config["schema"]["models"][0].clone();
+    current["enums"] = config["schema"]["enums"].clone();
+    let todo_v1 = json!({"name":"Todo","version":1,"identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"enums":[{"name":"Status","values":["open","done"]}]});
+    config["backendModels"] = json!([todo_v1, current]);
+    assert!(axton_compiler::check_action_names(&config).is_ok());
+    let ts = axton_compiler::backend_typescript(&config, "@axton/server");
+    for expected in [
+        "export interface TodosV1Input {\n status: \"open\" | \"done\";\n}\n",
+        "export interface TodosV1HandlerOutput {\n data: {\n  todos: TodoV1Identity[];\n };\n next: LoadNext;\n}\n",
+        "export interface TodosInput {\n status: Status;\n}\n",
+        "export interface TodosHandlerOutput {\n data: {\n  todos: TodoIdentity[];\n };\n next: LoadNext;\n}\n",
+        // No bare-function shorthand beyond a v1-only Load.
+        " todos: { v1(call: LoadHandlerCall<Tx, TodosV1Input>): Promise<TodosV1HandlerOutput>; v2(call: LoadHandlerCall<Tx, TodosInput>): Promise<TodosHandlerOutput> };\n",
+        "export interface TodoV1Identity {\n id: string;\n}\n",
+    ] {
+        assert!(ts.contains(expected), "{expected}\n---\n{ts}");
+    }
+    let only_v2 =
+        compile("model Todo { id UUID @@id(id) }\n@version(2) load Todos() { todos Todo[] }")
+            .unwrap();
+    let ts = axton_compiler::backend_typescript(&only_v2, "@axton/server");
+    assert!(
+        ts.contains(
+            " todos: { v2(call: LoadHandlerCall<Tx, TodosInput>): Promise<TodosHandlerOutput> };\n"
+        ),
+        "{ts}"
+    );
+}
+
+#[test]
+fn backends_without_loads_declare_no_load_types() {
+    for source in [
+        "model Todo { id UUID @@id(id) }",
+        "enum Status { open done }\nmodel Todo { id UUID s Status @@id(id) }\nquery Count(s Status) { n Int }",
+    ] {
+        let ts = axton_compiler::backend_typescript(&compile(source).unwrap(), "@axton/server");
+        for absent in [
+            "JsonValue",
+            "LoadNext",
+            "LoadContext",
+            "LoadHandlerCall",
+            "Loads<Tx>",
+            "\"loads\"",
+            "loads:",
+        ] {
+            assert!(!ts.contains(absent), "{absent}: {ts}");
+        }
+    }
 }

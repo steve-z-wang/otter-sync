@@ -9,6 +9,7 @@ import type {
   Memberships,
   Published,
   Stamped,
+  Stamps,
 } from "../../server/host-contract.mts";
 import type { Database, Persistence } from "../../server/index.mts";
 import type { PostgresDriver } from "./driver.mts";
@@ -166,6 +167,28 @@ export async function answer<Tx>(
       const stamped: Stamped = safe(rows[0]!.stamp);
       return stamped;
     }
+    case "readStamps": {
+      if (
+        typeof r.model !== "string" ||
+        r.model === "" ||
+        !Array.isArray(r.identityKeys) ||
+        r.identityKeys.some((key) => typeof key !== "string" || key === "") ||
+        new Set(r.identityKeys).size !== r.identityKeys.length
+      )
+        throw new Error("readStamps: a model and unique identity keys");
+      const rows = await q(
+        SQL.READ_STAMPS,
+        r.model,
+        JSON.stringify(r.identityKeys),
+      );
+      if (
+        rows.length !== r.identityKeys.length ||
+        rows.some((row, index) => row.identity_key !== r.identityKeys[index])
+      )
+        throw new Error(`readStamps answered rows out of order for ${r.model}`);
+      const stamps: Stamps = rows.map((row) => storedStamp(row.stamp));
+      return stamps;
+    }
     case "publish": {
       // Distribution allocates only the channel cursor. The record row is
       // locked and must carry the stamp the request names: a stale one is a
@@ -247,6 +270,7 @@ export async function answer<Tx>(
     }
     case "handle":
     case "handleAction":
+    case "handleLoad":
     case "load":
       break;
     default: {

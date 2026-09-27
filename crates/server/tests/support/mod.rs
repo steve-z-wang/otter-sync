@@ -361,6 +361,20 @@ impl Backend {
                     }
                 })
             }
+            // A Load handler writes nothing through the framework; its scripted
+            // business writes exist only to prove a rejected page rolls back.
+            HostRequest::HandleLoad { name, .. } => {
+                for (key, row) in s.writes.get(&name).cloned().unwrap_or_default() {
+                    match row {
+                        Some(row) => s.tables.rows.insert(key, row),
+                        None => s.tables.rows.remove(&key),
+                    };
+                }
+                s.scripts
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_else(|| json!({"data":{},"next":null}))
+            }
             HostRequest::Load {
                 model, identities, ..
             } => {
@@ -400,6 +414,16 @@ impl Backend {
                 model,
                 identity_key,
             } => json!(*s.tables.stamps.entry((model, identity_key)).or_insert(1)),
+            // `SQL.READ_STAMPS`: existing stamps are read, missing ones start at 1.
+            HostRequest::ReadStamps {
+                model,
+                identity_keys,
+            } => Value::Array(
+                identity_keys
+                    .into_iter()
+                    .map(|key| json!(*s.tables.stamps.entry((model.clone(), key)).or_insert(1)))
+                    .collect(),
+            ),
             HostRequest::Publish {
                 channel,
                 model,

@@ -5,6 +5,7 @@ pub mod error;
 pub mod host;
 pub mod live;
 mod loading;
+mod loads;
 mod readback;
 mod settlement;
 pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
@@ -14,6 +15,7 @@ use axton_core::{
 };
 pub use error::{Error, code};
 use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
+pub use loads::{process_load, validate_load_batch};
 use readback::Outcome;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};

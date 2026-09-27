@@ -11,7 +11,7 @@
 //! data. Every other thrown host error still aborts the whole delivery
 //! ([#95](https://github.com/zanminwang/axton/issues/95) narrows nothing more).
 use crate::{Error, Host, Result, code, valid_code};
-use axton_core::{check_channel, read_counter};
+use axton_core::{LoadNext, check_channel, read_counter};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeSet, fmt::Display, future::Future, pin::Pin};
@@ -61,6 +61,13 @@ fn channel_name<'de, D: Deserializer<'de>>(
     Ok(channel)
 }
 
+/// A required continuation member: `null` or exactly `{"state": …}`.
+fn required_next<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<LoadNext, D::Error> {
+    LoadNext::deserialize(deserializer)
+}
+
 fn nullable_string<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Option<String>, D::Error> {
@@ -70,7 +77,7 @@ fn nullable_string<'de, D: Deserializer<'de>>(
 /// Every operation, in the order [`HostRequest`] declares them. The fixture
 /// and `packages/server/host-contract.mts` carry the same list; the contract
 /// test checks this one against the enum itself.
-pub const OPERATIONS: [&str; 18] = [
+pub const OPERATIONS: [&str; 20] = [
     "claim",
     "saveReceipt",
     "claimCall",
@@ -82,9 +89,11 @@ pub const OPERATIONS: [&str; 18] = [
     "release",
     "handle",
     "handleAction",
+    "handleLoad",
     "load",
     "advanceStamp",
     "ensureStamp",
+    "readStamps",
     "publish",
     "lockRecord",
     "memberships",
@@ -155,6 +164,20 @@ pub enum HostRequest {
         call_id: String,
         ordinal: u64,
     },
+    /// Execute one generated Load handler for one page: the normalized flat
+    /// arguments and the page's continuation (`null` on the first page). Its
+    /// context is read-only: the answer carries identities and the next
+    /// continuation, never changes or memberships.
+    HandleLoad {
+        name: String,
+        version: u64,
+        arguments: Value,
+        #[serde(deserialize_with = "required_next")]
+        continuation: LoadNext,
+        owner: String,
+        call_id: String,
+        load_id: String,
+    },
     /// Load the current state of these identities as the records of one
     /// retained model read contract (`version`), for this caller. Loads name
     /// no channel: the same identity, version and stamp describe the same
@@ -169,6 +192,13 @@ pub enum HostRequest {
     AdvanceStamp { model: String, identity_key: String },
     /// The record's current stamp, initialized at 1 only when it has none.
     EnsureStamp { model: String, identity_key: String },
+    /// The current stamps of these records of one model, one per key in
+    /// request order: an existing stamp is read and never rewritten, and only
+    /// a record without one is initialized at 1.
+    ReadStamps {
+        model: String,
+        identity_keys: Vec<String>,
+    },
     /// Invalidate one record on one channel at this stamp, allocating only
     /// the channel cursor. `stamp` must be the record's current stamp.
     Publish {
@@ -213,9 +243,11 @@ impl HostRequest {
             Self::Release { ordinal } => format!("release(ordinal {ordinal})"),
             Self::Handle { ordinal, .. } => format!("handle(ordinal {ordinal})"),
             Self::HandleAction { ordinal, .. } => format!("handleAction(ordinal {ordinal})"),
+            Self::HandleLoad { .. } => "handleLoad".into(),
             Self::Load { .. } => "load".into(),
             Self::AdvanceStamp { .. } => "advanceStamp".into(),
             Self::EnsureStamp { .. } => "ensureStamp".into(),
+            Self::ReadStamps { .. } => "readStamps".into(),
             Self::Publish { .. } => "publish".into(),
             Self::LockRecord { .. } => "lockRecord".into(),
             Self::Memberships { .. } => "memberships".into(),
@@ -230,7 +262,9 @@ impl HostRequest {
             | Self::ClaimCall { .. }
             | Self::SaveCall { .. }
             | Self::Scan { .. } => code::STORAGE_INVALID,
-            Self::Handle { .. } | Self::HandleAction { .. } => code::HANDLER_INVALID,
+            Self::Handle { .. } | Self::HandleAction { .. } | Self::HandleLoad { .. } => {
+                code::HANDLER_INVALID
+            }
             Self::Load { .. } => code::LOADER_INVALID,
             Self::Head { .. }
             | Self::Savepoint { .. }
@@ -238,6 +272,7 @@ impl HostRequest {
             | Self::Release { .. }
             | Self::AdvanceStamp { .. }
             | Self::EnsureStamp { .. }
+            | Self::ReadStamps { .. }
             | Self::Publish { .. }
             | Self::LockRecord { .. }
             | Self::Memberships { .. }
@@ -359,6 +394,9 @@ impl TryFrom<LoadedWire> for Loaded {
 /// The answer to `advanceStamp` and `ensureStamp`: the record's stamp.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stamped(#[serde(with = "stamp")] pub u64);
+
+/// The answer to `readStamps`: one stamp per requested key, in request order.
+pub type Stamps = Vec<Stamped>;
 
 /// The answer to `lockRecord`: the locked record's unchanged stamp, or `None`
 /// when the record has no metadata row (nothing was locked or created).
@@ -522,6 +560,58 @@ impl TryFrom<HandledActionWire> for HandledAction {
                 })
             }
             _ => Err("invalid Action handler settlement".into()),
+        }
+    }
+}
+
+/// The answer to `handleLoad`: the page's identity lists and the next
+/// continuation, a rejection code, or a failure carrying a thrown handler
+/// error. A Load context has no declaration handles, so an answer carrying
+/// `changes`, `memberships` or anything else is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged, try_from = "HandledLoadWire")]
+pub enum HandledLoad {
+    Settled { data: Value, next: LoadNext },
+    Rejected { rejection: String },
+    Failed { error: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HandledLoadWire {
+    #[serde(default, deserialize_with = "present")]
+    data: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    next: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    rejection: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    error: Option<Value>,
+}
+
+impl TryFrom<HandledLoadWire> for HandledLoad {
+    type Error = String;
+    fn try_from(wire: HandledLoadWire) -> std::result::Result<Self, String> {
+        match (wire.data, wire.next, wire.rejection, wire.error) {
+            (None, None, Some(rejection), None) => rejection
+                .as_str()
+                .filter(|code| valid_code(code))
+                .map(|code| Self::Rejected {
+                    rejection: code.into(),
+                })
+                .ok_or_else(|| "invalid rejection code".into()),
+            (None, None, None, Some(error)) => error
+                .as_str()
+                .map(|error| Self::Failed {
+                    error: error.into(),
+                })
+                .ok_or_else(|| "invalid handler error".into()),
+            (Some(data), Some(next), None, None) if data.is_object() => Ok(Self::Settled {
+                data,
+                next: serde_json::from_value(next)
+                    .map_err(|error| format!("invalid Load continuation: {error}"))?,
+            }),
+            _ => Err("invalid Load handler settlement".into()),
         }
     }
 }

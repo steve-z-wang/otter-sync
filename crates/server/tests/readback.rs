@@ -249,7 +249,9 @@ impl Scripted {
             }
             HostRequest::ClaimCall { .. }
             | HostRequest::SaveCall { .. }
-            | HostRequest::HandleAction { .. } => {
+            | HostRequest::HandleAction { .. }
+            | HostRequest::HandleLoad { .. }
+            | HostRequest::ReadStamps { .. } => {
                 return Err("call persistence is outside this readback host".into());
             }
             HostRequest::SaveReceipt {

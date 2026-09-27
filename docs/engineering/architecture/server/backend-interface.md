@@ -15,10 +15,11 @@ The host operations the engine may issue:
 | Operation | Answered by | Purpose |
 | --- | --- | --- |
 | `handle` | the application's handler | run one mutation's business logic |
+| `handleLoad` | the application's Load handler | enumerate one Load page's identities and next continuation (read-only context) |
 | `load` | the application's loader | return the current state of records |
 | `savepoint`, `rollback`, `release` | [Persistence](persistence.md) | isolate one mutation's effects |
 | `claim`, `saveReceipt`, `head`, `scan` | [Persistence](persistence.md) | client rows, receipts and the invalidation table |
-| `advanceStamp`, `ensureStamp`, `publish` | [Persistence](persistence.md) | record stamps and channel cursors ([Publish](engine/publish.md)) |
+| `advanceStamp`, `ensureStamp`, `readStamps`, `publish` | [Persistence](persistence.md) | record stamps and channel cursors ([Publish](engine/publish.md)) |
 | `lockRecord`, `memberships`, `setMembership` | [Persistence](persistence.md) | record guards and persistent Channel membership |
 
 Each operation is one variant of `HostRequest` with one response type, defined once in [server/host.rs](../../../../crates/server/src/host.rs) and restated for TypeScript in [server/host-contract.mts](../../../../packages/server/host-contract.mts) (section 9). [fixtures/protocol/host-operations.json](../../../../fixtures/protocol/host-operations.json) carries one example of every request and every response variant, and both hosts are tested against it.
@@ -62,9 +63,11 @@ Code: the operation contract in [server/host.rs](../../../../crates/server/src/h
 | `scan` | `channel`, `after`, `limit` | `Vec<Invalidation { channel, cursor, model, identity, identityKey, stamp }>`, `stamp` being the record's current stamp |
 | `savepoint` / `rollback` / `release` | `ordinal` | unit |
 | `handle` | `name`, `version`, `arguments`, `owner`, `ordinal` | `Handled::Settled { changes: Vec<RecordRef>, memberships: Vec<MembershipIntent { channel, model, identity, present }> }`, `Handled::Rejected { rejection }`, or `Handled::Failed { error: String }`; `handleAction` answers the same with `outputs` beside `changes` and `memberships` |
+| `handleLoad` | `name`, `version`, `arguments`, `continuation` (`null` or `{state}`), `owner`, `callId`, `loadId` | `HandledLoad::Settled { data, next }`, `HandledLoad::Rejected { rejection }`, or `HandledLoad::Failed { error: String }`; any other member, including `changes` or `memberships`, is refused |
 | `load` | `model`, `version`, `identities`, `owner` | `Loaded::Rows(Vec<Option<Value>>)` (one entry per identity), `Loaded::Refused { rejection }`, or `Loaded::Failed { error: String }` |
 | `advanceStamp` | `model`, `identityKey` | `Stamped(u64)`: the record's next stamp, 1 for a record without one |
 | `ensureStamp` | `model`, `identityKey` | `Stamped(u64)`: the record's current stamp, initialized at 1 only when it has none |
+| `readStamps` | `model`, `identityKeys` | `Stamps = Vec<Stamped>`, one per key in request order: an existing stamp read without rewriting, a missing one initialized at 1 |
 | `publish` | `channel`, `model`, `identity`, `identityKey`, `stamp` | `Published { cursor, stamp }`; refused unless `stamp` is the record's current one |
 | `lockRecord` | `model`, `identityKey` | `Locked = Option<Stamped>`: the unchanged stamp, `null` when the record has no row |
 | `memberships` | `model`, `identityKey` | `Memberships(BTreeSet<String>)`: unique Channel names valid under `check_channel`, held in byte order |
@@ -77,9 +80,9 @@ The code it fails with is the one that operation already used (`invalid_code` in
 | Code | Operations |
 | --- | --- |
 | `storage.invalid` | `claim`, `saveReceipt`, `scan` |
-| `handler.invalid` | `handle` |
+| `handler.invalid` | `handle`, `handleAction`, `handleLoad` |
 | `loader.invalid` | `load` (a malformed answer) |
-| `host.invalid` | `head`, `savepoint`, `rollback`, `release`, `advanceStamp`, `ensureStamp`, `publish`, `lockRecord`, `memberships`, `setMembership` |
+| `host.invalid` | `head`, `savepoint`, `rollback`, `release`, `advanceStamp`, `ensureStamp`, `readStamps`, `publish`, `lockRecord`, `memberships`, `setMembership` |
 
 **How each side consumes it.**
 

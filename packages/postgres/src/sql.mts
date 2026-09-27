@@ -44,6 +44,22 @@ export const ADVANCE_STAMP =
 export const ENSURE_STAMP =
   "INSERT INTO axton_record(model,identity_key,stamp) VALUES($1,$2,1) ON CONFLICT(model,identity_key) DO UPDATE SET stamp=axton_record.stamp RETURNING stamp";
 /**
+ * The current stamps of many records of one model, in request order (`$2` is
+ * a JSON array of identity keys). Only a record without a stamp is inserted
+ * at 1; an existing row is read, never rewritten or locked, so a Load page
+ * does not contend with writers. The outer SELECT reads the transaction
+ * snapshot, which cannot see this statement's own inserts, hence COALESCE.
+ * Under Repeatable Read, a key another transaction inserted after the
+ * snapshot fails the INSERT with a serialization error the runner retries.
+ */
+export const READ_STAMPS =
+  "WITH keys AS (SELECT k.identity_key, k.position FROM jsonb_array_elements_text($2::jsonb) WITH ORDINALITY AS k(identity_key, position)), " +
+  "inserted AS (INSERT INTO axton_record(model,identity_key,stamp) SELECT $1, identity_key, 1 FROM keys ON CONFLICT(model,identity_key) DO NOTHING RETURNING identity_key, stamp) " +
+  "SELECT keys.identity_key, COALESCE(inserted.stamp, r.stamp) AS stamp FROM keys " +
+  "LEFT JOIN inserted ON inserted.identity_key=keys.identity_key " +
+  "LEFT JOIN axton_record r ON r.model=$1 AND r.identity_key=keys.identity_key " +
+  "ORDER BY keys.position";
+/**
  * Write-lock an existing record row without changing its stamp. A no-op UPDATE
  * rather than `SELECT … FOR UPDATE`: it writes a new row version, so a
  * concurrent Repeatable Read writer of the row fails serialization and retries

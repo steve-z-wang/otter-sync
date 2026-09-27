@@ -79,6 +79,16 @@
       ]
     },
     {
+      "op": "handleLoad",
+      "request": {"op": "handleLoad", "name": "Tasks", "version": 1, "arguments": {}, "continuation": {"state": {"after": "t-1"}}, "owner": "alice", "callId": "01890f47-1234-7123-8123-123456789abd", "loadId": "01890f47-1234-7123-8123-123456789abe"},
+      "responses": [
+        {"variant": "settled", "value": {"data": {"tasks": [{"id": "t-1"}, {"id": "t-2"}]}, "next": {"state": {"after": "t-2"}}}},
+        {"variant": "completed", "value": {"data": {"tasks": []}, "next": null}},
+        {"variant": "rejected", "value": {"rejection": "tasks.refused"}},
+        {"variant": "failed", "value": {"error": "handler failure"}}
+      ]
+    },
+    {
       "op": "load",
       "request": {"op": "load", "model": "Task", "version": 1, "identities": [{"id": "t-1"}, {"id": "t-2"}], "owner": "alice"},
       "responses": [
@@ -96,6 +106,11 @@
       "op": "ensureStamp",
       "request": {"op": "ensureStamp", "model": "Task", "identityKey": "{\"id\":\"t-2\"}"},
       "responses": [{"variant": "stamped", "value": 1}]
+    },
+    {
+      "op": "readStamps",
+      "request": {"op": "readStamps", "model": "Task", "identityKeys": ["{\"id\":\"t-1\"}", "{\"id\":\"t-2\"}"]},
+      "responses": [{"variant": "stamped", "value": [4, 1]}]
     },
     {
       "op": "publish",

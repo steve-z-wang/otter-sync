@@ -76,6 +76,31 @@ pub async fn process_action(
 ) -> Result<String> {
     axton_server::process_action(&config(&config_json)?, &owner, request_json.as_bytes(), &CallbackHost(callback)).await.map_err(reason)
 }
+/// Structural validation of one `POST /sync/loads` envelope; answers each
+/// item's canonical JSON in request order. The carrier runs each item through
+/// `process_load` in its own transaction and never accepts a looser envelope.
+#[napi]
+pub fn validate_load_batch(request_json: String) -> Result<Vec<String>> {
+    axton_server::validate_load_batch(request_json.as_bytes()).map_err(reason)
+}
+/// Executes or replays one Load page (one validated batch item) in the
+/// host's transaction and answers its page JSON.
+#[napi]
+pub async fn process_load(
+    config_json: String,
+    owner: String,
+    item_json: String,
+    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
+) -> Result<String> {
+    axton_server::process_load(
+        &config(&config_json)?,
+        &owner,
+        item_json.as_bytes(),
+        &CallbackHost(callback),
+    )
+    .await
+    .map_err(reason)
+}
 #[napi]
 pub async fn process_pull(
     config_json: String,

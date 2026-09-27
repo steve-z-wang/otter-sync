@@ -43,16 +43,33 @@ export type QueryOptions<K extends string = string> = CallOptions<K> &
 const invalidOptions = (message: string) =>
   new CallError("action.invalid_options", "rejected", Error(message));
 /** Mutations and `enqueue` accept no once controls, even from dynamic callers. */
-export function assertCallOptions(options: unknown): void {
+export function assertNoOnce(options: unknown): void {
   const value = options as { once?: unknown; refresh?: unknown } | undefined;
   if (value?.once !== undefined || value?.refresh !== undefined)
     throw invalidOptions("once and refresh apply only to direct Queries");
+}
+/**
+ * Only a Mutation submitted in a transaction (`tx.mutations`) runs a `local`
+ * callback; every other route refuses one, even from dynamic callers, rather
+ * than queue the call without it.
+ */
+function assertNoLocal(options: unknown): void {
+  if ((options as { local?: unknown } | undefined)?.local !== undefined)
+    throw invalidOptions(
+      "local applies only to a Mutation submitted in a transaction",
+    );
+}
+/** A standalone Mutation or direct call: no once controls, no `local`. */
+export function assertCallOptions(options: unknown): void {
+  assertNoOnce(options);
+  assertNoLocal(options);
 }
 /** Validate a direct Query's once controls before any I/O. */
 export function onceControls(options: unknown): {
   once: boolean;
   refresh: boolean;
 } {
+  assertNoLocal(options);
   const value = options as { once?: unknown; refresh?: unknown } | undefined;
   const once = value?.once ?? false;
   const refresh = value?.refresh ?? false;

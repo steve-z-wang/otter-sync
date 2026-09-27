@@ -560,6 +560,33 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
     );
   });
 
+  test("a local callback is refused outside a Mutation submitted in a transaction", async () => {
+    await run(async ({ client, pushes, queued }) => {
+      await client.direct(create("draft", "local"));
+      let ran = false;
+      const local = () => void (ran = true);
+      const invalid = code("action.invalid_options");
+      // Untyped callers of the standalone routes: refused before any work.
+      await assert.rejects(
+        client.invokeAction("Publish", 1, publish("p"), decode, { local }),
+        invalid,
+      );
+      await assert.rejects(
+        client.invokeDirectAction("Ping", 1, {}, decode, { local }),
+        invalid,
+      );
+      for (const options of [{ local }, { local, once: true }])
+        await assert.rejects(
+          client.invokeQuery("Find", 1, {}, decode, options),
+          invalid,
+        );
+      assert.equal(ran, false);
+      assert.equal(queued(), 0);
+      assert.deepEqual(await state(client), untouched);
+      assert.deepEqual(pushes, []);
+    });
+  });
+
   if (savepoints)
     test("a savepoint rollback ends only the Calls of its scope", async () => {
       await run(async ({ client, connect }) => {

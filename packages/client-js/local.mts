@@ -1,7 +1,7 @@
 import type { QuerySpec, RecordValue } from "./values.mts";
 import {
   CallError,
-  assertCallOptions,
+  assertNoOnce,
   type Call,
   type CallOptions,
 } from "./actions.mts";
@@ -129,7 +129,7 @@ function mutationCommand(
   args: object,
   options?: MutationOptions,
 ): { command: RecordValue; local: LocalCallback | undefined } {
-  assertCallOptions(options);
+  assertNoOnce(options);
   const local = options?.local;
   if (local !== undefined && typeof local !== "function")
     throw new CallError(

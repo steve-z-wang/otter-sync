@@ -18,8 +18,7 @@ Each database records the schema it was built for. Opening it with a newer gener
 | A new Model, or a new nullable field | Applied in place; cached records, queued calls and frozen request bytes are preserved. |
 | Anything else: a required field, a removed or retyped field, a changed identity, unique constraint, relation, enum or model version, a removed model, or a file from an earlier AXTON runtime | The file is left untouched and a fresh database is opened beside it (`<path>.1`, `<path>.2`, …). A small `<path>.current` file names the one in use. The new database keeps the old subscriptions and synchronises from the beginning. |
 
-<!-- load-draft: verify against implementation -->
-Durable [Loads](loads.md) are not carried into a rebuilt database: the rebuild report lists the abandoned Load IDs and the application starts new Loads ([Schema changes](loads.md#schema-changes)).
+Durable [Loads](loads.md) are not carried into a rebuilt database: the rebuild report lists the abandoned Load IDs (`abandonedLoads`) and the application starts new Loads ([Schema changes](loads.md#schema-changes)).
 
 Before switching, the runtime looks at the old database's unsent calls. If there are any, it keeps that database open so they can still be sent; `syncState().schema.pending` reports how many remain and why the schema is incompatible. When they are sent, call `rebuild()`. If they cannot be sent, call `rebuild({ discardPending: true })`: the report tells you how many queued calls and local-only records stay in the old file. Nothing is copied between schemas, and the runtime never deletes an old file; delete numbered files you no longer need. See [opening and schema changes](runtime.md#opening-and-schema-changes). Update backend tables separately through your database's migration process.
 

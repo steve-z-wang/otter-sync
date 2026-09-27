@@ -1,4 +1,3 @@
-<!-- load-draft: verify against implementation -->
 # Load data in pages
 
 A **Load** fills local Models from your backend in successive pages until your backend says it is done. You start it once; AXTON stores the job in the local database, requests each page, stores its records through your Loaders and `onStore` callbacks, and resumes unfinished work after the app restarts. Your code reads the loaded records with the ordinary [Model APIs](client-api.md#model-apis).
@@ -58,7 +57,6 @@ Pass `loads` to `createBackend` beside `mutations`, `queries` and `loaders`; it 
 - **Return identities, not records.** TypeScript does not check extra properties on an object returned from an unannotated handler, so returning full `Todo` records compiles; AXTON then fails the page with `handler.invalid`. Map rows to `{ id }` as above, or annotate the return type as `Promise<ProjectTodosHandlerOutput>` to catch it at compile time.
 - **Versions.** Keep a handler for every retained version. If you change what your state means in an incompatible way, add `@version(n + 1)`; the compiler cannot detect such a change.
 
-<!-- load-draft: verify against implementation -->
 ## Start a Load and wait
 
 === "TypeScript"
@@ -83,7 +81,7 @@ Pass `loads` to `createBackend` beside `mutations`, `queries` and `loaders`; it 
     load.dispose();
     ```
 
-Awaiting the start means the job is stored locally; it works offline and promises no data yet. `wait()` resolves once the final page is stored and throws a `LoadError` (TypeScript) or `LoadException` (Dart) with `code` and `message` if the Load fails or is cancelled. Each page commits on its own, so `watch` on your Models shows records as pages arrive. A Load has no result object: read the Models.
+Awaiting the start means the job is stored locally; it works offline and promises no data yet. A Load without inputs still takes `{}` in TypeScript (`client.loads.recentTodos({})`) and no argument in Dart. `wait()` resolves once the final page is stored and throws a `LoadError` (TypeScript) or `LoadException` (Dart) with `code` and `message` if the Load fails or is cancelled. Each page commits on its own, so `watch` on your Models shows records as pages arrive. A Load has no result object: read the Models.
 
 ## Continuation versus Channel cursor
 
@@ -96,7 +94,6 @@ Awaiting the start means the job is stored locally; it works offline and promise
 
 A Load creates no Channel membership, subscription or cursor, and completing it is not a snapshot: it means your handler finished its traversal and every page was stored. Records missing from a page are never deleted locally.
 
-<!-- load-draft: verify against implementation -->
 ## Fresh start, once and reattach
 
 === "TypeScript"
@@ -133,7 +130,6 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
 
 `once` says an earlier load can be reused; it does not promise the records are still complete or fresh. Deleting local records, Channel changes and elapsed time do not undo it.
 
-<!-- load-draft: verify against implementation -->
 ## Refresh and invalidate
 
 === "TypeScript"
@@ -150,10 +146,9 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
     await client.loads.invalidate.projectTodos(projectId: 'p1');
     ```
 
-- **`refresh: true`** (only with `once: true`, otherwise `load.invalid_options`) replaces a completed or failed job with a new one that starts from the first page. If the recorded job is still running, it joins that job instead of starting another. The replacement takes effect at once: if the refresh fails, later `once` calls see that failure, not the older success. Handles to the older job keep its history.
+- **`refresh: true`** (only with `once: true`, otherwise `load.invalid_options`; TypeScript accepts `{ refresh: true }` at compile time and refuses it at runtime) replaces a completed or failed job with a new one that starts from the first page. If the recorded job is still running, it joins that job instead of starting another. The replacement takes effect at once: if the refresh fails, later `once` calls see that failure, not the older success. Handles to the older job keep its history.
 - **`invalidate`** takes only the business arguments, works offline and forgets the recorded job for those arguments across retained versions, so the next `once` call starts a new job. It deletes no records and does not cancel a running job; that job can still finish and store its pages, but it will not be reused. Call its `cancel()` as well if it should stop.
 
-<!-- load-draft: verify against implementation -->
 ## Status, cancel, retry and forget
 
 `load.status` is `{ id, name, version, phase, pages, error }`. `pages` counts stored pages, empty ones included; it is not a percentage. `error` is `{ code, message }` after a failure or cancellation.
@@ -170,7 +165,7 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
 - **`retry()`** restarts a failed job from its last stored page with a new request; pages already stored stay. It may fail again if the cause remains. On a running job it does nothing; on a completed or cancelled job it fails with `load.not_retryable`: start a new Load instead. `wait()` on a failed job rejects at once with its error, so call `wait()` again after `retry()`.
 - **`cancel()`** stops a pending or failed job, with the error `load.cancelled`, and ignores any late response; stored pages stay. Cancelling a completed job changes nothing.
 - **`forget()`** removes a completed, failed or cancelled job (`load.not_terminal` for a running one); `get` then returns `null`, and later calls through an old handle fail with `load.not_found`. Jobs are never removed automatically.
-- **`dispose()`** stops this handle's observers only; the job continues.
+- **`dispose()`** stops this handle's observers only; the job continues. A handle you never dispose stays in memory until the client closes, because it keeps receiving status snapshots, so dispose handles you no longer watch. `get` returns a new handle each time; several handles to one job share its ID and state.
 
 Closing the client rejects pending `wait()` calls with `client_closed` and keeps every job; reopening resumes them. Load calls are not allowed inside `client.transaction` or an `onStore` callback.
 
@@ -184,10 +179,10 @@ AXTON sends ready pages of different jobs together without waiting to fill a bat
 
 Network failures, timeouts and server-side transaction failures back the job off, from 1 second up to 30 seconds, and retry the same page request, so the backend never runs a stored page twice. There is no overall timeout: an offline Load waits.
 
-<!-- load-draft: verify against implementation -->
-When the access token expires, AXTON asks your `refreshAuth` once, shared with other sync work; if it refuses with status 401 or 403, the Load fails with `load.unauthorized`, and any other refresh failure backs off. Any other HTTP error status from the Load endpoint, such as `400` or `404`, currently also backs off and retries rather than failing the Load; this may change.
+When the access token expires, AXTON asks your `refreshAuth` once, shared with other sync work; if it refuses with status 401 or 403, the Load fails with `load.unauthorized`, and any other refresh failure backs off. In TypeScript the refusal is an error with that `status`; in Dart an `HttpFailure` with that status or an `AuthenticationExpired`.
 
-<!-- load-draft: verify against implementation -->
+If the backend refuses a whole request with another 4xx status (not 408 or 429), AXTON sends each page of it in a request of its own, so one bad page cannot fail its neighbours; a page refused again on its own fails its Load with `load.protocol_invalid`. `408`, `429` and `5xx` statuses back off and retry. A frozen page too large to send even on its own fails its Load with `load.request_too_large`.
+
 ## Schema changes
 
 A compatible schema change keeps every job. A job whose Load or Model version is no longer in the schema fails with `load.contract_unavailable`. When a schema change [rebuilds the local database](storage.md#change-the-schema), Loads do not move to the new database: existing handles and `wait()` calls reject with `load.schema_changed`, the rebuild report lists the abandoned Load IDs, `get` returns `null` for them, and a `once` call starts fresh. While the old database stays open for unsent Mutations, Loads pause: starting, retrying or invalidating a Load fails with `load.schema_pending`, while `get`, `list`, `cancel` and `forget` still work.
@@ -196,7 +191,6 @@ A compatible schema change keeps every job. A job whose Load or Model version is
 
 Loads run while the client is open. A mobile app that is suspended or closed makes no progress; its jobs continue when the app opens the client again. AXTON does not schedule background execution.
 
-<!-- load-draft: verify against implementation -->
 ## Errors
 
 These codes appear as `status.error.code` and on the error `wait()` or a management call throws.
@@ -205,6 +199,7 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | --- | --- |
 | `load.invalid_options` | `refresh` without `once`, an option that is not a Boolean, or a `list` limit outside 1 to 100; nothing was started |
 | `load.unknown` | No Load of that name and version in this client's schema |
+| `load.invalid_args` | The start arguments do not match the Load's inputs; nothing was started <!-- load-draft: verify against implementation --> |
 | `load_version_unsupported`, `load.invalid`, `model_version_unsupported` | The backend does not retain this Load version, refused its arguments, or does not retain a Model version the client stores |
 | `handler.failed`, `loader.failed`, a `CallRejected` code | The handler or a Loader threw or rejected |
 | `handler.invalid`, `loader.invalid`, `loader.unregistered` | The handler returned something other than identity lists (a full record, for example), a Loader returned malformed rows, or no Loader is registered |
@@ -213,7 +208,8 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | `load.page_too_large` | The page exceeded 1,000 identities or 1 MiB; change the handler's page size |
 | `load.store_failed` | A record could not be stored locally; the page was not stored |
 | `load.hook_failed` | An `onStore` callback threw; the page and the callback's writes were rolled back |
-| `load.protocol_invalid` | The response for this page was malformed |
+| `load.protocol_invalid` | The response for this page was malformed, or the backend refused the page's request on its own with a 4xx status |
+| `load.request_too_large` | The page's request exceeds 1 MiB even on its own, for example because of very large arguments or state |
 | `load.unauthorized` | Credential refresh was refused |
 | `load.cancelled` | The job was cancelled |
 | `load.contract_unavailable` | The job's Load or Model version is no longer in the schema |

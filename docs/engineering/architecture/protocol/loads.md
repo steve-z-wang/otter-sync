@@ -64,7 +64,7 @@ The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `L
 | Continuation state | 64 KiB, depth 64 |
 | Error message | 1,024 bytes |
 
-A bound is never met by silent truncation. A page with more than 1,000 identities or over 1 MiB is the item's `load.page_too_large`. Because every page is bounded, eight full pages always fit one response; the envelope bound is a guard.
+A bound is never met by silent truncation. A page with more than 1,000 identities or over 1 MiB is the item's `load.page_too_large`. A frozen request that exceeds 1 MiB even as a batch of one is never sent: the client fails that job with `load.request_too_large`. Because every page is bounded, eight full pages always fit one response; the envelope bound is a guard.
 
 **Whole-request failures.** Authentication and envelope failures fail the whole request with the transport's ordinary statuses ([Server transport](../server/connection/transport.md)); the client keeps the frozen pages. Every item outcome, a rejection included, answers `200`.
 

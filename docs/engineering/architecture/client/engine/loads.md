@@ -20,7 +20,12 @@ Code: [client/loads.rs](../../../../../crates/client/src/loads.rs) (operations, 
 
 ## 6. Runtime View
 
-**Start and reuse.** A start without `once` creates a fresh job, never reads or writes a mapping and never registers its outcome. `refresh` without `once` is `load.invalid_options`, raised before anything else; an unknown name or version is `load.unknown`. The first request is checked against the 1 MiB request bound before it is stored. A start with `once` decides from a committed read, so a join or reuse commits nothing, then decides again inside the write transaction, so concurrent same-key starts resolve to one job. The key is SHA-256 of canonical `{format: 1, name, version, args, models}`: invocation normalization of the arguments (object key order, UUID case and equivalent date offsets normalize; list order and explicit `null` do not; a no-argument Load uses `{}`) and the output Models' local read-contract versions. It never contains a continuation, call ID, job or run, the options or credentials.
+**Start and reuse.** A start without `once` creates a fresh job, never reads or writes a mapping and never registers its outcome. `refresh` without `once` is `load.invalid_options`, raised before anything else; an unknown name or version is `load.unknown`.
+
+<!-- load-draft: verify against implementation -->
+Arguments that do not normalize against the Load's inputs fail the start with `load.invalid_args` before anything is written; until that code lands, the refusal is the uncoded engine error (for example `invalid UUID`), which the SDKs rethrow unchanged.
+
+The first request is checked against the 1 MiB request bound before it is stored. A start with `once` decides from a committed read, so a join or reuse commits nothing, then decides again inside the write transaction, so concurrent same-key starts resolve to one job. The key is SHA-256 of canonical `{format: 1, name, version, args, models}`: invocation normalization of the arguments (object key order, UUID case and equivalent date offsets normalize; list order and explicit `null` do not; a no-argument Load uses `{}`) and the output Models' local read-contract versions. It never contains a continuation, call ID, job or run, the options or credentials.
 
 | Current mapping | `once: true` | `once: true, refresh: true` |
 | --- | --- | --- |
@@ -46,6 +51,7 @@ A refresh replaces the mapping on local acceptance, not on success: if it fails,
 | A callback throws | The whole page rolls back, callback writes included: terminal `load.hook_failed` with the Model and its identities |
 | A preparation, replay or commit error | Nothing advances; retried under the same call ID with class `local` |
 | A malformed correlated page, too many identities or bytes, an invalid `next` | Terminal `load.protocol_invalid`, `load.page_too_large` or `load.invalid_continuation` |
+| A frozen page that cannot be sent even alone, or a single-page request the backend refuses with a 4xx other than 401, 408 and 429 | Terminal `load.request_too_large` or `load.protocol_invalid`, decided by the [Load worker](../connection/controller/load-worker.md#6-runtime-view) |
 | A saved backend rejection | Terminal with the backend's `{code, message}`; the rejected call stays frozen |
 
 A terminal failure is recorded in its own short transaction after the rollback. Stored errors are bounded to 1,024 bytes and at most 20 `{model, id, code}` diagnostics; a retryable failure stores only its class and attempt count. Other jobs answered by the same HTTP response commit separately.

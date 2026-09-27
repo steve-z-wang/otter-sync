@@ -2,6 +2,8 @@
 
 Status: agreed product contract, recorded for design review; not implemented. `local` is the selected callback option spelling for this proposal. This document extends the local-only transaction boundary established by [#145's design](2026-09-23-145-local-transactions-design.md); it does not reopen remote execution inside transactions.
 
+Implementation sequence: [plan](../plans/2026-09-27-transaction-mutations-plan.md).
+
 ## 1. Introduction and Goals
 
 An application must be able to read a local Composition, enqueue one Mutation that creates an Entry, media and Journal placement, and remove the local Composition in one durable local commit. The Composition deletion is never sent to the backend. Backend acceptance retains that deletion; rejection removes its effect so editing can resume. Later independent edits must survive settlement.
@@ -118,6 +120,8 @@ Acceptance and rejection settle the owning Mutation and its companions atomicall
 Settlement reconstructs state from the retained base and applicable later operations; it must not overwrite a row with a saved whole-row snapshot. Multiple companion writes to the same row preserve their local operation order regardless of arrival order of server outcomes. A later independent direct write survives both acceptance and rejection of an earlier companion when the record has an independently existing base, consistent with [L4](../../engineering/guarantees.md).
 
 For example, deleting an existing local Composition as a companion and subsequently recreating that identity with new content must not restore the old content on rejection or delete the new content on acceptance. A later independent deletion must likewise not be undone by rejection. Existing rules for edits to a record whose very creation is still pending remain in force; an edit cannot preserve a record whose only creation was rejected. Existing replay-conflict reporting remains in force for operations that become inapplicable.
+
+These local guarantees do not bypass server authority for a record that also receives authoritative data. Preserve existing receipt/readback and stamp precedence: a companion is not a way to force local content over a server-owned value. Composition recovery in the motivating scenario concerns local-only data.
 
 Reopen resumes the same durable call and settlement without running callbacks again. Process interruption before commit leaves neither durable enqueue nor deletion; after commit, both survive. Crash-durability claims require interruption tests beyond clean close/reopen.
 

@@ -5,17 +5,13 @@
 //! under a Fetch-tagged request identity, and the single-record read with
 //! Action results. It never touches, publishes or changes a membership.
 use crate::action_results::{ensure_stamp, load_one_state};
-use crate::actions::call_error;
-use crate::host::{Acknowledged, ClaimedCall, HostExt, HostRequest};
+use crate::calls::{self, Claim};
 use crate::settlement::unregistered;
-use crate::{
-    Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
-};
+use crate::{Config, Error, Host, Result, code, internal, principal, request_invalid};
 use axton_core::{
     ActionOutcome, AuthorityRecord, CallCompletion, ExecutionState, FetchRequest, FetchResponse,
     RecordKey, canonical_json,
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// The one savepoint a Fetch opens, as a direct Action opens its own.
@@ -53,12 +49,6 @@ fn canonical_intent(request: &FetchRequest) -> Result<String> {
     .map_err(internal)
 }
 
-/// The part of a saved response replay checks before returning its bytes.
-#[derive(Deserialize)]
-struct Saved {
-    completion: CallCompletion,
-}
-
 /// Serve one `POST /sync/fetch` in the caller's application transaction. The
 /// caller commits before replying and must never commit after an error.
 ///
@@ -88,60 +78,21 @@ pub async fn process_fetch(
         None => None,
     };
     let intent = canonical_intent(&request)?;
-    let claimed: ClaimedCall = host
-        .call_typed(HostRequest::ClaimCall {
-            owner: owner.into(),
-            call_id: request.call_id.clone(),
-            request: intent.clone(),
-        })
-        .await?;
-    // Compared before any saved bytes are read: another kind's response is
-    // never decoded as a Fetch.
-    if claimed.request != intent {
-        return encode(&failed(&request.call_id, "call.identity_conflict"));
+    match calls::claim(owner, &request.call_id, &intent, host).await? {
+        Claim::Conflict => return encode(&failed(&request.call_id, "call.identity_conflict")),
+        Claim::Replay(saved) => return Ok(saved),
+        Claim::Fresh => {}
     }
-    if !claimed.fresh {
-        let saved = claimed
-            .response
-            .ok_or_else(|| storage_invalid("committed call has no response"))?;
-        let Saved { completion } = serde_json::from_str(&saved).map_err(storage_invalid)?;
-        if completion.call_id != request.call_id {
-            return Err(storage_invalid("saved call ID mismatch"));
-        }
-        return Ok(saved);
-    }
-    if claimed.response.is_some() {
-        return Err(storage_invalid("fresh call already completed"));
-    }
-    let Acknowledged = host
-        .call_typed(HostRequest::Savepoint { ordinal: ORDINAL })
-        .await?;
-    let response = match read(config, owner, &request, key, host).await {
-        Ok(response) => {
-            let Acknowledged = host
-                .call_typed(HostRequest::Release { ordinal: ORDINAL })
-                .await?;
-            response
-        }
-        Err(error) if call_error(&error) => {
-            let Acknowledged = host
-                .call_typed(HostRequest::Rollback { ordinal: ORDINAL })
-                .await?;
-            let Acknowledged = host
-                .call_typed(HostRequest::Release { ordinal: ORDINAL })
-                .await?;
-            failed(&request.call_id, &error.code)
-        }
-        Err(error) => return Err(error),
-    };
-    let text = encode(&response)?;
-    let Acknowledged = host
-        .call_typed(HostRequest::SaveCall {
-            owner: owner.into(),
-            call_id: request.call_id.clone(),
-            response: text.clone(),
-        })
-        .await?;
+    let (_, text) = calls::complete(
+        owner,
+        &request.call_id,
+        ORDINAL,
+        host,
+        read(config, owner, &request, key, host),
+        |error| failed(&request.call_id, &error.code),
+        encode,
+    )
+    .await?;
     Ok(text)
 }
 

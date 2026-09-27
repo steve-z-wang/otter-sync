@@ -1,6 +1,7 @@
 //! Shared transactional Action executor. A stored call response is independent
 //! of the batch receipt, so replay retains its own result and authority.
-use crate::host::{Acknowledged, Claimed, ClaimedCall, HandledAction, HostExt, HostRequest};
+use crate::calls::{self, Claim};
+use crate::host::{Acknowledged, Claimed, HandledAction, HostExt, HostRequest};
 use crate::readback::{self, Outcome};
 use crate::settlement::{self, Changes};
 use crate::{
@@ -108,52 +109,23 @@ pub async fn execute_action(
 ) -> Result<ActionResponse> {
     principal(owner)?;
     let request = canonical_intent(call, models)?;
-    let claimed: ClaimedCall = host
-        .call_typed(HostRequest::ClaimCall {
-            owner: owner.into(),
-            call_id: call.call_id.clone(),
-            request: request.clone(),
-        })
-        .await?;
-    if claimed.request != request {
-        return Ok(rejected(&call.call_id, "call.identity_conflict"));
+    match calls::claim(owner, &call.call_id, &request, host).await? {
+        Claim::Conflict => return Ok(rejected(&call.call_id, "call.identity_conflict")),
+        Claim::Replay(saved) => return serde_json::from_str(&saved).map_err(storage_invalid),
+        Claim::Fresh => {}
     }
-    if !claimed.fresh {
-        let saved = claimed
-            .response
-            .ok_or_else(|| storage_invalid("committed call has no response"))?;
-        let response: ActionResponse = serde_json::from_str(&saved).map_err(storage_invalid)?;
-        if response.completion.call_id != call.call_id {
-            return Err(storage_invalid("saved call ID mismatch"));
-        }
-        return Ok(response);
-    }
-    if claimed.response.is_some() {
-        return Err(storage_invalid("fresh call already completed"));
-    }
-    let Acknowledged = host.call_typed(HostRequest::Savepoint { ordinal }).await?;
-    let result = execute_fresh(config, owner, call, models, ordinal, host).await;
-    let response = match result {
-        Ok(response) => {
-            let Acknowledged = host.call_typed(HostRequest::Release { ordinal }).await?;
-            response
-        }
-        Err(error) if call_error(&error) => {
-            let Acknowledged = host.call_typed(HostRequest::Rollback { ordinal }).await?;
-            let Acknowledged = host.call_typed(HostRequest::Release { ordinal }).await?;
-            rejected(&call.call_id, &error.code)
-        }
-        Err(error) => return Err(error),
-    };
-    let text =
-        canonical_json(&serde_json::to_value(&response).map_err(internal)?).map_err(internal)?;
-    let Acknowledged = host
-        .call_typed(HostRequest::SaveCall {
-            owner: owner.into(),
-            call_id: call.call_id.clone(),
-            response: text,
-        })
-        .await?;
+    let (response, _) = calls::complete(
+        owner,
+        &call.call_id,
+        ordinal,
+        host,
+        execute_fresh(config, owner, call, models, ordinal, host),
+        |error| rejected(&call.call_id, &error.code),
+        |response| {
+            canonical_json(&serde_json::to_value(response).map_err(internal)?).map_err(internal)
+        },
+    )
+    .await?;
     Ok(response)
 }
 

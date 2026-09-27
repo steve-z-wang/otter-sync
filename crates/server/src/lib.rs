@@ -1,6 +1,7 @@
 //! Server protocol orchestration. Host calls run in the application's outer transaction.
 mod action_results;
 mod actions;
+mod calls;
 pub mod error;
 mod fetch;
 pub mod host;

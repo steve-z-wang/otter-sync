@@ -4,6 +4,7 @@
 use serde_json::Value;
 mod action_names;
 mod emit;
+mod emit_loads;
 pub mod generate;
 mod history;
 pub mod parse;

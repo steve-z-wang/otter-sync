@@ -21,6 +21,13 @@ export type {
   ConnectionOptions,
 } from "../client-js/connection.mts";
 export type { ServerOptions } from "../client-js/live.mts";
+export {
+  LoadError,
+  type Load,
+  type LoadOptions,
+  type LoadPhase,
+  type LoadStatus,
+} from "../client-js/loads.mts";
 export type {
   BootstrapPhase,
   BootstrapStatus,

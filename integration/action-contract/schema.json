@@ -1246,6 +1246,64 @@
   "loads": [
     {
       "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "once",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "boolean"
+          }
+        },
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "refresh",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "name": "FlaggedTodos",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
+          "kind": "model",
+          "model": "Todo",
+          "modelReadVersion": 2,
+          "name": "todos",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "input": {
         "enums": [
           {
             "name": "Status",
@@ -1346,6 +1404,39 @@
           "model": "Project",
           "modelReadVersion": 1,
           "name": "projects",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [],
+      "name": "RecentTodos",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
+          "kind": "model",
+          "model": "Todo",
+          "modelReadVersion": 2,
+          "name": "todos",
           "source": "handlerIdentity"
         }
       ],

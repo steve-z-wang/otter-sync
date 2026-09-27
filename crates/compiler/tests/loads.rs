@@ -254,6 +254,7 @@ fn load_only_generated_names_are_reserved_only_beside_a_load() {
         "JsonValue",
         "LoadContext",
         "LoadHandlerCall",
+        "LoadInvalidations",
     ] {
         let model = format!("model {name} {{ id String @@id(id) }}\n");
         compile(&format!("{model}{MODELS}")).unwrap();
@@ -413,4 +414,97 @@ fn backends_without_loads_declare_no_load_types() {
             assert!(!ts.contains(absent), "{absent}: {ts}");
         }
     }
+}
+
+#[test]
+fn clients_without_loads_generate_no_loads_facade() {
+    for source in [
+        "model Todo { id UUID @@id(id) }",
+        "enum Status { open done }\nmodel Todo { id UUID s Status @@id(id) }\nquery Count(s Status) { n Int }\nmutation Ping()",
+    ] {
+        let config = compile(source).unwrap();
+        let ts = axton_compiler::typescript(&config);
+        let client = axton_compiler::client_typescript(&config, "@axton/client");
+        let dart = axton_compiler::dart(&config);
+        for (output, text) in [
+            ("generated.ts", &ts),
+            ("client.ts", &client),
+            ("dart", &dart),
+        ] {
+            for absent in [
+                "makeLoads",
+                "loads",
+                "Load,",
+                "LoadStatus",
+                "LoadInvalidations",
+                "startLoad",
+            ] {
+                assert!(!text.contains(absent), "{output} {absent}: {text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_client_starts_invalidates_and_reattaches_typed_loads() {
+    let config = compile(&source(
+        "load ProjectTodos(projectId UUID, status Status?, tags String[], at DateTime) { todos Todo[] notes Note[] }\nload AllNotes() { notes Note[] }\nload Flagged(once Boolean, refresh String) { notes Note[] }",
+    ))
+    .unwrap();
+    let ts = axton_compiler::typescript(&config);
+    for expected in [
+        "import type { Load, LoadOptions, LoadStatus } from './client.ts';",
+        "export interface ProjectTodosInput {\n projectId: string;\n status: Status | null;\n tags: string[];\n at: Date;\n}",
+        " at: args.at.toISOString(),",
+        " projectTodos: (args:ProjectTodosInput, options?:LoadOptions):Promise<Load<'ProjectTodos'>> => port.startLoad('ProjectTodos',1,encodeProjectTodosInput(args),options),",
+        " allNotes: (args:AllNotesInput, options?:LoadOptions):Promise<Load<'AllNotes'>>",
+        " get: (id:string):Promise<Load|null> => port.getLoad(id),",
+        " list: (options?:{limit?:number}):Promise<LoadStatus[]> => port.listLoads(options),",
+        "  projectTodos: (args:ProjectTodosInput):Promise<void> => port.invalidateLoad('ProjectTodos',encodeProjectTodosInput(args)),",
+    ] {
+        assert!(ts.contains(expected), "{expected}: {ts}");
+    }
+    // Options are a separate argument, so business inputs keep their names.
+    assert!(ts.contains("export interface FlaggedInput {\n once: boolean;\n refresh: string;\n}"));
+    let client = axton_compiler::client_typescript(&config, "@axton/client");
+    for expected in [
+        "export { LoadError, type Load, type LoadOptions, type LoadPhase, type LoadStatus } from \"@axton/client\";",
+        "import { makeLoads } from \"./generated.ts\";",
+        " readonly loads: ReturnType<typeof makeLoads>;",
+        "this.loads = makeLoads(client); ",
+    ] {
+        assert!(client.contains(expected), "{expected}: {client}");
+    }
+    let dart = axton_compiler::dart(&config);
+    for expected in [
+        "export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;\nclass Present<T>",
+        " late final LoadInvalidations invalidate = LoadInvalidations(client);",
+        " Future<Load> projectTodos({required String projectId, required Status? status, required List<String> tags, required DateTime at, bool once = false, bool refresh = false}) => client.startLoad('ProjectTodos', 1, {'projectId': projectId, 'status': status == null ? null : status.name, 'tags': tags, 'at': at.toUtc().toIso8601String()}, once: once, refresh: refresh);",
+        " Future<Load> allNotes({bool once = false, bool refresh = false}) => client.startLoad('AllNotes', 1, {}, once: once, refresh: refresh);",
+        // Business inputs own `once` and `refresh`: the controls fall back.
+        " Future<Load> flagged({required bool once, required String refresh, bool callOnce = false, bool callRefresh = false}) => client.startLoad('Flagged', 1, {'once': once, 'refresh': refresh}, once: callOnce, refresh: callRefresh);",
+        " Future<Load?> get(String id) => client.getLoad(id);",
+        " Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);",
+        " Future<void> allNotes() => client.invalidateLoad('AllNotes', {});",
+        " late final Loads loads = Loads(client);",
+    ] {
+        assert!(dart.contains(expected), "{expected}: {dart}");
+    }
+}
+
+#[test]
+fn the_client_starts_the_newest_retained_load_version() {
+    let mut config: Value = compile(&source("@version(2) load Todos() { todos Todo[] }")).unwrap();
+    let mut old = config["loads"][0].clone();
+    old["version"] = json!(1);
+    config["loads"] = json!([old, config["loads"][0].clone()]);
+    let ts = axton_compiler::typescript(&config);
+    assert!(ts.contains("port.startLoad('Todos',2,"), "{ts}");
+    assert_eq!(ts.matches("export interface TodosInput").count(), 1);
+    assert!(
+        !ts.contains("TodosV1Input"),
+        "the client starts only the newest version"
+    );
+    let dart = axton_compiler::dart(&config);
+    assert!(dart.contains("client.startLoad('Todos', 2, {}"), "{dart}");
 }

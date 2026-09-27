@@ -61,3 +61,7 @@ load ProjectTodos(projectId String, status Status?, tags String[]) {
  todos Todo[]
  projects Project[]
 }
+// A Load without inputs, and one whose business inputs take the option names:
+// Dart then names the call-site controls callOnce and callRefresh.
+load RecentTodos() { todos Todo[] }
+load FlaggedTodos(once Boolean, refresh String) { todos Todo[] }

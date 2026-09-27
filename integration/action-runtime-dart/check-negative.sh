@@ -8,14 +8,16 @@ if [[ $status -eq 0 ]]; then
   exit 1
 fi
 expected=(
-  'argument_type_not_assignable:7'
-  'list_element_type_not_assignable:10'
-  'undefined_named_parameter:15'
-  'undefined_method:18'
-  'undefined_getter:20'
-  'undefined_getter:21'
-  'invalid_assignment:22'
-  'undefined_getter:24'
+  'argument_type_not_assignable:9'
+  'list_element_type_not_assignable:12'
+  'undefined_named_parameter:17'
+  'undefined_method:20'
+  'undefined_getter:22'
+  'undefined_getter:23'
+  'invalid_assignment:24'
+  'undefined_getter:26'
+  'undefined_getter:33'
+  'undefined_getter:34'
 )
 for pair in "${expected[@]}"; do
   code="${pair%%:*}"

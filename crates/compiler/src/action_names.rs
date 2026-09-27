@@ -53,8 +53,8 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
         .map(|a| a.pos)
 }
 
-/// Names the generated clients and backend declare beside Loads, and only
-/// when the schema declares one ([#173](https://github.com/zanminwang/axton/issues/173)).
+/// Names the generated clients and backend declare (or re-export) beside
+/// Loads, and only when the schema declares one ([#173](https://github.com/zanminwang/axton/issues/173)).
 pub(crate) const LOAD_HELPERS: &[&str] = &[
     "JsonValue",
     "Load",
@@ -62,6 +62,7 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
     "LoadError",
     "LoadException",
     "LoadHandlerCall",
+    "LoadInvalidations",
     "LoadNext",
     "LoadOptions",
     "LoadPhase",

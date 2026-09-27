@@ -43,6 +43,10 @@ class ServerSession {
   Future<String> action(String body, Future<void> cancellation) =>
       _post('actions', 'action', body, cancellation);
 
+  /// `POST /sync/loads`: one batch of native Load pages.
+  Future<String> load(String body, Future<void> cancellation) =>
+      _post('loads', 'load', body, cancellation);
+
   /// `POST /sync/pull`: an ordinary catch-up or a Bootstrap page.
   Future<String> pull(String body, Future<void> cancellation) =>
       _post('pull', 'pull', body, cancellation);

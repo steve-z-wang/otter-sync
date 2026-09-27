@@ -1,4 +1,6 @@
 import 'generated.dart';
+import 'model_only/generated.dart' as model_only;
+import 'model_free/generated.dart' as model_free;
 
 Future<void> invalid(
   GeneratedClient client,
@@ -24,4 +26,10 @@ Future<void> invalid(
     tx.queries;
   });
   direct.hashCode;
+}
+
+// A schema without Loads has no `loads` facade.
+void noLoads(model_only.GeneratedClient only, model_free.GeneratedClient free) {
+  only.loads;
+  free.loads;
 }

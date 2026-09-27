@@ -10,6 +10,7 @@ export 'src/actions.dart'
         CallStatus,
         CallStore,
         CallError;
+export 'src/loads.dart' show Load, LoadStatus, LoadPhase, LoadException;
 export 'src/port.dart';
 export 'src/sync_state.dart';
 export 'src/subscriptions.dart'

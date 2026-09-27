@@ -10,3 +10,5 @@ mutation Echo(at DateTime, moods Mood[], maybe DateTime?) { result DateTime mood
 mutation Touch(note Note.create, changed Note.update<at>?) { stamp DateTime }
 mutation Ping()
 query Now(at DateTime) { at DateTime }
+// A multi-output Load (#173): two Model lists, typed DateTime and enum inputs.
+load NotesSince(since DateTime?, moods Mood[]) { notes Note[] pinned Note[] }

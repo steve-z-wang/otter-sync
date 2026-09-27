@@ -356,3 +356,90 @@ fn damaged_rows_are_reported_once_and_skipped() {
     assert!(step.issues.is_empty(), "reported once");
     assert!(step.dispatch.is_none());
 }
+
+#[test]
+fn a_page_that_cannot_be_sent_even_alone_fails_its_job_and_blocks_no_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    // The oldest ready job's frozen page is over the request bound.
+    let oversized = oversized_next_page(&mut c);
+    let healthy: Vec<String> = (0..2).map(|_| start(&mut c)).collect();
+    w.wake();
+    let step = w.dispatch(&mut c, 0, ENTROPY).unwrap();
+    assert_eq!(
+        loads(&step.dispatch.unwrap()),
+        healthy,
+        "the younger jobs go"
+    );
+    assert!(w.in_flight(&oversized), "its failure waits for the writer");
+    assert_eq!(w.batches(), 1, "the unsendable page holds no slot");
+    let LoadStored::Failed(job) = consume(&mut w, &mut c, 0) else {
+        panic!("a terminal failure")
+    };
+    assert_eq!(job.id, oversized);
+    let error = job.error.unwrap();
+    assert_eq!(error.code, loads::REQUEST_TOO_LARGE);
+    assert_eq!(job.pages, 1, "committed progress stays");
+    assert!(!w.in_flight(&oversized));
+    // Nothing is left to block: a later dispatch sends new work at once.
+    let later = start(&mut c);
+    w.wake();
+    assert_eq!(loads(&dispatch(&mut w, &mut c, 0).unwrap()), [later]);
+}
+
+#[test]
+fn a_rejected_request_splits_into_requests_of_one_and_a_rejected_one_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let started: Vec<String> = (0..3).map(|_| start(&mut c)).collect();
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&sent), started);
+    w.rejected(sent.batch, "HTTP 413");
+    assert_eq!(w.batches(), 0, "no failure: the slot is released");
+    assert!(!w.has_outcome());
+    // Each page now goes alone, two requests at a time.
+    let one = dispatch(&mut w, &mut c, 0).unwrap();
+    let two = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&one), [started[0].clone()]);
+    assert_eq!(loads(&two), [started[1].clone()]);
+    assert_eq!(one.pages[0].fence.call_id, sent.pages[0].fence.call_id);
+    // A page refused alone fails its job.
+    w.rejected(one.batch, "HTTP 413");
+    let LoadStored::Failed(job) = consume(&mut w, &mut c, 0) else {
+        panic!("refused alone")
+    };
+    assert_eq!(job.error.unwrap().code, loads::PROTOCOL_INVALID);
+    // The third, still marked, goes alone too, even with a new job ready.
+    let fresh = start(&mut c);
+    let three = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&three), [started[2].clone()]);
+    w.answered(two.batch, &respond(&two, |f| page_value(f, None)))
+        .unwrap();
+    consume(&mut w, &mut c, 0);
+    assert_eq!(loads(&dispatch(&mut w, &mut c, 0).unwrap()), [fresh]);
+}
+
+#[test]
+fn a_failed_scheduler_read_keeps_its_retry_until_a_dispatch_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let backing = start(&mut c);
+    w.scan_failed(0, ENTROPY);
+    assert_eq!(w.next_due(0), Some(1_000));
+    // Another job's backoff, later or not, never hides the retry.
+    w.back_off(&backing, "call", 3, 0, ENTROPY);
+    assert_eq!(w.next_due(0), Some(1_000));
+    w.settled(&backing);
+    assert_eq!(
+        w.next_due(0),
+        Some(1_000),
+        "nothing but a dispatch clears it"
+    );
+    w.wake();
+    dispatch(&mut w, &mut c, 1_000);
+    assert_eq!(w.next_due(1_000), None);
+}

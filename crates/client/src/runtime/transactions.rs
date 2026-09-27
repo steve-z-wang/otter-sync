@@ -567,9 +567,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         Value::Null
                     }
                 };
-                // A Load page whose job moved on wrote nothing: nothing to
-                // commit, no generation for the watches.
-                if matches!(result, StoreResult::Load(crate::LoadApply::Stale)) {
+                // A Load page is committed only when it applied: one whose job
+                // moved on wrote nothing, and a refused one must keep nothing.
+                if matches!(
+                    result,
+                    StoreResult::Load(crate::LoadApply::Stale | crate::LoadApply::Refused(_))
+                ) {
                     self.client.rollback_session()?;
                 } else {
                     self.client.commit_session()?;

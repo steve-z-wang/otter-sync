@@ -298,3 +298,35 @@ impl ClientStore for CommitFaultStore {
         self.inner.query_committed(sql, parameters)
     }
 }
+/// A `Tagged` job whose first page fits the 1 MiB request bound and whose
+/// committed first page returns a 60 KB state: its next frozen page request
+/// no longer fits, even alone. Answers the job ID.
+pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
+    let tag = "x".repeat(limits::LOAD_REQUEST_BYTES - 30_000);
+    let job = c
+        .start_load(
+            "Tagged",
+            1,
+            &json!({ "tags": [tag] }),
+            LoadOptions::default(),
+        )
+        .unwrap()
+        .job;
+    let fence = LoadFence {
+        replica: c.replica_generation(),
+        load_id: job.id.clone(),
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    let page = load_page(&fence, &[], Some(json!("s".repeat(60_000))));
+    assert!(matches!(
+        c.store_load_page(&fence, reply(page)).unwrap(),
+        LoadStored::Applied { .. }
+    ));
+    let next = c.get_load(&job.id).unwrap().unwrap().intent.unwrap();
+    assert!(
+        LoadBatchRequest { loads: vec![next] }.encode().is_err(),
+        "the next frozen page exceeds the request bound"
+    );
+    job.id
+}

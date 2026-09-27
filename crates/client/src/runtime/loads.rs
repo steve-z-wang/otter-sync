@@ -26,9 +26,9 @@
 //! publishes the job's status - its stored phase projected with what the
 //! runtime knows: a page in flight is `loading`; offline, paused, backing
 //! off or parked behind a pending rebuild is `waiting`. `loadWait` parks on
-//! the job's current run: it completes after the final page committed, fails
-//! with the run's stored error, or fails `load.superseded` once a later run
-//! is observed. Dispose releases one observer; close fails waiters
+//! the job's current run: it completes after the final page committed or
+//! fails with the run's stored error, and settles only from that run. Dispose
+//! releases one observer; close fails waiters
 //! `client_closed` and a rebuild fails them `load.schema_changed`, ending
 //! every observer, without cancelling durable jobs.
 use super::effects::{EffectKind, Waiter};
@@ -44,8 +44,6 @@ use crate::{
 /// A refresh that was refused (not merely failed) leaves the batch's jobs
 /// without credentials.
 pub(super) const UNAUTHORIZED: &str = "load.unauthorized";
-/// A waiter's run was replaced by an explicit retry.
-pub(super) const SUPERSEDED: &str = "load.superseded";
 /// A rebuild replaced the replica the job belonged to.
 pub(super) const SCHEMA_CHANGED: &str = "load.schema_changed";
 const CLIENT_CLOSED: &str = "client_closed";
@@ -164,10 +162,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
             }
             Err(error) => {
-                // The scheduler read failed: look again after a bounded delay.
+                // The scheduler read failed: look again after a bounded delay
+                // the worker keeps until a dispatch runs.
                 self.error(format!("load scheduling failed: {error}"));
-                self.arm_load_timer_at(now.saturating_add(crate::load_backoff(1, entropy)), now);
-                return;
+                self.loads.worker.scan_failed(now, entropy);
             }
         }
         self.arm_load_timer(now);
@@ -239,11 +237,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 let refresh = error.status == Some(401)
                     && !refreshed
                     && self.connection.as_ref().is_some_and(|c| c.refresh);
+                let refused = matches!(error.status, Some(400..=499))
+                    && !matches!(error.status, Some(401 | 408 | 429));
                 if refresh {
                     if let Some(flight) = self.loads.flights.get_mut(&batch) {
                         flight.refreshed = true;
                     }
                     self.join_refresh(Waiter::Load { batch });
+                } else if refused {
+                    // The backend refused the request whole: its pages go
+                    // alone, and a page refused alone fails its job.
+                    self.retire_load_flight(batch);
+                    self.loads.worker.rejected(batch, &error.message);
                 } else {
                     self.fail_load_batch(batch, LoadFailure::transport(error.message));
                 }
@@ -481,7 +486,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .retry_load(load_id)
                 .map_err(|e| e.to_string())
                 .map(|job| {
-                    self.loads.worker.settled(&job.id);
+                    // Retrying active work changes nothing, its backoff
+                    // included; a failed job starts clean under a new call.
+                    self.loads.worker.retried(&job.id, job.call_id.as_deref());
                     self.loads.worker.wake();
                     self.load_changed(&job);
                     self.load_status_json(job.status())
@@ -634,8 +641,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     // --- Status and waiters --------------------------------------------------
 
     /// A committed state of `job`: its observers publish it at the end of
-    /// the unit, waiters of its run settle when it is terminal, and waiters
-    /// of an earlier run are superseded.
+    /// the unit and waiters of its run settle when it is terminal.
+    ///
+    /// A waiter settles only from the run it attached to, so it never
+    /// resolves from another attempt. No waiter can see its run replaced:
+    /// `loadWait` attaches only to an active run (a terminal one answers at
+    /// once), and a run changes only when `loadRetry` restarts a *failed*
+    /// run, whose failure settled every waiter of it in the unit that
+    /// recorded it. The run fence therefore needs no separate superseded
+    /// outcome.
     pub(super) fn load_changed(&mut self, job: &LoadJob) {
         let Some(tracked) = self.loads.tracked.get_mut(&job.id) else {
             return;
@@ -643,13 +657,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         tracked.status = job.status();
         tracked.run = job.run;
         let terminal = !job.phase.active();
+        debug_assert!(
+            tracked.waiters.iter().all(|(_, run)| *run >= job.run),
+            "a Load waiter outlived its run"
+        );
         let mut settled = vec![];
-        let mut superseded = vec![];
         tracked.waiters.retain(|(request_id, run)| {
-            if *run < job.run {
-                superseded.push(request_id.clone());
-                false
-            } else if *run == job.run && terminal {
+            if *run == job.run && terminal {
                 settled.push(request_id.clone());
                 false
             } else {
@@ -673,9 +687,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     json!({"code": "load.failed", "message": "load failed"}),
                 ),
             }
-        }
-        for request_id in superseded {
-            self.fail(request_id, SUPERSEDED, json!({ "code": SUPERSEDED }));
         }
     }
     /// A stored status as a handle sees it: a pending job is `loading` while

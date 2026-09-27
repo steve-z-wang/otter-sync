@@ -40,6 +40,9 @@ pub const STORE_FAILED: &str = "load.store_failed";
 pub const HOOK_FAILED: &str = "load.hook_failed";
 /// A correlated page whose content breaks the Load contract.
 pub const PROTOCOL_INVALID: &str = "load.protocol_invalid";
+/// A frozen page request that cannot be sent even alone: over the request
+/// byte bound.
+pub const REQUEST_TOO_LARGE: &str = "load.request_too_large";
 /// A correlated page over the page byte or identity bound.
 pub const PAGE_TOO_LARGE: &str = "load.page_too_large";
 /// A correlated page whose `next` state is not bounded portable JSON.

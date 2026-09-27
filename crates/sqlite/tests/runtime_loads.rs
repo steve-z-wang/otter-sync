@@ -1612,3 +1612,214 @@ fn stale_timer_callback_and_refresh_answers_change_nothing() {
     let job = h.job(&third);
     assert_eq!((job.phase, job.attempts), (LoadPhase::Pending, 0));
 }
+
+// ------------------------------------------------------ fix round 1
+
+#[test]
+fn an_unsendable_page_fails_its_job_while_the_others_complete() {
+    let mut h = host();
+    let oversized = oversized_next_page(h.client());
+    h.task("wait", json!({"kind":"loadWait","loadId":oversized}));
+    let healthy = h.recent("healthy");
+    h.task(
+        "connect",
+        json!({"kind":"connect","directTimeoutMs":DEADLINE}),
+    );
+    let events = h.run();
+    let failure = completion(&events, "wait");
+    assert_eq!(failure["details"]["code"], "load.request_too_large");
+    let (http, body) = h.batch();
+    assert_eq!(ids(&body), [healthy.as_str()], "the younger job goes out");
+    h.ok(&http, &finish_all(&body));
+    h.run();
+    assert_eq!(h.job(&healthy).phase, LoadPhase::Complete);
+    let job = h.job(&oversized);
+    assert_eq!((job.phase, job.pages), (LoadPhase::Failed, 1));
+    assert_eq!(job.error.unwrap().code, "load.request_too_large");
+}
+
+#[test]
+fn a_whole_request_4xx_splits_the_batch_and_a_page_refused_alone_fails() {
+    let mut h = host();
+    let started: Vec<String> = (0..3).map(|n| h.recent(&format!("s{n}"))).collect();
+    h.task("wait", json!({"kind":"loadWait","loadId":started[0]}));
+    h.connect(false);
+    let (http, body) = h.batch();
+    assert_eq!(ids(&body), started);
+    h.fail(&http, "HTTP 413", Some(413));
+    let events = h.run();
+    assert_eq!(errors(&events), ["HTTP 413"]);
+    assert!(
+        h.outstanding("timer", None)
+            .iter()
+            .all(|(_, op)| op["millis"] == DEADLINE),
+        "no backoff"
+    );
+    let mut singles = h.batches();
+    singles.sort_by_key(|(_, b)| ids(b)[0].clone());
+    assert_eq!(singles.len(), 2, "requests of one, two at a time");
+    for (_, single) in &singles {
+        assert_eq!(intents(single).len(), 1);
+        let id = &ids(single)[0];
+        assert_eq!(
+            call_of(single, id),
+            call_of(&body, id),
+            "the same frozen call"
+        );
+        assert_eq!(h.job(id).attempts, 0, "a refused request counts no attempt");
+    }
+    // The first job's page is refused alone: that job fails, only that one.
+    let (first, _) = singles
+        .iter()
+        .find(|(_, b)| ids(b)[0] == started[0])
+        .unwrap()
+        .clone();
+    h.fail(&first, "HTTP 400", Some(400));
+    let events = h.run();
+    assert_eq!(
+        completion(&events, "wait")["details"]["code"],
+        "load.protocol_invalid"
+    );
+    assert_eq!(h.job(&started[0]).phase, LoadPhase::Failed);
+    // The others complete, each alone.
+    while h.job(&started[1]).phase != LoadPhase::Complete
+        || h.job(&started[2]).phase != LoadPhase::Complete
+    {
+        let (http, body) = h.batches().into_iter().next().expect("a request");
+        assert_eq!(intents(&body).len(), 1);
+        h.ok(&http, &finish_all(&body));
+        h.run();
+    }
+}
+
+#[test]
+fn a_408_429_or_5xx_backs_off_without_splitting() {
+    for status in [408u16, 429, 503] {
+        let mut h = host();
+        let started: Vec<String> = (0..2).map(|n| h.recent(&format!("s{n}"))).collect();
+        h.connect(false);
+        let (http, body) = h.batch();
+        h.fail(&http, "busy", Some(status));
+        h.run();
+        assert!(
+            h.batches().is_empty(),
+            "{status}: nothing resent before the delay"
+        );
+        let (timer, _) = h.backoff();
+        for id in &started {
+            assert_eq!(h.job(id).attempts, 1, "{status}");
+        }
+        h.fire(&timer);
+        h.run();
+        let (_, again) = h.batch();
+        assert_eq!(again, body, "{status}: the same two pages together");
+    }
+}
+
+#[test]
+fn retrying_a_job_that_backs_off_keeps_its_delay() {
+    let mut h = host();
+    h.connect(false);
+    let id = h.recent("start");
+    let (http, body) = h.batch();
+    h.fail(&http, "offline", None);
+    h.run();
+    let (timer, millis) = h.backoff();
+    assert_eq!(millis, 1_000);
+    let retried = h.call("retry", json!({"kind":"loadRetry","loadId":id}));
+    assert_eq!(retried["value"]["phase"], "waiting");
+    let events = h.run();
+    assert!(!events.contains(&json!({"type":"cancelEffect","effectId":timer})));
+    assert!(h.batches().is_empty(), "no request before the delay");
+    assert_eq!(h.backoff(), (timer.clone(), 1_000), "the same timer");
+    h.fire(&timer);
+    h.run();
+    let (_, again) = h.batch();
+    assert_eq!(again, body);
+}
+
+/// A SQLite store whose next scheduler read of ready Loads fails once.
+struct ScanFaultStore {
+    inner: SqliteStore,
+    fail_scan: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl ScanFaultStore {
+    fn scan(&self, sql: &str) -> Result<()> {
+        if sql.contains("WHERE phase = 'pending' ORDER BY ready")
+            && self
+                .fail_scan
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(axton_core::invalid("injected scan failure"));
+        }
+        Ok(())
+    }
+}
+impl ClientStore for ScanFaultStore {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.scan(sql)?;
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.scan(sql)?;
+        self.inner.query_committed(sql, parameters)
+    }
+}
+
+#[test]
+fn a_failed_scheduler_read_is_retried_on_its_own_timer() {
+    let dir = tempfile::tempdir().unwrap();
+    let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = ScanFaultStore {
+        inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+        fail_scan: fail.clone(),
+    };
+    let client = Client::open(store, Schema::from_value(schema_value()).unwrap()).unwrap();
+    let mut h = Host::of(ClientRuntime::new(client), Some(dir));
+    h.connect(false);
+    fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    h.task(
+        "second",
+        json!({"kind":"loadStart","name":"Recent","version":1,"args":{}}),
+    );
+    let events = h.run();
+    let second = completion(&events, "second")["value"]["loadId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        errors(&events)[0].starts_with("load scheduling failed"),
+        "{events:?}"
+    );
+    assert!(h.batches().is_empty(), "the failed read sent nothing");
+    let (retry, millis) = h.backoff();
+    assert_eq!(millis, 1_000);
+    h.fire(&retry);
+    h.run();
+    let (_, body) = h.batch();
+    assert_eq!(ids(&body), [second.as_str()]);
+}

@@ -470,6 +470,7 @@ pub fn typescript(v: &Value) -> String {
         )
         .unwrap();
     }
+    ts_fetch(v, &mut o);
     o.push_str("export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };\nexport type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;\nexport interface StoreHooks {\n");
     for model in arr(&v["schema"], "models") {
         let n = s(model, "name");
@@ -989,12 +990,19 @@ pub fn client_typescript(v: &Value, runtime: &str) -> String {
         let n = s(model, "name");
         writeln!(o, "import {{ decode{n}, decode{n}Identity, type {n}, type {n}Identity }} from \"./generated.ts\";").unwrap();
     }
+    let fetch = has_models(v);
+    if fetch {
+        o.push_str("import { fetchModels, type FetchModels } from \"./generated.ts\";\n");
+    }
     o.push_str("export * from \"./generated.ts\";\n");
     o.push_str("/** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */\nexport class Scopes { readonly #client: Client;\n constructor(client: Client) { this.#client = client; }\n subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }\n}\n");
     o.push_str("/** The retained `channels` spelling of the same registrations; `scopes` is the current one. */\nexport class Channels { readonly #client: Client;\n constructor(client: Client) { this.#client = client; }\n subscribe(channel: string): Promise<Subscription> { return this.#client.subscribe(channel); }\n unsubscribe(channel: string): Promise<void> { return this.#client.unsubscribe(channel); }\n}\n");
     o.push_str("export class GeneratedClient {\n");
     o.push_str(" /** @internal The runtime handle; application code uses the members below. */\n readonly client: Client;\n connection: Connection | undefined;\n readonly models: LiveModels;\n /** Durable by default: `await` resolves after local acceptance with a `Call`; `mutations.call` waits for the backend outcome. */\n readonly mutations: ReturnType<typeof makeMutations>;\n /** Direct by default: `await` resolves with the backend result; `queries.enqueue` accepts durably with a `Call`. */\n readonly queries: ReturnType<typeof makeQueries>;\n readonly scopes: Scopes;\n readonly channels: Channels;\n");
-    writeln!(o, " private constructor(client: Client, connection: Connection | undefined) {{ this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); {}this.scopes = new Scopes(client); this.channels = new Channels(client); }}", if has_mutations { "this.mutate = new Mutate(client); " } else { "" }).unwrap();
+    if fetch {
+        o.push_str(" /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */\n readonly fetch: FetchModels;\n");
+    }
+    writeln!(o, " private constructor(client: Client, connection: Connection | undefined) {{ this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); {}this.scopes = new Scopes(client); this.channels = new Channels(client); {}}}", if has_mutations { "this.mutate = new Mutate(client); " } else { "" }, if fetch { "this.fetch = fetchModels(client); " } else { "" }).unwrap();
     if has_mutations {
         o.push_str(" /** Each legacy mutation runs in its own local transaction and returns its ordinal. */\n readonly mutate: Mutate;\n");
     }
@@ -2401,6 +2409,7 @@ pub fn dart(v: &Value) -> String {
     }
     o.push_str("/// The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration.\nclass Scopes { final Client client; Scopes(this.client);\n Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);\n}\n");
     o.push_str("/// The retained `channels` spelling of the same registrations; `scopes` is the current one.\nclass Channels { final Client client; Channels(this.client);\n Future<Subscription> subscribe(String channel) => client.subscribe(channel);\n Future<void> unsubscribe(String channel) => client.unsubscribe(channel);\n}\n");
+    dart_fetch(v, &mut o);
     o.push_str("sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }\nfinal class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }\nfinal class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }\ntypedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);\nclass StoreHooks {\n");
     for model in arr(&v["schema"], "models") {
         let n = s(model, "name");
@@ -2423,6 +2432,9 @@ pub fn dart(v: &Value) -> String {
     }
     if !arr(v, "actions").is_empty() {
         o.push_str(" /// Durable by default; `mutations.call` waits for the backend outcome.\n late final Mutations mutations = Mutations(client);\n /// Direct by default; `queries.enqueue` accepts durably.\n late final Queries queries = Queries(client);\n");
+    }
+    if has_models(v) {
+        o.push_str(" /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.\n late final FetchModels fetch = FetchModels(client);\n");
     }
     o.push_str(" GeneratedClient._(this.client, this.connection);\n");
     o.push_str(" /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.\n");
@@ -2652,4 +2664,60 @@ fn dart_create_class(v: &Value, m: &Value, o: &mut String) {
         writeln!(o, "{line}").unwrap();
     }
     o.push_str(" };\n}\n");
+}
+
+// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): one
+// method per Model that reads its complete snapshot through the existing
+// Loader at the Model's local read version. The SDK's raw `fetchModel` submits
+// the Rust task; these only encode the identity and decode each caller's own
+// result with the Model's codecs. Nothing is emitted for a schema without
+// Models, and nothing reaches the transaction facades.
+fn has_models(v: &Value) -> bool {
+    !arr(&v["schema"], "models").is_empty()
+}
+fn ts_fetch(v: &Value, o: &mut String) {
+    if !has_models(v) {
+        return;
+    }
+    let models = arr(&v["schema"], "models");
+    o.push_str("export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }\n");
+    o.push_str("/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */\nexport interface FetchModels {\n");
+    for m in models {
+        let n = s(m, "name");
+        writeln!(
+            o,
+            " {}(identity:{n}Identity, options?:{{store?:boolean}}):Promise<{n}|null>;",
+            lower(n)
+        )
+        .unwrap();
+    }
+    o.push_str("}\nexport function fetchModels(port:FetchPort):FetchModels { return {\n");
+    for m in models {
+        let n = s(m, "name");
+        writeln!(
+            o,
+            " {}:(identity,options)=>port.fetchModel('{n}',{},encode{n}Identity(identity),decode{n},options),",
+            lower(n),
+            m["version"]
+        )
+        .unwrap();
+    }
+    o.push_str("}; }\n");
+}
+fn dart_fetch(v: &Value, o: &mut String) {
+    if !has_models(v) {
+        return;
+    }
+    o.push_str("/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.\nclass FetchModels { final Client _client; FetchModels(this._client);\n");
+    for m in arr(&v["schema"], "models") {
+        let n = s(m, "name");
+        writeln!(
+            o,
+            " Future<{n}?> {}({n}Identity identity, {{bool store = true}}) => _client.fetchModel('{n}', {}, identity.toRecord(), {n}.fromRecord, store: store);",
+            lower(n),
+            m["version"]
+        )
+        .unwrap();
+    }
+    o.push_str("}\n");
 }

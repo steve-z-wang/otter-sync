@@ -26,6 +26,8 @@ export const loaders: Loaders<Tx> = {
   async comment({ ids }) { return ids.map(() => null); },
   async counter({ ids }) { return ids.map(() => null); },
   async draft({ ids }) { return ids.map(() => null); },
+  // A composite identity keeps every component, DateTime included.
+  async placement({ ids }) { return ids.map((id) => ({ ...id, label: id.at.toISOString() })); },
 };
 export const backend = createBackend<Tx>({
   database: { transaction: async (body) => body({ rows: new Map() }), persistence: () => ({ call: async () => null }) },

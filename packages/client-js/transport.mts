@@ -12,7 +12,7 @@ export function httpTransport(options: {
         : options.token;
     if (signal?.aborted) throw Error("connection_closed");
     const response = await fetch(
-      `${base}/sync/${kind === "push" ? "mutations" : kind === "action" ? "actions" : "pull"}`,
+      `${base}/sync/${kind === "push" ? "mutations" : kind === "action" ? "actions" : kind === "fetch" ? "fetch" : "pull"}`,
       {
         method: "POST",
         headers: {

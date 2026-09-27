@@ -98,6 +98,14 @@ export interface LiveModels { entry:EntryLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { entry:new EntryLiveModel(port) }; }
 export interface TxModels { entry:EntryTxModel; }
 export function txModels(port:WritePort):TxModels { return { entry:new EntryTxModel(port) }; }
+export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
+/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
+export interface FetchModels {
+ entry(identity:EntryIdentity, options?:{store?:boolean}):Promise<Entry|null>;
+}
+export function fetchModels(port:FetchPort):FetchModels { return {
+ entry:(identity,options)=>port.fetchModel('Entry',1,encodeEntryIdentity(identity),decodeEntry,options),
+}; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {

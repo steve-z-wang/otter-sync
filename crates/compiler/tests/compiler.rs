@@ -2086,3 +2086,121 @@ fn invalidate_is_reserved_in_the_query_namespace_only() {
         assert!(error.contains("operation helper"), "{helper}: {error}");
     }
 }
+
+/// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): one
+/// generated method per Model, taking its identity and returning its complete
+/// snapshot or null. It reuses the identity encoder, the Model decoder and the
+/// Model's local read version; it declares no Action and is absent from local
+/// transactions.
+#[test]
+fn model_fetch_generates_one_typed_method_per_model_in_both_languages() {
+    let source = "enum Status { open closed } model Pin { tenant String at DateTime status Status @@id(tenant, at) @@version(3) } model Note { id String @@id(id) }";
+    let v = compile(source).unwrap();
+    assert_eq!(v["actions"], serde_json::json!([]), "no synthetic Action");
+    assert_eq!(v["schema"]["actions"], serde_json::json!([]));
+    let ts = axton_compiler::typescript(&v);
+    for line in [
+        "export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }",
+        " pin(identity:PinIdentity, options?:{store?:boolean}):Promise<Pin|null>;",
+        " note(identity:NoteIdentity, options?:{store?:boolean}):Promise<Note|null>;",
+        "export function fetchModels(port:FetchPort):FetchModels { return {",
+        " pin:(identity,options)=>port.fetchModel('Pin',3,encodePinIdentity(identity),decodePin,options),",
+        " note:(identity,options)=>port.fetchModel('Note',1,encodeNoteIdentity(identity),decodeNote,options),",
+    ] {
+        assert!(ts.contains(line), "{line} missing from {ts}");
+    }
+    let ts_transaction = ts
+        .lines()
+        .find(|line| line.starts_with("export class GeneratedTransaction "))
+        .unwrap();
+    assert!(!ts_transaction.contains("etch"), "{ts_transaction}");
+    assert!(
+        !ts.contains(
+            "interface WritePort extends ReadPort { direct(operation:object):Promise<void>; fetch"
+        ),
+        "{ts}"
+    );
+    let client = axton_compiler::client_typescript(&v, "@axton/client");
+    for line in [
+        "import { fetchModels, type FetchModels } from \"./generated.ts\";",
+        " readonly fetch: FetchModels;",
+        "this.fetch = fetchModels(client);",
+    ] {
+        assert!(client.contains(line), "{line} missing from {client}");
+    }
+    let dart = axton_compiler::dart(&v);
+    for line in [
+        "class FetchModels { final Client _client; FetchModels(this._client);",
+        " Future<Pin?> pin(PinIdentity identity, {bool store = true}) => _client.fetchModel('Pin', 3, identity.toRecord(), Pin.fromRecord, store: store);",
+        " Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);",
+        " late final FetchModels fetch = FetchModels(client);",
+    ] {
+        assert!(dart.contains(line), "{line} missing from {dart}");
+    }
+    let dart_transaction = dart
+        .lines()
+        .find(|line| line.starts_with("class GeneratedTransaction "))
+        .unwrap();
+    assert!(!dart_transaction.contains("etch"), "{dart_transaction}");
+    // The composite identity codecs Fetch reuses are the Model's own.
+    assert!(ts.contains("export function encodePinIdentity(value:PinIdentity):Record<string,unknown> { return {\n tenant: value.tenant,\n at: value.at.toISOString(),\n}; }"), "{ts}");
+    assert!(
+        dart.contains("class PinIdentity {\n final String tenant;\n final DateTime at;"),
+        "{dart}"
+    );
+}
+
+/// A schema with Models gets the facade even without Queries or Mutations; a
+/// schema without Models exposes no empty one.
+#[test]
+fn model_fetch_is_generated_for_model_only_schemas_and_omitted_without_models() {
+    let only = compile("model Item { id String label String @@id(id) }").unwrap();
+    assert!(
+        axton_compiler::typescript(&only)
+            .contains("export function fetchModels(port:FetchPort):FetchModels")
+    );
+    assert!(
+        axton_compiler::client_typescript(&only, "@axton/client")
+            .contains(" readonly fetch: FetchModels;")
+    );
+    assert!(
+        axton_compiler::dart(&only)
+            .contains(" late final FetchModels fetch = FetchModels(client);")
+    );
+    let free = compile("query Ping() { value String }").unwrap();
+    let ts = axton_compiler::typescript(&free);
+    let client = axton_compiler::client_typescript(&free, "@axton/client");
+    let dart = axton_compiler::dart(&free);
+    for text in [&ts, &client, &dart] {
+        assert!(!text.contains("FetchModels"), "{text}");
+        assert!(!text.contains("FetchPort"), "{text}");
+        assert!(!text.contains("fetchModel"), "{text}");
+    }
+    assert!(!client.contains("readonly fetch"), "{client}");
+}
+
+/// Only the helper names Fetch emits are reserved, and only where they are
+/// emitted: beside at least one Model.
+#[test]
+fn model_fetch_helper_names_are_reserved_only_beside_models() {
+    for name in ["FetchModels", "FetchPort"] {
+        let e = compile(&format!("model {name} {{ id UUID @@id(id) }}")).unwrap_err();
+        assert!(e.contains("generated client"), "{name}: {e}");
+        let e = compile(&format!(
+            "enum {name} {{ a b }}\nmodel Other {{ id UUID @@id(id) }}"
+        ))
+        .unwrap_err();
+        assert!(e.contains("generated client"), "enum {name}: {e}");
+        assert_eq!(line_of(&e), 1, "{e}");
+        compile(&format!(
+            "enum {name} {{ a b }} query Ping() {{ value String }}"
+        ))
+        .unwrap_or_else(|e| panic!("{name} is free without Models: {e}"));
+    }
+    for name in ["Fetch", "FetchOptions", "FetchModel", "Fetches"] {
+        compile(&format!("model {name} {{ id UUID @@id(id) }}"))
+            .unwrap_or_else(|e| panic!("{name} should stay valid: {e}"));
+    }
+    // An operation keeps its own `{Name}Options`; Fetch options are inline.
+    compile("model Todo { id String @@id(id) } query Fetch() { value String }").unwrap();
+}

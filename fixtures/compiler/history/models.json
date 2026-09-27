@@ -289,6 +289,43 @@
         "name": "Entry",
         "version": 2
       }
+    },
+    "Placement": {
+      "1": {
+        "enums": [],
+        "fields": [
+          {
+            "name": "shelf",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "at",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          },
+          {
+            "name": "label",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "shelf",
+          "at"
+        ],
+        "name": "Placement",
+        "version": 1
+      }
     }
   }
 }

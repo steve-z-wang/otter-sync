@@ -735,6 +735,11 @@ class Channels { final Client client; Channels(this.client);
  Future<Subscription> subscribe(String channel) => client.subscribe(channel);
  Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
 }
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+class FetchModels { final Client _client; FetchModels(this._client);
+ Future<Todo?> todo(TodoIdentity identity, {bool store = true}) => _client.fetchModel('Todo', 1, identity.toRecord(), Todo.fromRecord, store: store);
+ Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);
+}
 sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
 final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
 final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
@@ -754,6 +759,8 @@ class GeneratedClient {
  late final Mutations mutations = Mutations(client);
  /// Direct by default; `queries.enqueue` accepts durably.
  late final Queries queries = Queries(client);
+ /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
+ late final FetchModels fetch = FetchModels(client);
  GeneratedClient._(this.client, this.connection);
  /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
  static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {

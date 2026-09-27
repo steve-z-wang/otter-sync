@@ -262,6 +262,7 @@ class RuntimeConnection {
       'push' => _network.push(body, effect.cancelled),
       'pull' => _network.pull(body, effect.cancelled),
       'action' => _network.action(body, effect.cancelled),
+      'fetch' => _network.fetch(body, effect.cancelled),
       final route => Future.error(StateError('unknown route $route')),
     };
     sent.then(

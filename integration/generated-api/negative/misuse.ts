@@ -2,7 +2,7 @@
 // integration/generated-api` type-checks this file, and every
 // `@ts-expect-error` below has to be the error it names; the Dart twin is
 // misuse.dart ([#150](https://github.com/zanminwang/axton/issues/150)).
-import type {GeneratedClient, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks} from '../client.ts';
+import type {GeneratedClient, GeneratedTransaction, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks, Entry} from '../client.ts';
 
 const badHooks:StoreHooks={
  entry:async(tx,changes)=>{
@@ -13,6 +13,8 @@ const badHooks:StoreHooks={
   }
   // @ts-expect-error remote calls are unavailable within the local transaction
   void tx.mutations;
+  // @ts-expect-error Fetch is unavailable within the onStore transaction
+  void tx.fetch;
  },
  // @ts-expect-error unknown Models cannot register hooks
  unknown:async()=>{},
@@ -47,4 +49,32 @@ export function createMisuse(){
  const undef:DraftCreate={memo:null,body:undefined};
  const ok:AddDraftArgs={draft:{memo:null}};
  return [missing,incomplete,undef,ok];
+}
+
+// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): the
+// generated identity and a boolean `store` are the whole input, and Fetch is
+// absent from local transactions.
+export async function fetchMisuse(client:GeneratedClient,tx:GeneratedTransaction,row:Entry,at:Date){
+ // @ts-expect-error a composite identity needs every component
+ await client.fetch.placement({shelf:'s'});
+ // @ts-expect-error a DateTime identity component is a Date
+ await client.fetch.placement({shelf:'s',at:'2026-01-01'});
+ // @ts-expect-error a UUID identity is a string
+ await client.fetch.entry({id:1});
+ // @ts-expect-error an identity literal names only identity fields
+ await client.fetch.entry({id:row.id,title:row.title});
+ // @ts-expect-error there is no refresh option either
+ await client.fetch.entry({id:row.id},{refresh:true});
+ // @ts-expect-error storage is a boolean
+ await client.fetch.entry({id:row.id},{store:'false'});
+ // @ts-expect-error a Model the schema does not declare has no Fetch method
+ await client.fetch.unknown({id:row.id});
+ // @ts-expect-error Fetch is unavailable within a local transaction
+ void tx.fetch;
+ // @ts-expect-error the transaction port cannot fetch
+ void tx.transaction.fetchModel;
+ // The result is the snapshot or null, never a live handle.
+ const result=await client.fetch.placement({shelf:'s',at});
+ // @ts-expect-error the result may be null
+ void result.label;
 }

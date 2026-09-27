@@ -708,6 +708,42 @@
     {
       "fields": [
         {
+          "name": "shelf",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "at",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "shelf",
+        "at"
+      ],
+      "name": "Placement",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
           "name": "id",
           "nullable": false,
           "type": {
@@ -1088,6 +1124,41 @@
       ],
       "name": "Entry",
       "version": 2
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "shelf",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "at",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "shelf",
+        "at"
+      ],
+      "name": "Placement",
+      "version": 1
     }
   ]
 }

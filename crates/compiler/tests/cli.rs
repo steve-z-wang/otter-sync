@@ -1158,3 +1158,61 @@ fn cli_load_history_options_require_explicit_initialization() {
     assert!(axton(&explicit).status.success());
     fs::remove_dir_all(root).unwrap();
 }
+
+/// Model Fetch reuses each Model's current local read version and declares no
+/// operation: compiling it into a schema with retained Model and operation
+/// histories leaves the operation history byte-identical
+/// ([#153](https://github.com/zanminwang/axton/issues/153)).
+#[test]
+fn cli_model_fetch_uses_current_model_versions_and_leaves_operation_history() {
+    let (root, input) = workspace("model-fetch");
+    let out = root.join("out");
+    let model = input.join("test.model");
+    fs::write(
+        &model,
+        "model Todo { id String @@id(id) } query Find(text String) { value String }",
+    )
+    .unwrap();
+    let first = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let actions = fs::read(input.join("history/actions.json")).unwrap();
+    fs::write(
+        &model,
+        "model Todo { id String title String? @@id(id) @@version(2) } query Find(text String) { value String }",
+    )
+    .unwrap();
+    let second = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        fs::read(input.join("history/actions.json")).unwrap(),
+        actions
+    );
+    let backend: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
+    assert_eq!(
+        backend["models"].as_array().unwrap().len(),
+        2,
+        "v1 is retained"
+    );
+    let ts = fs::read_to_string(out.join("generated.ts")).unwrap();
+    assert!(
+        ts.contains(" todo:(identity,options)=>port.fetchModel('Todo',2,encodeTodoIdentity(identity),decodeTodo,options),"),
+        "{ts}"
+    );
+    let dart = fs::read_to_string(out.join("generated.dart")).unwrap();
+    assert!(
+        dart.contains(
+            "_client.fetchModel('Todo', 2, identity.toRecord(), Todo.fromRecord, store: store);"
+        ),
+        "{dart}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

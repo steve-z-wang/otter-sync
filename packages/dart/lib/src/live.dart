@@ -43,6 +43,11 @@ class ServerSession {
   Future<String> action(String body, Future<void> cancellation) =>
       _post('actions', 'action', body, cancellation);
 
+  /// `POST /sync/fetch`: one Model Fetch. Its cancellation closes the socket
+  /// even while the response is stalled.
+  Future<String> fetch(String body, Future<void> cancellation) =>
+      _post('fetch', 'fetch', body, cancellation);
+
   /// `POST /sync/loads`: one batch of native Load pages.
   Future<String> load(String body, Future<void> cancellation) =>
       _post('loads', 'load', body, cancellation);

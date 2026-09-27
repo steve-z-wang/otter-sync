@@ -345,6 +345,69 @@ class Client implements WritePort, MutatePort {
     return _decodeOutcome(invoked['outcome'] as Map, decode);
   }
 
+  /// Fetch one Model by identity through its existing Loader
+  /// ([#153](https://github.com/zanminwang/axton/issues/153)). Rust validates
+  /// the identity and [store], joins an identical request in flight or sends
+  /// a new one, and by default stores the reply before answering; this
+  /// submits the task and decodes this caller's own copy of the snapshot.
+  /// `null` when the Loader has no readable record. With `store: false` the
+  /// snapshot is returned without local storage or onStore.
+  Future<T?> fetchModel<T>(
+    String model,
+    int version,
+    Map<String, dynamic> identity,
+    T Function(Map<String, dynamic> row) decode, {
+    bool store = true,
+  }) async {
+    late final Map<String, dynamic> fetched;
+    try {
+      fetched =
+          await _task({
+                'kind': 'fetch',
+                'model': model,
+                'version': version,
+                'identity': identity,
+                if (!store) 'store': false,
+              })
+              as Map<String, dynamic>;
+    } catch (error) {
+      throw _fetchError(error);
+    }
+    return _decodeOutcome(
+      fetched['outcome'] as Map,
+      (result) => result == null
+          ? null
+          : decode((result as Map).cast<String, dynamic>()),
+    );
+  }
+
+  /// Fetch failures refused before any request was sent.
+  static const _fetchRejected = {
+    'fetch.invalid_options',
+    'fetch.schema_pending',
+  };
+
+  /// A `fetch` task's failure as a [CallError]: a `fetch.*` code the runtime
+  /// decided keeps its cause - the refusing onStore callback's error or the
+  /// transport failure with its status. A closed client's admission error
+  /// and any other engine error stay as they are.
+  Object _fetchError(Object error) {
+    if (error is TaskFailure) {
+      final code = error.details['code'];
+      if (code is String && code.startsWith('fetch.')) {
+        return CallError(
+          code,
+          execution: _fetchRejected.contains(code) ? 'rejected' : 'unknown',
+          cause: error.cause ?? _directCause(error.details) ?? error,
+        );
+      }
+    }
+    if (error is StateError && error.message == 'transaction_active') {
+      return _publicActionError(error);
+    }
+    return error;
+  }
+
   /// Discard the saved once results of one Query argument set, every store
   /// variant, in a local transaction. Needs no network; an older request
   /// still in flight cannot save its result afterwards.

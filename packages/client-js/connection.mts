@@ -1,9 +1,16 @@
 import { reportCallbackError, type EffectOutcome } from "./bridge.mts";
 import type { RecordValue } from "./values.mts";
 
-/** One HTTP POST: `kind` is the route (`push`, `pull`, `action` or `load`); an unknown route must be refused. Errors carry `status` when the server answered. */
+/**
+ * The backend route of one HTTP effect: `push` posts to `/sync/mutations`,
+ * `pull` to `/sync/pull`, `action` to `/sync/actions`, `fetch` (one Model
+ * Fetch) to `/sync/fetch` and `load` (a batch of native Load pages) to
+ * `/sync/loads`.
+ */
+export type HttpRoute = "push" | "pull" | "action" | "fetch" | "load";
+/** One HTTP POST: `kind` is the route; an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
-  kind: string,
+  kind: HttpRoute,
   body: string,
   signal?: AbortSignal,
 ) => Promise<string>;
@@ -238,7 +245,7 @@ export function startConnection(
     void effects.answer(effectId, failure(error));
   const uninstall = [
     effects.handle(owner, "http", (effectId, operation) => {
-      const { route, body } = operation as { route: string; body: string };
+      const { route, body } = operation as { route: HttpRoute; body: string };
       const abort = new AbortController();
       Promise.resolve()
         .then(() => network.push(route, body, abort.signal))

@@ -38,6 +38,15 @@ expected=(
   "The getter 'row' isn't defined for the type 'StoreDelete<EntryIdentity, Entry>'"
   "The getter 'mutations' isn't defined for the type 'GeneratedTransaction'"
   "The named parameter 'unknown' isn't defined"
+  # Model Fetch (#153)
+  "The named parameter 'at' is required, but there's no corresponding argument"
+  "The argument type 'int' can't be assigned to the parameter type 'String'"
+  "The argument type 'Entry' can't be assigned to the parameter type 'EntryIdentity'"
+  "The argument type 'Map<String, bool>' can't be assigned to the parameter type 'bool'"
+  "The named parameter 'once' isn't defined"
+  "The named parameter 'refresh' isn't defined"
+  "The getter 'fetch' isn't defined for the type 'GeneratedTransaction'"
+  "The getter 'fetchModel' isn't defined for the type 'Transaction'"
 )
 failed=0
 for message in "${expected[@]}"; do
@@ -50,6 +59,15 @@ if [[ "$(grep -Fc "The named parameter 'tags' isn't defined" <<<"$output")" -lt 
   echo "Expected 'tags' to be refused both as a filter and as a patch field." >&2
   failed=1
 fi
+# Fetch repeats two refusals: a DateTime identity component, and Fetch in both
+# the generated and the onStore transaction.
+for message in "The argument type 'String' can't be assigned to the parameter type 'DateTime'" \
+  "The getter 'fetch' isn't defined for the type 'GeneratedTransaction'"; do
+  if [[ "$(grep -Fc "$message" <<<"$output")" -lt 2 ]]; then
+    echo "Expected '$message' at least twice." >&2
+    failed=1
+  fi
+done
 if [[ $failed -ne 0 ]]; then
   echo "$output" >&2
   exit 1

@@ -6,7 +6,7 @@ The server transport terminates HTTP and WebSocket traffic, authenticates each r
 
 ## 3. Context and Scope
 
-`backend.listen({port, host = "127.0.0.1"})` starts one Node HTTP server with two routes, `POST /sync/mutations` and `POST /sync/pull`, and a WebSocket upgrade on `/sync/live`. Other paths are `404`; other methods `405`. Bodies and frames are limited to 1 MiB.
+`backend.listen({port, host = "127.0.0.1"})` starts one Node HTTP server with four POST routes, `/sync/mutations`, `/sync/actions`, `/sync/fetch` ([Model Fetch](../../protocol/actions.md#model-fetch)) and `/sync/pull`, and a WebSocket upgrade on `/sync/live`. Other paths are `404`; other methods `405`. Bodies and frames are limited to 1 MiB.
 
 `POST /sync/loads` serves batched native Load pages ([Protocol / Loads](../../protocol/loads.md)). It authenticates once per request (`401` without it) and answers a malformed envelope `400 request.invalid`; every item outcome, a rejection included, answers `200` inside the body.
 
@@ -22,7 +22,7 @@ Request handling is a pipeline: `authenticate` (null or blank → `401 unauthent
 | `model_version_unsupported` (pull and live subscribe only) | 409 | `{code, model, version}` |
 | any other code, or a non-engine error | 500 | `{code: "server"}`, and the error goes to `onError` |
 
-A push answers `200` even when one or more mutations are rejected: `mutation_version_unsupported`, `model_version_unsupported`, `handler.failed` and `loader.failed` are per-mutation entries in the receipt's `rejections`, never a status of their own ([Server / Push §9](../engine/push.md#9-architecture-decisions), [#95](https://github.com/zanminwang/axton/issues/95)).
+A push answers `200` even when one or more mutations are rejected: `mutation_version_unsupported`, `model_version_unsupported`, `handler.failed` and `loader.failed` are per-mutation entries in the receipt's `rejections`, never a status of their own ([Server / Push §9](../engine/push.md#9-architecture-decisions), [#95](https://github.com/zanminwang/axton/issues/95)). A Model Fetch likewise answers `200` with a `failed` completion when its read was rejected, `model_version_unsupported`, `loader.unregistered` and Loader failures included; only a malformed envelope or identity is `400 request.invalid` ([fetch.test.mjs](../../../../../integration/persistence/server/fetch.test.mjs)).
 
 The live path closes with `1002` when negotiation fails with `request.invalid`, and with `1011` for any other failure (a failed pull, or a controller error such as `live.invalid_page`), which also goes to `onError`. What to pull and send is decided by the Rust controller; `serveLive` only executes its actions ([Controller](controller.md)).
 
@@ -32,7 +32,7 @@ Code: `createHttpHandler`, `attachLive`, `serveLive`, `listen` in [server/index.
 
 ## 7. Deployment View
 
-One Node process runs the listener, the handlers, the loaders and the native engine. The listener binds to `127.0.0.1` unless `host` says otherwise, speaks plain HTTP and `ws://`, reads no forwarded-for headers, and enforces the 1 MiB limits itself. The supported placement is behind a reverse proxy that terminates TLS, forwards the two POST routes and relays the `/sync/live` upgrade with the `Authorization` header preserved. Live wakeups are process-local, so one process serves each set of live subscribers. The author-facing description, including a proxy example and what has and has not been validated, is [Deploy the backend](../../../../../website/docs/backend/deployment.md).
+One Node process runs the listener, the handlers, the loaders and the native engine. The listener binds to `127.0.0.1` unless `host` says otherwise, speaks plain HTTP and `ws://`, reads no forwarded-for headers, and enforces the 1 MiB limits itself. The supported placement is behind a reverse proxy that terminates TLS, forwards the POST routes and relays the `/sync/live` upgrade with the `Authorization` header preserved. Live wakeups are process-local, so one process serves each set of live subscribers. The author-facing description, including a proxy example and what has and has not been validated, is [Deploy the backend](../../../../../website/docs/backend/deployment.md).
 
 ## 10. Quality Requirements
 

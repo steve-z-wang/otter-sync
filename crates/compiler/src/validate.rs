@@ -807,6 +807,11 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
     "TransactionCall",
 ];
 
+/// Top-level names the Model Fetch facade declares
+/// ([#153](https://github.com/zanminwang/axton/issues/153)). It is generated
+/// only beside a Model, so they are reserved only then.
+const GENERATED_FETCH_NAMES: &[&str] = &["FetchModels", "FetchPort"];
+
 pub fn validate(d: &Declarations) -> Result<Validated, String> {
     let eof = d.end;
     let enums: Vec<Enum> = d
@@ -844,6 +849,12 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
             return Err(at(*pos, format!("duplicate declaration {name}")));
         }
         if GENERATED_NAMES.contains(name) {
+            return Err(at(
+                *pos,
+                format!("{name} is a name the generated client uses; choose another"),
+            ));
+        }
+        if !d.models.is_empty() && GENERATED_FETCH_NAMES.contains(name) {
             return Err(at(
                 *pos,
                 format!("{name} is a name the generated client uses; choose another"),

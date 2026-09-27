@@ -292,6 +292,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     refresh: refresh.unwrap_or(false),
                 },
             ),
+            Command::Fetch {
+                model,
+                version,
+                identity,
+                store,
+            } => {
+                self.fetch(&request_id, model, *version, identity, store);
+                None
+            }
             Command::RunPrerequisites { handlers } => {
                 self.run_prerequisites(&request_id, handlers.clone())
             }
@@ -336,7 +345,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// `rebuild {discardPending?}`: the report the client answers, plus the
     /// fence - everything in flight belongs to the replaced replica. Lane
     /// effects are cancelled and the lanes start over in the same intent,
-    /// direct calls fail with an unknown execution, the prerequisite loop
+    /// direct calls fail with an unknown execution (Fetches with
+    /// `fetch.schema_changed`, their flights fenced), the prerequisite loop
     /// moves on, every observer of the old replica ends and every abandoned
     /// durable call is completed. A refused rebuild changes nothing.
     fn rebuild(
@@ -354,7 +364,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         // allocators, so no answer to old I/O can match new I/O (#162).
         self.lanes.cycle = crate::SyncCycle::default();
         self.lanes.downlink.reset_for_rebuild();
-        self.fail_directs(direct::EXECUTION_UNKNOWN);
+        self.fence_directs();
         self.rebuilt_prerequisites();
         self.rebuilt_loads(&report.abandoned_loads);
         self.rebuilt_lanes(now, entropy);
@@ -421,7 +431,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     // The direct flight still owns its caller (and any joined
                     // once callers). The common direct-close path below settles
                     // them as unavailable after this session is rolled back.
-                    StoreContinuation::Direct { .. } => {}
+                    StoreContinuation::Direct { .. } | StoreContinuation::Fetch { .. } => {}
                     continuation => {
                         continuation.fail(self, "client_closed".into(), None, None, &[], 0, 0)
                     }
@@ -434,7 +444,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         for task in std::mem::take(&mut self.tasks.queue) {
             self.complete(task.request_id, Err("client_closed".into()));
         }
-        self.fail_directs(direct::UNAVAILABLE);
+        self.fail_directs(direct::Failure::Unavailable);
         self.finish_prerequisites(Err("client_closed".into()));
         self.ready.clear();
         self.close_lanes();

@@ -19,3 +19,4 @@ node --test "$root/integration/persistence/server/runtime.test.mjs" "$root/integ
 node --test "$root/integration/persistence/server/actions.test.mjs"
 node --test "$root/integration/persistence/server/membership.test.mjs"
 node --test "$root/integration/persistence/server/loads.test.mjs"
+node --test "$root/integration/persistence/server/fetch.test.mjs"

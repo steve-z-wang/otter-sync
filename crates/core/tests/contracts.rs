@@ -1575,3 +1575,546 @@ fn create_default_descriptors_are_validated_by_kind_and_field_type() {
     // Absent metadata stays compatible.
     schema();
 }
+
+const FETCH_CALL: &str = "123e4567-e89b-42d3-a456-426614174000";
+
+fn fetch_request(schema: &Schema, raw: Value) -> Result<FetchRequest> {
+    FetchRequest::decode(raw.to_string().as_bytes(), schema)
+}
+
+fn entry_fetch(store: Option<bool>) -> FetchRequest {
+    let mut raw = json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":ID}});
+    if let Some(store) = store {
+        raw["store"] = json!(store);
+    }
+    fetch_request(&schema(), raw).unwrap()
+}
+
+fn fetch_response(request: &FetchRequest, schema: &Schema, raw: Value) -> Result<FetchResponse> {
+    FetchResponse::decode(raw.to_string().as_bytes(), request, schema)
+}
+
+fn fetch_success(result: Value, records: Value) -> Value {
+    json!({"completion":{"callId":FETCH_CALL,"outcome":{"status":"succeeded","result":result}},"records":records})
+}
+
+fn entry_row() -> Value {
+    json!({"id":ID,"text":"a","note":null,"count":1})
+}
+
+fn entry_record(stamp: u64, state: Value) -> Value {
+    json!({"model":"Entry","identity":{"id":ID.to_lowercase()},"stamp":stamp,"state":state})
+}
+
+#[test]
+fn fetch_defaults_to_storage_without_an_action() {
+    let raw = serde_json::json!({
+        "callId": "123e4567-e89b-42d3-a456-426614174000",
+        "model": "Entry", "version": 1, "identity": {"id": ID}
+    });
+    let request = FetchRequest::decode(raw.to_string().as_bytes(), &schema()).unwrap();
+    assert!(request.store);
+    assert_eq!(
+        request.identity,
+        serde_json::json!({"id": ID.to_lowercase()})
+    );
+    let encoded: serde_json::Value = serde_json::from_slice(&request.encode().unwrap()).unwrap();
+    assert!(encoded.get("store").is_none());
+}
+
+#[test]
+fn fetch_request_carries_only_a_boolean_storage_policy() {
+    let default = entry_fetch(None);
+    assert_eq!(default, entry_fetch(Some(true)));
+    assert_eq!(
+        default.encode().unwrap(),
+        entry_fetch(Some(true)).encode().unwrap()
+    );
+    let preview = entry_fetch(Some(false));
+    assert!(!preview.store);
+    assert_eq!(preview.call_id, FETCH_CALL);
+    assert_eq!((preview.model.as_str(), preview.version), ("Entry", 1));
+    let wire: Value = serde_json::from_slice(&preview.encode().unwrap()).unwrap();
+    assert_eq!(
+        wire,
+        json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":ID.to_lowercase()},"store":false})
+    );
+    assert_eq!(
+        FetchRequest::decode(&preview.encode().unwrap(), &schema()).unwrap(),
+        preview
+    );
+    assert_ne!(default.encode().unwrap(), preview.encode().unwrap());
+}
+
+#[test]
+fn fetch_request_refuses_invalid_envelopes_identities_and_options() {
+    let schema = schema();
+    let base = json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":ID}});
+    assert!(fetch_request(&schema, base.clone()).is_ok());
+    let with = |field: &str, value: Value| {
+        let mut raw = base.clone();
+        raw[field] = value;
+        raw
+    };
+    let without = |field: &str| {
+        let mut raw = base.clone();
+        raw.as_object_mut().unwrap().remove(field);
+        raw
+    };
+    let cases = [
+        ("missing identity", without("identity")),
+        ("missing identity field", with("identity", json!({}))),
+        (
+            "extra identity field",
+            with("identity", json!({"id":ID,"text":"a"})),
+        ),
+        (
+            "unknown identity field",
+            with("identity", json!({"key":ID})),
+        ),
+        ("wrong identity type", with("identity", json!({"id":7}))),
+        (
+            "invalid identity UUID",
+            with("identity", json!({"id":"bad"})),
+        ),
+        ("null identity field", with("identity", json!({"id":null}))),
+        ("identity not an object", with("identity", json!(ID))),
+        ("missing callId", without("callId")),
+        ("invalid callId", with("callId", json!("not-a-uuid"))),
+        ("numeric callId", with("callId", json!(7))),
+        ("missing model", without("model")),
+        ("empty model", with("model", json!(""))),
+        ("unknown Model", with("model", json!("Missing"))),
+        ("missing version", without("version")),
+        ("zero version", with("version", json!(0))),
+        ("fractional version", with("version", json!(1.5))),
+        ("string version", with("version", json!("1"))),
+        ("unsupported version", with("version", json!(2))),
+        ("object store", with("store", json!({"Entry":false}))),
+        ("empty object store", with("store", json!({}))),
+        ("null store", with("store", Value::Null)),
+        ("string store", with("store", json!("false"))),
+        ("unknown member", with("once", json!(true))),
+        ("not an object", json!([base.clone()])),
+    ];
+    for (name, raw) in cases {
+        assert!(
+            fetch_request(&schema, raw.clone()).is_err(),
+            "{name}: {raw}"
+        );
+    }
+    let mut oversized = base.clone();
+    oversized["identity"]["id"] = json!("x".repeat(limits::PUSH_BYTES));
+    assert!(
+        FetchRequest::decode(oversized.to_string().as_bytes(), &schema)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit")
+    );
+}
+
+#[test]
+fn fetch_composite_identities_normalize_to_one_key() {
+    let schema = Schema::from_value(json!({"enums":[],"models":[{"name":"Book","version":3,"identity":["slug","edition"],"fields":[
+        {"name":"slug","type":{"kind":"scalar","name":"string"},"nullable":false},
+        {"name":"edition","type":{"kind":"scalar","name":"int"},"nullable":false},
+        {"name":"title","type":{"kind":"scalar","name":"string"},"nullable":false}
+    ]}]}))
+    .unwrap();
+    let request = |identity: &str| {
+        let raw = format!(
+            r#"{{"identity":{identity},"version":3,"model":"Book","callId":"{FETCH_CALL}"}}"#
+        );
+        FetchRequest::decode(raw.as_bytes(), &schema)
+    };
+    let first = request(r#"{"slug":"x","edition":1}"#).unwrap();
+    let second = request(r#"{"edition":1.0,"slug":"x"}"#).unwrap();
+    assert_eq!(first.identity, json!({"slug":"x","edition":1}));
+    assert_eq!(
+        canonical_json(&first.identity).unwrap(),
+        canonical_json(&second.identity).unwrap()
+    );
+    assert_eq!(first.encode().unwrap(), second.encode().unwrap());
+    assert_ne!(
+        first.identity,
+        request(r#"{"slug":"x","edition":2}"#).unwrap().identity
+    );
+    for bad in [
+        r#"{"slug":"x"}"#,
+        r#"{"slug":"x","edition":1,"title":"t"}"#,
+        r#"{"slug":"x","edition":"1"}"#,
+    ] {
+        assert!(request(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn fetch_response_stores_exactly_the_requested_complete_row() {
+    let schema = schema();
+    let request = entry_fetch(None);
+    let raw = fetch_success(
+        json!({"id":ID,"text":"a","note":null,"count":1.0}),
+        json!([entry_record(4, json!({"text":"a","note":null,"count":1}))]),
+    );
+    let response = fetch_response(&request, &schema, raw).unwrap();
+    assert_eq!(response.completion.call_id, FETCH_CALL);
+    assert_eq!(
+        success_result(&response.completion),
+        &json!({"id":ID.to_lowercase(),"text":"a","note":null,"count":1})
+    );
+    assert_eq!(response.records.len(), 1);
+    assert_eq!(response.records[0].stamp, 4);
+    assert_eq!(response.records[0].identity, request.identity);
+    assert_eq!(
+        response.records[0].state,
+        json!({"text":"a","note":null,"count":1})
+    );
+    let reopened = FetchResponse::decode(&response.encode().unwrap(), &request, &schema).unwrap();
+    assert_eq!(reopened.completion, response.completion);
+    assert_eq!(reopened.records, response.records);
+}
+
+#[test]
+fn fetch_response_absence_is_null_with_stamped_null_authority_only_when_storing() {
+    let schema = schema();
+    let stored = entry_fetch(None);
+    let response = fetch_response(
+        &stored,
+        &schema,
+        fetch_success(Value::Null, json!([entry_record(9, Value::Null)])),
+    )
+    .unwrap();
+    assert_eq!(success_result(&response.completion), &Value::Null);
+    assert_eq!(response.records.len(), 1);
+    assert_eq!(response.records[0].stamp, 9);
+    assert!(response.records[0].state.is_null());
+    assert!(fetch_response(&stored, &schema, fetch_success(Value::Null, json!([]))).is_err());
+
+    let preview = entry_fetch(Some(false));
+    let response =
+        fetch_response(&preview, &schema, fetch_success(Value::Null, json!([]))).unwrap();
+    assert_eq!(success_result(&response.completion), &Value::Null);
+    assert!(response.records.is_empty());
+    assert!(fetch_response(&preview, &schema, fetch_success(entry_row(), json!([]))).is_ok());
+    for records in [
+        json!([entry_record(9, Value::Null)]),
+        json!([entry_record(9, json!({"text":"a","note":null,"count":1}))]),
+    ] {
+        assert!(
+            fetch_response(
+                &preview,
+                &schema,
+                fetch_success(entry_row(), records.clone())
+            )
+            .is_err(),
+            "{records}"
+        );
+    }
+}
+
+#[test]
+fn fetch_refusal_has_no_records_and_keeps_its_code() {
+    let schema = schema();
+    for store in [true, false] {
+        let request = entry_fetch(Some(store));
+        let failed = |code: &str, execution: &str, records: Value| json!({"completion":{"callId":FETCH_CALL,"outcome":{"status":"failed","code":code,"execution":execution}},"records":records});
+        let response = fetch_response(
+            &request,
+            &schema,
+            failed("todo.forbidden", "rejected", json!([])),
+        )
+        .unwrap();
+        assert_eq!(
+            response.completion.outcome,
+            ActionOutcome::Failed {
+                code: "todo.forbidden".into(),
+                execution: ExecutionState::Rejected
+            }
+        );
+        assert!(response.records.is_empty());
+        for bad in [
+            failed(
+                "todo.forbidden",
+                "rejected",
+                json!([entry_record(2, Value::Null)]),
+            ),
+            failed("todo.forbidden", "unknown", json!([])),
+            failed("Not A Code", "rejected", json!([])),
+        ] {
+            assert!(
+                fetch_response(&request, &schema, bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fetch_response_refuses_foreign_or_disagreeing_authority_before_exposure() {
+    let schema = schema();
+    let request = entry_fetch(None);
+    let state = json!({"text":"a","note":null,"count":1});
+    let other = "01890f47-1234-7123-8123-123456789abd";
+    let with_call = |call: &str| {
+        let mut raw = fetch_success(entry_row(), json!([entry_record(4, state.clone())]));
+        raw["completion"]["callId"] = json!(call);
+        raw
+    };
+    assert!(fetch_response(&request, &schema, with_call(FETCH_CALL)).is_ok());
+    let mut other_model = entry_record(4, state.clone());
+    other_model["model"] = json!("Other");
+    let mut other_identity = entry_record(4, state.clone());
+    other_identity["identity"] = json!({"id":other});
+    let mut read_failure = entry_record(4, Value::Null);
+    read_failure["error"] = json!("loader.failed");
+    let cases = [
+        ("mismatched call ID", with_call(other)),
+        (
+            "noncanonical call ID",
+            with_call(&FETCH_CALL.to_uppercase()),
+        ),
+        ("missing authority", fetch_success(entry_row(), json!([]))),
+        (
+            "duplicate authority",
+            fetch_success(
+                entry_row(),
+                json!([
+                    entry_record(4, state.clone()),
+                    entry_record(4, state.clone())
+                ]),
+            ),
+        ),
+        (
+            "additional authority",
+            fetch_success(
+                entry_row(),
+                json!([entry_record(4, state.clone()), {"model":"Entry","identity":{"id":other},"stamp":4,"state":state}]),
+            ),
+        ),
+        (
+            "wrong Model authority",
+            fetch_success(entry_row(), json!([other_model])),
+        ),
+        (
+            "wrong identity authority",
+            fetch_success(entry_row(), json!([other_identity])),
+        ),
+        (
+            "record error",
+            fetch_success(entry_row(), json!([read_failure])),
+        ),
+        (
+            "zero stamp",
+            fetch_success(entry_row(), json!([entry_record(0, state.clone())])),
+        ),
+        (
+            "content disagreement",
+            fetch_success(
+                entry_row(),
+                json!([entry_record(4, json!({"text":"b","note":null,"count":1}))]),
+            ),
+        ),
+        (
+            "null result with content authority",
+            fetch_success(Value::Null, json!([entry_record(4, state.clone())])),
+        ),
+        (
+            "row result with null authority",
+            fetch_success(entry_row(), json!([entry_record(4, Value::Null)])),
+        ),
+        (
+            "identity inside authority state",
+            fetch_success(
+                entry_row(),
+                json!([entry_record(
+                    4,
+                    json!({"id":ID,"text":"a","note":null,"count":1})
+                )]),
+            ),
+        ),
+        (
+            "result for another identity",
+            fetch_success(
+                json!({"id":other,"text":"a","note":null,"count":1}),
+                json!([entry_record(4, state.clone())]),
+            ),
+        ),
+        (
+            "invalid result value",
+            fetch_success(
+                json!({"id":ID,"text":7,"note":null,"count":1}),
+                json!([entry_record(4, state.clone())]),
+            ),
+        ),
+        (
+            "result missing a required field",
+            fetch_success(
+                json!({"id":ID,"note":null,"count":1}),
+                json!([entry_record(4, json!({"note":null,"count":1}))]),
+            ),
+        ),
+        (
+            "named output object",
+            fetch_success(
+                json!({"entry":entry_row()}),
+                json!([entry_record(4, state.clone())]),
+            ),
+        ),
+        (
+            "missing records",
+            json!({"completion":with_call(FETCH_CALL)["completion"]}),
+        ),
+        ("missing completion", json!({"records":[]})),
+    ];
+    for (name, raw) in cases {
+        assert!(
+            fetch_response(&request, &schema, raw.clone()).is_err(),
+            "{name}: {raw}"
+        );
+    }
+    let mut oversized = with_call(FETCH_CALL);
+    oversized["padding"] = json!("x".repeat(limits::PUSH_BYTES));
+    assert!(
+        FetchResponse::decode(oversized.to_string().as_bytes(), &request, &schema)
+            .unwrap_err()
+            .to_string()
+            .contains("byte limit")
+    );
+}
+
+fn result_fixture_schema() -> Value {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/action-results.json"
+    ))
+    .unwrap();
+    fixture["schema"].clone()
+}
+
+#[test]
+fn fetch_uses_the_requested_retained_read_version() {
+    let schema = Schema::from_value(result_fixture_schema()).unwrap();
+    let id = "01890f47-1234-7123-8123-123456789abc";
+    let request = |version: u64| {
+        fetch_request(
+            &schema,
+            json!({"callId":FETCH_CALL,"model":"Todo","version":version,"identity":{"id":id}}),
+        )
+    };
+    for unsupported in [3, 99] {
+        assert!(request(unsupported).is_err(), "v{unsupported}");
+    }
+    // v1 is retained with {id,title}; v2 is the local Model with {id,title,done}.
+    let retained = request(1).unwrap();
+    let local = request(2).unwrap();
+    let v1_record = json!([{"model":"Todo","identity":{"id":id},"stamp":2,"state":{"title":"A"}}]);
+    let v2_record =
+        json!([{"model":"Todo","identity":{"id":id},"stamp":2,"state":{"title":"A","done":false}}]);
+    let decoded = fetch_response(
+        &retained,
+        &schema,
+        fetch_success(json!({"id":id,"title":"A"}), v1_record.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        success_result(&decoded.completion),
+        &json!({"id":id,"title":"A"})
+    );
+    let decoded = fetch_response(
+        &local,
+        &schema,
+        fetch_success(json!({"id":id,"title":"A","done":false}), v2_record.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        success_result(&decoded.completion),
+        &json!({"id":id,"title":"A","done":false})
+    );
+    assert!(
+        fetch_response(
+            &local,
+            &schema,
+            fetch_success(json!({"id":id,"title":"A"}), v1_record)
+        )
+        .is_err(),
+        "a v1 snapshot cannot satisfy a v2 read"
+    );
+}
+
+#[test]
+fn fetch_snapshot_follows_same_version_compatible_field_rules() {
+    let mut raw = result_fixture_schema();
+    let fields = raw["resultModels"][0]["fields"].as_array_mut().unwrap();
+    fields.push(json!({"name":"note","type":{"kind":"scalar","name":"string"},"nullable":true}));
+    fields.push(json!({"name":"flag","type":{"kind":"scalar","name":"boolean"},"nullable":false,"default":true}));
+    let schema = Schema::from_value(raw).unwrap();
+    let id = "01890f47-1234-7123-8123-123456789abc";
+    let request = fetch_request(
+        &schema,
+        json!({"callId":FETCH_CALL,"model":"Todo","version":1,"identity":{"id":id}}),
+    )
+    .unwrap();
+    let record =
+        |state: Value| json!([{"model":"Todo","identity":{"id":id},"stamp":3,"state":state}]);
+    // An older same-version server omits the added fields; a newer one adds
+    // a field this contract does not know. Both describe one snapshot.
+    let complete = json!({"id":id,"title":"A","note":null,"flag":true});
+    for (result, state) in [
+        (json!({"id":id,"title":"A"}), json!({"title":"A"})),
+        (
+            json!({"id":id,"title":"A","extra":1}),
+            json!({"title":"A","extra":1}),
+        ),
+        (
+            json!({"id":id,"title":"A"}),
+            json!({"title":"A","note":null,"flag":true}),
+        ),
+    ] {
+        let decoded = fetch_response(
+            &request,
+            &schema,
+            fetch_success(result.clone(), record(state.clone())),
+        )
+        .unwrap();
+        assert_eq!(success_result(&decoded.completion), &complete, "{result}");
+        assert_eq!(
+            decoded.records[0].state,
+            json!({"title":"A","note":null,"flag":true}),
+            "{state}"
+        );
+    }
+    let explicit = fetch_response(
+        &request,
+        &schema,
+        fetch_success(
+            json!({"id":id,"title":"A","note":"n","flag":false}),
+            record(json!({"title":"A","note":"n","flag":false})),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        success_result(&explicit.completion),
+        &json!({"id":id,"title":"A","note":"n","flag":false})
+    );
+    // A compatible default never hides disagreement or a missing required field.
+    for (result, state) in [
+        (
+            json!({"id":id,"title":"A"}),
+            json!({"title":"A","flag":false}),
+        ),
+        (json!({"id":id}), json!({})),
+        (
+            json!({"id":id,"title":"A","note":7}),
+            json!({"title":"A","note":7}),
+        ),
+    ] {
+        assert!(
+            fetch_response(
+                &request,
+                &schema,
+                fetch_success(result.clone(), record(state.clone()))
+            )
+            .is_err(),
+            "{result} {state}"
+        );
+    }
+}

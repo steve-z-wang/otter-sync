@@ -13,12 +13,14 @@ export {
   type CallStatus,
 } from "../client-js/actions.mts";
 export type { QuerySpec, RecordValue } from "../client-js/values.mts";
-export type { RawStoreChange } from "../client-js/runtime.mts";
+export type { FetchOptions, RawStoreChange } from "../client-js/runtime.mts";
 export type StoreHook =
   import("../client-js/runtime.mts").StoreHook<Transaction>;
 export type {
   Connection,
   ConnectionOptions,
+  HttpRoute,
+  Transport,
 } from "../client-js/connection.mts";
 export type { ServerOptions } from "../client-js/live.mts";
 export {

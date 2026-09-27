@@ -71,3 +71,28 @@ void scopeMisuse(GeneratedClient client, Subscription subscription) {
   subscription.bootstrap.cancel();
   subscription.refresh();
 }
+
+// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): the
+// identity class and a boolean `store` are the whole input, and Fetch is
+// absent from local and onStore transactions.
+void fetchMisuse(GeneratedClient client, GeneratedTransaction tx, Entry row) {
+  // a composite identity needs every component
+  client.fetch.placement(PlacementIdentity(shelf: 's'));
+  // a DateTime identity component is a DateTime
+  client.fetch.placement(PlacementIdentity(shelf: 's', at: '2026-01-01'));
+  // a UUID identity is a String
+  client.fetch.entry(EntryIdentity(id: 1));
+  // Fetch takes the identity, not the complete record
+  client.fetch.entry(row);
+  // storage is a boolean, not an output map
+  client.fetch.entry(EntryIdentity(id: row.id), store: {'entry': false});
+  // there is no persistent once option and no refresh
+  client.fetch.entry(EntryIdentity(id: row.id), once: true);
+  client.fetch.entry(EntryIdentity(id: row.id), refresh: true);
+  // Fetch is unavailable in local transactions, generated or raw
+  tx.fetch;
+  tx.transaction.fetchModel;
+  final hooks = StoreHooks(entry: (tx, changes) {
+    tx.fetch;
+  });
+}

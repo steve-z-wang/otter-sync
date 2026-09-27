@@ -389,11 +389,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             ),
             Waiter::Direct { request_id } => match refused {
                 None => self.resend_direct(&request_id),
-                Some(refused) => self.fail_direct(
-                    &request_id,
-                    direct::EXECUTION_UNKNOWN,
-                    direct::transport_failure(refused),
-                ),
+                Some(refused) => {
+                    self.fail_call(&request_id, direct::Failure::Transport(refused.clone()))
+                }
             },
             Waiter::Load { batch } => self.load_refreshed(batch, refused),
         }

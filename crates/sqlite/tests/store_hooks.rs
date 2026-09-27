@@ -624,3 +624,121 @@ fn failed_record_savepoint_discards_held_key_before_later_record() {
         "good"
     );
 }
+
+/// A stored Fetch response of `Entry e`: its snapshot and matching authority.
+fn fetch_response(text: Option<&str>, stamp: u64) -> FetchResponse {
+    FetchResponse {
+        completion: CallCompletion {
+            call_id: "123e4567-e89b-42d3-a456-426614174000".into(),
+            outcome: ActionOutcome::Succeeded {
+                result: text.map_or(Value::Null, |t| json!({"id":"e","text":t,"note":null})),
+            },
+        },
+        records: vec![authority(text, stamp)],
+    }
+}
+
+/// A Fetch is one single-record delivery: preflight selects its one change
+/// for the callback, an older stamp selects none, and an equal-stamp
+/// conflict refuses the whole delivery before any callback could open,
+/// leaving the session untouched.
+#[test]
+fn fetch_delivery_prepares_its_one_change_and_refuses_a_conflict_before_the_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = open(&dir.path().join("db"));
+    client
+        .apply_fetch_response(&fetch_response(Some("base"), 2))
+        .unwrap();
+    client.begin_session().unwrap();
+    let error = client
+        .prepare_store(StoreDelivery::Fetch {
+            response: fetch_response(Some("other"), 2),
+        })
+        .err()
+        .expect("an equal-stamp conflict refuses the delivery");
+    assert!(error.to_string().contains("conflicts"), "{error}");
+    let older = client
+        .prepare_store(StoreDelivery::Fetch {
+            response: fetch_response(Some("old"), 1),
+        })
+        .unwrap();
+    assert!(older.changes().is_empty());
+    let prepared = client
+        .prepare_store(StoreDelivery::Fetch {
+            response: fetch_response(Some("server"), 3),
+        })
+        .unwrap();
+    assert_eq!(
+        prepared.changes()["Entry"],
+        vec![StoreChange::Upsert {
+            identity: json!({"id":"e"}),
+            row: json!({"id":"e","text":"server","note":null}),
+        }]
+    );
+    assert_eq!(
+        client.session(|tx| tx.read(&key())).unwrap().unwrap()["text"],
+        "base"
+    );
+    let StoreResult::Fetch(report) = client.apply_prepared_store(prepared).unwrap() else {
+        panic!("fetch")
+    };
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.completions.len(), 1);
+    client.commit_session().unwrap();
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "server");
+    assert_eq!(client.record_stamp(&key()).unwrap(), 3);
+    // Stamped absence prepares a deletion.
+    client.begin_session().unwrap();
+    let absent = client
+        .prepare_store(StoreDelivery::Fetch {
+            response: fetch_response(None, 4),
+        })
+        .unwrap();
+    assert_eq!(
+        absent.changes()["Entry"],
+        vec![StoreChange::Delete {
+            identity: json!({"id":"e"})
+        }]
+    );
+    client.rollback_session().unwrap();
+}
+
+/// A record the local store cannot write is reported and skipped in a
+/// channel delivery, but a Fetch rejects instead of succeeding from the
+/// server envelope alone, and nothing it staged remains.
+#[test]
+fn fetch_refuses_a_record_the_store_cannot_write_and_keeps_the_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let enabled = Rc::new(Cell::new(false));
+    let failed = Rc::new(Cell::new(false));
+    let store = FaultStore {
+        sqlite: SqliteStore::open(dir.path().join("db")).unwrap(),
+        enabled: enabled.clone(),
+        failed: failed.clone(),
+        post_fault_held_reads: Rc::new(Cell::new(0)),
+    };
+    let mut client = Client::open(store, schema()).unwrap();
+    client
+        .transaction(|tx| tx.direct(create("Entry", "e", json!({"text":"base","note":null}))))
+        .unwrap();
+    enabled.set(true);
+    let error = client
+        .apply_fetch_response(&fetch_response(Some("server"), 2))
+        .expect_err("the skipped record refuses the Fetch");
+    assert!(failed.get(), "the injected stamp write fault fired");
+    assert!(error.to_string().contains("could not be stored"), "{error}");
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "base");
+    assert_eq!(client.record_stamp(&key()).unwrap(), 0);
+    // Preflight refuses it the same way, before any callback.
+    failed.set(false);
+    client.begin_session().unwrap();
+    assert!(
+        client
+            .prepare_store(StoreDelivery::Fetch {
+                response: fetch_response(Some("server"), 2),
+            })
+            .is_err()
+    );
+    client.rollback_session().unwrap();
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "base");
+}

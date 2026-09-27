@@ -253,6 +253,84 @@ void main(){
    await server.close(force:true);
    await temp.delete(recursive:true);
   }
+ }); // Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153))
+ // through the generated facade, the native runtime and a real HTTP route:
+ // default storage with onStore, `store: false`, a composite DateTime
+ // identity, absence, a typed backend refusal and joined callers.
+ test('generated Fetch reads one Model remotely and stores it by default',()async{
+  final temp=await Directory.systemTemp.createTemp('generated-fetch-');
+  final server=await HttpServer.bind(InternetAddress.loopbackIPv4,0);
+  final requests=<Map<String,dynamic>>[];
+  final paths=<String>[];
+  final held=Completer<void>();
+  server.listen((request)async{
+   final body=jsonDecode(await utf8.decoder.bind(request).join()) as Map<String,dynamic>;
+   requests.add(body);
+   paths.add('${request.uri.path} ${request.headers.value('authorization')}');
+   if(body['model']=='Book')await held.future;
+   final identity=(body['identity'] as Map).cast<String,dynamic>();
+   final Map<String,dynamic>? state=switch(body['model']){
+    'Placement'=>{'label':'placed'},
+    'Book'=>{'title':'remote book'},
+    'Entry' when identity['id']!='00000000-0000-4000-8000-000000000000'=>{'title':'remote','note':null,'at':'2026-02-03T04:05:06.000Z','tags':['x'],'status':'archived'},
+    _=>null,
+   };
+   final failed=body['model']=='Counter';
+   request.response.write(jsonEncode({
+    'completion':{'callId':body['callId'],'outcome':failed
+     ?{'status':'failed','code':'loader.failed','execution':'rejected'}
+     :{'status':'succeeded','result':state==null?null:{...identity,...state}}},
+    'records':failed||body['store']==false?[]:[{'model':body['model'],'identity':identity,'stamp':1,'state':state}],
+   }));
+   await request.response.close();
+  });
+  final stored=<String>[];
+  final client=await GeneratedClient.open(
+   path:'${temp.path}/state.sqlite',
+   libraryPath:Platform.environment['AXTON_DART_LIBRARY']!,
+   server:SyncServer(url:'http://127.0.0.1:${server.port}',token:()=>'secret'),
+   onStore:StoreHooks(entry:(tx,changes){
+    for(final change in changes){
+     if(change is StoreUpsert<EntryIdentity,Entry>)stored.add('${change.row.status.name}@${change.row.at.toIso8601String()}');
+    }
+   }),
+  );
+  try{
+   final Entry? entry=await client.fetch.entry(const EntryIdentity(id:id));
+   expect(entry!.at,DateTime.utc(2026,2,3,4,5,6));
+   expect(entry.status,Status.archived);
+   expect(entry.tags,['x']);
+   expect(paths.first,'/sync/fetch Bearer secret');
+   expect(requests.first['version'],2,reason:'the Model read version the schema declares');
+   expect(requests.first.containsKey('store'),isFalse);
+   expect((await client.models.entry.get(const EntryIdentity(id:id)))?.title,'remote');
+   expect(stored,['archived@2026-02-03T04:05:06.000Z']);
+   const other='123e4567-e89b-42d3-a456-426614174999';
+   final Entry? preview=await client.fetch.entry(const EntryIdentity(id:other),store:false);
+   expect(preview?.title,'remote');
+   expect(requests[1]['store'],false);
+   expect(await client.models.entry.get(const EntryIdentity(id:other)),isNull);
+   expect(stored,hasLength(1),reason:'store false runs no onStore');
+   final at=DateTime.utc(2026,3,4,5,6,7);
+   final Placement? placed=await client.fetch.placement(PlacementIdentity(shelf:'s',at:at));
+   expect(placed?.at,at);
+   expect(placed?.label,'placed');
+   expect(DateTime.parse((requests[2]['identity'] as Map)['at'] as String),at);
+   expect((await client.models.placement.get(PlacementIdentity(shelf:'s',at:at)))?.label,'placed');
+   expect(await client.fetch.entry(const EntryIdentity(id:'00000000-0000-4000-8000-000000000000')),isNull);
+   await expectLater(client.fetch.counter(const CounterIdentity(id:'n')),throwsA(isA<CallError>().having((e)=>e.code,'code','loader.failed').having((e)=>e.execution,'execution','rejected')));
+   final joined=[client.fetch.book(const BookIdentity(id:'b')),client.fetch.book(const BookIdentity(id:'b'))];
+   await _until(()=>requests.any((r)=>r['model']=='Book'),'the joined request');
+   held.complete();
+   final books=await Future.wait(joined);
+   expect(requests.where((r)=>r['model']=='Book'),hasLength(1),reason:'joined callers share one request');
+   expect(books[0]!.title,books[1]!.title);
+   expect(identical(books[0],books[1]),isFalse,reason:'each caller decodes its own object');
+  }finally{
+   await client.close();
+   await server.close(force:true);
+   await temp.delete(recursive:true);
+  }
  });
 }
 

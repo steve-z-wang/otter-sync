@@ -49,6 +49,10 @@ pub(super) enum StoreContinuation {
     Direct {
         request_id: String,
     },
+    /// A Model Fetch's single-record delivery.
+    Fetch {
+        request_id: String,
+    },
     Push,
     Downlink {
         token: crate::downlink_worker::StoreToken,
@@ -65,6 +69,7 @@ impl StoreContinuation {
             Self::Ack { .. } | Self::Push => "receipt",
             Self::Pull { .. } => "pull",
             Self::Direct { .. } => "direct",
+            Self::Fetch { .. } => "fetch",
             Self::Downlink { token } => token.path(),
             Self::Load { .. } => "load",
         }
@@ -114,6 +119,17 @@ impl StoreContinuation {
                         }),
                     );
                 }
+            }
+            // A read claims nothing about side effects: the refused store is
+            // the cause, with the hook's callback when one refused it.
+            Self::Fetch { request_id } => {
+                let mut details = json!({"code": direct::FETCH_STORE_FAILED, "message": error});
+                if let Some(effect_id) = callback {
+                    details["model"] = json!(model);
+                    details["path"] = json!(path);
+                    details["callbackEffectId"] = json!(effect_id);
+                }
+                runtime.fail_direct(&request_id, direct::FETCH_STORE_FAILED, details);
             }
             Self::Push => {
                 if callback.is_none() {
@@ -569,9 +585,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     StoreResult::Page(report) | StoreResult::Receipt(report) => {
                         serde_json::to_value(report)?
                     }
-                    StoreResult::Direct(_) | StoreResult::Bootstrap(_) | StoreResult::Load(_) => {
-                        Value::Null
-                    }
+                    StoreResult::Direct(_)
+                    | StoreResult::Fetch(_)
+                    | StoreResult::Bootstrap(_)
+                    | StoreResult::Load(_) => Value::Null,
                 };
                 // A Load page is committed only when it applied: one whose job
                 // moved on wrote nothing, and a refused one must keep nothing.
@@ -612,6 +629,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok((_, StoreResult::Direct(report))) => {
                 if let StoreContinuation::Direct { request_id } = continuation {
                     self.finish_direct_store(request_id, report);
+                } else {
+                    unreachable!()
+                }
+            }
+            Ok((_, StoreResult::Fetch(report))) => {
+                if let StoreContinuation::Fetch { request_id } = continuation {
+                    self.finish_fetch(request_id, report);
                 } else {
                     unreachable!()
                 }

@@ -267,6 +267,18 @@ export interface LiveModels { item:ItemLiveModel; tag:TagLiveModel; seen:SeenLiv
 export function liveModels(port:LivePort):LiveModels { return { item:new ItemLiveModel(port), tag:new TagLiveModel(port), seen:new SeenLiveModel(port) }; }
 export interface TxModels { item:ItemTxModel; tag:TagTxModel; seen:SeenTxModel; }
 export function txModels(port:WritePort):TxModels { return { item:new ItemTxModel(port), tag:new TagTxModel(port), seen:new SeenTxModel(port) }; }
+export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
+/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
+export interface FetchModels {
+ item(identity:ItemIdentity, options?:{store?:boolean}):Promise<Item|null>;
+ tag(identity:TagIdentity, options?:{store?:boolean}):Promise<Tag|null>;
+ seen(identity:SeenIdentity, options?:{store?:boolean}):Promise<Seen|null>;
+}
+export function fetchModels(port:FetchPort):FetchModels { return {
+ item:(identity,options)=>port.fetchModel('Item',1,encodeItemIdentity(identity),decodeItem,options),
+ tag:(identity,options)=>port.fetchModel('Tag',1,encodeTagIdentity(identity),decodeTag,options),
+ seen:(identity,options)=>port.fetchModel('Seen',1,encodeSeenIdentity(identity),decodeSeen,options),
+}; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {

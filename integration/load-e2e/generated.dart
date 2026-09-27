@@ -423,6 +423,12 @@ class Channels { final Client client; Channels(this.client);
  Future<Subscription> subscribe(String channel) => client.subscribe(channel);
  Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
 }
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+class FetchModels { final Client _client; FetchModels(this._client);
+ Future<Item?> item(ItemIdentity identity, {bool store = true}) => _client.fetchModel('Item', 1, identity.toRecord(), Item.fromRecord, store: store);
+ Future<Tag?> tag(TagIdentity identity, {bool store = true}) => _client.fetchModel('Tag', 1, identity.toRecord(), Tag.fromRecord, store: store);
+ Future<Seen?> seen(SeenIdentity identity, {bool store = true}) => _client.fetchModel('Seen', 1, identity.toRecord(), Seen.fromRecord, store: store);
+}
 sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
 final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
 final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
@@ -445,6 +451,8 @@ class GeneratedClient {
  late final Queries queries = Queries(client);
  /// Native Loads: resolve after durable local acceptance with a [Load] handle; `once` reuses a registered job and [Loads.invalidate] removes that registration.
  late final Loads loads = Loads(client);
+ /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
+ late final FetchModels fetch = FetchModels(client);
  GeneratedClient._(this.client, this.connection);
  /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
  static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {

@@ -8,7 +8,8 @@ use crate::{
     ApplyReport, BootstrapApply, BootstrapState, Client, LoadApply, LoadFailure, LoadFence, Report,
 };
 use axton_core::{
-    BootstrapPage, DirectActionResponse, LoadPageResponse, PullPage, PushReceipt, Result, invalid,
+    BootstrapPage, DirectActionResponse, FetchResponse, LoadPageResponse, PullPage, PushReceipt,
+    Result, invalid,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,6 +50,11 @@ pub enum StoreDelivery {
         fence: LoadFence,
         page: LoadPageResponse,
     },
+    /// One validated Model Fetch response: a single-record delivery that is
+    /// stored whole or refused whole ([`crate::Client::apply_fetch_response`]).
+    Fetch {
+        response: FetchResponse,
+    },
 }
 
 /// Result of replaying a prepared delivery in the host transaction.
@@ -59,6 +65,7 @@ pub enum StoreResult {
     Direct(ApplyReport),
     Receipt(ApplyReport),
     Load(LoadApply),
+    Fetch(ApplyReport),
 }
 impl StoreResult {
     pub fn as_page(&self) -> Option<&ApplyReport> {
@@ -187,6 +194,9 @@ impl<S: ClientStore> Client<S> {
                         .map(StoreResult::Load)
                 })
             }
+            StoreDelivery::Fetch { response } => self.staged(mode, |e| {
+                e.apply_fetch_body(response).map(StoreResult::Fetch)
+            }),
         }
     }
 

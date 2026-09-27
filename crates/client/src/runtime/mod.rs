@@ -88,8 +88,8 @@
 //!   the one credential refresh the lanes and direct calls share.
 //! - `lanes`: the connection intent, its controls, the push lane and the
 //!   Downlink worker as runtime work.
-//! - `direct`: direct Query/Mutation calls, Query once flights, their
-//!   deadlines and fences.
+//! - `direct`: direct Query/Mutation calls, Query once flights and Model
+//!   Fetch flights, their deadlines and fences.
 //! - `loads`: native Load commands, the Load worker's batches as effects,
 //!   page application, and the Load handles' observers and waiters.
 //! - `prerequisites`: the prerequisite loop over application handlers.

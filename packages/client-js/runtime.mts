@@ -203,6 +203,56 @@ function directCause(error: unknown): unknown {
 }
 
 /**
+ * Model Fetch options ([#153](https://github.com/zanminwang/axton/issues/153)):
+ * `store` defaults to `true`; `false` returns the snapshot without local
+ * storage or onStore. There is no other option.
+ */
+export type FetchOptions = { store?: boolean };
+/**
+ * The command members of a Fetch's options. Rust validates `store` and
+ * ignores members it does not know, so any other member is refused here.
+ */
+function fetchStore(options: unknown): { store?: unknown } {
+  if (options === undefined) return {};
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Object.keys(options).some((key) => key !== "store")
+  )
+    throw new CallError(
+      "fetch.invalid_options",
+      "rejected",
+      Error("Fetch accepts only a boolean store option"),
+    );
+  const store = (options as { store?: unknown }).store;
+  return store === undefined ? {} : { store };
+}
+/** Fetch failures refused before any request was sent. */
+const FETCH_REJECTED = new Set([
+  "fetch.invalid_options",
+  "fetch.schema_pending",
+]);
+/**
+ * A `fetch` task's failure as a {@link CallError}: a `fetch.*` code the
+ * runtime decided keeps its cause - the refusing onStore callback's value or
+ * the transport failure with its status. A closed client's admission error
+ * and any other engine error stay as they are.
+ */
+function fetchError(error: unknown): unknown {
+  if (error instanceof CallError) return error;
+  const code = (error as TaskError | null)?.details?.code;
+  if (typeof code === "string" && code.startsWith("fetch."))
+    return new CallError(
+      code,
+      FETCH_REJECTED.has(code) ? "rejected" : "unknown",
+      (error as Error & { cause?: unknown }).cause ?? directCause(error),
+    );
+  if ((error as Error | null)?.message === "transaction_active")
+    return actionError(error);
+  return error;
+}
+
+/**
  * Hosts share the Rust-owned client runtime and supply only their carrier,
  * transaction scope and network. Every command is a task of that runtime
  * ([#134](https://github.com/zanminwang/axton/issues/134)): it queues,
@@ -544,6 +594,38 @@ export function createClient<
         throw actionError(invokeError(error));
       }
       return decodeOutcome(outcome, decode);
+    }
+    /**
+     * Fetch one Model by identity through its existing Loader
+     * ([#153](https://github.com/zanminwang/axton/issues/153)). Rust
+     * validates the identity and options, joins an identical request in
+     * flight or sends a new one, and by default stores the reply before
+     * answering; this submits the task and decodes this caller's own copy of
+     * the snapshot. `null` when the Loader has no readable record.
+     */
+    async fetchModel<T>(
+      model: string,
+      version: number,
+      identity: object,
+      decode: (row: RecordValue) => T,
+      options?: FetchOptions,
+    ): Promise<T | null> {
+      let outcome: DirectOutcome | undefined;
+      try {
+        this.#guard(true);
+        ({ outcome } = await this.#bridge.task({
+          kind: "fetch",
+          model,
+          version,
+          identity: identity as RecordValue,
+          ...fetchStore(options),
+        }));
+      } catch (error) {
+        throw fetchError(error);
+      }
+      return decodeOutcome(outcome, (result) =>
+        result === null ? null : decode(result as RecordValue),
+      );
     }
     /**
      * Discard the saved once results of one Query argument set, every store

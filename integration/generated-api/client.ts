@@ -4,9 +4,11 @@ export { CallError, type Call, type CallOptions, type CallOutcome, type CallStat
 import { schema, liveModels, makeMutations, makeQueries, GeneratedTransaction, Mutate, type LiveModels, type StoreHooks, type StoreChange } from "./generated.ts";
 import { decodeDraft, decodeDraftIdentity, type Draft, type DraftIdentity } from "./generated.ts";
 import { decodeEntry, decodeEntryIdentity, type Entry, type EntryIdentity } from "./generated.ts";
+import { decodePlacement, decodePlacementIdentity, type Placement, type PlacementIdentity } from "./generated.ts";
 import { decodeBook, decodeBookIdentity, type Book, type BookIdentity } from "./generated.ts";
 import { decodeComment, decodeCommentIdentity, type Comment, type CommentIdentity } from "./generated.ts";
 import { decodeCounter, decodeCounterIdentity, type Counter, type CounterIdentity } from "./generated.ts";
+import { fetchModels, type FetchModels } from "./generated.ts";
 export * from "./generated.ts";
 /** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
 export class Scopes { readonly #client: Client;
@@ -30,7 +32,9 @@ export class GeneratedClient {
  readonly queries: ReturnType<typeof makeQueries>;
  readonly scopes: Scopes;
  readonly channels: Channels;
- private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.mutate = new Mutate(client); this.scopes = new Scopes(client); this.channels = new Channels(client); }
+ /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */
+ readonly fetch: FetchModels;
+ private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.mutate = new Mutate(client); this.scopes = new Scopes(client); this.channels = new Channels(client); this.fetch = fetchModels(client); }
  /** Each legacy mutation runs in its own local transaction and returns its ordinal. */
  readonly mutate: Mutate;
  /** Opens the local database at `path`. With a server, the connection starts immediately and retries on its own. */
@@ -40,6 +44,8 @@ export class GeneratedClient {
   if (draftHook) rawHooks['Draft'] = (tx, changes) => draftHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<DraftIdentity,Draft> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeDraftIdentity(change.identity),row:decodeDraft(change.row)} : {kind:'delete',identity:decodeDraftIdentity(change.identity)}));
   const entryHook = options.onStore?.entry;
   if (entryHook) rawHooks['Entry'] = (tx, changes) => entryHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<EntryIdentity,Entry> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeEntryIdentity(change.identity),row:decodeEntry(change.row)} : {kind:'delete',identity:decodeEntryIdentity(change.identity)}));
+  const placementHook = options.onStore?.placement;
+  if (placementHook) rawHooks['Placement'] = (tx, changes) => placementHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<PlacementIdentity,Placement> => change.kind === 'upsert' ? {kind:'upsert',identity:decodePlacementIdentity(change.identity),row:decodePlacement(change.row)} : {kind:'delete',identity:decodePlacementIdentity(change.identity)}));
   const bookHook = options.onStore?.book;
   if (bookHook) rawHooks['Book'] = (tx, changes) => bookHook(new GeneratedTransaction(tx), changes.map((change):StoreChange<BookIdentity,Book> => change.kind === 'upsert' ? {kind:'upsert',identity:decodeBookIdentity(change.identity),row:decodeBook(change.row)} : {kind:'delete',identity:decodeBookIdentity(change.identity)}));
   const commentHook = options.onStore?.comment;

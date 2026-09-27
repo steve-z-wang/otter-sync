@@ -4,6 +4,7 @@ const ROUTES: Readonly<Record<string, string>> = {
   push: "mutations",
   pull: "pull",
   action: "actions",
+  fetch: "fetch",
   load: "loads",
 };
 /** Transport for a backend started with `listen`. Errors carry `status` so `refreshAuth` can react to 401. */

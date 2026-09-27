@@ -1,0 +1,8 @@
+// Model Fetch (#153): a composite identity with a DateTime component, fetched
+// through the same identity codec as every other Model.
+model Placement {
+ shelf String
+ at DateTime
+ label String
+ @@id(shelf, at)
+}

@@ -132,6 +132,9 @@ test("generated backend decodes Date values and declares canonical identities th
     async processPush() {
       return "{}";
     },
+    async processFetch() {
+      return "{}";
+    },
     async processPull() {
       return "{}";
     },
@@ -213,6 +216,9 @@ function nativeHost(requests: object[], answers: unknown[]) {
       return "{}";
     },
     async processPush() {
+      return "{}";
+    },
+    async processFetch() {
       return "{}";
     },
     async processPull() {

@@ -262,6 +262,30 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         refresh: Option<bool>,
     },
+    /// Read one Model remotely through its versioned Loader
+    /// ([#153](https://github.com/zanminwang/axton/issues/153)). `version` is
+    /// the local Model read version and `identity` the generated identity;
+    /// `store` is a boolean, `true` when absent. Answers `{outcome}`, the
+    /// invocation's own completion outcome: `{"status":"succeeded","result":
+    /// <Model object or null>}`, or the backend's terminal refusal
+    /// `{"status":"failed","code","execution":"rejected"}`. A stored success
+    /// answers only after its authority - and any onStore callback - committed.
+    /// A local failure carries `details.code`: `fetch.invalid_options`,
+    /// `fetch.unavailable`, `fetch.timeout`, `fetch.transport_failed`,
+    /// `fetch.invalid_response`, `fetch.store_failed`, `fetch.schema_pending`
+    /// or `fetch.schema_changed`.
+    Fetch {
+        model: String,
+        #[serde(deserialize_with = "counter")]
+        version: u64,
+        identity: Value,
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        store: Option<Value>,
+    },
     /// Run the prerequisite tasks these handlers can take until none is left.
     RunPrerequisites { handlers: Vec<String> },
     /// Observe a local query; answers the observer id.
@@ -546,7 +570,10 @@ pub enum Event {
         /// or close - and, for `action.execution_unknown` with a known cause,
         /// that cause as `{"code", "message", "status"?}`: the transport
         /// failure, the refused credential refresh, the failed apply, or
-        /// `"direct call timed out"` for the deadline.
+        /// `"direct call timed out"` for the deadline. A `fetch` fails with
+        /// `error` equal to its `fetch.*` code and `details`
+        /// `{"code", "message"?, "status"?}`; a refused onStore callback adds
+        /// `model`, `path: "fetch"` and `callbackEffectId`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<Value>,
     },
@@ -629,9 +656,9 @@ pub enum Operation {
         changes: Vec<StoreChange>,
     },
     /// `POST` `body` to the route: `push` is `/sync/mutations`, `pull` is
-    /// `/sync/pull`, `action` is `/sync/actions`, `load` is `/sync/loads`.
-    /// A host must refuse a route it does not know rather than post it
-    /// elsewhere. Answer `ok` with
+    /// `/sync/pull`, `action` is `/sync/actions`, `fetch` is `/sync/fetch`,
+    /// `load` is `/sync/loads`. A host must refuse a route it does not know
+    /// rather than post it elsewhere. Answer `ok` with
     /// `{"status": <HTTP status>, "body": <response text>}` (a bare string is
     /// read as the body), or a failure carrying the HTTP status when there was
     /// one: a non-2xx answer is a failure, and a 401 is what asks for a
@@ -666,6 +693,8 @@ pub enum HttpRoute {
     Pull,
     /// `/sync/actions`: a direct Query or Mutation.
     Action,
+    /// `/sync/fetch`: one Model Fetch.
+    Fetch,
     /// `/sync/loads`: a batch of native Load pages.
     Load,
 }
@@ -935,5 +964,48 @@ mod tests {
             } => assert_eq!(store, Some(Value::Null)),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The Fetch command and its route keep their documented spellings; an
+    /// omitted and an explicit `null` storage option stay apart.
+    #[test]
+    fn fetch_command_and_route_round_trip() {
+        let wire = json!({"type":"task","requestId":"7","command":{"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"},"store":false}});
+        let typed: Input = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+        for (store, expected) in [(None, None), (Some(Value::Null), Some(Value::Null))] {
+            let mut command =
+                json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"}});
+            if let Some(store) = store {
+                command["store"] = store;
+            }
+            match serde_json::from_value(json!({"type":"task","requestId":"8","command":command}))
+                .unwrap()
+            {
+                Input::Task {
+                    command: Command::Fetch { store, .. },
+                    ..
+                } => assert_eq!(store, expected),
+                other => panic!("{other:?}"),
+            }
+        }
+        match serde_json::from_value(json!({"type":"task","requestId":"9","command":{"kind":"fetch","model":"Entry","version":0,"identity":{}}})).unwrap() {
+            Input::Task {
+                command: Command::Malformed { error },
+                ..
+            } => assert!(error.contains("invalid counter"), "{error}"),
+            other => panic!("{other:?}"),
+        }
+        let effect = json!({"type":"effect","effectId":"3","operation":{"kind":"http","route":"fetch","body":"{}"}});
+        assert_eq!(
+            serde_json::from_value::<Event>(effect.clone()).unwrap(),
+            Event::Effect {
+                effect_id: "3".into(),
+                operation: Operation::Http {
+                    route: HttpRoute::Fetch,
+                    body: "{}".into(),
+                },
+            }
+        );
     }
 }

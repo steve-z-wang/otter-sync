@@ -157,7 +157,7 @@ const loadTodoV2: Loaders<Tx>['todo']['v2'] =
 | `tx` | Your transaction, shared with sync persistence for this request |
 | `userId` | Caller whose visibility must be checked |
 
-A Loader is not told which channel, if any, asked: it serves Mutation and Query Model outputs, durable authority readback, catch-up pages and the live stream. It sees the same application transaction during a call.
+A Loader is not told which channel, if any, asked: it serves Mutation and Query Model outputs, durable authority readback, catch-up pages, the live stream and a client's [`client.fetch`](../frontend/client-api.md#fetch-a-record-from-the-backend) of one record, which needs no handler of its own. It sees the same application transaction during a call.
 
 A loader returns `Promise<readonly (Record | null)[]>`. Return exactly one item per identity, in the same order. Do not filter out missing rows or return a differently ordered database result directly.
 
@@ -263,12 +263,13 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | --- | --- |
 | `POST /sync/mutations` | Receive durable batches of Mutations and queued Queries |
 | `POST /sync/actions` | Execute one direct Mutation or Query and return its result |
+| `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
 | `POST /sync/pull` | Materialize changed records through loaders for catch-up and gap recovery |
 | `/sync/live` (WebSocket) | Subscribe to channels and stream ongoing record changes |
 
 The listener has no TLS, CORS or proxy-header handling and binds to loopback by default; run it behind a reverse proxy as described in [Deploy the backend](deployment.md).
 
-Generated clients use all three routes automatically from one `server` configuration. The WebSocket subscription acknowledgement confirms that channel listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must separately close its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
+Generated clients use all of these routes automatically from one `server` configuration. The WebSocket subscription acknowledgement confirms that channel listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must separately close its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
 
 ## Background writes
 

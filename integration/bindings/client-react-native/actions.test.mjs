@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import { Transaction } from "../../../packages/client-react-native/transaction.mts";
+import { createServerConnection } from "../../../packages/client-react-native/live.mts";
 
 test("mobile durable diagnostics do not stop later native Actions", async () => {
   const native = createRequire(import.meta.url)(
@@ -88,6 +90,7 @@ test("mobile durable diagnostics do not stop later native Actions", async () => 
   }
 });
 import {
+  fetchModels,
   makeMutations,
   makeQueries,
   liveModels,
@@ -201,6 +204,110 @@ test("generated Mutation, Query and Model bindings run through the mobile host a
     );
   } finally {
     await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)) on the
+// mobile host adapter: the React Native connection posts Rust's `fetch` effect
+// to `/sync/fetch` with its token, and the generated facade decodes the
+// result. This runs the shared JS Bridge over the Node carrier; it does not
+// prove a device run.
+test("generated Fetch routes through the mobile host connection to /sync/fetch", async () => {
+  const native = createRequire(import.meta.url)(
+    "../../../bindings/node/axton-node.node",
+  );
+  const seen = [];
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    seen.push({
+      url: request.url,
+      authorization: request.headers.authorization,
+      body,
+    });
+    const state =
+      body.model === "Todo"
+        ? {
+            title: "remote",
+            at: "2026-02-03T04:05:06.000Z",
+            status: "closed",
+            note: null,
+          }
+        : { label: "pinned" };
+    response.end(
+      JSON.stringify({
+        completion: {
+          callId: body.callId,
+          outcome: {
+            status: "succeeded",
+            result: { ...body.identity, ...state },
+          },
+        },
+        records:
+          body.store === false
+            ? []
+            : [
+                {
+                  model: body.model,
+                  identity: body.identity,
+                  stamp: 1,
+                  state,
+                },
+              ],
+      }),
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // No Scope is followed, so no socket is opened; one would fail the test.
+  class NoSocket {
+    constructor() {
+      throw Error("no socket expected");
+    }
+  }
+  const Client = createClient(native, Transaction, (options) =>
+    createServerConnection(options, NoSocket),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "axton-rn-fetch-"));
+  const client = await Client.open({
+    path: join(directory, "db"),
+    schema: generatedSchema,
+  });
+  try {
+    await client.connect({
+      url: `http://127.0.0.1:${server.address().port}`,
+      token: "mobile",
+    });
+    const fetch = fetchModels(client);
+    const todo = await fetch.todo({ id: "one" });
+    assert.ok(todo.at instanceof Date);
+    assert.equal(todo.status, "closed");
+    assert.equal(
+      (await liveModels(client).todo.get({ id: "one" }))?.title,
+      "remote",
+    );
+    const at = new Date("2026-03-04T05:06:07.000Z");
+    const pin = await fetch.pin({ todo: "one", at }, { store: false });
+    assert.equal(pin.at.getTime(), at.getTime());
+    assert.equal(pin.label, "pinned");
+    assert.equal(await liveModels(client).pin.get({ todo: "one", at }), null);
+    assert.deepEqual(
+      seen.map(({ url, authorization, body }) => [
+        url,
+        authorization,
+        body.model,
+        body.version,
+        body.store,
+      ]),
+      [
+        ["/sync/fetch", "Bearer mobile", "Todo", 1, undefined],
+        ["/sync/fetch", "Bearer mobile", "Pin", 1, false],
+      ],
+    );
+  } finally {
+    await client.close();
+    await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   }
 });

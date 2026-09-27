@@ -530,6 +530,18 @@ export interface LiveModels { todo:TodoLiveModel; project:ProjectLiveModel; note
 export function liveModels(port:LivePort):LiveModels { return { todo:new TodoLiveModel(port), project:new ProjectLiveModel(port), note:new NoteLiveModel(port) }; }
 export interface TxModels { todo:TodoTxModel; project:ProjectTxModel; note:NoteTxModel; }
 export function txModels(port:WritePort):TxModels { return { todo:new TodoTxModel(port), project:new ProjectTxModel(port), note:new NoteTxModel(port) }; }
+export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
+/** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
+export interface FetchModels {
+ todo(identity:TodoIdentity, options?:{store?:boolean}):Promise<Todo|null>;
+ project(identity:ProjectIdentity, options?:{store?:boolean}):Promise<Project|null>;
+ note(identity:NoteIdentity, options?:{store?:boolean}):Promise<Note|null>;
+}
+export function fetchModels(port:FetchPort):FetchModels { return {
+ todo:(identity,options)=>port.fetchModel('Todo',2,encodeTodoIdentity(identity),decodeTodo,options),
+ project:(identity,options)=>port.fetchModel('Project',1,encodeProjectIdentity(identity),decodeProject,options),
+ note:(identity,options)=>port.fetchModel('Note',1,encodeNoteIdentity(identity),decodeNote,options),
+}; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
 export interface StoreHooks {

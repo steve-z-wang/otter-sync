@@ -7,6 +7,7 @@ import { makeLoads } from "./generated.ts";
 import { decodeTodo, decodeTodoIdentity, type Todo, type TodoIdentity } from "./generated.ts";
 import { decodeMoment, decodeMomentIdentity, type Moment, type MomentIdentity } from "./generated.ts";
 import { decodePin, decodePinIdentity, type Pin, type PinIdentity } from "./generated.ts";
+import { fetchModels, type FetchModels } from "./generated.ts";
 export * from "./generated.ts";
 /** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
 export class Scopes { readonly #client: Client;
@@ -32,7 +33,9 @@ export class GeneratedClient {
  readonly channels: Channels;
  /** Native Loads: `await` resolves after durable local acceptance with a `Load` handle; `once` reuses a registered job and `invalidate` removes that registration. */
  readonly loads: ReturnType<typeof makeLoads>;
- private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.loads = makeLoads(client); this.scopes = new Scopes(client); this.channels = new Channels(client); }
+ /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */
+ readonly fetch: FetchModels;
+ private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.loads = makeLoads(client); this.scopes = new Scopes(client); this.channels = new Channels(client); this.fetch = fetchModels(client); }
  /** Opens the local database at `path`. With a server, the connection starts immediately and retries on its own. */
  static async open(options: { path: string; server?: ServerOptions; connection?: ConnectionOptions; migration?: { defaults?: RecordValue; replayPull?: boolean }; discardPending?: boolean; onStore?: StoreHooks }): Promise<GeneratedClient> {
   const rawHooks: Record<string, StoreHook> = {};

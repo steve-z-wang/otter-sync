@@ -98,9 +98,13 @@ impl<S: ClientStore> Engine<'_, S> {
         self.set_record_stamp(&key, record.stamp)?;
         Ok(Disposition::Applied)
     }
+    /// New authority replaces the base, and with it the settled local writes
+    /// retained on that base: later server authority may replace a direct
+    /// write or an accepted companion (L4). Pending operations replay on it.
     fn stage_one(&mut self, key: &RecordKey, value: Option<&Value>, held: &mut Held) -> Result<()> {
         if self.dirty(key)? {
             self.before_set(key, value)?;
+            self.delete_local_writes(key)?;
             held.insert(key.encoded()?, key.clone());
         } else {
             self.main_set(key, value)?;

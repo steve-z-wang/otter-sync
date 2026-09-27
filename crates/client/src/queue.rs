@@ -23,6 +23,27 @@ pub struct QueuedOp {
     pub kind: OpKind,
     pub op: Operation,
 }
+/// Why a settled local write is still retained in the journal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalWriteKind {
+    /// A direct write made while the record had pending work.
+    Independent,
+    /// The companion of a call the server accepted, kept at its position
+    /// until no earlier pending work on the record needs it.
+    Accepted,
+}
+/// A settled local write retained at its place in a record's local order:
+/// an accepted companion at its owner's `(ordinal, position)`, an
+/// independent write after every operation of the last ordinal allocated
+/// before it. `sequence` orders writes that share a place.
+#[derive(Clone, Debug)]
+pub struct LocalWrite {
+    pub sequence: u64,
+    pub ordinal: u64,
+    pub position: Option<u64>,
+    pub kind: LocalWriteKind,
+    pub op: Operation,
+}
 #[derive(Clone, Debug)]
 pub struct Queued {
     pub ordinal: u64,
@@ -50,6 +71,25 @@ fn kind_text(kind: OpKind) -> &'static str {
         OpKind::Effect => "effect",
     }
 }
+fn decode_operation(
+    model: &Value,
+    identity: &Value,
+    op: &Value,
+    values: &Value,
+) -> Result<Operation> {
+    let op = match op.as_str() {
+        Some("create") => OperationKind::Create,
+        Some("update") => OperationKind::Update,
+        Some("delete") => OperationKind::Delete,
+        _ => return Err(invalid("unknown operation")),
+    };
+    Ok(Operation {
+        model: text(model),
+        op,
+        identity: serde_json::from_str(identity.as_str().unwrap_or("null"))?,
+        values: values.as_str().map(serde_json::from_str).transpose()?,
+    })
+}
 fn decode_op(row: &[Value]) -> Result<QueuedOp> {
     // columns: ordinal, position, kind, model, identity, op, values
     let kind = match row[2].as_str() {
@@ -58,22 +98,36 @@ fn decode_op(row: &[Value]) -> Result<QueuedOp> {
         Some("effect") => OpKind::Effect,
         _ => return Err(invalid("unknown operation kind")),
     };
-    let op = match row[5].as_str() {
-        Some("create") => OperationKind::Create,
-        Some("update") => OperationKind::Update,
-        Some("delete") => OperationKind::Delete,
-        _ => return Err(invalid("unknown operation")),
-    };
     Ok(QueuedOp {
         ordinal: as_u64(&row[0])?,
         position: as_u64(&row[1])?,
         kind,
-        op: Operation {
-            model: text(&row[3]),
-            op,
-            identity: serde_json::from_str(row[4].as_str().unwrap_or("null"))?,
-            values: row[6].as_str().map(serde_json::from_str).transpose()?,
+        op: decode_operation(&row[3], &row[4], &row[5], &row[6])?,
+    })
+}
+fn decode_local_write(row: &[Value]) -> Result<LocalWrite> {
+    // columns: sequence, ordinal, position, disposition, model, identity, op, values
+    let kind = match row[3].as_str() {
+        Some("independent") => LocalWriteKind::Independent,
+        Some("accepted") => LocalWriteKind::Accepted,
+        _ => return Err(invalid("unknown local write disposition")),
+    };
+    Ok(LocalWrite {
+        sequence: as_u64(&row[0])?,
+        ordinal: as_u64(&row[1])?,
+        position: if row[2].is_null() {
+            None
+        } else {
+            Some(as_u64(&row[2])?)
         },
+        kind,
+        op: decode_operation(&row[4], &row[5], &row[6], &row[7])?,
+    })
+}
+fn values_text(op: &Operation) -> Result<Value> {
+    Ok(match &op.values {
+        Some(v) => json!(serde_json::to_string(v)?),
+        None => Value::Null,
     })
 }
 
@@ -118,10 +172,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 json!(op.model),
                 json!(key.encoded_identity()?),
                 json!(op_text(op.op)),
-                match &op.values {
-                    Some(v) => json!(serde_json::to_string(v)?),
-                    None => Value::Null,
-                },
+                values_text(op)?,
             ],
         )?;
         Ok(())
@@ -173,12 +224,87 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(())
     }
     pub fn add_effect(&mut self, ordinal: u64, op: &Operation) -> Result<()> {
+        self.add_cascade(ordinal, OpKind::Effect, op)
+    }
+    /// Append a cascade delete to a queued call: an effect of a wire delete,
+    /// or a companion when the delete it extends is the call's companion.
+    pub(crate) fn add_cascade(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
         let next = self.scalar(
             "SELECT COALESCE(MAX(position), -1) + 1 FROM axton_mutation_operation WHERE ordinal=?",
             &[json!(ordinal)],
         )?;
         let position = as_u64(&next.unwrap_or(json!(0)))?;
-        self.insert_op(ordinal, position, OpKind::Effect, op)
+        self.insert_op(ordinal, position, kind, op)
+    }
+    /// The companion operations of one queued call with their positions.
+    pub(crate) fn companion_ops(&mut self, ordinal: u64) -> Result<Vec<QueuedOp>> {
+        Ok(self
+            .ops_by_ordinal("WHERE ordinal=? AND kind='companion'", &[json!(ordinal)])?
+            .into_values()
+            .flatten()
+            .collect())
+    }
+    /// The last ordinal allocated: every queued operation at or below it was
+    /// written before anything written now.
+    pub(crate) fn last_ordinal(&mut self) -> Result<u64> {
+        let next = self
+            .scalar("SELECT next_ordinal FROM axton_client", &[])?
+            .ok_or_else(|| invalid("client row missing"))?;
+        Ok(as_u64(&next)?.saturating_sub(1))
+    }
+    /// Retain a settled local write at its place in the record's local order.
+    pub(crate) fn insert_local_write(
+        &mut self,
+        ordinal: u64,
+        position: Option<u64>,
+        kind: LocalWriteKind,
+        op: &Operation,
+    ) -> Result<()> {
+        let key = self.schema.record_key(&op.model, &op.identity)?;
+        let disposition = match kind {
+            LocalWriteKind::Independent => "independent",
+            LocalWriteKind::Accepted => "accepted",
+        };
+        self.exec(
+            "axton_local_write",
+            "INSERT INTO axton_local_write (ordinal, position, disposition, model, identity, op, \"values\") VALUES (?,?,?,?,?,?,?)",
+            &[
+                json!(ordinal),
+                position.map_or(Value::Null, |p| json!(p)),
+                json!(disposition),
+                json!(op.model),
+                json!(key.encoded_identity()?),
+                json!(op_text(op.op)),
+                values_text(op)?,
+            ],
+        )?;
+        Ok(())
+    }
+    /// The settled local writes retained for one record, in allocation order.
+    pub(crate) fn local_writes_for(&mut self, key: &RecordKey) -> Result<Vec<LocalWrite>> {
+        let rows = self.rows(
+            "SELECT sequence, ordinal, position, disposition, model, identity, op, \"values\" FROM axton_local_write WHERE model=? AND identity=? ORDER BY sequence",
+            &[json!(key.model), json!(key.encoded_identity()?)],
+        )?;
+        rows.rows.iter().map(|r| decode_local_write(r)).collect()
+    }
+    pub(crate) fn delete_local_write(&mut self, sequence: u64) -> Result<()> {
+        self.exec(
+            "axton_local_write",
+            "DELETE FROM axton_local_write WHERE sequence=?",
+            &[json!(sequence)],
+        )?;
+        Ok(())
+    }
+    /// Forget every settled local write of one record: new authority replaced
+    /// the base they belong to.
+    pub(crate) fn delete_local_writes(&mut self, key: &RecordKey) -> Result<()> {
+        self.exec(
+            "axton_local_write",
+            "DELETE FROM axton_local_write WHERE model=? AND identity=?",
+            &[json!(key.model), json!(key.encoded_identity()?)],
+        )?;
+        Ok(())
     }
     fn ops_by_ordinal(
         &mut self,

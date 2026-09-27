@@ -1,9 +1,9 @@
 //! Freeze pushes from queued rows and complete them from their receipts.
 use crate::authority::Held;
 use crate::engine::Engine;
-use crate::queue::Queued;
+use crate::queue::{LocalWriteKind, Queued};
 use crate::store::ClientStore;
-use crate::{ApplyReport, Mutation, Operation, OperationKind, mutate::apply_to_row};
+use crate::{ApplyReport, Mutation, Operation, OperationKind};
 use axton_core::{
     ActionOutcome, CallCompletion, ExecutionState, PushReceipt, PushRequest, RecordKey, Rejection,
     Result, canonical_json, invalid, limits,
@@ -298,36 +298,35 @@ impl<S: ClientStore> Engine<'_, S> {
                 affected.insert(key.encoded()?, key);
             }
         }
-        // Accepted local-only companions settle as they always have: folded
-        // into the base of records the server did not report. A record the
-        // receipt covers takes the server's authority instead.
+        // A record the receipt answered for takes the server's authority,
+        // and so do the descendants of a companion delete of such a record.
+        let mut answered: BTreeSet<String> = wire_rows.union(&covered).cloned().collect();
         for q in &accepted {
-            let mut local_ops = q.mutation.companion.clone();
             for op in &q.mutation.companion {
-                if op.op == OperationKind::Delete {
-                    let key = schema.record_key(&op.model, &op.identity)?;
-                    if !wire_rows.contains(&key.encoded()?) {
-                        for child in self.descendants(&key)? {
-                            local_ops.push(Operation {
-                                model: child.model,
-                                identity: child.identity,
-                                op: OperationKind::Delete,
-                                values: None,
-                            });
-                        }
+                let key = schema.record_key(&op.model, &op.identity)?;
+                if op.op == OperationKind::Delete && answered.contains(&key.encoded()?) {
+                    for child in self.descendants(&key)? {
+                        answered.insert(child.encoded()?);
                     }
                 }
             }
-            for op in &local_ops {
-                let key = schema.record_key(&op.model, &op.identity)?;
+        }
+        // Every other accepted companion keeps its local effect at its
+        // original position; the replay below folds it into the base once no
+        // earlier pending operation on the record precedes it.
+        for q in &accepted {
+            for companion in self.companion_ops(q.ordinal)? {
+                let key = schema.record_key(&companion.op.model, &companion.op.identity)?;
                 let encoded = key.encoded()?;
-                if wire_rows.contains(&encoded) || covered.contains(&encoded) {
+                if answered.contains(&encoded) {
                     continue;
                 }
-                let mut truth = self.before_get(&key)?;
-                if apply_to_row(&mut truth, op).is_ok() {
-                    self.before_set(&key, truth.as_ref())?;
-                }
+                self.insert_local_write(
+                    q.ordinal,
+                    Some(companion.position),
+                    LocalWriteKind::Accepted,
+                    &companion.op,
+                )?;
                 affected.insert(encoded, key);
             }
         }

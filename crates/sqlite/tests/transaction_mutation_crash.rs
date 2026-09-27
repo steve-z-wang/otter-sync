@@ -12,11 +12,21 @@
 //!
 //! Boundaries covered: before the local commit, after the local commit,
 //! before the receipt commit (receipt and store-hook writes made, not
-//! committed), after a failed receipt transaction rolled back, and after the
-//! receipt commit. The kill ends the process; the operating system keeps
-//! what SQLite already wrote. These tests do not simulate power loss,
-//! storage or filesystem failures, torn writes or a kill inside SQLite's own
-//! commit.
+//! committed), after a failed receipt transaction rolled back (a hook that
+//! failed before the receipt was replayed, and a receipt replayed and then
+//! rolled back), and after the receipt commit (store-hook and plain routes).
+//!
+//! Limits. The kill ends the process; the operating system keeps what SQLite
+//! already wrote. These tests do not simulate power loss, storage or
+//! filesystem failures, torn writes or a kill inside SQLite's own commit.
+//! The transactions are small, so the before-local-commit kill shows that
+//! uncommitted in-process state is lost; it does not exercise recovery that
+//! ignores uncommitted pages already spilled to the WAL. The before-receipt
+//! commit and rollback boundaries run on the store-hook route only, the one
+//! receipt entry that can stop inside its transaction. Plain
+//! `Client::acknowledge` runs the same `Engine::acknowledge` in one SQLite
+//! transaction; only its after-commit boundary is exercised here, and SQLite
+//! atomicity is what covers a kill inside it.
 use axton_client::*;
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
@@ -192,6 +202,64 @@ fn decode(request: &str) -> PushRequest {
     PushRequest::decode_actions(request.as_bytes(), &schema()).unwrap()
 }
 
+/// The frozen request carries no companion data in any field. Its `models`
+/// declaration names every read contract with its version (local Models
+/// included), and nothing else.
+fn assert_no_companion_data(request: &[u8]) {
+    let mut raw: Value = serde_json::from_slice(request).unwrap();
+    let models = raw.as_object_mut().unwrap().remove("models").unwrap();
+    assert!(
+        models.as_object().unwrap().values().all(Value::is_u64),
+        "{models}"
+    );
+    let rest = raw.to_string();
+    for local in ["Composition", "Draft", "companion"] {
+        assert!(!rest.contains(local), "{local} reached the wire: {rest}");
+    }
+}
+
+/// Every row the call and its settlement can touch: the queue, the local
+/// write journal, rejections, record stamps, the client counters, and the
+/// Model rows with their before images.
+fn snapshot(query: &mut dyn FnMut(&str) -> Vec<Value>) -> Value {
+    let mut tables = serde_json::Map::new();
+    for (name, sql) in [
+        (
+            "axton_mutation",
+            "SELECT ordinal, name, version, push, diverged, call_id, args, store FROM axton_mutation ORDER BY ordinal",
+        ),
+        (
+            "axton_mutation_operation",
+            "SELECT * FROM axton_mutation_operation ORDER BY ordinal, position",
+        ),
+        (
+            "axton_local_write",
+            "SELECT * FROM axton_local_write ORDER BY sequence",
+        ),
+        (
+            "axton_rejection",
+            "SELECT * FROM axton_rejection ORDER BY ordinal",
+        ),
+        (
+            "axton_record",
+            "SELECT * FROM axton_record ORDER BY model, identity",
+        ),
+        (
+            "axton_client",
+            "SELECT next_ordinal, next_push, last_completed_push FROM axton_client",
+        ),
+    ] {
+        tables.insert(name.into(), Value::Array(query(sql)));
+    }
+    for model in ["Composition", "Draft", "Entry"] {
+        for table in [model.to_owned(), format!("axton_before_{model}")] {
+            let rows = query(&format!("SELECT * FROM {table} ORDER BY id"));
+            tables.insert(table, Value::Array(rows));
+        }
+    }
+    Value::Object(tables)
+}
+
 // The child-only mode.
 
 /// Where the child stops and waits to be killed.
@@ -204,8 +272,14 @@ enum Boundary {
     /// The batch was frozen, and the receipt and a store hook's write were
     /// applied in the receipt transaction, which is still open.
     BeforeReceiptCommit,
-    /// The receipt transaction failed in its store hook and rolled back.
-    FailedReceipt,
+    /// A store hook failed before the receipt was replayed, and the receipt
+    /// transaction rolled back. (Preflight had already undone its own
+    /// writes, so only the hook's write was pending.)
+    HookFailedBeforeReplay,
+    /// The receipt was replayed with its hook's write, settling the call in
+    /// the open transaction, and then the transaction rolled back, as when
+    /// its commit fails.
+    ReplayedReceiptRolledBack,
     /// The receipt transaction committed.
     AfterReceiptCommit,
 }
@@ -216,7 +290,8 @@ impl Boundary {
             Self::BeforeLocalCommit => "before_local_commit",
             Self::AfterLocalCommit => "after_local_commit",
             Self::BeforeReceiptCommit => "before_receipt_commit",
-            Self::FailedReceipt => "failed_receipt",
+            Self::HookFailedBeforeReplay => "hook_failed_before_replay",
+            Self::ReplayedReceiptRolledBack => "replayed_receipt_rolled_back",
             Self::AfterReceiptCommit => "after_receipt_commit",
         }
     }
@@ -225,7 +300,8 @@ impl Boundary {
             Self::BeforeLocalCommit,
             Self::AfterLocalCommit,
             Self::BeforeReceiptCommit,
-            Self::FailedReceipt,
+            Self::HookFailedBeforeReplay,
+            Self::ReplayedReceiptRolledBack,
             Self::AfterReceiptCommit,
         ]
         .into_iter()
@@ -318,12 +394,37 @@ fn child_process_entry() {
             client.apply_prepared_store(prepared).unwrap();
             park(json!({"event":"settling","report":report}));
         }
-        Boundary::FailedReceipt => {
+        Boundary::HookFailedBeforeReplay => {
+            let before = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
             let _prepared = hooked(&mut client);
-            // The hook fails: its write and the receipt roll back together.
+            // The hook fails: its write rolls back with the transaction.
             client.rollback_session().unwrap();
-            assert_eq!(client.pending_count().unwrap(), 1);
-            park(json!({"event":"rolled_back","report":report}));
+            let after = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
+            assert_eq!(after, before);
+            park(json!({"event":"rolled_back","report":report,"before":before}));
+        }
+        Boundary::ReplayedReceiptRolledBack => {
+            let before = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
+            let prepared = hooked(&mut client);
+            let StoreResult::Receipt(applied) = client.apply_prepared_store(prepared).unwrap()
+            else {
+                panic!("a receipt delivery stores as a receipt");
+            };
+            assert_eq!(applied.completions.len(), 1);
+            // The receipt's effects exist in the open transaction: the call
+            // left the queue and the batch is recorded as completed.
+            let during = snapshot(&mut |sql| client.session_sql(sql, &[]).unwrap());
+            assert_eq!(during["axton_mutation"], json!([]));
+            assert_eq!(
+                during["axton_client"][0]["last_completed_push"],
+                receipt.batch_sequence
+            );
+            assert_ne!(during, before);
+            // The commit fails: the whole receipt transaction rolls back.
+            client.rollback_session().unwrap();
+            let after = snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap());
+            assert_eq!(after, before);
+            park(json!({"event":"rolled_back","report":report,"before":before}));
         }
         Boundary::AfterReceiptCommit => {
             let completions = match route {
@@ -555,6 +656,23 @@ fn assert_redelivery_is_stale(client: &mut Local, request: &PushRequest, accepte
     assert_settled(client, request, accepted, c2);
 }
 
+/// After a kill before any receipt committed: the call is still queued as
+/// the child committed it, the retried request is the child's frozen
+/// request byte for byte, and its receipt settles the call exactly once.
+fn assert_retry_settles_once(path: &Path, report: &Value, accepted: bool) {
+    let mut client = open(path);
+    assert_committed(&mut client, &report["call"], true);
+    assert_eq!(client.last_completed_push().unwrap(), 0);
+    let sent = report["request"].as_str().unwrap();
+    let bytes = client.freeze().unwrap().unwrap();
+    assert_eq!(bytes, sent.as_bytes());
+    assert_no_companion_data(&bytes);
+    let request = decode(sent);
+    settle_once(&mut client, &request, accepted);
+    assert_settled(&mut client, &request, accepted, "second");
+    assert_redelivery_is_stale(&mut client, &request, accepted, "second");
+}
+
 /// Deliver the receipt once, as a restarted client would, and check the
 /// single completion it reports.
 fn settle_once(client: &mut Local, request: &PushRequest, accepted: bool) {
@@ -641,7 +759,7 @@ fn killed_after_the_local_commit_keeps_the_call_and_its_companion_for_either_out
         assert_eq!(request.mutations.len(), 1);
         assert_eq!(request.mutations[0].raw["callId"], call["callId"]);
         assert_eq!(request.mutations[0].raw["ordinal"], call["ordinal"]);
-        assert!(!request.raw["mutations"].to_string().contains("Composition"));
+        assert_no_companion_data(&bytes);
         assert_committed(&mut client, &call, true);
         // A retry after another restart sends the same request.
         drop(client);
@@ -674,47 +792,39 @@ fn killed_before_the_receipt_commit_retries_the_same_request_and_settles_once() 
         );
         let report = child.wait_for("settling")["report"].clone();
         child.kill();
-
-        let mut client = open(&path);
-        assert_committed(&mut client, &report["call"], true);
-        assert_eq!(client.last_completed_push().unwrap(), 0);
-        let sent = report["request"].as_str().unwrap();
-        assert_eq!(client.freeze().unwrap().unwrap(), sent.as_bytes());
-        let request = decode(sent);
-        settle_once(&mut client, &request, accepted);
-        assert_settled(&mut client, &request, accepted, "second");
-        assert_redelivery_is_stale(&mut client, &request, accepted, "second");
+        assert_retry_settles_once(&path, &report, accepted);
     }
 }
 
-/// A receipt transaction whose store hook fails rolls back the receipt and
-/// the hook's write together; a kill afterwards changes nothing, and the
-/// retried request settles the call once.
+/// A receipt transaction that fails rolls back: a hook failing before the
+/// receipt is replayed, or a receipt replayed (the call settled in the open
+/// transaction, which the child checks) whose transaction then rolls back.
+/// The queue, records and recovery metadata return to their pre-receipt
+/// rows, a kill afterwards changes nothing, and the retried request
+/// settles the call once.
 #[test]
 fn a_failed_receipt_transaction_rolls_back_and_the_retry_settles_once() {
-    for accepted in [true, false] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("db");
-        seed(&path);
-        let mut child = Crashing::spawn(
-            dir.path(),
-            &path,
-            Boundary::FailedReceipt,
-            accepted,
-            Route::Hooked,
-        );
-        let report = child.wait_for("rolled_back")["report"].clone();
-        child.kill();
+    for boundary in [
+        Boundary::HookFailedBeforeReplay,
+        Boundary::ReplayedReceiptRolledBack,
+    ] {
+        for accepted in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("db");
+            seed(&path);
+            let mut child = Crashing::spawn(dir.path(), &path, boundary, accepted, Route::Hooked);
+            let reported = child.wait_for("rolled_back");
+            child.kill();
 
-        let mut client = open(&path);
-        assert_committed(&mut client, &report["call"], true);
-        assert_eq!(client.last_completed_push().unwrap(), 0);
-        let sent = report["request"].as_str().unwrap();
-        assert_eq!(client.freeze().unwrap().unwrap(), sent.as_bytes());
-        let request = decode(sent);
-        settle_once(&mut client, &request, accepted);
-        assert_settled(&mut client, &request, accepted, "second");
-        assert_redelivery_is_stale(&mut client, &request, accepted, "second");
+            let mut client = open(&path);
+            assert_eq!(
+                snapshot(&mut |sql| client.read_sql(sql, &[]).unwrap()),
+                reported["before"],
+                "{boundary:?}"
+            );
+            drop(client);
+            assert_retry_settles_once(&path, &reported["report"], accepted);
+        }
     }
 }
 

@@ -15,6 +15,7 @@ export async function createFixture() {
   /** Every PublishEntry argument exactly as the handler received it. */
   const publishes: { entry: { id: string; title: string; body: string }; media: { id: string; entryId: string; url: string }[]; placement: { id: string; entryId: string; journal: string; position: number } }[] = [];
   let rejectPublish = false;
+  let compositionLoads = 0;
   const mutations: Mutations<PgClient> = {
     async addTodo({ ctx, args }) {
       handlerCalls++;
@@ -63,14 +64,15 @@ export async function createFixture() {
       return { saved: { id: args.note.id } };
     },
     // Stores the Entry, its media and its Journal placement in one backend
-    // transaction, or rejects them all while `rejectPublish` is set. A
+    // transaction. While `rejectPublish` is set it rejects after the Entry
+    // and media are inserted, so the rejection must roll those back. A
     // client's local companion writes never arrive here.
     async publishEntry({ ctx, args }) {
       handlerCalls++;
       publishes.push(structuredClone(args));
-      if (rejectPublish) throw new CallRejected("publish.rejected");
       await ctx.tx.query("INSERT INTO action_e2e_entry(id,title,body) VALUES($1,$2,$3)", [args.entry.id, args.entry.title, args.entry.body]);
       for (const media of args.media) await ctx.tx.query("INSERT INTO action_e2e_media(id,entry_id,url) VALUES($1,$2,$3)", [media.id, media.entryId, media.url]);
+      if (rejectPublish) throw new CallRejected("publish.rejected");
       await ctx.tx.query("INSERT INTO action_e2e_placement(id,entry_id,journal,position) VALUES($1,$2,$3,$4)", [args.placement.id, args.placement.entryId, args.placement.journal, args.placement.position]);
     },
     async retitleTodos({ ctx, args }) {
@@ -112,8 +114,10 @@ export async function createFixture() {
       }
       return rows;
     },
-    // Compositions are local to the client: the backend stores none.
+    // Compositions are local to the client: the backend stores none, and
+    // `compositionLoads` shows whether it was ever asked for one.
     async composition({ ids }) {
+      compositionLoads++;
       return ids.map(() => null);
     },
     async entry({ ids, tx }) {
@@ -164,8 +168,10 @@ export async function createFixture() {
     set failQueries(value: boolean) { failQueries = value; },
     /** PublishEntry arguments in arrival order. */
     publishes,
-    /** While set, PublishEntry rejects with `publish.rejected` and stores nothing. */
+    /** While set, PublishEntry rejects with `publish.rejected` after partial inserts, which its transaction rolls back. */
     set rejectPublish(value: boolean) { rejectPublish = value; },
+    /** Composition Loader executions: a local-only Model the backend should never look up. */
+    get compositionLoads() { return compositionLoads; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
       for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);

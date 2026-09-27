@@ -883,6 +883,7 @@ test("the PublishEntry backend fixture stores Entry, media and placement togethe
     media: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_media WHERE entry_id=$1", [id])).rows[0].n),
     placements: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_placement WHERE entry_id=$1", [id])).rows[0].n),
   });
+  const compositionLoads = fixture.compositionLoads;
   try {
     client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
     const accepted = await (await client.mutations.publishEntry(input("publish-ok"))).wait();
@@ -900,10 +901,11 @@ test("the PublishEntry backend fixture stores Entry, media and placement togethe
       assert.equal(rejected.error?.execution, "rejected");
     } finally { fixture.rejectPublish = false; }
     assert.deepEqual(fixture.publishes.at(-1), input("publish-no"));
-    assert.deepEqual(await stored("publish-no"), { entries: 0, media: 0, placements: 0 }, "a rejection stores nothing");
+    assert.deepEqual(await stored("publish-no"), { entries: 0, media: 0, placements: 0 }, "the rejection rolled back the Entry and media it had inserted");
     assert.equal(await client.models.entry.get({ id: "publish-no" }), null, "rejection removes the optimism");
     assert.equal(await client.models.media.get({ id: "publish-no-m1" }), null);
     assert.equal(await client.models.placement.get({ id: "publish-no-p" }), null);
     assert.equal((await client.syncState()).pending, 0);
+    assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });

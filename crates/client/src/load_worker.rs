@@ -19,10 +19,18 @@
 //!   [`load_backoff`] of its persisted attempt count; a job with persisted
 //!   attempts that this worker has not seen fail (a reopen) waits a fresh
 //!   bounded delay. A job that waits never holds back a ready one.
+//! - **Unsendable and rejected pages.** A frozen page that cannot be sent
+//!   even alone (over the request bound) fails its job terminally
+//!   (`load.request_too_large`) instead of blocking the jobs behind it. A
+//!   whole request the backend refused ([`LoadWorker::rejected`]) is split:
+//!   each of its pages goes alone next time, and a page refused alone fails
+//!   its job as `load.protocol_invalid`.
 use crate::load_ledger::LoadLedgerIssue;
-use crate::loads::{LoadFailure, LoadFence};
+use crate::loads::{LoadFailure, LoadFence, LoadJobError, PROTOCOL_INVALID, REQUEST_TOO_LARGE};
 use crate::{Client, ClientStore};
-use axton_core::{LoadBatchRequest, LoadBatchResponse, LoadPageReply, Result, limits};
+use axton_core::{
+    LoadBatchRequest, LoadBatchResponse, LoadPageReply, Result, canonical_json, limits,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Pages in one batch request.
@@ -34,6 +42,18 @@ pub const LOAD_BACKOFF_BASE_MS: u64 = 1_000;
 /// No delay exceeds this, jitter included.
 pub const LOAD_BACKOFF_CAP_MS: u64 = 30_000;
 
+/// Why a request of one page cannot be sent, decided from the request's own
+/// canonical size: over the request bound, or refused for its content.
+fn unsendable(request: &LoadBatchRequest) -> &'static str {
+    let size = serde_json::to_value(request)
+        .ok()
+        .and_then(|value| canonical_json(&value).ok())
+        .map(|text| text.len());
+    match size {
+        Some(size) if size > limits::LOAD_REQUEST_BYTES => REQUEST_TOO_LARGE,
+        _ => PROTOCOL_INVALID,
+    }
+}
 /// How long a page that failed `attempts` times waits before it is sent
 /// again: 1 s doubling per attempt, with the lanes' ±20 % jitter from host
 /// entropy, never more than 30 s.
@@ -87,13 +107,19 @@ pub struct LoadReceived {
     pub answer: LoadAnswer,
 }
 
+/// One dispatch step's slot: the pages it sent as one request, and the
+/// pages it failed because they cannot be sent. Both count against the slot
+/// until their outcomes are consumed, so unsendable failures are bounded
+/// like answers.
 struct Batch {
     request: LoadBatchRequest,
     body: String,
+    /// The pages sent; empty when the step only failed unsendable pages.
     pages: Vec<LoadSent>,
-    /// Whether the answer (or the failure) of the request was taken.
+    /// Whether the answer (or the failure) of the request was taken; true
+    /// from the start when nothing was sent.
     answered: bool,
-    /// Pages whose outcome was not consumed yet.
+    /// Pages, sent or unsendable, whose outcome was not consumed yet.
     unconsumed: usize,
 }
 
@@ -114,6 +140,11 @@ pub struct LoadWorker {
     backoff: BTreeMap<String, Backoff>,
     /// Rows reported undecodable; skipped by every later read.
     damaged: BTreeSet<String>,
+    /// Frozen pages (job to call ID) that go out only in a request of their
+    /// own, because a request carrying them with others was refused whole.
+    solo: BTreeMap<String, String>,
+    /// A scheduler read failed: look again at this time.
+    rescan: Option<u64>,
     outcomes: VecDeque<LoadReceived>,
     /// A dispatch may find ready work.
     dirty: bool,
@@ -153,8 +184,14 @@ impl LoadWorker {
         self.backoff
             .values()
             .map(|b| b.due)
+            .chain(self.rescan)
             .filter(|due| *due > now)
             .min()
+    }
+    /// A scheduler read failed: dispatch looks again after one bounded
+    /// delay, which [`LoadWorker::next_due`] keeps until a dispatch runs.
+    pub fn scan_failed(&mut self, now: u64, entropy: u64) {
+        self.rescan = Some(now.saturating_add(load_backoff(1, entropy)));
     }
     /// The exact body of a batch whose request is still unanswered.
     pub fn unanswered(&self, batch: u64) -> Option<&str> {
@@ -176,13 +213,20 @@ impl LoadWorker {
         entropy: u64,
     ) -> Result<LoadDispatchStep> {
         self.dirty = false;
+        self.rescan = None;
         let mut step = LoadDispatchStep::default();
         if self.batches.len() >= LOAD_BATCHES {
             return Ok(step);
         }
         let mut request = LoadBatchRequest { loads: vec![] };
         let mut pages: Vec<LoadSent> = vec![];
+        // Pages that cannot be sent even alone, and why; they share the
+        // step's slot and its bound of LOAD_BATCH_ITEMS pages.
+        let mut unsent: Vec<(LoadSent, LoadFailure)> = vec![];
+        // Pages taken (sent, or failed as unsendable), and pages left for a
+        // request of their own.
         let mut picked = BTreeSet::new();
+        let mut held = BTreeSet::new();
         let mut full = false;
         loop {
             let mut skip: BTreeSet<String> = self.flight.keys().cloned().collect();
@@ -194,12 +238,15 @@ impl LoadWorker {
             );
             skip.extend(self.damaged.iter().cloned());
             skip.extend(picked.iter().cloned());
-            let schedule = client.load_ready_pages(LOAD_BATCH_ITEMS - pages.len(), &skip)?;
+            skip.extend(held.iter().cloned());
+            let schedule =
+                client.load_ready_pages(LOAD_BATCH_ITEMS - pages.len() - unsent.len(), &skip)?;
             for issue in schedule.issues {
                 self.damaged.insert(issue.load_id.clone());
                 step.issues.push(issue);
             }
             let found = schedule.pages.len();
+            // A page of this read was set aside: read again to fill the batch.
             let mut deferred = false;
             for page in schedule.pages {
                 let id = page.fence.load_id.clone();
@@ -221,32 +268,74 @@ impl LoadWorker {
                         self.backoff.remove(&id);
                     }
                 }
+                let alone = self.solo.get(&id) == Some(&page.fence.call_id);
+                if alone && !pages.is_empty() {
+                    held.insert(id);
+                    deferred = true;
+                    continue;
+                }
                 request.loads.push(page.intent.clone());
-                if request.encode().is_err() {
-                    // The request bound is reached: this page goes with the
-                    // next batch.
-                    request.loads.pop();
+                let sent = LoadSent {
+                    fence: page.fence,
+                    attempts: page.attempts,
+                };
+                match request.encode() {
+                    Ok(_) => {}
+                    Err(error) if pages.is_empty() => {
+                        // Not even alone: this job fails, the others go on.
+                        let code = unsendable(&request);
+                        request.loads.pop();
+                        unsent.push((
+                            sent,
+                            LoadFailure::Local(LoadJobError::new(
+                                code,
+                                format!("the frozen Load page cannot be sent: {error}"),
+                                vec![],
+                            )),
+                        ));
+                        picked.insert(id);
+                        deferred = true;
+                        if unsent.len() == LOAD_BATCH_ITEMS {
+                            full = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(_) => {
+                        // The request bound is reached: this page goes with
+                        // the next batch.
+                        request.loads.pop();
+                        full = true;
+                        break;
+                    }
+                }
+                picked.insert(id);
+                pages.push(sent);
+                if alone {
                     full = true;
                     break;
                 }
-                picked.insert(id);
-                pages.push(LoadSent {
-                    fence: page.fence,
-                    attempts: page.attempts,
-                });
             }
-            if full || pages.len() == LOAD_BATCH_ITEMS || !deferred || found == 0 {
+            if full || pages.len() + unsent.len() == LOAD_BATCH_ITEMS || !deferred || found == 0 {
                 break;
             }
         }
-        if pages.is_empty() {
+        if !held.is_empty() {
+            // A page that must go alone waits for the next dispatch.
+            self.dirty = true;
+        }
+        if pages.is_empty() && unsent.is_empty() {
             return Ok(step);
         }
-        let body = String::from_utf8(request.encode()?)
-            .map_err(|_| axton_core::invalid("Load request is not UTF-8"))?;
+        let body = if pages.is_empty() {
+            String::new()
+        } else {
+            String::from_utf8(request.encode()?)
+                .map_err(|_| axton_core::invalid("Load request is not UTF-8"))?
+        };
         self.issued += 1;
         let batch = self.issued;
-        for page in &pages {
+        for page in pages.iter().chain(unsent.iter().map(|(sent, _)| sent)) {
             self.flight.insert(page.fence.load_id.clone(), batch);
         }
         self.batches.insert(
@@ -255,13 +344,22 @@ impl LoadWorker {
                 request,
                 body: body.clone(),
                 pages: pages.clone(),
-                answered: false,
-                unconsumed: pages.len(),
+                answered: pages.is_empty(),
+                unconsumed: pages.len() + unsent.len(),
             },
         );
-        // More may be ready than one batch holds.
+        for (sent, failure) in unsent {
+            self.outcomes.push_back(LoadReceived {
+                batch,
+                sent,
+                answer: LoadAnswer::Failure(failure),
+            });
+        }
+        // More may be ready than one step holds.
         self.dirty = true;
-        step.dispatch = Some(LoadDispatch { batch, body, pages });
+        if !pages.is_empty() {
+            step.dispatch = Some(LoadDispatch { batch, body, pages });
+        }
         Ok(step)
     }
 
@@ -320,17 +418,46 @@ impl LoadWorker {
             });
         }
     }
-    /// The request of `batch` was abandoned (pause, stop) before an answer:
-    /// its slot and its pages are released without a failure, so no backoff
-    /// follows. An answered batch is left alone.
-    pub fn abandon(&mut self, batch: u64) {
-        if self.batches.get(&batch).is_none_or(|b| b.answered) {
+    /// The backend refused the whole request of `batch` (a 4xx other than
+    /// 401, 408 and 429). A request of several pages is abandoned without a
+    /// failure and each of its pages goes alone next time; a page refused
+    /// alone fails its job as `load.protocol_invalid`.
+    pub fn rejected(&mut self, batch: u64, message: &str) {
+        let Some(entry) = self.batches.get(&batch).filter(|b| !b.answered) else {
             return;
+        };
+        if entry.pages.len() == 1 {
+            let failure = LoadFailure::Local(LoadJobError::new(
+                PROTOCOL_INVALID,
+                format!("the backend refused the Load request: {message}"),
+                vec![],
+            ));
+            return self.failed(batch, failure);
         }
-        if let Some(entry) = self.batches.remove(&batch) {
-            for sent in entry.pages {
+        for sent in &entry.pages {
+            self.solo
+                .insert(sent.fence.load_id.clone(), sent.fence.call_id.clone());
+        }
+        self.abandon(batch);
+    }
+    /// The request of `batch` was abandoned (pause, stop) before an answer:
+    /// its pages are released without a failure, so no backoff follows, and
+    /// the slot is released once the step's unsendable failures, if any,
+    /// were consumed. An answered batch is left alone.
+    pub fn abandon(&mut self, batch: u64) {
+        let Some(entry) = self.batches.get_mut(&batch).filter(|b| !b.answered) else {
+            return;
+        };
+        for sent in std::mem::take(&mut entry.pages) {
+            if self.flight.get(&sent.fence.load_id) == Some(&batch) {
                 self.flight.remove(&sent.fence.load_id);
             }
+            entry.unconsumed = entry.unconsumed.saturating_sub(1);
+        }
+        entry.answered = true;
+        entry.request.loads.clear();
+        if entry.unconsumed == 0 {
+            self.batches.remove(&batch);
         }
         self.dirty = true;
     }
@@ -391,6 +518,18 @@ impl LoadWorker {
     /// retry, a forget): no backoff of it applies any more.
     pub fn settled(&mut self, load_id: &str) {
         self.backoff.remove(load_id);
+        self.solo.remove(load_id);
+    }
+    /// A retry answered `call_id` as the job's frozen call: when that is the
+    /// call already waiting (an idempotent retry of active work), its backoff
+    /// and its request of its own stay; a new call starts clean.
+    pub fn retried(&mut self, load_id: &str, call_id: Option<&str>) {
+        if self.backoff.get(load_id).map(|b| b.call_id.as_str()) != call_id {
+            self.backoff.remove(load_id);
+        }
+        if self.solo.get(load_id).map(String::as_str) != call_id {
+            self.solo.remove(load_id);
+        }
     }
     /// The replica was replaced or the runtime closed: nothing held belongs
     /// to the current ledger. The next dispatch starts from the ledger.

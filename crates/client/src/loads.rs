@@ -30,6 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SCHEMA_PENDING: &str = "load.schema_pending";
 /// `refresh` without `once`, or a `list` limit outside `1..=100`.
 pub const INVALID_OPTIONS: &str = "load.invalid_options";
+/// Business arguments the Load's declared inputs refuse: a wrong type, an
+/// invalid value (such as a malformed UUID), a missing or an undeclared input.
+pub const INVALID_ARGS: &str = "load.invalid_args";
 /// The named job is not in this replica's ledger.
 pub const NOT_FOUND: &str = "load.not_found";
 /// The job's frozen Load version is no longer retained by the schema.
@@ -40,6 +43,9 @@ pub const STORE_FAILED: &str = "load.store_failed";
 pub const HOOK_FAILED: &str = "load.hook_failed";
 /// A correlated page whose content breaks the Load contract.
 pub const PROTOCOL_INVALID: &str = "load.protocol_invalid";
+/// A frozen page request that cannot be sent even alone: over the request
+/// byte bound.
+pub const REQUEST_TOO_LARGE: &str = "load.request_too_large";
 /// A correlated page over the page byte or identity bound.
 pub const PAGE_TOO_LARGE: &str = "load.page_too_large";
 /// A correlated page whose `next` state is not bounded portable JSON.
@@ -498,7 +504,7 @@ fn load_call(
     args: &Value,
 ) -> Result<(Value, BTreeMap<String, u64>)> {
     let load = schema.load(name, version).map_err(|e| coded(UNKNOWN, e))?;
-    let args = normalize_load_args(schema, load, args)?;
+    let args = normalize_load_args(schema, load, args).map_err(|e| coded(INVALID_ARGS, e))?;
     let mut models = BTreeMap::new();
     for output in &load.outputs {
         if let Some(model) = &output.model {

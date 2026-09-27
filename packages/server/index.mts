@@ -471,6 +471,11 @@ const LOAD_STATE_DEPTH = 64;
  * would silently turn a safe BigInt into a number or call `toJSON`. A value
  * that throws while it is inspected (a getter, a Proxy trap) is not portable.
  */
+/**
+ * A lone UTF-16 surrogate: `JSON.stringify` escapes it, but it is not Unicode
+ * text, so Rust refuses the answer. Well-formed pairs match nothing here.
+ */
+const LONE_SURROGATE = /\p{Surrogate}/u;
 function continuationProblem(next: unknown): string | undefined {
   try {
     return inspectContinuation(next);
@@ -492,6 +497,9 @@ function inspectContinuation(next: unknown): string | undefined {
   const visit = (value: unknown, depth: number): string | undefined => {
     switch (typeof value) {
       case "string":
+        return LONE_SURROGATE.test(value)
+          ? "a string with a lone UTF-16 surrogate"
+          : undefined;
       case "boolean":
         return undefined;
       case "number":
@@ -526,6 +534,8 @@ function inspectContinuation(next: unknown): string | undefined {
         }
       } else
         for (const key of Object.keys(value)) {
+          if (LONE_SURROGATE.test(key))
+            return "a key with a lone UTF-16 surrogate";
           const problem = visit(
             (value as Record<string, unknown>)[key],
             depth + 1,

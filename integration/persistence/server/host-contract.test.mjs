@@ -165,6 +165,11 @@ test('a Load continuation that is not bounded portable JSON is a saved rejection
   ['empty wrapper',{}],
   ['extra member',{state:1,more:2}],
   ['bare state',7],
+  // JSON.stringify escapes a lone UTF-16 surrogate that Rust cannot decode:
+  // without this check the page would fail as a host fault and retry forever.
+  ['lone surrogate',{state:'\ud800'}],
+  ['nested lone surrogate',{state:{after:['ok','x\udfff']}}],
+  ['lone surrogate key',{state:{'\udc00':1}}],
  ];
  for(const [label,next] of invalid){
   const errors=[];
@@ -172,7 +177,7 @@ test('a Load continuation that is not bounded portable JSON is a saved rejection
   assert.deepEqual(answers,[['handleLoad',{rejection:'load.invalid_continuation'}]],label);
   assert.equal(errors.length,1,`${label} is reported`);
  }
- const valid=[{state:deep(64)},{state:null},{state:'x'.repeat(64*1024-2)},{state:{nested:[1,-0,2.5,'s',true,null,{}]}},null];
+ const valid=[{state:deep(64)},{state:null},{state:'x'.repeat(64*1024-2)},{state:{nested:[1,-0,2.5,'s',true,null,{}]}},{state:{'\u{1f600}':'pair \ud83d\ude00'}},null];
  for(const next of valid){
   const {answers}=await replay([request],{page:()=>({data:{tasks:[{id:'t-1'}]},next})});
   assert.deepEqual(answers[0][1],{data:{tasks:[{id:'t-1'}]},next:JSON.parse(JSON.stringify(next))});

@@ -1823,3 +1823,51 @@ fn a_failed_scheduler_read_is_retried_on_its_own_timer() {
     let (_, body) = h.batch();
     assert_eq!(ids(&body), [second.as_str()]);
 }
+
+#[test]
+fn invalid_business_arguments_are_coded_for_every_start_and_invalidation() {
+    let mut h = host();
+    let cases = [
+        ("uuid", json!({"projectId":"not-a-uuid","since":null})),
+        ("type", json!({"projectId":5,"since":null})),
+        ("missing", json!({"since":null})),
+        (
+            "undeclared",
+            json!({"projectId":PROJECT,"since":null,"extra":1}),
+        ),
+    ];
+    for (case, args) in cases {
+        for (kind, options) in [
+            ("start", json!({})),
+            ("once", json!({"once":true})),
+            ("refresh", json!({"once":true,"refresh":true})),
+        ] {
+            let mut command = json!({"kind":"loadStart","name":"Entries","version":1,"args":args});
+            for (k, v) in options.as_object().unwrap() {
+                command[k] = v.clone();
+            }
+            let refused = h.call(&format!("{case}-{kind}"), command);
+            assert_eq!(refused["ok"], false, "{case} {kind}");
+            assert_eq!(
+                refused["details"]["code"], "load.invalid_args",
+                "{case} {kind}: {refused}"
+            );
+            assert!(refused["details"]["message"].is_string());
+        }
+        let refused = h.call(
+            &format!("{case}-invalidate"),
+            json!({"kind":"loadInvalidate","name":"Entries","args":args}),
+        );
+        assert_eq!(
+            refused["details"]["code"], "load.invalid_args",
+            "{case} invalidate: {refused}"
+        );
+    }
+    assert!(
+        h.call("list", json!({"kind":"loadList"}))["value"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "nothing was stored"
+    );
+}

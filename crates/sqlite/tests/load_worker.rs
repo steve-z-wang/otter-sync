@@ -373,7 +373,7 @@ fn a_page_that_cannot_be_sent_even_alone_fails_its_job_and_blocks_no_other() {
         "the younger jobs go"
     );
     assert!(w.in_flight(&oversized), "its failure waits for the writer");
-    assert_eq!(w.batches(), 1, "the unsendable page holds no slot");
+    assert_eq!(w.batches(), 1, "the failure shares the step's one slot");
     let LoadStored::Failed(job) = consume(&mut w, &mut c, 0) else {
         panic!("a terminal failure")
     };
@@ -442,4 +442,43 @@ fn a_failed_scheduler_read_keeps_its_retry_until_a_dispatch_runs() {
     w.wake();
     dispatch(&mut w, &mut c, 1_000);
     assert_eq!(w.next_due(1_000), None);
+}
+
+#[test]
+fn unsendable_failures_count_against_the_slots_like_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let oversized: Vec<String> = (0..17).map(|_| oversized_next_page(&mut c)).collect();
+    let healthy = start(&mut c);
+    w.wake();
+    // Each step fails at most eight, and each step's failures hold a slot
+    // until they are consumed: sixteen waiting outcomes stop the worker.
+    for _ in 0..2 {
+        let step = w.dispatch(&mut c, 0, ENTROPY).unwrap();
+        assert!(step.dispatch.is_none(), "nothing to send yet");
+    }
+    assert_eq!(w.waiting_outcomes(), 16);
+    assert_eq!(w.batches(), 2);
+    assert!(!w.wants_dispatch());
+    assert!(w.dispatch(&mut c, 0, ENTROPY).unwrap().dispatch.is_none());
+    assert_eq!(w.waiting_outcomes(), 16, "no seventeenth failure queued");
+    for _ in 0..8 {
+        let LoadStored::Failed(job) = consume(&mut w, &mut c, 0) else {
+            panic!("a terminal failure")
+        };
+        assert_eq!(job.error.unwrap().code, loads::REQUEST_TOO_LARGE);
+    }
+    // One step's failures consumed: its slot frees, and the next step fails
+    // the last oversized job and sends the healthy one.
+    assert!(w.wants_dispatch());
+    let step = w.dispatch(&mut c, 0, ENTROPY).unwrap();
+    assert_eq!(loads(&step.dispatch.unwrap()), [healthy]);
+    assert_eq!(w.waiting_outcomes(), 9);
+    while w.has_outcome() {
+        consume(&mut w, &mut c, 0);
+    }
+    for id in &oversized {
+        assert_eq!(c.get_load(id).unwrap().unwrap().phase, LoadPhase::Failed);
+    }
 }

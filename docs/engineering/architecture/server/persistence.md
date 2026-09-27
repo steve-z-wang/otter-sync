@@ -69,4 +69,7 @@ Executed 2026-09-26 on this branch with PostgreSQL 14.23: `bash integration/pers
 
 **Accepted limitation (legacy column).** `axton_client` once defined a `request_hash text` column that nothing wrote or read; receipt replay is keyed by client and sequence ([Server Push §9](engine/push.md#9-architecture-decisions)). Databases installed before its removal keep the column: `CREATE TABLE IF NOT EXISTS` never alters an existing table, and the statements name their columns, so the extra one is ignored. Removing it is optional and safe, `ALTER TABLE axton_client DROP COLUMN request_hash`, and touches no receipts or business data.
 
+<!-- load-draft: verify against implementation -->
+**Accepted limitation: no transaction timeout with `pg` or `drizzle`.** Their `transaction` runners set no timeout, so a hung application transaction holds its claim row, and a resend of the same call ID - a native Load page in particular ([Server / Engine / Loads](engine/loads.md#11-risks-and-technical-debt)) - blocks behind it. The `prisma` shim passes its `timeout`.
+
 **Accepted limitations.** PostgreSQL is the only database. The framework tables are installed from a raw SQL file with no migration tooling. Rows are never pruned: client rows live forever and invalidation rows grow with records × channels ([#61](https://github.com/zanminwang/axton/issues/61)). The isolation requirement on a driver's runner is stated in the interface's doc comment and checked by the conformance retry test, not enforced at runtime.

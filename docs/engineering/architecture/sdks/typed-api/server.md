@@ -14,11 +14,16 @@ A backend author writes retained Mutation and Query handlers and versioned Model
 | Query handler | `({ctx, args}: QueryHandlerCall<Tx, Args>) => Promise<Outputs>`; `QueryContext` has only `tx`, `userId`, `callId`, in the types and at runtime ([enforcement and its limit](../../schema/actions.md#8-crosscutting-concepts)) |
 | Changed records | the engine infers the operation's input targets; `touch.todo(identity)` declares a record the handler changed beyond them, which is stamped and distributed but is not caller authority |
 | Outputs | only explicitly declared outputs: a value for a scalar or enum output, an identity for a Model output (`null` for an optional one, an array for a list), even when an input has the same name; a missing field fails the call and is never filled from an input. An operation without outputs returns `void` |
+| Load handler | `({ctx, args, continuation}) => Promise<{data, next}>`, registered per retained version in generated `Loads<Tx>`; `LoadContext` has `tx`, `userId`, `callId` and `loadId`, no `touch` or `channel`; `continuation` and `next` are `LoadNext` (`null` or `{state: JsonValue}`); `data` holds one identity list per declared output ([Loads](../../schema/loads.md)) <!-- load-draft: verify against implementation --> |
 | Loader | `({ids, tx, userId}: LoaderCall) => Promise<(Row \| null)[]>`, aligned with `ids`; one per retained model version, `Row` being that version's record type; no channel |
 | Rejecting one call or refusing a read | throw `CallRejected(code)` (the same class as the legacy `MutationRejected`), or throw anything `translateRejection` maps to a code; during a call this rejects the call, in a pull it reports the affected record |
 | Channel membership | `channel(name).todo.add(identity)` / `.remove(identity)`, or `channel(name).add([Todo({id}), Project({id})])` / `.remove([…])` with generated references; outside a handler, `backend.transaction(async ({tx, channel, touch}) => …)` hands the body the same handles, settles them when it returns and answers the body's value ([Publish](../../server/engine/publish.md)) |
 | Serving | `backend.listen({port, host?})` → `{url, close}` |
 | Development auth | `devAuth()` treats the bearer token as the user id; documented as development only |
+
+<!-- load-draft: verify against implementation -->
+<!-- load-draft: TODO confirm name -->
+In a schema that declares Loads, generated `backend.ts` also supplies `Loads<Tx>`, `LoadContext`, `LoadNext` and `JsonValue`, and `createBackend` takes the Load handlers beside `mutations` and `queries` (option name to be confirmed, presumably `loads`), required when a Load contract is retained. Registration follows the version rules below. The Handler must return portable JSON state; the host rejects state that JSON serialization would coerce ([Server / Engine / Loads](../../server/engine/loads.md#6-runtime-view)).
 
 ## 5. Building Block View
 

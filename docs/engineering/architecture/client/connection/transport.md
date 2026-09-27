@@ -8,6 +8,9 @@ The transport moves bytes. It knows the three HTTP routes and the WebSocket rout
 
 Configuration is `{url, token}`, where `token` is a string or a function returning one. Push, catch-up and direct Action calls use `POST <url>/sync/mutations`, `POST <url>/sync/pull` and `POST <url>/sync/actions`; the stream is a WebSocket on `<url>/sync/live`. All four carry `Authorization: Bearer <token>`. A non-2xx response becomes an error carrying `status` (TypeScript) or `AuthenticationExpired` for 401 and `HttpFailure` otherwise (Dart); the effect executor passes that status back in the effect result, which is what the [runtime](../runtime.md) uses to ask for an auth refresh ([Scheduling](controller/scheduling.md#6-runtime-view)). Direct calls use the connection's configured carrier independently of the durable push and live lanes. `directTimeoutMs` in TypeScript accepts an integer from 1 to 2,147,483,647 milliseconds; `directTimeout` in Dart accepts a positive `Duration`. Both bound the entire direct attempt, including token acquisition and refresh, and default to 30 seconds. The runtime enforces that deadline with a `timer` effect. A timeout or lost response leaves execution unknown. Authentication retry reuses the prepared request body and call ID.
 
+<!-- load-draft: verify against implementation -->
+Native Load pages use `POST <url>/sync/loads` with the same bearer token, as the `load` route of an `http` effect in the TypeScript `httpTransport`, the custom `Transport` type, React Native and the Dart connection; no bridge falls back to another route. The runtime bounds each attempt with its own `timer` effect ([Load worker](controller/load-worker.md#6-runtime-view)).
+
 ## 5. Building Block View
 
 Both transports do the same things with language-native tools:

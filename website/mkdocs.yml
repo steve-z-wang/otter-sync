@@ -60,6 +60,8 @@ nav:
           - Set up the client: frontend/setup.md
           - Client API: frontend/client-api.md
           - Offline work and sync: frontend/sync.md
+          # load-draft: verify against implementation
+          - Load data in pages: frontend/loads.md
           - Local storage: frontend/storage.md
           - Advanced client APIs: frontend/runtime.md
           - Supported platforms: frontend/platforms.md

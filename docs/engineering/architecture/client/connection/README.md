@@ -8,6 +8,8 @@ The connection is how the client reaches a server: the network calls themselves,
   - [Push lane](controller/push-lane.md) — Freeze, send, acknowledge, repeat.
   - [Downlink worker](controller/downlink-worker.md) — Subscribe, catch up over HTTP, queue and commit pages, recover from gaps and subscription changes.
   - [Live session](controller/live-session.md) — One socket attempt of the worker: wire subscription, epoch and handshake order.
+<!-- load-draft: verify against implementation -->
+  - [Load worker](controller/load-worker.md) — Batch ready native Load pages, fairly and with per-job backoff.
 
 ## Code map
 
@@ -17,3 +19,4 @@ The connection is how the client reaches a server: the network calls themselves,
 | Controller / Scheduling | [client/connection.rs](../../../../../crates/client/src/connection.rs) (`ConnectionDriver`), driven by [client/runtime/lanes.rs](../../../../../crates/client/src/runtime/lanes.rs); effect executors in [client-js/connection.mts](../../../../../packages/client-js/connection.mts) and [dart/connection.dart](../../../../../packages/dart/lib/src/connection.dart) |
 | Controller / Push lane | [client/transport.rs](../../../../../crates/client/src/transport.rs) (`SyncCycle`), driven by [client/runtime/lanes.rs](../../../../../crates/client/src/runtime/lanes.rs) |
 | Controller / Downlink worker | [client/downlink_worker.rs](../../../../../crates/client/src/downlink_worker.rs) (`DownlinkWorker`) with the socket session in [client/live.rs](../../../../../crates/client/src/live.rs) (`LiveSession`); dispositions in [client/transport.rs](../../../../../crates/client/src/transport.rs); driven by [client/runtime/lanes.rs](../../../../../crates/client/src/runtime/lanes.rs), with its socket and HTTP results admitted in [client/runtime/effects.rs](../../../../../crates/client/src/runtime/effects.rs) |
+| Controller / Load worker | planned `crates/client/src/load_worker.rs` and `runtime/loads.rs` <!-- load-draft: verify against implementation --> |

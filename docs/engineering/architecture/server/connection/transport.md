@@ -6,7 +6,10 @@ The server transport terminates HTTP and WebSocket traffic, authenticates each r
 
 ## 3. Context and Scope
 
-`backend.listen({port, host = "127.0.0.1"})` starts one Node HTTP server with two routes, `POST /sync/mutations` and `POST /sync/pull`, and a WebSocket upgrade on `/sync/live`. Other paths are `404`; other methods `405`. Bodies and frames are limited to 1 MiB.
+`backend.listen({port, host = "127.0.0.1"})` starts one Node HTTP server with two routes, `POST /sync/mutations` and `POST /sync/pull`, and a WebSocket upgrade on `/sync/live`.
+
+<!-- load-draft: verify against implementation -->
+`POST /sync/loads` serves batched native Load pages ([Protocol / Loads](../../protocol/loads.md)). It authenticates once per request; envelope and authentication failures are whole-request statuses, while every item outcome, a rejection included, answers `200` inside the body. Other paths are `404`; other methods `405`. Bodies and frames are limited to 1 MiB.
 
 ## 5. Building Block View
 

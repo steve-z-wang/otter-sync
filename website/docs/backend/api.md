@@ -132,6 +132,11 @@ A bare function means v1 only. A missing retained version, unknown version key, 
 
 An error that is neither `CallRejected` nor translated to a business code rejects that call with `handler.failed` and reaches `onError`. Independent valid calls in the batch can still commit. A retryable database transaction error instead retries the transaction; it is not saved as a permanent business rejection.
 
+<!-- load-draft: verify against implementation -->
+## Load handlers
+
+A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version that receives `{ ctx, args, continuation }` and returns identity lists with the next continuation. Its context has `tx`, `userId`, `callId` and `loadId`, and no `touch` or `channel`. Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again. Your handler owns ordering, consistency, authorization and termination. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
+
 ## Loaders
 
 ```ts title="action-contract"

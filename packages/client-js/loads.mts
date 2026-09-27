@@ -53,7 +53,11 @@ export class LoadError extends Error {
  */
 export interface Load<Name extends string = string> {
   readonly id: string;
-  /** The runtime's last published status. It stays readable after dispose or close. */
+  /**
+   * The runtime's last published status. It stays readable after dispose or
+   * close. A schema rebuild ends the handle with a `failed` status whose error
+   * is `load.schema_changed`.
+   */
   readonly status: LoadStatus<Name>;
   /** Deliver the current status at once, then every distinct change, until the returned function is called. */
   watch(listener: (status: LoadStatus<Name>) => void): () => void;
@@ -63,7 +67,11 @@ export interface Load<Name extends string = string> {
   cancel(): Promise<void>;
   /** Read a failed job again from its last committed continuation. */
   retry(): Promise<void>;
-  /** Delete a terminal job; later management calls fail `load.not_found`. */
+  /**
+   * Delete a terminal job; later management calls fail `load.not_found`.
+   * Every management call on a job a schema rebuild abandoned fails
+   * `load.schema_changed`.
+   */
   forget(): Promise<void>;
   /** Release this handle's observer. The job continues. */
   dispose(): void;
@@ -183,6 +191,8 @@ class LoadHandle<Name extends string> implements Load<Name> {
       for (const listener of [...this.#listeners]) this.#deliver(listener);
     }
     // Close or rebuild ended the observer: its route ended with this snapshot.
+    // The runtime decides what it carries: the last status on close, a failed
+    // status with the rebuild's `load.schema_changed` error on rebuild.
     if (snapshot.closed === true) this.#end();
   }
   #deliver(listener: (status: LoadStatus<Name>) => void): void {

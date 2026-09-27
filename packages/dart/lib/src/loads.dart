@@ -111,11 +111,14 @@ class Load {
   Load._(this.id, this._observerId, this._snapshot, this._loads);
 
   /// The runtime's last published status. It stays readable after [dispose]
-  /// or the client's close.
+  /// or the client's close. A schema rebuild ends the handle with a `failed`
+  /// status whose error is `load.schema_changed`.
   LoadStatus get status => _snapshot;
 
   /// One `observerChanged` snapshot. A terminal one - the client closed or a
-  /// rebuild replaced the replica - is the last.
+  /// rebuild replaced the replica - is the last; the runtime decides what it
+  /// carries: the last status on close, a failed status with the rebuild's
+  /// `load.schema_changed` error on rebuild.
   void _apply(Map<String, dynamic> snapshot) {
     if (_observerId == null) return;
     final status = LoadStatus.fromJson(
@@ -166,6 +169,8 @@ class Load {
   Future<void> retry() => _manage('loadRetry');
 
   /// Delete a terminal job; later management calls fail `load.not_found`.
+  /// Every management call on a job a schema rebuild abandoned fails
+  /// `load.schema_changed`.
   Future<void> forget() => _manage('loadForget');
 
   Future<void> _manage(String kind) =>

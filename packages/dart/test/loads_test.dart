@@ -315,6 +315,13 @@ void main() {
     );
     await expectLater(client.startLoad('Nope', 1, {}), _code('load.unknown'));
     await expectLater(
+      client.startLoad('Entries', 1, {
+        'projectId': 'not-a-uuid',
+        'since': null,
+      }),
+      _code('load.invalid_args'),
+    );
+    await expectLater(
       client.listLoads(limit: 0),
       _code('load.invalid_options'),
     );
@@ -487,4 +494,75 @@ void main() {
       expect(job.status.error?.code, 'load.unauthorized');
     },
   );
+
+  test('a rebuild ends live handles and parked waiters with '
+      'load.schema_changed', () async {
+    final changed = jsonDecode(jsonEncode(_schema)) as Map<String, dynamic>;
+    for (final models in ['models', 'resultModels']) {
+      (changed[models][0]['fields'] as List).add({
+        'name': 'extra',
+        'nullable': false,
+        'type': {'kind': 'scalar', 'name': 'string'},
+      });
+    }
+    // An unsent Mutation keeps the old file open behind a pending rebuild.
+    final old = await open();
+    final started = await old.startLoad('Entries', 1, _args);
+    await old.transaction((tx) async {
+      await tx.direct({
+        'model': 'Entry',
+        'op': 'create',
+        'identity': {'id': 'e'},
+        'values': {'text': 'A', 'note': null},
+      });
+    });
+    await old.mutate({
+      'name': 'Edit',
+      'operations': [
+        {
+          'model': 'Entry',
+          'op': 'update',
+          'identity': {'id': 'e'},
+          'values': {'text': 'B'},
+        },
+      ],
+    });
+    await old.close();
+    final client = await Client.open(
+      path: '${directory.path}/db',
+      schema: changed,
+      libraryPath: Platform.environment['AXTON_LIBRARY']!,
+    );
+    clients.add(client);
+    expect((await client.syncState())['schema']['pending'], isNotNull);
+    final job = (await client.getLoad(started.id))!;
+    expect(job.status.phase, LoadPhase.waiting);
+    final watched = job.watch().toList();
+    Object? settled;
+    final waiting = job.wait().then<void>(
+      (_) => settled = 'resolved',
+      onError: (Object error) {
+        settled = error;
+      },
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(settled, isNull, reason: 'the waiter is parked');
+    final report = await client.rebuild(discardPending: true);
+    expect(report['abandonedLoads'], [started.id]);
+    await waiting;
+    expect(
+      settled,
+      isA<LoadException>().having((e) => e.code, 'code', 'load.schema_changed'),
+    );
+    // The handle's last status says why it ended, and its watch completes.
+    expect(job.status.phase, LoadPhase.failed);
+    expect(job.status.error?.code, 'load.schema_changed');
+    expect((await watched).last, job.status);
+    await expectLater(job.wait(), _code('load.schema_changed'));
+    await expectLater(job.cancel(), _code('load.schema_changed'));
+    await expectLater(job.retry(), _code('load.schema_changed'));
+    await expectLater(job.forget(), _code('load.schema_changed'));
+    expect(await client.getLoad(started.id), isNull);
+    expect(await client.listLoads(), isEmpty);
+  });
 }

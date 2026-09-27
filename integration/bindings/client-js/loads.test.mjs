@@ -10,6 +10,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { AxtonReport } from "../../../packages/client-js/connection.mts";
 import { LoadError } from "../../../packages/client-js/loads.mts";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import { Transaction } from "../../../packages/client-js/transaction.mts";
@@ -113,9 +114,21 @@ test("a start is accepted offline and its wait resolves after the final page com
     for (let i = 1; i < seen.length; i++)
       assert.notDeepEqual(seen[i], seen[i - 1], "only distinct snapshots");
     stop();
-    const count = seen.length;
-    await (await client.startLoad("Entries", 1, args)).wait();
-    assert.equal(seen.length, count, "a stopped listener hears nothing");
+    // A stopped listener hears nothing more while its own job still changes:
+    // the batch is held until the listener is stopped.
+    const gate = deferred();
+    server.gate = gate;
+    const third = await client.startLoad("Entries", 1, args);
+    const heard = [];
+    const stopThird = third.watch((status) => heard.push(status.phase));
+    assert.deepEqual(heard, [third.status.phase], "the current status at once");
+    assert.notEqual(heard[0], "complete");
+    stopThird();
+    server.gate = undefined;
+    gate.resolve();
+    await third.wait();
+    assert.equal(third.status.phase, "complete", "the handle itself moved on");
+    assert.equal(heard.length, 1, "a stopped listener hears nothing");
     // A complete job waits locally.
     await job.wait();
     await connection.close();
@@ -218,10 +231,11 @@ test("invalid options and arguments are refused before any job exists", async ()
         JSON.stringify(options),
       );
     await assert.rejects(client.startLoad("Nope", 1, {}), code("load.unknown"));
-    // Arguments the Load's inputs refuse fail with the engine's reason.
+    // Arguments the Load's inputs refuse fail with a coded reason.
     await assert.rejects(
       client.startLoad("Entries", 1, { projectId: "not-a-uuid", since: null }),
-      /invalid UUID/,
+      (error) =>
+        code("load.invalid_args")(error) && /invalid UUID/.test(error.message),
     );
     assert.equal((await client.listLoads()).length, before);
     await assert.rejects(
@@ -398,6 +412,32 @@ test("close settles every waiter, keeps the work, and terminal status is readabl
   });
 });
 
+test("a page refused for a record reports that record through onError", async () => {
+  await harness(async ({ client, server, connect }) => {
+    server.answer = (intent) => {
+      const item = page(intent, [
+        ["a", "A"],
+        ["b", "B"],
+      ]);
+      item.records[1].state = { text: 5, note: null };
+      return item;
+    };
+    const job = await client.startLoad("Entries", 1, args);
+    const errors = [];
+    const connection = await connect(client, {
+      onError: (error) => errors.push(error),
+    });
+    await assert.rejects(job.wait(), code("load.store_failed"));
+    const reports = errors.filter((error) => error instanceof AxtonReport);
+    assert.equal(reports.length, 1, String(errors));
+    assert.equal(reports[0].kind, "skipped");
+    assert.equal(reports[0].model, "Entry");
+    assert.deepEqual(reports[0].identity, { id: "b" });
+    assert.equal(await client.read("Entry", { id: "a" }), null);
+    await connection.close();
+  });
+});
+
 test("a refused credential refresh fails the batch load.unauthorized", async () => {
   await harness(async ({ client, server, connect }) => {
     server.error = Object.assign(Error("expired"), { status: 401 });
@@ -447,6 +487,84 @@ test("a rebuild reports the Load jobs it left behind", async () => {
       assert.equal(await rebuilt.getLoad(job.id), null);
     } finally {
       await rebuilt.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a rebuild ends live handles and parked waiters with load.schema_changed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-loads-rebuild-"));
+  const path = join(directory, "db");
+  const Client = createClient(native, Transaction, () =>
+    backend().connection(),
+  );
+  const changed = structuredClone(schema);
+  const extra = {
+    name: "extra",
+    nullable: false,
+    type: { kind: "scalar", name: "string" },
+  };
+  changed.models[0].fields = [...changed.models[0].fields, extra];
+  changed.resultModels[0].fields = [...changed.resultModels[0].fields, extra];
+  try {
+    // An unsent Mutation keeps the old file open behind a pending rebuild.
+    const old = await Client.open({ path, schema });
+    const started = await old.startLoad("Entries", 1, args);
+    await old.transaction((tx) =>
+      tx.direct({
+        model: "Entry",
+        op: "create",
+        identity: { id: "e" },
+        values: { text: "A", note: null },
+      }),
+    );
+    await old.mutate({
+      name: "Edit",
+      operations: [
+        {
+          model: "Entry",
+          op: "update",
+          identity: { id: "e" },
+          values: { text: "B" },
+        },
+      ],
+    });
+    await old.close();
+    const client = await Client.open({ path, schema: changed });
+    try {
+      assert.notEqual((await client.syncState()).schema.pending, null);
+      const job = await client.getLoad(started.id);
+      assert.equal(job.status.phase, "waiting");
+      const seen = [];
+      job.watch((status) => seen.push(status));
+      let settled;
+      const waiting = job.wait().then(
+        () => (settled = "resolved"),
+        (error) => {
+          settled = error;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(settled, undefined, "the waiter is parked");
+      const report = await client.rebuild({ discardPending: true });
+      assert.deepEqual(report.abandonedLoads, [started.id]);
+      await waiting;
+      assert.ok(code("load.schema_changed")(settled), String(settled));
+      // The handle's last status says why it ended, and nothing follows.
+      assert.equal(job.status.phase, "failed");
+      assert.equal(job.status.error.code, "load.schema_changed");
+      assert.equal(seen.at(-1), job.status);
+      for (const manage of ["wait", "cancel", "retry", "forget"])
+        await assert.rejects(
+          job[manage](),
+          code("load.schema_changed"),
+          manage,
+        );
+      assert.equal(await client.getLoad(started.id), null);
+      assert.deepEqual(await client.listLoads(), []);
+    } finally {
+      await client.close();
     }
   } finally {
     await rm(directory, { recursive: true, force: true });

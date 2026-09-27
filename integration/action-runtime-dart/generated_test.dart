@@ -423,8 +423,8 @@ void main() {
         expect(restored?.status, job.status);
         final listed = await client.loads.list(limit: 10);
         expect(listed.map((s) => s.id), containsAll([job.id, ordinary.id]));
-        expect(
-          () => client.loads.notesSince(since: null, moods: [], refresh: true),
+        await expectLater(
+          client.loads.notesSince(since: null, moods: [], refresh: true),
           throwsA(
             isA<LoadException>().having(
               (e) => e.code,

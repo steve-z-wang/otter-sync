@@ -247,6 +247,13 @@ fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
                 .into(),
         };
         h.command(
+            "written",
+            &hook.transaction,
+            None,
+            create("local", "hook write"),
+        );
+        assert_eq!(h.run(), vec![done("written", Value::Null)]);
+        h.command(
             "3",
             &hook.transaction,
             None,
@@ -277,6 +284,10 @@ fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
             assert_eq!(events[0]["ok"], false);
         }
         assert_eq!(h.committed(), None);
+        let local = schema()
+            .record_key("Entry", &json!({"id":"local"}))
+            .unwrap();
+        assert_eq!(h.runtime.client().read(&local).unwrap(), None);
     }
 }
 
@@ -613,6 +624,144 @@ fn close_during_a_callback_rolls_back_and_releases_every_waiter() {
 struct FailingCommit {
     inner: SqliteStore,
     armed: Arc<AtomicBool>,
+}
+
+struct FaultRollback {
+    inner: SqliteStore,
+    fail_commit: Arc<AtomicBool>,
+    fail_rollback: Arc<AtomicBool>,
+}
+impl ClientStore for FaultRollback {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        if self.fail_commit.swap(false, Ordering::SeqCst) {
+            return Err(invalid("injected commit failure"));
+        }
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        if self.fail_rollback.swap(false, Ordering::SeqCst) {
+            return Err(invalid("injected physical rollback failure"));
+        }
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query_committed(sql, parameters)
+    }
+}
+
+#[test]
+fn authority_rollback_failure_reports_cleanup_and_closes_before_next_write() {
+    for commit_failure in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let fail_commit = Arc::new(AtomicBool::new(false));
+        let fail_rollback = Arc::new(AtomicBool::new(false));
+        let client = Client::open(
+            FaultRollback {
+                inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+                fail_commit: fail_commit.clone(),
+                fail_rollback: fail_rollback.clone(),
+            },
+            schema(),
+        )
+        .unwrap();
+        let mut h = Harness {
+            runtime: ClientRuntime::with_store_hooks(client, vec!["Entry".into()]).unwrap(),
+            _dir: dir,
+        };
+        h.task(
+            "channel",
+            json!({"kind":"channel","channel":"feed","subscribed":true}),
+        );
+        h.run();
+        let state = h
+            .runtime
+            .client()
+            .subscription_state("feed")
+            .unwrap()
+            .unwrap();
+        h.runtime
+            .client()
+            .initialize_subscriptions(
+                &std::collections::BTreeMap::from([("feed".into(), state.subscription_id)]),
+                &std::collections::BTreeMap::from([("feed".into(), 0)]),
+            )
+            .unwrap();
+        h.task("owner", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+        let first = h.run();
+        assert_eq!(first[0]["operation"]["kind"], "storeCallback", "{first:?}");
+        let hook = Open {
+            effect: first[0]["effectId"].as_str().unwrap().into(),
+            transaction: first[0]["operation"]["transactionId"]
+                .as_str()
+                .unwrap()
+                .into(),
+        };
+        h.task("next", create("later", "must not run"));
+        fail_rollback.store(true, Ordering::SeqCst);
+        if commit_failure {
+            fail_commit.store(true, Ordering::SeqCst);
+        }
+        h.callback(
+            &hook,
+            commit_failure,
+            (!commit_failure).then_some("hook boom"),
+        );
+        let events = h.run();
+        let owner = events
+            .iter()
+            .find(|event| event["requestId"] == "owner")
+            .unwrap();
+        assert_eq!(
+            owner["error"],
+            if commit_failure {
+                "injected commit failure"
+            } else {
+                "hook boom"
+            },
+            "{events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "report"
+                    && event["diagnostic"]["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("injected physical rollback failure"))
+                .count(),
+            1,
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event["requestId"] == "next" && event["error"] == "client_closed"),
+            "{events:?}"
+        );
+        assert_eq!(events.last().unwrap()["type"], "runtimeClosed");
+        assert!(h.runtime.closed());
+    }
 }
 impl ClientStore for FailingCommit {
     fn begin(&mut self) -> Result<()> {

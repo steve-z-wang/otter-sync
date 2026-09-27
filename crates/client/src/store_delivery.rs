@@ -248,7 +248,7 @@ impl<S: ClientStore> Client<S> {
         let (result, mode) = match replay {
             Ok(value) => value,
             Err(error) => {
-                self.rollback_session()?;
+                let _ = self.rollback_session();
                 return Err(error);
             }
         };
@@ -256,7 +256,7 @@ impl<S: ClientStore> Client<S> {
             unreachable!()
         };
         if next != count {
-            self.rollback_session()?;
+            let _ = self.rollback_session();
             return Err(invalid("prepared delivery did not replay all occurrences"));
         }
         if let StoreDelivery::Page(page) = &prepared.delivery {

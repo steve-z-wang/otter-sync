@@ -221,6 +221,9 @@ pub struct Client<S: ClientStore> {
     generation: u64,
     watchers: Vec<(BTreeSet<String>, Sender<()>)>,
     session: Option<Session>,
+    /// Physical rollback failure after the logical session has been taken.
+    /// The runtime consumes this separately from the original owner error.
+    physical_rollback_failure: Option<String>,
     session_serial: u64,
     last_changed: BTreeSet<String>,
     last_bootstrap: BTreeSet<String>,
@@ -443,6 +446,7 @@ impl<S: ClientStore> Client<S> {
             generation,
             watchers: vec![],
             session: None,
+            physical_rollback_failure: None,
             last_changed: BTreeSet::new(),
             last_bootstrap: BTreeSet::new(),
             session_serial: 0,
@@ -762,6 +766,7 @@ impl<S: ClientStore> Client<S> {
             return Err(invalid("transaction already active"));
         }
         self.store.begin()?;
+        self.physical_rollback_failure = None;
         self.session_serial += 1;
         self.session = Some(Session {
             id: self.session_serial,
@@ -797,17 +802,17 @@ impl<S: ClientStore> Client<S> {
             .take()
             .ok_or_else(|| invalid("no active transaction"))?;
         if !session.savepoints.is_empty() {
-            self.store.rollback()?;
+            let _ = self.physical_rollback();
             return Err(invalid("unclosed savepoint"));
         }
         if let Err(e) = self.fence() {
-            self.store.rollback()?;
+            let _ = self.physical_rollback();
             return Err(e);
         }
         // The session is already taken; a failed COMMIT must also close the
         // transaction, or every later `begin` would fail. Report the commit error.
         if let Err(e) = self.store.commit() {
-            let _ = self.store.rollback();
+            let _ = self.physical_rollback();
             return Err(e);
         }
         self.generation += 1;
@@ -823,7 +828,17 @@ impl<S: ClientStore> Client<S> {
         self.session
             .take()
             .ok_or_else(|| invalid("no active transaction"))?;
-        self.store.rollback()
+        self.physical_rollback()
+    }
+    fn physical_rollback(&mut self) -> Result<()> {
+        let result = self.store.rollback();
+        if let Err(error) = &result {
+            self.physical_rollback_failure = Some(error.to_string());
+        }
+        result
+    }
+    pub(crate) fn take_physical_rollback_failure(&mut self) -> Option<String> {
+        self.physical_rollback_failure.take()
     }
     pub fn session_savepoint(&mut self) -> Result<()> {
         let session = self

@@ -102,6 +102,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .into_iter()
                 .any(|model| self.store_hooks.contains(&model))
     }
+    /// Discard authority state if it still owns a logical session, then report
+    /// any physical rollback failure once. A failed physical rollback closes
+    /// the runtime before its queued work can touch the uncertain connection.
+    pub(super) fn abort_authority_session(&mut self) {
+        if self.client.session_active() {
+            let _ = self.client.rollback_session();
+        }
+        if let Some(error) = self.client.take_physical_rollback_failure() {
+            self.error(format!("authority rollback failed: {error}"));
+            self.lifecycle = Lifecycle::Closing;
+        }
+    }
     pub(super) fn open_store(
         &mut self,
         delivery: StoreDelivery,
@@ -117,7 +129,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let prepared = match self.client.prepare_store(delivery) {
             Ok(prepared) => prepared,
             Err(error) => {
-                let _ = self.client.rollback_session();
+                self.abort_authority_session();
                 self.complete(request_id, Err(error.to_string()));
                 return;
             }
@@ -135,7 +147,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let transaction_id = match self.issue() {
             Ok(id) => format!("tx{id}"),
             Err(error) => {
-                let _ = self.client.rollback_session();
+                self.abort_authority_session();
                 self.complete(request_id, Err(error));
                 return;
             }
@@ -143,7 +155,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let effect_id = match self.issue() {
             Ok(id) => id.to_string(),
             Err(error) => {
-                let _ = self.client.rollback_session();
+                self.abort_authority_session();
                 self.complete(request_id, Err(error));
                 return;
             }
@@ -335,7 +347,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
         if matches!(open.owner, TransactionOwner::Authority { .. }) {
             if let Some(refusal) = refusal {
-                let _ = self.client.rollback_session();
+                self.abort_authority_session();
                 if let TransactionOwner::Authority { continuation, .. } = open.owner {
                     self.fail(
                         continuation.request_id().to_string(),
@@ -371,7 +383,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                             self.emit_next_store_callback();
                         }
                         _ => {
-                            let _ = self.client.rollback_session();
+                            self.abort_authority_session();
                             self.fail(
                                 continuation.request_id().to_string(),
                                 "runtime identifiers exhausted",
@@ -432,7 +444,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Ok(value)
             });
         if result.is_err() {
-            let _ = self.client.rollback_session();
+            self.abort_authority_session();
         }
         self.committed_since(generation);
         if self.client.generation() != generation {

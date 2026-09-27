@@ -377,10 +377,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// announce the end. Nothing is applied after it.
     fn close(&mut self) {
         let transaction = self.transaction.take();
-        if transaction.is_some()
-            && let Err(e) = self.client.rollback_session()
-        {
-            self.error(format!("rollback at close failed: {e}"));
+        match transaction.as_ref().map(|transaction| &transaction.owner) {
+            Some(TransactionOwner::Authority { .. }) => self.abort_authority_session(),
+            Some(TransactionOwner::Application { .. }) => {
+                if let Err(e) = self.client.rollback_session() {
+                    self.error(format!("rollback at close failed: {e}"));
+                }
+            }
+            None => {}
         }
         for effect_id in std::mem::take(&mut self.effects).into_keys() {
             self.events.push(Event::CancelEffect { effect_id });

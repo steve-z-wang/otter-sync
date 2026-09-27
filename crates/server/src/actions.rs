@@ -34,7 +34,10 @@ fn rejected(call_id: &str, code: &str) -> ActionResponse {
     }
 }
 
-fn call_error(error: &Error) -> bool {
+/// Whether an execution error is the call's own terminal rejection, saved as
+/// its outcome, rather than a host, storage or request failure that aborts the
+/// application transaction. Direct Actions and Fetch share this classification.
+pub(crate) fn call_error(error: &Error) -> bool {
     !matches!(
         error.code.as_str(),
         code::HOST

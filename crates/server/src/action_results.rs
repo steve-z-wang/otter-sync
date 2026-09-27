@@ -61,7 +61,23 @@ impl Reads {
     }
 }
 
-async fn load_one_state(
+/// Stamp evidence for new authority of one record, taken before its content
+/// is read: its current stamp, initialized only when it has none.
+pub(crate) async fn ensure_stamp(key: &RecordKey, host: &impl Host) -> Result<u64> {
+    let Stamped(stamp) = host
+        .call_typed(HostRequest::EnsureStamp {
+            model: key.model.clone(),
+            identity_key: key.encoded_identity().map_err(internal)?,
+        })
+        .await?;
+    Ok(stamp)
+}
+
+/// One authorized Loader read of one record at a retained read version,
+/// normalized by that contract: the state, or `null` for absence. A refusal
+/// is its code, a thrown Loader error `loader.failed`, and an unaligned or
+/// unacceptable row `loader.invalid`.
+pub(crate) async fn load_one_state(
     config: &Config,
     owner: &str,
     key: &RecordKey,
@@ -196,13 +212,7 @@ pub(crate) async fn assemble_result(
                 let stamp = if adds && let Some(stamp) = stamps.get(&encoded) {
                     Some(*stamp)
                 } else if adds {
-                    let Stamped(stamp) = host
-                        .call_typed(HostRequest::EnsureStamp {
-                            model: model.into(),
-                            identity_key: key.encoded_identity().map_err(internal)?,
-                        })
-                        .await?;
-                    Some(stamp)
+                    Some(ensure_stamp(key, host).await?)
                 } else {
                     None
                 };

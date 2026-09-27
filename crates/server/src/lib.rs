@@ -2,6 +2,7 @@
 mod action_results;
 mod actions;
 pub mod error;
+mod fetch;
 pub mod host;
 pub mod live;
 mod loading;
@@ -13,6 +14,7 @@ use axton_core::{
     limits, read_counter,
 };
 pub use error::{Error, code};
+pub use fetch::process_fetch;
 use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
 use readback::Outcome;
 use serde::{Deserialize, Serialize};

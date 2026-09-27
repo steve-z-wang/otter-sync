@@ -12,6 +12,7 @@ cargo run -p axton-compiler --locked -- compile integration/action-e2e/evolved/s
   --backend-runtime ../../../packages/server/index.mts \
   --client-runtime ../../../packages/client-js/index.mts
 "$root/node_modules/.bin/tsc" -p integration/action-e2e
+dart pub get --directory integration/action-runtime-dart
 cluster="$(mktemp -d "${TMPDIR:-/tmp}/axton-action-e2e-pg.XXXXXX")"
 cleanup(){ pg_ctl -D "$cluster/data" -m immediate stop >/dev/null 2>&1 || true; rm -rf -- "$cluster"; }
 trap cleanup EXIT

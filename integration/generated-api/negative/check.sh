@@ -34,6 +34,10 @@ expected=(
   "The named parameter 'memo' is required, but there's no corresponding argument"
   "The argument type 'String' can't be assigned to the parameter type 'Present<String?>?'"
   "The named parameter 'id' is required, but there's no corresponding argument"
+  "The getter 'missing' isn't defined for the type 'Entry'"
+  "The getter 'row' isn't defined for the type 'StoreDelete<EntryIdentity, Entry>'"
+  "The getter 'mutations' isn't defined for the type 'GeneratedTransaction'"
+  "The named parameter 'unknown' isn't defined"
 )
 failed=0
 for message in "${expected[@]}"; do

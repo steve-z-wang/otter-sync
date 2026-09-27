@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { GeneratedClient } from "./client.ts";
+import type { StoreHooks } from "./client.ts";
 import { createFixture } from "./backend-fixture.ts";
 import { GeneratedClient as EvolvedClient } from "./evolved/client.ts";
 import { createBackend as createEvolvedBackend, devAuth, type Mutations as EvolvedMutations, type Queries as EvolvedQueries, type Loaders as EvolvedLoaders } from "./evolved/backend.ts";
@@ -14,6 +17,7 @@ let url: string;
 before(async () => { await fixture.initialize(); url = (await fixture.listen()).url; });
 after(async () => { await fixture.close(); });
 const server = () => ({ url, token: "alice" });
+const execFileAsync = promisify(execFile);
 const wait = async (predicate: () => Promise<boolean>, label: string) => {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -377,8 +381,10 @@ test("explicit extra touches are stamped once and are not caller authority; outp
   let client: GeneratedClient | undefined;
   try {
     await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('retitle-a','retitleq a'),('retitle-b','retitleq b')");
-    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    const hooked: string[] = [];
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server(), onStore: { todo: (_tx, changes) => { hooked.push(...changes.map(change => change.identity.id)); } } });
     const direct = await client.mutations.call.retitleTodos({ query: "retitleq", title: "retitleq direct" }, { store: false });
+    assert.deepEqual(hooked, [], "extra touch without stored caller authority invokes no hook");
     assert.deepEqual(direct.todos.map((todo) => todo.title), ["retitleq direct", "retitleq direct"], "the result is the Loader snapshot");
     assert.equal(await client.models.todo.get({ id: "retitle-a" }), null, "a touch alone is not caller authority, and store:false stores no output");
     assert.equal(await serverStamp("retitle-a"), 1, "the touch stamped the record once");
@@ -435,6 +441,58 @@ test("an edit of A that explicitly returns B: A is reconciled, the result is B, 
     const stored = await client.mutations.call.editAndShow({ todo: { id: "ab-a", title: "A5" }, shown: "ab-c" });
     assert.equal((await client.models.todo.get({ id: "ab-c" }))?.title, stored.todo.title, "the default policy stores the output");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("generated store hook sees mandatory A authority with store:false and commits derived B before success", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-store-hook-"));
+  const path = join(directory, "client.sqlite");
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({ path, server: server() });
+    for (const [id, title] of [["hook-a", "A"], ["hook-b", "B"]]) {
+      await client.mutations.call.addTodo({ todo: { id, title } });
+    }
+    await client.close();
+    const observed: Array<{ kind: string; id: string; row?: string; before?: string }> = [];
+    const hooks: StoreHooks = {
+      async todo(tx, changes) {
+        for (const change of changes) {
+          const before = await tx.models.todo.get(change.identity);
+          observed.push({ kind: change.kind, id: change.identity.id, row: change.kind === "upsert" ? change.row.title : undefined, before: before?.title });
+          if (change.identity.id === "hook-a") {
+            await tx.models.todo.update({ id: "hook-b" }, { title: "derived B" });
+            await tx.channels.subscribe("hook-derived");
+          }
+        }
+      },
+    };
+    client = await GeneratedClient.open({ path, server: server(), onStore: hooks });
+    Object.assign(hooks, { todo: async () => { throw Error("registration was not snapshotted"); } });
+    const watched: string[][] = [];
+    const stop = client.models.todo.watch({}, rows => watched.push(rows.map(row => `${row.id}:${row.title}`).sort()));
+    try {
+      const result = await client.mutations.call.editAndShow({ todo: { id: "hook-a", title: " A1 " }, shown: "hook-b" }, { store: false });
+      assert.deepEqual(result, { todo: { id: "hook-b", title: "B" } }, "result remains the Loader snapshot");
+      assert.deepEqual(observed, [{ kind: "upsert", id: "hook-a", row: "A1", before: "A" }], "only mandatory input authority calls the hook");
+      assert.equal((await client.models.todo.get({ id: "hook-a" }))?.title, "A1");
+      assert.equal((await client.models.todo.get({ id: "hook-b" }))?.title, "derived B");
+      await wait(async () => watched.some(rows => rows.includes("hook-a:A1") && rows.includes("hook-b:derived B")), "watcher after hook commit");
+      assert.equal(watched.some(rows => rows.includes("hook-a:A1") !== rows.includes("hook-b:derived B")), false, "watchers see no partial A/B commit");
+      assert.deepEqual(await client.readSql("SELECT channel FROM axton_subscription WHERE channel = ?", ["hook-derived"]), [{ channel: "hook-derived" }], "hook subscription intent committed");
+    } finally { stop(); }
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("Dart generated application hook sees mandatory A and keeps B's Loader snapshot", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-dart-hook-"));
+  try {
+    const root = process.cwd();
+    const { stdout } = await execFileAsync("dart", [
+      "run", "action_e2e_hook.dart", url, join(directory, "client.sqlite"),
+      join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`),
+    ], { cwd: join(root, "integration/action-runtime-dart"), timeout: 20_000 });
+    assert.match(stdout, /Dart generated A\/B store hook: passed/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("a retried A-returns-B call replays its saved result without new stamps or positions on both routes", async () => {

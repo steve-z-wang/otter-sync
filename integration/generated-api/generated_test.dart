@@ -4,6 +4,23 @@ import 'dart:convert';
 import 'package:test/test.dart';
 import 'generated.dart';
 void main(){
+ test('store hook variants have typed identities and decoded rows',(){
+  final hooks=StoreHooks(entry:(tx,changes)async{
+   for(final change in changes){
+    final String id=change.identity.id;
+    if(change is StoreUpsert<EntryIdentity,Entry>){
+     final DateTime at=change.row.at;
+     final Status status=change.row.status;
+     await tx.models.entry.get(EntryIdentity(id:id));
+     await tx.channels.subscribe('entry:$id');
+     expect(at,isA<DateTime>());expect(status,isA<Status>());
+    }else if(change is StoreDelete<EntryIdentity,Entry>){
+     await tx.channels.unsubscribe('entry:$id');
+    }
+   }
+  });
+  expect(hooks.entry,isNotNull);
+ });
  // The child exits by itself only when nothing is left attached: no runtime
  // keeps a wake registered and no NativeCallable keeps its isolate alive.
  test('a failed open leaves no runtime attached',()async{

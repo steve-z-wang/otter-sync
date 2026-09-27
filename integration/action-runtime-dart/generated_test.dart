@@ -231,6 +231,7 @@ void main() {
       final free = await model_free.GeneratedClient.open(
         path: '${directory.path}/free.sqlite',
         libraryPath: Platform.environment['AXTON_DART_LIBRARY']!,
+        onStore: const model_free.StoreHooks(),
       );
       try {
         final model_free.Call<void> call = await free.mutations.ping();

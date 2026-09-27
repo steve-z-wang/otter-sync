@@ -347,4 +347,11 @@ export interface LiveModels { todo:TodoLiveModel; moment:MomentLiveModel; pin:Pi
 export function liveModels(port:LivePort):LiveModels { return { todo:new TodoLiveModel(port), moment:new MomentLiveModel(port), pin:new PinLiveModel(port) }; }
 export interface TxModels { todo:TodoTxModel; moment:MomentTxModel; pin:PinTxModel; }
 export function txModels(port:WritePort):TxModels { return { todo:new TodoTxModel(port), moment:new MomentTxModel(port), pin:new PinTxModel(port) }; }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); } }
+export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
+export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
+export interface StoreHooks {
+ readonly todo?: StoreHandler<TodoIdentity, Todo>;
+ readonly moment?: StoreHandler<MomentIdentity, Moment>;
+ readonly pin?: StoreHandler<PinIdentity, Pin>;
+}
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }

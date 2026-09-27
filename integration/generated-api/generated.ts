@@ -430,4 +430,13 @@ export interface LiveModels { draft:DraftLiveModel; entry:EntryLiveModel; book:B
 export function liveModels(port:LivePort):LiveModels { return { draft:new DraftLiveModel(port), entry:new EntryLiveModel(port), book:new BookLiveModel(port), comment:new CommentLiveModel(port), counter:new CounterLiveModel(port) }; }
 export interface TxModels { draft:DraftTxModel; entry:EntryTxModel; book:BookTxModel; comment:CommentTxModel; counter:CounterTxModel; }
 export function txModels(port:WritePort):TxModels { return { draft:new DraftTxModel(port), entry:new EntryTxModel(port), book:new BookTxModel(port), comment:new CommentTxModel(port), counter:new CounterTxModel(port) }; }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); } }
+export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
+export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
+export interface StoreHooks {
+ readonly draft?: StoreHandler<DraftIdentity, Draft>;
+ readonly entry?: StoreHandler<EntryIdentity, Entry>;
+ readonly book?: StoreHandler<BookIdentity, Book>;
+ readonly comment?: StoreHandler<CommentIdentity, Comment>;
+ readonly counter?: StoreHandler<CounterIdentity, Counter>;
+}
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }

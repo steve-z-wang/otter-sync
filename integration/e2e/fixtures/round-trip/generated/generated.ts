@@ -90,4 +90,9 @@ export interface LiveModels { entry:EntryLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { entry:new EntryLiveModel(port) }; }
 export interface TxModels { entry:EntryTxModel; }
 export function txModels(port:WritePort):TxModels { return { entry:new EntryTxModel(port) }; }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); } }
+export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
+export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
+export interface StoreHooks {
+ readonly entry?: StoreHandler<EntryIdentity, Entry>;
+}
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }

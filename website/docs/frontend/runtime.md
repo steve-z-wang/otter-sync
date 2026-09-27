@@ -166,7 +166,7 @@ Pass `server` when opening the generated client, or call `client.connect` after 
 | `refreshAuth` | `() => Promise<void>`, in connection options | Named async callback on `connect` / `open` |
 | Direct timeout | `connection.directTimeoutMs` on `open`, or `directTimeoutMs` on `connect`: integer milliseconds, 1–2,147,483,647; default 30,000 | `directTimeout` on `open` / `connect`: positive `Duration`; default 30 seconds |
 
-Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
+Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A TypeScript host that supplies its own HTTP carrier implements `Transport`: it receives an `HttpRoute` (`push`, `pull`, `action` or `fetch`) and the request body, and the built-in carrier posts them to `/sync/mutations`, `/sync/pull`, `/sync/actions` and `/sync/fetch`. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
 
 ### Catch-up and live updates
 
@@ -178,7 +178,7 @@ AXTON manages these phases automatically:
 
 For either source, a page applies as one transaction and names a range for each channel it covers. A channel already covered by its cursor is left alone. A range spanning the current cursor applies: for example, at cursor `100`, a range `90 → 120` advances the channel to `120`, and each record's stamp decides whether its content is newer. A range starting beyond the current cursor is a gap. Then nothing from the page applies, and HTTP recovery fetches the missing range. Pages update SQLite and watches through the same engine logic.
 
-Durable submission of Mutations and queued Queries runs independently through `POST /sync/mutations`; direct calls use `POST /sync/actions` with the configured finite timeout. A connection with no subscribed channels can still submit calls without opening a socket.
+Durable submission of Mutations and queued Queries runs independently through `POST /sync/mutations`; direct calls use `POST /sync/actions` and a [Model Fetch](client-api.md#fetch-a-record-from-the-backend) uses `POST /sync/fetch`, both with the configured finite timeout. A connection with no subscribed channels can still submit calls without opening a socket.
 
 A `bootstrap()` load is a third, independent work class on the same connection: one bounded `POST /sync/pull` at a time across all channels, asked for while the connection is running and not paused, retried with the same backoff after a transport failure, and taking turns between channels that have one registered. It does not hold up the socket, the catch-up request or Action submission, and pausing the connection defers its next page instead of failing it. Progress is committed page by page, so closing the client or losing the network resumes where it stopped.
 

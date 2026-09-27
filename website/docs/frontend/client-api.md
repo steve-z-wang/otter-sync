@@ -88,7 +88,7 @@ Register an `onStore` callback when opening the generated client. This example c
     );
     ```
 
-The callback receives typed incoming upserts (identity and full row) and deletes (identity only). It can read the pre-store local view and write local Models through `tx.models`; `tx.channels` changes only local subscription intent and returns no handle. These writes, incoming authority and delivery progress commit together. A failed callback rolls them back and reports `store_hook_failed`; delivery may invoke it again, and a permanently failing callback can block that Channel or the current push batch. Local CRUD, optimistic replay, and authority excluded from local storage by the call's `store` option do not invoke it. `store: false` still stores mandatory Mutation input authority, which may invoke its hook. See [sync and recovery](sync.md#recover-from-connection-failures) for connection diagnostics.
+The callback receives typed incoming upserts (identity and full row) and deletes (identity only). It can read the pre-store local view and write local Models through `tx.models`; `tx.channels` changes only local subscription intent and returns no handle. These writes, incoming authority and delivery progress commit together. A failed callback rolls them back and reports `store_hook_failed`; delivery may invoke it again, and a permanently failing callback can block that Channel or the current push batch. A stored [Fetch](#fetch-a-record-from-the-backend) invokes it for the fetched record before the Fetch resolves. Local CRUD, optimistic replay, and authority excluded from local storage by the call's `store` option do not invoke it. `store: false` still stores mandatory Mutation input authority, which may invoke its hook. See [sync and recovery](sync.md#recover-from-connection-failures) for connection diagnostics.
 
 ## Model APIs
 
@@ -110,7 +110,7 @@ The callback receives typed incoming upserts (identity and full row) and deletes
     print(entry?.text);
     ```
 
-`get(identity)` returns the complete typed record or `null` when it is absent from local storage. It does not call the backend loader. A newly opened cache can return `null` until channel synchronization supplies the record.
+`get(identity)` returns the complete typed record or `null` when it is absent from local storage. It does not call the backend loader. A newly opened cache can return `null` until channel synchronization supplies the record. To read the record from the backend instead, use [`client.fetch`](#fetch-a-record-from-the-backend).
 
 ### Query records
 
@@ -168,6 +168,62 @@ The compiler emits relation methods only for relationships declared in the schem
 
 For a `Comment.book` relationship, `client.models.comment.book(commentIdentity)` follows the forward reference. The [relations fixture](https://github.com/zanminwang/axton/blob/main/fixtures/compiler/relations.model) defines `Book.comments` and `Comment.book`; the [generated API checks](https://github.com/zanminwang/axton/blob/main/integration/generated-api/verify.sh) exercise those accessors. A singular inverse needs a unique foreign key; an ambiguous inverse is rejected during compilation.
 
+## Fetch a record from the backend
+
+`client.fetch.<model>(identity, options?)` reads one record from the backend through that Model's [Loader](../backend/api.md#loaders), the same Loader that serves synchronization. You declare no Query and write no handler for it. Three generated APIs read a record in different ways:
+
+| API | Reads | Network |
+| --- | --- | --- |
+| `client.models.entry.get(identity)` | The local database | Never |
+| `client.fetch.entry(identity, options?)` | One record, through the backend's Loader for `Entry` | One request per call |
+| `client.queries.<name>(args, options?)` | A named business read that your Query handler implements ([Mutations and Queries](#mutations-and-queries)) | One direct request, unless [`once`](#reuse-a-query-result-with-once) reuses a saved result |
+
+=== "TypeScript"
+
+    ```ts
+    const entry = await client.fetch.entry({ id: 'entry-1' });
+    console.log(entry?.text);
+    const preview = await client.fetch.entry({ id: 'entry-2' }, { store: false });
+    console.log(preview === null ? 'not readable' : preview.text);
+    ```
+
+=== "Flutter"
+
+    ```dart
+    final entry = await client.fetch.entry(const EntryIdentity(id: 'entry-1'));
+    print(entry?.text);
+    final preview = await client.fetch.entry(
+      const EntryIdentity(id: 'entry-2'),
+      store: false,
+    );
+    print(preview == null ? 'not readable' : preview.text);
+    ```
+
+The call returns `Promise<Entry | null>` / `Future<Entry?>`: the complete record, with its identity, as the Loader returned it for this call. It is `null` when the Loader answered `null` for that identity: no readable record exists. The result is a snapshot, not a live record. It never contains pending local edits, which stay pending and are replayed as usual.
+
+- **Storage.** By default (`store: true`) the call resolves only after the record is stored locally and any `onStore` callback for that Model has committed with it. A `null` result deletes the local row. A newer local copy is kept, and the call still returns its own snapshot. With `store: false` the record is returned without changing local data or running `onStore`. `store` is the only option and must be a boolean.
+- **Every call reads the backend.** No result is saved. A call for the same identity with the same `store` choice as a call still in flight shares that call: one request, one Loader call and one local store, and each caller receives its own object. A later call makes a new request.
+- **No offline fallback.** A local row does not satisfy the call. Without a connection it rejects with `fetch.unavailable`; it is never queued. It uses the connection's direct timeout and credential refresh ([Server connection](runtime.md#server-connection)).
+- **No subscription.** A Fetch joins no Channel and changes no subscription, cursor or `bootstrap()` progress.
+- **Permissions stay in the Loader.** Return `null` for a record this user may not see if the app should treat it as absent, which deletes a stored copy; throw `CallRejected` if it should be an error, which deletes nothing.
+- **Not inside transactions.** `tx` has no `fetch`. Calling `client.fetch` inside a `client.transaction` or `onStore` callback fails with `transaction_active`.
+
+Failures reject with `CallError`:
+
+| `code` | Meaning |
+| --- | --- |
+| The Loader's `CallRejected` code, `loader.failed`, `loader.invalid`, `loader.unregistered`, `model_version_unsupported`, `call.identity_conflict` | The backend answered with this failure. `execution` is `rejected` |
+| `fetch.invalid_options` | An invalid identity or option, refused before any request |
+| `fetch.unavailable` | No connection, the connection was stopped before the response, or the client was closed while waiting |
+| `fetch.timeout` | The direct timeout passed |
+| `fetch.transport_failed` | The request or credential refresh failed; `cause` carries the message and the HTTP status, if any |
+| `fetch.invalid_response` | The response did not answer this request |
+| `fetch.store_failed` | The record could not be stored: an `onStore` callback threw (it is the `cause`, and the callback's writes are rolled back), the local commit failed, or local content has the same stamp as different backend content. The last case happens when a business write skipped `touch`, so the record did not get a new stamp |
+| `fetch.schema_pending` | The local database is waiting to be rebuilt for an incompatible schema change |
+| `fetch.schema_changed` | The local database was rebuilt while the call waited |
+
+A failure never deletes the local row. `execution` is `rejected` for the backend's codes, `fetch.invalid_options` and `fetch.schema_pending`, and `unknown` otherwise; a read has no side effects either way. A call on a client that is already closed rejects with the runtime's plain `client_closed` error (`Error` in TypeScript, `StateError` in Dart), not a `CallError`. A result the generated decoder cannot read rejects with `action.observation_failed`, as for a direct call.
+
 ## Transactions
 
 === "TypeScript"
@@ -191,9 +247,9 @@ For a `Comment.book` relationship, `client.models.comment.book(commentIdentity)`
     });
     ```
 
-`transaction<T>(callback)` returns the callback's result after local commit. Throwing or a failed operation rolls it back. Await each operation, including nested callbacks; unfinished work is rejected. Inside the callback, use `tx.models` for reads that must see earlier writes in the same transaction. Calling the outer `client` from inside its own transaction callback - a read, a Mutation or a Query - fails with `transaction_active` on Node and Dart (React Native rejects Mutations and Queries and lets other outer calls wait behind the transaction) instead of waiting on itself.
+`transaction<T>(callback)` returns the callback's result after local commit. Throwing or a failed operation rolls it back. Await each operation, including nested callbacks; unfinished work is rejected. Inside the callback, use `tx.models` for reads that must see earlier writes in the same transaction. Calling the outer `client` from inside its own transaction callback - a read, a Mutation, a Query or a Fetch - fails with `transaction_active` on Node and Dart (React Native rejects Mutations, Queries and Fetches and lets other outer calls wait behind the transaction) instead of waiting on itself.
 
-`GeneratedTransaction` exposes `models` and the underlying `transaction`; it has no `mutations`, `queries` or watch method. For nested savepoints, see [transactions and savepoints](runtime.md#transactions-and-savepoints).
+`GeneratedTransaction` exposes `models` and the underlying `transaction`; it has no `mutations`, `queries`, `fetch` or watch method. For nested savepoints, see [transactions and savepoints](runtime.md#transactions-and-savepoints).
 
 ## Mutations and Queries
 
@@ -494,6 +550,6 @@ UUID fields are strings; DateTime fields use language date/time values and encod
 
 `ReadPort` declares `read`, `querySpec`, `related`, and `referencing`. `WritePort` adds local direct writes; TypeScript `LivePort` adds `watch`. These are forwarding contracts for generated Model facades, not alternate storage engines supplied automatically by the generator.
 
-TypeScript exports Model classes (`EntryModel`, `EntryLiveModel`, `EntryTxModel`), `LiveModels`, `TxModels`, `liveModels(port)`, `txModels(port)` and `GeneratedTransaction`. Dart exposes corresponding facades. Construct these only when adapting a compatible port; normal applications obtain them through `GeneratedClient`.
+TypeScript exports Model classes (`EntryModel`, `EntryLiveModel`, `EntryTxModel`), `LiveModels`, `TxModels`, `liveModels(port)`, `txModels(port)` and `GeneratedTransaction`. For Fetch it exports `FetchModels`, `fetchModels(port)` and the `FetchPort` contract, whose `fetchModel(model, version, identity, decode, options)` the runtime `Client` implements. Dart exposes corresponding facades, including `FetchModels`. A schema without Models has no Fetch facade, and the names `FetchModels` and `FetchPort` are reserved only when a schema has Models. Construct these only when adapting a compatible port; normal applications obtain them through `GeneratedClient`.
 
 TypeScript's `encodeEntry`, `decodeEntry`, `encodeEntryIdentity`, `encodeEntryPatch` and `encodeEntryWhere`, and Dart's `toRecord`/`fromRecord`, perform wire conversions. They assume schema-compatible data; casts in generated decoders are not a substitute for validating arbitrary untrusted input. Generated Mutation and Query methods encode arguments, invoke the shared runtime and decode typed results.

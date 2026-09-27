@@ -480,7 +480,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             let error = format!("{SCHEMA_CHANGED}: {SCHEMA_CHANGED_MESSAGE} ({load_id})");
             self.fail(
                 request_id.to_string(),
-                error.clone(),
+                error,
                 json!({"code": SCHEMA_CHANGED, "message": SCHEMA_CHANGED_MESSAGE}),
             );
             return None;

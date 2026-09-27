@@ -24,8 +24,11 @@
 //! `action.unavailable`, a response in hand included, and nothing is applied
 //! after [`Event::RuntimeClosed`].
 use super::effects::{EffectKind, Ready, Waiter};
+use super::transactions::StoreContinuation;
 use super::*;
-use crate::{ActionCallOptions, ClientStore, QueryOnce, QueryOnceOptions};
+use crate::{
+    ActionCallOptions, ApplyReport, ClientStore, QueryOnce, QueryOnceOptions, StoreDelivery,
+};
 
 pub(super) const UNAVAILABLE: &str = "action.unavailable";
 pub(super) const EXECUTION_UNKNOWN: &str = "action.execution_unknown";
@@ -344,7 +347,54 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Apply one response in one local transaction, then settle: every
     /// completion is announced after the commit, and the task - with every
     /// caller joined to its flight - completes with this call's own outcome.
-    pub(super) fn apply_direct(&mut self, request_id: String, response: String) {
+    pub(super) fn apply_direct(
+        &mut self,
+        request_id: String,
+        response: String,
+        now: u64,
+        entropy: u64,
+    ) {
+        let candidate = serde_json::from_str::<Value>(&response)
+            .ok()
+            .and_then(|raw| raw["records"].as_array().cloned())
+            .is_some_and(|records| {
+                self.has_store_hook_candidate(
+                    records
+                        .into_iter()
+                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                )
+            });
+        if candidate {
+            let Some(call) = self.directs.calls.get(&request_id) else {
+                return;
+            };
+            let delivery = match &call.flight {
+                Some(flight) => self
+                    .client
+                    .decode_query_once_store(flight, response.as_bytes()),
+                None => self
+                    .client
+                    .decode_direct_store(call.body.as_bytes(), response.as_bytes()),
+            };
+            match delivery {
+                Ok(delivery @ StoreDelivery::Direct { .. }) => self.open_store(
+                    delivery,
+                    StoreContinuation::Direct { request_id },
+                    now,
+                    entropy,
+                ),
+                Err(error) => self.fail_direct(
+                    &request_id,
+                    EXECUTION_UNKNOWN,
+                    transport_failure(&EffectError {
+                        message: error.to_string(),
+                        status: None,
+                    }),
+                ),
+                _ => unreachable!(),
+            }
+            return;
+        }
         let Some(call) = self.directs.calls.remove(&request_id) else {
             return;
         };
@@ -387,6 +437,32 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             match &outcome {
                 Ok(value) => self.complete(request_id, Ok(value.clone())),
                 Err((error, details)) => self.fail(request_id, *error, details.clone()),
+            }
+        }
+    }
+    /// Settle the still-owned call and every joined once caller after the
+    /// authority and cache snapshot have committed.
+    pub(super) fn finish_direct_store(&mut self, request_id: String, report: ApplyReport) {
+        let Some(call) = self.directs.calls.remove(&request_id) else {
+            return;
+        };
+        let joined = call
+            .flight
+            .as_ref()
+            .and_then(|flight| {
+                self.client.fail_query_once(flight);
+                self.directs.joined.remove(flight)
+            })
+            .unwrap_or_default();
+        self.settled(&report);
+        let outcome = report.completions.iter()
+            .find(|completion| completion.call_id == call.call_id)
+            .map(|completion| json!({"outcome": serde_json::to_value(&completion.outcome).unwrap_or(Value::Null)}))
+            .ok_or((OBSERVATION_FAILED, code(OBSERVATION_FAILED)));
+        for id in std::iter::once(request_id).chain(joined) {
+            match &outcome {
+                Ok(value) => self.complete(id, Ok(value.clone())),
+                Err((error, details)) => self.fail(id, *error, details.clone()),
             }
         }
     }

@@ -81,7 +81,16 @@ export class AxtonReport extends Error {
 export type Diagnostic =
   | { kind: "records"; reports: ReportDetails[] }
   | { kind: "error"; message: string; status?: number }
-  | { kind: "protocol"; message: string };
+  | { kind: "protocol"; message: string }
+  | {
+      kind: "storeHook";
+      code: "store_hook_failed";
+      model: string;
+      path: string;
+      message: string;
+      callbackEffectId?: string;
+      cause?: unknown;
+    };
 
 /** The part of the Bridge an effect executor uses; tests supply a fake. */
 export type EffectBridge = {
@@ -281,7 +290,14 @@ export function startConnection(
                 Error(diagnostic.message),
                 diagnostic.kind === "error" && diagnostic.status !== undefined
                   ? { status: diagnostic.status }
-                  : {},
+                  : diagnostic.kind === "storeHook"
+                    ? {
+                        code: diagnostic.code,
+                        model: diagnostic.model,
+                        path: diagnostic.path,
+                        cause: diagnostic.cause,
+                      }
+                    : {},
               ),
             ];
       for (const error of errors)

@@ -6,9 +6,33 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {GeneratedClient,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
+import type {StoreHooks, StoreChange, EntryIdentity} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
+import {Client as RawClient} from '../../packages/client-js/index.mts';
 import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,Mutate,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
 const row:Entry={id:'123e4567-e89b-42d3-a456-426614174000',title:'hello',note:null,at:new Date('2026-01-01T00:00:00Z'),tags:['x'],status:'active'};
+const externalHooks: StoreHooks = {
+ async entry(tx, changes) {
+  for (const change of changes) {
+   const id: string = change.identity.id;
+   if (change.kind === 'upsert') {
+    const at: Date = change.row.at;
+    const status: 'active' | 'archived' = change.row.status;
+    await tx.models.entry.get({id});
+    await tx.channels.subscribe(`entry:${id}`);
+    void [at,status];
+   } else {
+    await tx.channels.unsubscribe(`entry:${id}`);
+    // @ts-expect-error deletes have no row
+    void change.row;
+   }
+  }
+  // @ts-expect-error remote actions are unavailable in a store transaction
+  void tx.queries;
+ },
+};
+const typedChange: StoreChange<EntryIdentity, Entry> = {kind:'upsert',identity:{id:row.id},row};
+void [externalHooks,typedChange];
 function check(v:unknown,m:string){if(!v)throw Error(m)}
 async function until(predicate:()=>boolean,what:string){
  const deadline=Date.now()+5000;
@@ -242,3 +266,34 @@ try{
  await new Promise<void>(resolve=>http.close(()=>resolve()));
  await rm(bootstrapDirectory,{recursive:true,force:true});
 }
+
+// Exercise the generated adapter with incoming wire records: DateTime and enum
+// conversion use the same Model decoder as ordinary reads, and registration
+// captures the function value at open.
+const rawClass=RawClient as unknown as {open:(options:any)=>Promise<any>};
+const originalRawOpen=rawClass.open;
+let registered:Record<string,(tx:unknown,changes:unknown[])=>void|Promise<void>>|undefined;
+rawClass.open=async options=>{registered=options.onStore;return {async close(){}};};
+const delivered:string[]=[];
+const decoderHooks:StoreHooks={entry:(_tx,changes)=>{
+ for(const change of changes){
+  if(change.kind==='upsert'){
+   assert.equal(change.row.at instanceof Date,true);
+   assert.equal(change.row.status,'active');
+   delivered.push(`${change.identity.id}:${change.row.at.toISOString()}`);
+  }else{
+   assert.equal('row' in change,false);
+   delivered.push(`delete:${change.identity.id}`);
+  }
+ }
+}};
+try{
+ const adapted=await GeneratedClient.open({path:'unused-for-captured-adapter',onStore:decoderHooks});
+ try{
+  Object.assign(decoderHooks,{entry:()=>{throw Error('mutable map replaced registration');}});
+  assert.ok(registered?.Entry);
+  const rawRow=encodeEntry(row);
+  await registered.Entry({channels:{}},[{kind:'upsert',identity:{id:row.id},row:rawRow},{kind:'delete',identity:{id:row.id}}]);
+  assert.deepEqual(delivered,[`${row.id}:2026-01-01T00:00:00.000Z`,`delete:${row.id}`]);
+ }finally{await adapted.close();}
+}finally{rawClass.open=originalRawOpen;}

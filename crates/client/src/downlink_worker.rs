@@ -135,6 +135,7 @@ enum Control {
 
 /// One catch-up in flight: the id the host correlates its answer by and the
 /// request that answer must match.
+#[derive(Clone)]
 struct Pending {
     id: u64,
     request: PullRequest,
@@ -152,6 +153,40 @@ struct PendingBootstrap {
     subscription_id: u64,
     run: u64,
     request: BootstrapRequest,
+}
+
+/// An admitted page is owned independently of whatever socket/request is
+/// current when its application callback completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StoreToken {
+    serial: u64,
+    generation: u64,
+    request: Option<u64>,
+    epoch: Option<u64>,
+    path: &'static str,
+}
+impl StoreToken {
+    pub(crate) fn path(self) -> &'static str {
+        self.path
+    }
+}
+enum StoreSource {
+    Live(PullPage),
+    Catchup { request: u64, continues: bool },
+    Bootstrap(PendingBootstrap),
+}
+struct PendingStore {
+    token: StoreToken,
+    source: StoreSource,
+    delivery: StoreDelivery,
+}
+pub(crate) struct RuntimeDownlinkPump {
+    pub(crate) actions: Vec<DownlinkAction>,
+    pub(crate) store: Option<(StoreToken, StoreDelivery)>,
+}
+struct PendingBootstrapFailure {
+    pending: PendingBootstrap,
+    error: BootstrapError,
 }
 
 /// What the host reported about the historical request in flight, waiting for
@@ -280,6 +315,10 @@ pub struct DownlinkWorker {
     /// Scopes whose delivery committed but whose barrier scan failed. Their
     /// Changed action is already in the outbox; settlement still needs work.
     barrier_retry: BTreeSet<String>,
+    store_serial: u64,
+    pending_store: Option<PendingStore>,
+    yielded_store: Option<(StoreToken, StoreDelivery)>,
+    bootstrap_failure: Option<PendingBootstrapFailure>,
 }
 
 /// Whether an HTTP status is a refusal the server decided, which no retry can
@@ -307,6 +346,184 @@ fn settle(progress: &DownlinkProgress, actions: &mut Vec<DownlinkAction>) {
 }
 
 impl DownlinkWorker {
+    pub(crate) fn store_committed(&mut self, token: StoreToken, result: StoreResult) {
+        let Some(pending) = self.pending_store.take() else {
+            return;
+        };
+        if pending.token != token {
+            self.pending_store = Some(pending);
+            return;
+        }
+        match (pending.source, result) {
+            (StoreSource::Live(page), StoreResult::Page(report)) => {
+                if self.pages.front() == Some(&page) {
+                    self.pages.pop_front();
+                }
+                self.barrier_retry.extend(report.cursors.keys().cloned());
+                settle(
+                    &DownlinkProgress {
+                        disposition: "applied",
+                        gaps: vec![],
+                        continues: vec![],
+                        report,
+                    },
+                    &mut self.pending,
+                );
+            }
+            (StoreSource::Catchup { request, continues }, StoreResult::Page(report)) => {
+                if self
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.id == request)
+                {
+                    self.active = None;
+                    if continues || self.again {
+                        self.again = true;
+                    }
+                }
+                self.barrier_retry.extend(report.cursors.keys().cloned());
+                settle(
+                    &DownlinkProgress {
+                        disposition: "applied",
+                        gaps: vec![],
+                        continues: vec![],
+                        report,
+                    },
+                    &mut self.pending,
+                );
+            }
+            (StoreSource::Bootstrap(pending), StoreResult::Bootstrap(applied)) => {
+                if self
+                    .bootstrap
+                    .as_ref()
+                    .is_some_and(|current| current.id == pending.id)
+                {
+                    self.bootstrap = None;
+                    self.loaded = None;
+                }
+                if let Some(report) = applied.report().filter(|r| !r.reports.is_empty()) {
+                    self.pending.push(DownlinkAction::Report {
+                        reports: report.reports.clone(),
+                    });
+                }
+                if let Some(state) = applied.state() {
+                    self.pending.push(DownlinkAction::Bootstrap(state.clone()));
+                }
+            }
+            _ => unreachable!("downlink store owner/result mismatch"),
+        }
+    }
+
+    pub(crate) fn store_failed<S: ClientStore>(
+        &mut self,
+        client: &mut Client<S>,
+        token: StoreToken,
+        error: String,
+        hook_failed: bool,
+        now: u64,
+        entropy: u64,
+    ) -> Result<()> {
+        let Some(pending) = self.pending_store.take() else {
+            return Ok(());
+        };
+        if pending.token != token {
+            self.pending_store = Some(pending);
+            return Ok(());
+        }
+        let pending_store_delivery = pending.delivery;
+        match pending.source {
+            StoreSource::Live(_) | StoreSource::Catchup { .. } => {
+                self.fail(client, None, now, entropy);
+                Ok(())
+            }
+            StoreSource::Bootstrap(pending) => {
+                if !hook_failed {
+                    let StoreDelivery::Bootstrap { page, .. } = pending_store_delivery else {
+                        unreachable!()
+                    };
+                    let body = String::from_utf8(page.encode()?)
+                        .map_err(|_| invalid("saved bootstrap page is not UTF-8"))?;
+                    self.bootstrap = Some(pending);
+                    self.loaded = Some(Loaded::Page(body));
+                    self.loading.defer(now, entropy);
+                    return Err(invalid(error));
+                }
+                self.bootstrap_failure = Some(PendingBootstrapFailure {
+                    pending,
+                    error: BootstrapError::new("store_hook_failed", error, vec![]),
+                });
+                self.persist_bootstrap_failure(client)
+            }
+        }
+    }
+
+    fn persist_bootstrap_failure<S: ClientStore>(&mut self, client: &mut Client<S>) -> Result<()> {
+        let Some(failure) = &self.bootstrap_failure else {
+            return Ok(());
+        };
+        let scope = &failure.pending.request.channel;
+        let state = client.fail_bootstrap_state(
+            scope,
+            failure.pending.subscription_id,
+            failure.pending.run,
+            failure.error.clone(),
+        )?;
+        self.bootstrap_failure = None;
+        if let Some(state) = state {
+            self.pending.push(DownlinkAction::Bootstrap(state));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn next_runtime<S: ClientStore>(
+        &mut self,
+        client: &mut Client<S>,
+        now: u64,
+        entropy: u64,
+        hooks: &BTreeSet<String>,
+        hooks_active: bool,
+    ) -> Result<RuntimeDownlinkPump> {
+        let actions = self.pump_with_hooks(client, now, entropy, hooks_active.then_some(hooks))?;
+        Ok(RuntimeDownlinkPump {
+            actions,
+            store: self.yielded_store.take(),
+        })
+    }
+
+    fn wants_hook(records: &[AuthorityRecord], hooks: Option<&BTreeSet<String>>) -> bool {
+        hooks.is_some_and(|hooks| records.iter().any(|record| hooks.contains(&record.model)))
+    }
+
+    fn yield_store<S: ClientStore>(
+        &mut self,
+        client: &Client<S>,
+        delivery: StoreDelivery,
+        source: StoreSource,
+    ) -> Result<()> {
+        self.store_serial = allocate(self.store_serial, "downlink store token")?;
+        let token = StoreToken {
+            serial: self.store_serial,
+            generation: client.subscription_generation(),
+            request: match &source {
+                StoreSource::Catchup { request, .. } => Some(*request),
+                StoreSource::Bootstrap(pending) => Some(pending.id),
+                StoreSource::Live(_) => None,
+            },
+            epoch: self.session.active_epoch(),
+            path: match &source {
+                StoreSource::Live(_) => "live",
+                StoreSource::Catchup { .. } => "catchUp",
+                StoreSource::Bootstrap(_) => "bootstrap",
+            },
+        };
+        self.pending_store = Some(PendingStore {
+            token,
+            source,
+            delivery: delivery.clone(),
+        });
+        self.yielded_store = Some((token, delivery));
+        Ok(())
+    }
     /// One event. Everything but [`DownlinkEvent::Next`] is enqueued into typed
     /// state and answers with no actions; `next` is the pump.
     pub fn handle<S: ClientStore>(
@@ -317,7 +534,7 @@ impl DownlinkWorker {
         entropy: u64,
     ) -> Result<Vec<DownlinkAction>> {
         match event {
-            DownlinkEvent::Next => self.pump(client, now, entropy),
+            DownlinkEvent::Next => self.pump_with_hooks(client, now, entropy, None),
             other => {
                 self.enqueue(client, other, now, entropy);
                 Ok(vec![])
@@ -453,6 +670,9 @@ impl DownlinkWorker {
         // file: subscription identity and run counters may be reused there.
         self.pending.clear();
         self.barrier_retry.clear();
+        self.pending_store = None;
+        self.yielded_store = None;
+        self.bootstrap_failure = None;
         // Closing without a `close` action: the host's reset abandons it.
         self.session.close();
         self.control.clear();
@@ -669,12 +889,17 @@ impl DownlinkWorker {
     /// One bounded pump: control work first, then at most one page application,
     /// then the lane's next decision. One commit per call, so foreground work
     /// interleaves; the host pumps again while actions come back.
-    fn pump<S: ClientStore>(
+    fn pump_with_hooks<S: ClientStore>(
         &mut self,
         client: &mut Client<S>,
         now: u64,
         entropy: u64,
+        hooks: Option<&BTreeSet<String>>,
     ) -> Result<Vec<DownlinkAction>> {
+        self.persist_bootstrap_failure(client)?;
+        if self.pending_store.is_some() {
+            return Ok(vec![]);
+        }
         if !self.pending.is_empty() {
             // A subscription may have changed since the failed pump. Fence
             // undelivered session I/O before the outbox reaches the host;
@@ -698,7 +923,7 @@ impl DownlinkWorker {
         if reset {
             actions.push(DownlinkAction::Reset);
         }
-        match self.advance(client, now, entropy, &mut actions) {
+        match self.advance(client, now, entropy, hooks, &mut actions) {
             Ok(()) => Ok(actions),
             Err(error) => {
                 // No action reached the host. Keep every decided action and
@@ -726,6 +951,7 @@ impl DownlinkWorker {
         client: &mut Client<S>,
         now: u64,
         entropy: u64,
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<()> {
         self.flush(actions);
@@ -748,10 +974,16 @@ impl DownlinkWorker {
                 }
             }
         }
-        let committed = self.process(client, now, entropy, actions)?;
+        let committed = self.process(client, now, entropy, hooks, actions)?;
+        if self.pending_store.is_some() {
+            return Ok(());
+        }
         self.flush(actions);
         self.barriers(client, actions)?;
-        self.historical(client, now, entropy, committed, actions)?;
+        self.historical(client, now, entropy, committed, hooks, actions)?;
+        if self.pending_store.is_some() {
+            return Ok(());
+        }
         // The two schedules are read together and answered with one sleep: the
         // load's next attempt is its own, so the socket's backoff must never
         // hold a page back ([#151](https://github.com/zanminwang/axton/issues/151)).
@@ -814,6 +1046,7 @@ impl DownlinkWorker {
         client: &mut Client<S>,
         now: u64,
         entropy: u64,
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
         while self.session.open() {
@@ -826,7 +1059,9 @@ impl DownlinkWorker {
                     self.acknowledged(client, &ack, now, entropy, actions)
                 }
                 Control::Overflow => self.recover(client, actions).map(|()| false),
-                Control::Response(body) => self.response(client, &body, now, entropy, actions),
+                Control::Response(body) => {
+                    self.response(client, &body, now, entropy, hooks, actions)
+                }
             };
             let committed = match result {
                 Ok(committed) => committed,
@@ -856,6 +1091,17 @@ impl DownlinkWorker {
             let Some(front) = self.pages.front().cloned() else {
                 break;
             };
+            if Self::wants_hook(&front.changes, hooks) {
+                let admission = client.admit_downlink(&front, None)?;
+                if admission.disposition == "applied" {
+                    self.yield_store(
+                        client,
+                        StoreDelivery::Page(front.clone()),
+                        StoreSource::Live(front),
+                    )?;
+                    return Ok(true);
+                }
+            }
             let progress = client.receive_downlink(front, None)?;
             settle(&progress, actions);
             if progress.disposition == "recover" {
@@ -964,9 +1210,10 @@ impl DownlinkWorker {
         now: u64,
         entropy: u64,
         committed: bool,
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<()> {
-        if committed || self.answered(client, now, entropy, actions)? {
+        if committed || self.answered(client, now, entropy, hooks, actions)? {
             return Ok(());
         }
         self.schedule(client, now, actions)
@@ -983,6 +1230,7 @@ impl DownlinkWorker {
         client: &mut Client<S>,
         now: u64,
         entropy: u64,
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
         // The slot is emptied only by an answer to the request it holds: taking
@@ -995,7 +1243,7 @@ impl DownlinkWorker {
         };
         let retry_loaded = loaded.clone();
         let retry_pending = pending.clone();
-        let result = self.finish_answer(client, now, entropy, actions, loaded, pending);
+        let result = self.finish_answer(client, (now, entropy), hooks, actions, loaded, pending);
         if result.is_err() {
             // The store rejected this application, so the answer and the
             // request it names are still the next unit of local work.
@@ -1008,12 +1256,13 @@ impl DownlinkWorker {
     fn finish_answer<S: ClientStore>(
         &mut self,
         client: &mut Client<S>,
-        now: u64,
-        entropy: u64,
+        timing: (u64, u64),
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
         loaded: Loaded,
         pending: PendingBootstrap,
     ) -> Result<bool> {
+        let (now, entropy) = timing;
         let scope = pending.request.channel.clone();
         let body = match loaded {
             Loaded::Failed { status, reason } => {
@@ -1074,6 +1323,20 @@ impl DownlinkWorker {
                 );
             }
         };
+        if Self::wants_hook(&page.records, hooks) {
+            self.yield_store(
+                client,
+                StoreDelivery::Bootstrap {
+                    scope: scope.clone(),
+                    subscription_id: pending.subscription_id,
+                    run: pending.run,
+                    expected_after: pending.request.after,
+                    page,
+                },
+                StoreSource::Bootstrap(pending),
+            )?;
+            return Ok(true);
+        }
         let applied = client.apply_bootstrap_page(
             &scope,
             pending.subscription_id,
@@ -1289,8 +1552,35 @@ impl DownlinkWorker {
         body: &str,
         now: u64,
         entropy: u64,
+        hooks: Option<&BTreeSet<String>>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
+        if let Some(pending) = &self.active
+            && let Ok(page) = PullPage::decode(body.as_bytes())
+            && Self::wants_hook(&page.changes, hooks)
+        {
+            let pending = pending.clone();
+            let admission = match client.admit_downlink(&page, Some(&pending.request)) {
+                Ok(admission) => admission,
+                Err(e) if e.to_string() == "response does not match pull request" => {
+                    self.fail(client, Some(e.to_string()), now, entropy);
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            };
+            if admission.disposition == "applied" {
+                let continues = !admission.continues.is_empty();
+                self.yield_store(
+                    client,
+                    StoreDelivery::Page(page),
+                    StoreSource::Catchup {
+                        request: pending.id,
+                        continues,
+                    },
+                )?;
+                return Ok(true);
+            }
+        }
         // The id was matched when the answer was enqueued; a second answer to
         // the same request finds nothing in flight and is ignored.
         let Some(pending) = self.active.take() else {

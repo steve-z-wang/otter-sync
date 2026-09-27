@@ -471,6 +471,24 @@ impl<S: ClientStore> Client<S> {
         let response = DirectActionResponse::decode(response, &flight.request, &self.schema)?;
         self.apply_direct_response(response, Some((&flight.key, flight.generation.as_deref())))
     }
+    /// Decode a flight's received response without retiring it. A store hook
+    /// may still roll back, so the flight remains owned until local commit.
+    pub(crate) fn decode_query_once_store(
+        &self,
+        flight_id: &str,
+        response: &[u8],
+    ) -> Result<crate::StoreDelivery> {
+        let flight = self
+            .query_flights
+            .flights
+            .get(flight_id)
+            .ok_or_else(|| invalid("unknown query once flight"))?;
+        let response = DirectActionResponse::decode(response, &flight.request, &self.schema)?;
+        Ok(crate::StoreDelivery::Direct {
+            response,
+            snapshot: Some((flight.key.clone(), flight.generation.clone())),
+        })
+    }
     /// Release a Fetch whose request produced no applicable response
     /// (transport failure, close, cancellation). Returns whether it was
     /// active; an older flight never releases a newer one.

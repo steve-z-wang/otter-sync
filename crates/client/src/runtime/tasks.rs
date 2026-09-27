@@ -2,7 +2,7 @@
 //! rebuild fencing and close
 //! ([#134](https://github.com/zanminwang/axton/issues/134)).
 use super::effects::Ready;
-use super::transactions::Continuation;
+use super::transactions::{Continuation, StoreContinuation, TransactionOwner};
 use super::*;
 use crate::ClientStore;
 use std::collections::{BTreeSet, VecDeque};
@@ -163,7 +163,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Ready::ApplyDirect {
                     request_id,
                     response,
-                } => self.apply_direct(request_id, response),
+                } => self.apply_direct(request_id, response, now, entropy),
                 Ready::PrerequisiteOutcome { key, error } => self.prerequisite_outcome(key, error),
                 Ready::PrerequisiteNext => self.next_prerequisite(),
             }
@@ -197,6 +197,61 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let generation = self.client.generation();
         let outcome = match &command {
             Command::Transaction => return self.open_transaction(request_id),
+            Command::Ack { sequence, receipt }
+                if self.has_store_hook_candidate(
+                    receipt["records"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                ) =>
+            {
+                let bytes = match serde_json::to_vec(receipt) {
+                    Ok(bytes) => bytes,
+                    Err(e) => return self.complete(request_id, Err(e.to_string())),
+                };
+                let decoded = if receipt.get("completions").is_some() {
+                    crate::PushReceipt::decode_action_envelope(&bytes)
+                } else {
+                    crate::PushReceipt::decode(&bytes)
+                };
+                match decoded {
+                    Ok(receipt) => self.open_store(
+                        crate::StoreDelivery::Receipt {
+                            sequence: *sequence,
+                            receipt,
+                        },
+                        StoreContinuation::Ack { request_id },
+                        now,
+                        entropy,
+                    ),
+                    Err(e) => self.complete(request_id, Err(e.to_string())),
+                }
+                return;
+            }
+            Command::Pull { page }
+                if self.has_store_hook_candidate(
+                    page["changes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                ) =>
+            {
+                match serde_json::to_vec(page)
+                    .map_err(|e| crate::invalid(e.to_string()))
+                    .and_then(|bytes| crate::PullPage::decode(&bytes))
+                {
+                    Ok(page) => self.open_store(
+                        crate::StoreDelivery::Page(page),
+                        StoreContinuation::Pull { request_id },
+                        now,
+                        entropy,
+                    ),
+                    Err(e) => self.complete(request_id, Err(e.to_string())),
+                }
+                return;
+            }
             Command::Connect {
                 direct_timeout_ms,
                 refresh_auth,
@@ -295,7 +350,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         Ok(commands::rebuild_json(&report))
     }
     /// The `completions` of an `ack`, `pull` or `drop` answer, announced.
-    fn seam_completions(&mut self, value: &Value) {
+    pub(super) fn seam_completions(&mut self, value: &Value) {
         for completion in value["completions"].as_array().into_iter().flatten() {
             self.events.push(Event::CallCompleted {
                 call_id: completion["callId"]
@@ -322,16 +377,33 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// announce the end. Nothing is applied after it.
     fn close(&mut self) {
         let transaction = self.transaction.take();
-        if transaction.is_some()
-            && let Err(e) = self.client.rollback_session()
-        {
-            self.error(format!("rollback at close failed: {e}"));
+        match transaction.as_ref().map(|transaction| &transaction.owner) {
+            Some(TransactionOwner::Authority { .. }) => self.abort_authority_session(),
+            Some(TransactionOwner::Application { .. }) => {
+                if let Err(e) = self.client.rollback_session() {
+                    self.error(format!("rollback at close failed: {e}"));
+                }
+            }
+            None => {}
         }
         for effect_id in std::mem::take(&mut self.effects).into_keys() {
             self.events.push(Event::CancelEffect { effect_id });
         }
         if let Some(transaction) = transaction {
-            self.complete(transaction.request_id, Err("client_closed".into()));
+            match transaction.owner {
+                TransactionOwner::Application { request_id } => {
+                    self.complete(request_id, Err("client_closed".into()))
+                }
+                TransactionOwner::Authority { continuation, .. } => match continuation {
+                    // The direct flight still owns its caller (and any joined
+                    // once callers). The common direct-close path below settles
+                    // them as unavailable after this session is rolled back.
+                    StoreContinuation::Direct { .. } => {}
+                    continuation => {
+                        continuation.fail(self, "client_closed".into(), None, None, 0, 0)
+                    }
+                },
+            }
             for command in transaction.lane {
                 self.complete(command.request_id, Err("client_closed".into()));
             }

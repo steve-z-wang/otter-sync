@@ -300,8 +300,73 @@ abstract interface class RuntimeHost {
 /// instead of matching the message. It is a [StateError] carrying the
 /// engine's message, like every other task failure.
 class TaskFailure extends StateError {
-  TaskFailure(super.message, this.details);
+  TaskFailure(super.message, this.details, {this.cause});
   final Map<String, dynamic> details;
+  final Object? cause;
+}
+
+/// Cancellation of one store callback, separate from public task callbacks.
+class StoreCancellation {
+  bool _cancelled = false;
+  void Function()? _onCancel;
+  bool get cancelled => _cancelled;
+  void onCancel(void Function() callback) {
+    _onCancel = callback;
+    if (_cancelled) callback();
+  }
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _onCancel?.call();
+    _onCancel = null;
+  }
+}
+
+typedef RawStoreHandler =
+    FutureOr<void> Function(
+      String transactionId,
+      List<Map<String, dynamic>> changes,
+      StoreCancellation cancellation,
+    );
+
+/// Owns decoded changes only until the handler is called or cancelled.
+class _StoreInvocation {
+  _StoreInvocation(this.model, this.transactionId, this.handler, this.changes);
+  final String model;
+  final String transactionId;
+  final StoreCancellation cancellation = StoreCancellation();
+  RawStoreHandler? handler;
+  List<Map<String, dynamic>>? changes;
+
+  Future<void> start() {
+    if (cancellation.cancelled) return Future<void>.value();
+    final callback = handler;
+    final delivered = changes;
+    handler = null;
+    changes = null;
+    if (callback == null || delivered == null) {
+      return Future<void>.error(StateError('missing store hook for $model'));
+    }
+    return Future<void>.sync(
+      () => callback(transactionId, delivered, cancellation),
+    );
+  }
+
+  void cancel() {
+    cancellation.cancel();
+    handler = null;
+    changes = null;
+  }
+}
+
+String _storeFailureMessage(Object error) {
+  try {
+    final message = error.toString();
+    return message.length <= 1024 ? message : message.substring(0, 1024);
+  } catch (_) {
+    return 'store callback failed';
+  }
 }
 
 /// What observer handles need from a runtime: a task whose completion claims
@@ -327,12 +392,22 @@ abstract interface class ObserverHost {
 
 /// The SDK side of one Rust-owned client runtime.
 class Bridge implements RuntimeHost, ObserverHost, Finalizable {
-  Bridge._(this._carrier, this.runtimeId) {
+  Bridge._(
+    this._carrier,
+    this.runtimeId,
+    this._storeHandlers,
+    this._storeZone,
+  ) {
     final carrier = _carrier;
     if (carrier is _Abi) carrier.attach(this);
   }
 
   final Carrier _carrier;
+  final Map<String, RawStoreHandler> _storeHandlers;
+  final Zone _storeZone;
+  final _storeCallbacks = <String, _StoreInvocation>{};
+  final _storeCauses = <String, (Object, StackTrace)>{};
+  final _reportedStoreCauses = <String>{};
 
   /// The runtime's id: fresh per open, never reused.
   final int runtimeId;
@@ -418,7 +493,10 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     Map<String, dynamic>? migration,
     bool discardPending = false,
     Carrier? carrier,
+    Map<String, RawStoreHandler>? onStore,
   }) async {
+    final handlers = Map<String, RawStoreHandler>.of(onStore ?? const {});
+    final registrationZone = Zone.current;
     final opener = carrier ?? _Abi.load(libraryPath);
     final request = jsonEncode({
       'type': 'open',
@@ -426,12 +504,13 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'path': path,
       'schema': schema,
       'discardPending': discardPending,
+      'storeHooks': handlers.keys.toList(),
     });
     final (runtime, refused) = opener.open(request, _wakeRuntime);
     if (runtime == 0) throw StateError(refused ?? 'runtime open failed');
     // Registered before any wake can be delivered: the listener only posts to
     // this isolate, which runs it after this synchronous section.
-    final bridge = Bridge._(opener, runtime);
+    final bridge = Bridge._(opener, runtime, handlers, registrationZone);
     final route = _Route();
     bridge._routes['1'] = route;
     _hold();
@@ -596,6 +675,10 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       }
     } finally {
       _draining = false;
+      for (final id in _reportedStoreCauses) {
+        _storeCauses.remove(id);
+      }
+      _reportedStoreCauses.clear();
     }
   }
 
@@ -611,8 +694,17 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       case 'cancelEffect':
         _effects[event['effectId']]?.cancel();
         _callbacks.remove(event['effectId']);
+        _storeCallbacks.remove(event['effectId'])?.cancel();
+        _storeCauses.remove(event['effectId']);
       case 'report':
-        _reports.add(event['diagnostic'] as Map<String, dynamic>);
+        final diagnostic = event['diagnostic'] as Map<String, dynamic>;
+        final id = diagnostic['callbackEffectId'];
+        if (diagnostic['kind'] == 'storeHook' && id is String) {
+          final cause = _storeCauses[id];
+          if (cause != null) diagnostic['cause'] = cause.$1;
+          _reportedStoreCauses.add(id);
+        }
+        _reports.add(diagnostic);
       case 'callCompleted':
         onCallCompleted?.call(event['callId'] as String, event['outcome']);
       case 'observerChanged':
@@ -649,7 +741,11 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       final details = event['details'];
       route.completer.completeError(
         details is Map<String, dynamic>
-            ? TaskFailure(message, details)
+            ? TaskFailure(
+                message,
+                details,
+                cause: _storeCauses[details['callbackEffectId']]?.$1,
+              )
             : StateError(message),
       );
     }
@@ -668,6 +764,10 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   }
 
   void _effect(String effectId, Map<String, dynamic> operation) {
+    if (operation['kind'] == 'storeCallback') {
+      _storeCallback(effectId, operation);
+      return;
+    }
     if (operation['kind'] != 'callback') {
       final effect = Effect(
         effectId,
@@ -731,6 +831,71 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     });
   }
 
+  void _storeCallback(String effectId, Map<String, dynamic> operation) {
+    final transactionId = operation['transactionId'] as String;
+    final model = operation['model'] as String;
+    final changes = (operation['changes'] as List)
+        .map((change) => Map<String, dynamic>.from(change as Map))
+        .toList();
+    final invocation = _StoreInvocation(
+      model,
+      transactionId,
+      _storeHandlers[model],
+      changes,
+    );
+    _storeCallbacks[effectId] = invocation;
+    _storeZone.scheduleMicrotask(
+      () => _startStoreCallback(effectId, transactionId, invocation),
+    );
+  }
+
+  void _startStoreCallback(
+    String effectId,
+    String transactionId,
+    _StoreInvocation invocation,
+  ) {
+    if (invocation.cancellation.cancelled) return;
+    _finishStoreCallback(
+      effectId,
+      transactionId,
+      invocation.cancellation,
+      invocation.start(),
+    );
+  }
+
+  /// Completion listeners have no access to the decoded change list.
+  void _finishStoreCallback(
+    String effectId,
+    String transactionId,
+    StoreCancellation cancellation,
+    Future<void> running,
+  ) {
+    running.then(
+      (_) {
+        if (!cancellation.cancelled) {
+          _submitQuietly(
+            callbackResultEnvelope(effectId, transactionId, ok: true),
+          );
+        }
+        _storeCallbacks.remove(effectId);
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!cancellation.cancelled) {
+          _storeCauses[effectId] = (error, stack);
+          _submitQuietly(
+            callbackResultEnvelope(
+              effectId,
+              transactionId,
+              ok: false,
+              error: _storeFailureMessage(error),
+            ),
+          );
+        }
+        _storeCallbacks.remove(effectId);
+      },
+    );
+  }
+
   /// `runtimeClosed`: fail what never completed, detach (after which no wake
   /// runs for this id), forget the id and end the report stream.
   void _terminate() {
@@ -741,6 +906,13 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     if (carrier is _Abi) carrier.finalizer.detach(this);
     _bridges.remove(runtimeId);
     _callbacks.clear();
+    for (final callback in _storeCallbacks.values) {
+      callback.cancel();
+    }
+    _storeCallbacks.clear();
+    _storeHandlers.clear();
+    _storeCauses.clear();
+    _reportedStoreCauses.clear();
     for (final effect in _effects.values.toList()) {
       effect.cancel();
     }

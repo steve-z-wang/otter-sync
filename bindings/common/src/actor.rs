@@ -345,12 +345,30 @@ fn open_runtime(request: &Value) -> axton_client::Result<ClientRuntime<SqliteSto
         Some(Value::Bool(discard)) => *discard,
         Some(_) => return Err(axton_client::invalid("discardPending must be bool")),
     };
-    ClientRuntime::open_at(
+    let hooks = match request.get("storeHooks") {
+        None => vec![],
+        Some(Value::Array(names)) => names
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| axton_client::invalid("storeHooks must contain Model names"))
+            })
+            .collect::<axton_client::Result<Vec<_>>>()?,
+        Some(_) => return Err(axton_client::invalid("storeHooks must be an array")),
+    };
+    let runtime = ClientRuntime::open_at(
         path,
         Schema::from_value(request["schema"].clone())?,
         Box::new(|file| SqliteStore::open(file)),
         discard,
-    )
+    )?;
+    if hooks.is_empty() {
+        return Ok(runtime);
+    }
+    // Registration is validated against the requested schema before the actor
+    // can admit work and survives rebuild on this runtime object.
+    runtime.register_store_hooks(hooks)
 }
 
 /// The actor's thread: open, then admit and step until the runtime closes or

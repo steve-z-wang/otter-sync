@@ -88,6 +88,38 @@ fn read(id: &str) -> Value {
 }
 
 #[test]
+fn native_open_validates_store_hook_model_names() {
+    let dir = tempfile::tempdir().unwrap();
+    for hooks in [
+        json!(["Missing"]),
+        json!(["Entry", "Entry"]),
+        json!([3]),
+        json!("Entry"),
+    ] {
+        let (sink, wakes) = channel_sink();
+        let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema(),"storeHooks":hooks}), sink).unwrap();
+        let mut carrier = Carrier {
+            id,
+            wakes,
+            seen: vec![],
+        };
+        let result = carrier.completed("open");
+        assert_eq!(result["ok"], false, "{result:?}");
+        carrier.until(|e| e["type"] == "runtimeClosed");
+        actor::detach(id);
+    }
+    let (sink, wakes) = channel_sink();
+    let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("valid"),"schema":schema(),"storeHooks":["Entry"]}), sink).unwrap();
+    let mut carrier = Carrier {
+        id,
+        wakes,
+        seen: vec![],
+    };
+    assert_eq!(carrier.completed("open")["ok"], true);
+    actor::detach(id);
+}
+
+#[test]
 fn open_answers_on_the_wake_and_a_failed_open_closes_the_runtime() {
     let dir = tempfile::tempdir().unwrap();
     let (mut carrier, opened) = Carrier::open(&dir.path().join("db"));

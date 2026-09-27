@@ -2,7 +2,22 @@
 // integration/generated-api` type-checks this file, and every
 // `@ts-expect-error` below has to be the error it names; the Dart twin is
 // misuse.dart ([#150](https://github.com/zanminwang/axton/issues/150)).
-import type {GeneratedClient, Subscription, Draft, DraftCreate, AddDraftArgs} from '../client.ts';
+import type {GeneratedClient, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks} from '../client.ts';
+
+const badHooks:StoreHooks={
+ entry:async(tx,changes)=>{
+  const change=changes[0]!;
+  if(change.kind==='upsert'){
+  // @ts-expect-error the incoming row has no invented field
+   void change.row.missing;
+  }
+  // @ts-expect-error remote calls are unavailable within the local transaction
+  void tx.mutations;
+ },
+ // @ts-expect-error unknown Models cannot register hooks
+ unknown:async()=>{},
+};
+void badHooks;
 
 export function scopeMisuse(client:GeneratedClient,subscription:Subscription){
  // @ts-expect-error a status snapshot is immutable

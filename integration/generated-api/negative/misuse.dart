@@ -5,6 +5,20 @@
 // ignore_for_file: unused_local_variable
 import '../generated.dart';
 
+void storeMisuse() {
+  final hooks=StoreHooks(entry:(tx,changes) async {
+    final change=changes.first;
+    if(change is StoreUpsert<EntryIdentity,Entry>){
+      change.row.missing;
+    }
+    if(change is StoreDelete<EntryIdentity,Entry>){
+      change.row;
+    }
+    tx.mutations;
+  });
+  final unknown=StoreHooks(unknown:(tx,changes){});
+}
+
 void misuse(GeneratedClient client, GeneratedTransaction tx, Entry row) {
   // lists cannot be query predicates
   client.models.entry.query(where: const EntryFilter(tags: Present(['x'])));

@@ -724,6 +724,85 @@ fn generated_transaction_facades_are_local_only() {
     );
 }
 
+#[test]
+fn generated_store_hooks_are_typed_and_decode_incoming_records() {
+    let schema = compile("enum Status { active closed } model Entry { tenant String id String at DateTime status Status @@id(tenant, id) }").unwrap();
+    let ts = axton_compiler::typescript(&schema);
+    let client = axton_compiler::client_typescript(&schema, "@axton/client");
+    let dart = axton_compiler::dart(&schema);
+    assert!(
+        ts.contains("export type StoreChange<Identity, Model>"),
+        "{ts}"
+    );
+    assert!(
+        ts.contains("entry?: StoreHandler<EntryIdentity, Entry>"),
+        "{ts}"
+    );
+    assert!(
+        ts.contains("tenant: row.tenant as string"),
+        "composite identity decoder: {ts}"
+    );
+    assert!(
+        ts.contains("id: row.id as string"),
+        "composite identity decoder: {ts}"
+    );
+    assert!(ts.contains("readonly channels:"), "{ts}");
+    assert!(client.contains("onStore?: StoreHooks"), "{client}");
+    assert!(
+        client.contains("decodeEntryIdentity(change.identity)"),
+        "{client}"
+    );
+    assert!(client.contains("decodeEntry(change.row)"), "{client}");
+    assert!(dart.contains("sealed class StoreChange<I, M>"), "{dart}");
+    assert!(dart.contains("StoreUpsert<I, M>"), "{dart}");
+    assert!(dart.contains("StoreDelete<I, M>"), "{dart}");
+    assert!(dart.contains("EntryIdentity.fromRecord"), "{dart}");
+    assert!(
+        dart.contains("tenant: row['tenant'] as String"),
+        "composite identity decoder: {dart}"
+    );
+    assert!(dart.contains("Entry.fromRecord"), "{dart}");
+}
+
+#[test]
+fn store_hooks_emit_for_model_only_and_model_free_schemas() {
+    for source in [
+        "model Entry { id String @@id(id) }",
+        "query Ping() { value String }",
+    ] {
+        let schema = compile(source).unwrap();
+        assert!(axton_compiler::typescript(&schema).contains("export interface StoreHooks"));
+        assert!(
+            axton_compiler::client_typescript(&schema, "@axton/client")
+                .contains("onStore?: StoreHooks")
+        );
+        assert!(axton_compiler::dart(&schema).contains("class StoreHooks"));
+    }
+    let free = compile("query Ping() { value String }").unwrap();
+    assert!(axton_compiler::dart(&free).contains("const StoreHooks();"));
+}
+
+#[test]
+fn store_hook_generated_names_are_reserved() {
+    for name in [
+        "StoreHooks",
+        "StoreChange",
+        "StoreHandler",
+        "StoreUpsert",
+        "StoreDelete",
+        "StoreHook",
+        "FutureOr",
+    ] {
+        for declaration in [
+            format!("model {name} {{ id String @@id(id) }}"),
+            format!("enum {name} {{ one two }}"),
+        ] {
+            let error = compile(&declaration).unwrap_err();
+            assert!(error.contains("generated client"), "{declaration}: {error}");
+        }
+    }
+}
+
 fn line_of(error: &str) -> usize {
     error
         .split(':')

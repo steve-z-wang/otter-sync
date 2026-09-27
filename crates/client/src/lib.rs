@@ -21,6 +21,7 @@ pub mod rows;
 pub mod runtime;
 pub mod schema_store;
 pub mod store;
+mod store_delivery;
 pub mod subscriptions;
 pub mod transport;
 
@@ -36,6 +37,7 @@ pub use live::*;
 pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
+pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
 
@@ -199,9 +201,17 @@ impl ApplyReport {
 
 /// A transaction the host holds open across calls, with its own savepoint stack.
 struct Session {
+    id: u64,
     changed: BTreeSet<String>,
-    savepoints: Vec<String>,
+    savepoints: Vec<SessionSavepoint>,
     counter: u64,
+    pull_pages: Vec<BTreeMap<String, u64>>,
+}
+
+struct SessionSavepoint {
+    name: String,
+    changed: BTreeSet<String>,
+    pull_pages_len: usize,
 }
 
 pub struct Client<S: ClientStore> {
@@ -211,6 +221,10 @@ pub struct Client<S: ClientStore> {
     generation: u64,
     watchers: Vec<(BTreeSet<String>, Sender<()>)>,
     session: Option<Session>,
+    /// Physical rollback failure after the logical session has been taken.
+    /// The runtime consumes this separately from the original owner error.
+    physical_rollback_failure: Option<String>,
+    session_serial: u64,
     last_changed: BTreeSet<String>,
     last_bootstrap: BTreeSet<String>,
     pulls: PullLedger,
@@ -304,7 +318,7 @@ fn strip_marks(changed: &mut BTreeSet<String>, prefix: &str) -> BTreeSet<String>
 /// resubscribe reset the cursor, and the next pull from that cursor delivers
 /// everything. Nothing here is durable; a process restart cannot have a
 /// request in flight.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct PullLedger {
     epochs: BTreeMap<String, u64>,
     issued: std::collections::VecDeque<IssuedPull>,
@@ -314,6 +328,7 @@ struct PullLedger {
 }
 /// One request: the cursor it asked from on every channel, and the epoch each
 /// channel's subscription was at.
+#[derive(Clone)]
 struct IssuedPull {
     cursors: BTreeMap<String, u64>,
     epochs: BTreeMap<String, u64>,
@@ -431,8 +446,10 @@ impl<S: ClientStore> Client<S> {
             generation,
             watchers: vec![],
             session: None,
+            physical_rollback_failure: None,
             last_changed: BTreeSet::new(),
             last_bootstrap: BTreeSet::new(),
+            session_serial: 0,
             pulls: PullLedger::default(),
             schema_state: SchemaState::default(),
             origin: None,
@@ -749,10 +766,14 @@ impl<S: ClientStore> Client<S> {
             return Err(invalid("transaction already active"));
         }
         self.store.begin()?;
+        self.physical_rollback_failure = None;
+        self.session_serial += 1;
         self.session = Some(Session {
+            id: self.session_serial,
             changed: BTreeSet::new(),
             savepoints: vec![],
             counter: 0,
+            pull_pages: vec![],
         });
         Ok(())
     }
@@ -781,20 +802,23 @@ impl<S: ClientStore> Client<S> {
             .take()
             .ok_or_else(|| invalid("no active transaction"))?;
         if !session.savepoints.is_empty() {
-            self.store.rollback()?;
+            let _ = self.physical_rollback();
             return Err(invalid("unclosed savepoint"));
         }
         if let Err(e) = self.fence() {
-            self.store.rollback()?;
+            let _ = self.physical_rollback();
             return Err(e);
         }
         // The session is already taken; a failed COMMIT must also close the
         // transaction, or every later `begin` would fail. Report the commit error.
         if let Err(e) = self.store.commit() {
-            let _ = self.store.rollback();
+            let _ = self.physical_rollback();
             return Err(e);
         }
         self.generation += 1;
+        for cursors in &session.pull_pages {
+            self.pulls.stale(cursors);
+        }
         let mut changed = session.changed;
         changed.insert("axton_client".into());
         self.notify(changed);
@@ -804,7 +828,17 @@ impl<S: ClientStore> Client<S> {
         self.session
             .take()
             .ok_or_else(|| invalid("no active transaction"))?;
-        self.store.rollback()
+        self.physical_rollback()
+    }
+    fn physical_rollback(&mut self) -> Result<()> {
+        let result = self.store.rollback();
+        if let Err(error) = &result {
+            self.physical_rollback_failure = Some(error.to_string());
+        }
+        result
+    }
+    pub(crate) fn take_physical_rollback_failure(&mut self) -> Option<String> {
+        self.physical_rollback_failure.take()
     }
     pub fn session_savepoint(&mut self) -> Result<()> {
         let session = self
@@ -814,7 +848,11 @@ impl<S: ClientStore> Client<S> {
         session.counter += 1;
         let name = format!("session_{}", session.counter);
         self.store.savepoint(&name)?;
-        session.savepoints.push(name);
+        session.savepoints.push(SessionSavepoint {
+            name,
+            changed: session.changed.clone(),
+            pull_pages_len: session.pull_pages.len(),
+        });
         Ok(())
     }
     pub fn session_release(&mut self) -> Result<()> {
@@ -822,22 +860,25 @@ impl<S: ClientStore> Client<S> {
             .session
             .as_mut()
             .ok_or_else(|| invalid("no active transaction"))?;
-        let name = session
+        let savepoint = session
             .savepoints
             .pop()
             .ok_or_else(|| invalid("no savepoint"))?;
-        self.store.release(&name)
+        self.store.release(&savepoint.name)
     }
     pub fn session_rollback_savepoint(&mut self) -> Result<()> {
         let session = self
             .session
             .as_mut()
             .ok_or_else(|| invalid("no active transaction"))?;
-        let name = session
+        let savepoint = session
             .savepoints
             .pop()
             .ok_or_else(|| invalid("no savepoint"))?;
-        self.store.rollback_to(&name)
+        self.store.rollback_to(&savepoint.name)?;
+        session.changed = savepoint.changed;
+        session.pull_pages.truncate(savepoint.pull_pages_len);
+        Ok(())
     }
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
         let key = self.schema.record_key(&key.model, &key.identity)?;
@@ -909,6 +950,20 @@ impl<S: ClientStore> Client<S> {
     pub fn declared_models(&self) -> std::collections::BTreeMap<String, u64> {
         declared_models(&self.schema)
     }
+    /// Hook names belong to the requested schema. A pending rebuild may be
+    /// draining a replica whose stored schema differs from that request.
+    pub(crate) fn target_store_hook_models(&self) -> BTreeSet<String> {
+        self.origin
+            .as_ref()
+            .map_or(&self.schema, |origin| &origin.target)
+            .models
+            .iter()
+            .map(|model| model.name.clone())
+            .collect()
+    }
+    pub(crate) fn store_hooks_active(&self) -> bool {
+        self.schema_state.pending.is_none()
+    }
     pub fn subscription_generation(&self) -> u64 {
         self.pulls.generation
     }
@@ -968,6 +1023,13 @@ impl<S: ClientStore> Client<S> {
     /// replays, in one transaction. Nothing waits for a channel.
     pub fn acknowledge(&mut self, sequence: u64, receipt: PushReceipt) -> Result<ApplyReport> {
         self.write(|e| e.acknowledge(sequence, &receipt))
+    }
+    pub(crate) fn validate_push_receipt(
+        &mut self,
+        sequence: u64,
+        receipt: &PushReceipt,
+    ) -> Result<()> {
+        self.view(|e| e.validate_receipt(sequence, receipt))
     }
     pub fn set_readiness(&mut self, key: &str, value: Readiness) -> Result<()> {
         self.write(|e| {

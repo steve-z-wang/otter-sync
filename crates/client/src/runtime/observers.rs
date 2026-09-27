@@ -367,6 +367,27 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             covered.remove(scope);
         }
     }
+    /// A callback may edit Channels through transaction commands. Reconcile
+    /// observer ownership after its commit from durable subscription identity,
+    /// including remove-and-recreate under the same name.
+    pub(super) fn reconcile_registrations(&mut self) {
+        let registrations: Vec<(u64, String)> = self
+            .observers
+            .registrations
+            .iter()
+            .map(|(id, registration)| (*id, registration.scope.clone()))
+            .collect();
+        for (id, scope) in registrations {
+            match self.client.subscription_state(&scope) {
+                Ok(Some(state)) if state.subscription_id == id => {}
+                Ok(_) => {
+                    self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
+                    self.forget(&scope);
+                }
+                Err(error) => self.error(error.to_string()),
+            }
+        }
+    }
 
     /// The replica was replaced: every identity belongs to the file left
     /// behind, so every registration closes the way a removal does, and no

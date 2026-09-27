@@ -15,6 +15,7 @@ class FakeCarrier implements Carrier {
 
   /// Every envelope admitted after the open request, in order.
   final admitted = <Map<String, dynamic>>[];
+  late final Map<String, dynamic> openedRequest;
   final _events = <Map<String, dynamic>>[];
   late final void Function(int runtime) _wake;
   static int _runtimes = 1 << 40;
@@ -25,6 +26,7 @@ class FakeCarrier implements Carrier {
   (int, String?) open(String request, void Function(int runtime) wake) {
     _wake = wake;
     final envelope = jsonDecode(request) as Map<String, dynamic>;
+    openedRequest = envelope;
     publish([
       completed(envelope['requestId'] as String, {'clientId': 'fake'}),
     ]);

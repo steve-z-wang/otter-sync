@@ -31,7 +31,7 @@
 //! unknown `kind`, a missing or mistyped field - is still admitted under its
 //! request id and completes that request with the decoding error, in its
 //! turn, so no SDK waiter is left without an answer.
-use crate::{Mutation, QuerySpec, Readiness, RecordKey, Report};
+use crate::{Mutation, QuerySpec, Readiness, RecordKey, Report, StoreChange};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -552,6 +552,14 @@ pub enum Operation {
         transaction_id: String,
         request_id: String,
     },
+    /// Run the registered Model's store handler. The reply uses the normal
+    /// callbackResult envelope; Rust owns replay and final settlement.
+    #[serde(rename_all = "camelCase")]
+    StoreCallback {
+        transaction_id: String,
+        model: String,
+        changes: Vec<StoreChange>,
+    },
     /// `POST` `body` to the route: `push` is `/sync/mutations`, `pull` is
     /// `/sync/pull`, `action` is `/sync/actions`. Answer `ok` with
     /// `{"status": <HTTP status>, "body": <response text>}` (a bare string is
@@ -597,6 +605,20 @@ pub enum Diagnostic {
     /// Records a receipt, page or direct response could not apply; the
     /// client stays consistent and the application hears about each one.
     Records { reports: Vec<Report> },
+    /// An application store hook refused incoming authority. The callback
+    /// effect id lets a language bridge attach its original thrown cause.
+    StoreHook {
+        code: String,
+        model: String,
+        path: String,
+        message: String,
+        #[serde(
+            rename = "callbackEffectId",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        callback_effect_id: Option<String>,
+    },
     /// A lane or effect failure the application's `onError` would have seen:
     /// a transport error, a protocol violation the runtime closed a socket
     /// for, a failed credential refresh, a watch that failed to re-run.

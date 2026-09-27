@@ -20,6 +20,24 @@ export class Transaction {
   constructor(send: (command: RecordValue, scope?: string) => Promise<any>) {
     this.#send = send;
   }
+  cancel(): void {
+    this.#open = false;
+  }
+  get channels(): {
+    subscribe(channel: string): Promise<void>;
+    unsubscribe(channel: string): Promise<void>;
+  } {
+    return {
+      subscribe: (channel) =>
+        this.#call({ kind: "channel", channel, subscribed: true }).then(
+          () => {},
+        ),
+      unsubscribe: (channel) =>
+        this.#call({ kind: "channel", channel, subscribed: false }).then(
+          () => {},
+        ),
+    };
+  }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
     this.#activeCallback = true;
     try {

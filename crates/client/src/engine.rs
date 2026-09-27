@@ -9,6 +9,7 @@ pub struct Engine<'a, S: ClientStore> {
     pub schema: &'a Schema,
     pub changed: &'a mut BTreeSet<String>,
     pub committed: bool,
+    pub(crate) stage_mode: crate::authority::StageMode,
 }
 
 impl<'a, S: ClientStore> Engine<'a, S> {
@@ -23,6 +24,7 @@ impl<'a, S: ClientStore> Engine<'a, S> {
             schema,
             changed,
             committed,
+            stage_mode: crate::authority::StageMode::Normal,
         }
     }
     pub fn rows(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {

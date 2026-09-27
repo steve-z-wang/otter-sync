@@ -186,4 +186,10 @@ export interface LiveModels { user:UserLiveModel; todo:TodoLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { user:new UserLiveModel(port), todo:new TodoLiveModel(port) }; }
 export interface TxModels { user:UserTxModel; todo:TodoTxModel; }
 export function txModels(port:WritePort):TxModels { return { user:new UserTxModel(port), todo:new TodoTxModel(port) }; }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); } }
+export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
+export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
+export interface StoreHooks {
+ readonly user?: StoreHandler<UserIdentity, User>;
+ readonly todo?: StoreHandler<TodoIdentity, Todo>;
+}
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }

@@ -7,9 +7,11 @@ Use this index to find the interface you call or implement. Local Model examples
 | Interface | Use it to | Reference |
 | --- | --- | --- |
 | `GeneratedClient.open` | Open a local database and optionally start background sync | [Generated client](frontend/client-api.md#open-a-client) |
+| `onStore`, `StoreHooks`, `StoreChange` | React to typed incoming Model changes inside their local storage transaction | [React to incoming records](frontend/client-api.md#react-to-incoming-records) |
 | `client.models.<model>` | Read, query, watch and follow relations in local data | [Model APIs](frontend/client-api.md#model-apis) |
 | `client.transaction` | Commit local reads and direct writes together | [Transactions](frontend/client-api.md#transactions) |
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |
+| `tx.channels.subscribe / unsubscribe` | Change local Channel intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.mutations.call.<name>` | Run a Mutation directly and await its final result | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>`, `client.queries.enqueue.<name>` | Run a Query directly, or queue it durably and receive a `Call<Output>` | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |

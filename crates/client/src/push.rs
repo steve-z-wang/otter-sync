@@ -22,6 +22,14 @@ fn all_ops(m: &Mutation) -> impl Iterator<Item = &Operation> {
     m.operations.iter().chain(&m.companion).chain(&m.effects)
 }
 
+struct AdmittedReceipt {
+    mutations: Vec<Queued>,
+    receipt: PushReceipt,
+    rejected: BTreeSet<u64>,
+    wire_rows: BTreeSet<String>,
+    covered: BTreeSet<String>,
+}
+
 impl<S: ClientStore> Engine<'_, S> {
     fn client_id(&mut self) -> Result<String> {
         Ok(self
@@ -178,8 +186,11 @@ impl<S: ClientStore> Engine<'_, S> {
     /// sent, record rejections, remove the completed operations, replay what
     /// remains, and remember the completion. Any failure leaves the frozen
     /// batch for retry. A duplicate receipt changes nothing.
-    pub fn acknowledge(&mut self, sequence: u64, receipt: &PushReceipt) -> Result<ApplyReport> {
-        let mut report = ApplyReport::default();
+    fn admit_receipt(
+        &mut self,
+        sequence: u64,
+        receipt: &PushReceipt,
+    ) -> Result<Option<AdmittedReceipt>> {
         if receipt.batch_sequence != sequence {
             return Err(invalid("receipt answers another batch"));
         }
@@ -187,8 +198,7 @@ impl<S: ClientStore> Engine<'_, S> {
             return Err(invalid("receipt answers another client"));
         }
         if sequence <= self.last_completed_push()? {
-            report.stale = true;
-            return Ok(report);
+            return Ok(None);
         }
         let Some(push) = self.in_flight()? else {
             return Err(invalid("unknown batch receipt"));
@@ -248,6 +258,38 @@ impl<S: ClientStore> Engine<'_, S> {
                 "receipt omits the authority of accepted record {missing}"
             )));
         }
+        Ok(Some(AdmittedReceipt {
+            mutations,
+            receipt,
+            rejected,
+            wire_rows,
+            covered,
+        }))
+    }
+
+    pub(crate) fn validate_receipt(&mut self, sequence: u64, receipt: &PushReceipt) -> Result<()> {
+        self.admit_receipt(sequence, receipt).map(|_| ())
+    }
+
+    pub fn acknowledge(&mut self, sequence: u64, receipt: &PushReceipt) -> Result<ApplyReport> {
+        let mut report = ApplyReport::default();
+        let Some(AdmittedReceipt {
+            mutations,
+            receipt,
+            rejected,
+            wire_rows,
+            covered,
+        }) = self.admit_receipt(sequence, receipt)?
+        else {
+            report.stale = true;
+            return Ok(report);
+        };
+        let schema = self.schema;
+        let push = sequence;
+        let accepted: Vec<&Queued> = mutations
+            .iter()
+            .filter(|q| !rejected.contains(&q.ordinal))
+            .collect();
         // Every record the batch touched is rebuilt once the rows are gone.
         let mut affected: Held = Held::new();
         for q in &mutations {

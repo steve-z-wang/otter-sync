@@ -2,12 +2,12 @@
 //! push receipt or a channel page. Content is ordered by record stamp alone;
 //! channels and cursors never enter here
 //! ([Settlement](../../../docs/engineering/architecture/client/engine/settlement.md)).
-use crate::ApplyReport;
 use crate::engine::Engine;
 use crate::rows::merge_identity;
 use crate::store::ClientStore;
+use crate::{ApplyReport, StoreChange};
 use crate::{Report, ReportKind};
-use axton_core::{AuthorityRecord, RecordKey, Result};
+use axton_core::{AuthorityRecord, RecordKey, Result, invalid};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -33,6 +33,23 @@ pub enum Disposition {
 /// there, so a base staged before a completed operation is removed still
 /// carries the right content afterwards.
 pub type Held = BTreeMap<String, RecordKey>;
+
+#[derive(Clone, Debug)]
+pub(crate) struct StageEntry {
+    pub(crate) change: Option<(String, StoreChange)>,
+    pub(crate) diagnostic: Option<Report>,
+}
+
+#[derive(Default)]
+pub(crate) enum StageMode {
+    #[default]
+    Normal,
+    Capture(Vec<StageEntry>),
+    Replay {
+        entries: Vec<StageEntry>,
+        next: usize,
+    },
+}
 
 impl<S: ClientStore> Engine<'_, S> {
     /// Stage one authoritative record by stamp. A newer stamp stores its
@@ -117,6 +134,21 @@ impl<S: ClientStore> Engine<'_, S> {
         record: &AuthorityRecord,
         held: &mut Held,
     ) -> Result<(bool, Option<Report>)> {
+        if let StageMode::Replay { entries, next } = &mut self.stage_mode {
+            let entry = entries
+                .get(*next)
+                .cloned()
+                .ok_or_else(|| invalid("prepared delivery has more records than preflight"))?;
+            *next += 1;
+            if entry.change.is_some() {
+                let disposition = self.stage_authority(record, held)?;
+                if disposition != Disposition::Applied {
+                    return Err(invalid("prepared authority changed before replay"));
+                }
+                return Ok((true, None));
+            }
+            return Ok((false, entry.diagnostic));
+        }
         let mut entry = Report::new(
             ReportKind::ReadFailed,
             &record.model,
@@ -125,15 +157,27 @@ impl<S: ClientStore> Engine<'_, S> {
         );
         if let Some(code) = &record.error {
             entry.code = Some(code.clone());
+            if let StageMode::Capture(entries) = &mut self.stage_mode {
+                entries.push(StageEntry {
+                    change: None,
+                    diagnostic: Some(entry.clone()),
+                });
+            }
             return Ok((false, Some(entry)));
         }
         self.store.savepoint("record")?;
+        let held_before = held.clone();
+        let changed_before = self.changed.clone();
         let staged = self.stage_authority(record, held);
         match &staged {
             Ok(_) => self.store.release("record")?,
-            Err(_) => self.store.rollback_to("record")?,
+            Err(_) => {
+                self.store.rollback_to("record")?;
+                *held = held_before;
+                *self.changed = changed_before;
+            }
         }
-        Ok(match staged {
+        let result = match staged {
             Ok(Disposition::Applied) => (true, None),
             Ok(Disposition::Older | Disposition::Same) => (false, None),
             Ok(Disposition::Conflict { local, incoming }) => {
@@ -146,7 +190,35 @@ impl<S: ClientStore> Engine<'_, S> {
                 entry.detail = json!({ "error": e.to_string() });
                 (false, Some(entry))
             }
-        })
+        };
+        if matches!(self.stage_mode, StageMode::Capture(_)) {
+            let change = if result.0 {
+                let key = self.schema.record_key(&record.model, &record.identity)?;
+                let change = if record.state.is_null() {
+                    StoreChange::Delete {
+                        identity: key.identity,
+                    }
+                } else {
+                    StoreChange::Upsert {
+                        identity: key.identity.clone(),
+                        row: merge_identity(
+                            &key.identity,
+                            &self.schema.validate_state(&record.model, &record.state)?,
+                        ),
+                    }
+                };
+                Some((record.model.clone(), change))
+            } else {
+                None
+            };
+            if let StageMode::Capture(entries) = &mut self.stage_mode {
+                entries.push(StageEntry {
+                    change,
+                    diagnostic: result.1.clone(),
+                });
+            }
+        }
+        Ok(result)
     }
     /// Stage every record of one delivery, then rebuild the held keys once.
     /// A record that cannot be staged is reported and leaves nothing behind;

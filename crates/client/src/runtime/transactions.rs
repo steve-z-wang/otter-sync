@@ -7,14 +7,14 @@
 //! clears, and the callback's result decides commit or rollback only once
 //! every submitted command has run.
 use super::*;
-use crate::ClientStore;
+use crate::{ClientStore, PreparedStore, StoreChange, StoreDelivery, StoreResult};
 use std::collections::VecDeque;
 
 const INVALID_SCOPE: &str = "invalid transaction scope";
 const CLOSED: &str = "transaction_closed";
 
 pub(super) struct Transaction {
-    pub(super) request_id: String,
+    pub(super) owner: TransactionOwner,
     transaction_id: String,
     effect_id: String,
     /// Open savepoints, innermost last.
@@ -27,6 +27,94 @@ pub(super) struct Transaction {
     finishing: Option<(bool, Option<String>)>,
     /// Submitted commands of the callback, in order.
     pub(super) lane: VecDeque<Continuation>,
+    current_model: Option<String>,
+}
+pub(super) enum TransactionOwner {
+    Application {
+        request_id: String,
+    },
+    Authority {
+        prepared: Box<PreparedStore>,
+        continuation: StoreContinuation,
+        pending: VecDeque<(String, Vec<StoreChange>)>,
+    },
+}
+pub(super) enum StoreContinuation {
+    Ack {
+        request_id: String,
+    },
+    Pull {
+        request_id: String,
+    },
+    Direct {
+        request_id: String,
+    },
+    Push,
+    Downlink {
+        token: crate::downlink_worker::StoreToken,
+    },
+}
+impl StoreContinuation {
+    fn path(&self) -> &'static str {
+        match self {
+            Self::Ack { .. } | Self::Push => "receipt",
+            Self::Pull { .. } => "pull",
+            Self::Direct { .. } => "direct",
+            Self::Downlink { token } => token.path(),
+        }
+    }
+    pub(super) fn fail<S: ClientStore + 'static>(
+        self,
+        runtime: &mut ClientRuntime<S>,
+        error: String,
+        callback: Option<&str>,
+        model: Option<&str>,
+        now: u64,
+        entropy: u64,
+    ) {
+        let path = self.path();
+        if let Some(model) = model {
+            runtime.report(Diagnostic::StoreHook {
+                code: "store_hook_failed".into(),
+                model: model.into(),
+                path: path.into(),
+                message: error.clone(),
+                callback_effect_id: callback.map(str::to_string),
+            });
+        }
+        match self {
+            Self::Ack { request_id } | Self::Pull { request_id } => {
+                if let Some(effect_id) = callback {
+                    runtime.fail(request_id, error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
+                } else {
+                    runtime.complete(request_id, Err(error));
+                }
+            }
+            Self::Direct { request_id } => {
+                if let Some(effect_id) = callback {
+                    runtime.fail_direct(&request_id, &error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
+                } else {
+                    runtime.fail_direct(
+                        &request_id,
+                        direct::EXECUTION_UNKNOWN,
+                        direct::transport_failure(&EffectError {
+                            message: error,
+                            status: None,
+                        }),
+                    );
+                }
+            }
+            Self::Push => {
+                if callback.is_none() {
+                    runtime.error(error);
+                }
+                runtime.push_failed(now, entropy);
+            }
+            Self::Downlink { token } => {
+                runtime.downlink_store_failed(token, error, callback.is_some(), now, entropy)
+            }
+        }
+    }
 }
 struct Scope {
     token: String,
@@ -65,7 +153,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             },
         });
         self.transaction = Some(Transaction {
-            request_id,
+            owner: TransactionOwner::Application { request_id },
             transaction_id,
             effect_id,
             scopes: vec![],
@@ -73,6 +161,110 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             structural: None,
             finishing: None,
             lane: VecDeque::new(),
+            current_model: None,
+        });
+    }
+    pub(super) fn has_store_hook_candidate(&self, models: impl Iterator<Item = String>) -> bool {
+        self.client.store_hooks_active()
+            && models
+                .into_iter()
+                .any(|model| self.store_hooks.contains(&model))
+    }
+    /// Discard authority state if it still owns a logical session, then report
+    /// any physical rollback failure once. A failed physical rollback closes
+    /// the runtime before its queued work can touch the uncertain connection.
+    pub(super) fn abort_authority_session(&mut self) {
+        if self.client.session_active() {
+            let _ = self.client.rollback_session();
+        }
+        if let Some(error) = self.client.take_physical_rollback_failure() {
+            self.error(format!("authority rollback failed: {error}"));
+            self.lifecycle = Lifecycle::Closing;
+        }
+    }
+    pub(super) fn open_store(
+        &mut self,
+        delivery: StoreDelivery,
+        continuation: StoreContinuation,
+        now: u64,
+        entropy: u64,
+    ) {
+        if let Err(error) = self.client.begin_session() {
+            continuation.fail(self, error.to_string(), None, None, now, entropy);
+            return;
+        }
+        let prepared = match self.client.prepare_store(delivery) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.abort_authority_session();
+                continuation.fail(self, error.to_string(), None, None, now, entropy);
+                return;
+            }
+        };
+        let pending: VecDeque<_> = prepared
+            .changes()
+            .iter()
+            .filter(|(model, changes)| self.store_hooks.contains(*model) && !changes.is_empty())
+            .map(|(model, changes)| (model.clone(), changes.clone()))
+            .collect();
+        if pending.is_empty() {
+            self.finish_store_owner(prepared, continuation, now, entropy);
+            return;
+        }
+        let transaction_id = match self.issue() {
+            Ok(id) => format!("tx{id}"),
+            Err(error) => {
+                self.abort_authority_session();
+                continuation.fail(self, error, None, None, now, entropy);
+                return;
+            }
+        };
+        let effect_id = match self.issue() {
+            Ok(id) => id.to_string(),
+            Err(error) => {
+                self.abort_authority_session();
+                continuation.fail(self, error, None, None, now, entropy);
+                return;
+            }
+        };
+        self.transaction = Some(Transaction {
+            owner: TransactionOwner::Authority {
+                prepared: Box::new(prepared),
+                continuation,
+                pending,
+            },
+            transaction_id,
+            effect_id,
+            scopes: vec![],
+            failure: None,
+            structural: None,
+            finishing: None,
+            lane: VecDeque::new(),
+            current_model: None,
+        });
+        self.emit_next_store_callback();
+    }
+    fn emit_next_store_callback(&mut self) {
+        let Some(open) = &mut self.transaction else {
+            return;
+        };
+        let TransactionOwner::Authority { pending, .. } = &mut open.owner else {
+            return;
+        };
+        let Some((model, changes)) = pending.pop_front() else {
+            return;
+        };
+        open.current_model = Some(model.clone());
+        let effect_id = open.effect_id.clone();
+        self.effects
+            .insert(effect_id.clone(), effects::EffectKind::Callback);
+        self.events.push(Event::Effect {
+            effect_id,
+            operation: Operation::StoreCallback {
+                transaction_id: open.transaction_id.clone(),
+                model,
+                changes,
+            },
         });
     }
     /// Admit one command of the callback: onto the lane when it names the
@@ -161,6 +353,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     Value::Null
                 })
             }
+            TransactionCommand::Enqueue { .. }
+                if matches!(
+                    self.transaction.as_ref().map(|t| &t.owner),
+                    Some(TransactionOwner::Authority { .. })
+                ) =>
+            {
+                Err(crate::invalid("store hook cannot enqueue"))
+            }
             _ => commands::execute_in_session(&mut self.client, &command.command),
         };
         outcome.map_err(|e| {
@@ -214,6 +414,68 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         for command in open.lane {
             self.complete(command.request_id, Err(CLOSED.into()));
         }
+        if matches!(open.owner, TransactionOwner::Authority { .. }) {
+            if let Some(refusal) = refusal {
+                self.abort_authority_session();
+                if let TransactionOwner::Authority { continuation, .. } = open.owner {
+                    continuation.fail(
+                        self,
+                        refusal,
+                        Some(&open.effect_id),
+                        open.current_model.as_deref(),
+                        now,
+                        entropy,
+                    );
+                }
+            } else if let TransactionOwner::Authority {
+                prepared,
+                continuation,
+                pending,
+            } = open.owner
+            {
+                if !pending.is_empty() {
+                    let transaction_id = self.issue().map(|id| format!("tx{id}"));
+                    let effect_id = self.issue().map(|id| id.to_string());
+                    match (transaction_id, effect_id) {
+                        (Ok(transaction_id), Ok(effect_id)) => {
+                            self.transaction = Some(Transaction {
+                                owner: TransactionOwner::Authority {
+                                    prepared,
+                                    continuation,
+                                    pending,
+                                },
+                                transaction_id,
+                                effect_id,
+                                scopes: vec![],
+                                failure: None,
+                                structural: None,
+                                finishing: None,
+                                lane: VecDeque::new(),
+                                current_model: None,
+                            });
+                            self.emit_next_store_callback();
+                        }
+                        _ => {
+                            self.abort_authority_session();
+                            continuation.fail(
+                                self,
+                                "runtime identifiers exhausted".into(),
+                                None,
+                                None,
+                                now,
+                                entropy,
+                            );
+                        }
+                    }
+                } else {
+                    self.finish_store_owner(*prepared, continuation, now, entropy);
+                }
+            }
+            return;
+        }
+        let TransactionOwner::Application { request_id } = open.owner else {
+            unreachable!()
+        };
         let outcome = match refusal {
             Some(refusal) => {
                 if let Err(e) = self.client.rollback_session() {
@@ -234,6 +496,66 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 committed.map(|()| Value::Null)
             }
         };
-        self.complete(open.request_id, outcome);
+        self.complete(request_id, outcome);
+    }
+    fn finish_store_owner(
+        &mut self,
+        prepared: PreparedStore,
+        continuation: StoreContinuation,
+        now: u64,
+        entropy: u64,
+    ) {
+        let generation = self.client.generation();
+        let result = self
+            .client
+            .apply_prepared_store(prepared)
+            .and_then(|result| {
+                let value = match &result {
+                    StoreResult::Page(report) | StoreResult::Receipt(report) => {
+                        serde_json::to_value(report)?
+                    }
+                    StoreResult::Direct(_) => Value::Null,
+                    StoreResult::Bootstrap(_) => Value::Null,
+                };
+                self.client.commit_session()?;
+                Ok((value, result))
+            });
+        if result.is_err() {
+            self.abort_authority_session();
+        }
+        self.committed_since(generation);
+        if self.client.generation() != generation {
+            self.wake_lanes(now, entropy);
+        }
+        match result {
+            Ok((_, StoreResult::Direct(report))) => {
+                if let StoreContinuation::Direct { request_id } = continuation {
+                    self.finish_direct_store(request_id, report);
+                } else {
+                    unreachable!()
+                }
+            }
+            Ok((_, StoreResult::Receipt(report)))
+                if matches!(continuation, StoreContinuation::Push) =>
+            {
+                self.push_store_committed(report);
+            }
+            Ok((_, result)) if matches!(continuation, StoreContinuation::Downlink { .. }) => {
+                if let StoreContinuation::Downlink { token } = continuation {
+                    self.lanes.downlink.store_committed(token, result);
+                    if let Some(connection) = &mut self.connection {
+                        connection.downlink.dirty = true;
+                    }
+                }
+            }
+            Ok((value, _)) => match continuation {
+                StoreContinuation::Ack { request_id } | StoreContinuation::Pull { request_id } => {
+                    self.seam_completions(&value);
+                    self.complete(request_id, Ok(value));
+                }
+                _ => unreachable!(),
+            },
+            Err(error) => continuation.fail(self, error.to_string(), None, None, now, entropy),
+        }
     }
 }

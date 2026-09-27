@@ -31,6 +31,7 @@ export 'src/connection.dart'
         RuntimeConnection,
         AuthenticationExpired,
         ActionTransportException,
-        AxtonReport;
+        AxtonReport,
+        StoreHookFailure;
 
 export 'src/live.dart' show SyncServer, HttpFailure;

@@ -141,7 +141,7 @@ async function scenario(body) {
   get reports() { return errors.filter(error => error.name === 'AxtonReport'); },
   /** Opens a client database under `name`; `connect: false` leaves it offline. */
   async open(name, options = {}) {
-   const client = await GeneratedClient.open({ path: join(directory, `${name}.sqlite`) });
+   const client = await GeneratedClient.open({ path: join(directory, `${name}.sqlite`), onStore: options.onStore });
    opened.add(client);
    if (options.connect !== false) await context.connect(client);
    return client;
@@ -164,6 +164,55 @@ async function scenario(body) {
   await rm(directory, { recursive: true, force: true });
  }
 }
+
+test('generated store hooks commit derived rows and intent on live and Bootstrap; a failed historical hook retries', { timeout: 120000 }, async () => {
+ await scenario(async ctx => {
+  const scope = 'bootstrap:generated-hooks';
+  await ctx.app.publishOne('historic', 'history', [scope]);
+  let failHistory = true;
+  const seen = [];
+  const client = await ctx.open('reader', { onStore: {
+   async entry(tx, changes) {
+    for (const change of changes) {
+     if (change.kind !== 'upsert') continue;
+     seen.push({ id: change.identity.id, row: change.row.text, before: (await tx.models.entry.get(change.identity))?.text ?? null });
+     await tx.models.entry.create({ id: `derived-${change.identity.id}`, text: `from ${change.row.text}` });
+     await tx.channels.subscribe(`derived:${change.identity.id}`);
+     if (failHistory && change.identity.id === 'historic') throw Error('historical hook blocked');
+    }
+   },
+  } });
+  const subscription = await client.scopes.subscribe(scope);
+  await wait(() => subscription.status.initialization === 'ready', 'hook scope origin');
+  const initial = await ledger(client, scope);
+  const watched = [];
+  const stop = client.models.entry.watch({}, rows => watched.push(rows.map(row => row.id).sort()));
+  try {
+   const failed = await subscription.bootstrap().then(() => null, error => error);
+   assert.equal(failed?.code, 'store_hook_failed');
+   assert.equal((await ledger(client, scope)).bootstrap_cursor, initial.bootstrap_cursor, 'failure keeps historical progress');
+   assert.equal(await client.models.entry.get({ id: 'historic' }), null, 'authority rolled back');
+   assert.equal(await client.models.entry.get({ id: 'derived-historic' }), null, 'derived row rolled back');
+   assert.equal(watched.some(ids => ids.includes('historic')), false, 'failure did not notify watchers');
+   failHistory = false;
+   await subscription.bootstrap();
+   assert.equal((await client.models.entry.get({ id: 'historic' }))?.text, 'history');
+   assert.equal((await client.models.entry.get({ id: 'derived-historic' }))?.text, 'from history');
+   assert.equal((await ledger(client, scope)).bootstrap_cursor, initial.starting_cursor, 'retry advanced historical progress');
+   await wait(() => watched.some(ids => ids.includes('historic') && ids.includes('derived-historic')), 'Bootstrap watcher after commit');
+   assert.equal(watched.some(ids => ids.includes('historic') !== ids.includes('derived-historic')), false, 'Bootstrap watchers see no partial authority/derived commit');
+   await ctx.app.publishOne('live', 'live text', [scope]);
+   await wait(async () => (await client.models.entry.get({ id: 'derived-live' }))?.text === 'from live text', 'live hook derived row');
+   assert.equal((await client.models.entry.get({ id: 'live' }))?.text, 'live text');
+   await wait(() => watched.some(ids => ids.includes('live') && ids.includes('derived-live')), 'live watcher after commit');
+   assert.equal(watched.some(ids => ids.includes('live') !== ids.includes('derived-live')), false, 'live watchers see no partial authority/derived commit');
+   assert.equal(seen.filter(x => x.id === 'historic').length, 2, 'failed hook was invoked again on retry');
+   assert.deepEqual(seen.filter(x => x.id === 'live'), [{ id: 'live', row: 'live text', before: null }]);
+   const names = await client.readSql('SELECT channel FROM axton_subscription WHERE channel IN (?, ?) ORDER BY channel', ['derived:historic', 'derived:live']);
+   assert.deepEqual(names.map(row => row.channel), ['derived:historic', 'derived:live'], 'hook intent committed on both paths');
+  } finally { stop(); }
+ });
+});
 
 // The critical case of the coverage argument: a record published before the
 // origin whose latest publication moves above it belongs to the subscription's

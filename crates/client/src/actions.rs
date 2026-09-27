@@ -1,5 +1,6 @@
 //! Durable Action submission. The intent is persisted independently of its
 //! inferred optimistic Model operations.
+use crate::engine::Engine;
 use crate::query_cache::QueryCacheKey;
 use crate::{ApplyReport, Client, ClientStore, Mutation, Operation, OperationKind};
 use axton_core::{
@@ -88,18 +89,7 @@ impl<S: ClientStore> Client<S> {
             report.completions.push(response.completion.clone());
             return Ok(report);
         }
-        self.write(|engine| {
-            let mut report = if response.records.is_empty() {
-                ApplyReport::default()
-            } else {
-                engine.apply_records(&response.records)?
-            };
-            if let Some((result, (key, generation))) = result {
-                engine.save_query_result(key, generation, result)?;
-            }
-            report.completions.push(response.completion.clone());
-            Ok(report)
-        })
+        self.write(|engine| engine.apply_direct_response_body(&response, snapshot))
     }
     pub fn apply_action_response_bytes(
         &mut self,
@@ -108,6 +98,20 @@ impl<S: ClientStore> Client<S> {
     ) -> Result<ApplyReport> {
         let request = DirectActionRequest::decode(request, &self.schema)?;
         self.apply_action_response(&request, response)
+    }
+    /// Decode a received direct response while leaving its runtime call
+    /// owner in place until the authority transaction commits.
+    pub(crate) fn decode_direct_store(
+        &self,
+        request: &[u8],
+        response: &[u8],
+    ) -> Result<crate::StoreDelivery> {
+        let request = DirectActionRequest::decode(request, &self.schema)?;
+        let response = DirectActionResponse::decode(response, &request, &self.schema)?;
+        Ok(crate::StoreDelivery::Direct {
+            response,
+            snapshot: None,
+        })
     }
     pub fn submit_action(
         &mut self,
@@ -143,6 +147,27 @@ impl<S: ClientStore> Client<S> {
         mutation.store = options.store.canonical();
         let ordinal = self.transaction(|tx| tx.enqueue(mutation))?;
         Ok(SubmittedCall { call_id, ordinal })
+    }
+}
+
+impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn apply_direct_response_body(
+        &mut self,
+        response: &DirectActionResponse,
+        snapshot: Option<(&QueryCacheKey, Option<&str>)>,
+    ) -> Result<ApplyReport> {
+        let mut report = if response.records.is_empty() {
+            ApplyReport::default()
+        } else {
+            self.apply_records(&response.records)?
+        };
+        if let (ActionOutcome::Succeeded { result }, Some((key, generation))) =
+            (&response.completion.outcome, snapshot)
+        {
+            self.save_query_result(key, generation, result)?;
+        }
+        report.completions.push(response.completion.clone());
+        Ok(report)
     }
 }
 

@@ -62,6 +62,9 @@ impl LiveSession {
     pub fn current(&self, epoch: u64) -> bool {
         self.session.as_ref().is_some_and(|s| s.epoch == epoch)
     }
+    pub(crate) fn active_epoch(&self) -> Option<u64> {
+        self.session.as_ref().map(|s| s.epoch)
+    }
     /// The subscription generation the open session subscribed under.
     pub fn generation(&self) -> Option<u64> {
         self.session.as_ref().map(|s| s.generation)

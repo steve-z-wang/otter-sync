@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Bridge } from "../../../packages/client-js/bridge.mts";
+import { createClient } from "../../../packages/client-js/runtime.mts";
+import { Transaction } from "../../../packages/client-js/transaction.mts";
 
 // The SDK Bridge over the Rust-owned client runtime (#134): request routing,
 // callback transactions, wake/drain dispatch and lifecycle, on the real
@@ -640,7 +642,7 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
  * submitted task with the events it publishes, and `publish` hands the Bridge
  * more, one drain batch per call, the way the runtime's outbox would.
  */
-async function scripted(respond = () => []) {
+async function scripted(respond = () => [], options = {}) {
   let wake;
   const outbox = [];
   const submitted = [];
@@ -671,7 +673,7 @@ async function scripted(respond = () => []) {
     runtimeDrain: () => JSON.stringify(outbox.splice(0)),
     runtimeDetach() {},
   };
-  const { bridge } = await Bridge.open(carrier, { path: "unused", schema });
+  const { bridge } = await Bridge.open(carrier, { path: "unused", schema, ...options });
   return {
     bridge,
     submitted,
@@ -822,11 +824,11 @@ test("a terminal snapshot ends its observer; a throwing observer is reported and
 });
 
 /** Run a module script and answer its exit code and output. */
-function script(source) {
+function script(source, flags = []) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      ["--input-type=module", "-e", source],
+      [...flags, "--input-type=module", "-e", source],
       { timeout: 20000 },
       (error, stdout, stderr) =>
         resolve({
@@ -938,4 +940,264 @@ test("a callback whose effect was cancelled never runs, even while its task is p
   publish({ type: "runtimeClosed" });
   assert.match((await outcome).message, /client_closed/);
   assert.equal(ran, false);
+});
+
+test("a store callback dispatches without a public task and snapshots its handler", async () => {
+  let wake;
+  const events = [];
+  const inputs = [];
+  let opened;
+  const carrier = {
+    runtimeOpen(request, notify) {
+      opened = JSON.parse(request);
+      wake = notify;
+      events.push({ type: "taskCompleted", requestId: opened.requestId, ok: true,
+        value: { clientId: "c", schema: {} } });
+      setImmediate(() => wake("1"));
+      return "1";
+    },
+    runtimeSubmit(_id, message) {
+      const input = JSON.parse(message);
+      inputs.push(input);
+      if (input.type === "close") events.push({ type: "runtimeClosed" });
+      setImmediate(() => wake("1"));
+    },
+    runtimeDrain: () => JSON.stringify(events.splice(0)),
+    runtimeDetach() {},
+  };
+  const called = [];
+  const handlers = { Entry: async (_tx, changes) => called.push(changes) };
+  const { bridge } = await Bridge.open(carrier,
+    { path: "unused", schema, onStore: handlers });
+  handlers.Entry = () => { throw Error("replacement must not run"); };
+  assert.deepEqual(opened.storeHooks, ["Entry"]);
+  assert.equal("onStore" in opened, false);
+  events.push({ type: "effect", effectId: "store1", operation: {
+    kind: "storeCallback", transactionId: "tx1", model: "Entry",
+    changes: [{ kind: "delete", identity: { id: "e" } }],
+  } });
+  wake("1");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(called.length, 1);
+  assert.deepEqual(inputs.find((input) => input.effectId === "store1"), {
+    type: "callbackResult", effectId: "store1", transactionId: "tx1", ok: true,
+  });
+  await bridge.close();
+});
+
+test("store effect cancellation aborts an unresolved callback and fences its answer", async () => {
+  const entered = deferred();
+  const gate = deferred();
+  let signal;
+  const { bridge, publish, submitted } = await scripted(() => [], {
+    onStore: { Entry: async (_tx, _changes, cancellation) => {
+      signal = cancellation;
+      entered.resolve();
+      await gate.promise;
+    } },
+  });
+  publish({ type: "effect", effectId: "store2", operation: {
+    kind: "storeCallback", transactionId: "tx2", model: "Entry", changes: [],
+  } });
+  await entered.promise;
+  publish({ type: "cancelEffect", effectId: "store2" });
+  assert.equal(signal.aborted, true);
+  gate.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(submitted.some((input) => input.effectId === "store2"), false);
+  await bridge.close();
+});
+
+test("joined once callers and connection onError retain one store hook cause", async () => {
+  const thrown = Error("hook broke");
+  let wake;
+  const outbox = [];
+  const requests = [];
+  const carrier = {
+    runtimeOpen(request, notify) {
+      wake = notify;
+      outbox.push({ type: "taskCompleted", requestId: JSON.parse(request).requestId,
+        ok: true, value: { clientId: "c", schema: {} } });
+      setImmediate(() => wake("1"));
+      return "1";
+    },
+    runtimeSubmit(_id, message) {
+      const input = JSON.parse(message);
+      if (input.type === "task" && input.command.kind === "invoke") requests.push(input.requestId);
+      if (input.type === "task" && input.command.kind === "connect")
+        outbox.push({ type: "taskCompleted", requestId: input.requestId, ok: true, value: null });
+      if (input.type === "callbackResult") {
+        assert.equal(input.ok, false);
+        outbox.push({ type: "report", diagnostic: { kind: "storeHook",
+          code: "store_hook_failed", model: "Entry", path: "direct",
+          message: input.error, callbackEffectId: input.effectId } });
+        for (const requestId of requests)
+          outbox.push({ type: "taskCompleted", requestId, ok: false,
+            error: "hook broke", details: { code: "store_hook_failed",
+              model: "Entry", path: "direct", callbackEffectId: input.effectId } });
+      }
+      if (input.type === "close") outbox.push({ type: "runtimeClosed" });
+      setImmediate(() => wake("1"));
+    },
+    runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
+  };
+  const Client = createClient(carrier, Transaction, () => ({
+    push: async () => "", open() {},
+  }));
+  const reported = [];
+  const client = await Client.open({ path: "unused", schema,
+    onStore: { Entry: async () => { throw thrown; } } });
+  try {
+    await client.connect({ url: "http://unused", token: "token" },
+      { onError: (error) => reported.push(error) });
+    const a = client.invokeQuery("Lookup", 1, {}, (value) => value, { once: true });
+    const b = client.invokeQuery("Lookup", 1, {}, (value) => value, { once: true });
+    assert.equal(requests.length, 2);
+    outbox.push({ type: "effect", effectId: "store3", operation: {
+      kind: "storeCallback", transactionId: "tx3", model: "Entry", changes: [],
+    } });
+    wake("1");
+    const [first, second] = await Promise.all([a.catch(e => e), b.catch(e => e)]);
+    assert.equal(first.code, "store_hook_failed");
+    assert.equal(second.code, "store_hook_failed");
+    assert.equal(first.cause, thrown);
+    assert.equal(second.cause, thrown);
+    assert.equal(reported.length, 1);
+    assert.equal(reported[0].cause, thrown);
+    assert.equal(reported[0].model, "Entry");
+    assert.equal(reported[0].path, "direct");
+  } finally { await client.close(); }
+});
+
+test("store hooks use transaction guards, savepoints, and immediate cancellation", async () => {
+  let wake;
+  const outbox = [];
+  const submitted = [];
+  const carrier = {
+    runtimeOpen(request, notify) {
+      wake = notify;
+      outbox.push({ type: "taskCompleted", requestId: JSON.parse(request).requestId,
+        ok: true, value: { clientId: "c", schema: {} } });
+      setImmediate(() => wake("1"));
+      return "1";
+    },
+    runtimeSubmit(_id, message) {
+      const input = JSON.parse(message);
+      submitted.push(input);
+      if (input.type === "transactionCommand")
+        outbox.push({ type: "taskCompleted", requestId: input.requestId,
+          ok: true, value: input.command.kind === "savepoint" ? { scope: "sp1" } : null });
+      if (input.type === "close") outbox.push({ type: "runtimeClosed" });
+      setImmediate(() => wake("1"));
+    },
+    runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
+  };
+  const Client = createClient(carrier, Transaction, () => { throw Error("no network"); });
+  let escaped, held;
+  const entered = deferred();
+  const gate = deferred();
+  const client = await Client.open({ path: "unused", schema, onStore: {
+    Entry: async (tx, changes) => {
+      const id = changes[0]?.identity?.id;
+      if (id === "hold") { held = tx; entered.resolve(); await gate.promise; return; }
+      escaped = tx;
+      assert.match((await client.read("Entry", { id }).catch(e => e)).message, /transaction_active/);
+      if (id === "unawaited") { void tx.channels.subscribe("x"); return; }
+      if (id === "nested") {
+        await tx.savepoint(() => tx.savepoint(async () => { throw Error("nested failure"); }));
+        return;
+      }
+      await tx.channels.subscribe("x");
+      await tx.savepoint(async () => { await tx.channels.unsubscribe("x"); });
+    },
+  } });
+  const effect = (effectId, id) => {
+    outbox.push({ type: "effect", effectId, operation: { kind: "storeCallback",
+      transactionId: `tx-${effectId}`, model: "Entry",
+      changes: [{ kind: "delete", identity: { id } }] } });
+    wake("1");
+  };
+  const answer = async (effectId) => {
+    for (let i = 0; i < 20; i++) {
+      const result = submitted.find(x => x.type === "callbackResult" && x.effectId === effectId);
+      if (result) return result;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.fail(`missing callbackResult for ${effectId}`);
+  };
+  try {
+    effect("ok", "normal");
+    assert.equal((await answer("ok")).ok, true);
+    assert.deepEqual(submitted.filter(x => x.type === "transactionCommand").map(x => x.command.kind),
+      ["channel", "savepoint", "channel", "release"]);
+    await assert.rejects(escaped.read("Entry", { id: "normal" }), /closed/);
+    effect("bad", "nested");
+    assert.match((await answer("bad")).error, /nested failure/);
+    effect("unawaited", "unawaited");
+    assert.match((await answer("unawaited")).error, /unawaited transaction operation/);
+    effect("held", "hold");
+    await entered.promise;
+    outbox.push({ type: "cancelEffect", effectId: "held" });
+    wake("1");
+    await assert.rejects(held.read("Entry", { id: "hold" }), /closed/);
+  } finally { gate.resolve(); await client.close(); }
+});
+
+test("transaction Channel helpers commit local intent without a Subscription handle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-tx-channel-"));
+  const Client = createClient(native, Transaction, () => { throw Error("no network"); });
+  const client = await Client.open({ path: join(directory, "db"), schema });
+  try {
+    await client.transaction(async (tx) => {
+      assert.equal(await tx.channels.subscribe("project:p1"), undefined);
+      assert.equal(await tx.channels.subscribe("project:p1"), undefined);
+    });
+    assert.deepEqual((await client.syncState()).channels, ["project:p1"]);
+    await client.transaction(async (tx) => {
+      assert.equal(await tx.channels.unsubscribe("project:p1"), undefined);
+    });
+    assert.deepEqual((await client.syncState()).channels, []);
+  } finally {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cancelled raw store callback releases decoded changes while user work is unresolved", async () => {
+  const { code, stdout, stderr } = await script(`
+    import { Bridge } from ${JSON.stringify(bridgeModule)};
+    let wake;
+    const outbox = [];
+    let reference;
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const carrier = {
+      runtimeOpen(request, notify) {
+        wake = notify;
+        outbox.push({type:'taskCompleted',requestId:JSON.parse(request).requestId,
+          ok:true,value:{clientId:'c',schema:{}}});
+        setImmediate(() => wake('1'));
+        return '1';
+      },
+      runtimeSubmit(_id, message) {
+        if (JSON.parse(message).type === 'close') outbox.push({type:'runtimeClosed'});
+        setImmediate(() => wake('1'));
+      },
+      runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
+    };
+    const { bridge } = await Bridge.open(carrier, {path:'unused',schema:{},
+      onStore:{Entry:(_tx,changes)=>{reference=new WeakRef(changes);return gate;}}});
+    outbox.push({type:'effect',effectId:'e',operation:{kind:'storeCallback',
+      transactionId:'t',model:'Entry',changes:[{kind:'delete',identity:{id:'x'}}]}});
+    wake('1');
+    await new Promise(setImmediate);
+    outbox.push({type:'cancelEffect',effectId:'e'});
+    wake('1');
+    await bridge.close();
+    for(let i=0;i<8;i++){await new Promise(setImmediate);global.gc();}
+    process.stdout.write(reference.deref()===undefined?'collected':'retained');
+    release();
+  `, ["--expose-gc"]);
+  assert.equal(code, 0, stderr);
+  assert.equal(stdout, "collected");
 });

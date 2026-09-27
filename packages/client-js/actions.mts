@@ -205,16 +205,27 @@ export class ActionRegistry {
 
 export function actionError(error: unknown): CallError {
   if (error instanceof CallError) return error;
-  const value = error as { code?: unknown; execution?: unknown } | null;
+  const value = error as {
+    code?: unknown;
+    execution?: unknown;
+    details?: { code?: unknown };
+    cause?: unknown;
+  } | null;
   const code =
     typeof value?.code === "string"
       ? value.code
-      : error instanceof Error && error.message === "transaction_active"
-        ? "transaction_active"
-        : "action.transport_failed";
+      : value?.details?.code === "store_hook_failed"
+        ? "store_hook_failed"
+        : error instanceof Error && error.message === "transaction_active"
+          ? "transaction_active"
+          : "action.transport_failed";
   const execution =
     value?.execution === "rejected" || code === "transaction_active"
       ? "rejected"
       : "unknown";
-  return new CallError(code, execution, error);
+  return new CallError(
+    code,
+    execution,
+    code === "store_hook_failed" ? (value?.cause ?? error) : error,
+  );
 }

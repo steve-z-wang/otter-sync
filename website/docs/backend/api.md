@@ -264,6 +264,7 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | `POST /sync/mutations` | Receive durable batches of Mutations and queued Queries |
 | `POST /sync/actions` | Execute one direct Mutation or Query and return its result |
 | `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
+| `POST /sync/loads` | Serve batched pages of native Loads for `client.loads` |
 | `POST /sync/pull` | Materialize changed records through loaders for catch-up and gap recovery |
 | `/sync/live` (WebSocket) | Subscribe to channels and stream ongoing record changes |
 

@@ -810,3 +810,62 @@ test("store variants are separate snapshots and store:false still persists the r
     assert.equal(calls(), start + 4, "invalidation cleared every store variant");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("Model Fetch reads through the real Loader: stored by default, shared only while in flight, never publishing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-model-fetch-"));
+  let client: GeneratedClient | undefined;
+  try {
+    await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('fetch-a','Fetched A'),('fetch-b','Preview B')");
+    const note = "0190c3a1-0000-7000-8000-00000000f153";
+    await fixture.pool.query("INSERT INTO action_e2e_note(id,body,mood,created_at,tag) VALUES($1,'noted','busy','2026-03-04T05:06:07.000Z',NULL)", [note]);
+    const invalidations = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_invalidation")).rows[0].n);
+    const memberships = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_membership")).rows[0].n);
+    const published = await invalidations();
+    const members = await memberships();
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    const loads = fixture.loaderCalls;
+    let paths: string[] = [];
+    let todo: Awaited<ReturnType<typeof client.fetch.todo>> = null;
+    paths = await requestedPaths(async () => { todo = await client!.fetch.todo({ id: "fetch-a" }); });
+    assert.deepEqual(paths, ["/sync/fetch"]);
+    assert.deepEqual(todo, { id: "fetch-a", title: "Fetched A" });
+    assert.equal(fixture.loaderCalls, loads + 1);
+    assert.deepEqual(await client.models.todo.get({ id: "fetch-a" }), { id: "fetch-a", title: "Fetched A" }, "stored by default");
+    assert.equal(await serverStamp("fetch-a"), 1, "stamp evidence, not an advance");
+    // A present local row does not satisfy the next call: it reads again.
+    // Business writes go through the framework so the record gets a new stamp.
+    await fixture.backend.transaction(async ({ tx, touch }) => {
+      await tx.query("UPDATE action_e2e_todo SET title='Fetched A2' WHERE id='fetch-a'");
+      touch.todo({ id: "fetch-a" });
+    });
+    assert.equal((await client.fetch.todo({ id: "fetch-a" }))?.title, "Fetched A2");
+    assert.equal(fixture.loaderCalls, loads + 2);
+    assert.equal((await client.models.todo.get({ id: "fetch-a" }))?.title, "Fetched A2");
+    // Overlapping identical callers share one request and one Loader call.
+    const shared = await Promise.all([1, 2, 3].map(() => client!.fetch.todo({ id: "fetch-a" })));
+    assert.equal(fixture.loaderCalls, loads + 3);
+    assert.deepEqual(shared[0], shared[2]);
+    assert.notStrictEqual(shared[0], shared[2]);
+    // store:false returns the snapshot and neither stores nor stamps.
+    assert.deepEqual(await client.fetch.todo({ id: "fetch-b" }, { store: false }), { id: "fetch-b", title: "Preview B" });
+    assert.equal(await client.models.todo.get({ id: "fetch-b" }), null);
+    assert.equal(await serverStamp("fetch-b"), null);
+    // Typed codecs: a UUID identity, a DateTime and an enum.
+    const fetchedNote = await client.fetch.note({ id: note }, { store: false });
+    assert.ok(fetchedNote?.createdAt instanceof Date);
+    assert.equal(fetchedNote.createdAt.toISOString(), "2026-03-04T05:06:07.000Z");
+    assert.equal(fetchedNote.mood, "busy");
+    assert.equal(fetchedNote.tag, null);
+    // The Loader's null is absence: stored as a deletion of the local row.
+    await fixture.backend.transaction(async ({ tx, touch }) => {
+      await tx.query("DELETE FROM action_e2e_todo WHERE id='fetch-a'");
+      touch.todo({ id: "fetch-a" });
+    });
+    assert.equal(await client.fetch.todo({ id: "fetch-a" }), null);
+    assert.equal(await client.models.todo.get({ id: "fetch-a" }), null);
+    // The touched records belong to no Channel, so any publication is Fetch's.
+    assert.equal(await invalidations(), published, "Fetch publishes nothing");
+    assert.equal(await memberships(), members, "Fetch changes no membership");
+    assert.equal((await client.syncState()).pending, 0, "Fetch never enqueues");
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});

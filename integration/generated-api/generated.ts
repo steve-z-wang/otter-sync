@@ -5,7 +5,7 @@ export interface WritePort extends ReadPort { direct(operation:object):Promise<v
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
 export interface CallPort { invokeAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<Call<T>>; invokeDirectAction<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions):Promise<T>; invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions&OnceOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
 export interface MutatePort { mutate(value:object):Promise<number>; }
-export const schema = {"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q 'single' \"double\" ''' \"\"\" $dollar ${x} \\ back\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]} as const;
+export const schema = {"actions":[{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"single","kind":"value","list":false,"name":"composition","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}}],"kind":"mutation","name":"PublishEntry","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":2,"name":"published","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Rename","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q 'single' \"double\" ''' \"\"\" $dollar ${x} \\ back\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]} as const;
 export type MutationName = 'AddBook'|'AddComment'|'AddDraft'|'CreateEntry'|'EditEntry'|'RemoveEntries';
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
 export interface Rejection { ordinal:number; code:string; [key:string]:unknown; }
@@ -297,6 +297,48 @@ export function encodeCounterWhere(value:Partial<Counter>):Record<string,unknown
  ...(value.id !== undefined ? { id: value.id } : {}),
  ...(value.index !== undefined ? { index: value.index == null ? null : value.index } : {}),
 }; }
+export interface Composition {
+ id: string;
+ title: string;
+ body: string;
+}
+export interface CompositionIdentity {
+ id: string;
+}
+export interface CompositionPatch {
+ title?: string;
+ body?: string;
+}
+export interface CompositionCreate {
+ id: string;
+ title: string;
+ body: string;
+}
+export function decodeComposition(row:Record<string,unknown>):Composition { return {
+ id: row.id as string,
+ title: row.title as string,
+ body: row.body as string,
+}; }
+export function decodeCompositionIdentity(row:Record<string,unknown>):CompositionIdentity { return {
+ id: row.id as string,
+}; }
+export function encodeComposition(value:Composition):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeCompositionIdentity(value:CompositionIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeCompositionPatch(value:CompositionPatch):Record<string,unknown> { return {
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
+export function encodeCompositionWhere(value:Partial<Composition>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.title !== undefined ? { title: value.title } : {}),
+ ...(value.body !== undefined ? { body: value.body } : {}),
+}; }
 export function encodeDraftCreate(value:DraftCreate):Record<string,unknown> { return {
  ...(value.id !== undefined ? { id: value.id } : {}),
  ...(value.body !== undefined ? { body: value.body } : {}),
@@ -348,6 +390,14 @@ export function encodeCounterCreate(value:CounterCreate):Record<string,unknown> 
  index: value.index == null ? null : value.index,
 }; }
 export function encodeCounterCreateIdentity(value:CounterCreate):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeCompositionCreate(value:CompositionCreate):Record<string,unknown> { return {
+ id: value.id,
+ title: value.title,
+ body: value.body,
+}; }
+export function encodeCompositionCreateIdentity(value:CompositionCreate):Record<string,unknown> { return {
  id: value.id,
 }; }
 export interface AddDraftArgs {
@@ -482,8 +532,78 @@ export class CounterLiveModel extends CounterTxModel<LivePort> {
  /** This record's sync state: its pending mutations and retained rejections. Local only. */
  async syncState(identity:CounterIdentity):Promise<SyncState> { return (await this.port.syncState('Counter',encodeCounterIdentity(identity))) as SyncState; }
 }
-export function makeMutations(_port:CallPort) { return { call: {} }; }
-export function makeQueries(_port:CallPort) { return { enqueue: {}, invalidate: {} }; }
+export class CompositionModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:CompositionIdentity):Promise<Composition|null> { const row=await this.port.read('Composition',encodeCompositionIdentity(identity)); return row===null ? null : decodeComposition(row); }
+ async query(options:{where?:Partial<Composition>;orderBy?:{field:'id' | 'title' | 'body';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Composition[]> { return (await this.port.querySpec('Composition',{filter:encodeCompositionWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeComposition); }
+}
+export class CompositionTxModel<P extends WritePort=WritePort> extends CompositionModel<P> {
+ create(value:CompositionCreate):Promise<void> { return this.port.direct({model:'Composition',op:'create',identity:encodeCompositionCreateIdentity(value),values:encodeCompositionPatch(value)}); }
+ update(identity:CompositionIdentity, patch:CompositionPatch):Promise<void> { return this.port.direct({model:'Composition',op:'update',identity:encodeCompositionIdentity(identity),values:encodeCompositionPatch(patch)}); }
+ delete(identity:CompositionIdentity):Promise<void> { return this.port.direct({model:'Composition',op:'delete',identity:encodeCompositionIdentity(identity)}); }
+}
+export class CompositionLiveModel extends CompositionTxModel<LivePort> {
+ watch(options:{where?:Partial<Composition>}, listener:(rows:Composition[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Composition',encodeCompositionWhere(options.where??{}),(rows)=>listener(rows.map(decodeComposition)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:CompositionIdentity):Promise<SyncState> { return (await this.port.syncState('Composition',encodeCompositionIdentity(identity))) as SyncState; }
+}
+export type DraftUpdate<K extends keyof DraftPatch = keyof DraftPatch> = DraftIdentity & Partial<Pick<DraftPatch, K>>;
+export type DraftDelete = DraftIdentity;
+export type EntryUpdate<K extends keyof EntryPatch = keyof EntryPatch> = EntryIdentity & Partial<Pick<EntryPatch, K>>;
+export type EntryDelete = EntryIdentity;
+export type PlacementUpdate<K extends keyof PlacementPatch = keyof PlacementPatch> = PlacementIdentity & Partial<Pick<PlacementPatch, K>>;
+export type PlacementDelete = PlacementIdentity;
+export type BookUpdate<K extends keyof BookPatch = keyof BookPatch> = BookIdentity & Partial<Pick<BookPatch, K>>;
+export type BookDelete = BookIdentity;
+export type CommentUpdate<K extends keyof CommentPatch = keyof CommentPatch> = CommentIdentity & Partial<Pick<CommentPatch, K>>;
+export type CommentDelete = CommentIdentity;
+export type CounterUpdate<K extends keyof CounterPatch = keyof CounterPatch> = CounterIdentity & Partial<Pick<CounterPatch, K>>;
+export type CounterDelete = CounterIdentity;
+export type CompositionUpdate<K extends keyof CompositionPatch = keyof CompositionPatch> = CompositionIdentity & Partial<Pick<CompositionPatch, K>>;
+export type CompositionDelete = CompositionIdentity;
+export interface PublishEntryInput {
+ entry: EntryCreate;
+ composition: string;
+}
+export interface PublishEntryOutput {
+ published: Entry;
+}
+export interface RenameInput {
+ id: string;
+ title: string;
+}
+export type RenameOutput = void;
+function encodePublishEntryInput(args:PublishEntryInput):Record<string,unknown> { return {
+ entry: encodeEntryCreate(args.entry),
+ composition: args.composition,
+}; }
+function decodePublishEntryOutput(value:unknown):PublishEntryOutput { const row=value as Record<string,unknown>; return {
+ published: decodeEntry(row.published as Record<string,unknown>),
+}; }
+function encodeRenameInput(args:RenameInput):Record<string,unknown> { return {
+ id: args.id,
+ title: args.title,
+}; }
+function decodeRenameOutput(_value:unknown):void { return undefined; }
+/** Invocation options for PublishEntry; `store` selects which explicit Model outputs also update local Models. */
+export type PublishEntryOptions = CallOptions<'published'>;
+/** Invocation options for Rename; `store` selects which explicit Model outputs also update local Models. */
+export type RenameOptions = { store?: boolean };
+/** Mutations resolve after local acceptance (durable); `call` waits for the backend outcome. */
+export function makeMutations(port:CallPort) { return {
+ publishEntry: (args:PublishEntryInput, options?:PublishEntryOptions):Promise<Call<PublishEntryOutput>> => port.invokeAction('PublishEntry',1,encodePublishEntryInput(args),decodePublishEntryOutput,options),
+ rename: (args:RenameInput, options?:RenameOptions):Promise<Call<RenameOutput>> => port.invokeAction('Rename',1,encodeRenameInput(args),decodeRenameOutput,options),
+ call: {
+  publishEntry: (args:PublishEntryInput, options?:PublishEntryOptions):Promise<PublishEntryOutput> => port.invokeDirectAction('PublishEntry',1,encodePublishEntryInput(args),decodePublishEntryOutput,options),
+  rename: (args:RenameInput, options?:RenameOptions):Promise<RenameOutput> => port.invokeDirectAction('Rename',1,encodeRenameInput(args),decodeRenameOutput,options),
+ }
+}; }
+/** Queries resolve with the backend result (direct); `once` reuses a saved complete result, `enqueue` accepts them durably and `invalidate` discards saved results. */
+export function makeQueries(port:CallPort) { return {
+ enqueue: {
+ },
+ invalidate: {
+ }
+}; }
 export class Mutate { readonly port:MutatePort; constructor(port:MutatePort) { this.port=port; }
  addDraft(args:AddDraftArgs):Promise<number> { return this.port.mutate(AddDraft(args)); }
  createEntry(args:CreateEntryArgs):Promise<number> { return this.port.mutate(CreateEntry(args)); }
@@ -492,10 +612,10 @@ export class Mutate { readonly port:MutatePort; constructor(port:MutatePort) { t
  addBook(args:AddBookArgs):Promise<number> { return this.port.mutate(AddBook(args)); }
  addComment(args:AddCommentArgs):Promise<number> { return this.port.mutate(AddComment(args)); }
 }
-export interface LiveModels { draft:DraftLiveModel; entry:EntryLiveModel; placement:PlacementLiveModel; book:BookLiveModel; comment:CommentLiveModel; counter:CounterLiveModel; }
-export function liveModels(port:LivePort):LiveModels { return { draft:new DraftLiveModel(port), entry:new EntryLiveModel(port), placement:new PlacementLiveModel(port), book:new BookLiveModel(port), comment:new CommentLiveModel(port), counter:new CounterLiveModel(port) }; }
-export interface TxModels { draft:DraftTxModel; entry:EntryTxModel; placement:PlacementTxModel; book:BookTxModel; comment:CommentTxModel; counter:CounterTxModel; }
-export function txModels(port:WritePort):TxModels { return { draft:new DraftTxModel(port), entry:new EntryTxModel(port), placement:new PlacementTxModel(port), book:new BookTxModel(port), comment:new CommentTxModel(port), counter:new CounterTxModel(port) }; }
+export interface LiveModels { draft:DraftLiveModel; entry:EntryLiveModel; placement:PlacementLiveModel; book:BookLiveModel; comment:CommentLiveModel; counter:CounterLiveModel; composition:CompositionLiveModel; }
+export function liveModels(port:LivePort):LiveModels { return { draft:new DraftLiveModel(port), entry:new EntryLiveModel(port), placement:new PlacementLiveModel(port), book:new BookLiveModel(port), comment:new CommentLiveModel(port), counter:new CounterLiveModel(port), composition:new CompositionLiveModel(port) }; }
+export interface TxModels { draft:DraftTxModel; entry:EntryTxModel; placement:PlacementTxModel; book:BookTxModel; comment:CommentTxModel; counter:CounterTxModel; composition:CompositionTxModel; }
+export function txModels(port:WritePort):TxModels { return { draft:new DraftTxModel(port), entry:new EntryTxModel(port), placement:new PlacementTxModel(port), book:new BookTxModel(port), comment:new CommentTxModel(port), counter:new CounterTxModel(port), composition:new CompositionTxModel(port) }; }
 export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
 /** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore. */
 export interface FetchModels {
@@ -505,6 +625,7 @@ export interface FetchModels {
  book(identity:BookIdentity, options?:{store?:boolean}):Promise<Book|null>;
  comment(identity:CommentIdentity, options?:{store?:boolean}):Promise<Comment|null>;
  counter(identity:CounterIdentity, options?:{store?:boolean}):Promise<Counter|null>;
+ composition(identity:CompositionIdentity, options?:{store?:boolean}):Promise<Composition|null>;
 }
 export function fetchModels(port:FetchPort):FetchModels { return {
  draft:(identity,options)=>port.fetchModel('Draft',1,encodeDraftIdentity(identity),decodeDraft,options),
@@ -513,6 +634,7 @@ export function fetchModels(port:FetchPort):FetchModels { return {
  book:(identity,options)=>port.fetchModel('Book',1,encodeBookIdentity(identity),decodeBook,options),
  comment:(identity,options)=>port.fetchModel('Comment',1,encodeCommentIdentity(identity),decodeComment,options),
  counter:(identity,options)=>port.fetchModel('Counter',1,encodeCounterIdentity(identity),decodeCounter,options),
+ composition:(identity,options)=>port.fetchModel('Composition',1,encodeCompositionIdentity(identity),decodeComposition,options),
 }; }
 export type StoreChange<Identity, Model> = { readonly kind:'upsert'; readonly identity:Identity; readonly row:Model } | { readonly kind:'delete'; readonly identity:Identity };
 export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:ReadonlyArray<StoreChange<Identity, Model>>) => void | Promise<void>;
@@ -523,5 +645,20 @@ export interface StoreHooks {
  readonly book?: StoreHandler<BookIdentity, Book>;
  readonly comment?: StoreHandler<CommentIdentity, Comment>;
  readonly counter?: StoreHandler<CounterIdentity, Counter>;
+ readonly composition?: StoreHandler<CompositionIdentity, Composition>;
 }
 export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }
+/** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */
+export type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };
+export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }
+/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints. */
+export class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }
+/** Transaction-only option: `local` runs inside the open transaction and its Model writes belong to that Mutation. */
+export type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };
+/** Mutations queued in an application transaction: each resolves with its `Call` after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route. */
+export function makeTransactionMutations(port:SubmitMutationPort) { const submit=(options:(CallOptions & CompanionOptions)|undefined):SubmitMutationOptions|undefined => { if (options===undefined) return undefined; const {local,...rest}=options; return local===undefined ? rest : {...rest,local:(companion:WritePort)=>local(new CompanionContext(companion))}; }; return {
+ publishEntry: (args:PublishEntryInput, options?:PublishEntryOptions & CompanionOptions):Promise<Call<PublishEntryOutput>> => port.submitMutation('PublishEntry',1,encodePublishEntryInput(args),decodePublishEntryOutput,submit(options)),
+ rename: (args:RenameInput, options?:RenameOptions & CompanionOptions):Promise<Call<RenameOutput>> => port.submitMutation('Rename',1,encodeRenameInput(args),decodeRenameOutput,submit(options)),
+}; }
+/** The application transaction: local Models and Channels, and `mutations`, which queue typed Mutations in the same local commit. */
+export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; constructor(transaction:WritePort & SubmitMutationPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); } }

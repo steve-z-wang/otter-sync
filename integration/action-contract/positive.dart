@@ -230,7 +230,42 @@ Future<void> useLoads(GeneratedClient client) async {
   [refreshed, ordinary, noArgs, flagged, byClient, name, phase, pages, error, restored, recent, defaults];
 }
 
+// Transactional Mutation enqueue: `tx.mutations` queues typed Mutations in the
+// application transaction; each returns its own Call, and the transaction
+// returns whatever its callback returns.
+Future<void> useTransactions(GeneratedClient client) async {
+  final Call<AddTodoOutput> one = await client.transaction((tx) async {
+    final Todo? current = await tx.models.todo.get(identity);
+    if (current == null) throw StateError('Todo not found');
+    return tx.mutations.addTodo(
+      todo: created, gone: [deleted], status: null, tags: [],
+      store: const AddTodoStore.outputs(matches: false),
+      local: (local) async {
+        final Todo? seen = await local.models.todo.get(identity);
+        await local.models.todo.update(identity, TodoPatch(title: Present(seen?.title ?? 'Local')));
+        await local.models.project.delete(composite);
+        await local.models.note.create(const NoteCreate(memo: null));
+      },
+    );
+  });
+  final (Call<EditAndReadOutput>, Call<SendEmailOutput>) pair = await client.transaction((tx) async {
+    final first = await tx.mutations.editAndRead(todo: const EditAndReadTodoUpdate(id: 'A'), local: (local) => local.models.todo.delete(identity));
+    final second = await tx.mutations.sendEmail(to: 'team@example.test', subject: 'Todo', body: 'Created');
+    await tx.models.todo.create(todo);
+    return (first, second);
+  });
+  // A business input named `store` stays apart from the store selector.
+  final Call<OpenTodoOutput> opened = await client.transaction((tx) => tx.mutations.openTodo(store: 'business', outputStore: const OpenTodoStore.none()));
+  final Call<PingOutput> pinged = await client.transaction((tx) => tx.mutations.ping(store: const PingStore.none()));
+  final int plain = await client.transaction((tx) async { await tx.channels.subscribe('todos'); return 1; });
+  await client.transaction((tx) => tx.models.todo.delete(identity));
+  final CallOutcome<AddTodoOutput> outcome = await one.wait();
+  if (outcome is CallSuccess<AddTodoOutput>) outcome.result.count;
+  [pair.$1, pair.$2, opened, pinged, plain];
+}
+
 void main() {
+  useTransactions;
   useLoads;
   composite.id;
   oldInput.todo.id;

@@ -18,6 +18,8 @@ expected=(
   'undefined_getter:26'
   'undefined_getter:33'
   'undefined_getter:34'
+  'undefined_getter:39'
+  'undefined_getter:40'
 )
 for pair in "${expected[@]}"; do
   code="${pair%%:*}"

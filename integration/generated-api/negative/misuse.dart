@@ -96,3 +96,27 @@ void fetchMisuse(GeneratedClient client, GeneratedTransaction tx, Entry row) {
     tx.fetch;
   });
 }
+
+// Transactional Mutation enqueue: an application transaction queues typed
+// Mutations only, `local` is a transaction-only parameter, and a Mutation's
+// `local` callback has Models only. The runtime refuses the same misuse.
+Future<void> transactionMisuse(GeneratedClient client, ApplicationTransaction tx, CompanionContext local, Entry row) async {
+  // there is no direct route inside a transaction
+  tx.mutations.call;
+  // Queries and Fetch are unavailable inside a transaction
+  tx.queries;
+  tx.fetch;
+  // the callback receives the companion context
+  await tx.mutations.rename(id: row.id, title: 't', local: (GeneratedTransaction other) async {});
+  // the Call observes the declared output
+  final Call<String> wrong = await tx.mutations.publishEntry(entry: row, composition: row.id);
+  // standalone and direct Mutations take no local callback
+  await client.mutations.rename(id: row.id, title: 't', local: (local) async {});
+  await client.mutations.call.rename(id: row.id, title: 't', local: (local) async {});
+  // the callback queues no Mutation, modifies no Channel and exposes no raw port
+  local.mutations;
+  local.channels;
+  local.transaction;
+  // the callback cannot watch
+  local.models.composition.watch();
+}

@@ -70,6 +70,18 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
     "Loads",
 ];
 
+/// Names the generated clients declare beside a current Mutation for
+/// transactional Mutation enqueue; `SubmitMutationPort` is also the Dart
+/// runtime's port those clients bind to.
+const TRANSACTION_HELPERS: &[&str] = &[
+    "ApplicationTransaction",
+    "CompanionContext",
+    "CompanionOptions",
+    "SubmitMutationOptions",
+    "SubmitMutationPort",
+    "TransactionMutations",
+];
+
 /// Members of the generated Dart `{Name}Store` selector (and `Object`).
 const STORE_SELECTOR_MEMBERS: &[&str] = &[
     "toWire",
@@ -255,6 +267,16 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             .entry(n)
             .and_modify(|v| *v = (*v).max(version))
             .or_insert(version);
+    }
+    // Transactional Mutation enqueue emits these beside a current Mutation only.
+    let current_mutation = actions.iter().any(|action| {
+        action["version"].as_u64() == Some(latest[name(action)])
+            && kind(action) == axton_core::CallKind::Mutation
+    });
+    if current_mutation {
+        for helper in TRANSACTION_HELPERS {
+            add((*helper).into(), "transaction mutation helper".into())?;
+        }
     }
     let mut handler_groups = std::collections::BTreeSet::new();
     for action in actions {

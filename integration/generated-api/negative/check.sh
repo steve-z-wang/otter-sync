@@ -47,6 +47,17 @@ expected=(
   "The named parameter 'refresh' isn't defined"
   "The getter 'fetch' isn't defined for the type 'GeneratedTransaction'"
   "The getter 'fetchModel' isn't defined for the type 'Transaction'"
+  # Transactional Mutation enqueue
+  "The getter 'call' isn't defined for the type 'TransactionMutations'"
+  "The getter 'queries' isn't defined for the type 'ApplicationTransaction'"
+  "The getter 'fetch' isn't defined for the type 'ApplicationTransaction'"
+  "The argument type 'Future<void> Function(GeneratedTransaction)' can't be assigned to the parameter type 'Future<void> Function(CompanionContext)?'"
+  "A value of type 'Call<PublishEntryOutput>' can't be assigned to a variable of type 'Call<String>'"
+  "The named parameter 'local' isn't defined"
+  "The getter 'mutations' isn't defined for the type 'CompanionContext'"
+  "The getter 'channels' isn't defined for the type 'CompanionContext'"
+  "The getter 'transaction' isn't defined for the type 'CompanionContext'"
+  "The method 'watch' isn't defined for the type 'CompositionTxModel'"
 )
 failed=0
 for message in "${expected[@]}"; do
@@ -57,6 +68,10 @@ for message in "${expected[@]}"; do
 done
 if [[ "$(grep -Fc "The named parameter 'tags' isn't defined" <<<"$output")" -lt 2 ]]; then
   echo "Expected 'tags' to be refused both as a filter and as a patch field." >&2
+  failed=1
+fi
+if [[ "$(grep -Fc "The named parameter 'local' isn't defined" <<<"$output")" -lt 2 ]]; then
+  echo "Expected 'local' to be refused on both standalone and direct Mutations." >&2
   failed=1
 fi
 # Fetch repeats two refusals: a DateTime identity component, and Fetch in both

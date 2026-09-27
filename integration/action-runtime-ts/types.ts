@@ -20,7 +20,7 @@ import {
   type TodoPagesHandlerOutput,
   type TodoPagesInput,
 } from "./backend.ts";
-import type { Todo } from "./generated.ts";
+import type { PutOutput, Todo } from "./generated.ts";
 import type { Database } from "../../packages/server/index.mts";
 import type {
   Call as SdkCall,
@@ -316,8 +316,42 @@ client.transaction(async (tx) => {
   tx.models.todo.watch({}, () => {});
 });
 client.transaction(async (tx) => {
-  // @ts-expect-error transactions cannot submit Mutations
-  tx.mutations.ping({});
+  // @ts-expect-error transactions queue Mutations; they have no direct route
+  tx.mutations.call.ping({});
   // @ts-expect-error transactions cannot run Queries
   tx.queries.find({ at: new Date() });
+  // @ts-expect-error Find is a Query now, so it is not queued in a transaction
+  tx.mutations.find({ at: new Date() });
+});
+// Transactional Mutation enqueue: DateTime args and outputs keep their Date
+// types, and each queued Mutation answers its own Call.
+const enqueued: Promise<{
+  put: Call<PutOutput>;
+  cleared: Call<void>;
+}> = client.transaction(async (tx) => {
+  const put = await tx.mutations.put(
+    { todo, when: new Date(), statuses: ["open"], note: null },
+    {
+      store: { todo: false },
+      local: async (local) => {
+        const at: Date | undefined = (await local.models.moment.get({ at: new Date(0) }))?.at;
+        await local.models.pin.delete({ todo: todo.id, at: at ?? new Date(0) });
+      },
+    },
+  );
+  const cleared = await tx.mutations.clear({ todo: [{ id: todo.id }] });
+  return { put, cleared };
+});
+enqueued.then(async ({ put }) => {
+  const outcome: CallOutcome<PutOutput> = await put.wait();
+  const echoed: Date | undefined = outcome.result?.echoed;
+  void echoed;
+});
+client.transaction(async (tx) => {
+  // @ts-expect-error a DateTime arg is a Date
+  await tx.mutations.change({ todo: null, at: "2026-01-01T00:00:00.000Z" });
+  // @ts-expect-error a DateTime identity component is a Date in the callback too
+  await tx.mutations.ping({}, { local: async (local) => local.models.moment.delete({ at: "2026" }) });
+  // @ts-expect-error the callback queues no Mutation
+  await tx.mutations.ping({}, { local: async (local) => local.mutations.ping({}) });
 });

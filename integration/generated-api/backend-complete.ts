@@ -1,4 +1,4 @@
-import { Book, Entry, createBackend, devAuth, type Handlers, type Loaders } from "./backend.ts";
+import { Book, Entry, createBackend, devAuth, type Handlers, type Loaders, type Mutations } from "./backend.ts";
 type Tx = { rows: Map<string, object> };
 export const handlers: Handlers<Tx> = {
   // An ordinary write: the target record is stamped and read back without any Channel membership.
@@ -17,6 +17,12 @@ export const handlers: Handlers<Tx> = {
   // Handlers receive the client-expanded create: defaulted fields are present and required (#27).
   async addDraft({ input, tx }) { const { id, created, body }: { id: string; created: Date; body: string } = input.draft; tx.rows.set(id, { created, body }); },
 };
+// Transactional Mutation enqueue: the handler receives only the declared
+// business args; a local companion never reaches the backend.
+export const mutations: Mutations<Tx> = {
+  async publishEntry({ ctx, args }) { ctx.tx.rows.set(args.entry.id, args.entry); return { published: { id: args.entry.id } }; },
+  async rename({ ctx, args }) { ctx.tx.rows.set(args.id, { title: args.title }); },
+};
 export const loaders: Loaders<Tx> = {
   entry: {
     async v1({ ids }) { return ids.map((id) => ({ ...id, title: "old", note: null, at: new Date(0), status: "active" })); },
@@ -25,6 +31,7 @@ export const loaders: Loaders<Tx> = {
   async book({ ids }) { return ids.map(() => null); },
   async comment({ ids }) { return ids.map(() => null); },
   async counter({ ids }) { return ids.map(() => null); },
+  async composition({ ids }) { return ids.map(() => null); },
   async draft({ ids }) { return ids.map(() => null); },
   // A composite identity keeps every component, DateTime included.
   async placement({ ids }) { return ids.map((id) => ({ ...id, label: id.at.toISOString() })); },
@@ -33,6 +40,7 @@ export const backend = createBackend<Tx>({
   database: { transaction: async (body) => body({ rows: new Map() }), persistence: () => ({ call: async () => null }) },
   authenticate: devAuth(),
   handlers,
+  mutations,
   loaders,
   native: { validateConfig() {}, processPush: async () => "", processAction: async () => "", processFetch: async () => "", processPull: async () => "", validateLoadBatch: () => [], encodeLoadBatch: () => "", processLoad: async () => "", settleExternal: async () => "", negotiateLive: async () => "", pullLive: async () => "", liveEvent: () => "[]", liveClose() {} },
 });

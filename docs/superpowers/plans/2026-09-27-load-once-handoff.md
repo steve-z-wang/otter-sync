@@ -2,7 +2,7 @@
 
 Issue: [#173](https://github.com/zanminwang/axton/issues/173). Planning branch: `codex/load-operations`. Original planning commit: `8df1cc3`.
 
-The user has authorized this amendment while another agent is implementing Load. Continue the current implementation and incorporate these changes; do not restart it, reset its branch, or discard completed code. This document and the updated [spec](../specs/2026-09-27-load-design.md#once-reuse-refresh-and-invalidation-2026-09-27-amendment) and [plan](2026-09-27-load-plan.md) supersede the original statements that every start is fresh and once is out of scope.
+The user has authorized this amendment. When it was written, the author believed implementation was already running; in fact only preparation and review had been done, and no Load implementation code existed. Implementation incorporates this amendment from the start on `codex/173-load`; see the spec's review resolutions for later decisions. This document and the updated [spec](../specs/2026-09-27-load-design.md#once-reuse-refresh-and-invalidation-2026-09-27-amendment) and [plan](2026-09-27-load-plan.md) supersede the original statements that every start is fresh and once is out of scope.
 
 ## Public API
 

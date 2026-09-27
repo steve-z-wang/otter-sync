@@ -551,6 +551,9 @@ test("Load handlers take decoded args and a read-only context and answer identit
   const native = {
     ...nativeHost([], []),
     validateLoadBatch: () => ["item"],
+    // Assembles the committed pages as the engine's encoder would.
+    encodeLoadBatch: (_items: string[], answers: { page: string }[]) =>
+      `{"loads":[${answers.map(({ page }) => page).join(",")}]}`,
     async processLoad(
       _config: string,
       _owner: string,
@@ -725,7 +728,11 @@ test("the native engine refuses a full Model value that type-checks as an identi
       JSON.stringify({ loads: [item(1, null), item(2, { state: "ids" })] }),
     ),
   );
-  const [full, identities] = response.loads;
+  const [full, identities] = [1, 2].map((index) =>
+    response.loads.find(
+      (page: { loadId: string }) => page.loadId === item(index, null).loadId,
+    ),
+  );
   assert.equal(full.outcome.status, "failed");
   assert.equal(full.outcome.error.code, "handler.invalid");
   assert.match(full.outcome.error.message, /exactly identity fields/);

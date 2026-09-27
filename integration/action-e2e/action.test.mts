@@ -909,3 +909,194 @@ test("the PublishEntry backend fixture stores Entry, media and placement togethe
     assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+/** PublishEntry business input for Entry `id`, built from a Composition's content. */
+const publishInput = (id: string, composition: { title: string; body: string }) => ({
+  entry: { id, title: composition.title, body: composition.body },
+  media: [{ id: `${id}-m1`, entryId: id, url: "one.jpg" }, { id: `${id}-m2`, entryId: id, url: "two.jpg" }],
+  placement: { id: `${id}-p`, entryId: id, journal: "daily", position: 1 },
+});
+/** Parses every push body the client sends from now until `stop()`. */
+const capturePushes = () => {
+  const original = globalThis.fetch;
+  const bodies: { batchSequence: number; mutations: { callId: string; name: string; version: number; args: unknown }[]; [key: string]: unknown }[] = [];
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    if (path === "/sync/mutations") bodies.push(JSON.parse(String(init?.body)));
+    return original(input, init);
+  }) as typeof fetch;
+  return { bodies, stop: () => { globalThis.fetch = original; } };
+};
+/**
+ * Whether a pushed request carries companion data: a Mutation field other
+ * than its business call, a Composition anywhere but the read-contract
+ * `models` map, or one of the companions' identities. The business input
+ * itself is built from Composition content, so content is not a signal.
+ */
+const leaksComposition = (body: { mutations: object[]; models?: unknown; [key: string]: unknown }, identities: string[]) => {
+  const { models, ...rest } = body;
+  const text = JSON.stringify(rest);
+  return /composition/i.test(text) || identities.some((id) => text.includes(`"id":"${id}"`))
+    || body.mutations.some((mutation) => Object.keys(mutation).sort().join() !== "args,callId,name,ordinal,version")
+    || Object.values(models as Record<string, unknown>).some((version) => typeof version !== "number");
+};
+
+test("tx.mutations.publishEntry deletes its Composition as a local companion: acceptance keeps it deleted, rejection restores editing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-publish-companion-"));
+  let client: GeneratedClient | undefined;
+  const capture = capturePushes();
+  const compositionLoads = fixture.compositionLoads;
+  const publishedBefore = fixture.publishes.length;
+  const draft = (id: string) => ({ id, title: `draft ${id}`, body: `body ${id}` });
+  let localRuns = 0;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    await client.connection!.pause();
+    for (const id of ["comp-ok", "comp-ok-re", "comp-no", "comp-no-re", "comp-side"]) await client.models.composition.create(draft(id));
+    fixture.rejectedEntries.add("entry-no");
+    const calls = await client.transaction(async (tx) => {
+      const accepted = await tx.models.composition.get({ id: "comp-ok" });
+      const rejected = await tx.models.composition.get({ id: "comp-no" });
+      assert.ok(accepted && rejected);
+      const ok = await tx.mutations.publishEntry(publishInput("entry-ok", accepted), {
+        local: async (local) => {
+          localRuns++;
+          assert.equal((await local.models.entry.get({ id: "entry-ok" }))?.title, accepted.title, "the callback reads its own call's optimism");
+          await local.models.composition.delete({ id: "comp-ok" });
+          await local.models.composition.delete({ id: "comp-ok-re" });
+        },
+      });
+      await assert.rejects(ok.wait(), { name: "CallError", code: "transaction_uncommitted" }, "a wait before commit fails at once");
+      const no = await tx.mutations.publishEntry(publishInput("entry-no", rejected), {
+        local: async (local) => {
+          localRuns++;
+          await local.models.composition.delete({ id: "comp-no" });
+          await local.models.composition.delete({ id: "comp-no-re" });
+        },
+      });
+      // An ordinary transaction write: independent of both calls.
+      await tx.models.composition.update({ id: "comp-side" }, { title: "edited in the transaction" });
+      assert.equal(await tx.models.composition.get({ id: "comp-ok" }), null, "later transaction reads see the companion delete");
+      return { ok, no };
+    });
+    assert.equal(localRuns, 2);
+    assert.equal((await client.syncState()).pending, 2, "both calls committed together");
+    for (const id of ["comp-ok", "comp-ok-re", "comp-no", "comp-no-re"]) assert.equal(await client.models.composition.get({ id }), null);
+    assert.equal((await client.models.entry.get({ id: "entry-no" }))?.title, "draft comp-no", "optimism is committed");
+    // Later independent writes: recreate two deleted identities and edit the side row again.
+    await client.models.composition.create({ id: "comp-ok-re", title: "next ok", body: "fresh" });
+    await client.models.composition.create({ id: "comp-no-re", title: "next no", body: "fresh" });
+    await client.models.composition.update({ id: "comp-side" }, { body: "edited after commit" });
+    assert.equal(capture.bodies.length, 0, "nothing was sent while paused");
+
+    await client.connection!.resume();
+    const ok = await calls.ok.wait();
+    assert.equal(ok.error, null);
+    const no = await calls.no.wait();
+    assert.equal(no.error?.code, "publish.rejected");
+    assert.equal(no.error?.execution, "rejected");
+    assert.equal(localRuns, 2, "settlement never runs a callback");
+
+    assert.equal(await client.models.composition.get({ id: "comp-ok" }), null, "acceptance keeps the companion delete");
+    assert.deepEqual(await client.models.composition.get({ id: "comp-no" }), draft("comp-no"), "rejection restores the Composition");
+    assert.deepEqual(await client.models.composition.get({ id: "comp-ok-re" }), { id: "comp-ok-re", title: "next ok", body: "fresh" }, "acceptance does not delete a later recreate");
+    assert.deepEqual(await client.models.composition.get({ id: "comp-no-re" }), { id: "comp-no-re", title: "next no", body: "fresh" }, "rejection does not restore old content over a later recreate");
+    assert.deepEqual(await client.models.composition.get({ id: "comp-side" }), { id: "comp-side", title: "edited in the transaction", body: "edited after commit" }, "independent writes survive both outcomes");
+    await client.models.composition.update({ id: "comp-no" }, { title: "editing again" });
+    assert.equal((await client.models.composition.get({ id: "comp-no" }))?.title, "editing again", "the restored Composition is editable");
+
+    assert.equal((await client.models.entry.get({ id: "entry-ok" }))?.title, "draft comp-ok");
+    assert.equal(await client.models.entry.get({ id: "entry-no" }), null, "rejection removes the call's optimism");
+    assert.deepEqual((await fixture.pool.query("SELECT id,title,body FROM action_e2e_entry WHERE id IN ('entry-ok','entry-no') ORDER BY id")).rows, [{ id: "entry-ok", title: "draft comp-ok", body: "body comp-ok" }]);
+    assert.equal((await client.syncState()).pending, 0);
+
+    const pushed = capture.bodies.flatMap((body) => body.mutations);
+    assert.deepEqual(pushed.map((call) => [call.name, call.args]), [["PublishEntry", publishInput("entry-ok", draft("comp-ok"))], ["PublishEntry", publishInput("entry-no", draft("comp-no"))]], "only the business calls are pushed");
+    for (const body of capture.bodies) assert.equal(leaksComposition(body, ["comp-ok", "comp-ok-re", "comp-no", "comp-no-re", "comp-side"]), false, `push carries no companion: ${JSON.stringify(body)}`);
+    assert.deepEqual(fixture.publishes.slice(publishedBefore), [publishInput("entry-ok", draft("comp-ok")), publishInput("entry-no", draft("comp-no"))], "handlers receive exactly the business input");
+    assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
+  } finally {
+    capture.stop();
+    fixture.rejectedEntries.delete("entry-no");
+    await client?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("queued transactional PublishEntry survives offline reopen and settles without re-running local", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-publish-reopen-"));
+  const path = join(directory, "client.sqlite");
+  let client: GeneratedClient | undefined;
+  const compositionLoads = fixture.compositionLoads;
+  const runs = { kept: 0, restored: 0 };
+  const draft = (id: string) => ({ id, title: `draft ${id}`, body: `body ${id}` });
+  const capture = capturePushes();
+  try {
+    client = await GeneratedClient.open({ path });
+    for (const id of ["reopen-kept", "reopen-restored"]) await client.models.composition.create(draft(id));
+    for (const [key, id, entry] of [["kept", "reopen-kept", "reopen-entry-ok"], ["restored", "reopen-restored", "reopen-entry-no"]] as const) {
+      const call = await client.transaction(async (tx) => {
+        const composition = await tx.models.composition.get({ id });
+        assert.ok(composition);
+        return tx.mutations.publishEntry(publishInput(entry, composition), {
+          local: async (local) => { runs[key]++; await local.models.composition.delete({ id }); },
+        });
+      });
+      assert.equal(call.status, "pending");
+    }
+    assert.deepEqual(runs, { kept: 1, restored: 1 });
+    await client.close();
+
+    client = await GeneratedClient.open({ path });
+    assert.equal((await client.syncState()).pending, 2, "the queued calls survived reopen");
+    assert.equal(await client.models.composition.get({ id: "reopen-kept" }), null, "the companion delete survived reopen");
+    assert.equal(await client.models.composition.get({ id: "reopen-restored" }), null);
+    assert.equal((await client.models.entry.get({ id: "reopen-entry-no" }))?.title, "draft reopen-restored");
+    await client.close();
+
+    fixture.rejectedEntries.add("reopen-entry-no");
+    client = await GeneratedClient.open({ path, server: server() });
+    await wait(async () => (await client!.syncState()).pending === 0, "reopened transactional calls settle");
+    assert.deepEqual(runs, { kept: 1, restored: 1 }, "reopen, retry and settlement never re-run local");
+    assert.equal(await client.models.composition.get({ id: "reopen-kept" }), null, "acceptance keeps the deletion after reopen");
+    assert.deepEqual(await client.models.composition.get({ id: "reopen-restored" }), draft("reopen-restored"), "rejection restores the Composition after reopen");
+    assert.equal((await client.models.entry.get({ id: "reopen-entry-ok" }))?.title, "draft reopen-kept");
+    assert.equal(await client.models.entry.get({ id: "reopen-entry-no" }), null);
+    assert.deepEqual((await fixture.pool.query("SELECT id FROM action_e2e_entry WHERE id LIKE 'reopen-%' ORDER BY id")).rows, [{ id: "reopen-entry-ok" }]);
+    const pushed = capture.bodies.flatMap((body) => body.mutations.map((call) => (call.args as { entry: { id: string } }).entry.id));
+    assert.deepEqual([...new Set(pushed)].sort(), ["reopen-entry-no", "reopen-entry-ok"]);
+    for (const body of capture.bodies) assert.equal(leaksComposition(body, ["reopen-kept", "reopen-restored"]), false, `push carries no companion: ${JSON.stringify(body)}`);
+    assert.equal(fixture.compositionLoads, compositionLoads);
+  } finally {
+    capture.stop();
+    fixture.rejectedEntries.delete("reopen-entry-no");
+    await client?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Dart tx.mutations.publishEntry keeps or restores its companion delete across reopen, and the backend sees only business input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-dart-publish-"));
+  const compositionLoads = fixture.compositionLoads;
+  const publishedBefore = fixture.publishes.length;
+  for (const id of ["dart-entry-no", "dart-entry-live-no"]) fixture.rejectedEntries.add(id);
+  try {
+    const root = process.cwd();
+    const { stdout, stderr } = await execFileAsync("dart", [
+      "run", "action_e2e_publish.dart", url, join(directory, "client.sqlite"),
+      join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`),
+    ], { cwd: join(root, "integration/action-runtime-dart"), timeout: 30_000 });
+    assert.match(stdout, /Dart transactional PublishEntry companion: passed/, stderr);
+  } finally {
+    for (const id of ["dart-entry-no", "dart-entry-live-no"]) fixture.rejectedEntries.delete(id);
+    await rm(directory, { recursive: true, force: true });
+  }
+  const draft = (id: string) => ({ title: `draft ${id}`, body: `body ${id}` });
+  assert.deepEqual(fixture.publishes.slice(publishedBefore), [
+    publishInput("dart-entry-ok", draft("dart-comp-ok")),
+    publishInput("dart-entry-no", draft("dart-comp-no")),
+    publishInput("dart-entry-live-no", draft("dart-comp-live-no")),
+  ], "handlers receive exactly the business input, once each");
+  assert.deepEqual((await fixture.pool.query("SELECT id FROM action_e2e_entry WHERE id LIKE 'dart-entry-%' ORDER BY id")).rows, [{ id: "dart-entry-ok" }]);
+  assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
+});

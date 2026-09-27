@@ -15,6 +15,8 @@ export async function createFixture() {
   /** Every PublishEntry argument exactly as the handler received it. */
   const publishes: { entry: { id: string; title: string; body: string }; media: { id: string; entryId: string; url: string }[]; placement: { id: string; entryId: string; journal: string; position: number } }[] = [];
   let rejectPublish = false;
+  /** Entry identities PublishEntry rejects, so one push can mix outcomes. */
+  const rejectedEntries = new Set<string>();
   let compositionLoads = 0;
   const mutations: Mutations<PgClient> = {
     async addTodo({ ctx, args }) {
@@ -64,15 +66,16 @@ export async function createFixture() {
       return { saved: { id: args.note.id } };
     },
     // Stores the Entry, its media and its Journal placement in one backend
-    // transaction. While `rejectPublish` is set it rejects after the Entry
-    // and media are inserted, so the rejection must roll those back. A
-    // client's local companion writes never arrive here.
+    // transaction. While `rejectPublish` is set, or for an Entry listed in
+    // `rejectedEntries`, it rejects after the Entry and media are inserted,
+    // so the rejection must roll those back. A client's local companion
+    // writes never arrive here.
     async publishEntry({ ctx, args }) {
       handlerCalls++;
       publishes.push(structuredClone(args));
       await ctx.tx.query("INSERT INTO action_e2e_entry(id,title,body) VALUES($1,$2,$3)", [args.entry.id, args.entry.title, args.entry.body]);
       for (const media of args.media) await ctx.tx.query("INSERT INTO action_e2e_media(id,entry_id,url) VALUES($1,$2,$3)", [media.id, media.entryId, media.url]);
-      if (rejectPublish) throw new CallRejected("publish.rejected");
+      if (rejectPublish || rejectedEntries.has(args.entry.id)) throw new CallRejected("publish.rejected");
       await ctx.tx.query("INSERT INTO action_e2e_placement(id,entry_id,journal,position) VALUES($1,$2,$3,$4)", [args.placement.id, args.placement.entryId, args.placement.journal, args.placement.position]);
     },
     async retitleTodos({ ctx, args }) {
@@ -170,6 +173,8 @@ export async function createFixture() {
     publishes,
     /** While set, PublishEntry rejects with `publish.rejected` after partial inserts, which its transaction rolls back. */
     set rejectPublish(value: boolean) { rejectPublish = value; },
+    /** Entry identities PublishEntry rejects like `rejectPublish`, leaving other calls of the same push accepted. */
+    rejectedEntries,
     /** Composition Loader executions: a local-only Model the backend should never look up. */
     get compositionLoads() { return compositionLoads; },
     async initialize() {

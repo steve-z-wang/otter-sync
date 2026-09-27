@@ -1,0 +1,437 @@
+{
+  "actions": [
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "project",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Item"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Item",
+          "name": "item",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "AddItem",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "note",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "mutation",
+      "name": "Ping",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Item"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "allowedPatchFields": [
+            "title"
+          ],
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Item",
+          "name": "item",
+          "operation": "update"
+        }
+      ],
+      "kind": "mutation",
+      "name": "RenameItem",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    }
+  ],
+  "clientPolicies": [],
+  "enums": [],
+  "loads": [
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "shelf",
+          "nullable": true,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "name": "Catalog",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Item"
+          },
+          "kind": "model",
+          "model": "Item",
+          "modelReadVersion": 1,
+          "name": "items",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "project",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "name": "ProjectItems",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Item"
+          },
+          "kind": "model",
+          "model": "Item",
+          "modelReadVersion": 1,
+          "name": "items",
+          "source": "handlerIdentity"
+        },
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Tag"
+          },
+          "kind": "model",
+          "model": "Tag",
+          "modelReadVersion": 1,
+          "name": "tags",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    }
+  ],
+  "models": [
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "project",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Item",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Tag",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "hits",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "int"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Seen",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    }
+  ],
+  "prerequisites": [],
+  "requirements": [],
+  "resultModels": [
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "project",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Item",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "hits",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "int"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Seen",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Tag",
+      "version": 1
+    }
+  ]
+}

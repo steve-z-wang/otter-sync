@@ -11,6 +11,7 @@ import { createBackend, devAuth } from './generated/backend.ts';
 import { database } from './database.ts';
 import { mutations, queries } from './handlers.ts';
 import { loaders } from './loaders.ts';
+import { loads } from './loads.ts';
 
 const backend = createBackend<Tx>({
   database,
@@ -18,13 +19,14 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
+  loads,
   onError: error => console.error(error),
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);
 ```
 
-`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts` and `loaders.ts` contain the implementations below.
+`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts`, `loaders.ts` and `loads.ts` contain the implementations below.
 
 The generated `Options<Tx>` requires:
 
@@ -35,8 +37,9 @@ The generated `Options<Tx>` requires:
 | `mutations: Mutations<Tx>` | Implement each retained Mutation version |
 | `queries: Queries<Tx>` | Implement each retained Query version |
 | `loaders: Loaders<Tx>` | Implement the read function for each supported model version |
+| `loads: Loads<Tx>` | Implement the page handler of each retained Load version ([Load handlers](#load-handlers)) |
 
-`mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
+`mutations`, `queries` or `loads` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
 
 ## What your backend owns
 
@@ -131,6 +134,10 @@ queries.getTodos = { v2: handleGetTodosV2 }; // GetTodos v2 is a Query
 A bare function means v1 only. A missing retained version, unknown version key, non-function value, or a registration under the wrong kind is refused at startup. Dispatch uses the requested version and never falls back to another. An unsupported version is a per-call rejection.
 
 An error that is neither `CallRejected` nor translated to a business code rejects that call with `handler.failed` and reaches `onError`. Independent valid calls in the batch can still commit. A retryable database transaction error instead retries the transaction; it is not saved as a permanent business rejection.
+
+## Load handlers
+
+A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId` and `loadId`, and no `touch` or `channel`. Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
 
 ## Loaders
 
@@ -257,6 +264,7 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | `POST /sync/mutations` | Receive durable batches of Mutations and queued Queries |
 | `POST /sync/actions` | Execute one direct Mutation or Query and return its result |
 | `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
+| `POST /sync/loads` | Serve batched pages of native Loads for `client.loads` |
 | `POST /sync/pull` | Materialize changed records through loaders for catch-up and gap recovery |
 | `/sync/live` (WebSocket) | Subscribe to channels and stream ongoing record changes |
 

@@ -6,6 +6,7 @@ The server engine is pure protocol logic in Rust: it never opens a connection or
 - Operation execution — Claim each Mutation or Query call independently, run its handler in a savepoint, refuse a Query settlement with effects, resolve Model outputs through versioned loaders and save its result for immutable replay.
 - [Pull](pull.md) — Find changes by channel cursor and invoke loaders to return records.
 - [Publish](publish.md) — Settle changed records and persistent Channel memberships: one stamp per changed record, one cursor per affected Channel/record pair.
+- [Loads](loads.md) — Run each native Load page in its own application transaction: claim, read-only Handler, batched Loader and stamp resolution, saved outcome and replay by call ID.
 
 ## How the parts work together
 
@@ -33,4 +34,5 @@ A handler writes to the application's database, may touch extra changed records 
 | Operations | [server/actions.rs](../../../../../crates/server/src/actions.rs) (`execute_action`, `process_action_push`); host dispatch in [server/index.mts](../../../../../packages/server/index.mts) |
 | Model Fetch | [server/fetch.rs](../../../../../crates/server/src/fetch.rs) (`process_fetch`); the call ledger protocol it shares with Operations in [server/calls.rs](../../../../../crates/server/src/calls.rs) ([Direct calls](../../protocol/actions.md#model-fetch)) |
 | Pull | [server/lib.rs](../../../../../crates/server/src/lib.rs) (`process_pull`) |
+| Loads | [server/loads.rs](../../../../../crates/server/src/loads.rs) (`validate_load_batch`, `process_load`, `encode_load_batch`); HTTP carrier in [server/index.mts](../../../../../packages/server/index.mts) |
 | Publish | shared settlement in [server/settlement.rs](../../../../../crates/server/src/settlement.rs) (`settle_changes`); the external path in [server/lib.rs](../../../../../crates/server/src/lib.rs) (`settle_external`); the declaration collector `createEffects` in [server/effects.mts](../../../../../packages/server/effects.mts); `transaction` and `WakeHub` in [server/index.mts](../../../../../packages/server/index.mts) |

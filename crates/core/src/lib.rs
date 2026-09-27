@@ -1,10 +1,12 @@
 //! Shared schema-driven semantics. Business model types live in generated SDKs.
 mod actions;
 mod fetch;
+mod loads;
 mod protocol;
 mod schema;
 pub use actions::*;
 pub use fetch::*;
+pub use loads::*;
 pub use protocol::*;
 pub use schema::*;
 

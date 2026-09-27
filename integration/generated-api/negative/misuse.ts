@@ -50,6 +50,11 @@ export function createMisuse(){
  const ok:AddDraftArgs={draft:{memo:null}};
  return [missing,incomplete,undef,ok];
 }
+// A schema without Loads generates no `loads` facade (#173).
+export function loadMisuse(client:GeneratedClient){
+ // @ts-expect-error no Load is declared, so there is no loads facade
+ return client.loads;
+}
 
 // Model Fetch ([#153](https://github.com/zanminwang/axton/issues/153)): the
 // generated identity and a boolean `store` are the whole input, and Fetch is

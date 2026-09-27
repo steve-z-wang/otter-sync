@@ -11,8 +11,14 @@ import {
   type Mutations,
   type Queries,
   type Loaders,
+  type Loads,
+  type LoadContext,
+  type LoadHandlerCall,
+  type JsonValue,
   type PutV1Input,
   type RecordRef,
+  type TodoPagesHandlerOutput,
+  type TodoPagesInput,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
 import type { Database } from "../../packages/server/index.mts";
@@ -182,6 +188,56 @@ const loaders: Loaders<Tx> = {
   },
 };
 void [handlers, loaders];
+// Loads (#173): typed args, a read-only context and identity pages.
+declare const loadCtx: LoadContext<Tx>;
+void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
+// @ts-expect-error a Load context has no membership writer
+loadCtx.channel("project:1");
+// @ts-expect-error a Load context has no change declaration
+loadCtx.touch.todo({ id: "A" });
+const loads: Loads<Tx> = {
+  async todoPages({ ctx, args, continuation }) {
+    ctx.tx.rows.get("one");
+    const since: Date = args.since;
+    const statuses: ("open" | "closed")[] = args.statuses;
+    void statuses;
+    if (continuation === null)
+      return {
+        data: { todos: [{ id: "one" }], moments: [{ at: since }] },
+        next: { state: { after: "one", seen: [1, 2.5, true, null] } },
+      };
+    const state: JsonValue = continuation.state;
+    void state;
+    return { data: { todos: [], moments: [] }, next: null };
+  },
+};
+const standalone = async ({
+  args,
+}: LoadHandlerCall<Tx, TodoPagesInput>): Promise<TodoPagesHandlerOutput> => ({
+  data: { todos: [], moments: [{ at: args.since }] },
+  next: { state: null },
+});
+const versionedLoads: Loads<Tx> = { todoPages: { v1: standalone } };
+void [loads, versionedLoads];
+const wrongArgs: Loads<Tx> = {
+  async todoPages({ ctx, args }) {
+    // @ts-expect-error a DateTime arg is a Date, not its wire string
+    const wire: string = args.since;
+    // @ts-expect-error a Load has only its declared args
+    void args.cursor;
+    // @ts-expect-error a Load handler cannot declare changes
+    ctx.touch.todo({ id: "one" });
+    void wire;
+    return { data: { todos: [], moments: [] }, next: null };
+  },
+};
+// @ts-expect-error a DateTime identity is a Date, not its wire string
+const wireIdentity: TodoPagesHandlerOutput = { data: { todos: [], moments: [{ at: "2026-01-01T00:00:00.000Z" }] }, next: null };
+// @ts-expect-error a Load page answers identities, not full Model records
+const fullRecords: TodoPagesHandlerOutput = { data: { todos: [{ id: "one", title: "T", at: new Date(), status: "open", note: null }], moments: [] }, next: null };
+// @ts-expect-error continuation state is portable JSON, not a Date
+const dateState: TodoPagesHandlerOutput = { data: { todos: [], moments: [] }, next: { state: new Date() } };
+void [wrongArgs, wireIdentity, fullRecords, dateState];
 declare const database: Database<Tx>;
 if (false) {
   const backend = createBackend({
@@ -197,6 +253,7 @@ if (false) {
     },
     queries,
     loaders,
+    loads,
   });
   void backend;
   // The external transaction hands its body the same generated handles and
@@ -218,7 +275,11 @@ if (false) {
     channel("project:1").todo.add({});
   });
   // @ts-expect-error a schema that retains Queries requires the queries map
-  createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders });
+  createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, loads });
+  // @ts-expect-error a schema that retains Loads requires the loads map
+  createBackend({ database, authenticate: () => "alice", mutations: handlers, queries, loaders });
+  // @ts-expect-error a Load is registered under loads, not queries
+  createBackend({ database, authenticate: () => "alice", mutations: handlers, queries: { ...queries, todoPages: loads.todoPages }, loaders, loads });
 }
 const retained = (call: MutationHandlerCall<Tx, PutV1Input>) =>
   call.args.todo.at.getUTCFullYear();

@@ -57,6 +57,11 @@ pub(super) enum StoreContinuation {
     Downlink {
         token: crate::downlink_worker::StoreToken,
     },
+    /// One page of the Load worker's `batch`.
+    Load {
+        batch: u64,
+        sent: crate::LoadSent,
+    },
 }
 impl StoreContinuation {
     fn path(&self) -> &'static str {
@@ -66,14 +71,20 @@ impl StoreContinuation {
             Self::Direct { .. } => "direct",
             Self::Fetch { .. } => "fetch",
             Self::Downlink { token } => token.path(),
+            Self::Load { .. } => "load",
         }
     }
+    /// The delivery failed. `callback` names the store hook effect when a
+    /// hook refused it, `model` that hook's Model, and `identities` the
+    /// records the hook was handed (a Load page keeps them as diagnostics).
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn fail<S: ClientStore + 'static>(
         self,
         runtime: &mut ClientRuntime<S>,
         error: String,
         callback: Option<&str>,
         model: Option<&str>,
+        identities: &[Value],
         now: u64,
         entropy: u64,
     ) {
@@ -128,6 +139,17 @@ impl StoreContinuation {
             }
             Self::Downlink { token } => {
                 runtime.downlink_store_failed(token, error, callback.is_some(), now, entropy)
+            }
+            // The page rolled back: a hook failure is terminal, any other
+            // failure retries the same call. The next Load unit records it.
+            Self::Load { batch, sent } => {
+                let failure = match (callback, model) {
+                    (Some(_), Some(model)) => {
+                        crate::LoadFailure::hook_failed(model, identities, error)
+                    }
+                    _ => crate::LoadFailure::local_retry(error),
+                };
+                runtime.requeue_load(batch, sent, failure);
             }
         }
     }
@@ -206,17 +228,41 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         entropy: u64,
     ) {
         if let Err(error) = self.client.begin_session() {
-            continuation.fail(self, error.to_string(), None, None, now, entropy);
+            continuation.fail(self, error.to_string(), None, None, &[], now, entropy);
             return;
         }
         let prepared = match self.client.prepare_store(delivery) {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.abort_authority_session();
-                continuation.fail(self, error.to_string(), None, None, now, entropy);
+                continuation.fail(self, error.to_string(), None, None, &[], now, entropy);
                 return;
             }
         };
+        // A Load page with a record that cannot be applied is refused before
+        // any hook runs; nothing of it is kept.
+        if let Some(refusal) = prepared.load_refusal().cloned() {
+            let reports = prepared.load_refusal_reports().to_vec();
+            self.abort_authority_session();
+            // The application hears which records refused the page, as for
+            // every other delivery; the job keeps their bounded summary.
+            if !reports.is_empty() {
+                self.report(Diagnostic::Records { reports });
+            }
+            match continuation {
+                StoreContinuation::Load { batch, sent } => self.requeue_load(batch, sent, refusal),
+                continuation => continuation.fail(
+                    self,
+                    "a refused Load page cannot be stored".into(),
+                    None,
+                    None,
+                    &[],
+                    now,
+                    entropy,
+                ),
+            }
+            return;
+        }
         let pending: VecDeque<_> = prepared
             .changes()
             .iter()
@@ -231,7 +277,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok(id) => format!("tx{id}"),
             Err(error) => {
                 self.abort_authority_session();
-                continuation.fail(self, error, None, None, now, entropy);
+                continuation.fail(self, error, None, None, &[], now, entropy);
                 return;
             }
         };
@@ -239,7 +285,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok(id) => id.to_string(),
             Err(error) => {
                 self.abort_authority_session();
-                continuation.fail(self, error, None, None, now, entropy);
+                continuation.fail(self, error, None, None, &[], now, entropy);
                 return;
             }
         };
@@ -433,12 +479,20 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if matches!(open.owner, TransactionOwner::Authority { .. }) {
             if let Some(refusal) = refusal {
                 self.abort_authority_session();
-                if let TransactionOwner::Authority { continuation, .. } = open.owner {
+                if let TransactionOwner::Authority {
+                    continuation,
+                    prepared,
+                    ..
+                } = open.owner
+                {
+                    let identities =
+                        loads::hook_identities(&prepared, open.current_model.as_deref());
                     continuation.fail(
                         self,
                         refusal,
                         Some(&open.effect_id),
                         open.current_model.as_deref(),
+                        &identities,
                         now,
                         entropy,
                     );
@@ -478,6 +532,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                                 "runtime identifiers exhausted".into(),
                                 None,
                                 None,
+                                &[],
                                 now,
                                 entropy,
                             );
@@ -530,20 +585,47 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     StoreResult::Page(report) | StoreResult::Receipt(report) => {
                         serde_json::to_value(report)?
                     }
-                    StoreResult::Direct(_) | StoreResult::Fetch(_) => Value::Null,
-                    StoreResult::Bootstrap(_) => Value::Null,
+                    StoreResult::Direct(_)
+                    | StoreResult::Fetch(_)
+                    | StoreResult::Bootstrap(_)
+                    | StoreResult::Load(_) => Value::Null,
                 };
-                self.client.commit_session()?;
+                // A Load page is committed only when it applied: one whose job
+                // moved on wrote nothing, and a refused one must keep nothing.
+                if matches!(
+                    result,
+                    StoreResult::Load(crate::LoadApply::Stale | crate::LoadApply::Refused { .. })
+                ) {
+                    self.client.rollback_session()?;
+                } else {
+                    self.client.commit_session()?;
+                }
                 Ok((value, result))
             });
         if result.is_err() {
             self.abort_authority_session();
         }
         self.committed_since(generation);
-        if self.client.generation() != generation {
+        // A Load page changes no queue, Channel or cursor: the lanes have
+        // nothing new to look at.
+        if self.client.generation() != generation
+            && !matches!(continuation, StoreContinuation::Load { .. })
+        {
             self.wake_lanes(now, entropy);
         }
         match result {
+            Ok((_, StoreResult::Load(apply))) => match continuation {
+                StoreContinuation::Load { batch, sent } => self.load_stored(batch, sent, apply),
+                continuation => continuation.fail(
+                    self,
+                    "a Load page answered another delivery".into(),
+                    None,
+                    None,
+                    &[],
+                    now,
+                    entropy,
+                ),
+            },
             Ok((_, StoreResult::Direct(report))) => {
                 if let StoreContinuation::Direct { request_id } = continuation {
                     self.finish_direct_store(request_id, report);
@@ -578,7 +660,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
                 _ => unreachable!(),
             },
-            Err(error) => continuation.fail(self, error.to_string(), None, None, now, entropy),
+            Err(error) => continuation.fail(self, error.to_string(), None, None, &[], now, entropy),
         }
     }
 }

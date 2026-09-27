@@ -1,5 +1,7 @@
-use axton_compiler::reconcile_action_history;
 use axton_compiler::{check_fence, compile, reconcile_history};
+use axton_compiler::{
+    reconcile_action_history, reconcile_load_history, reconcile_model_history as reconcile_models,
+};
 use serde_json::json;
 
 #[test]
@@ -541,4 +543,240 @@ fn default_only_changes_keep_retained_versions_and_required_fields_still_break()
     assert!(error.contains("adding required field"), "{error}");
     let error = reconcile_history(&required, Some(&mutations)).unwrap_err();
     assert!(error.contains("incompatible input change"), "{error}");
+}
+
+const LOAD_MODELS: &str = "enum Status { open done } model Todo { id UUID title String @@id(id) } model Note { id String @@id(id) }";
+
+/// Reconcile model and Load history the way the CLI does, returning the
+/// retained Load history and the merged client schema.
+fn retain_loads(
+    source: &str,
+    models: Option<&serde_json::Value>,
+    loads: Option<&serde_json::Value>,
+) -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), String> {
+    let mut config = compile(source)?;
+    let model_history = reconcile_models(&config, models)?;
+    let retained: Vec<serde_json::Value> = model_history["models"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|v| v.as_object().unwrap().values().cloned())
+        .collect();
+    config["backendModels"] = json!(retained);
+    let load_history = reconcile_load_history(&config, loads)?;
+    let mut schema = config["schema"].clone();
+    schema["resultModels"] = json!(retained);
+    schema["loads"] = json!(
+        load_history["loads"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|v| v.as_object().unwrap().values().cloned())
+            .collect::<Vec<_>>()
+    );
+    axton_core::Schema::from_value(schema.clone()).map_err(|e| e.to_string())?;
+    Ok((model_history, load_history, schema))
+}
+
+#[test]
+fn load_history_mirrors_the_operation_envelope() {
+    let source = format!("{LOAD_MODELS} load ProjectTodos(projectId UUID) {{ todos Todo[] }}");
+    let config = compile(&source).unwrap();
+    let history = reconcile_load_history(&config, None).unwrap();
+    assert_eq!(history["formatVersion"], 1);
+    assert_eq!(history["loads"]["ProjectTodos"]["1"], config["loads"][0]);
+    assert_eq!(history.as_object().unwrap().len(), 2);
+    // Reconciling again is a fixed point.
+    assert_eq!(
+        reconcile_load_history(&config, Some(&history)).unwrap(),
+        history
+    );
+    let error =
+        reconcile_load_history(&config, Some(&json!({"formatVersion":2,"loads":{}}))).unwrap_err();
+    assert!(error.contains("unsupported load history format"), "{error}");
+    let error = reconcile_load_history(&config, Some(&json!({"formatVersion":1,"actions":{}})))
+        .unwrap_err();
+    assert!(error.contains("unsupported load history format"), "{error}");
+    let first_at_v2 = compile(&format!(
+        "{LOAD_MODELS} @version(2) load Late() {{ todos Todo[] }}"
+    ))
+    .unwrap();
+    let error = reconcile_load_history(&first_at_v2, None).unwrap_err();
+    assert!(
+        error.contains("Late: initial load history must begin at version 1"),
+        "{error}"
+    );
+}
+
+#[test]
+fn same_version_breaking_load_changes_need_a_new_version() {
+    let base = "load ProjectTodos(projectId UUID, status Status?) { todos Todo[] notes Note[] }";
+    let source = format!("{LOAD_MODELS} {base}");
+    let history = reconcile_load_history(&compile(&source).unwrap(), None).unwrap();
+    for (changed, needle) in [
+        (
+            base.replace("projectId UUID", "projectId String"),
+            "incompatible input change",
+        ),
+        (
+            base.replace("status Status?", "status Status"),
+            "incompatible input change",
+        ),
+        (
+            base.replace("status Status?", "status Status?, extra Int"),
+            "incompatible input change",
+        ),
+        (
+            base.replace("projectId UUID, ", ""),
+            "incompatible input change",
+        ),
+        (
+            base.replace(" notes Note[]", ""),
+            "incompatible output change",
+        ),
+        (
+            base.replace("notes Note[]", "notes Todo[]"),
+            "incompatible output change",
+        ),
+        (
+            base.replace("todos Todo[]", "items Todo[]"),
+            "incompatible output change",
+        ),
+    ] {
+        let config = compile(&format!("{LOAD_MODELS} {changed}")).unwrap();
+        let error = reconcile_load_history(&config, Some(&history)).unwrap_err();
+        assert!(
+            error.contains(&format!("ProjectTodos v1: {needle}; increase @version")),
+            "{changed}: {error}"
+        );
+    }
+    // A narrowed input enum is not: an old caller may still send the value.
+    let narrowed = LOAD_MODELS.replace("open done", "open");
+    let error = reconcile_load_history(
+        &compile(&format!("{narrowed} {base}")).unwrap(),
+        Some(&history),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("ProjectTodos v1: incompatible input change; increase @version"),
+        "{error}"
+    );
+    // A widened input enum is compatible: an old caller's values stay valid.
+    let widened = LOAD_MODELS.replace("open done", "open done archived");
+    let next = reconcile_load_history(
+        &compile(&format!("{widened} {base}")).unwrap(),
+        Some(&history),
+    )
+    .unwrap();
+    assert_eq!(
+        next["loads"]["ProjectTodos"]["1"]["input"]["enums"][0]["values"],
+        json!(["open", "done", "archived"])
+    );
+    // A compatible Model addition does not touch the Load contract.
+    let added = LOAD_MODELS.replace("title String", "title String note String?");
+    assert_eq!(
+        reconcile_load_history(
+            &compile(&format!("{added} {base}")).unwrap(),
+            Some(&history)
+        )
+        .unwrap(),
+        history
+    );
+}
+
+#[test]
+fn load_version_two_retains_version_one_and_its_model_reader() {
+    let v1 = format!("{LOAD_MODELS} load ProjectTodos(projectId UUID) {{ todos Todo[] }}");
+    let (models, loads, _) = retain_loads(&v1, None, None).unwrap();
+    // A breaking Model read change retypes the output contract: v1 is refused
+    // until the Load version moves with it.
+    let breaking = v1.replace(
+        "model Todo { id UUID title String @@id(id) }",
+        "@version(2) model Todo { id UUID title Int @@id(id) }",
+    );
+    let error = retain_loads(&breaking, Some(&models), Some(&loads)).unwrap_err();
+    assert!(
+        error.contains("ProjectTodos v1: incompatible output change"),
+        "{error}"
+    );
+    let bumped = breaking.replace("load ProjectTodos", "@version(2) load ProjectTodos");
+    let (_, next, schema) = retain_loads(&bumped, Some(&models), Some(&loads)).unwrap();
+    assert_eq!(
+        next["loads"]["ProjectTodos"]["1"],
+        loads["loads"]["ProjectTodos"]["1"]
+    );
+    assert_eq!(
+        next["loads"]["ProjectTodos"]["1"]["outputs"][0]["modelReadVersion"],
+        1
+    );
+    assert_eq!(
+        next["loads"]["ProjectTodos"]["2"]["outputs"][0]["modelReadVersion"],
+        2
+    );
+    let schema = axton_core::Schema::from_value(schema).unwrap();
+    assert!(schema.load("ProjectTodos", 1).is_ok());
+    assert!(schema.load("ProjectTodos", 2).is_ok());
+    assert!(schema.result_model("Todo", 1).is_ok());
+    let error = retain_loads(
+        &bumped.replace("@version(2) load", "load"),
+        Some(&models),
+        Some(&next),
+    )
+    .unwrap_err();
+    assert!(error.contains("version cannot decrease from 2"), "{error}");
+}
+
+#[test]
+fn retained_loads_cannot_be_removed_or_change_kind() {
+    let load = format!("{LOAD_MODELS} load Find() {{ todos Todo[] }}");
+    let history = reconcile_load_history(&compile(&load).unwrap(), None).unwrap();
+    for replacement in [
+        LOAD_MODELS.to_string(),
+        format!("{LOAD_MODELS} query Find() {{ todos Todo[] }}"),
+        format!("{LOAD_MODELS} mutation Find() {{ todos Todo[] }}"),
+    ] {
+        let error =
+            reconcile_load_history(&compile(&replacement).unwrap(), Some(&history)).unwrap_err();
+        assert!(
+            error.contains("retained load Find cannot be removed"),
+            "{error}"
+        );
+    }
+    // A retained Query or Mutation cannot become a Load either.
+    for kind in ["query", "mutation"] {
+        let operation = compile(&format!("{LOAD_MODELS} {kind} Find() {{ n Int }}")).unwrap();
+        let actions = reconcile_action_history(&operation, None).unwrap();
+        let error = reconcile_action_history(&compile(&load).unwrap(), Some(&actions)).unwrap_err();
+        assert!(
+            error.contains("retained operation Find cannot be removed"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn adding_a_load_leaves_operation_and_mutation_history_unchanged() {
+    let operations = format!(
+        "{LOAD_MODELS} mutation Save {{ todo Todo.create }} mutation Rename(todo Todo.update) {{ n Int }} query Count(status Status?) {{ n Int }}"
+    );
+    let before = compile(&operations).unwrap();
+    let actions = reconcile_action_history(&before, None).unwrap();
+    let mutations = reconcile_history(&before, None).unwrap();
+    let with_load = compile(&format!(
+        "{operations} load ProjectTodos(status Status?) {{ todos Todo[] }}"
+    ))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_string_pretty(
+            &reconcile_action_history(&with_load, Some(&actions)).unwrap()
+        )
+        .unwrap(),
+        serde_json::to_string_pretty(&actions).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_string_pretty(&reconcile_history(&with_load, Some(&mutations)).unwrap())
+            .unwrap(),
+        serde_json::to_string_pretty(&mutations).unwrap()
+    );
+    assert_eq!(with_load["actions"], before["actions"]);
 }

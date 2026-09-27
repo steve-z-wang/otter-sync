@@ -70,8 +70,9 @@
 //! and overflow recovery hold even while a callback keeps the writer. [`ClientRuntime::step`]
 //! then runs one unit: the application transaction's own lane first, then
 //! ordinary tasks and *lane units* - a ready continuation (a receipt, a direct
-//! response, a prerequisite outcome), else a Downlink pump, else a push-lane
-//! turn - in the order they were admitted, so neither starves. Each unit holds
+//! response, a prerequisite outcome), else a Load unit or a Downlink pump or
+//! a push-lane turn, the Load lane alternating with the other two - in the
+//! order they were admitted, so neither starves. Each unit holds
 //! at most one local transaction and none is held across an effect: prepare,
 //! effect and apply are three units. Every ordinary task or continuation that
 //! committed wakes both lanes.
@@ -89,6 +90,8 @@
 //!   Downlink worker as runtime work.
 //! - `direct`: direct Query/Mutation calls, Query once flights and Model
 //!   Fetch flights, their deadlines and fences.
+//! - `loads`: native Load commands, the Load worker's batches as effects,
+//!   page application, and the Load handles' observers and waiters.
 //! - `prerequisites`: the prerequisite loop over application handlers.
 //! - `observers`: subscription status, Bootstrap waiters and local watches,
 //!   published as snapshots.
@@ -99,6 +102,7 @@ mod commands;
 mod direct;
 mod effects;
 mod lanes;
+mod loads;
 mod observers;
 mod prerequisites;
 pub mod protocol;
@@ -130,6 +134,9 @@ pub struct ClientRuntime<S: ClientStore> {
     ready: VecDeque<effects::Ready>,
     directs: direct::Directs,
     prerequisites: Option<prerequisites::Loop>,
+    /// The Load worker, its batches in flight, and the Load handles'
+    /// observers and waiters.
+    loads: loads::Loads,
     /// Subscription and watch observers, and the Bootstrap waiters.
     observers: observers::Observers,
     /// Admissions so far: ordinary tasks and effect results are numbered in
@@ -183,6 +190,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             ready: VecDeque::new(),
             directs: direct::Directs::default(),
             prerequisites: None,
+            loads: loads::Loads::default(),
             observers: observers::Observers::default(),
             admitted: 0,
             lane_since: None,

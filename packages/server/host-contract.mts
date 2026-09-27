@@ -74,6 +74,25 @@ export type HandleActionRequest = {
   callId: string;
   ordinal: number;
 };
+/** Portable JSON: what a Load continuation state may hold. */
+export type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+/** `null` on a first page (or at the end of a traversal); `{state}` otherwise, even when `state` is `null`. */
+export type LoadNext = null | { state: JsonValue };
+/**
+ * Run one Load handler for one page. Its context is read-only: the answer
+ * names identities and the next continuation, never changes or memberships.
+ */
+export type HandleLoadRequest = {
+  op: "handleLoad";
+  name: string;
+  version: number;
+  arguments: Record<string, unknown>;
+  continuation: LoadNext;
+  owner: string;
+  callId: string;
+  loadId: string;
+};
 /**
  * Load the current state of these identities as records of one retained model
  * read contract, for this caller. Loads name no channel: the same identity,
@@ -97,6 +116,16 @@ export type EnsureStampRequest = {
   op: "ensureStamp";
   model: string;
   identityKey: string;
+};
+/**
+ * The current stamps of these records of one model, one per key in request
+ * order: an existing stamp is read and never rewritten; only a record without
+ * one is initialized at 1.
+ */
+export type ReadStampsRequest = {
+  op: "readStamps";
+  model: string;
+  identityKeys: string[];
 };
 /**
  * Invalidate one record on one channel at this stamp, allocating only the
@@ -151,9 +180,11 @@ export type HostRequest =
   | ReleaseRequest
   | HandleRequest
   | HandleActionRequest
+  | HandleLoadRequest
   | LoadRequest
   | AdvanceStampRequest
   | EnsureStampRequest
+  | ReadStampsRequest
   | PublishRequest
   | LockRecordRequest
   | MembershipsRequest
@@ -164,7 +195,7 @@ export type HostOperation = HostRequest["op"];
 /** The subset a [Persistence] answers: everything that is not application code. */
 export type PersistenceRequest = Exclude<
   HostRequest,
-  HandleRequest | HandleActionRequest | LoadRequest
+  HandleRequest | HandleActionRequest | HandleLoadRequest | LoadRequest
 >;
 
 /** The answer to an operation whose only answer is "done". */
@@ -199,6 +230,8 @@ export type Invalidation = {
 };
 /** The answer to `advanceStamp` and `ensureStamp`: the record's stamp. */
 export type Stamped = number;
+/** The answer to `readStamps`: one stamp per requested key, in request order. */
+export type Stamps = number[];
 /** The answer to `publish`: the allocated cursor and the stamp the request named. */
 export type Published = { cursor: number; stamp: number };
 /** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
@@ -249,6 +282,14 @@ export type HandledAction =
   | { rejection: string }
   | { error: string };
 /**
+ * The answer to `handleLoad`: the page's identity lists and next
+ * continuation, a rejection code, or a failure carrying a thrown handler error.
+ */
+export type HandledLoad =
+  | { data: Record<string, unknown>; next: LoadNext }
+  | { rejection: string }
+  | { error: string };
+/**
  * The answer to `load`: one entry per identity, `null` for a record that does
  * not exist for this caller, a refusal the engine records as the mutation's
  * rejection (push) or reports for the page (pull), or a failure carrying a
@@ -272,9 +313,11 @@ export type HostResponse = {
   release: Acknowledged;
   handle: Handled;
   handleAction: HandledAction;
+  handleLoad: HandledLoad;
   load: Loaded;
   advanceStamp: Stamped;
   ensureStamp: Stamped;
+  readStamps: Stamps;
   publish: Published;
   lockRecord: Locked;
   memberships: Memberships;
@@ -297,9 +340,11 @@ const OPERATIONS: Record<HostOperation, true> = {
   release: true,
   handle: true,
   handleAction: true,
+  handleLoad: true,
   load: true,
   advanceStamp: true,
   ensureStamp: true,
+  readStamps: true,
   publish: true,
   lockRecord: true,
   memberships: true,

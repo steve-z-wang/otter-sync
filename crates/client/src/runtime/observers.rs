@@ -444,6 +444,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Publish every subscription status that changed. Memory only: it runs
     /// after an effect result is admitted as well as after a unit.
     pub(super) fn publish_statuses(&mut self) {
+        self.publish_loads();
         let mut changed = vec![];
         for (id, registration) in &self.observers.registrations {
             let Some(observer_id) = &registration.observer else {

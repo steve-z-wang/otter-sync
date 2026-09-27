@@ -171,3 +171,162 @@ pub fn table_count(c: &mut Client<SqliteStore>, table: &str) -> u64 {
         .as_u64()
         .unwrap()
 }
+/// The Entry schema with native Loads ([#173](https://github.com/zanminwang/axton/issues/173)):
+/// `Entries` v1 and v2 (a `projectId` UUID and a nullable `since` date-time),
+/// the no-argument `Recent` and `Tagged` (a string list), each filling the
+/// `entries` list of Entry identities at read contract 1.
+pub fn load_schema_value() -> Value {
+    let fields = json!([
+        {"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},
+        {"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},
+        {"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}
+    ]);
+    let input = |name: &str, scalar: &str, nullable: bool, list: bool| {
+        json!({"kind":"value","name":name,"type":{"kind":"scalar","name":scalar},
+            "nullable":nullable,"list":list,"required":true,
+            "cardinality": if list { "list" } else { "single" }})
+    };
+    let load = |name: &str, version: u64, inputs: Value| {
+        json!({"name":name,"version":version,"inputs":inputs,
+            "outputs":[{"name":"entries","kind":"model","cardinality":"list","source":"handlerIdentity",
+                "model":"Entry","modelReadVersion":1,
+                "handlerType":{"kind":"identity","model":"Entry","fields":[
+                    {"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
+            "input":{"models":[],"enums":[]},"outputEnums":[]})
+    };
+    let project = json!([
+        input("projectId", "uuid", false, false),
+        input("since", "dateTime", true, false)
+    ]);
+    json!({
+        "enums":[],
+        "models":[{"name":"Entry","version":1,"identity":["id"],"fields":fields}],
+        "resultModels":[{"name":"Entry","version":1,"identity":["id"],"fields":fields,"enums":[]}],
+        "loads":[
+            load("Entries", 1, project.clone()),
+            load("Entries", 2, project),
+            load("Recent", 1, json!([])),
+            load("Tagged", 1, json!([input("tags", "string", false, true)]))
+        ]
+    })
+}
+pub fn load_schema() -> Schema {
+    Schema::from_value(load_schema_value()).unwrap()
+}
+/// A successful page answering `fence`: the Entry identities `entries` as
+/// `(id, text, stamp)` with their records, and `next` as the continuation
+/// state (`None` completes the job).
+pub fn load_page(
+    fence: &LoadFence,
+    entries: &[(&str, &str, u64)],
+    next: Option<Value>,
+) -> LoadPageResponse {
+    LoadPageResponse {
+        load_id: fence.load_id.clone(),
+        call_id: fence.call_id.clone(),
+        outcome: LoadOutcome::Succeeded {
+            data: json!({"entries": entries.iter().map(|(id, _, _)| json!({"id": id})).collect::<Vec<_>>()}),
+            next: next.map(|state| Continuation { state }),
+        },
+        records: entries
+            .iter()
+            .map(|(id, text, stamp)| authority_of(id, Some(text), *stamp))
+            .collect(),
+    }
+}
+/// The correlated reply a decoded response carries for a well-formed `page`.
+pub fn reply(page: LoadPageResponse) -> LoadPageReply {
+    LoadPageReply {
+        load_id: page.load_id.clone(),
+        call_id: page.call_id.clone(),
+        page: Ok(page),
+    }
+}
+/// A SQLite store whose next commit fails once while `fail_commit` is set:
+/// nothing of that transaction is kept.
+pub struct CommitFaultStore {
+    pub inner: SqliteStore,
+    pub fail_commit: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl CommitFaultStore {
+    pub fn open(path: &std::path::Path) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        (
+            Self {
+                inner: SqliteStore::open(path).unwrap(),
+                fail_commit: fail.clone(),
+            },
+            fail,
+        )
+    }
+}
+impl ClientStore for CommitFaultStore {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        if self
+            .fail_commit
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(axton_core::invalid("injected commit failure"));
+        }
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query_committed(sql, parameters)
+    }
+}
+/// A `Tagged` job whose first page fits the 1 MiB request bound and whose
+/// committed first page returns a 60 KB state: its next frozen page request
+/// no longer fits, even alone. Answers the job ID.
+pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
+    let tag = "x".repeat(limits::LOAD_REQUEST_BYTES - 30_000);
+    let job = c
+        .start_load(
+            "Tagged",
+            1,
+            &json!({ "tags": [tag] }),
+            LoadOptions::default(),
+        )
+        .unwrap()
+        .job;
+    let fence = LoadFence {
+        replica: c.replica_generation(),
+        load_id: job.id.clone(),
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    let page = load_page(&fence, &[], Some(json!("s".repeat(60_000))));
+    assert!(matches!(
+        c.store_load_page(&fence, reply(page)).unwrap(),
+        LoadStored::Applied { .. }
+    ));
+    let next = c.get_load(&job.id).unwrap().unwrap().intent.unwrap();
+    assert!(
+        LoadBatchRequest { loads: vec![next] }.encode().is_err(),
+        "the next frozen page exceeds the request bound"
+    );
+    job.id
+}

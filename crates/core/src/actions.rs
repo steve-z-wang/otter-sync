@@ -224,12 +224,16 @@ impl DirectActionResponse {
 }
 
 pub fn normalize_call_id(value: &str) -> Result<String> {
-    let id = uuid::Uuid::parse_str(value).map_err(|_| invalid("invalid callId UUID"))?;
+    normalize_uuid(value, "callId")
+}
+/// A hyphenated RFC 4122 UUID (versions 1 to 8) in canonical lowercase.
+pub(crate) fn normalize_uuid(value: &str, label: &str) -> Result<String> {
+    let id = uuid::Uuid::parse_str(value).map_err(|_| invalid(format!("invalid {label} UUID")))?;
     if value.len() != 36
         || id.get_variant() != uuid::Variant::RFC4122
         || !(1..=8).contains(&id.get_version_num())
     {
-        return Err(invalid("invalid callId UUID format/version"));
+        return Err(invalid(format!("invalid {label} UUID format/version")));
     }
     Ok(id.to_string())
 }
@@ -464,82 +468,99 @@ impl Schema {
             }
             names.clear();
             for output in &action.outputs {
-                if output.name.is_empty()
-                    || !names.insert(output.name.as_str())
-                    || !valid_cardinality(&output.cardinality)
-                {
+                if output.name.is_empty() || !names.insert(output.name.as_str()) {
                     return Err(invalid("invalid Action output"));
                 }
-                match output.kind.as_str() {
-                    "value" => {
-                        let ty = output
-                            .value_type
-                            .as_ref()
-                            .ok_or_else(|| invalid("missing Action value type"))?;
-                        let mut local = self.clone();
-                        if !action.output_enums.is_empty() {
-                            local.enums = action.output_enums.clone();
-                        }
-                        local.validate_action_type(ty)?;
-                        if !matches!(
-                            output.source,
-                            ActionOutputSource::Named(ActionNamedSource::HandlerValue)
-                        ) {
-                            return Err(invalid("Action value output needs handlerValue source"));
-                        }
-                    }
-                    "model" | "deleteIdentity" => {
-                        let model = output
-                            .model
-                            .as_deref()
-                            .ok_or_else(|| invalid("missing Action output Model"))?;
-                        self.model(model)?;
-                        if output.kind == "model" {
-                            self.result_model(
-                                model,
-                                output
-                                    .model_read_version
-                                    .ok_or_else(|| invalid("missing Model read version"))?,
-                            )?;
-                        }
-                        match &output.source {
-                            ActionOutputSource::Named(ActionNamedSource::HandlerIdentity) => {
-                                let handler = output.handler_type.as_ref().ok_or_else(|| {
-                                    invalid("missing Action identity handler type")
-                                })?;
-                                let descriptor = self.model(model)?;
-                                if handler.kind != "identity"
-                                    || handler.model != model
-                                    || handler.fields.len() != descriptor.identity.len()
-                                    || handler.fields.iter().zip(&descriptor.identity).any(
-                                        |(field, name)| {
-                                            field.name != *name
-                                                || descriptor
-                                                    .fields
-                                                    .iter()
-                                                    .find(|f| &f.name == name)
-                                                    .is_none_or(|f| {
-                                                        serde_json::to_value(&f.value_type).ok()
-                                                            != serde_json::to_value(
-                                                                &field.value_type,
-                                                            )
-                                                            .ok()
-                                                    })
-                                        },
-                                    )
-                                {
-                                    return Err(invalid("invalid Action identity handler type"));
-                                }
-                            }
-                            ActionOutputSource::InputIdentity { input_identity: name } => {
-                                if !action.inputs.iter().any(|input| matches!(input, ActionInputDescriptor::Model { name: input_name, model: input_model, .. } if input_name == name && input_model == model)) { return Err(invalid("Action output source does not name matching Model input")); }
-                            }
-                            _ => return Err(invalid("invalid Action Model output source")),
-                        }
-                    }
-                    _ => return Err(invalid("invalid Action output kind")),
+                self.validate_output(&action.inputs, &action.output_enums, output)?;
+            }
+        }
+        Ok(())
+    }
+    /// One declared output against the schema: its kind, source, value type
+    /// or Model read contract and identity handler type. Shared by Actions
+    /// and Loads; the caller owns output-name uniqueness.
+    pub(crate) fn validate_output(
+        &self,
+        inputs: &[ActionInputDescriptor],
+        output_enums: &[EnumDescriptor],
+        output: &ActionOutputDescriptor,
+    ) -> Result<()> {
+        if !valid_cardinality(&output.cardinality) {
+            return Err(invalid("invalid Action output"));
+        }
+        match output.kind.as_str() {
+            "value" => {
+                let ty = output
+                    .value_type
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing Action value type"))?;
+                let mut local = self.clone();
+                if !output_enums.is_empty() {
+                    local.enums = output_enums.to_vec();
+                }
+                local.validate_action_type(ty)?;
+                if !matches!(
+                    output.source,
+                    ActionOutputSource::Named(ActionNamedSource::HandlerValue)
+                ) {
+                    return Err(invalid("Action value output needs handlerValue source"));
                 }
             }
+            "model" | "deleteIdentity" => {
+                let model = output
+                    .model
+                    .as_deref()
+                    .ok_or_else(|| invalid("missing Action output Model"))?;
+                self.model(model)?;
+                if output.kind == "model" {
+                    self.result_model(
+                        model,
+                        output
+                            .model_read_version
+                            .ok_or_else(|| invalid("missing Model read version"))?,
+                    )?;
+                }
+                match &output.source {
+                    ActionOutputSource::Named(ActionNamedSource::HandlerIdentity) => {
+                        let handler = output
+                            .handler_type
+                            .as_ref()
+                            .ok_or_else(|| invalid("missing Action identity handler type"))?;
+                        let descriptor = self.model(model)?;
+                        if handler.kind != "identity"
+                            || handler.model != model
+                            || handler.fields.len() != descriptor.identity.len()
+                            || handler.fields.iter().zip(&descriptor.identity).any(
+                                |(field, name)| {
+                                    field.name != *name
+                                        || descriptor
+                                            .fields
+                                            .iter()
+                                            .find(|f| &f.name == name)
+                                            .is_none_or(|f| {
+                                                serde_json::to_value(&f.value_type).ok()
+                                                    != serde_json::to_value(&field.value_type)
+                                                        .ok()
+                                            })
+                                },
+                            )
+                        {
+                            return Err(invalid("invalid Action identity handler type"));
+                        }
+                    }
+                    ActionOutputSource::InputIdentity {
+                        input_identity: name,
+                    } => {
+                        if !inputs.iter().any(|input| matches!(input, ActionInputDescriptor::Model { name: input_name, model: input_model, .. } if input_name == name && input_model == model)) {
+                            return Err(invalid(
+                                "Action output source does not name matching Model input",
+                            ));
+                        }
+                    }
+                    _ => return Err(invalid("invalid Action Model output source")),
+                }
+            }
+            _ => return Err(invalid("invalid Action output kind")),
         }
         Ok(())
     }
@@ -592,12 +613,7 @@ pub fn validate_action_models(
     action: &ActionDescriptor,
     models: &BTreeMap<String, u64>,
 ) -> Result<()> {
-    for (name, version) in models {
-        if schema.model(name)?.version != *version {
-            return Err(invalid("unsupported local Model read version"));
-        }
-    }
-    let required: BTreeSet<&str> = action
+    let required = action
         .inputs
         .iter()
         .filter_map(|input| match input {
@@ -609,12 +625,26 @@ pub fn validate_action_models(
                 .outputs
                 .iter()
                 .filter_map(|output| output.model.as_deref()),
-        )
-        .collect();
-    for name in required {
+        );
+    validate_operation_models(schema, "Action", required, models)
+}
+/// A request's declared local read contracts: every entry at the local
+/// Model version, and every Model the operation touches declared.
+pub(crate) fn validate_operation_models<'a>(
+    schema: &Schema,
+    label: &str,
+    required: impl Iterator<Item = &'a str>,
+    models: &BTreeMap<String, u64>,
+) -> Result<()> {
+    for (name, version) in models {
+        if schema.model(name)?.version != *version {
+            return Err(invalid("unsupported local Model read version"));
+        }
+    }
+    for name in required.collect::<BTreeSet<_>>() {
         if models.get(name) != Some(&schema.model(name)?.version) {
             return Err(invalid(format!(
-                "Action needs local Model read contract {name}"
+                "{label} needs local Model read contract {name}"
             )));
         }
     }
@@ -624,39 +654,54 @@ fn valid_cardinality(s: &str) -> bool {
     ["single", "optional", "list"].contains(&s)
 }
 fn input_schema(schema: &Schema, action: &ActionDescriptor) -> Result<Schema> {
-    if let Some(input) = &action.input {
-        let mut result = schema.clone();
+    Ok(snapshot_schema(schema, action.input.as_ref()))
+}
+/// The schema an operation's inputs are read against: its retained input
+/// snapshot when it has one, otherwise the current schema.
+pub(crate) fn snapshot_schema(schema: &Schema, snapshot: Option<&ActionInputSnapshot>) -> Schema {
+    let mut result = schema.clone();
+    if let Some(input) = snapshot {
         result.models = input.models.clone();
         result.enums = input.enums.clone();
-        Ok(result)
-    } else {
-        Ok(schema.clone())
     }
+    result
 }
 pub fn normalize_action_args(
     schema: &Schema,
     action: &ActionDescriptor,
     args: &Value,
 ) -> Result<Value> {
+    let input_schema = input_schema(schema, action)?;
+    let normalized = normalize_inputs(&input_schema, "Action", &action.inputs, args)?;
+    validate_action_bindings(&input_schema, action, &normalized)?;
+    Ok(normalized)
+}
+/// Business arguments against declared inputs, read in `input_schema`: an
+/// object naming only declared inputs, each normalized by its own contract.
+pub(crate) fn normalize_inputs(
+    input_schema: &Schema,
+    label: &str,
+    inputs: &[ActionInputDescriptor],
+    args: &Value,
+) -> Result<Value> {
     let object = args
         .as_object()
-        .ok_or_else(|| invalid("Action args must be an object"))?;
+        .ok_or_else(|| invalid(format!("{label} args must be an object")))?;
     if object
         .keys()
-        .any(|key| !action.inputs.iter().any(|i| i.name() == key))
+        .any(|key| !inputs.iter().any(|i| i.name() == key))
     {
-        return Err(invalid("Action args contain undeclared input"));
+        return Err(invalid(format!("{label} args contain undeclared input")));
     }
-    let input_schema = input_schema(schema, action)?;
     let mut normalized = Map::new();
-    for input in &action.inputs {
+    for input in inputs {
         let missing = Value::Null;
         let value = match object.get(input.name()) {
             Some(value) => value,
             None if matches!(input, ActionInputDescriptor::Model { cardinality, .. } if cardinality == "optional") => {
                 &missing
             }
-            None => return Err(invalid("Action required input missing")),
+            None => return Err(invalid(format!("{label} required input missing"))),
         };
         let result = match input {
             ActionInputDescriptor::Value {
@@ -692,7 +737,7 @@ pub fn normalize_action_args(
                 ..
             } => normalize_cardinality(value, cardinality, |item| {
                 normalize_model_input(
-                    &input_schema,
+                    input_schema,
                     model,
                     operation,
                     allowed_patch_fields.as_deref(),
@@ -702,9 +747,7 @@ pub fn normalize_action_args(
         };
         normalized.insert(input.name().to_string(), result);
     }
-    let normalized = Value::Object(normalized);
-    validate_action_bindings(&input_schema, action, &normalized)?;
-    Ok(normalized)
+    Ok(Value::Object(normalized))
 }
 fn normalize_cardinality(
     value: &Value,
@@ -1137,14 +1180,23 @@ pub(crate) fn read_schema(schema: &Schema, descriptor: &ModelReadDescriptor) -> 
     local.enums = descriptor.enums.clone();
     local
 }
+/// A retained Model read contract as a one-model schema, so its records and
+/// identities normalize by the rules of that `(name, version)`.
+pub(crate) fn read_contract_schema<'a>(
+    schema: &'a Schema,
+    model: &str,
+    version: u64,
+) -> Result<(Schema, &'a ModelReadDescriptor)> {
+    let descriptor = schema.result_model(model, version)?;
+    Ok((read_schema(schema, descriptor), descriptor))
+}
 fn normalize_result_model(
     schema: &Schema,
     model: &str,
     version: u64,
     value: &Value,
 ) -> Result<Value> {
-    let descriptor = schema.result_model(model, version)?;
-    let local = read_schema(schema, descriptor);
+    let (local, descriptor) = read_contract_schema(schema, model, version)?;
     let object = value
         .as_object()
         .ok_or_else(|| invalid("Model result must be object"))?;
@@ -1178,8 +1230,7 @@ pub fn materialize_action_model(
     identity: &Value,
     state: &Value,
 ) -> Result<Value> {
-    let descriptor = schema.result_model(model, version)?;
-    let local = read_schema(schema, descriptor);
+    let (local, descriptor) = read_contract_schema(schema, model, version)?;
     let key = local.record_key(model, identity)?;
     let fields = state
         .as_object()

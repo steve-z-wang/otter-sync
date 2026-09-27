@@ -1,0 +1,63 @@
+# Loads
+
+## 1. Introduction and Goals
+
+The server executes each page of a native [Load](../../schema/loads.md) as one independent, replayable call ([#173](https://github.com/zanminwang/axton/issues/173)). It claims the page's call ID, runs the retained Load handler, resolves the returned identities through stamps and Loaders, and saves the outcome in the same application transaction. A batch of pages shares one HTTP request and nothing else ([guarantees N3, N5](../../../guarantees.md#n-native-loads)).
+
+## 3. Context and Scope
+
+Input: one `POST /sync/loads` item that passed the envelope check ([Protocol / Loads](../../protocol/loads.md)), the authenticated owner and a host bound to that item's application transaction. Output: the item's `succeeded`, `failed` or `retryable` outcome. Rust owns shape validation, dispatch, normalization, claim and save, Loader authority, fault classification and response assembly; the TypeScript carrier owns HTTP and the application's transactions, as it does for other operations ([Backend interface](../backend-interface.md#3-context-and-scope)).
+
+## 5. Building Block View
+
+| Piece | Owns |
+| --- | --- |
+| `validate_load_batch` (native `validateLoadBatch`) | The whole envelope before any transaction opens; answers each item's canonical JSON in request order |
+| `process_load` (native `processLoad`) | One item inside its transaction: fingerprint, claim, handler dispatch, continuation and data validation, batched page resolution, save or replay |
+| `encode_load_batch` (native `encodeLoadBatch`) and `load_fault_outcome` | Classify each fault that escaped an item's transaction, check each page against its item and the page bound, and write the one bounded response |
+| Carrier `loads` in [server/index.mts](../../../../../packages/server/index.mts) | Authenticates once, runs each item through the application's `run` boundary with at most 4 (`LOAD_ITEM_TRANSACTIONS`) at once, and reports each item's page or fault to `encodeLoadBatch` after every item finished |
+| Host `handleLoad` | Invokes the generated Load handler with a read-only context and checks its `next` inside the handler's error boundary ([Backend interface](../backend-interface.md#3-context-and-scope)) |
+| Host `readStamps` | One persistence round trip per Model: reads existing stamps without rewriting or locking them and initializes only the missing ones at 1 ([Persistence](../persistence.md)) |
+
+Code: [server/loads.rs](../../../../../crates/server/src/loads.rs); codes in [server/error.rs](../../../../../crates/server/src/error.rs); the host operations in [server/host.rs](../../../../../crates/server/src/host.rs), [server/host-contract.mts](../../../../../packages/server/host-contract.mts), [fixtures/protocol/host-operations.json](../../../../../fixtures/protocol/host-operations.json) and the simulation host [sim/host.rs](../../../../../crates/sim/src/host.rs); `SQL.READ_STAMPS` in [postgres/src/sql.mts](../../../../../packages/postgres/src/sql.mts).
+
+## 6. Runtime View
+
+**Claim and replay.** The claim fingerprint is the canonical JSON of `{kind: "load", loadId, callId, name, version, args, continuation, models}`, using the same atomic claim/save storage as other calls ([Persistence](../persistence.md)). The arguments are kept as sent, so replay never depends on the current schema; the client must resend its frozen bytes. The explicit kind prevents cross-kind replay: an Action reusing a Load's call ID, or the reverse, is an unsaved `call.identity_conflict`, as is the same call ID with another request. The claim is owner-scoped, so another user's request IDs never retrieve a saved outcome. A repeated call ID returns the saved `data`, `records` and `next` without running the handler or a Loader and without a stamp operation; its records are renormalized for the current read contract, as for Actions, and a saved page that no longer fits the page bound after that is answered as an unsaved `load.page_too_large` while the saved page stays. Saved outcomes have no TTL or automatic pruning ([guarantee Q2](../../../guarantees.md#q-call-outcomes)); a future retention policy ([#61](https://github.com/zanminwang/axton/issues/61)) must keep outstanding page outcomes, or enough identity to reject an expired replay as `load.replay_expired`, and must never run an expired page ID again.
+
+**One transaction per item.** A fresh claim opens a savepoint, then runs, in order: the Load lookup, argument and incoming continuation normalization, the declared read contracts (every output Model must be declared), `handleLoad`, the returned `next`, the identity count, the `data` shape, and then, per Model in canonical order, one `readStamps` and one `load` of the deduplicated identities at the client's declared read version. A null row fails the page; the canonical page must fit 1 MiB and pass the client's own page check before it is saved. On a rejection the savepoint rolls back the handler's writes and the stamps, and only the rejection is saved before the outer transaction commits. A batch is never one transaction with savepoints: a failing item rolls back only itself, and no SQL transaction spans pages.
+
+**Handler and continuation.** The handler receives `{ctx, args, continuation}` with `ctx` holding only `tx`, `userId`, the page's `callId` and the `loadId`. The engine judges `next` before `data`: a missing `next`, a malformed wrapper or non-portable state is `load.invalid_continuation`; `data` that is not exactly the declared identity lists is `handler.invalid`. The Node bridge checks `next` first (BigInt, `toJSON`, a Date or class instance, NaN, ±Infinity, unsafe integers, `undefined`, holes, cycles, depth over 64, over 64 KiB, and a getter or Proxy that throws while read) so JSON encoding cannot coerce it. The continuation is untrusted client input, never authorization: the owner reaches the claim, the handler and every Loader.
+
+**Classification.**
+
+| Outcome | Codes | Saved |
+| --- | --- | --- |
+| `succeeded` | | Yes, with `records` and `next` |
+| `failed`, item rejection | `load_version_unsupported` (unknown name or version), `load.invalid` (arguments), `model_version_unsupported` (undeclared, unretained or missing read contract) | Yes, before any handler call |
+| `failed`, page rejection | a `CallRejected` or translated code from the handler or a Loader, `handler.failed`, `handler.invalid`, `loader.failed`, `loader.invalid`, `loader.unregistered`, `load.invalid_continuation`, `load.record_unavailable`, `load.page_too_large` | Yes, after the savepoint rollback; replayed until an explicit retry uses a new call ID |
+| `failed`, unsaved | `call.identity_conflict`; deterministic defects such as `storage.invalid`, `host.invalid`, `internal`; a page that no longer fits its bound on replay or at assembly | No; answered with its code so the client does not back off forever |
+| `retryable` | `server.unavailable` (a host failure, an unknown commit, a pool timeout), `transaction.conflict` (a serialization failure left after the driver's retries) | No; the client resends the same call ID and replay decides what committed |
+
+A handler or Loader throw, including a statement or lock timeout inside it, is a saved `handler.failed` or `loader.failed`. Any error escaping the application transaction is a fault the carrier reports to `encodeLoadBatch`, whose fixed retryable messages carry no database text. A deterministic inconsistency in a `readStamps` answer is answered as data and refused as `host.invalid`, never thrown, because a thrown persistence error reads as retryable. No `succeeded` item is sent before its transaction commits.
+
+**Tail latency.** Ordinary HTTP answers after every item finishes, so one slow item delays its siblings in that response. Bounded batches, the client's independent in-flight batches and transaction timeouts where the driver has them limit the impact; streaming responses and adaptive batching are deferred.
+
+## 10. Quality Requirements
+
+- **A repeated page ID replays its original data, authority and continuation after business rows change, without handler, Loader or stamp work; the claim is owner- and kind-scoped** ([guarantee N3](../../../guarantees.md#n-native-loads)). Evidence: [server/tests/loads.rs](../../../../../crates/server/tests/loads.rs) `a_repeated_call_id_replays_its_saved_page_without_handler_loader_or_stamps`, `a_reused_call_id_with_another_request_or_kind_conflicts_without_saving`, `the_claim_is_owner_scoped`, `replay_normalizes_saved_authority_for_the_current_read_contract`, `a_replayed_page_that_outgrows_the_page_bound_answers_an_unsaved_page_too_large`; on PostgreSQL, [loads.test.mjs](../../../../../integration/persistence/server/loads.test.mjs) `a repeated page call ID replays its exact saved page after business rows change, without handler, Loader or new stamps`, `another principal cannot retrieve a saved page by its IDs`.
+- **Each item is its own transaction; a failing item rolls back its writes and stamps while a sibling commits; faults are classified in Rust** ([guarantee N5](../../../guarantees.md#n-native-loads)). Evidence: `handler_rejection_and_failure_roll_back_its_writes_before_saving`, `an_absent_record_fails_the_whole_page_and_rolls_back_its_stamps_and_writes`, `faults_are_classified_in_rust_into_bounded_unsaved_items`, `infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes`, `a_page_that_answers_another_item_or_is_malformed_fails_only_its_own_item`; on PostgreSQL through `pg`, `prisma` and `drizzle`, `each batch item is its own transaction: a rejected handler rolls back its writes while its sibling commits, on every shim`, `transaction faults are retryable items with nothing saved, and a resend lets replay decide what committed`, `an inconsistent readStamps answer is a deterministic defect, never a retryable fault`, `at most four item transactions of one request run at once`.
+- **Existing stamps are never rewritten, and a page of 1,000 identities takes a fixed number of host round trips.** Evidence: `existing_stamps_are_read_without_rewriting_and_only_missing_ones_start_at_one`, `a_thousand_identity_page_takes_a_fixed_number_of_host_round_trips`, `repeated_identities_are_resolved_once_per_record_with_one_stamp_and_one_loader_read_per_model`; on PostgreSQL, `a 1,000-identity page resolves with one stamp and one Loader round trip`.
+- **The context is read-only, the answer is judged by the engine, and continuation state is bounded in both directions.** Evidence: `the_load_context_is_read_only_and_a_forged_settlement_is_refused`, `data_that_is_not_exactly_the_declared_identity_lists_is_an_invalid_handler_answer`, `continuation_state_is_bounded_portable_json_in_both_directions`, `unknown_operations_invalid_args_and_undeclared_contracts_are_saved_item_rejections`; the bridge in [host-contract.test.mjs](../../../../../integration/persistence/server/host-contract.test.mjs).
+
+Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked` and `bash integration/persistence/server/run.sh` on a disposable PostgreSQL 14 cluster); commit loss and pool timeout are simulated with transaction wrappers, not a severed connection.
+
+## 11. Risks and Technical Debt
+
+**Accepted limitation: no transaction timeout with `pg` or `drizzle`.** *Condition:* an item's application transaction hangs. *Consequence:* it holds its claim row, and a resend of the same call ID blocks behind it. The `prisma` shim's `timeout` bounds this; the `pg` and `drizzle` shims have none ([Persistence](../persistence.md#11-risks-and-technical-debt)). This feature does not solve it.
+
+**Accepted limitation: an oversized page reproduces.** `load.page_too_large` is saved, and an explicit retry reads the same continuation again, so it fails again. Recovery needs a backend change to the handler's page size.
+
+**Accepted limitation: tail latency.** One slow item delays its response's siblings (see above).
+
+**Accepted limitation: other carriers must report faults the same way.** The carrier reports what it observed (`engine`, `conflict`, `unavailable`) and Rust classifies it; a carrier for another language must distinguish the same three.

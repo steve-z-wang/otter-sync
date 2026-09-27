@@ -1,7 +1,10 @@
-import type { Call, CallOutcome, GeneratedClient } from './client.ts';
+import type { Call, CallOutcome, GeneratedClient, Load, LoadOptions, LoadPhase, LoadStatus } from './client.ts';
+import { LoadError } from './client.ts';
 import { Project, Todo } from './backend.ts';
 import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, EditOutput, EditAndReadOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, MutationContext, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import { createBackend } from './backend.ts';
+import type { Database } from '../../packages/server/index.mts';
 
 const created: TodoCreate = { id: 't', title: 'Task', state: 'open', note: null };
 const patch: TodoUpdate<'title'> = { id: 't', title: 'Renamed' };
@@ -94,6 +97,40 @@ async function clientContract(client: GeneratedClient) {
   void [status, final, removed, edited, editedCall, readTitle, noOutput, email, rows, suggestion, openOutcome, queuedOutcome, savedAt];
 }
 
+// Client Loads (#173): start answers a handle after durable local acceptance;
+// once/refresh are call-site options beside the business args.
+async function loadContract(client: GeneratedClient) {
+  const job: Load<'ProjectTodos'> = await client.loads.projectTodos({ projectId: 'p', status: 'open', tags: ['a'] }, { once: true });
+  const refreshed = await client.loads.projectTodos({ projectId: 'p', status: null, tags: [] }, { once: true, refresh: true });
+  const ordinary = await client.loads.projectTodos({ projectId: 'p', status: null, tags: [] });
+  const noArgs = await client.loads.recentTodos({}, { once: false });
+  // Business inputs may take the option names: options stay a separate argument.
+  const flagged = await client.loads.flaggedTodos({ once: true, refresh: 'yes' }, { once: true });
+  const byClient: Load<'ClientTodos'> = await client.loads.clientTodos({ client: 'c' });
+  const status: LoadStatus<'ProjectTodos'> = job.status;
+  const name: 'ProjectTodos' = status.name;
+  const phase: LoadPhase = status.phase;
+  const pages: number = status.pages;
+  const error: { readonly code: string; readonly message: string } | null = status.error;
+  const stop: () => void = job.watch((next: LoadStatus<'ProjectTodos'>) => void next.phase);
+  stop();
+  const waited: void = await job.wait();
+  await job.cancel();
+  await job.retry();
+  await job.forget();
+  const disposed: void = job.dispose();
+  const restored: Load | null = await client.loads.get(job.id);
+  const recent: LoadStatus[] = await client.loads.list({ limit: 10 });
+  const defaults: LoadStatus[] = await client.loads.list();
+  const invalidated: void = await client.loads.invalidate.projectTodos({ projectId: 'p', status: null, tags: [] });
+  await client.loads.invalidate.recentTodos({});
+  await client.loads.invalidate.flaggedTodos({ once: false, refresh: 'no' });
+  await client.loads.invalidate.clientTodos({ client: 'c' });
+  const options: LoadOptions = { once: true };
+  try { await job.wait(); } catch (thrown) { if (thrown instanceof LoadError) { const code: string = thrown.code; const message: string = thrown.message; void [code, message]; } }
+  void [refreshed, ordinary, noArgs, flagged, byClient, name, phase, pages, error, waited, disposed, restored, recent, defaults, invalidated, options];
+}
+
 type Tx = { db: unknown };
 const pingHandlerResult: PingHandlerOutput = undefined;
 const removeHandlerResult: RemoveTodoHandlerOutput = undefined;
@@ -131,4 +168,28 @@ const loaders: Loaders<Tx> = {
   project: async () => [],
   note: async () => [],
 };
-void [handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput];
+// Loads (#173): a page answers every declared identity list and a portable continuation.
+const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
+const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
+const nullState: LoadNext = { state: null };
+const loads: Loads<Tx> = {
+  async projectTodos({ ctx, args, continuation }) {
+    void [ctx.tx.db, ctx.loadId];
+    const projectId: string = args.projectId;
+    const status: 'open' | 'closed' | 'archived' | null = args.status;
+    const tags: string[] = args.tags;
+    void [projectId, status, tags];
+    if (continuation === null) return firstPage;
+    const state: JsonValue = continuation.state;
+    void state;
+    return { data: { todos: [], projects: [] }, next: null };
+  },
+  async recentTodos({ args }) { void args; return { data: { todos: [] }, next: null }; },
+  async flaggedTodos({ args }) { const once: boolean = args.once; const refresh: string = args.refresh; void [once, refresh]; return { data: { todos: [] }, next: null }; },
+  async clientTodos({ args }) { const client: string = args.client; void client; return { data: { todos: [] }, next: null }; },
+};
+const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => ({ data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState });
+const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
+declare const database: Database<Tx>;
+const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
+void [loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];

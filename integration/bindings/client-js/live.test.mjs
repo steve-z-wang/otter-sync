@@ -537,3 +537,20 @@ test('a receipt record the client cannot apply reaches onError and the batch sti
   assert.equal(pushes,1,'the batch completed; the receipt was not re-requested');
  }finally{await fixture.close();for(const s of ws.clients)s.terminate();await new Promise(r=>ws.close(r));await new Promise(r=>server.close(r));}
 });
+
+// Every runtime route posts to its own path; a route the transport does not
+// know is refused rather than posted to another one (#173).
+test('the HTTP transport maps every runtime route and refuses an unknown one', async () => {
+  const { createServer } = await import('node:http');
+  const paths = [];
+  const server = createServer((req, res) => { paths.push(req.url); req.resume(); req.on('end', () => res.end('{}')); });
+  server.listen(0); await once(server, 'listening');
+  try {
+    const live = createServerConnection({url:`http://127.0.0.1:${server.address().port}`,token:'secret'});
+    for (const route of ['push','pull','action','load']) assert.equal(await timeout(live.push(route, '{}')), '{}');
+    assert.deepEqual(paths, ['/sync/mutations','/sync/pull','/sync/actions','/sync/loads']);
+    await assert.rejects(live.push('nope', '{}'), /unknown route nope/);
+    await assert.rejects(live.push('toString', '{}'), /unknown route toString/);
+    assert.equal(paths.length, 4, 'nothing was posted for an unknown route');
+  } finally { await new Promise(r => server.close(r)); }
+});

@@ -45,6 +45,16 @@ pub(super) enum EffectKind {
         request_id: String,
         key: String,
     },
+    /// The HTTP request of the Load worker's `batch`.
+    LoadHttp {
+        batch: u64,
+    },
+    /// The attempt deadline of that request.
+    LoadDeadline {
+        batch: u64,
+    },
+    /// The earliest backoff of a Load page passes.
+    LoadTimer,
 }
 
 /// An effect result that needs local work, run as one unit by `step`.
@@ -77,6 +87,9 @@ pub(super) enum Waiter {
     },
     /// The direct call that failed with 401: sent again once, or failed.
     Direct { request_id: String },
+    /// The Load batch that failed with 401: sent again once, backed off, or
+    /// failed as unauthorized when the refresh was refused.
+    Load { batch: u64 },
 }
 
 /// The HTTP answer's body, or why the request failed. A success value is
@@ -189,6 +202,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     EffectKind::Prerequisite { request_id, key } => {
                         self.prerequisite_result(request_id, key, outcome)
                     }
+                    EffectKind::LoadHttp { batch } => self.load_result(batch, outcome),
+                    EffectKind::LoadDeadline { batch } => self.load_deadline(batch),
+                    EffectKind::LoadTimer => self.load_timer_fired(&effect_id),
                     EffectKind::Callback | EffectKind::Socket { .. } => {}
                 }
             }
@@ -377,6 +393,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     self.fail_call(&request_id, direct::Failure::Transport(refused.clone()))
                 }
             },
+            Waiter::Load { batch } => self.load_refreshed(batch, refused),
         }
     }
 }

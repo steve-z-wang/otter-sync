@@ -1,7 +1,8 @@
 import * as actionBackend from "./backend.ts";
-import type { Call, GeneratedClient } from "./client.ts";
+import type { Call, GeneratedClient, Load, LoadOptions } from "./client.ts";
 import type { AddTodoInput, AddTodoOutput, EditAndReadOutput, FindTodosOutput, Note, NoteCreate, Todo, TodoIdentity, TodoUpdate, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddNotesInput as AddNotesHandlerInput, AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, EditAndReadHandlerOutput, EditHandlerOutput, FindTodosHandlerOutput, LinkHandlerOutput, PingHandlerOutput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddNotesInput as AddNotesHandlerInput, AddTodoHandlerOutput, AddTodoV1Input, AddTodoV1HandlerOutput, EditAndReadHandlerOutput, EditHandlerOutput, FindTodosHandlerOutput, LinkHandlerOutput, LoadContext, Loaders, Loads, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { Database } from '../../packages/server/index.mts';
 
 declare const client: GeneratedClient;
 declare const concrete: GeneratedClient;
@@ -186,3 +187,99 @@ client.mutations.call.removeTodo({ todo: { id: 'A' } }).then(result => result.to
 // @ts-expect-error The client result is the loaded record, not an identity.
 const identityResult: EditAndReadOutput = { todo: { id: 'B' } };
 void [missing, recordOutput, editResult, identityResult];
+
+// Loads (#173): typed backend handlers.
+declare const loadContext: LoadContext<{}>;
+// @ts-expect-error A Load context has no membership writer.
+loadContext.channel('todos');
+// @ts-expect-error A Load context has no change declaration.
+loadContext.touch.todo({ id: 'x' });
+// @ts-expect-error A Load handler cannot use Mutation declarations.
+const effectfulLoad: Loads<{}>['projectTodos'] = async ({ ctx }) => { ctx.touch.todo({ id: 'x' }); return { data: { todos: [], projects: [] }, next: null }; };
+// @ts-expect-error Load args keep their declared types.
+const wrongArgType: Loads<{}>['projectTodos'] = async ({ args }) => { const n: number = args.projectId; void n; return { data: { todos: [], projects: [] }, next: null }; };
+// @ts-expect-error A Load has only its declared args.
+const undeclaredArg: Loads<{}>['projectTodos'] = async ({ args }) => { void args.cursor; return { data: { todos: [], projects: [] }, next: null }; };
+// @ts-expect-error A Load takes no Model operand.
+const operandArgs: ProjectTodosInput = { projectId: 'p', status: null, tags: [], todo: { id: 'x', title: 'T', state: 'open', note: null } };
+// @ts-expect-error A nullable Load arg is still present.
+const missingNullableArg: ProjectTodosInput = { projectId: 'p', tags: [] };
+// @ts-expect-error A Load page answers identities, not full Model records.
+const fullPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 'x', title: 'T', state: 'open', note: null }], projects: [] }, next: null };
+// @ts-expect-error Load outputs are identity objects, not bare keys.
+const barePage: ProjectTodosHandlerOutput = { data: { todos: ['x'], projects: [] }, next: null };
+// @ts-expect-error A Load output is a list, never a single identity.
+const singlePage: ProjectTodosHandlerOutput = { data: { todos: { id: 'x' }, projects: [] }, next: null };
+// @ts-expect-error Every declared output is present.
+const partialPage: ProjectTodosHandlerOutput = { data: { todos: [] }, next: null };
+// @ts-expect-error A Load declares no scalar output.
+const scalarPage: ProjectTodosHandlerOutput = { data: { todos: [], projects: [], count: 1 }, next: null };
+// @ts-expect-error A composite identity names every component.
+const partialComposite: ProjectTodosHandlerOutput = { data: { todos: [], projects: [{ id: 'p' }] }, next: null };
+// @ts-expect-error A Project identity cannot replace a Todo identity.
+const wrongPageModel: ProjectTodosHandlerOutput = { data: { todos: [{ tenantId: 't', id: 'x' }], projects: [] }, next: null };
+// @ts-expect-error next is required: null completes the Load.
+const noNext: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] } };
+// @ts-expect-error A continuation wraps its state.
+const bareState: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: 'cursor' };
+// @ts-expect-error The continuation wrapper has only state.
+const extraWrapper: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: { state: 1, extra: true } };
+// @ts-expect-error Continuation state is portable JSON: no Date.
+const dateState: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: { state: new Date() } };
+// @ts-expect-error Continuation state is portable JSON: no undefined.
+const undefinedState: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: { state: { cursor: undefined } } };
+// @ts-expect-error Continuation state is portable JSON: no BigInt.
+const bigintState: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: { state: 1n } };
+// @ts-expect-error Continuation state is portable JSON: no functions.
+const functionState: ProjectTodosHandlerOutput = { data: { todos: [], projects: [] }, next: { state: () => 1 } };
+// @ts-expect-error A contextual handler answer still types its continuation.
+const dateStateHandler: Loads<{}>['projectTodos'] = async () => ({ data: { todos: [], projects: [] }, next: { state: new Date() } });
+// @ts-expect-error A Load is registered under loads, not queries.
+const loadInQueries: Pick<Queries<{}>, 'projectTodos'> = {};
+// @ts-expect-error A Query is not registered under loads.
+const queryInLoads: Pick<Loads<{}>, 'findTodos'> = {};
+// @ts-expect-error A v1-only Load retains no v2.
+const loadV2: Loads<{}> = { projectTodos: { async v2() { return { data: { todos: [], projects: [] }, next: null }; } } };
+// @ts-expect-error Every Load handler is required.
+const noLoads: Loads<{}> = {};
+declare const database: Database<{}>;
+declare const everyMutation: Mutations<{}>;
+declare const everyQuery: Queries<{}>;
+declare const everyLoader: Loaders<{}>;
+// @ts-expect-error A schema that retains Loads requires the loads map.
+const withoutLoads = () => actionBackend.createBackend({ database, authenticate: () => 'alice', mutations: everyMutation, queries: everyQuery, loaders: everyLoader });
+void [effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
+
+// Client Loads (#173): typed business args, call-site options apart from them.
+declare const job: Load<'ProjectTodos'>;
+// @ts-expect-error Load args keep their declared types.
+client.loads.projectTodos({ projectId: 1, status: null, tags: [] });
+// @ts-expect-error Every Load arg is present, a nullable one too.
+client.loads.projectTodos({ projectId: 'p', tags: [] });
+// @ts-expect-error A Load has only its declared args.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [], cursor: 'x' });
+// @ts-expect-error Options are never business args.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [], once: true });
+// @ts-expect-error once is a Boolean.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [] }, { once: 'yes' });
+// @ts-expect-error A Load stores every declared Model: there is no store option.
+client.loads.projectTodos({ projectId: 'p', status: null, tags: [] }, { store: false });
+// @ts-expect-error LoadOptions holds only once and refresh.
+const cursorOption: LoadOptions = { once: true, cursor: 'x' };
+// @ts-expect-error A no-argument Load still takes its (empty) args object.
+client.loads.recentTodos();
+// @ts-expect-error A Load has no aggregate business result.
+job.wait().then(result => result.todos);
+// @ts-expect-error A handle exposes no result or cursor.
+void job.result;
+// @ts-expect-error The status name is the schema operation name.
+const otherName: 'RecentTodos' = job.status.name;
+// @ts-expect-error Invalidation takes only business args.
+client.loads.invalidate.projectTodos({ projectId: 'p', status: null, tags: [] }, { once: true });
+// @ts-expect-error list takes its limit as a number.
+client.loads.list({ limit: '10' });
+// @ts-expect-error A Load is started under loads, not queries.
+client.queries.projectTodos;
+// @ts-expect-error A Mutation is not a Load.
+client.loads.addTodo;
+void [cursorOption, otherName];

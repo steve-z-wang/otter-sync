@@ -2,6 +2,7 @@ import 'actions.dart';
 import 'bridge.dart';
 import 'connection.dart';
 import 'live.dart';
+import 'loads.dart';
 import 'port.dart';
 import 'subscriptions.dart';
 import 'dart:async';
@@ -536,6 +537,34 @@ class Client implements WritePort, MutatePort {
         : StateError(message);
   }
 
+  /// Load handles; the runtime owns every job and publishes its status.
+  late final Loads _loads = Loads(_bridge, () => _inTransaction);
+
+  /// Accept a native Load durably
+  /// ([#173](https://github.com/zanminwang/axton/issues/173)) and answer its
+  /// handle after the local commit; it needs no connection. Rust persists,
+  /// schedules and applies every page; [once] and [refresh] are call-site
+  /// controls, never sent to the backend.
+  Future<Load> startLoad(
+    String name,
+    int version,
+    Map<String, dynamic> args, {
+    bool once = false,
+    bool refresh = false,
+  }) => _loads.start(name, version, args, once: once, refresh: refresh);
+
+  /// Reattach to a job of this replica: a fresh handle, or `null`.
+  Future<Load?> getLoad(String id) => _loads.get(id);
+
+  /// The most recently started jobs, newest first; [limit] is 1..100.
+  Future<List<LoadStatus>> listLoads({int limit = 50}) =>
+      _loads.list(limit: limit);
+
+  /// Remove the once mappings of one Load argument set, offline, in a local
+  /// commit.
+  Future<void> invalidateLoad(String name, Map<String, dynamic> args) =>
+      _loads.invalidate(name, args);
+
   /// Register durable intent to follow [scope] and answer with its handle. It
   /// resolves when the local transaction commits: it awaits no
   /// authentication, connection or acknowledgement, and the same Scope answers
@@ -640,7 +669,10 @@ class Client implements WritePort, MutatePort {
 
   /// Leave an incompatible database behind and open a fresh file for the
   /// schema this client asked for. Refused while unsent mutations remain
-  /// unless [discardPending]; the report says what the old file keeps.
+  /// unless [discardPending]; the report says what the old file keeps:
+  /// `oldFile`, `newFile`, `reason`, `leftPending`, `leftDirect`,
+  /// `abandonedCalls` and `abandonedLoads`, the IDs of the Load jobs left
+  /// behind, whose handles and waiters ended with `load.schema_changed`.
   Future<Map<String, dynamic>> rebuild({bool discardPending = false}) async {
     final report =
         (await _task({'kind': 'rebuild', 'discardPending': discardPending}))

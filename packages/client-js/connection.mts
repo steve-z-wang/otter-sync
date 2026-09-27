@@ -3,11 +3,12 @@ import type { RecordValue } from "./values.mts";
 
 /**
  * The backend route of one HTTP effect: `push` posts to `/sync/mutations`,
- * `pull` to `/sync/pull`, `action` to `/sync/actions` and `fetch` (one Model
- * Fetch) to `/sync/fetch`.
+ * `pull` to `/sync/pull`, `action` to `/sync/actions`, `fetch` (one Model
+ * Fetch) to `/sync/fetch` and `load` (a batch of native Load pages) to
+ * `/sync/loads`.
  */
-export type HttpRoute = "push" | "pull" | "action" | "fetch";
-/** One HTTP POST: `kind` is the route. Errors carry `status` when the server answered. */
+export type HttpRoute = "push" | "pull" | "action" | "fetch" | "load";
+/** One HTTP POST: `kind` is the route; an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
   kind: HttpRoute,
   body: string,

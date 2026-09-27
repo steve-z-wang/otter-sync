@@ -29,11 +29,12 @@ export type BridgeEventType =
   "callCompleted" | "observerChanged" | "report" | "cancelEffect";
 
 /**
- * One observer's state as the runtime published it: a subscription status or
- * a watch's rows. `closed` marks the last one; nothing follows it.
+ * One observer's state as the runtime published it: a subscription status, a
+ * watch's rows or a Load job's status. `closed` marks the last one; nothing
+ * follows it.
  */
 export type ObserverSnapshot = {
-  kind: "subscription" | "watch";
+  kind: "subscription" | "watch" | "load";
   closed?: true;
   [field: string]: any;
 };

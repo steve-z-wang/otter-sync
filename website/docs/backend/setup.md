@@ -4,12 +4,13 @@ This TypeScript SDK embeds the shared Rust server runtime in your Node applicati
 
 `index.mts` runs on Node with TypeScript support (Node 22.18+), or can be compiled with TypeScript. Build the local native module with `node bindings/node/build.mjs`. Supply an injected `native` implementation when packaging the native artifact elsewhere.
 
-Given a schema with `Todo`, a Mutation `AddTodo` and a Query `FindTodos`, the compiler emits `generated/backend.ts`, which already binds the schema. Your application implements the generated `Mutations<Tx>`, `Queries<Tx>` and `Loaders<Tx>` contracts:
+Given a schema with `Todo`, a Mutation `AddTodo`, a Query `FindTodos` and a Load `ProjectTodos`, the compiler emits `generated/backend.ts`, which already binds the schema. Your application implements the generated `Mutations<Tx>`, `Queries<Tx>`, `Loaders<Tx>` and `Loads<Tx>` contracts:
 
 ```ts title="action-contract"
 import { createBackend, devAuth } from './generated/backend.ts';
 import { mutations, queries } from './handlers.ts';
 import { loaders } from './loaders.ts';
+import { loads } from './loads.ts';
 
 const backend = createBackend<Tx>({
   database, // a shim such as prisma(db); Tx is its transaction type
@@ -17,6 +18,7 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
+  loads,
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);
@@ -24,7 +26,7 @@ console.log(server.url);
 
 The generated `createBackend` needs no `config` option: the schema is already bound. The runtime's own `createBackend` (`packages/server/index.mts`) still takes `config` explicitly, for callers that build the schema themselves.
 
-`mutations`, `queries` and `loaders` are application modules typed against the generated interfaces; a schema without Queries omits `queries`, and one without Mutations omits `mutations`. The application enforces write and read permissions. Authorization, unique constraints, child deletion and client identity are the application's responsibility ([What your backend owns](api.md#what-your-backend-owns)).
+`mutations`, `queries`, `loaders` and `loads` are application modules typed against the generated interfaces; a schema without Queries omits `queries`, one without Mutations omits `mutations`, and one without Loads omits `loads` ([Load handlers](api.md#load-handlers)). The application enforces write and read permissions. Authorization, unique constraints, child deletion and client identity are the application's responsibility ([What your backend owns](api.md#what-your-backend-owns)).
 
 ## Call objects
 
@@ -78,6 +80,6 @@ A record that cannot be read fails alone ([#95](https://github.com/zanminwang/ax
 
 Run `integration/persistence/server/run.sh` for the disposable PostgreSQL/Prisma integration suite. Its database is created, used, and destroyed by the runner.
 
-`backend.listen({ port, host? })` starts a Node HTTP+WebSocket server that serves durable `/sync/mutations`, direct `/sync/actions`, `/sync/fetch`, `/sync/pull`, and `/sync/live` on one port, and returns `{ url, close() }`. It resolves once the listener is bound.
+`backend.listen({ port, host? })` starts a Node HTTP+WebSocket server that serves durable `/sync/mutations`, direct `/sync/actions`, `/sync/fetch`, `/sync/loads`, `/sync/pull`, and `/sync/live` on one port, and returns `{ url, close() }`. It resolves once the listener is bound.
 
 For every option, callback, return value and failure mode, see the [backend interface reference](api.md). For process placement, the reverse-proxy configuration and trust boundaries, see [Deploy the backend](deployment.md).

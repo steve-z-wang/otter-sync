@@ -28,6 +28,8 @@ Code: [core/lib.rs](../../../../crates/core/src/lib.rs) (`canonical_json`), [cor
 
 Three limits are shared by both sides but not negotiated on the wire: 20 mutations and 256 KiB per push, 50 changes per channel in a pull page. They are defined once, in `limits` of [core/protocol.rs](../../../../crates/core/src/protocol.rs), and every consumer reads them from there: the push request decoder and the client's [batching](../client/engine/push/batching.md), the per-channel continuation rule (`CursorRange::continues`) and the [server pull](../server/engine/pull.md) scan. A page with more than 50 changes per named channel is refused by `PullPage::validate`. Making the limits configurable is [#11](https://github.com/zanminwang/axton/issues/11).
 
+Native Load pages have their own item, identity, state and byte bounds, owned by [Protocol / Loads](loads.md#6-runtime-view).
+
 Host resource limits are not protocol rules and stay with each transport: 1 MiB HTTP bodies and WebSocket frames on the server, 8 MiB WebSocket frames and the page buffers on the clients ([Client transport](../client/connection/transport.md), [Server transport](../server/connection/transport.md)).
 
 [fixtures/protocol/live-messages.json](../../../../fixtures/protocol/live-messages.json) records the limit values and the subscription message cases ([Subscriptions](subscriptions.md)).

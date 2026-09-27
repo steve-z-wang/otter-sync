@@ -3,8 +3,8 @@
 //! [`Validated`]: the same input renders the same bytes.
 pub use crate::emit::{backend_typescript, client_typescript, dart, typescript};
 use crate::validate::{
-    Action, ActionInput, ActionOutputSource, ActionOutputType, Deprecation, FieldType, Mutation,
-    Validated,
+    Action, ActionInput, ActionOutput, ActionOutputSource, ActionOutputType, Deprecation,
+    FieldType, Load, Mutation, Validated,
 };
 use serde_json::{Value, json};
 
@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 /// prerequisites}`. `schema` is [`schema`]; `mutations` are the mutations as
 /// declared, which the CLI replaces with every retained version.
 pub fn descriptors(v: &Validated) -> Value {
-    json!({
+    let mut descriptors = json!({
         "schema": schema(v),
         "mutations": mutations(v),
         "actions": v.actions.iter().map(|a| action(v, a)).collect::<Vec<_>>(),
@@ -30,7 +30,12 @@ pub fn descriptors(v: &Validated) -> Value {
             Deprecation::Field { model, field, reason } => json!({"kind":"field","model":model,"field":field,"reason":reason}),
             Deprecation::Slot { mutation, slot, reason } => json!({"kind":"slot","mutation":mutation,"slot":slot,"reason":reason}),
         }).collect::<Vec<_>>(),
-    })
+    });
+    // Present only beside a declared Load, so other schemas keep their bytes.
+    if !v.loads.is_empty() {
+        descriptors["loads"] = loads(v);
+    }
+    descriptors
 }
 
 /// The client descriptor (`schema.json` before the CLI substitutes retained
@@ -64,7 +69,7 @@ pub fn schema(v: &Validated) -> Value {
         .iter()
         .map(|e| json!({"name":e.name,"values":e.values}))
         .collect();
-    json!({
+    let mut schema = json!({
         "models": models,
         "enums": enums,
         "actions": v.actions.iter().map(|a| action(v, a)).collect::<Vec<_>>(),
@@ -82,7 +87,11 @@ pub fn schema(v: &Validated) -> Value {
         "requirements": requirements(v),
         "prerequisites": prerequisites(v),
         "clientPolicies": mutations(v),
-    })
+    });
+    if !v.loads.is_empty() {
+        schema["loads"] = loads(v);
+    }
+    schema
 }
 
 pub(crate) fn field_type(ty: &FieldType) -> Value {
@@ -98,8 +107,47 @@ fn mutations(v: &Validated) -> Vec<Value> {
 }
 
 fn action(v: &Validated, a: &Action) -> Value {
-    let inputs: Vec<Value> = a
+    let inputs = inputs(&a.inputs);
+    let outputs = outputs(v, &a.outputs);
+    let sequence = a.sequence.as_ref().map(|s| json!({"after":s.after.iter().map(|call| json!({
+        "name":call.mutation,
+        "arguments":call.bindings.iter().map(|b| (b.slot.clone(), Value::from(b.path.join(".")))).collect::<serde_json::Map<_,_>>(),
+    })).collect::<Vec<_>>() }));
+    json!({"name":a.name,"version":a.version,"kind":a.kind,"inputs":inputs,"outputs":outputs,"sequence":sequence})
+}
+
+/// A Load descriptor: its value inputs, the retained enum snapshot they read
+/// against, and Model-list outputs. Never a `kind`, `sequence` or call option.
+fn load(v: &Validated, l: &Load) -> Value {
+    let used: std::collections::BTreeSet<&str> = l
         .inputs
+        .iter()
+        .filter_map(|input| match input {
+            ActionInput::Value {
+                ty: FieldType::Enum(name),
+                ..
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let enums: Vec<Value> = v
+        .enums
+        .iter()
+        .filter(|e| used.contains(e.name.as_str()))
+        .map(|e| json!({"name":e.name,"values":e.values}))
+        .collect();
+    json!({
+        "name":l.name,"version":l.version,
+        "inputs":inputs(&l.inputs),"outputs":outputs(v, &l.outputs),
+        "input":{"models":[],"enums":enums},"outputEnums":[],
+    })
+}
+fn loads(v: &Validated) -> Value {
+    json!(v.loads.iter().map(|l| load(v, l)).collect::<Vec<_>>())
+}
+
+fn inputs(inputs: &[ActionInput]) -> Vec<Value> {
+    inputs
         .iter()
         .map(|input| match input {
             ActionInput::Value {
@@ -132,8 +180,11 @@ fn action(v: &Validated, a: &Action) -> Value {
                 value
             }
         })
-        .collect();
-    let outputs: Vec<Value> = a.outputs.iter().map(|output| {
+        .collect()
+}
+
+fn outputs(v: &Validated, outputs: &[ActionOutput]) -> Vec<Value> {
+    outputs.iter().map(|output| {
         let (kind, ty, model) = match &output.ty {
             ActionOutputType::Value(ty) => ("value", Some(field_type(ty)), None),
             ActionOutputType::Model(name) => ("model", None, Some(name)),
@@ -156,12 +207,7 @@ fn action(v: &Validated, a: &Action) -> Value {
             value["handlerType"] = json!({"kind":"identity","model":name,"fields":fields});
         }
         value
-    }).collect();
-    let sequence = a.sequence.as_ref().map(|s| json!({"after":s.after.iter().map(|call| json!({
-        "name":call.mutation,
-        "arguments":call.bindings.iter().map(|b| (b.slot.clone(), Value::from(b.path.join(".")))).collect::<serde_json::Map<_,_>>(),
-    })).collect::<Vec<_>>() }));
-    json!({"name":a.name,"version":a.version,"kind":a.kind,"inputs":inputs,"outputs":outputs,"sequence":sequence})
+    }).collect()
 }
 
 fn mutation(m: &Mutation) -> Value {

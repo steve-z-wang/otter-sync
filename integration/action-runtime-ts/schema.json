@@ -744,6 +744,95 @@
       ]
     }
   ],
+  "loads": [
+    {
+      "input": {
+        "enums": [
+          {
+            "name": "Status",
+            "values": [
+              "open",
+              "closed"
+            ]
+          }
+        ],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "since",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        },
+        {
+          "cardinality": "list",
+          "kind": "value",
+          "list": true,
+          "name": "statuses",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "enum",
+            "name": "Status"
+          }
+        }
+      ],
+      "name": "TodoPages",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Todo"
+          },
+          "kind": "model",
+          "model": "Todo",
+          "modelReadVersion": 1,
+          "name": "todos",
+          "source": "handlerIdentity"
+        },
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "at",
+                "type": {
+                  "kind": "scalar",
+                  "name": "dateTime"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Moment"
+          },
+          "kind": "model",
+          "model": "Moment",
+          "modelReadVersion": 1,
+          "name": "moments",
+          "source": "handlerIdentity"
+        }
+      ],
+      "version": 1
+    }
+  ],
   "models": [
     {
       "fields": [

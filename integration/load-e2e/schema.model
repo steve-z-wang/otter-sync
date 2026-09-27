@@ -1,0 +1,31 @@
+// Native Load end-to-end fixture (#173): real HTTP, PostgreSQL and native
+// SQLite clients in TypeScript and Dart, generated from this one schema.
+model Item {
+ id String
+ project String
+ title String
+ @@id(id)
+}
+model Tag {
+ id String
+ label String
+ @@id(id)
+}
+// Written only by the clients' onStore hooks, inside the page transaction:
+// one row per stored Item identity counting the hook runs that committed.
+model Seen {
+ id String
+ hits Int
+ @@id(id)
+}
+// Item writes join the Item's project Channel, so later changes reach live
+// subscribers.
+mutation AddItem(item Item.create)
+mutation RenameItem(item Item.update<title>)
+// Unrelated to any Load: it must settle while a Load batch is delayed.
+mutation Ping(note String)
+// Two independent Loads. ProjectItems pages a project's Items in id order
+// with a structured keyset state and names the project's Tags; Catalog uses
+// a legitimate null state on its second request.
+load ProjectItems(project String) { items Item[] tags Tag[] }
+load Catalog(shelf String?) { items Item[] }

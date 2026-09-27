@@ -34,6 +34,8 @@ export type RebuildReport = {
   leftPending: number;
   leftDirect: number;
   abandonedCalls: { callId: string; frozen: boolean }[];
+  /** The Load jobs of the replica left behind; their handles and waiters ended with `load.schema_changed`. */
+  abandonedLoads: string[];
 };
 /** The open-time schema check: whether this open rebuilt, or is waiting to. */
 export type SchemaState = {
@@ -108,6 +110,19 @@ import {
   type CallOptions,
   type QueryOptions,
 } from "./actions.mts";
+import {
+  Loads,
+  type Load,
+  type LoadOptions,
+  type LoadStatus,
+} from "./loads.mts";
+export {
+  LoadError,
+  type Load,
+  type LoadOptions,
+  type LoadPhase,
+  type LoadStatus,
+} from "./loads.mts";
 
 /**
  * The native command field for an Action's store option, beside its args.
@@ -285,12 +300,30 @@ export function createClient<
     #activePublicTx: Tx | undefined;
     /** Subscription handles by persistent identity; the runtime publishes their status. */
     readonly #subscriptions: Subscriptions;
+    /** Load handles; the runtime owns every job and publishes its status. */
+    readonly #loads: Loads;
     readonly clientId: string;
     private constructor(bridge: Bridge, id: string) {
       this.#bridge = bridge;
       this.clientId = id;
       this.#effects = new Effects(bridge);
       this.#subscriptions = new Subscriptions(bridge, reportCallbackError);
+      this.#loads = new Loads(
+        {
+          task: (command, hooks, writes) => {
+            try {
+              this.#guard(writes);
+            } catch (error) {
+              return Promise.reject(error);
+            }
+            return bridge.task(command, hooks);
+          },
+          release: (command) => bridge.task(command),
+          observe: (observerId, listener) =>
+            bridge.observe(observerId, listener),
+        },
+        reportCallbackError,
+      );
       // Every call outcome the runtime committed - receipts, discards, direct
       // calls, once flights and rebuild abandonments - after the commit that
       // decided it. This is the only path completions take.
@@ -713,6 +746,32 @@ export function createClient<
     }
     subscribe(channel: string): Promise<Subscription> {
       return this.subscribeScope(channel);
+    }
+    /**
+     * Accept a native Load durably ([#173](https://github.com/zanminwang/axton/issues/173))
+     * and answer its handle after the local commit; it needs no connection.
+     * Rust persists, schedules and applies every page; `options` are the
+     * call-site once controls, never sent to the backend.
+     */
+    startLoad<Name extends string>(
+      name: Name,
+      version: number,
+      args: object,
+      options?: LoadOptions,
+    ): Promise<Load<Name>> {
+      return this.#loads.start(name, version, args, options);
+    }
+    /** Reattach to a job of this replica: a fresh handle, or `null`. */
+    getLoad(id: string): Promise<Load | null> {
+      return this.#loads.get(id);
+    }
+    /** The most recently started jobs, newest first; `limit` 1..100, 50 by default. */
+    listLoads(options?: { limit?: number }): Promise<LoadStatus[]> {
+      return this.#loads.list(options);
+    }
+    /** Remove the once mappings of one Load argument set, offline, in a local commit. */
+    invalidateLoad(name: string, args: object): Promise<void> {
+      return this.#loads.invalidate(name, args);
     }
     /** Remove whatever registration this Scope name has; its handle stops. */
     async unsubscribe(channel: string): Promise<void> {

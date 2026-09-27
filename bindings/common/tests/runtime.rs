@@ -625,3 +625,59 @@ fn ffi_detach_is_safe_from_any_thread_repeatedly_and_for_unknown_ids() {
     );
     assert!(actor::wait_closed(id, LOST_WAKE), "the actor never ended");
 }
+
+/// A native Load goes through the carrier like any other runtime work: the
+/// start answers with its handle, the page request is an `http` effect on the
+/// `load` route, and the wait completes only after the page's commit
+/// ([#173](https://github.com/zanminwang/axton/issues/173)).
+#[test]
+fn a_native_load_runs_through_the_carrier() {
+    let mut schema = schema();
+    let fields = schema["models"][0]["fields"].clone();
+    schema["models"][0]["version"] = json!(1);
+    schema["resultModels"] =
+        json!([{"name":"Entry","version":1,"identity":["id"],"fields":fields,"enums":[]}]);
+    schema["loads"] = json!([{"name":"Recent","version":1,"inputs":[],
+        "outputs":[{"name":"entries","kind":"model","cardinality":"list","source":"handlerIdentity",
+            "model":"Entry","modelReadVersion":1,
+            "handlerType":{"kind":"identity","model":"Entry","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
+        "input":{"models":[],"enums":[]},"outputEnums":[]}]);
+    let dir = tempfile::tempdir().unwrap();
+    let (sink, wakes) = channel_sink();
+    let id = actor::open(
+        json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema}),
+        sink,
+    )
+    .unwrap();
+    let mut carrier = Carrier {
+        id,
+        wakes,
+        seen: vec![],
+    };
+    assert_eq!(carrier.completed("open")["ok"], true);
+    carrier.task(
+        "start",
+        json!({"kind":"loadStart","name":"Recent","version":1,"args":{}}),
+    );
+    let started = carrier.completed("start");
+    let load = started["value"]["loadId"].as_str().unwrap().to_string();
+    assert_eq!(started["value"]["status"]["phase"], "waiting");
+    carrier.task("wait", json!({"kind":"loadWait","loadId":load}));
+    carrier.task("connect", json!({"kind":"connect"}));
+    carrier.completed("connect");
+    let effect = carrier.until(|e| e["type"] == "effect" && e["operation"]["route"] == "load");
+    let body: Value = serde_json::from_str(effect["operation"]["body"].as_str().unwrap()).unwrap();
+    let intent = &body["loads"][0];
+    assert_eq!(intent["loadId"], load.as_str());
+    let answer = json!({"loads":[{"loadId":intent["loadId"],"callId":intent["callId"],
+        "outcome":{"status":"succeeded","data":{"entries":[{"id":"a"}]},"next":null},
+        "records":[{"model":"Entry","identity":{"id":"a"},"stamp":1,"state":{"text":"A","note":null}}]}]});
+    carrier.submit(json!({"type":"effectResult","effectId":effect["effectId"],
+        "outcome":{"ok":true,"value":{"status":200,"body":answer.to_string()}}}));
+    assert_eq!(carrier.completed("wait")["ok"], true);
+    carrier.task("read", read("a"));
+    assert_eq!(carrier.completed("read")["value"]["text"], "A");
+    carrier.submit(json!({"type":"close"}));
+    carrier.until(|e| e["type"] == "runtimeClosed");
+    actor::detach(id);
+}

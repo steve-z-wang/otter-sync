@@ -1,9 +1,9 @@
 //! The host operation contract: the shared fixture round-trips through the
 //! Rust types, and a malformed request or response is refused per operation.
 use axton_server::host::{
-    Acknowledged, Claimed, ClaimedCall, Handled, HandledAction, Head, HostRequest, Invalidation,
-    Loaded, Locked, MembershipIntent, Memberships, OPERATIONS, Published, RecordRef, Scanned,
-    Stamped,
+    Acknowledged, Claimed, ClaimedCall, Handled, HandledAction, HandledLoad, Head, HostRequest,
+    Invalidation, Loaded, Locked, MembershipIntent, Memberships, OPERATIONS, Published, RecordRef,
+    Scanned, Stamped, Stamps,
 };
 use serde_json::{Value, json};
 
@@ -33,8 +33,10 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
         "scan" => round!(Scanned),
         "handle" => round!(Handled),
         "handleAction" => round!(HandledAction),
+        "handleLoad" => round!(HandledLoad),
         "load" => round!(Loaded),
         "advanceStamp" | "ensureStamp" => round!(Stamped),
+        "readStamps" => round!(Stamps),
         "publish" => round!(Published),
         "lockRecord" => round!(Locked),
         "memberships" => round!(Memberships),
@@ -202,7 +204,7 @@ fn a_claimed_call_always_names_its_response_even_when_uncompleted() {
 #[test]
 fn a_response_of_the_wrong_type_is_refused_per_operation() {
     // One clearly wrong answer per operation, in the shape a host might drift into.
-    let wrong: [(&str, Value); 17] = [
+    let wrong: [(&str, Value); 19] = [
         ("claim", json!({"clientId":"c","owner":"o","sequence":-1})),
         ("saveReceipt", json!({"saved": true})),
         (
@@ -216,9 +218,11 @@ fn a_response_of_the_wrong_type_is_refused_per_operation() {
         ("rollback", json!({})),
         ("release", json!({})),
         ("handle", json!({"channel": "shared"})),
+        ("handleLoad", json!({"next": null})),
         ("load", json!({"0": null})),
         ("advanceStamp", json!("4")),
         ("ensureStamp", json!(0)),
+        ("readStamps", json!([1, 0])),
         ("publish", json!({"cursor": 0, "stamp": 1})),
         ("lockRecord", json!(0)),
         ("memberships", json!(["shared", "shared"])),
@@ -603,4 +607,70 @@ fn memberships_are_unique_valid_channels_held_in_canonical_order() {
         let error = decode(bad.clone()).unwrap_err();
         assert!(error.contains(detail), "{bad}: {error}");
     }
+}
+
+#[test]
+fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
+    let decode = |value: Value| serde_json::from_value::<HandledLoad>(value);
+    assert_eq!(
+        decode(json!({"data": {"tasks": []}, "next": {"state": null}})).unwrap(),
+        HandledLoad::Settled {
+            data: json!({"tasks": []}),
+            next: Some(json!({"state": null})),
+        },
+        "a null state is a continuation, not the end"
+    );
+    // `data` and `next` are carried as answered: the engine judges them, so
+    // a missing or malformed wrapper is the page's `load.invalid_continuation`
+    // and malformed data its `handler.invalid`, whatever the host bridge.
+    for (answer, next) in [
+        (json!({"data": {}}), None),
+        (json!({"data": {}, "next": {}}), Some(json!({}))),
+        (json!({"data": {}, "next": 1}), Some(json!(1))),
+        (json!({"data": [], "next": null}), Some(Value::Null)),
+    ] {
+        let decoded = decode(answer.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            HandledLoad::Settled {
+                data: answer["data"].clone(),
+                next
+            }
+        );
+    }
+    for refused in [
+        json!({"data": {}, "next": null, "changes": []}),
+        json!({"data": {}, "next": null, "memberships": []}),
+        json!({"data": {}, "next": null, "outputs": {}}),
+        json!({"next": null}),
+        json!({"data": {}, "next": null, "rejection": "tasks.refused"}),
+        json!({"rejection": "Not A Code"}),
+        json!({"error": 7}),
+        json!({}),
+    ] {
+        assert!(decode(refused.clone()).is_err(), "accepted {refused}");
+    }
+    let request: HostRequest =
+        serde_json::from_value(json!({"op":"handleLoad","name":"Tasks","version":1,
+        "arguments":{},"continuation":null,"owner":"alice","callId":"c","loadId":"l"}))
+        .unwrap();
+    assert!(matches!(
+        request,
+        HostRequest::HandleLoad {
+            continuation: None,
+            ..
+        }
+    ));
+    let error = serde_json::from_value::<HandledLoad>(json!({"next": null}))
+        .map_err(|error| request.invalid_response(error))
+        .unwrap_err();
+    assert_eq!(error.code, axton_server::code::HANDLER_INVALID);
+    let stamps = HostRequest::ReadStamps {
+        model: "Task".into(),
+        identity_keys: vec![],
+    };
+    assert_eq!(
+        stamps.invalid_response("x").code,
+        axton_server::code::HOST_INVALID
+    );
 }

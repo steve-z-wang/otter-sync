@@ -17,6 +17,9 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.mutations.call.<name>` | Run a Mutation directly and await its final result | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>`, `client.queries.enqueue.<name>` | Run a Query directly, or queue it durably and receive a `Call<Output>` | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>(args, { once, refresh })`, `client.queries.invalidate.<name>` | Reuse, refresh or discard the saved complete result of a direct Query | [Reuse a Query result](frontend/client-api.md#reuse-a-query-result-with-once) |
+| `client.loads.<name>(args, { once, refresh })`, `Load`, `LoadStatus`, `LoadPhase`, `LoadOptions` | Start a durable paged Load, or reuse or refresh a recorded one; observe, wait, cancel, retry or forget it | [Load data in pages](frontend/loads.md) |
+| `client.loads.invalidate.<name>`, `client.loads.get`, `client.loads.list` | Forget a recorded `once` job, reattach to a job by ID, list recent jobs | [Fresh start, once and reattach](frontend/loads.md#fresh-start-once-and-reattach) |
+| `LoadError`, Dart `LoadException` | Read the `code` and `message` of a failed, cancelled or refused Load | [Errors](frontend/loads.md#errors) |
 | `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` / `CallStore` | Read a durable outcome, handle failures and choose which Model outputs are stored | [Storing Model results](frontend/client-api.md#storing-model-results) |
 | `client.scopes`, `Subscription` | Subscribe to a named channel and follow that registration's status | [Channels](frontend/client-api.md#channels) |
 | `subscription.bootstrap()`, `status.bootstrap` | Load what the channel held before this subscription started, and follow that load | [Channels](frontend/client-api.md#channels) |
@@ -25,6 +28,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |
 | `Mutations<Tx>`, `Queries<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>` | Implement each operation's authoritative business logic | [Handlers](backend/api.md#handlers) |
+| `Loads<Tx>`, `LoadContext<Tx>`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
 | `Loaders<Tx>`, `LoaderCall` | Return current records for synchronization | [Loaders](backend/api.md#loaders) |
 | `touch`, `Touch` | Declare a record a handler changed beyond its Model inputs, so it is stamped and delivered to its Channels (not returned to the caller) | [Channels](backend/api.md#channels) |
 | `channel(name)`, `Channel`, `ModelMembership`, `RecordRef`, Model reference functions | Add records to a Channel once, or remove them, so every later change reaches its subscribers | [Channels](backend/api.md#channels) |
@@ -42,7 +46,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | React Native `databasePath` | Resolve a persistent local database path | [React Native setup](frontend/platforms.md#react-native) |
 | `Client`, `Transaction`, `QuerySpec`, `RecordValue` | Access the generic runtime beneath generated APIs | [Client runtime](frontend/runtime.md) |
 | `ServerOptions`, `SyncServer`, `ConnectionOptions` | Configure the backend connection and refresh credentials | [Server connection](frontend/runtime.md#server-connection) |
-| `Transport`, `HttpRoute` (TypeScript) | Type the HTTP carrier a platform host build supplies (not passed to `open`/`connect`): it receives the route `push`, `pull`, `action` or `fetch` | [Server connection](frontend/runtime.md#server-connection) |
+| `Transport`, `HttpRoute` (TypeScript) | Type the HTTP carrier a platform host build supplies (not passed to `open`/`connect`): it receives the route `push`, `pull`, `action`, `fetch` or `load` | [Server connection](frontend/runtime.md#server-connection) |
 | `RuntimeConnection`, `AuthenticationExpired` | Control Dart sync and identify authentication failures | [Connections](frontend/runtime.md#connection-controls) |
 | `syncState`, `models.<name>.syncState`, `dismissRejection`, `drop` | Inspect a record's pending work and handle rejected or unsent calls | [Recovery APIs](frontend/runtime.md#pending-work-and-recovery) |
 | `pendingTasks`, `runPrerequisites`, `setReadiness` | Complete prerequisite I/O before a durable call can be sent | [Prerequisites](frontend/runtime.md#prerequisites) |

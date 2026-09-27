@@ -59,6 +59,30 @@ pub mod code {
     /// The host drove a live session with an event it cannot accept: an unknown
     /// scope, a pull it was not asked for, or a session handle that is not open.
     pub const LIVE_INVALID_EVENT: &str = "live.invalid_event";
+    /// A Load page names an operation or version this backend does not retain.
+    /// Saved as that page's terminal outcome.
+    pub const LOAD_VERSION_UNSUPPORTED: &str = "load_version_unsupported";
+    /// A Load page's business arguments do not match the retained Load inputs.
+    pub const LOAD_INVALID: &str = "load.invalid";
+    /// A Load page's incoming or returned continuation is not bounded
+    /// portable JSON in the `{state}` wrapper.
+    pub const LOAD_INVALID_CONTINUATION: &str = "load.invalid_continuation";
+    /// A Load handler enumerated an identity its Loader answered as absent.
+    /// Never read as a deletion: the whole page fails.
+    pub const LOAD_RECORD_UNAVAILABLE: &str = "load.record_unavailable";
+    /// A Load page exceeds its identity or encoded byte bound. Retrying the
+    /// same continuation reproduces it; the backend must page smaller.
+    pub const LOAD_PAGE_TOO_LARGE: &str = "load.page_too_large";
+    /// A call ID already names a different saved request, of this or another
+    /// operation kind. Answered without saving anything.
+    pub const CALL_IDENTITY_CONFLICT: &str = "call.identity_conflict";
+    /// A Load item's transaction did not complete, or its commit result is
+    /// unknown. Answered as that item's unsaved `retryable` outcome: the
+    /// client resends the same call ID.
+    pub const SERVER_UNAVAILABLE: &str = "server.unavailable";
+    /// A Load item's transaction kept failing with a serialization conflict
+    /// or deadlock. Answered as that item's unsaved `retryable` outcome.
+    pub const TRANSACTION_CONFLICT: &str = "transaction.conflict";
     /// Encoding a response failed.
     pub const INTERNAL: &str = "internal";
 }

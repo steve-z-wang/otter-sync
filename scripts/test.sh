@@ -38,6 +38,7 @@ export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 bash integration/generated-api/verify.sh
 bash integration/e2e/run.sh
 bash integration/action-e2e/run.sh
+bash integration/load-e2e/run.sh
 node --test integration/e2e/todo-ui.test.mjs
 bash integration/e2e/todo-run.sh
 python3 website/scripts/check_examples.py

@@ -1281,6 +1281,18 @@ fn a_page_with_a_record_that_cannot_apply_is_refused_before_any_hook() {
     let error = job.error.unwrap();
     assert_eq!(error.code, "load.store_failed");
     assert_eq!(error.diagnostics[0].code, "skipped");
+    // The application hears which record refused the page, through the
+    // records report every other delivery uses; the good record is absent.
+    let reports: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "report" && e["diagnostic"]["kind"] == "records")
+        .collect();
+    assert_eq!(reports.len(), 1, "{events:?}");
+    let records = reports[0]["diagnostic"]["reports"].as_array().unwrap();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["kind"], "skipped");
+    assert_eq!(records[0]["model"], "Entry");
+    assert_eq!(records[0]["identity"], json!({"id":"b"}));
 }
 
 #[test]
@@ -1427,10 +1439,44 @@ fn a_pending_rebuild_parks_loads_beside_the_mutation_drain_and_the_rebuild_ends_
         .unwrap();
     assert_eq!(ended["snapshot"]["closed"], true);
     assert_eq!(ended["snapshot"]["code"], "load.schema_changed");
+    // The handle's last status says why it ended.
+    assert_eq!(ended["snapshot"]["status"]["id"], json!(active));
+    assert_eq!(ended["snapshot"]["status"]["phase"], "failed");
+    assert_eq!(
+        ended["snapshot"]["status"]["error"]["code"],
+        "load.schema_changed"
+    );
     assert_eq!(
         h.call("gone", json!({"kind":"loadGet","loadId":active}))["value"],
         Value::Null
     );
+    // Managing an abandoned job - any ID spelling - answers schema_changed,
+    // not not_found; an ID the old replica never held is still not_found.
+    for (n, id) in [active.clone(), cancellable.clone(), active.to_uppercase()]
+        .into_iter()
+        .enumerate()
+    {
+        for kind in [
+            "loadStatus",
+            "loadWait",
+            "loadCancel",
+            "loadRetry",
+            "loadForget",
+        ] {
+            let refused = h.call(&format!("{kind}{n}"), json!({"kind":kind,"loadId":id}));
+            assert_eq!(refused["ok"], false, "{kind} {id}");
+            assert_eq!(
+                refused["details"]["code"], "load.schema_changed",
+                "{kind} {id}: {refused}"
+            );
+            assert!(refused["details"]["message"].is_string());
+        }
+    }
+    let unknown = h.call(
+        "unknown",
+        json!({"kind":"loadWait","loadId":"0190f0e0-0000-7000-8000-000000000000"}),
+    );
+    assert_eq!(unknown["details"]["code"], "load.not_found");
     // A new start on the fresh replica runs the target schema's hook.
     let fresh = h.recent("fresh");
     let (http, body) = h.batch();
@@ -1822,6 +1868,44 @@ fn a_failed_scheduler_read_is_retried_on_its_own_timer() {
     h.run();
     let (_, body) = h.batch();
     assert_eq!(ids(&body), [second.as_str()]);
+}
+
+#[test]
+fn a_start_whose_first_request_exceeds_the_bound_is_coded_and_stores_nothing() {
+    let mut h = host();
+    let tag = "x".repeat(limits::LOAD_REQUEST_BYTES);
+    for (kind, options) in [
+        ("start", json!({})),
+        ("once", json!({"once":true})),
+        ("refresh", json!({"once":true,"refresh":true})),
+    ] {
+        let mut command =
+            json!({"kind":"loadStart","name":"Tagged","version":1,"args":{"tags":[tag]}});
+        for (k, v) in options.as_object().unwrap() {
+            command[k] = v.clone();
+        }
+        let refused = h.call(kind, command);
+        assert_eq!(refused["ok"], false, "{kind}");
+        assert_eq!(
+            refused["details"]["code"], "load.request_too_large",
+            "{kind}: {}",
+            refused["details"]
+        );
+        assert!(refused["details"]["message"].is_string());
+    }
+    assert!(
+        h.call("list", json!({"kind":"loadList"}))["value"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "nothing was stored"
+    );
+    // A start that fits is unaffected.
+    let fits = h.call(
+        "fits",
+        json!({"kind":"loadStart","name":"Tagged","version":1,"args":{"tags":["x"]}}),
+    );
+    assert_eq!(fits["ok"], true, "{fits}");
 }
 
 #[test]

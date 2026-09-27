@@ -445,8 +445,12 @@ pub enum LoadApply {
     /// The job no longer waits for this page: nothing was written.
     Stale,
     /// A record could not be applied. Refused before any hook; the caller
-    /// rolls the session back and records the failure.
-    Refused(LoadFailure),
+    /// rolls the session back, records the failure and reports `reports`,
+    /// the full report of every record that refused the page.
+    Refused {
+        failure: LoadFailure,
+        reports: Vec<Report>,
+    },
     /// The page's authority and progress, ready to commit together.
     Applied {
         job: Box<LoadJob>,
@@ -547,7 +551,9 @@ fn normalize_id(id: &str) -> Result<String> {
         .map_err(|_| coded(NOT_FOUND, format!("{id} is not a Load ID")))
 }
 /// A fresh job at the first page, with its frozen first request checked
-/// against the request envelope bounds before anything is stored.
+/// against the request envelope bounds before anything is stored. A first
+/// request over the byte bound - arguments too large to send even alone - is
+/// `load.request_too_large`, the code dispatch gives such a page.
 fn fresh_intent(
     name: &str,
     version: u64,
@@ -563,10 +569,21 @@ fn fresh_intent(
         models,
         None,
     );
-    LoadBatchRequest {
+    let request = LoadBatchRequest {
         loads: vec![intent.clone()],
+    };
+    if let Err(error) = request.encode() {
+        if crate::load_worker::unsendable(&request) == REQUEST_TOO_LARGE {
+            return Err(coded(
+                REQUEST_TOO_LARGE,
+                format!(
+                    "the first request of {name} exceeds {} bytes",
+                    limits::LOAD_REQUEST_BYTES
+                ),
+            ));
+        }
+        return Err(error);
     }
-    .encode()?;
     Ok(intent)
 }
 
@@ -1063,16 +1080,16 @@ impl<S: ClientStore> crate::engine::Engine<'_, S> {
             return Err(invalid("Load page does not answer its fenced request"));
         }
         let report = self.apply_records(&page.records)?;
-        let diagnostics: Vec<LoadDiagnostic> = report
+        let (diagnostics, reports): (Vec<LoadDiagnostic>, Vec<Report>) = report
             .reports
             .iter()
-            .filter_map(LoadDiagnostic::of)
-            .collect();
+            .filter_map(|r| LoadDiagnostic::of(r).map(|d| (d, r.clone())))
+            .unzip();
         if !diagnostics.is_empty() {
             if matches!(self.stage_mode, crate::authority::StageMode::Replay { .. }) {
                 return Err(invalid("a prepared Load page was refused on replay"));
             }
-            return Ok(LoadApply::Refused(LoadFailure::Local(LoadJobError::new(
+            let failure = LoadFailure::Local(LoadJobError::new(
                 STORE_FAILED,
                 format!(
                     "{} of {} records on the Load page could not be applied",
@@ -1080,7 +1097,8 @@ impl<S: ClientStore> crate::engine::Engine<'_, S> {
                     page.records.len()
                 ),
                 diagnostics,
-            ))));
+            ));
+            return Ok(LoadApply::Refused { failure, reports });
         }
         self.advance_load(&job, next)?;
         let job = self

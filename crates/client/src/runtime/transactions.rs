@@ -226,7 +226,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         // A Load page with a record that cannot be applied is refused before
         // any hook runs; nothing of it is kept.
         if let Some(refusal) = prepared.load_refusal().cloned() {
+            let reports = prepared.load_refusal_reports().to_vec();
             self.abort_authority_session();
+            // The application hears which records refused the page, as for
+            // every other delivery; the job keeps their bounded summary.
+            if !reports.is_empty() {
+                self.report(Diagnostic::Records { reports });
+            }
             match continuation {
                 StoreContinuation::Load { batch, sent } => self.requeue_load(batch, sent, refusal),
                 continuation => continuation.fail(
@@ -571,7 +577,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 // moved on wrote nothing, and a refused one must keep nothing.
                 if matches!(
                     result,
-                    StoreResult::Load(crate::LoadApply::Stale | crate::LoadApply::Refused(_))
+                    StoreResult::Load(crate::LoadApply::Stale | crate::LoadApply::Refused { .. })
                 ) {
                     self.client.rollback_session()?;
                 } else {

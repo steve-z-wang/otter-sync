@@ -356,7 +356,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.lanes.downlink.reset_for_rebuild();
         self.fail_directs(direct::EXECUTION_UNKNOWN);
         self.rebuilt_prerequisites();
-        self.rebuilt_loads();
+        self.rebuilt_loads(&report.abandoned_loads);
         self.rebuilt_lanes(now, entropy);
         self.observers.stale = true;
         self.rebuilt_observers();

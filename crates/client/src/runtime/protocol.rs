@@ -585,8 +585,9 @@ pub enum Event {
     ///   {"id","name","version","phase","pages","error"}}`, the phase being
     ///   `pending`, `loading`, `waiting`, `complete`, `failed` or
     ///   `cancelled`. A terminal snapshot also carries `"code"`:
-    ///   `client_closed`, or `load.schema_changed` when a rebuild replaced
-    ///   the replica the job belonged to.
+    ///   `client_closed` (the status is the last one published), or
+    ///   `load.schema_changed` when a rebuild replaced the replica the job
+    ///   belonged to (the status is then `failed` with that error).
     ///
     /// A terminal snapshot adds `"closed": true` and nothing follows it for
     /// that observer: a subscription that was removed, replaced by a rebuild

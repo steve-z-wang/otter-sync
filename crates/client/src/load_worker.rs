@@ -44,7 +44,7 @@ pub const LOAD_BACKOFF_CAP_MS: u64 = 30_000;
 
 /// Why a request of one page cannot be sent, decided from the request's own
 /// canonical size: over the request bound, or refused for its content.
-fn unsendable(request: &LoadBatchRequest) -> &'static str {
+pub(crate) fn unsendable(request: &LoadBatchRequest) -> &'static str {
     let size = serde_json::to_value(request)
         .ok()
         .and_then(|value| canonical_json(&value).ok())

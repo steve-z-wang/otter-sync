@@ -5,7 +5,7 @@ use crate::engine::Engine;
 use crate::query_cache::QueryCacheKey;
 use crate::store::ClientStore;
 use crate::{
-    ApplyReport, BootstrapApply, BootstrapState, Client, LoadApply, LoadFailure, LoadFence,
+    ApplyReport, BootstrapApply, BootstrapState, Client, LoadApply, LoadFailure, LoadFence, Report,
 };
 use axton_core::{
     BootstrapPage, DirectActionResponse, LoadPageResponse, PullPage, PushReceipt, Result, invalid,
@@ -82,6 +82,7 @@ pub struct PreparedStore {
     page_guards: Vec<(String, u64, u64)>,
     bootstrap_admitted: Option<BootstrapState>,
     load_refusal: Option<LoadFailure>,
+    load_refusal_reports: Vec<Report>,
 }
 impl PreparedStore {
     pub fn accepted(&self) -> &[usize] {
@@ -95,6 +96,11 @@ impl PreparedStore {
     /// such a preparation cannot be replayed.
     pub fn load_refusal(&self) -> Option<&LoadFailure> {
         self.load_refusal.as_ref()
+    }
+    /// The report of every record that refused a Load page; empty unless
+    /// [`PreparedStore::load_refusal`] is set.
+    pub fn load_refusal_reports(&self) -> &[Report] {
+        &self.load_refusal_reports
     }
 }
 
@@ -234,11 +240,12 @@ impl<S: ClientStore> Client<S> {
         } else {
             vec![]
         };
-        let load_refusal = if let StoreResult::Load(LoadApply::Refused(refusal)) = &result {
-            Some(refusal.clone())
-        } else {
-            None
-        };
+        let (load_refusal, load_refusal_reports) =
+            if let StoreResult::Load(LoadApply::Refused { failure, reports }) = &result {
+                (Some(failure.clone()), reports.clone())
+            } else {
+                (None, vec![])
+            };
         let bootstrap_admitted = if let StoreResult::Bootstrap(
             BootstrapApply::Applied { state, .. } | BootstrapApply::Failed { state, .. },
         ) = result
@@ -256,6 +263,7 @@ impl<S: ClientStore> Client<S> {
             page_guards,
             bootstrap_admitted,
             load_refusal,
+            load_refusal_reports,
         })
     }
 

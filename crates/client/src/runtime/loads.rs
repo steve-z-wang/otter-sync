@@ -31,6 +31,14 @@
 //! releases one observer; close fails waiters
 //! `client_closed` and a rebuild fails them `load.schema_changed`, ending
 //! every observer, without cancelling durable jobs.
+//!
+//! **Rebuild.** A rebuild ends each handle with a `failed` status whose
+//! error is `load.schema_changed`: its job stays in the replaced file only.
+//! The runtime remembers the job IDs the rebuild abandoned for the rest of
+//! the session, and answers `loadStatus`, `loadWait`, `loadCancel`,
+//! `loadRetry` and `loadForget` for them with `load.schema_changed` rather
+//! than `load.not_found`; `loadGet` answers `null`, as for any ID the
+//! current replica does not hold.
 use super::effects::{EffectKind, Waiter};
 use super::transactions::StoreContinuation;
 use super::*;
@@ -47,6 +55,8 @@ pub(super) const UNAUTHORIZED: &str = "load.unauthorized";
 /// A rebuild replaced the replica the job belonged to.
 pub(super) const SCHEMA_CHANGED: &str = "load.schema_changed";
 const CLIENT_CLOSED: &str = "client_closed";
+const SCHEMA_CHANGED_MESSAGE: &str =
+    "a schema rebuild replaced the local database this Load belonged to";
 const TIMED_OUT: &str = "load request timed out";
 const DEFAULT_LIST: u64 = 50;
 
@@ -66,6 +76,9 @@ pub(super) struct Loads {
     pub(super) served: bool,
     /// The latest clock the runtime was driven with, for the projection.
     pub(super) clock: u64,
+    /// The job IDs every rebuild of this session abandoned: management of
+    /// them answers `load.schema_changed`.
+    abandoned: BTreeSet<String>,
 }
 struct Flight {
     http: Option<String>,
@@ -94,6 +107,17 @@ fn refusal(error: &str) -> (String, Option<Value>) {
             Some(json!({"code": code, "message": message})),
         ),
         None => (error.to_string(), None),
+    }
+}
+/// The job a management command names, when it names one by ID.
+fn managed_id(command: &Command) -> Option<&str> {
+    match command {
+        Command::LoadStatus { load_id }
+        | Command::LoadWait { load_id }
+        | Command::LoadCancel { load_id }
+        | Command::LoadRetry { load_id }
+        | Command::LoadForget { load_id } => Some(load_id),
+        _ => None,
     }
 }
 /// An option that is absent, `null` or a boolean.
@@ -431,7 +455,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.loads.worker.wake();
             }
             LoadApply::Stale => self.load_consumed(batch, &sent),
-            LoadApply::Refused(failure) => self.requeue_load(batch, sent, failure),
+            LoadApply::Refused { failure, .. } => self.requeue_load(batch, sent, failure),
         }
     }
     /// What a committed page could not replay: diverged pending edits.
@@ -452,6 +476,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         request_id: &str,
         command: &Command,
     ) -> Option<std::result::Result<Value, String>> {
+        if let Some(load_id) = managed_id(command).filter(|id| self.load_abandoned(id)) {
+            let error = format!("{SCHEMA_CHANGED}: {SCHEMA_CHANGED_MESSAGE} ({load_id})");
+            self.fail(
+                request_id.to_string(),
+                error.clone(),
+                json!({"code": SCHEMA_CHANGED, "message": SCHEMA_CHANGED_MESSAGE}),
+            );
+            return None;
+        }
         let outcome = match command {
             Command::LoadStart {
                 name,
@@ -524,6 +557,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 None
             }
         }
+    }
+    /// Whether a rebuild of this session abandoned the job `load_id` names.
+    fn load_abandoned(&self, load_id: &str) -> bool {
+        !self.loads.abandoned.is_empty()
+            && uuid::Uuid::parse_str(load_id)
+                .is_ok_and(|id| self.loads.abandoned.contains(&id.to_string()))
     }
     fn start_load(
         &mut self,
@@ -737,13 +776,25 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
     /// End every handle and waiter: waiters fail with `code`, observers
-    /// publish a terminal snapshot carrying it. Durable jobs stay.
-    fn end_load_handles(&mut self, code: &str) {
+    /// publish a terminal snapshot carrying it. Durable jobs stay. With a
+    /// `message` the jobs are gone from this replica: waiters fail with it,
+    /// and the terminal status is `failed` with that error, so a handle's
+    /// last status says why it ended.
+    fn end_load_handles(&mut self, code: &str, message: Option<&str>) {
         for (_, tracked) in std::mem::take(&mut self.loads.tracked) {
             for (request_id, _) in tracked.waiters {
-                self.fail(request_id, code, json!({ "code": code }));
+                let details = match message {
+                    Some(message) => json!({ "code": code, "message": message }),
+                    None => json!({ "code": code }),
+                };
+                self.fail(request_id, code, details);
             }
-            let status = self.load_status_json(tracked.status.clone());
+            let mut last = tracked.status.clone();
+            if let Some(message) = message {
+                last.phase = LoadPhase::Failed;
+                last.error = Some(LoadJobError::new(code, message, vec![]).public());
+            }
+            let status = self.load_status_json(last);
             for observer_id in tracked.observers.into_keys() {
                 self.events.push(Event::ObserverChanged {
                     observer_id,
@@ -768,8 +819,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
     /// The replica was replaced: nothing in flight or observed belongs to
-    /// the fresh ledger.
-    pub(super) fn rebuilt_loads(&mut self) {
+    /// the fresh ledger, and the `abandoned` jobs answer
+    /// `load.schema_changed` from now on.
+    pub(super) fn rebuilt_loads(&mut self, abandoned: &[String]) {
+        self.loads.abandoned.extend(abandoned.iter().cloned());
         let flights: Vec<u64> = self.loads.flights.keys().copied().collect();
         for batch in flights {
             self.retire_load_flight(batch);
@@ -778,13 +831,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.cancel_effect(&timer);
         }
         self.loads.worker.reset();
-        self.end_load_handles(SCHEMA_CHANGED);
+        self.end_load_handles(SCHEMA_CHANGED, Some(SCHEMA_CHANGED_MESSAGE));
     }
     /// Close: effects were already cancelled; waiters and observers end.
     pub(super) fn close_loads(&mut self) {
         self.loads.flights.clear();
         self.loads.timer = None;
         self.loads.worker.reset();
-        self.end_load_handles(CLIENT_CLOSED);
+        self.end_load_handles(CLIENT_CLOSED, None);
     }
 }

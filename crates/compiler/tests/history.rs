@@ -650,6 +650,17 @@ fn same_version_breaking_load_changes_need_a_new_version() {
             "{changed}: {error}"
         );
     }
+    // A narrowed input enum is not: an old caller may still send the value.
+    let narrowed = LOAD_MODELS.replace("open done", "open");
+    let error = reconcile_load_history(
+        &compile(&format!("{narrowed} {base}")).unwrap(),
+        Some(&history),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("ProjectTodos v1: incompatible input change; increase @version"),
+        "{error}"
+    );
     // A widened input enum is compatible: an old caller's values stay valid.
     let widened = LOAD_MODELS.replace("open done", "open done archived");
     let next = reconcile_load_history(

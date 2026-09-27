@@ -267,15 +267,28 @@ fn load_only_generated_names_are_reserved_only_beside_a_load() {
 }
 
 #[test]
-fn load_contract_identifiers_are_checked_against_other_generated_names() {
-    let error = compile(&format!(
-        "model TodosInput {{ id String @@id(id) }}\n{MODELS}load Todos() {{ todos Todo[] }}"
-    ))
-    .unwrap_err();
-    assert!(
-        error.starts_with("5:1:") && error.contains("TodosInput"),
-        "{error}"
-    );
+fn no_per_load_contract_identifier_is_reserved_yet() {
+    // The emitters declare no per-Load type yet, so none is reserved.
+    for name in ["TodosInput", "TodosOutput", "TodosV1Input"] {
+        compile(&format!(
+            "model {name} {{ id String @@id(id) }}\n{MODELS}load Todos() {{ todos Todo[] }}"
+        ))
+        .unwrap();
+    }
     let value: Value = compile(&source("load Todos() { todos Todo[] }")).unwrap();
     assert!(axton_compiler::check_action_names(&value).is_ok());
+    // A hand-built config is checked without panicking on missing members.
+    assert!(
+        axton_compiler::check_action_names(&json!({
+            "schema":{"models":[],"enums":[]},
+            "loads":[{"name":"Todos"}]
+        }))
+        .is_ok()
+    );
+    let error = axton_compiler::check_action_names(&json!({
+        "schema":{"models":[{"name":"LoadStatus"}],"enums":[]},
+        "loads":[{}]
+    }))
+    .unwrap_err();
+    assert!(error.contains("LoadStatus"), "{error}");
 }

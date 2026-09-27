@@ -33,14 +33,6 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
             .find(|m| m.name == n)
             .map(|m| m.pos);
     }
-    if let Some(n) = owner.strip_prefix("Load ") {
-        let n = n.split(' ').next()?;
-        return declarations
-            .loads
-            .iter()
-            .find(|l| l.name == n)
-            .map(|l| l.pos);
-    }
     let action = owner
         .strip_prefix("Mutation ")
         .or_else(|| owner.strip_prefix("Query "))?
@@ -156,31 +148,11 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             add(format!("{n}V{version}Identity"), format!("model {n}"))?;
         }
     }
-    let loads = values(config, "loads");
-    if !loads.is_empty() {
+    // Per-Load contract identifiers are reserved by the emitters that
+    // declare them; until then only the shared Load names are.
+    if !values(config, "loads").is_empty() {
         for helper in LOAD_HELPERS {
             add((*helper).into(), "load helper".into())?;
-        }
-        let mut latest = BTreeMap::<&str, u64>::new();
-        for load in loads {
-            let version = load["version"].as_u64().unwrap();
-            latest
-                .entry(name(load))
-                .and_modify(|v| *v = (*v).max(version))
-                .or_insert(version);
-        }
-        for load in loads {
-            let n = name(load);
-            let version = load["version"].as_u64().unwrap();
-            let prefix = if version == latest[n] {
-                n.to_owned()
-            } else {
-                format!("{n}V{version}")
-            };
-            let owner = format!("Load {n} v{version}");
-            for suffix in ["Input", "Output"] {
-                add(format!("{prefix}{suffix}"), format!("{owner} {suffix}"))?;
-            }
         }
     }
     // Model-only schemas still emit every per-model type (such as

@@ -176,18 +176,24 @@ pub struct LoadIntent {
 }
 impl LoadIntent {
     /// Per-item semantic normalization against the retained Load: canonical
-    /// IDs and continuation state, and arguments by the Load's inputs.
-    /// Declared read contracts are checked by [`validate_load_models`].
-    pub fn normalize(mut self, schema: &Schema) -> Result<Self> {
-        self.load_id = normalize_uuid(&self.load_id, "loadId")?;
-        self.call_id = normalize_uuid(&self.call_id, "callId")?;
+    /// IDs, a retained `(name, version)`, arguments by the Load's inputs and
+    /// portable continuation state, checked in that order. The error names
+    /// which step failed. Declared read contracts are checked by
+    /// [`validate_load_models`].
+    pub fn normalize(mut self, schema: &Schema) -> std::result::Result<Self, LoadItemError> {
+        use LoadItemErrorKind::*;
+        self.load_id = normalize_uuid(&self.load_id, "loadId").map_err(item(InvalidId))?;
+        self.call_id = normalize_uuid(&self.call_id, "callId").map_err(item(InvalidId))?;
+        let load = schema
+            .load(&self.name, self.version)
+            .map_err(item(UnsupportedLoad))?;
+        self.args = normalize_load_args(schema, load, &self.args).map_err(item(InvalidArgs))?;
         self.continuation = self
             .continuation
             .as_ref()
             .map(Continuation::normalized)
-            .transpose()?;
-        let load = schema.load(&self.name, self.version)?;
-        self.args = normalize_load_args(schema, load, &self.args)?;
+            .transpose()
+            .map_err(item(InvalidContinuation))?;
         Ok(self)
     }
     fn validate_envelope(&self) -> Result<()> {
@@ -251,7 +257,52 @@ impl LoadBatchRequest {
     }
 }
 
-/// A bounded terminal or retryable item error: `{code, message}`.
+/// Which per-item step refused one Load request or page answer. A caller
+/// maps each kind to its own outcome without reading messages; sibling items
+/// in the same batch are unaffected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadItemErrorKind {
+    /// A load or call ID is not an RFC 4122 UUID.
+    InvalidId,
+    /// No retained Load has this name and version.
+    UnsupportedLoad,
+    /// Business arguments do not satisfy the Load's inputs.
+    InvalidArgs,
+    /// Continuation state is not bounded portable JSON.
+    InvalidContinuation,
+    /// A page answer is malformed: its members, outcome, error, identities
+    /// or records.
+    MalformedPage,
+    /// A page exceeds [`limits::LOAD_PAGE_BYTES`] or
+    /// [`limits::LOAD_PAGE_IDENTITIES`].
+    PageTooLarge,
+}
+/// A classified per-item failure with a diagnostic message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadItemError {
+    pub kind: LoadItemErrorKind,
+    pub message: String,
+}
+impl std::fmt::Display for LoadItemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.kind, self.message)
+    }
+}
+impl std::error::Error for LoadItemError {}
+impl From<LoadItemError> for crate::Error {
+    fn from(error: LoadItemError) -> Self {
+        invalid(error.to_string())
+    }
+}
+fn item(kind: LoadItemErrorKind) -> impl FnOnce(crate::Error) -> LoadItemError {
+    move |error| LoadItemError {
+        kind,
+        message: error.to_string(),
+    }
+}
+
+/// A terminal or retryable item error: `{code, message}`, with a valid
+/// machine code and at most [`limits::LOAD_ERROR_MESSAGE_BYTES`] of message.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoadError {
@@ -259,9 +310,34 @@ pub struct LoadError {
     pub message: String,
 }
 impl LoadError {
+    /// A wire-safe error: an invalid machine code becomes `internal`, and the
+    /// message is cut to [`limits::LOAD_ERROR_MESSAGE_BYTES`] on a UTF-8
+    /// character boundary.
+    pub fn bounded(code: impl Into<String>, message: impl Into<String>) -> Self {
+        let code = code.into();
+        let mut message = message.into();
+        if message.len() > limits::LOAD_ERROR_MESSAGE_BYTES {
+            let mut end = limits::LOAD_ERROR_MESSAGE_BYTES;
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+        }
+        Self {
+            code: if valid_code(&code) {
+                code
+            } else {
+                "internal".into()
+            },
+            message,
+        }
+    }
     fn validate(&self) -> Result<()> {
-        if !valid_code(&self.code) || self.message.len() > limits::LOAD_ERROR_MESSAGE_BYTES {
-            return Err(invalid("invalid Load error"));
+        if !valid_code(&self.code) {
+            return Err(invalid("Load error code is not a machine code"));
+        }
+        if self.message.len() > limits::LOAD_ERROR_MESSAGE_BYTES {
+            return Err(invalid("Load error message exceeds byte limit"));
         }
         Ok(())
     }
@@ -297,32 +373,37 @@ pub struct LoadPageResponse {
     pub records: Vec<AuthorityRecord>,
 }
 impl LoadPageResponse {
-    fn decode(value: Value) -> Result<Self> {
-        let object = value
-            .as_object()
-            .ok_or_else(|| invalid("Load page must be an object"))?;
-        if !object.get("outcome").is_some_and(Value::is_object) {
-            return Err(invalid("Load page outcome must be an object"));
-        }
-        let records = object
+    /// Decode one answer's shape: exactly `loadId`, `callId`, `outcome` and
+    /// `records`; a known outcome status with its members (`data` an object
+    /// and `next` present, or a valid `error`); well-formed authority
+    /// records, and none on an unsuccessful page. A failure is
+    /// [`LoadItemErrorKind::MalformedPage`] for this item only.
+    pub fn decode_item(value: &Value) -> std::result::Result<Self, LoadItemError> {
+        Self::decode_shape(value).map_err(item(LoadItemErrorKind::MalformedPage))
+    }
+    fn decode_shape(value: &Value) -> Result<Self> {
+        let records = value
             .get("records")
             .and_then(Value::as_array)
             .ok_or_else(|| invalid("Load page records must be an array"))?
             .iter()
             .map(decode_record)
             .collect::<Result<Vec<_>>>()?;
-        let mut page: Self = serde_json::from_value(value)?;
+        let mut page: Self = serde_json::from_value(value.clone())?;
         page.load_id = normalize_uuid(&page.load_id, "loadId")?;
         page.call_id = normalize_uuid(&page.call_id, "callId")?;
         page.records = records;
-        page.validate_shape()?;
+        page.check_shape()?;
         Ok(page)
     }
-    fn validate_shape(&self) -> Result<()> {
+    fn check_shape(&self) -> Result<()> {
         for (value, label) in [(&self.load_id, "loadId"), (&self.call_id, "callId")] {
             if &normalize_uuid(value, label)? != value {
                 return Err(invalid(format!("{label} must be canonical")));
             }
+        }
+        for record in &self.records {
+            decode_record(&serde_json::to_value(record)?)?;
         }
         match &self.outcome {
             LoadOutcome::Succeeded { data, .. } => {
@@ -343,26 +424,68 @@ impl LoadPageResponse {
     pub fn answers(&self, intent: &LoadIntent) -> bool {
         self.load_id == intent.load_id && self.call_id == intent.call_id
     }
-    /// Per-item semantic validation against the frozen request's Load: at
-    /// most [`limits::LOAD_PAGE_BYTES`], every declared output as a list of
-    /// normalized identities (at most [`limits::LOAD_PAGE_IDENTITIES`] in
-    /// all), a portable next state, and exactly one state-bearing record per
-    /// distinct identity. A failure here fails only this job.
-    pub fn normalize(mut self, schema: &Schema, intent: &LoadIntent) -> Result<Self> {
+    /// Per-item semantic validation against the frozen request's Load: the
+    /// page shape, at most [`limits::LOAD_PAGE_BYTES`] and
+    /// [`limits::LOAD_PAGE_IDENTITIES`] entries across every declared output
+    /// (both [`LoadItemErrorKind::PageTooLarge`]), each output a list of
+    /// identities normalized by its read contract, a portable next state
+    /// ([`LoadItemErrorKind::InvalidContinuation`]) and exactly one
+    /// state-bearing record per distinct identity. A failure fails only this job.
+    pub fn normalize(
+        mut self,
+        schema: &Schema,
+        intent: &LoadIntent,
+    ) -> std::result::Result<Self, LoadItemError> {
+        use LoadItemErrorKind::*;
         if !self.answers(intent) {
-            return Err(invalid("Load page answers another request"));
+            return Err(item(MalformedPage)(invalid(
+                "Load page answers another request",
+            )));
         }
-        if canonical_json(&serde_json::to_value(&self)?)?.len() > limits::LOAD_PAGE_BYTES {
-            return Err(invalid("Load page exceeds byte limit"));
+        self.check_shape().map_err(item(MalformedPage))?;
+        let bytes = serde_json::to_value(&self)
+            .map_err(crate::Error::from)
+            .and_then(|value| canonical_json(&value))
+            .map_err(item(MalformedPage))?;
+        if bytes.len() > limits::LOAD_PAGE_BYTES {
+            return Err(item(PageTooLarge)(invalid("Load page exceeds byte limit")));
         }
         if let LoadOutcome::Succeeded { data, next } = &mut self.outcome {
-            let load = schema.load(&intent.name, intent.version)?;
-            *data = validate_load_data(schema, load, data)?;
-            *next = next.as_ref().map(Continuation::normalized).transpose()?;
-            validate_load_records(schema, load, data, &self.records)?;
+            let load = schema
+                .load(&intent.name, intent.version)
+                .map_err(item(UnsupportedLoad))?;
+            let entries: usize = load
+                .outputs
+                .iter()
+                .filter_map(|o| data[&o.name].as_array())
+                .map(Vec::len)
+                .sum();
+            if entries > limits::LOAD_PAGE_IDENTITIES {
+                return Err(item(PageTooLarge)(invalid(format!(
+                    "Load page exceeds {} identities",
+                    limits::LOAD_PAGE_IDENTITIES
+                ))));
+            }
+            *data = validate_load_data(schema, load, data).map_err(item(MalformedPage))?;
+            *next = next
+                .as_ref()
+                .map(Continuation::normalized)
+                .transpose()
+                .map_err(item(InvalidContinuation))?;
+            validate_load_records(schema, load, data, &self.records)
+                .map_err(item(MalformedPage))?;
         }
         Ok(self)
     }
+}
+
+/// One correlated answer of a decoded response envelope: the IDs it answers
+/// and its page, or why this item alone is malformed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoadPageReply {
+    pub load_id: String,
+    pub call_id: String,
+    pub page: std::result::Result<LoadPageResponse, LoadItemError>,
 }
 
 /// `{"loads":[LoadPageResponse…]}`: exactly one answer per requested page.
@@ -372,48 +495,88 @@ pub struct LoadBatchResponse {
     pub loads: Vec<LoadPageResponse>,
 }
 impl LoadBatchResponse {
-    /// Structural client ingress against the frozen request. Malformed,
-    /// duplicate, extra or missing correlations reject the whole envelope
-    /// before any page may be applied; order carries no meaning.
-    pub fn decode(bytes: &[u8], request: &LoadBatchRequest) -> Result<Self> {
+    /// Client ingress against the frozen request. The envelope is refused
+    /// only for its structure: bytes, exactly `{"loads":[…]}`, 1..=8 items,
+    /// each an object with UUID `loadId` and `callId`, an object `outcome`
+    /// and an array `records`, and an exact one-to-one correlation (no
+    /// malformed, duplicate, extra or missing pair). Everything else about a
+    /// correlated item is decoded per item into [`LoadPageReply::page`], so a
+    /// malformed page fails only its own job. Order carries no meaning.
+    pub fn decode(bytes: &[u8], request: &LoadBatchRequest) -> Result<Vec<LoadPageReply>> {
         if bytes.len() > limits::LOAD_RESPONSE_BYTES {
             return Err(invalid("Load response exceeds byte limit"));
         }
         let raw: Value = serde_json::from_slice(bytes)?;
         let items = objects(&raw, "Load response")?;
-        let response = Self {
-            loads: items
-                .iter()
-                .cloned()
-                .map(LoadPageResponse::decode)
-                .collect::<Result<_>>()?,
-        };
-        response.validate()?;
-        if response.loads.len() != request.loads.len()
-            || !response
-                .loads
-                .iter()
-                .all(|page| request.loads.iter().any(|intent| page.answers(intent)))
-        {
-            return Err(invalid("Load response does not answer its request"));
-        }
-        Ok(response)
-    }
-    fn validate(&self) -> Result<()> {
-        batch_count(self.loads.len())?;
+        batch_count(items.len())?;
         let (mut loads, mut calls) = (BTreeSet::new(), BTreeSet::new());
-        for page in &self.loads {
-            page.validate_shape()?;
-            if !loads.insert(&page.load_id) || !calls.insert(&page.call_id) {
+        let mut replies = vec![];
+        for value in items {
+            let id = |key: &str| -> Result<String> {
+                normalize_uuid(
+                    value[key]
+                        .as_str()
+                        .ok_or_else(|| invalid(format!("Load page {key} must be a string")))?,
+                    key,
+                )
+            };
+            let (load_id, call_id) = (id("loadId")?, id("callId")?);
+            if !value["outcome"].is_object() || !value["records"].is_array() {
+                return Err(invalid(
+                    "Load page needs an object outcome and a records array",
+                ));
+            }
+            if !loads.insert(load_id.clone()) || !calls.insert(call_id.clone()) {
                 return Err(invalid("duplicate Load page correlation"));
             }
+            if !request
+                .loads
+                .iter()
+                .any(|intent| intent.load_id == load_id && intent.call_id == call_id)
+            {
+                return Err(invalid("Load response answers an unrequested page"));
+            }
+            replies.push(LoadPageReply {
+                load_id,
+                call_id,
+                page: LoadPageResponse::decode_item(value),
+            });
         }
-        Ok(())
+        if replies.len() != request.loads.len() {
+            return Err(invalid(
+                "Load response does not answer every requested page",
+            ));
+        }
+        Ok(replies)
     }
-    /// Canonical bytes, refused past [`limits::LOAD_RESPONSE_BYTES`].
+    /// Canonical bytes for the backend carrier. Only the correlation
+    /// structure refuses the batch: 1..=8 pages with canonical, unique IDs,
+    /// within [`limits::LOAD_RESPONSE_BYTES`]. Each unsuccessful page's error
+    /// is written through [`LoadError::bounded`] (an invalid code becomes
+    /// `internal`, the message is clamped) and its records are dropped, so no
+    /// single item's error can cost its siblings. Page content is not judged
+    /// here; the client refuses a malformed page per item.
     pub fn encode(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        let bytes = canonical_json(&serde_json::to_value(self)?)?.into_bytes();
+        batch_count(self.loads.len())?;
+        let (mut loads, mut calls) = (BTreeSet::new(), BTreeSet::new());
+        let mut wire = self.clone();
+        for page in &mut wire.loads {
+            for (value, label) in [(&page.load_id, "loadId"), (&page.call_id, "callId")] {
+                if &normalize_uuid(value, label)? != value {
+                    return Err(invalid(format!("{label} must be canonical")));
+                }
+            }
+            if !loads.insert(page.load_id.clone()) || !calls.insert(page.call_id.clone()) {
+                return Err(invalid("duplicate Load page correlation"));
+            }
+            if let LoadOutcome::Failed { error } | LoadOutcome::Retryable { error } =
+                &mut page.outcome
+            {
+                *error = LoadError::bounded(error.code.clone(), error.message.clone());
+                page.records.clear();
+            }
+        }
+        let bytes = canonical_json(&serde_json::to_value(&wire)?)?.into_bytes();
         if bytes.len() > limits::LOAD_RESPONSE_BYTES {
             return Err(invalid("canonical Load response exceeds byte limit"));
         }
@@ -513,9 +676,20 @@ impl Schema {
                 return Err(invalid(format!("{label} declares no output")));
             }
             names.clear();
+            // Records are keyed by Model, so every output of one Model reads
+            // through one contract version.
+            let mut reads = BTreeMap::<&str, Option<u64>>::new();
             for output in &load.outputs {
                 if output.name.is_empty() || !names.insert(output.name.as_str()) {
                     return Err(invalid("invalid Load output"));
+                }
+                if let Some(model) = output.model.as_deref()
+                    && *reads.entry(model).or_insert(output.model_read_version)
+                        != output.model_read_version
+                {
+                    return Err(invalid(format!(
+                        "{label} reads Model {model} at two contract versions"
+                    )));
                 }
                 if output.cardinality != "list"
                     || !store_eligible(output)

@@ -25,8 +25,10 @@ pub mod limits {
     pub const LOAD_REQUEST_BYTES: usize = 1024 * 1024;
     /// The canonical bytes of one answered page: IDs, outcome and records.
     pub const LOAD_PAGE_BYTES: usize = 1024 * 1024;
-    /// The bytes of one Load batch response.
-    pub const LOAD_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+    /// The bytes of one Load batch response: eight pages at
+    /// [`LOAD_PAGE_BYTES`] plus a 64 KiB allowance for the envelope, so a
+    /// full batch of maximal pages stays encodable.
+    pub const LOAD_RESPONSE_BYTES: usize = 8 * LOAD_PAGE_BYTES + 64 * 1024;
     /// Identity entries one page returns across all declared lists.
     pub const LOAD_PAGE_IDENTITIES: usize = 1000;
     /// The canonical bytes of one continuation state.

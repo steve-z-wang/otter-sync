@@ -742,3 +742,56 @@ fn fetch_refuses_a_record_the_store_cannot_write_and_keeps_the_row() {
     client.rollback_session().unwrap();
     assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "base");
 }
+
+/// A store session is incoming authority's: whatever handle its hooks write
+/// through, it submits no Mutation and records no companion, while its local
+/// writes and the delivery still commit. An application session keeps both.
+#[test]
+fn a_store_session_submits_no_mutation_and_records_no_companion() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut raw = serde_json::to_value(schema()).unwrap();
+    raw["actions"] = json!([{"name":"Ping","version":1,"inputs":[],"outputs":[]}]);
+    let mut client = Client::open(
+        SqliteStore::open(dir.path().join("db")).unwrap(),
+        Schema::from_value(raw).unwrap(),
+    )
+    .unwrap();
+    subscribe(&mut client, "a");
+    client.begin_session().unwrap();
+    let submitted = client
+        .session(|tx| tx.submit_mutation("Ping", 1, json!({}), ActionCallOptions::default()))
+        .unwrap();
+    client.rollback_session().unwrap();
+    client.begin_session().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::Page(page("a", 0, 1, Some("server"))))
+        .unwrap();
+    let refused = client
+        .session(|tx| tx.submit_mutation("Ping", 1, json!({}), ActionCallOptions::default()))
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "store hook cannot submit a Mutation");
+    let refused = client
+        .session(|tx| tx.append_companion(submitted.ordinal, update("x")))
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "store hook cannot submit a Mutation");
+    client
+        .session(|tx| {
+            tx.direct(Operation {
+                model: "Entry".into(),
+                op: OperationKind::Create,
+                identity: json!({"id":"local"}),
+                values: Some(json!({"text":"hook","note":null})),
+            })
+        })
+        .unwrap();
+    client.apply_prepared_store(prepared).unwrap();
+    client.commit_session().unwrap();
+    assert_eq!(client.pending_count().unwrap(), 0);
+    assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "server");
+    let local = RecordKey {
+        model: "Entry".into(),
+        identity: json!({"id":"local"}),
+    };
+    assert_eq!(client.read(&local).unwrap().unwrap()["text"], "hook");
+    assert_eq!(client.cursor("a").unwrap(), Some(1));
+}

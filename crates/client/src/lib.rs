@@ -221,6 +221,9 @@ struct Session {
     pull_pages: Vec<BTreeMap<String, u64>>,
     /// Ordinals of the calls submitted in this transaction.
     submitted: BTreeSet<u64>,
+    /// The session delivers incoming authority (`prepare_store`): its store
+    /// hooks are local-only and submit no Mutation.
+    pub(crate) authority: bool,
 }
 
 struct SessionSavepoint {
@@ -785,6 +788,7 @@ impl<S: ClientStore> Client<S> {
                 ),
                 depth: 0,
                 submitted: &mut submitted,
+                local_only: false,
             };
             body(&mut tx)
         })
@@ -803,6 +807,7 @@ impl<S: ClientStore> Client<S> {
             counter: 0,
             pull_pages: vec![],
             submitted: BTreeSet::new(),
+            authority: false,
         });
         Ok(())
     }
@@ -823,6 +828,7 @@ impl<S: ClientStore> Client<S> {
             engine: Engine::new(store, schema, &mut session.changed, false),
             depth: 0,
             submitted: &mut session.submitted,
+            local_only: session.authority,
         };
         body(&mut tx)
     }
@@ -1223,12 +1229,17 @@ fn count_direct<S: ClientStore>(store: &mut S, schema: &Schema) -> Result<usize>
     Ok(total)
 }
 
+/// Why a store hook's transaction refuses a Mutation and its companions.
+pub(crate) const STORE_HOOK_SUBMIT: &str = "store hook cannot submit a Mutation";
+
 pub struct ClientTransaction<'a, S: ClientStore> {
     pub(crate) engine: Engine<'a, S>,
     depth: u64,
     /// Ordinals of the calls [`Self::submit_mutation`] queued in this
     /// transaction and not rolled back: the only calls that take companions.
     submitted: &'a mut BTreeSet<u64>,
+    /// A store hook's transaction: local reads and writes only.
+    local_only: bool,
 }
 impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn read(&mut self, key: &RecordKey) -> Result<Option<Value>> {
@@ -1293,6 +1304,9 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         args: Value,
         options: ActionCallOptions,
     ) -> Result<SubmittedCall> {
+        if self.local_only {
+            return Err(invalid(STORE_HOOK_SUBMIT));
+        }
         let schema = self.engine.schema;
         let action = schema.action(name, version)?;
         if action.kind == CallKind::Query {
@@ -1314,6 +1328,9 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     /// capability; it is not an application API.
     #[doc(hidden)]
     pub fn append_companion(&mut self, ordinal: u64, operation: Operation) -> Result<()> {
+        if self.local_only {
+            return Err(invalid(STORE_HOOK_SUBMIT));
+        }
         if !self.submitted.contains(&ordinal) {
             return Err(invalid(
                 "a companion belongs to a Mutation submitted in this transaction",

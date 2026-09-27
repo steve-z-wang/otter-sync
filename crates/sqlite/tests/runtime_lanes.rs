@@ -4763,3 +4763,199 @@ fn fetch_is_refused_while_a_schema_drains_and_runs_on_the_rebuilt_replica() {
     );
     assert_eq!(h.text("e"), Some(json!("new")));
 }
+
+// --- Transactional Mutations at the writer boundary --------------------------
+
+/// The lanes' schema with `Publish`, which creates an Entry; with `hooked`,
+/// Entry authority runs an onStore hook.
+fn publishing_host(hooked: bool) -> Host {
+    let mut schema = schema_value();
+    schema["actions"].as_array_mut().unwrap().push(json!(
+        {"name":"Publish","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"create","cardinality":"single"}],"outputs":[]}
+    ));
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::open(
+        SqliteStore::open(dir.path().join("db")).unwrap(),
+        Schema::from_value(schema).unwrap(),
+    )
+    .unwrap();
+    let hooks = if hooked { vec!["Entry".into()] } else { vec![] };
+    Host::of(
+        ClientRuntime::with_store_hooks(client, hooks).unwrap(),
+        Some(dir),
+    )
+}
+impl Host {
+    /// Run to quiescence, answering every onStore callback with success:
+    /// everything said on the way.
+    fn run_hooks(&mut self) -> Vec<Value> {
+        let mut events = self.run();
+        loop {
+            let hooks = self.outstanding("storeCallback", None);
+            if hooks.is_empty() {
+                return events;
+            }
+            for (effect, operation) in hooks {
+                self.open.remove(&effect);
+                self.submit(json!({"type":"callbackResult","effectId":effect,
+                    "transactionId":operation["transactionId"],"ok":true}));
+            }
+            events.extend(self.run());
+        }
+    }
+}
+/// The ids of a watch snapshot's rows.
+fn ids(snapshot: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = snapshot["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Read a media list, compute a difference and submit the Mutation that
+/// publishes it with a local companion, all while frames stream in: the
+/// deliveries wait at the writer, so the callback's view never moves;
+/// watches publish only committed state; nothing provisional is frozen; and
+/// delivery, sending and settlement - through an onStore hook or not -
+/// resume after the commit, the companion surviving acceptance.
+#[test]
+fn a_local_callback_keeps_deliveries_waiting_until_its_transaction_commits() {
+    for hooked in [false, true] {
+        let mut h = publishing_host(hooked);
+        h.connect(false);
+        let socket = h.streaming(0);
+        assert_eq!(h.call("m1", create("m1", "a"))["ok"], true);
+        assert_eq!(h.call("m2", create("m2", "b"))["ok"], true);
+        let watch =
+            h.call("watch", json!({"kind":"watch","model":"Entry"}))["value"]["observerId"].clone();
+        let (effect, transaction) = h.begin("tx");
+        let mut during = vec![];
+        let list = json!({"kind":"query","model":"Entry"});
+        h.submit(json!({"type":"transactionCommand","requestId":"list","transactionId":transaction,"command":list}));
+        during.extend(h.run());
+        let listed = h.completion(&during, "list")["value"].clone();
+        assert_eq!(ids(&json!({"rows":listed})), ["m1", "m2"]);
+        // A delivery arrives: it waits for the writer.
+        h.frame(&socket, &page(0, 1, "m3", "remote"));
+        during.extend(h.run());
+        assert_eq!(h.runtime.held_frames(), 1);
+        h.submit(json!({"type":"transactionCommand","requestId":"again","transactionId":transaction,"command":list}));
+        during.extend(h.run());
+        assert_eq!(
+            h.completion(&during, "again")["value"],
+            listed,
+            "{hooked}: the view is stable"
+        );
+        // The difference is published; the local callback retires m2.
+        h.submit(
+            json!({"type":"transactionCommand","requestId":"publish","transactionId":transaction,
+            "command":{"kind":"submitMutation","name":"Publish","version":1,
+                "args":{"entry":{"id":"m4","text":"diff","note":null}},"local":true}}),
+        );
+        let events = h.run();
+        during.extend(events.clone());
+        let local = events
+            .iter()
+            .find(|e| e["type"] == "effect" && e["operation"]["kind"] == "mutationLocal")
+            .unwrap_or_else(|| panic!("{events:?}"))
+            .clone();
+        let companion = local["operation"]["companionId"].clone();
+        h.frame(&socket, &page(1, 2, "m1", "remote edit"));
+        for (id, command) in [
+            (
+                "read",
+                json!({"kind":"read","key":{"model":"Entry","identity":{"id":"m1"}}}),
+            ),
+            (
+                "retire",
+                json!({"kind":"direct","operation":{"model":"Entry","op":"delete","identity":{"id":"m2"}}}),
+            ),
+        ] {
+            h.submit(
+                json!({"type":"transactionCommand","requestId":id,"transactionId":transaction,
+                "companionId":companion,"command":command}),
+            );
+        }
+        during.extend(h.run());
+        assert_eq!(h.completion(&during, "read")["value"]["text"], "a");
+        assert_eq!(h.completion(&during, "retire")["ok"], true);
+        h.submit(
+            json!({"type":"callbackResult","effectId":local["effectId"],"transactionId":transaction,
+            "companionId":companion,"ok":true}),
+        );
+        during.extend(h.run());
+        let call = h.completion(&during, "publish")["value"]["callId"].clone();
+        assert_eq!(h.runtime.held_frames(), 2);
+        assert!(snapshots(&during, &watch).is_empty(), "{during:?}");
+        assert!(
+            h.outstanding("http", Some("push")).is_empty(),
+            "nothing provisional is sent"
+        );
+        assert!(h.outstanding("storeCallback", None).is_empty());
+        assert_eq!(h.text("m3"), None);
+        assert_eq!(h.text("m4"), None);
+        assert_eq!(h.client().cursor("book").unwrap(), Some(0));
+
+        h.submit(json!({"type":"callbackResult","effectId":effect,"transactionId":transaction,"ok":true}));
+        let events = h.run_hooks();
+        let committed = position(&events, |e| {
+            *e == json!({"type":"transactionCallState","callId":call,"state":"committed"})
+        });
+        let answered = position(&events, |e| *e == done("tx", Value::Null));
+        assert!(committed < answered, "{events:?}");
+        let published = snapshots(&events, &watch);
+        assert!(
+            position(&events, |e| e["observerId"] == watch) > answered,
+            "{events:?}"
+        );
+        assert_eq!(
+            ids(&published[0]),
+            ["m1", "m4"],
+            "{hooked}: the commit, then deliveries"
+        );
+        assert_eq!(
+            ids(published.last().unwrap()),
+            ["m1", "m3", "m4"],
+            "{published:?}"
+        );
+        assert_eq!(h.text("m3"), Some(json!("remote")));
+        assert_eq!(h.text("m1"), Some(json!("remote edit")));
+        assert_eq!(h.client().cursor("book").unwrap(), Some(2));
+        let hooks = events
+            .iter()
+            .filter(|e| e["type"] == "effect" && e["operation"]["kind"] == "storeCallback")
+            .count();
+        assert_eq!(hooks > 0, hooked, "{events:?}");
+
+        // Only the committed call is sent; its companion never is.
+        let (push, body) = h.http("push");
+        let request: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(request["mutations"].as_array().unwrap().len(), 1);
+        assert_eq!(request["mutations"][0]["callId"], call);
+        assert!(!body.contains("m2"), "{body}");
+        let client_id = h.client().client_id().to_string();
+        let mut answer: Value = serde_json::from_str(&receipt(&client_id, &body)).unwrap();
+        answer["records"] = json!([{"model":"Entry","identity":{"id":"m4"},"stamp":3,"state":{"text":"diff","note":null}}]);
+        h.ok(&push, &answer.to_string());
+        let events = h.run_hooks();
+        assert!(
+            events
+                .iter()
+                .any(|e| e["type"] == "callCompleted" && e["callId"] == call),
+            "{events:?}"
+        );
+        assert_eq!(
+            store_callbacks(&events).len(),
+            usize::from(hooked),
+            "{events:?}"
+        );
+        assert_eq!(h.client().pending_count().unwrap(), 0);
+        assert_eq!(h.client().before_image_count().unwrap(), 0);
+        assert_eq!(h.text("m2"), None, "the accepted companion is kept");
+        assert_eq!(h.text("m4"), Some(json!("diff")));
+    }
+}

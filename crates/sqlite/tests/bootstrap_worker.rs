@@ -701,6 +701,43 @@ fn a_reopen_settles_a_reached_barrier_before_any_request() {
     );
 }
 
+#[test]
+fn a_failed_reopen_rechecks_the_reached_barrier_on_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut lane = Lane::new(dir.path());
+    lane.streaming("a", 100);
+    let (id, _) = only(&lane.register("a"));
+    lane.answer(id, historical("a", 0, 100, 100, 130, vec![]));
+    lane.send(DownlinkEvent::Stop);
+    lane.client
+        .apply_page(page("a", 100, 130, Some("caught up")))
+        .unwrap();
+    assert_eq!(lane.load("a").state, BootstrapPhase::CatchingUp);
+
+    lane.enqueue(DownlinkEvent::Start);
+    let mut other = SqliteStore::open(dir.path().join("db")).unwrap();
+    other
+        .execute_batch("ALTER TABLE axton_subscription RENAME TO held")
+        .unwrap();
+    assert!(
+        lane.worker
+            .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
+            .is_err()
+    );
+    other
+        .execute_batch("ALTER TABLE held RENAME TO axton_subscription")
+        .unwrap();
+
+    let actions = lane.drain();
+    assert_eq!(
+        statuses(&actions).len(),
+        1,
+        "the completed run must be announced: {actions:?}"
+    );
+    assert_eq!(statuses(&actions)[0].state, BootstrapPhase::Complete);
+    assert_eq!(lane.load("a").state, BootstrapPhase::Complete);
+}
+
 /// One commit per pump: a queued live page and a queued historical answer are
 /// applied by two pumps, in that order.
 #[test]
@@ -1258,42 +1295,47 @@ fn an_undecodable_barrier_candidate_is_reported_once_beside_a_healthy_one() {
     assert_eq!(lane.cursor("bad"), Some(130));
 }
 
-/// A pump that fails after it found a damaged row drops the issue with the rest
-/// of its actions, so the issue is still owed: the next pump reports it.
+/// A pump that fails after finding a damaged row owes the diagnostic. If a new
+/// connection starts before retry, its own scan announces that defect once.
 #[test]
-fn an_issue_a_failed_pump_dropped_is_reported_by_the_next_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut lane = Lane::new(dir.path());
-    let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
-    for channel in ["bad", "waiting"] {
-        lane.saved(channel, 100);
-        lane.intend(channel);
-        finished(&mut lane, channel);
-        lane.client
-            .apply_page(page(channel, 100, 130, Some("caught up")))
-            .unwrap();
-    }
-    tamper(&mut raw, "bad", "bootstrap_error='{not json'");
-    // The reopen finds the damaged row, then fails to settle the healthy one.
-    raw.execute_batch(
-        "CREATE TRIGGER held BEFORE UPDATE ON axton_subscription \
+fn a_failed_pump_reports_each_ledger_issue_once_with_or_without_restart() {
+    for restart in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lane = Lane::new(dir.path());
+        let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
+        for channel in ["bad", "waiting"] {
+            lane.saved(channel, 100);
+            lane.intend(channel);
+            finished(&mut lane, channel);
+            lane.client
+                .apply_page(page(channel, 100, 130, Some("caught up")))
+                .unwrap();
+        }
+        tamper(&mut raw, "bad", "bootstrap_error='{not json'");
+        // The reopen finds the damaged row, then fails to settle the healthy one.
+        raw.execute_batch(
+            "CREATE TRIGGER held BEFORE UPDATE ON axton_subscription \
          BEGIN SELECT RAISE(ABORT, 'held'); END;",
-    )
-    .unwrap();
-    lane.enqueue(DownlinkEvent::Start);
-    assert!(
-        lane.worker
-            .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
-            .is_err(),
-        "the settlement write fails"
-    );
-    raw.execute_batch("DROP TRIGGER held").unwrap();
-    let next = lane.drain();
-    let reported = issues(&next);
-    assert_eq!(reported.len(), 1, "{next:?}");
-    assert_eq!(reported[0].0, "bad");
-    assert!(undecodable(reported[0]), "{reported:?}");
-    assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "and only once");
+        )
+        .unwrap();
+        lane.enqueue(DownlinkEvent::Start);
+        assert!(
+            lane.worker
+                .handle(&mut lane.client, DownlinkEvent::Next, lane.now, 500)
+                .is_err(),
+            "the settlement write fails"
+        );
+        raw.execute_batch("DROP TRIGGER held").unwrap();
+        if restart {
+            lane.enqueue(DownlinkEvent::Start);
+        }
+        let next = lane.drain();
+        let reported = issues(&next);
+        assert_eq!(reported.len(), 1, "{next:?}");
+        assert_eq!(reported[0].0, "bad");
+        assert!(undecodable(reported[0]), "{reported:?}");
+        assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "and only once");
+    }
 }
 
 /// The application hears about ledger issues through the error callback of one

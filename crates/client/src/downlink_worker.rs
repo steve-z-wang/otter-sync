@@ -6,7 +6,7 @@
 //! ([Downlink worker](../../../docs/engineering/architecture/client/connection/controller/downlink-worker.md)).
 use crate::bootstrap_ledger::LedgerIssue;
 use crate::*;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 /// What the host tells the worker. `now` and `entropy` travel beside the event
 /// ([`DownlinkWorker::handle`]). `epoch` names the socket session an event
@@ -123,6 +123,7 @@ pub enum DownlinkAction {
 /// Inbound work that a full page queue may never drop: the handshake, an
 /// overflow to recover from, and the answer to the request in flight. Each one
 /// needs the database, so the pump consumes it, never the enqueue.
+#[derive(Clone)]
 enum Control {
     /// The acknowledgement, already confirmed against the subscribe frame.
     Acknowledged(SubscriptionAck),
@@ -145,6 +146,7 @@ struct Pending {
 /// belongs to the client, not to a session - so replacing the socket neither
 /// cancels nor restarts it, and the answer is validated against what is
 /// committed when it arrives.
+#[derive(Clone)]
 struct PendingBootstrap {
     id: u64,
     subscription_id: u64,
@@ -155,6 +157,7 @@ struct PendingBootstrap {
 /// What the host reported about the historical request in flight, waiting for
 /// the pump that may commit it. It is held apart from the session's control
 /// queue, which an ended session discards: an answer must survive the socket.
+#[derive(Clone)]
 enum Loaded {
     /// The body the request answered with.
     Page(String),
@@ -270,6 +273,13 @@ pub struct DownlinkWorker {
     /// scan that finds the same defect again announces nothing
     /// ([`DownlinkWorker::ledger`]).
     reported: BTreeMap<String, String>,
+    /// Actions decided by a pump that later failed. The host saw none of them,
+    /// but the worker (and possibly SQLite) already advanced. Return them
+    /// before making another fallible decision.
+    pending: Vec<DownlinkAction>,
+    /// Scopes whose delivery committed but whose barrier scan failed. Their
+    /// Changed action is already in the outbox; settlement still needs work.
+    barrier_retry: BTreeSet<String>,
 }
 
 /// Whether an HTTP status is a refusal the server decided, which no retry can
@@ -330,6 +340,9 @@ impl DownlinkWorker {
             // Handled by `handle`; a pump is not queued.
             DownlinkEvent::Next => {}
             DownlinkEvent::Start => {
+                self.discard_pending_io(false);
+                self.pending
+                    .retain(|action| !matches!(action, DownlinkAction::LedgerIssue { .. }));
                 // A lane that replaced a closed one starts clean: the old
                 // host abandoned its socket already, so nothing of a leftover
                 // session is queued or announced to this one.
@@ -347,6 +360,7 @@ impl DownlinkWorker {
                 self.reported.clear();
             }
             DownlinkEvent::Stop => {
+                self.discard_pending_io(true);
                 self.end(None);
                 self.driver.stop();
                 // The lane is gone for good: its request is abandoned and its
@@ -358,6 +372,7 @@ impl DownlinkWorker {
                 self.reopened = false;
             }
             DownlinkEvent::Pause => {
+                self.discard_pending_io(true);
                 if self.session.open() {
                     self.end(None);
                     self.driver.complete(true, now, 0);
@@ -433,6 +448,11 @@ impl DownlinkWorker {
     /// right after a successful rebuild, and never after a failed one
     /// ([#162](https://github.com/zanminwang/axton/issues/162)).
     pub fn reset_for_rebuild(&mut self) {
+        self.discard_pending_io(false);
+        // Old replica states and statuses cannot be replayed against a fresh
+        // file: subscription identity and run counters may be reused there.
+        self.pending.clear();
+        self.barrier_retry.clear();
         // Closing without a `close` action: the host's reset abandons it.
         self.session.close();
         self.control.clear();
@@ -524,6 +544,21 @@ impl DownlinkWorker {
     /// whatever it queued is dropped, since the next session recovers from the
     /// durable cursors.
     fn end(&mut self, reason: Option<String>) {
+        // A failed pump may have held actions for this session that the host
+        // never saw. Its close supersedes those session-bound effects and
+        // status, while committed notifications and historical work survive.
+        self.pending.retain(|action| {
+            !matches!(
+                action,
+                DownlinkAction::Open { .. }
+                    | DownlinkAction::Request {
+                        bootstrap: false,
+                        ..
+                    }
+                    | DownlinkAction::Acknowledged { .. }
+                    | DownlinkAction::Wait { .. }
+            )
+        });
         if let Some(epoch) = self.session.close() {
             self.closing = Some((epoch, reason));
         }
@@ -579,6 +614,58 @@ impl DownlinkWorker {
         }
     }
 
+    /// A control may supersede an I/O decision the host has not received.
+    /// Keep committed notifications, which describe work already in SQLite.
+    /// Stop and pause still owe a close for a socket the host did receive.
+    fn discard_pending_io(&mut self, keep_close: bool) {
+        let unopened: Vec<u64> = self
+            .pending
+            .iter()
+            .filter_map(|action| match action {
+                DownlinkAction::Open { epoch, .. } => Some(*epoch),
+                _ => None,
+            })
+            .collect();
+        let unsent: Vec<u64> = self
+            .pending
+            .iter()
+            .filter_map(|action| match action {
+                DownlinkAction::Request { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect();
+        if self.active.as_ref().is_some_and(|p| unsent.contains(&p.id)) {
+            self.active = None;
+            self.again = false;
+        }
+        if self
+            .bootstrap
+            .as_ref()
+            .is_some_and(|p| unsent.contains(&p.id))
+        {
+            self.bootstrap = None;
+            self.loaded = None;
+            self.loading.wake();
+        }
+        if self
+            .closing
+            .as_ref()
+            .is_some_and(|(epoch, _)| unopened.contains(epoch))
+        {
+            self.closing = None;
+        }
+        self.pending.retain(|action| match action {
+            DownlinkAction::Bootstrap(_)
+            | DownlinkAction::Wake { .. }
+            | DownlinkAction::Report { .. }
+            | DownlinkAction::Changed { .. }
+            | DownlinkAction::LedgerIssue { .. }
+            | DownlinkAction::Reset => true,
+            DownlinkAction::Close { epoch, .. } => keep_close && !unopened.contains(epoch),
+            _ => false,
+        });
+    }
+
     /// One bounded pump: control work first, then at most one page application,
     /// then the lane's next decision. One commit per call, so foreground work
     /// interleaves; the host pumps again while actions come back.
@@ -588,22 +675,48 @@ impl DownlinkWorker {
         now: u64,
         entropy: u64,
     ) -> Result<Vec<DownlinkAction>> {
+        if !self.pending.is_empty() {
+            // A subscription may have changed since the failed pump. Fence
+            // undelivered session I/O before the outbox reaches the host;
+            // committed notifications and historical work still survive.
+            if self.stale(client) {
+                self.invalidate(now);
+            }
+            let mut actions = vec![];
+            if std::mem::take(&mut self.reset) {
+                actions.push(DownlinkAction::Reset);
+            }
+            self.flush(&mut actions);
+            actions.append(&mut self.pending);
+            return Ok(actions);
+        }
         let mut actions = vec![];
         // The host abandons the old replica's I/O before it opens or requests
-        // anything for the new one. A pump that fails drops what it collected,
-        // so the reset is owed to the next one, and so is every ledger issue
-        // it announced: what it remembered as reported is forgotten again.
+        // anything for the new one. A failed pump retains this action with
+        // every other decision and returns them before another fallible step.
         let reset = std::mem::take(&mut self.reset);
         if reset {
             actions.push(DownlinkAction::Reset);
         }
-        let reported = self.reported.clone();
-        let pumped = self.advance(client, now, entropy, &mut actions);
-        if pumped.is_err() {
-            self.reset |= reset;
-            self.reported = reported;
+        match self.advance(client, now, entropy, &mut actions) {
+            Ok(()) => Ok(actions),
+            Err(error) => {
+                // No action reached the host. Keep every decided action and
+                // the progressed worker state; do not replay a database commit
+                // merely to recreate its notification.
+                self.barrier_retry.extend(
+                    actions
+                        .iter()
+                        .filter_map(|action| match action {
+                            DownlinkAction::Changed { scopes } => Some(scopes.iter().cloned()),
+                            _ => None,
+                        })
+                        .flatten(),
+                );
+                self.pending = actions;
+                Err(error)
+            }
         }
-        pumped.map(|()| actions)
     }
 
     /// The pump's body, after the reset: everything it decides is collected
@@ -625,8 +738,15 @@ impl DownlinkWorker {
         // A lane that just started re-evaluates every persisted barrier before
         // it issues anything: a run whose delivery reached its barrier while
         // the client was closed completes without another request.
-        if std::mem::take(&mut self.reopened) && self.resume(client, actions)? {
-            return Ok(());
+        if std::mem::take(&mut self.reopened) {
+            match self.resume(client, actions) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    self.reopened = true;
+                    return Err(error);
+                }
+            }
         }
         let committed = self.process(client, now, entropy, actions)?;
         self.flush(actions);
@@ -639,7 +759,14 @@ impl DownlinkWorker {
         let mut socket = None;
         if !self.session.open() {
             match self.driver.next(now) {
-                ConnectionAction::Sync => self.begin(client, now, actions)?,
+                ConnectionAction::Sync => {
+                    if let Err(error) = self.begin(client, now, actions) {
+                        // `next` reserved the attempt before `begin` read the
+                        // subscriptions. Release it for a bounded retry.
+                        self.driver.complete(false, now, entropy);
+                        return Err(error);
+                    }
+                }
                 ConnectionAction::Wait { millis } => socket = Some(millis),
                 ConnectionAction::Idle => {}
             }
@@ -693,19 +820,34 @@ impl DownlinkWorker {
             let Some(control) = self.control.pop_front() else {
                 break;
             };
-            let committed = match control {
+            let retry = control.clone();
+            let result = match control {
                 Control::Acknowledged(ack) => {
-                    self.acknowledged(client, &ack, now, entropy, actions)?
+                    self.acknowledged(client, &ack, now, entropy, actions)
                 }
-                Control::Overflow => {
-                    self.recover(client, actions)?;
-                    false
+                Control::Overflow => self.recover(client, actions).map(|()| false),
+                Control::Response(body) => self.response(client, &body, now, entropy, actions),
+            };
+            let committed = match result {
+                Ok(committed) => committed,
+                Err(error) => {
+                    // An acknowledgement can be reconsidered from committed
+                    // rows, and a failed page still holds its request slot.
+                    // A response that committed before a later pull failure
+                    // has no slot: its continuation is `again`, not replay.
+                    if !matches!(retry, Control::Response(_)) || self.active.is_some() {
+                        self.control.push_front(retry);
+                    }
+                    return Err(error);
                 }
-                Control::Response(body) => self.response(client, &body, now, entropy, actions)?,
             };
             if committed {
                 return Ok(true);
             }
+        }
+        if self.again && self.active.is_none() {
+            self.pull(client, actions)?;
+            self.again = false;
         }
         // Pages wait while a pull is in flight: its answer moves the cursors
         // they are measured against. A historical page is in neither queue and
@@ -758,18 +900,27 @@ impl DownlinkWorker {
         client: &mut Client<S>,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<()> {
-        let moved: Vec<String> = actions
+        let moved: BTreeSet<String> = actions
             .iter()
             .filter_map(|action| match action {
                 DownlinkAction::Changed { scopes } => Some(scopes.clone()),
                 _ => None,
             })
             .flatten()
+            .chain(self.barrier_retry.iter().cloned())
             .collect();
         if moved.is_empty() {
             return Ok(());
         }
-        let (settled, issues) = client.settle_bootstrap_barriers_scan(&moved)?;
+        let moved: Vec<String> = moved.into_iter().collect();
+        let (settled, issues) = match client.settle_bootstrap_barriers_scan(&moved) {
+            Ok(result) => result,
+            Err(error) => {
+                self.barrier_retry.extend(moved);
+                return Err(error);
+            }
+        };
+        self.barrier_retry.clear();
         self.ledger(issues, Scan::Candidates, actions);
         for state in settled {
             actions.push(DownlinkAction::Bootstrap(state));
@@ -842,6 +993,27 @@ impl DownlinkWorker {
         let Some(pending) = self.bootstrap.take() else {
             return Ok(false);
         };
+        let retry_loaded = loaded.clone();
+        let retry_pending = pending.clone();
+        let result = self.finish_answer(client, now, entropy, actions, loaded, pending);
+        if result.is_err() {
+            // The store rejected this application, so the answer and the
+            // request it names are still the next unit of local work.
+            self.loaded = Some(retry_loaded);
+            self.bootstrap = Some(retry_pending);
+        }
+        result
+    }
+
+    fn finish_answer<S: ClientStore>(
+        &mut self,
+        client: &mut Client<S>,
+        now: u64,
+        entropy: u64,
+        actions: &mut Vec<DownlinkAction>,
+        loaded: Loaded,
+        pending: PendingBootstrap,
+    ) -> Result<bool> {
         let scope = pending.request.channel.clone();
         let body = match loaded {
             Loaded::Failed { status, reason } => {
@@ -947,10 +1119,11 @@ impl DownlinkWorker {
         if !held {
             return Ok(false);
         }
-        if !client.fail_bootstrap(scope, pending.subscription_id, pending.run, error)? {
+        let Some(state) =
+            client.fail_bootstrap_state(scope, pending.subscription_id, pending.run, error)?
+        else {
             return Ok(false);
-        }
-        let state = client.bootstrap_state(scope, pending.subscription_id)?;
+        };
         actions.push(DownlinkAction::Bootstrap(state));
         Ok(true)
     }
@@ -1135,17 +1308,22 @@ impl DownlinkWorker {
                 return Ok(false);
             }
         };
-        let progress = match client.receive_downlink(page, Some(pending.request)) {
+        let progress = match client.receive_downlink(page, Some(pending.request.clone())) {
             Ok(progress) => progress,
             Err(e) if e.to_string() == "response does not match pull request" => {
                 self.fail(client, Some(e.to_string()), now, entropy);
                 return Ok(false);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                self.active = Some(pending);
+                return Err(e);
+            }
         };
         settle(&progress, actions);
-        if !progress.continues.is_empty() || std::mem::take(&mut self.again) {
+        if !progress.continues.is_empty() || self.again {
+            self.again = true;
             self.pull(client, actions)?;
+            self.again = false;
         }
         Ok(progress.disposition == "applied")
     }

@@ -1,7 +1,7 @@
 //! Freeze pushes from queued rows and complete them from their receipts.
 use crate::authority::Held;
 use crate::engine::Engine;
-use crate::queue::{LocalWriteKind, Queued};
+use crate::queue::{LocalWriteKind, OpKind, Queued};
 use crate::store::ClientStore;
 use crate::{ApplyReport, Mutation, Operation, OperationKind};
 use axton_core::{
@@ -313,10 +313,31 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         // Every other accepted companion keeps its local effect at its
         // original position; the replay below folds it into the base once no
-        // earlier pending operation on the record precedes it.
+        // earlier pending operation on the record precedes it. A file from
+        // before companion cascades were companions stored a companion
+        // delete's cascade as an effect: an effect on a descendant of one of
+        // the call's companion deletes is that companion's cascade.
         for q in &accepted {
-            for companion in self.companion_ops(q.ordinal)? {
+            let ops = self.call_ops(q.ordinal)?;
+            let mut cascaded = BTreeSet::new();
+            for op in ops.iter().filter(|o| o.kind == OpKind::Companion) {
+                if op.op.op == OperationKind::Delete {
+                    let key = schema.record_key(&op.op.model, &op.op.identity)?;
+                    for child in self.descendants(&key)? {
+                        cascaded.insert(child.encoded()?);
+                    }
+                }
+            }
+            for companion in ops {
                 let key = schema.record_key(&companion.op.model, &companion.op.identity)?;
+                let owned = match companion.kind {
+                    OpKind::Companion => true,
+                    OpKind::Effect => cascaded.contains(&key.encoded()?),
+                    OpKind::Wire => false,
+                };
+                if !owned {
+                    continue;
+                }
                 let encoded = key.encoded()?;
                 if answered.contains(&encoded) {
                     continue;

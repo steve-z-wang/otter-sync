@@ -1213,3 +1213,242 @@ fn a_file_without_the_local_write_journal_gains_it_in_place() {
         assert_settled(&mut c);
     }
 }
+
+fn family(path: &std::path::Path) -> Client<axton_sqlite::SqliteStore> {
+    Client::open(
+        axton_sqlite::SqliteStore::open(path).unwrap(),
+        family_schema(),
+    )
+    .unwrap()
+}
+fn book_delete(id: &str) -> Operation {
+    Operation {
+        model: "Book".into(),
+        op: OperationKind::Delete,
+        identity: json!({ "id": id }),
+        values: None,
+    }
+}
+fn comment_update(id: &str, text: &str) -> Operation {
+    Operation {
+        model: "Comment".into(),
+        op: OperationKind::Update,
+        identity: json!({ "id": id }),
+        values: Some(json!({ "text": text })),
+    }
+}
+fn title(c: &mut Client<axton_sqlite::SqliteStore>, id: &str) -> Option<String> {
+    c.read(&book(id))
+        .unwrap()
+        .map(|row| row["title"].as_str().unwrap().to_owned())
+}
+fn comment_text(c: &mut Client<axton_sqlite::SqliteStore>, id: &str) -> Option<String> {
+    c.read(&comment(id))
+        .unwrap()
+        .map(|row| row["text"].as_str().unwrap().to_owned())
+}
+/// `Book b` ("B") with `Comment c` ("C"), and `Book other`, all local.
+fn family_start(path: &std::path::Path) -> Client<axton_sqlite::SqliteStore> {
+    let mut c = family(path);
+    c.transaction(|tx| {
+        tx.direct(create("Book", "b", json!({"title":"B"})))?;
+        tx.direct(create("Book", "other", json!({"title":"O"})))?;
+        tx.direct(create("Comment", "c", json!({"bookId":"b","text":"C"})))
+    })
+    .unwrap();
+    c
+}
+/// The status of the queued call `ordinal` on `key`: whether it diverged.
+fn diverged(c: &mut Client<axton_sqlite::SqliteStore>, key: &RecordKey, ordinal: u64) -> bool {
+    c.record_status(key).unwrap()["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["ordinal"] == ordinal && p["diverged"] == true)
+}
+
+/// One call's companions delete a Book, recreate it and recreate its Comment:
+/// the cascade of the delete sits at the delete, before the recreations, so
+/// the recreated Comment replays while the call is pending and survives
+/// acceptance; rejection restores both records.
+#[test]
+fn a_companion_cascade_keeps_its_place_before_later_companions_of_the_same_call() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = family_start(&dir.path().join("db"));
+        // An earlier call on the Comment, rejected below, forces a rebuild of
+        // the Comment while the companion call is still pending.
+        let earlier = c
+            .transaction(|tx| tx.enqueue(Mutation::new("Edit", vec![comment_update("c", "E")])))
+            .unwrap();
+        let mut m = Mutation::new("Edit", vec![book_update("other", "O2")]);
+        m.companion = vec![
+            book_delete("b"),
+            create("Book", "b", json!({"title":"B2"})),
+            create("Comment", "c", json!({"bookId":"b","text":"C2"})),
+        ];
+        m.prerequisites.push("hold".into());
+        let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+        assert_eq!(comment_text(&mut c, "c").as_deref(), Some("C2"));
+        c.freeze().unwrap().unwrap();
+        let r = rejecting(&mut c, 1, &[earlier], "denied", vec![]);
+        c.acknowledge(1, r).unwrap();
+        assert_eq!(
+            comment_text(&mut c, "c").as_deref(),
+            Some("C2"),
+            "the rebuilt Comment replays the call's recreation"
+        );
+        assert!(
+            !diverged(&mut c, &comment("c"), owner),
+            "no replay conflict"
+        );
+        assert_eq!(title(&mut c, "b").as_deref(), Some("B2"));
+        c.set_readiness("hold", Readiness::Ready).unwrap();
+        c.freeze().unwrap().unwrap();
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 2, vec![book_authority("other", "O2", 1)]),
+            Outcome::Rejected => rejecting(&mut c, 2, &[owner], "denied", vec![]),
+        };
+        c.acknowledge(2, r).unwrap();
+        let expected = match outcome {
+            Outcome::Accepted => (Some("B2"), Some("C2")),
+            Outcome::Rejected => (Some("B"), Some("C")),
+        };
+        assert_eq!(
+            (
+                title(&mut c, "b").as_deref(),
+                comment_text(&mut c, "c").as_deref()
+            ),
+            expected,
+            "{outcome:?}"
+        );
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+    }
+}
+
+/// The same order holds for the cascade of a wire delete: it sits at the
+/// delete, so a later wire recreation of the child in the same call replays.
+#[test]
+fn a_wire_cascade_keeps_its_place_before_later_operations_of_the_same_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = family_start(&dir.path().join("db"));
+    let earlier = c
+        .transaction(|tx| tx.enqueue(Mutation::new("Edit", vec![comment_update("c", "E")])))
+        .unwrap();
+    let mut m = Mutation::new(
+        "Replace",
+        vec![
+            book_delete("b"),
+            create("Book", "b", json!({"title":"B2"})),
+            create("Comment", "c", json!({"bookId":"b","text":"C2"})),
+        ],
+    );
+    m.prerequisites.push("hold".into());
+    let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+    c.freeze().unwrap().unwrap();
+    let r = rejecting(&mut c, 1, &[earlier], "denied", vec![]);
+    c.acknowledge(1, r).unwrap();
+    assert_eq!(comment_text(&mut c, "c").as_deref(), Some("C2"));
+    assert!(!diverged(&mut c, &comment("c"), owner));
+}
+
+/// A pending wire delete keeps extending to a child the server delivers for
+/// the deleted parent while a later call's recreation of that parent is
+/// pending: only a local recreation stops the extension.
+#[test]
+fn a_pending_wire_delete_still_hides_a_delivered_child_of_a_parent_recreated_by_a_later_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = family_start(&dir.path().join("db"));
+    c.transaction(|tx| tx.set_channel("a".into(), true))
+        .unwrap();
+    acknowledge(&mut c, &[("a", 0)]);
+    let mut delete = Mutation::new("Delete", vec![book_delete("b")]);
+    delete.prerequisites.push("hold".into());
+    c.transaction(|tx| {
+        tx.enqueue(delete)?;
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![create("Book", "b", json!({"title":"B2"}))],
+        ))
+    })
+    .unwrap();
+    assert_eq!(title(&mut c, "b").as_deref(), Some("B2"));
+    let delivered = AuthorityRecord {
+        model: "Comment".into(),
+        identity: json!({"id":"x"}),
+        stamp: 1,
+        state: json!({"bookId":"b","text":"X"}),
+        error: None,
+    };
+    c.apply_page(multi(&[("a", 0, 1, 1)], vec![delivered]))
+        .unwrap();
+    assert_eq!(
+        comment_text(&mut c, "x"),
+        None,
+        "the pending delete of the old parent extends to its delivered child"
+    );
+}
+
+/// A file written before companion cascades were companions stored a
+/// companion delete's cascade as an effect of its call. Acceptance still
+/// keeps that cascade with the companion, so the child does not come back.
+#[test]
+fn an_old_queued_companion_cascade_stored_as_an_effect_settles_with_its_companion() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut c = family_start(&path);
+        let mut m = Mutation::new("Edit", vec![book_update("other", "O2")]);
+        m.companion.push(book_delete("b"));
+        let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+        drop(c);
+        // Rewrite the call's operations as the earlier runtime stored them:
+        // wire operations, then companions, then every cascade as an effect;
+        // and remove the journal, which that runtime did not have.
+        let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+        raw.execute_batch(&format!(
+            "DELETE FROM axton_mutation_operation WHERE ordinal={owner};
+             INSERT INTO axton_mutation_operation (ordinal, position, kind, model, identity, op, \"values\") VALUES
+               ({owner}, 0, 'wire', 'Book', '{{\"id\":\"other\"}}', 'update', '{{\"title\":\"O2\"}}'),
+               ({owner}, 1, 'companion', 'Book', '{{\"id\":\"b\"}}', 'delete', NULL),
+               ({owner}, 2, 'effect', 'Comment', '{{\"id\":\"c\"}}', 'delete', NULL);
+             DROP TABLE axton_local_write;"
+        ))
+        .unwrap();
+        drop(raw);
+        let mut c = family(&path);
+        assert_eq!(
+            c.read_sql(
+                "SELECT kind FROM axton_mutation_operation WHERE model='Comment'",
+                &[]
+            )
+            .unwrap(),
+            vec![json!({"kind":"effect"})],
+            "an old-format row"
+        );
+        assert_eq!(comment_text(&mut c, "c"), None);
+        c.freeze().unwrap().unwrap();
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 1, vec![book_authority("other", "O2", 1)]),
+            Outcome::Rejected => rejecting(&mut c, 1, &[owner], "denied", vec![]),
+        };
+        c.acknowledge(1, r).unwrap();
+        let expected = match outcome {
+            Outcome::Accepted => (None, None),
+            Outcome::Rejected => (Some("B"), Some("C")),
+        };
+        assert_eq!(
+            (
+                title(&mut c, "b").as_deref(),
+                comment_text(&mut c, "c").as_deref()
+            ),
+            expected,
+            "{outcome:?}"
+        );
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+    }
+}

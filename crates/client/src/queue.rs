@@ -177,7 +177,28 @@ impl<S: ClientStore> Engine<'_, S> {
         )?;
         Ok(())
     }
+    /// Store a call with its operations grouped by kind: wire, companion,
+    /// then effect.
     pub fn insert_mutation(&mut self, ordinal: u64, mutation: &Mutation) -> Result<()> {
+        let grouped: Vec<(OpKind, &Operation)> = mutation
+            .operations
+            .iter()
+            .map(|op| (OpKind::Wire, op))
+            .chain(mutation.companion.iter().map(|op| (OpKind::Companion, op)))
+            .chain(mutation.effects.iter().map(|op| (OpKind::Effect, op)))
+            .collect();
+        self.insert_mutation_ordered(ordinal, mutation, &grouped)
+    }
+    /// Store a call whose operations take their positions from `ordered`,
+    /// the local order they were applied in: a cascade delete sits at the
+    /// delete that caused it, before the call's later operations. `ordered`
+    /// holds exactly the call's wire, companion and effect operations.
+    pub(crate) fn insert_mutation_ordered(
+        &mut self,
+        ordinal: u64,
+        mutation: &Mutation,
+        ordered: &[(OpKind, &Operation)],
+    ) -> Result<()> {
         let args = mutation.args.as_ref().map(canonical_json).transpose()?;
         // NULL is the default (all) policy, including for rows written
         // before the column existed.
@@ -199,16 +220,8 @@ impl<S: ClientStore> Engine<'_, S> {
                 store.map_or(Value::Null, Value::String),
             ],
         )?;
-        let mut position = 0;
-        for (kind, ops) in [
-            (OpKind::Wire, &mutation.operations),
-            (OpKind::Companion, &mutation.companion),
-            (OpKind::Effect, &mutation.effects),
-        ] {
-            for op in ops {
-                self.insert_op(ordinal, position, kind, op)?;
-                position += 1;
-            }
+        for (position, (kind, op)) in (0u64..).zip(ordered) {
+            self.insert_op(ordinal, position, *kind, op)?;
         }
         for (kind, deps) in [
             ("lifecycle", &mutation.lifecycle_dependencies),
@@ -236,10 +249,10 @@ impl<S: ClientStore> Engine<'_, S> {
         let position = as_u64(&next.unwrap_or(json!(0)))?;
         self.insert_op(ordinal, position, kind, op)
     }
-    /// The companion operations of one queued call with their positions.
-    pub(crate) fn companion_ops(&mut self, ordinal: u64) -> Result<Vec<QueuedOp>> {
+    /// The operations of one queued call with their positions and kinds.
+    pub(crate) fn call_ops(&mut self, ordinal: u64) -> Result<Vec<QueuedOp>> {
         Ok(self
-            .ops_by_ordinal("WHERE ordinal=? AND kind='companion'", &[json!(ordinal)])?
+            .ops_by_ordinal("WHERE ordinal=?", &[json!(ordinal)])?
             .into_values()
             .flatten()
             .collect())

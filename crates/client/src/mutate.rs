@@ -294,10 +294,27 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(result)
     }
+    /// Whether the last delete of `parent` by call `ordinal` is followed by a
+    /// local recreation: a create later in the same call, or a settled local
+    /// write (a direct write or an accepted companion) after it. A recreation
+    /// by a later pending call is not one: the server has yet to answer both.
+    fn recreated_locally(&mut self, parent: &RecordKey, ordinal: u64) -> Result<bool> {
+        let steps = self.history(parent)?;
+        let Some(at) = steps.iter().rposition(|step| {
+            matches!(step, Step::Pending(q) if q.ordinal == ordinal && q.op.op == OperationKind::Delete)
+        }) else {
+            return Ok(false);
+        };
+        Ok(steps[at + 1..].iter().any(|step| match step {
+            Step::Pending(q) => q.ordinal == ordinal && q.op.op == OperationKind::Create,
+            Step::Settled(w) => w.op.op == OperationKind::Create,
+        }))
+    }
     /// Extend queued deletes to descendants that appeared after they were
-    /// queued. A parent visible again was recreated by a later write: its
-    /// current children belong to that write, not to the earlier delete.
-    /// A companion delete's cascade stays the call's companion.
+    /// queued. A parent visible again because a local write recreated it
+    /// after the delete keeps its current children: they belong to that
+    /// recreation, not to the earlier delete. A companion delete's cascade
+    /// stays the call's companion.
     pub fn refresh_pending(&mut self) -> Result<()> {
         for queued in self.queued()? {
             let deletes: Vec<(OpKind, Operation)> = queued
@@ -317,7 +334,9 @@ impl<S: ClientStore> Engine<'_, S> {
                 .collect();
             for (kind, op) in deletes {
                 let parent = self.schema.record_key(&op.model, &op.identity)?;
-                if self.read_row(&parent)?.is_some() {
+                if self.read_row(&parent)?.is_some()
+                    && self.recreated_locally(&parent, queued.ordinal)?
+                {
                     continue;
                 }
                 for child in self.descendants(&parent)? {
@@ -416,10 +435,11 @@ impl<S: ClientStore> Engine<'_, S> {
             }
         }
         mutation.effects.clear();
-        let mut effects = vec![];
-        // The cascade of a companion delete is the call's companion too: it
-        // settles locally with the call, never on the wire.
-        let mut companion_cascades = vec![];
+        // Every operation in the local order it is applied in: a delete's
+        // cascade first, then the delete. The cascade of a companion delete is
+        // the call's companion too: it settles locally with the call, never
+        // on the wire.
+        let mut ordered: Vec<(OpKind, Operation)> = vec![];
         let wire = mutation.operations.len();
         let mut all: Vec<Operation> = mutation
             .operations
@@ -432,6 +452,11 @@ impl<S: ClientStore> Engine<'_, S> {
             normalize(self.schema, op)?;
             let key = self.schema.record_key(&op.model, &op.identity)?;
             self.hold_truth(&key)?;
+            let (own, cascade_kind) = if index < wire {
+                (OpKind::Wire, OpKind::Effect)
+            } else {
+                (OpKind::Companion, OpKind::Companion)
+            };
             if op.op == OperationKind::Delete {
                 for child in self.descendants(&key)? {
                     self.hold_truth(&child)?;
@@ -442,22 +467,27 @@ impl<S: ClientStore> Engine<'_, S> {
                         values: None,
                     };
                     self.apply_main(&cascade)?;
-                    if index < wire {
-                        effects.push(cascade);
-                    } else {
-                        companion_cascades.push(cascade);
-                    }
+                    ordered.push((cascade_kind, cascade));
                 }
             }
             self.apply_main(op)?;
+            ordered.push((own, op.clone()));
         }
-        mutation.companion = all.split_off(wire);
-        mutation.companion.extend(companion_cascades);
-        mutation.operations = all;
-        mutation.effects = effects;
+        let of = |kind: OpKind| -> Vec<Operation> {
+            ordered
+                .iter()
+                .filter(|(k, _)| *k == kind)
+                .map(|(_, op)| op.clone())
+                .collect()
+        };
+        mutation.operations = of(OpKind::Wire);
+        mutation.companion = of(OpKind::Companion);
+        mutation.effects = of(OpKind::Effect);
         policies::derive(self, &mut mutation)?;
         let ordinal = self.allocate_ordinal()?;
-        self.insert_mutation(ordinal, &mutation)?;
+        let ordered: Vec<(OpKind, &Operation)> =
+            ordered.iter().map(|(kind, op)| (*kind, op)).collect();
+        self.insert_mutation_ordered(ordinal, &mutation, &ordered)?;
         Ok(ordinal)
     }
     /// A local write that is never sent: it moves the truth along with the row.

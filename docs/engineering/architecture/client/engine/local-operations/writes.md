@@ -13,6 +13,9 @@ Two kinds of write enter here, both as operations `{model, op, identity, values}
 | Named mutation (wire operations, plus optional *companion* operations) | `enqueue` | wire operations yes, companions never | yes, with its companions |
 | Direct write | `direct` | never | no: it is final at commit |
 
+<!-- txm-draft: verify against implementation -->
+A named Mutation submitted inside an application transaction takes the same path: `submit_mutation` enqueues it without opening another transaction, and each write of its `local` callback enters through `append_companion` as a companion of that call. Ownership is explicit: a direct write in the same transaction, before or after the submission, stays an independent direct write, and a companion belongs only to the call whose callback issued it, however many calls the transaction submits ([Frontend interface](../../frontend-interface.md#6-runtime-view)).
+
 A companion is owned by the one call that carries it; a cascade delete of a companion delete is that call's companion too. A delete's cascade is stored at the delete's place in the call, before the call's later operations, so a call that deletes a parent and then recreates it or its children replays in the order it was written. Its effect is local only and follows the call's outcome ([Settlement](../settlement.md)).
 
 Writes owns the visible table and the before-image table of every model ([Storage / Reconciliation](../../storage/reconciliation.md) creates them). It hands finished mutations to the [Queue](../push/queue.md) and calls [Dependencies](../push/dependencies.md) to derive what each mutation waits for. [Pull](../pull.md) and [Settlement](../settlement.md) call back into it to record server truth and to rebuild rows.
@@ -31,6 +34,9 @@ Code: `enqueue`, `direct`, `hold_truth`, `rebuild`, `set_authority`, `descendant
 ## 6. Runtime View
 
 **Enqueueing a mutation.** Each operation is normalized against the schema (identity, full state for a create, patch for an update). For every operation, in order: copy the record aside if it is clean, apply the operation to the visible table, and if it is a delete, do the same for every child the schema cascades to, recording those child deletes as *effects* of the mutation. Then dependency and prerequisite metadata is derived and the mutation is stored with a new ordinal. Everything happens in one savepoint, so a failure such as a unique-index violation undoes only this mutation.
+
+<!-- txm-draft: verify against implementation -->
+**Appending a companion.** A companion from a transaction's `local` callback is normalized against the schema like any operation, applied to the visible table at once, with the record copied aside first if it is clean and a delete's cascade stored at its place, and then stored as a companion row of its call after the operations already written for it. It shares the enclosing transaction's fate; after commit it is durable data, so reopen, retry and settlement never run the callback again.
 
 **A direct write.** The operation is applied to the visible table, with the same cascade for deletes. If the record is dirty, the write is also retained in the journal after everything already written, so neither a rejection nor an acceptance of earlier work undoes or reorders it (guarantee L4). If the record's existence is itself pending (the before image is "absent"), the write goes with the create if the create is rejected: it cannot preserve a record whose only creation went. A direct write on a clean record touches only the visible table.
 

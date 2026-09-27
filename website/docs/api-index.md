@@ -4,6 +4,7 @@ Use this index to find the interface you call or implement. Local Model examples
 
 ## Application interfaces
 
+<!-- txm-draft: verify against implementation -->
 | Interface | Use it to | Reference |
 | --- | --- | --- |
 | `GeneratedClient.open` | Open a local database and optionally start background sync | [Generated client](frontend/client-api.md#open-a-client) |
@@ -14,6 +15,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |
 | `tx.channels.subscribe / unsubscribe` | Change local Channel intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
+| `tx.mutations.<name>(args, { local })` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
 | `client.mutations.call.<name>` | Run a Mutation directly and await its final result | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>`, `client.queries.enqueue.<name>` | Run a Query directly, or queue it durably and receive a `Call<Output>` | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>(args, { once, refresh })`, `client.queries.invalidate.<name>` | Reuse, refresh or discard the saved complete result of a direct Query | [Reuse a Query result](frontend/client-api.md#reuse-a-query-result-with-once) |

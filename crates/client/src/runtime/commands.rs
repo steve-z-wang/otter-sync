@@ -131,7 +131,17 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Rebuild { .. }
         | Command::ScopeSubscribe { .. }
         | Command::Watch { .. }
-        | Command::Unwatch { .. } => {
+        | Command::Unwatch { .. }
+        | Command::LoadStart { .. }
+        | Command::LoadGet { .. }
+        | Command::LoadStatus { .. }
+        | Command::LoadList { .. }
+        | Command::LoadWait { .. }
+        | Command::LoadCancel { .. }
+        | Command::LoadRetry { .. }
+        | Command::LoadForget { .. }
+        | Command::LoadInvalidate { .. }
+        | Command::LoadDispose { .. } => {
             return Err(invalid("a runtime lifecycle is not a client command"));
         }
     })

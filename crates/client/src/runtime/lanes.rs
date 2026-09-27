@@ -145,6 +145,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         });
         self.lanes.connection.start(now);
         self.enqueue_downlink(DownlinkEvent::Start, now, entropy);
+        self.loads.worker.wake();
         Ok(Value::Null)
     }
 
@@ -168,8 +169,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     connection.paused = false;
                 }
                 self.wake_push();
+                self.loads.worker.wake();
             }
-            ConnectionEvent::Wake => self.wake_lanes(now, entropy),
+            ConnectionEvent::Wake => {
+                self.wake_lanes(now, entropy);
+                self.loads.worker.wake();
+            }
             ConnectionEvent::Stop => self.stop_lanes(),
         }
         Ok(Value::Null)
@@ -214,6 +219,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             );
         }
         self.cancel_lane_effects(false);
+        self.abandon_loads();
         let Some(connection) = &mut self.connection else {
             return;
         };
@@ -238,6 +244,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 false
             }
             Waiter::Direct { .. } => true,
+            Waiter::Load { .. } => false,
         });
         let abandoned = sent.is_some() || refreshing;
         if abandoned {
@@ -276,6 +283,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.abandon_session(epoch);
         }
         self.cancel_lane_effects(true);
+        self.abandon_loads();
         if let Some(refresh) = self.connection.as_ref().and_then(|c| c.refreshing.clone()) {
             self.cancel_effect(&refresh);
         }

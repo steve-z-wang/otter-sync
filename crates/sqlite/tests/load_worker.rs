@@ -1,0 +1,358 @@
+//! The shared Load worker's decisions over a real SQLite ledger
+//! ([#173](https://github.com/zanminwang/axton/issues/173)): bounded batches
+//! with no waiting to fill, one page per job, a slot held until every answer
+//! was consumed, oldest-ready order with requeue after a committed page, and
+//! capped jittered backoff from persisted attempts. The test plays the
+//! runtime: it applies each answer with the ledger's reference sequence and
+//! tells the worker it was consumed. Time and entropy are values.
+mod common;
+use axton_client::*;
+use axton_sqlite::SqliteStore;
+use common::*;
+use serde_json::{Value, json};
+use std::path::Path;
+
+const ENTROPY: u64 = 200;
+
+fn open_db(path: &Path) -> Client<SqliteStore> {
+    Client::open(SqliteStore::open(path).unwrap(), load_schema()).unwrap()
+}
+fn start(c: &mut Client<SqliteStore>) -> String {
+    c.start_load("Recent", 1, &json!({}), LoadOptions::default())
+        .unwrap()
+        .job
+        .id
+}
+fn dispatch(w: &mut LoadWorker, c: &mut Client<SqliteStore>, now: u64) -> Option<LoadDispatch> {
+    w.dispatch(c, now, ENTROPY).unwrap().dispatch
+}
+fn loads(d: &LoadDispatch) -> Vec<String> {
+    d.pages.iter().map(|p| p.fence.load_id.clone()).collect()
+}
+/// The response to a dispatched batch: every page answered by `answer`.
+fn respond(d: &LoadDispatch, answer: impl Fn(&LoadFence) -> Value) -> Vec<u8> {
+    let request: Value = serde_json::from_str(&d.body).unwrap();
+    assert_eq!(request["loads"].as_array().unwrap().len(), d.pages.len());
+    serde_json::to_vec(
+        &json!({"loads": d.pages.iter().map(|p| answer(&p.fence)).collect::<Vec<_>>()}),
+    )
+    .unwrap()
+}
+fn page_value(fence: &LoadFence, next: Option<Value>) -> Value {
+    serde_json::to_value(load_page(fence, &[], next)).unwrap()
+}
+/// Apply one received answer the way the runtime does, and consume it.
+fn consume(w: &mut LoadWorker, c: &mut Client<SqliteStore>, now: u64) -> LoadStored {
+    let received = w.next_outcome().expect("an outcome");
+    let stored = match received.answer {
+        LoadAnswer::Reply(reply) => c.store_load_page(&received.sent.fence, reply).unwrap(),
+        LoadAnswer::Failure(failure) => {
+            match c
+                .record_load_failure(&received.sent.fence, &failure)
+                .unwrap()
+            {
+                Some(job) if job.phase == LoadPhase::Failed => LoadStored::Failed(job),
+                Some(job) => LoadStored::Retrying(job),
+                None => LoadStored::Stale,
+            }
+        }
+    };
+    let id = received.sent.fence.load_id.clone();
+    match &stored {
+        LoadStored::Retrying(job) => w.back_off(
+            &id,
+            job.call_id.as_deref().unwrap(),
+            job.attempts,
+            now,
+            ENTROPY,
+        ),
+        _ => w.settled(&id),
+    }
+    w.consumed(received.batch, &id);
+    stored
+}
+
+#[test]
+fn nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    // One ready job goes alone: nothing waits to fill a batch.
+    let alone = start(&mut c);
+    w.wake();
+    assert!(w.wants_dispatch());
+    let first = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&first), [alone]);
+    w.answered(first.batch, &respond(&first, |f| page_value(f, None)))
+        .unwrap();
+    assert!(matches!(
+        consume(&mut w, &mut c, 0),
+        LoadStored::Applied { .. }
+    ));
+    // Nine ready jobs: the oldest eight, then one.
+    let started: Vec<String> = (0..9).map(|_| start(&mut c)).collect();
+    w.wake();
+    let eight = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&eight), started[..8]);
+    let request: LoadBatchRequest = serde_json::from_str(&eight.body).unwrap();
+    assert_eq!(
+        String::from_utf8(request.encode().unwrap()).unwrap(),
+        eight.body,
+        "the canonical request body"
+    );
+    assert!(w.wants_dispatch(), "more may be ready");
+    let one = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&one), started[8..]);
+    assert_ne!(eight.batch, one.batch);
+    assert_eq!(w.batches(), 2);
+    assert!(!w.wants_dispatch(), "two batches out: no third");
+}
+
+#[test]
+fn a_job_never_has_two_pages_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let a = start(&mut c);
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).unwrap();
+    assert!(w.in_flight(&a));
+    // Requested: a later dispatch leaves it out.
+    let b = start(&mut c);
+    w.wake();
+    assert_eq!(loads(&dispatch(&mut w, &mut c, 0).unwrap()), [b]);
+    // Answered and waiting for the writer: still left out.
+    w.answered(
+        sent.batch,
+        &respond(&sent, |f| page_value(f, Some(json!(2)))),
+    )
+    .unwrap();
+    w.wake();
+    assert!(dispatch(&mut w, &mut c, 0).is_none());
+    assert!(w.in_flight(&a));
+    // Applied: its next page is a new frozen call and may go.
+    assert!(matches!(
+        consume(&mut w, &mut c, 0),
+        LoadStored::Applied { .. }
+    ));
+    assert!(!w.in_flight(&a));
+    assert!(w.wants_dispatch());
+    let next = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&next), [a]);
+    assert_ne!(next.pages[0].fence.call_id, sent.pages[0].fence.call_id);
+}
+
+#[test]
+fn sixteen_unconsumed_outcomes_hold_both_slots_until_each_batch_is_consumed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let started: Vec<String> = (0..20).map(|_| start(&mut c)).collect();
+    w.wake();
+    let first = dispatch(&mut w, &mut c, 0).unwrap();
+    let second = dispatch(&mut w, &mut c, 0).unwrap();
+    for batch in [&first, &second] {
+        w.answered(
+            batch.batch,
+            &respond(batch, |f| page_value(f, Some(json!(2)))),
+        )
+        .unwrap();
+    }
+    assert_eq!(w.waiting_outcomes(), 16);
+    w.wake();
+    assert!(!w.wants_dispatch(), "sixteen outcomes: no slot");
+    assert!(dispatch(&mut w, &mut c, 0).is_none());
+    // Seven of the first batch consumed: its slot is still held.
+    for _ in 0..7 {
+        consume(&mut w, &mut c, 0);
+    }
+    assert!(!w.wants_dispatch());
+    assert!(dispatch(&mut w, &mut c, 0).is_none());
+    // Its eighth frees the slot: the never-sent jobs go first, then the
+    // requeued ones in commit order.
+    consume(&mut w, &mut c, 0);
+    assert!(w.wants_dispatch());
+    let third = dispatch(&mut w, &mut c, 0).unwrap();
+    let expected: Vec<String> = started[16..].iter().chain(&started[..4]).cloned().collect();
+    assert_eq!(loads(&third), expected);
+    assert!(!w.wants_dispatch());
+}
+
+#[test]
+fn backoff_doubles_from_one_second_is_jittered_and_capped() {
+    assert_eq!(load_backoff(1, 200), 1_000);
+    assert_eq!(load_backoff(2, 200), 2_000);
+    assert_eq!(load_backoff(3, 200), 4_000);
+    assert_eq!(load_backoff(1, 0), 800, "-20 % jitter");
+    assert_eq!(load_backoff(1, 400), 1_200, "+20 % jitter");
+    assert_eq!(
+        load_backoff(0, 200),
+        1_000,
+        "a first retry never waits less"
+    );
+    for attempts in [6, 7, 64, u64::MAX] {
+        for entropy in [0, 200, 400, u64::MAX] {
+            let delay = load_backoff(attempts, entropy);
+            assert!(
+                (24_000..=30_000).contains(&delay),
+                "{attempts} {entropy}: {delay}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_job_backing_off_holds_back_no_ready_job_and_goes_again_when_due() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let slow = start(&mut c);
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).unwrap();
+    w.failed(sent.batch, LoadFailure::transport("offline"));
+    let LoadStored::Retrying(job) = consume(&mut w, &mut c, 1_000) else {
+        panic!("a retryable failure")
+    };
+    assert_eq!(
+        job.call_id.as_deref(),
+        Some(sent.pages[0].fence.call_id.as_str())
+    );
+    assert!(w.backing_off(&slow, 1_000));
+    assert_eq!(w.next_due(1_000), Some(2_000));
+    // Nine more jobs: the oldest one backs off, the next eight go.
+    let others: Vec<String> = (0..9).map(|_| start(&mut c)).collect();
+    w.wake();
+    let batch = dispatch(&mut w, &mut c, 1_500).unwrap();
+    assert_eq!(loads(&batch), others[..8]);
+    // Due: it goes again under its frozen call, ahead of younger jobs.
+    w.wake();
+    let again = dispatch(&mut w, &mut c, 2_000).unwrap();
+    assert_eq!(loads(&again), [slow.clone(), others[8].clone()]);
+    assert_eq!(again.pages[0].fence.call_id, sent.pages[0].fence.call_id);
+    assert_eq!(again.pages[0].attempts, 1);
+}
+
+#[test]
+fn persisted_attempts_wait_a_fresh_bounded_delay_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    let mut w = LoadWorker::default();
+    let id = start(&mut c);
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).unwrap();
+    w.failed(sent.batch, LoadFailure::transport("offline"));
+    consume(&mut w, &mut c, 0);
+    w.wake();
+    let again = dispatch(&mut w, &mut c, 1_000).unwrap();
+    w.failed(again.batch, LoadFailure::transport("offline"));
+    consume(&mut w, &mut c, 1_000);
+    assert_eq!(c.get_load(&id).unwrap().unwrap().attempts, 2);
+    drop(c);
+    // A fresh worker over the reopened ledger: no monotonic deadline
+    // survived, so the job waits the delay of its two attempts from now.
+    let mut c = open_db(&path);
+    let mut w = LoadWorker::default();
+    w.wake();
+    assert!(dispatch(&mut w, &mut c, 50_000).is_none());
+    assert!(w.backing_off(&id, 50_000));
+    assert_eq!(w.next_due(50_000), Some(52_000));
+    w.wake();
+    assert!(dispatch(&mut w, &mut c, 51_999).is_none());
+    w.wake();
+    let resent = dispatch(&mut w, &mut c, 52_000).unwrap();
+    assert_eq!(resent.pages[0].fence.call_id, sent.pages[0].fence.call_id);
+}
+
+#[test]
+fn an_uncorrelated_response_keeps_every_frozen_call_and_a_pause_counts_no_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    let a = start(&mut c);
+    let b = start(&mut c);
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).unwrap();
+    // Only one of two pages answered: the envelope is refused whole.
+    let missing =
+        serde_json::to_vec(&json!({"loads":[page_value(&sent.pages[0].fence, None)]})).unwrap();
+    assert!(w.answered(sent.batch, &missing).is_err());
+    for id in [&a, &b] {
+        let LoadStored::Retrying(job) = consume(&mut w, &mut c, 0) else {
+            panic!("retried")
+        };
+        assert_eq!(&job.id, id);
+        assert_eq!(job.retry, Some(LoadRetryClass::Transport));
+        assert_eq!(c.get_load(id).unwrap().unwrap().pages, 0);
+    }
+    // An abandoned (paused) request releases its slot and its jobs without
+    // an attempt; once their delay passed they go at once.
+    w.wake();
+    let resent = dispatch(&mut w, &mut c, 1_000).unwrap();
+    w.abandon(resent.batch);
+    assert_eq!(w.batches(), 0);
+    assert!(!w.in_flight(&a));
+    w.wake();
+    let after = dispatch(&mut w, &mut c, 1_000).unwrap();
+    assert_eq!(loads(&after), [a.clone(), b.clone()]);
+    assert_eq!(c.get_load(&a).unwrap().unwrap().attempts, 1);
+}
+
+#[test]
+fn a_batch_stops_at_the_request_byte_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let mut w = LoadWorker::default();
+    // Each frozen request carries about 300 KB of arguments: three fit in
+    // one 1 MiB request, the fourth goes with the next batch.
+    let started: Vec<String> = (0..4)
+        .map(|n| {
+            let tag = format!("{n}{}", "x".repeat(300_000));
+            c.start_load(
+                "Tagged",
+                1,
+                &json!({ "tags": [tag] }),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .job
+            .id
+        })
+        .collect();
+    w.wake();
+    let first = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&first), started[..3]);
+    assert!(first.body.len() <= limits::LOAD_REQUEST_BYTES);
+    let second = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&second), started[3..]);
+}
+
+#[test]
+fn damaged_rows_are_reported_once_and_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    let mut w = LoadWorker::default();
+    let broken = start(&mut c);
+    let healthy = start(&mut c);
+    SqliteStore::open(&path)
+        .unwrap()
+        .execute_batch(&format!(
+            "UPDATE axton_load SET intent = 'x' WHERE load_id = '{broken}'"
+        ))
+        .unwrap();
+    w.wake();
+    let step = w.dispatch(&mut c, 0, ENTROPY).unwrap();
+    assert_eq!(
+        step.issues
+            .iter()
+            .map(|i| i.load_id.clone())
+            .collect::<Vec<_>>(),
+        [broken]
+    );
+    assert_eq!(loads(&step.dispatch.unwrap()), [healthy]);
+    w.wake();
+    let step = w.dispatch(&mut c, 0, ENTROPY).unwrap();
+    assert!(step.issues.is_empty(), "reported once");
+    assert!(step.dispatch.is_none());
+}

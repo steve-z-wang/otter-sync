@@ -44,6 +44,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if self.lifecycle != Lifecycle::Open {
             return Err(BridgeError::Closed);
         }
+        self.loads.clock = self.loads.clock.max(now);
         match input {
             Input::Task {
                 request_id,
@@ -108,6 +109,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
             Lifecycle::Open => {}
         }
+        self.loads.clock = self.loads.clock.max(now);
         let ran = self.unit(now, entropy);
         if ran {
             self.publish();
@@ -152,9 +154,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .connection
                 .as_ref()
                 .is_some_and(|c| c.downlink.dirty || c.push.dirty)
+            || self.load_ready()
     }
-    /// One lane unit: a ready continuation, else a Downlink pump, else a
-    /// push-lane turn. A continuation that committed wakes both lanes.
+    /// One lane unit: a ready continuation, else a Load unit, a Downlink pump
+    /// or a push-lane turn. The Load lane alternates with the other two: when
+    /// both have work, the one that did not have the last turn goes. A
+    /// continuation that committed wakes both lanes.
     fn lane_unit(&mut self, now: u64, entropy: u64) {
         if let Some(ready) = self.ready.pop_front() {
             let generation = self.client.generation();
@@ -172,12 +177,19 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
             return;
         }
-        let Some(connection) = &self.connection else {
+        let (downlink, push) = self
+            .connection
+            .as_ref()
+            .map_or((false, false), |c| (c.downlink.dirty, c.push.dirty));
+        if self.load_ready() && (!self.loads.served || !(downlink || push)) {
+            self.loads.served = true;
+            self.load_turn(now, entropy);
             return;
-        };
-        if connection.downlink.dirty {
+        }
+        self.loads.served = false;
+        if downlink {
             self.downlink_turn(now, entropy);
-        } else if connection.push.dirty {
+        } else if push {
             self.push_turn(now, entropy);
         }
     }
@@ -290,6 +302,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Command::ScopeBootstrap { .. } => self.bootstrap_scope(&request_id, &command),
             Command::Watch { model, spec } => Some(self.watch(model, spec.as_ref())),
             Command::Unwatch { observer_id } => Some(self.unwatch(observer_id)),
+            Command::LoadStart { .. }
+            | Command::LoadGet { .. }
+            | Command::LoadStatus { .. }
+            | Command::LoadList { .. }
+            | Command::LoadWait { .. }
+            | Command::LoadCancel { .. }
+            | Command::LoadRetry { .. }
+            | Command::LoadForget { .. }
+            | Command::LoadInvalidate { .. }
+            | Command::LoadDispose { .. } => self.load_task(&request_id, &command),
             _ => Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string())),
         };
         self.committed_since(generation);
@@ -334,6 +356,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.lanes.downlink.reset_for_rebuild();
         self.fail_directs(direct::EXECUTION_UNKNOWN);
         self.rebuilt_prerequisites();
+        self.rebuilt_loads();
         self.rebuilt_lanes(now, entropy);
         self.observers.stale = true;
         self.rebuilt_observers();
@@ -400,7 +423,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     // them as unavailable after this session is rolled back.
                     StoreContinuation::Direct { .. } => {}
                     continuation => {
-                        continuation.fail(self, "client_closed".into(), None, None, 0, 0)
+                        continuation.fail(self, "client_closed".into(), None, None, &[], 0, 0)
                     }
                 },
             }
@@ -415,6 +438,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.finish_prerequisites(Err("client_closed".into()));
         self.ready.clear();
         self.close_lanes();
+        self.close_loads();
         self.close_observers();
         self.lifecycle = Lifecycle::Closed;
         self.events.push(Event::RuntimeClosed);

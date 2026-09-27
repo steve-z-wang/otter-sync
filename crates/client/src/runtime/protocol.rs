@@ -274,6 +274,67 @@ pub enum Command {
     #[serde(rename_all = "camelCase")]
     Unwatch { observer_id: String },
 
+    // --- Native Loads (#173); refused inside a callback transaction ---
+    /// Start a Load: a local commit that needs no connection. `once` and
+    /// `refresh` are call-site options, never business arguments, and must be
+    /// booleans when present. Answers `{loadId, observerId, start, status}`,
+    /// `start` being `created`, `joined` or `reused`; the observer publishes
+    /// the job's status after the answer.
+    LoadStart {
+        name: String,
+        #[serde(deserialize_with = "counter")]
+        version: u64,
+        args: Value,
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        once: Option<Value>,
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        refresh: Option<Value>,
+    },
+    /// Reattach to a job of this replica: `null`, or
+    /// `{loadId, observerId, status}` with a fresh observer.
+    #[serde(rename_all = "camelCase")]
+    LoadGet { load_id: String },
+    /// The job's current status snapshot.
+    #[serde(rename_all = "camelCase")]
+    LoadStatus { load_id: String },
+    /// The statuses of the most recently started jobs, newest first; `limit`
+    /// is 1 to 100, 50 when absent.
+    LoadList {
+        #[serde(
+            default,
+            deserialize_with = "present",
+            skip_serializing_if = "Option::is_none"
+        )]
+        limit: Option<Value>,
+    },
+    /// Wait for the job's current run: `null` after its final page committed,
+    /// or its terminal error.
+    #[serde(rename_all = "camelCase")]
+    LoadWait { load_id: String },
+    /// Cancel the job; answers its status.
+    #[serde(rename_all = "camelCase")]
+    LoadCancel { load_id: String },
+    /// Read a failed job again from its committed continuation; answers its
+    /// status.
+    #[serde(rename_all = "camelCase")]
+    LoadRetry { load_id: String },
+    /// Delete a terminal job.
+    #[serde(rename_all = "camelCase")]
+    LoadForget { load_id: String },
+    /// Remove the once mappings of `name` for `args`; answers `{removed}`.
+    LoadInvalidate { name: String, args: Value },
+    /// Release one handle's observer; the job is untouched.
+    #[serde(rename_all = "camelCase")]
+    LoadDispose { observer_id: String },
+
     /// Never on the wire: a command that did not decode. Its request is
     /// completed with `error`, the decoding failure.
     #[serde(skip)]
@@ -519,7 +580,13 @@ pub enum Event {
     ///   "waiting-for-initialization"|"loading"|"catching-up"|"complete"|
     ///   "failed","error":null|{"code","message"}}}}` - the SDK
     ///   `SubscriptionStatus`, verbatim;
-    /// - a watch observer (`watch`): `{"kind":"watch","rows":[…]}`.
+    /// - a watch observer (`watch`): `{"kind":"watch","rows":[…]}`;
+    /// - a Load handle (`loadStart`, `loadGet`): `{"kind":"load","status":
+    ///   {"id","name","version","phase","pages","error"}}`, the phase being
+    ///   `pending`, `loading`, `waiting`, `complete`, `failed` or
+    ///   `cancelled`. A terminal snapshot also carries `"code"`:
+    ///   `client_closed`, or `load.schema_changed` when a rebuild replaced
+    ///   the replica the job belonged to.
     ///
     /// A terminal snapshot adds `"closed": true` and nothing follows it for
     /// that observer: a subscription that was removed, replaced by a rebuild
@@ -561,7 +628,9 @@ pub enum Operation {
         changes: Vec<StoreChange>,
     },
     /// `POST` `body` to the route: `push` is `/sync/mutations`, `pull` is
-    /// `/sync/pull`, `action` is `/sync/actions`. Answer `ok` with
+    /// `/sync/pull`, `action` is `/sync/actions`, `load` is `/sync/loads`.
+    /// A host must refuse a route it does not know rather than post it
+    /// elsewhere. Answer `ok` with
     /// `{"status": <HTTP status>, "body": <response text>}` (a bare string is
     /// read as the body), or a failure carrying the HTTP status when there was
     /// one: a non-2xx answer is a failure, and a 401 is what asks for a
@@ -596,6 +665,8 @@ pub enum HttpRoute {
     Pull,
     /// `/sync/actions`: a direct Query or Mutation.
     Action,
+    /// `/sync/loads`: a batch of native Load pages.
+    Load,
 }
 
 /// What a [`Event::Report`] carries.
@@ -724,6 +795,16 @@ mod tests {
                 },
             ),
             (
+                json!({"type":"effect","effectId":"8","operation":{"kind":"http","route":"load","body":"{}"}}),
+                Event::Effect {
+                    effect_id: "8".into(),
+                    operation: Operation::Http {
+                        route: HttpRoute::Load,
+                        body: "{}".into(),
+                    },
+                },
+            ),
+            (
                 json!({"type":"effect","effectId":"7","operation":{"kind":"timer","millis":250}}),
                 Event::Effect {
                     effect_id: "7".into(),
@@ -833,6 +914,18 @@ mod tests {
             serde_json::from_value::<Input>(json!({"type":"task","command":{"kind":"status"}}))
                 .is_err()
         );
+        // A Load start keeps its options beside its arguments, as given.
+        match serde_json::from_value(json!({"type":"task","requestId":"2","command":{"kind":"loadStart","name":"L","version":1,"args":{"once":1},"once":"yes"}})).unwrap() {
+            Input::Task {
+                command: Command::LoadStart { args, once, refresh, .. },
+                ..
+            } => {
+                assert_eq!(args, json!({"once":1}));
+                assert_eq!(once, Some(json!("yes")), "validated by the runtime, not the decoder");
+                assert_eq!(refresh, None);
+            }
+            other => panic!("{other:?}"),
+        }
         // An explicit null option is kept apart from an absent one.
         match serde_json::from_value(json!({"type":"task","requestId":"1","command":{"kind":"invoke","name":"N","version":1,"args":{},"store":null}})).unwrap() {
             Input::Task {

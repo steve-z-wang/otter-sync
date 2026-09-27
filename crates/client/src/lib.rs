@@ -12,6 +12,7 @@ pub mod engine;
 pub mod ledger;
 pub mod live;
 mod load_ledger;
+pub mod load_worker;
 pub mod loads;
 mod mutate;
 mod policies;
@@ -37,6 +38,9 @@ pub use connection::*;
 pub use downlink_worker::*;
 pub use live::*;
 pub use load_ledger::LoadLedgerIssue;
+pub use load_worker::{
+    LoadAnswer, LoadDispatch, LoadDispatchStep, LoadReceived, LoadSent, LoadWorker, load_backoff,
+};
 pub use loads::{
     LoadApply, LoadDiagnostic, LoadFailure, LoadFence, LoadJob, LoadJobError, LoadOnceKey,
     LoadOptions, LoadPageStep, LoadPageTask, LoadPhase, LoadRetryClass, LoadSchedule,

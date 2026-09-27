@@ -1393,6 +1393,47 @@ impl<S: ClientStore + 'static> Harness<S> {
             })
             .collect()
     }
+    /// Every committed row a transactional submission can write: the queue,
+    /// the local write journal, rejections, record stamps, the client
+    /// counters, and the Entry rows with their before images.
+    fn recovery_state(&mut self) -> Value {
+        let mut state = serde_json::Map::new();
+        for (name, sql) in [
+            (
+                "axton_mutation",
+                "SELECT * FROM axton_mutation ORDER BY ordinal",
+            ),
+            (
+                "axton_mutation_operation",
+                "SELECT * FROM axton_mutation_operation ORDER BY ordinal, position",
+            ),
+            (
+                "axton_local_write",
+                "SELECT * FROM axton_local_write ORDER BY sequence",
+            ),
+            (
+                "axton_rejection",
+                "SELECT * FROM axton_rejection ORDER BY ordinal",
+            ),
+            (
+                "axton_record",
+                "SELECT * FROM axton_record ORDER BY model, identity",
+            ),
+            (
+                "axton_client",
+                "SELECT next_ordinal, next_push, last_completed_push FROM axton_client",
+            ),
+            ("Entry", "SELECT * FROM Entry ORDER BY id"),
+            (
+                "axton_before_Entry",
+                "SELECT * FROM axton_before_Entry ORDER BY id",
+            ),
+        ] {
+            let rows = self.runtime.client().read_sql(sql, &[]).unwrap();
+            state.insert(name.into(), Value::Array(rows));
+        }
+        Value::Object(state)
+    }
 }
 
 /// A named Mutation submitted by the callback answers its `{callId,
@@ -1827,6 +1868,168 @@ fn a_rollback_or_failed_commit_turns_every_provisional_call_rolled_back() {
     assert_eq!(h.pending(), 0);
     let (frozen, _) = h.call("freeze", json!({"kind":"freeze"}));
     assert_eq!(frozen, done("freeze", Value::Null));
+}
+
+/// Where the local unit read -> submit -> local companion delete -> later
+/// outer write -> commit is made to fail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LocalStep {
+    Read,
+    Submit,
+    Companion,
+    Callback,
+    OuterWrite,
+    Commit,
+}
+
+/// Spec §10 #1: the read, the submission, its local companion delete, a
+/// later outer write and the commit are one local unit. A failure injected
+/// at any step, with the remaining steps still issued, leaves none of it:
+/// no queue row, before image, local write journal row, record stamp or
+/// counter survives, and no call is ever committed. Without a failure the
+/// same sequence commits all of it, so the store is writable after each
+/// failure and the comparison is not vacuous.
+#[test]
+fn a_failure_at_any_local_step_leaves_no_call_companion_or_recovery_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let store = FailingCommit {
+        inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+        armed: armed.clone(),
+    };
+    let mut h = Harness {
+        runtime: ClientRuntime::new(Client::open(store, mutation_schema(Value::Null)).unwrap()),
+        _dir: dir,
+    };
+    h.task("seed", create("draft", "local"));
+    assert_eq!(h.run(), vec![done("seed", Value::Null)]);
+    let initial = h.recovery_state();
+    let edit = |id: &str| {
+        json!({"kind":"direct","operation":{"model":"Entry","op":"update",
+            "identity":{"id":id},"values":{"text":"edited"}}})
+    };
+    let steps = [
+        LocalStep::Read,
+        LocalStep::Submit,
+        LocalStep::Companion,
+        LocalStep::Callback,
+        LocalStep::OuterWrite,
+        LocalStep::Commit,
+    ];
+    for fail in steps.into_iter().map(Some).chain([None]) {
+        let at = |step| fail == Some(step);
+        let a = h.begin("tx");
+        let read_command = if at(LocalStep::Read) {
+            json!({"kind":"read","key":{"model":"Nope","identity":{"id":"draft"}}})
+        } else {
+            read("draft")
+        };
+        h.command("read", &a.transaction, None, read_command);
+        let events = h.run();
+        assert_eq!(
+            events[0]["ok"],
+            !at(LocalStep::Read),
+            "{fail:?}: {events:?}"
+        );
+        let mut call = None;
+        if at(LocalStep::Submit) {
+            h.command(
+                "s",
+                &a.transaction,
+                None,
+                submit_mutation("Publish", json!({"entry":{"id":"p","extra":1}}), true),
+            );
+            let events = h.run();
+            assert_eq!(events.len(), 1, "{events:?}");
+            assert_eq!(events[0]["ok"], false, "{events:?}");
+        } else {
+            let local = h.local("s", &a.transaction, None, publish("p"));
+            let companion = if at(LocalStep::Companion) {
+                missing_model()
+            } else {
+                delete("draft")
+            };
+            h.companion("d", &local, None, companion);
+            let events = h.run();
+            assert_eq!(
+                events[0]["ok"],
+                !at(LocalStep::Companion),
+                "{fail:?}: {events:?}"
+            );
+            if at(LocalStep::Callback) {
+                h.finish_local(&local, false, Some("boom"));
+            } else {
+                h.finish_local(&local, true, None);
+            }
+            let events = h.run();
+            if at(LocalStep::Companion) || at(LocalStep::Callback) {
+                assert_eq!(events[0]["ok"], false, "{fail:?}: {events:?}");
+            } else {
+                call = Some(submitted(&events, "s"));
+            }
+        }
+        // The outer write edits the call's Entry, or the Draft when no call
+        // was submitted; either way it is a write the rollback must undo.
+        let write = if at(LocalStep::OuterWrite) {
+            missing_model()
+        } else if at(LocalStep::Submit) {
+            edit("draft")
+        } else {
+            edit("p")
+        };
+        h.command("w", &a.transaction, None, write);
+        let events = h.run();
+        assert_eq!(
+            events[0]["ok"],
+            !at(LocalStep::OuterWrite),
+            "{fail:?}: {events:?}"
+        );
+        armed.store(at(LocalStep::Commit), Ordering::SeqCst);
+        h.callback(&a, true, None);
+        let events = h.run();
+        let outcome = events.last().unwrap();
+        assert_eq!(outcome["requestId"], "tx");
+        let Some(fail) = fail else {
+            assert_eq!(outcome["ok"], true, "{events:?}");
+            assert_eq!(
+                call_states(&events),
+                vec![call_state(call.as_ref().unwrap(), "committed")]
+            );
+            continue;
+        };
+        assert_eq!(outcome["ok"], false, "{fail:?}: {events:?}");
+        // A call that was answered is rolled back; a failed one never had a
+        // Call to announce.
+        let expected: Vec<Value> = call
+            .iter()
+            .map(|call| call_state(call, "rolledBack"))
+            .collect();
+        assert_eq!(call_states(&events), expected, "{fail:?}");
+        assert_eq!(
+            h.recovery_state(),
+            initial,
+            "{fail:?} left part of the unit"
+        );
+        let (frozen, _) = h.call("freeze", json!({"kind":"freeze"}));
+        assert_eq!(frozen, done("freeze", Value::Null), "{fail:?}");
+    }
+    // The unit without a failure: every piece committed together.
+    let state = h.recovery_state();
+    assert_eq!(state["axton_mutation"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        h.operations(),
+        ["wire Entry p create", "companion Entry draft delete"]
+    );
+    assert_eq!(
+        state["axton_before_Entry"],
+        json!([{"id":"draft","text":"local","note":null}])
+    );
+    let journal = state["axton_local_write"].as_array().unwrap();
+    assert_eq!(journal.len(), 1, "{journal:?}");
+    assert_eq!(journal[0]["disposition"], "independent");
+    assert_eq!(h.entry("draft"), None);
+    assert_eq!(h.entry("p").unwrap()["text"], "edited");
+    assert_ne!(state["axton_client"], initial["axton_client"]);
 }
 
 /// Close while a local callback runs: the session rolls back, both callback

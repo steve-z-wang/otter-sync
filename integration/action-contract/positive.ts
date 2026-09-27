@@ -106,6 +106,7 @@ async function loadContract(client: GeneratedClient) {
   const noArgs = await client.loads.recentTodos({}, { once: false });
   // Business inputs may take the option names: options stay a separate argument.
   const flagged = await client.loads.flaggedTodos({ once: true, refresh: 'yes' }, { once: true });
+  const byClient: Load<'ClientTodos'> = await client.loads.clientTodos({ client: 'c' });
   const status: LoadStatus<'ProjectTodos'> = job.status;
   const name: 'ProjectTodos' = status.name;
   const phase: LoadPhase = status.phase;
@@ -124,9 +125,10 @@ async function loadContract(client: GeneratedClient) {
   const invalidated: void = await client.loads.invalidate.projectTodos({ projectId: 'p', status: null, tags: [] });
   await client.loads.invalidate.recentTodos({});
   await client.loads.invalidate.flaggedTodos({ once: false, refresh: 'no' });
+  await client.loads.invalidate.clientTodos({ client: 'c' });
   const options: LoadOptions = { once: true };
   try { await job.wait(); } catch (thrown) { if (thrown instanceof LoadError) { const code: string = thrown.code; const message: string = thrown.message; void [code, message]; } }
-  void [refreshed, ordinary, noArgs, flagged, name, phase, pages, error, waited, disposed, restored, recent, defaults, invalidated, options];
+  void [refreshed, ordinary, noArgs, flagged, byClient, name, phase, pages, error, waited, disposed, restored, recent, defaults, invalidated, options];
 }
 
 type Tx = { db: unknown };
@@ -184,9 +186,10 @@ const loads: Loads<Tx> = {
   },
   async recentTodos({ args }) { void args; return { data: { todos: [] }, next: null }; },
   async flaggedTodos({ args }) { const once: boolean = args.once; const refresh: string = args.refresh; void [once, refresh]; return { data: { todos: [] }, next: null }; },
+  async clientTodos({ args }) { const client: string = args.client; void client; return { data: { todos: [] }, next: null }; },
 };
 const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => ({ data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState });
-const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos };
+const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
 declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
 void [loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];

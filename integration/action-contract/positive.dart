@@ -200,6 +200,8 @@ Future<void> useLoads(GeneratedClient client) async {
   final Load ordinary = await client.loads.projectTodos(projectId: 'p', status: null, tags: []);
   final Load noArgs = await client.loads.recentTodos(once: true);
   final Load flagged = await client.loads.flaggedTodos(once: true, refresh: 'yes', callOnce: true, callRefresh: false);
+  // An input named client still reaches the generated route's client field.
+  final Load byClient = await client.loads.clientTodos(client: 'c', once: true);
   final LoadStatus status = job.status;
   final String name = status.name;
   final LoadPhase phase = status.phase;
@@ -218,13 +220,14 @@ Future<void> useLoads(GeneratedClient client) async {
   await client.loads.invalidate.projectTodos(projectId: 'p', status: null, tags: []);
   await client.loads.invalidate.recentTodos();
   await client.loads.invalidate.flaggedTodos(once: false, refresh: 'no');
+  await client.loads.invalidate.clientTodos(client: 'c');
   try {
     await job.wait();
   } on LoadException catch (thrown) {
     thrown.code;
     thrown.message;
   }
-  [refreshed, ordinary, noArgs, flagged, name, phase, pages, error, restored, recent, defaults];
+  [refreshed, ordinary, noArgs, flagged, byClient, name, phase, pages, error, restored, recent, defaults];
 }
 
 void main() {

@@ -493,6 +493,24 @@ fn the_client_starts_invalidates_and_reattaches_typed_loads() {
 }
 
 #[test]
+fn a_load_input_named_client_does_not_shadow_the_dart_route() {
+    let config = compile(&source(
+        "load ByClient(client String) { notes Note[] }\nload AllNotes() { notes Note[] }",
+    ))
+    .unwrap();
+    let dart = axton_compiler::dart(&config);
+    for expected in [
+        " Future<Load> byClient({required String client, bool once = false, bool refresh = false}) => this.client.startLoad('ByClient', 1, {'client': client}, once: once, refresh: refresh);",
+        " Future<void> byClient({required String client}) => this.client.invalidateLoad('ByClient', {'client': client});",
+        // Other Loads keep the plain field reference.
+        " Future<Load> allNotes({bool once = false, bool refresh = false}) => client.startLoad('AllNotes', 1, {}, once: once, refresh: refresh);",
+        " Future<void> allNotes() => client.invalidateLoad('AllNotes', {});",
+    ] {
+        assert!(dart.contains(expected), "{expected}: {dart}");
+    }
+}
+
+#[test]
 fn the_client_starts_the_newest_retained_load_version() {
     let mut config: Value = compile(&source("@version(2) load Todos() { todos Todo[] }")).unwrap();
     let mut old = config["loads"][0].clone();

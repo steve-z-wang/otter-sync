@@ -123,6 +123,19 @@ fn dart_encode_input(input: &Value, x: &str) -> String {
         expr
     }
 }
+/// The route field as a Load method body names it: `this.client` when a
+/// business input named `client` shadows the field, `client` otherwise (so
+/// no `unnecessary_this` lint fires on ordinary Loads).
+fn dart_route(load: &Value) -> &'static str {
+    if arr(load, "inputs")
+        .iter()
+        .any(|arg| s(arg, "name") == "client")
+    {
+        "this.client"
+    } else {
+        "client"
+    }
+}
 /// The named business parameters and their args map of one Load.
 fn dart_business(load: &Value) -> (Vec<String>, String) {
     let params = arr(load, "inputs")
@@ -164,7 +177,7 @@ pub(crate) fn dart_client(v: &Value, o: &mut String) {
         let (once, refresh) = dart_option_params(taken);
         params.push(format!("bool {once} = false"));
         params.push(format!("bool {refresh} = false"));
-        writeln!(o, " Future<Load> {}({{{}}}) => client.startLoad('{name}', {}, {{{args}}}, once: {once}, refresh: {refresh});", lower(name), params.join(", "), load["version"]).unwrap();
+        writeln!(o, " Future<Load> {}({{{}}}) => {}.startLoad('{name}', {}, {{{args}}}, once: {once}, refresh: {refresh});", lower(name), params.join(", "), dart_route(load), load["version"]).unwrap();
     }
     o.push_str(" Future<Load?> get(String id) => client.getLoad(id);\n Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);\n}\n");
     o.push_str("/// Removes the once registrations of one Load argument set across its retained versions, offline; no job is cancelled and no Model deleted.\nclass LoadInvalidations {\n final Client client; LoadInvalidations(this.client);\n");
@@ -178,8 +191,9 @@ pub(crate) fn dart_client(v: &Value, o: &mut String) {
         };
         writeln!(
             o,
-            " Future<void> {}({signature}) => client.invalidateLoad('{name}', {{{args}}});",
-            lower(name)
+            " Future<void> {}({signature}) => {}.invalidateLoad('{name}', {{{args}}});",
+            lower(name),
+            dart_route(load)
         )
         .unwrap();
     }

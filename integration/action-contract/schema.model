@@ -65,3 +65,5 @@ load ProjectTodos(projectId String, status Status?, tags String[]) {
 // Dart then names the call-site controls callOnce and callRefresh.
 load RecentTodos() { todos Todo[] }
 load FlaggedTodos(once Boolean, refresh String) { todos Todo[] }
+// A business input named client: the Dart route must still reach the field.
+load ClientTodos(client String) { todos Todo[] }

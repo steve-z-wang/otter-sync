@@ -13,12 +13,13 @@
 - The [spec](../specs/2026-09-26-17-on-store-design.md) owns behavior. No schema annotation, backend protocol/version change or database migration is required.
 - Baseline inspected: main `1fc412f`. Rebase onto main including #167 before implementing Downlink continuations; preserve #162/#163 fencing.
 - Incoming-only payloads: upsert has identity and full row; delete has identity. No previous row and no synthesized cascade events.
+- Hook registrations snapshot both names and callback function values at open. Validate against `origin.target` when pending, otherwise the current schema; suspend target callbacks while old-schema work drains, activating them after rebuild.
 - Hook reads see the pre-store local view plus transaction writes. Local operations/optimism/replay never trigger hooks.
 - All callback effects, incoming authority, receipt settlement, once cache and delivery progress commit or roll back together. Completion and observer events follow commit.
-- Models run sequentially in ordinal schema-name order; records retain incoming order, including repeated identities. No hook runs for Older, Same, Conflict or preflight failures.
+- Models run sequentially in ordinal schema-name order; records retain accepted incoming order, including repeated identities in the internal journal. Existing Page/Receipt/Bootstrap wire validation still rejects duplicate identities within one payload; the decoded Direct test exercises journal ordering. No hook runs for Older, Same, Conflict or preflight failures.
 - Hook failure is `store_hook_failed`, not backend rejection. Retries may invoke callbacks again; a permanently failing callback can block a Channel or the frozen uplink batch.
 - `store:false` does not suppress mandatory input-target authority. Extra backend touch is not caller authority under #140. Business result snapshots remain independent.
-- Do not implement #144, #152, eviction, hook timeouts, a response inbox, or public response retry handles here.
+- Admitted push receipts may be retained in memory for local retry. Inadmissible replies go back to the network with frozen request bytes; reopen uses backend replay and rebuild clears saved memory. Do not implement #144, #152, eviction, hook timeouts, a durable response inbox, or public response retry handles here.
 - Do not update unrelated generated fixtures or deploy/publish packages. One PR may contain the sequential checkpoints below; no checkpoint is independently advertised as the complete feature.
 
 ## File ownership
@@ -50,7 +51,7 @@ pub enum StoreChange {
 }
 ```
 
-- [ ] Add real-SQLite scenarios in `crates/sqlite/tests/store_hooks.rs`: a pending optimistic edit over an older base; a newer incoming row; repeated identities with increasing/equal/decreasing stamps; a malformed/constraint-failing row beside a valid row; a parent cascade. Preparation must report the accepted incoming entries while a transaction read still returns the original visible row.
+- [ ] Add real-SQLite scenarios in `crates/sqlite/tests/store_hooks.rs`: a pending optimistic edit over an older base; a newer incoming row; repeated identities with increasing/equal/decreasing stamps through an already decoded Direct payload (wire Page/Receipt/Bootstrap duplicates remain invalid); a malformed/constraint-failing row beside a valid row; a parent cascade. Preparation must report the accepted incoming entries while a transaction read still returns the original visible row.
 - [ ] Run `cargo test -p axton-sqlite --test store_hooks --locked`; record the expected failure before implementation.
 - [ ] Extract delivery bodies from closure-only `Client::write` wrappers so they can execute under `Client::begin_session` without nesting a transaction. Keep the current synchronous wrappers for no-hook callers and existing simulations.
 - [ ] Instrument successful `stage_isolated` acceptance to collect original occurrence indices and normalized server inputs. Use one internal savepoint to run the delivery application preflight, including the existing receipt companion/base and settlement ordering. Do not infer inputs from a final database diff.

@@ -31,7 +31,7 @@ The interface is the `Client` and `ClientTransaction` types in [client/lib.rs](.
 
 **Every write** goes through one path: begin, run the body, bump the generation with `UPDATE … WHERE generation = ?`, commit. A handle whose generation is behind the database's fails that update with `stale client writer` and rolls back; this is how a forgotten handle is fenced out after another one wrote (guarantee R4). A failed commit is followed by a rollback so the store never stays inside an open transaction.
 
-**Sessions** exist for a transaction that spans several calls: the runtime opens one for an application callback and runs the callback's commands inside it ([Runtime](runtime.md#6-runtime-view)). While a session is open, sync commands are refused, and `commit_session` refuses to commit with an unclosed savepoint.
+**Sessions** exist for a transaction that spans several calls: the runtime opens one for an application callback and runs the callback's commands inside it ([Runtime](runtime.md#6-runtime-view)). For incoming authority with matching hooks, `prepare_store` preflights the complete delivery under a reversible savepoint, records accepted incoming occurrences, and restores the pre-store rows, stamps, held keys, reports and completion state before callbacks run. `apply_prepared_store` replays only accepted occurrences after callbacks; a newly failing promised occurrence aborts the whole session. Known preflight record failures keep their path-specific isolation. Without a matching hook, delivery uses its existing single-pass path. While a session is open, sync commands are refused, and `commit_session` refuses to commit with an unclosed savepoint.
 
 **Reads outside a transaction** use the committed reader connection, so a long session in the same process does not block them and they do not see its uncommitted writes.
 
@@ -45,6 +45,7 @@ The interface is the `Client` and `ClientTransaction` types in [client/lib.rs](.
 
 ## 10. Quality Requirements
 
+- **Preparation restores the pre-store view and records accepted occurrences; callback writes and promised authority then share one commit or rollback.** Evidence: [sqlite/tests/store_hooks.rs](../../../../crates/sqlite/tests/store_hooks.rs) `prepares_newer_authority_under_optimism_without_changing_visible_row`, `repeated_identities_select_occurrences_and_preserve_known_failures`, `callback_constraint_failure_aborts_entire_prepared_unit`, `duplicate_wire_page_is_rejected_before_preparation_changes_anything`.
 - **A committed write survives close and reopen; identity, queue and rejections persist** (guarantee L2). Evidence: [sqlite/tests/client.rs](../../../../crates/sqlite/tests/client.rs) `open_creates_tables_persists_identity_and_survives_reopen`.
 - **An error anywhere in a transaction rolls back the whole transaction; a savepoint confines its own scope** (guarantee L3). Evidence: `local_transaction_and_mutation_savepoint_have_independent_fate`, `session_reads_own_writes_without_notifying_until_commit_and_blocks_other_writes`.
 - **A stale handle cannot commit** (guarantee R4). Evidence: `stale_writer_cannot_overwrite_committed_database`.
@@ -59,4 +60,4 @@ Executed 2026-09-16 (2026-09-25 for the subscription bullet): `cargo test -p axt
 
 **Accepted limitation.** `drop_mutation` refuses a mutation that has been frozen, because its outcome is unknown until the receipt arrives. The consequence for a batch the server keeps failing is recorded under [Batching](engine/push/batching.md).
 
-**To confirm.** Applications cannot run code inside the page transaction; [#17](https://github.com/zanminwang/axton/issues/17) proposes such a hook and notes the binding constraint.
+**Accepted limitation.** A hook runs only for eligible incoming server authority, not for local writes or every later change to a record. An unresolved callback holds this client's transaction; [Runtime](runtime.md#6-runtime-view) owns cancellation and failure reporting.

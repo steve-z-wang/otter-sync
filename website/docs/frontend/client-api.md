@@ -35,12 +35,60 @@ Both examples open local storage. To start background sync, supply `server` as s
 | --- | --- | --- |
 | `path` | Yes | SQLite file to create or reopen. The application selects a writable directory. Use a separate file per signed-in user. |
 | `server` | No | Backend URL and credentials: `ServerOptions` in TypeScript, `SyncServer` in Dart. AXTON manages durable and direct Mutation and Query requests, HTTP catch-up and WebSocket updates. |
+| `onStore` | No | Per-Model callbacks for incoming server authority, run inside its local storage transaction before the authority is stored. |
 | `connection` (TypeScript) | No | `onError`, `refreshAuth` and `directTimeoutMs` for the connection. `onError` also receives an `AxtonReport` for each record AXTON could not apply ([Sync](sync.md#recover-from-connection-failures)). |
 | `onError`, `refreshAuth`, `directTimeout` (Dart) | No | Callbacks and a `Duration` for direct requests, passed to `open`. |
 | `libraryPath` (Dart) | Outside iOS | Absolute native library path; iOS can use symbols linked into the process. |
 | `migration` | No | Defaults and optional cursor rewind for an explicitly changed schema. See [runtime migration](runtime.md#opening-and-schema-changes). |
 
 Returns `Promise<GeneratedClient>` / `Future<GeneratedClient>`. Opening can fail on native library loading, an unwritable or incompatible database, or an invalid schema. Completion means local storage is open, not that initial server data has arrived. Omitting `server` keeps the client local-only.
+
+## React to incoming records
+
+Register an `onStore` callback when opening the generated client. This example changes local Channel intent for each incoming Entry; use Channel names your backend actually publishes to.
+
+=== "TypeScript"
+
+    ```ts
+    const client = await GeneratedClient.open({
+      path: 'local.sqlite',
+      onStore: {
+        async entry(tx, changes) {
+          for (const change of changes) {
+            const channel = `entry:${change.identity.id}`;
+            if (change.kind === 'upsert') {
+              await tx.channels.subscribe(channel);
+            } else {
+              await tx.channels.unsubscribe(channel);
+            }
+          }
+        },
+      },
+    });
+    ```
+
+=== "Flutter"
+
+    ```dart
+    final client = await GeneratedClient.open(
+      path: 'local.sqlite',
+      libraryPath: '/absolute/path/to/libaxton_dart.dylib',
+      onStore: StoreHooks(
+        entry: (tx, changes) async {
+          for (final change in changes) {
+            final channel = 'entry:${change.identity.id}';
+            if (change is StoreUpsert<EntryIdentity, Entry>) {
+              await tx.channels.subscribe(channel);
+            } else {
+              await tx.channels.unsubscribe(channel);
+            }
+          }
+        },
+      ),
+    );
+    ```
+
+The callback receives typed incoming upserts (identity and full row) and deletes (identity only). It can read the pre-store local view and write local Models through `tx.models`; `tx.channels` changes only local subscription intent and returns no handle. These writes, incoming authority and delivery progress commit together. A failed callback rolls them back and reports `store_hook_failed`; delivery may invoke it again, and a permanently failing callback can block that Channel or the current push batch. Local CRUD, optimistic replay, and authority excluded from local storage by the call's `store` option do not invoke it. `store: false` still stores mandatory Mutation input authority, which may invoke its hook. See [sync and recovery](sync.md#recover-from-connection-failures) for connection diagnostics.
 
 ## Model APIs
 

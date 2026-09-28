@@ -1220,80 +1220,113 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         return callbackJson(result);
       });
   };
-  const bindTransaction = (tx: T) => {
-    if (sessions.has(tx)) throw new Error("transaction already bound");
+  /**
+   * Runs `operation` under one session bound to `tx`: every host callback is
+   * tracked, and the operation completes only once none is unfinished or
+   * failed. Answers its value and the Channels it published to, which the
+   * caller wakes after `tx` commits. A transaction holds one session at a
+   * time, so AXTON never settles into a transaction it is already serving.
+   */
+  const bound = async <R,>(
+    tx: T,
+    operation: (session: Session) => Promise<R>,
+  ): Promise<{ result: R; published: string[] }> => {
+    if (sessions.has(tx))
+      throw new Error(
+        "transaction already bound: AXTON is serving it; declare through its own handles",
+      );
     const session = new Session();
     sessions.set(tx, session);
-    return {
-      assertCommittable: () => session.assertCommittable(),
-      afterCommit: () => {
-        const scopes = [...session.touched];
-        return () => wakes.notify(scopes);
-      },
-      close: () => {
-        session.closed = true;
-        sessions.delete(tx);
-      },
-    };
+    try {
+      const result = await operation(session);
+      await session.assertCommittable();
+      return { result, published: [...session.touched] };
+    } catch (error) {
+      // Preserve the original database error so the caller can retry serialization failures.
+      while (session.pending.size)
+        await Promise.allSettled([...session.pending]);
+      throw session.failed ?? error;
+    } finally {
+      session.closed = true;
+      sessions.delete(tx);
+    }
   };
   const run = async <R,>(
     operation: (tx: T, session: Session) => Promise<R>,
   ) => {
     let committed: string[] = [];
     const result = await options.database.transaction(async (tx) => {
-      const bound = bindTransaction(tx);
-      const session = sessions.get(tx)!;
-      try {
-        const result = await operation(tx, session);
-        await bound.assertCommittable();
-        committed = [...session.touched];
-        return result;
-      } catch (error) {
-        // Preserve the original database error so the caller can retry serialization failures.
-        while (session.pending.size)
-          await Promise.allSettled([...session.pending]);
-        throw session.failed ?? error;
-      } finally {
-        bound.close();
-      }
+      const { result, published } = await bound(tx, (session) =>
+        operation(tx, session),
+      );
+      committed = published;
+      return result;
     });
     wakes.notify(committed);
     return result;
   };
   /**
-   * Runs `body` in one application transaction with a Mutation's `channel` and
-   * `touch`. After the body returns, the engine settles what it declared in
-   * the same transaction: one new stamp per touched record, published at that
+   * Runs `body` with a Mutation's `channel` and `touch`, then settles what it
+   * declared in `tx`: one new stamp per touched record, published at that
    * stamp to each Channel it is a member of, and each newly added member
    * published once. The handles close when the body settles, whether it
-   * returns or throws. After the driver commits, the live subscribers of
-   * every channel published to are woken; a failure rolls back and wakes
-   * nobody. Answers the body's own value. Not for use inside a handler, which
-   * already has a transaction.
+   * returns or throws.
+   */
+  const settle = async <R,>(
+    tx: T,
+    session: Session,
+    body: (call: External) => R | Promise<R>,
+  ): Promise<R> => {
+    const effects = createEffects();
+    let result: R;
+    try {
+      const call: TransactionCall<T> = {
+        tx,
+        channel: effects.channel,
+        touch: effects.touch,
+      };
+      result = await body(call as unknown as External);
+    } finally {
+      effects.close();
+    }
+    await session.track(() =>
+      native.settleExternal(
+        config,
+        JSON.stringify(effects.settlement()),
+        host(tx, session),
+      ),
+    );
+    return result;
+  };
+  /**
+   * Runs `body` in one application transaction the framework opens, and
+   * settles its declarations there. After the driver commits, the live
+   * subscribers of every channel published to are woken; a failure rolls
+   * back and wakes nobody. Answers the body's own value. Not for use inside
+   * a handler, which already has a transaction.
    */
   const transaction = <R,>(body: (call: External) => Promise<R>): Promise<R> =>
-    run(async (tx, session) => {
-      const effects = createEffects();
-      let result: R;
-      try {
-        const call: TransactionCall<T> = {
-          tx,
-          channel: effects.channel,
-          touch: effects.touch,
-        };
-        result = await body(call as unknown as External);
-      } finally {
-        effects.close();
-      }
-      await session.track(() =>
-        native.settleExternal(
-          config,
-          JSON.stringify(effects.settlement()),
-          host(tx, session),
-        ),
-      );
-      return result;
-    });
+    run((tx, session) => settle(tx, session, body));
+  /**
+   * Settles `body`'s declarations in `tx`, a transaction the application
+   * opened and still owns, before this call resolves: the stamps,
+   * memberships and positions are written through `tx`, so they commit or
+   * roll back with it, a savepoint included. Answers the wake: call it once
+   * `tx` has committed, and never after a rollback; until then no live
+   * subscriber hears of the change. A thrown database error is the original
+   * one, for the caller's retry loop. Refuses a transaction the framework
+   * is serving (a handler's or `backend.transaction`'s): declare through
+   * its own handles instead.
+   */
+  const publish = async (
+    tx: T,
+    body: (call: External) => void | Promise<void>,
+  ): Promise<() => void> => {
+    const { published } = await bound(tx, (session) =>
+      settle(tx, session, body),
+    );
+    return () => wakes.notify(published);
+  };
   const text = (request: Uint8Array | string) =>
     typeof request === "string"
       ? request
@@ -1444,6 +1477,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     notifyCommitted: (scopes: readonly string[]) => wakes.notify(scopes),
     closeLive: () => wakes.clear(),
     transaction,
+    publish,
   };
   const authenticate = async (request: IncomingMessage) => {
     const id = await options.authenticate(request);

@@ -418,3 +418,31 @@ test('a later subscriber read failure is isolated from the committed mutation',a
  assert.deepEqual(replay.completions,receipt.completions,'its saved outcome still replays');
  assert.deepEqual(delivered(await pull({iso:0})),[['iso',1,{title:'iso-declare'}]]);
 });
+// #180 on the pg shim, at PostgreSQL's default Read Committed: a transaction the
+// application opened on its own pool client, as a host that owns its transaction does.
+const ownedPg=async body=>{
+ const client=await pool.connect();
+ try{await client.query('BEGIN');try{const result=await body(client);await client.query('COMMIT');return result;}catch(error){await client.query('ROLLBACK');throw error;}}
+ finally{client.release();}
+};
+test('backend.publish settles in a caller-owned Read Committed transaction and reads memberships committed before its touch',async()=>{
+ await seed('owned-rc','v1');await add('owned-rc-a',['owned-rc']);
+ let entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});
+ const caller=ownedPg(async tx=>{
+  await driver.query(tx,'SELECT 1',[]);entered();await gate;
+  await write(tx,'owned-rc','v2');
+  return backend.publish(tx,({touch})=>{touch.todo({id:'owned-rc'});});
+ });
+ await inside;
+ // Committed after the caller began and before it touches: its settlement must still see it.
+ await add('owned-rc-b',['owned-rc']);
+ release();
+ const wake=await caller;
+ await settled();let woke=0;const unsubscribe=backend.onCommitted('owned-rc-b',()=>{woke++;});
+ assert.equal(await stamp('owned-rc'),2);
+ assert.deepEqual(await position('owned-rc-a','owned-rc'),[2,2]);
+ assert.deepEqual(await position('owned-rc-b','owned-rc'),[2,2],'the newer member hears the change at its final stamp');
+ await settled();assert.equal(woke,0);wake();await settled();assert.equal(woke,1);
+ assert.deepEqual(delivered(await pull({'owned-rc-b':1})),[['owned-rc',2,{title:'v2'}]]);
+ unsubscribe();
+});

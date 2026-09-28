@@ -39,6 +39,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `admit`, `Admit`, `AdmissionRefusal` | Refuse an outdated or unwanted client with your own status and body | [Admission](backend/api.md#admission) |
 | `CallRejected`, `translateRejection`, `onError`, `EngineError` | Reject business operations and diagnose failures | [Errors](backend/api.md#errors) |
 | `backend.transaction`, `TransactionCall` | Write outside a handler with the same `touch` and `channel`; subscribers wake after commit | [Background writes](backend/api.md#background-writes) |
+| `backend.publish` | Settle the same `touch` and `channel` inside a transaction your code already owns; call the returned wake after it commits | [In a transaction you own](backend/api.md#in-a-transaction-you-own) |
 | `pg`, `prisma`, `drizzle`, `PostgresDriver`, `persistence` | Run business and sync storage in one PostgreSQL transaction through your own access tool | [Database](backend/database.md) |
 
 ## Advanced interfaces

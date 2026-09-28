@@ -309,6 +309,29 @@ await backend.transaction(async ({ tx, channel, touch }) => {
 
 Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A touched record advances its stamp even without a Channel; adding an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
 
+### In a transaction you own
+
+When your code has already opened the transaction, for example another framework's request handler, `backend.publish(tx, body)` settles the same declarations inside it. `tx` must be a transaction of the tool the `database` shim was built on.
+
+```ts
+const wake = await db.$transaction(async (tx) => {
+  await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From my host' } });
+  return backend.publish(tx, ({ channel, touch }) => {
+    touch.entry({ id: 'entry-1' });
+    channel('book:demo').entry.add({ id: 'entry-1' });
+  });
+});
+wake();
+```
+
+| Behavior | Contract |
+| --- | --- |
+| Settlement | Runs before `publish` resolves: stamps, memberships and Channel positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two stamps |
+| Wake | `publish` resolves to a function. Call it after `tx` commits; after a rollback, drop it. Until it is called, no live subscriber is told; they catch up on their next wake or reconnect |
+| Errors | A refused declaration or a database error rejects `publish` with the original error, so your retry loop can recognize a serialization failure and run the whole transaction again. Wakes from failed attempts are simply never called |
+| Isolation | Works at Read Committed or Repeatable Read; retry serialization failures as `backend.transaction` does |
+| Refusal | A transaction AXTON is already serving, a handler's or `backend.transaction`'s, is refused: declare through its own `touch` and `channel` |
+
 ## Extension points
 
 `loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the load. Use it only if viewer-specific preparation is needed; a loader already receives the user.

@@ -817,6 +817,7 @@ fn validate_load(
 /// names would collide with them in the generated file.
 const GENERATED_NAMES: &[&str] = &[
     "AdmissionRefused",
+    "AxtonDateTime",
     "BootstrapError",
     "BootstrapFailedException",
     "BootstrapPhase",

@@ -1564,6 +1564,17 @@ fn dart_encodes_every_date_time_at_axton_precision() {
         assert!(dart.contains(expected), "missing {expected}: {dart}");
     }
     assert!(!dart.contains(".toUtc().toIso8601String()"), "{dart}");
+    // Generated Dart re-exports the extension, so no Model or enum may take its name.
+    for source in [
+        "model AxtonDateTime { id String @@id(id) }",
+        "enum AxtonDateTime { a b }",
+    ] {
+        let error = compile(source).unwrap_err();
+        assert!(
+            error.contains("the generated client uses"),
+            "{source}: {error}"
+        );
+    }
 }
 
 #[test]

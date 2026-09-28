@@ -117,6 +117,8 @@ If a handler rejects a call, AXTON removes any optimistic contribution and retai
 
 `rejectionOrdinal` is taken from the rejection you handled. Dismissing only clears the inbox entry. Retrying the business operation means making a new call after resolving its cause. `drop(ordinal)` is for eligible unsent work; it cannot cancel a request whose server outcome is unknown.
 
+For a screen of everything that has not been sent, watch `client.rejections`, `client.failures` and `client.outbound` instead of polling: each refusal keeps the call as it was submitted, so you can show the author's words again, and a failed prerequisite lists every call waiting on it. A repair can drop the failed call and queue its replacement in one transaction. See [unsent work](runtime.md#unsent-work).
+
 ## Recover from connection failures
 
 Provide `onError` to record background failures, and `refreshAuth` if your credentials can expire. Records that could not be applied also reach `onError`, as an `AxtonReport` with a `kind`: `readFailed` when the server could not read the record, `skipped` when the local schema refused it, `conflict`, or `diverged` when a pending edit no longer applies to newer server state. A diverged edit is still sent, and `models.<name>.syncState(identity)` marks it `diverged` until the server answers it. Let the runtime retry frozen work; do not make a new call merely because the original request timed out. The backend may already have committed it and retained its outcome.

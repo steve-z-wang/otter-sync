@@ -1081,6 +1081,9 @@ void main() {
       await step('114', () => client.setReadiness('k', 'ready'));
       await step('115', () => client.drop(3));
       await step('116', () => client.dismissRejection(4));
+      await step('193', () => client.rejections.get(4));
+      await step('194', () => client.failures.retry(['k']));
+      await step('195', () => client.failures.drop(3));
       await step(
         '117',
         () => client.invalidateQuery('GetTodo', 1, {'id': 't'}),
@@ -1121,6 +1124,8 @@ void main() {
             '139',
             () => tx.referencing('User', {'id': 'u'}, 'Todo', 'owner'),
           );
+          await step('196', () => tx.rejections.dismiss(4));
+          await step('197', () => tx.failures.retry(['k']));
           // A savepoint's own commands carry the scope Rust issued for it.
           await step(
             '143',

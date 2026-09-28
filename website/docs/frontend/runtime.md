@@ -302,6 +302,88 @@ All controls return promise/future void. Pause/close cancel network activity tha
 
 Phases are `queued` (not frozen) and `frozen` (request retained for sending or retry); a receipt completes a frozen call and removes it, so there is no phase after `frozen`. An ordinal is local bookkeeping. To retry a rejected business operation, make a new call after resolving the cause. See [sync and recovery](sync.md).
 
+### Unsent work
+
+An unsent-work screen reads three streams that cover the whole client, not one record. Each delivers the current value when it starts, then a new value after each local commit that changes it, and never a repeat. The runtime computes them from committed state; nothing polls.
+
+| Member | Delivers |
+| --- | --- |
+| `rejections.watch` | The refusals kept until dismissed, oldest first. Each is a `RefusedAct`: `{ id, name, version, code, act }` |
+| `failures.watch` | The queued calls that wait on a prerequisite task that failed, oldest first. Each is a `FailedAct`: `{ ordinal, name, version, act, tasks }`, where each task is `{ key, name, arguments, error }` |
+| `outbound.watchPending` | The number of queued calls that have not settled: it changes when a call is queued, settled, refused or dropped |
+
+`act` is the call as it was submitted: `{ args, operations }`, the call's arguments and its Model operations with their values (`{ model, op, identity, values? }`). Recover what the author wrote from `act.args`. A legacy mutation has `args: null`. A task's `name` and `arguments` come from the schema and are `null` for an opaque key.
+
+=== "TypeScript"
+
+    ```ts
+    const stopRefused = client.rejections.watch((refused) => {
+      for (const item of refused) console.log(item.id, item.name, item.code, item.act.args);
+    });
+    const stopFailed = client.failures.watch(
+      (failed) => {
+        for (const item of failed) console.log(item.ordinal, item.name, item.tasks.map((task) => task.error));
+      },
+      (error) => console.error(error),
+    );
+    const stopCount = client.outbound.watchPending((count) => console.log(`${count} unsent`));
+    // When the screen closes:
+    stopRefused();
+    stopFailed();
+    stopCount();
+    ```
+
+=== "Flutter"
+
+    ```dart
+    final refused = client.rejections.watch().listen((items) {
+      for (final item in items) print('${item.id} ${item.name} ${item.code} ${item.act.args}');
+    });
+    final failed = client.failures.watch().listen((items) {
+      for (final item in items) print('${item.ordinal} ${item.name} ${item.tasks.map((task) => task.error)}');
+    });
+    final count = client.outbound.watchPending().listen((pending) => print('$pending unsent'));
+    // When the screen closes:
+    await refused.cancel();
+    await failed.cancel();
+    await count.cancel();
+    ```
+
+In TypeScript `watch` takes a listener and an optional `onError`, and returns a function that stops delivery. In Dart it returns a `Stream` that starts when listened to and stops when cancelled. A stream that cannot start fails (`onError`, or a stream error) and delivers nothing; closing the client ends it. Starting one inside a transaction callback fails with `transaction_active`.
+
+| Resolution | Effect |
+| --- | --- |
+| `rejections.get(id)` | One kept refusal, or `null` |
+| `rejections.dismiss(id)` | Remove a refusal; nothing is retried |
+| `failures.retry(taskKeys)` | Make each task pending again for every call waiting on it; the handler you registered at open runs it |
+| `failures.drop(ordinal)` | Remove an unsent call and its local changes. No refusal is kept for it, because you decided; its `Call` completes with `dropped`. A call that depended on its records (one that edits a record it creates, for example) is refused with `dependency.rejected` and appears in `rejections`. A call already sent cannot be dropped |
+
+The earlier `dismissRejection(ordinal)` and `drop(ordinal)` stay; `drop` keeps a `dropped` refusal you then dismiss.
+
+#### Repair inside a transaction
+
+`rejections.dismiss`, `failures.retry` and `failures.drop` are also on the transaction a `client.transaction` callback receives. There, a resolution applies at once for the rest of the callback and commits or rolls back with it. So a repair can drop a failed call and queue its replacement in one step: the replacement is planned without the dropped call's local changes and does not wait for it, and if the callback throws, both are undone and the original call stays as it was. A dropped call's `Call` completes, and a retried task's handler runs, only after the commit. An `onStore` hook and a Mutation's `local` callback cannot resolve unsent work.
+
+=== "TypeScript"
+
+    ```typescript title="action-contract"
+    const call = await client.transaction(async (tx) => {
+      await tx.failures.drop(1);
+      return tx.mutations.edit({ todo: { id: 'todo-1', title: 'Fixed' } });
+    });
+    console.log(call.status);
+    ```
+
+=== "Flutter"
+
+    ```dart title="action-contract"
+    final call = await client.transaction((tx) async {
+      await tx.failures.drop(1);
+      return tx.mutations.edit(todo: const EditTodoUpdate(id: 'todo-1', title: Present('Fixed')));
+    });
+    print(call.status);
+    ```
+
 ## Prerequisites
 
 A schema can require host I/O, such as an upload, before a durable call can be sent. The local change remains visible while this work is pending. Register one handler per prerequisite name when you open the client; the runtime runs it whenever a task becomes pending - when a Mutation that needs it is queued, when the client opens and finds one left from an earlier run, and when you reset one to `pending`. You never start the handlers yourself.
@@ -351,7 +433,9 @@ The request body is elided. A handler receives the task's schema-declared argume
 | `pendingTasks()` | Return unresolved tasks, including `key`, `state`, schema-derived `name`/`arguments` and, for a failed task, `error` |
 | `setReadiness(key, state)` | Set `ready`, `pending` or `failed`; use the task's opaque key, not a reconstructed key. `pending` runs its handler again at once, even one waiting out a retry delay |
 
-Show failed tasks from `pendingTasks` or a record's `syncState`. To retry one, set its key to `pending`; to give up, drop the Mutation that needs it. Mark ready only when the prerequisite actually completed. Closing the client cancels a running handler and waits for nothing: whatever the handler does after that is ignored.
+Show failed tasks from [`failures.watch`](#unsent-work), `pendingTasks` or a record's `syncState`. To retry one, call `failures.retry([key])` or set its key to `pending`; to give up, drop the call that needs it with `failures.drop`. Mark ready only when the prerequisite actually completed. Closing the client cancels a running handler and waits for nothing: whatever the handler does after that is ignored.
+
+A task that failed stays failed while any call waits on it. A call queued later that needs the same task inherits the failure: it is listed in `failures` at once, with that task, and does not wait silently. The task is not reset for it; retrying stays your decision, and one retry covers every call that waits on the task. Once no call waits on a task, a later call that needs it starts a fresh, pending task.
 
 ## Protocol primitives
 

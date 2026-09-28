@@ -355,6 +355,60 @@ fn schema_sequence_relationship_freezes_dependent_with_its_predecessor() {
     assert_eq!(batch.mutations.len(), 2);
 }
 
+/// #179 in the block form: `Rename(b)` waits for earlier `CommentEdit` whose
+/// `comment.book` is `b`, and not for one on a comment of another Book.
+#[test]
+fn block_form_sequence_prior_path_waits_only_for_the_same_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut value = serde_json::to_value(family_schema()).unwrap();
+    value["clientPolicies"] = json!([
+    {"name":"CommentEdit","version":1,"slots":[{"name":"comment","model":"Comment","operation":"update","cardinality":"single"}]},
+    {"name":"Rename","version":1,"slots":[{"name":"book","model":"Book","operation":"update","cardinality":"single"}],"sequence":{"after":[{"name":"CommentEdit","arguments":{"comment.book":"book"}}]}}
+    ]);
+    let mut c = Client::open(
+        SqliteStore::open(dir.path().join("db")).unwrap(),
+        Schema::from_value(value).unwrap(),
+    )
+    .unwrap();
+    let update = |model: &str, id: &str, values: Value| Operation {
+        model: model.into(),
+        op: OperationKind::Update,
+        identity: json!({ "id": id }),
+        values: Some(values),
+    };
+    let (on_b, rename) = c
+        .transaction(|tx| {
+            tx.direct(create("Book", "b", json!({"title":"B"})))?;
+            tx.direct(create("Book", "other", json!({"title":"O"})))?;
+            tx.direct(create("Comment", "c", json!({"bookId":"b","text":"C"})))?;
+            tx.direct(create("Comment", "d", json!({"bookId":"other","text":"D"})))?;
+            let mut edit = |id: &str| {
+                let mut m = Mutation::new(
+                    "CommentEdit",
+                    vec![update("Comment", id, json!({"text":"E"}))],
+                );
+                m.prerequisites.push("pending".into());
+                tx.enqueue(m)
+            };
+            let on_b = edit("c")?;
+            edit("d")?;
+            let rename = tx.enqueue(Mutation::new(
+                "Rename",
+                vec![update("Book", "b", json!({"title":"R"}))],
+            ))?;
+            Ok((on_b, rename))
+        })
+        .unwrap();
+    assert_eq!(
+        c.read_sql(
+            "SELECT ordinal, depends_on, kind FROM axton_mutation_dependency ORDER BY ordinal, depends_on",
+            &[],
+        )
+        .unwrap(),
+        vec![json!({"ordinal":rename,"depends_on":on_b,"kind":"sequence"})]
+    );
+}
+
 #[test]
 fn accepted_companion_cascade_does_not_resurrect_descendants() {
     let dir = tempfile::tempdir().unwrap();

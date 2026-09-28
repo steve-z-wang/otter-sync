@@ -4,8 +4,8 @@ use crate::engine::Engine;
 use crate::query_cache::QueryCacheKey;
 use crate::{ApplyReport, Client, ClientStore, Mutation, Operation, OperationKind};
 use axton_core::{
-    ActionInputDescriptor, ActionIntent, ActionOutcome, ActionStore, DirectActionRequest,
-    DirectActionResponse, Result, invalid, normalize_action_args,
+    ActionDescriptor, ActionInputDescriptor, ActionIntent, ActionOutcome, ActionStore,
+    DirectActionRequest, DirectActionResponse, Result, Schema, invalid, normalize_action_args,
 };
 use serde_json::Value;
 
@@ -43,19 +43,14 @@ impl<S: ClientStore> Client<S> {
         options: ActionCallOptions,
     ) -> Result<DirectActionRequest> {
         let action = self.schema.action(name, version)?;
-        // Fresh arguments only: generated values are fixed here, once.
-        let mut args = args;
-        crate::defaults::fill_action_args(&self.schema, action, &mut args);
-        let args = normalize_action_args(&self.schema, action, &args)?;
-        validate_bindings(&self.schema, action, &args)?;
-        options.store.validate(action)?;
+        let (args, store) = fresh_args(&self.schema, action, args, options)?;
         Ok(DirectActionRequest {
             call: ActionIntent {
                 call_id: uuid::Uuid::new_v4().to_string(),
                 name: name.into(),
                 version,
                 args,
-                store: options.store.canonical(),
+                store,
             },
             models: self.declared_models(),
         })
@@ -123,7 +118,9 @@ impl<S: ClientStore> Client<S> {
     }
     /// [`Self::submit_action`] with invocation options. The store policy is
     /// validated before any local write and persisted with the call ID,
-    /// args and optimism in one transaction.
+    /// args and optimism in one transaction. This standalone entry also
+    /// queues a Query; a transaction submits Mutations only
+    /// ([`crate::ClientTransaction::submit_mutation`]).
     pub fn submit_action_with_options(
         &mut self,
         name: &str,
@@ -132,22 +129,47 @@ impl<S: ClientStore> Client<S> {
         options: ActionCallOptions,
     ) -> Result<SubmittedCall> {
         let action = self.schema.action(name, version)?;
-        // Fresh arguments only: generated values are fixed here, once.
-        let mut args = args;
-        crate::defaults::fill_action_args(&self.schema, action, &mut args);
-        let args = normalize_action_args(&self.schema, action, &args)?;
-        validate_bindings(&self.schema, action, &args)?;
-        options.store.validate(action)?;
-        let operations = derive_operations(&self.schema, action, &args)?;
-        let call_id = uuid::Uuid::new_v4().to_string();
-        let mut mutation = Mutation::new(name, operations);
-        mutation.version = version;
-        mutation.call_id = Some(call_id.clone());
-        mutation.args = Some(args);
-        mutation.store = options.store.canonical();
+        let mutation = fresh_call(&self.schema, action, args, options)?;
+        let call_id = mutation.call_id.clone().unwrap_or_default();
         let ordinal = self.transaction(|tx| tx.enqueue(mutation))?;
         Ok(SubmittedCall { call_id, ordinal })
     }
+}
+
+/// Fresh business arguments made canonical: generated values are fixed here,
+/// once, then the args are normalized and their bindings and the store
+/// policy validated, all before any local write. Returns the args with the
+/// canonical store policy.
+fn fresh_args(
+    schema: &Schema,
+    action: &ActionDescriptor,
+    mut args: Value,
+    options: ActionCallOptions,
+) -> Result<(Value, ActionStore)> {
+    crate::defaults::fill_action_args(schema, action, &mut args);
+    let args = normalize_action_args(schema, action, &args)?;
+    validate_bindings(schema, action, &args)?;
+    options.store.validate(action)?;
+    Ok((args, options.store.canonical()))
+}
+
+/// A fresh queued call for `action`: canonical args ([`fresh_args`]), the
+/// wire operations derived from them and a new call ID. Its queue row is
+/// written in the caller's transaction, which also validates it again as a
+/// canonical intent.
+pub(crate) fn fresh_call(
+    schema: &Schema,
+    action: &ActionDescriptor,
+    args: Value,
+    options: ActionCallOptions,
+) -> Result<Mutation> {
+    let (args, store) = fresh_args(schema, action, args, options)?;
+    let mut mutation = Mutation::new(&action.name, derive_operations(schema, action, &args)?);
+    mutation.version = action.version;
+    mutation.call_id = Some(uuid::Uuid::new_v4().to_string());
+    mutation.args = Some(args);
+    mutation.store = store;
+    Ok(mutation)
 }
 
 impl<S: ClientStore> Engine<'_, S> {

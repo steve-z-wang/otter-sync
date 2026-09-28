@@ -43,16 +43,33 @@ export type QueryOptions<K extends string = string> = CallOptions<K> &
 const invalidOptions = (message: string) =>
   new CallError("action.invalid_options", "rejected", Error(message));
 /** Mutations and `enqueue` accept no once controls, even from dynamic callers. */
-export function assertCallOptions(options: unknown): void {
+export function assertNoOnce(options: unknown): void {
   const value = options as { once?: unknown; refresh?: unknown } | undefined;
   if (value?.once !== undefined || value?.refresh !== undefined)
     throw invalidOptions("once and refresh apply only to direct Queries");
+}
+/**
+ * Only a Mutation submitted in a transaction (`tx.mutations`) runs a `local`
+ * callback; every other route refuses one, even from dynamic callers, rather
+ * than queue the call without it.
+ */
+function assertNoLocal(options: unknown): void {
+  if ((options as { local?: unknown } | undefined)?.local !== undefined)
+    throw invalidOptions(
+      "local applies only to a Mutation submitted in a transaction",
+    );
+}
+/** A standalone Mutation or direct call: no once controls, no `local`. */
+export function assertCallOptions(options: unknown): void {
+  assertNoOnce(options);
+  assertNoLocal(options);
 }
 /** Validate a direct Query's once controls before any I/O. */
 export function onceControls(options: unknown): {
   once: boolean;
   refresh: boolean;
 } {
+  assertNoLocal(options);
   const value = options as { once?: unknown; refresh?: unknown } | undefined;
   const once = value?.once ?? false;
   const refresh = value?.refresh ?? false;
@@ -73,21 +90,54 @@ type Completion = {
     | { status: "failed"; code: string; execution: "rejected" | "unknown" };
 };
 
+/**
+ * Where a Call stands against the local transaction that submitted it. A
+ * standalone submission is committed when its handle exists; one submitted in
+ * a transaction is provisional until the runtime announces the commit or the
+ * rollback that decides it.
+ */
+type Lifecycle = "provisional" | "committed" | "rolledBack";
+
 class CallState<T> implements Call<T> {
   status: CallStatus = "pending";
+  #lifecycle: Lifecycle;
   #outcome: CallOutcome<T> | undefined;
   #promise: Promise<CallOutcome<T>>;
   #resolve!: (value: CallOutcome<T>) => void;
   #activate: () => void;
-  constructor(activate: () => void) {
+  constructor(activate: () => void, lifecycle: Lifecycle) {
     this.#activate = activate;
+    this.#lifecycle = lifecycle;
     this.#promise = new Promise((resolve) => {
       this.#resolve = resolve;
     });
   }
+  get provisional(): boolean {
+    return this.#lifecycle === "provisional";
+  }
+  /**
+   * Local observation errors, never backend outcomes: before the commit a
+   * wait is refused without settling or retaining the Call; after a rollback
+   * every wait fails.
+   */
   wait(): Promise<CallOutcome<T>> {
+    if (this.#lifecycle === "rolledBack")
+      return Promise.reject(
+        new CallError("transaction_rolled_back", "rejected"),
+      );
+    if (this.#lifecycle === "provisional")
+      return Promise.reject(new CallError("transaction_uncommitted"));
     if (!this.#outcome) this.#activate();
     return this.#promise;
+  }
+  commit(): void {
+    if (this.#lifecycle === "provisional") this.#lifecycle = "committed";
+  }
+  /** The transaction or savepoint rolled back: the call never becomes sendable. */
+  rollBack(): void {
+    if (this.#lifecycle !== "provisional") return;
+    this.#lifecycle = "rolledBack";
+    this.status = "failed";
   }
   settle(outcome: CallOutcome<T>): void {
     if (this.#outcome) return;
@@ -110,6 +160,7 @@ export class ActionRegistry {
   #weak: WeakFactory | null;
   #usesRuntimeWeak: boolean;
   #closed = false;
+  #ended = false;
   constructor(weak?: WeakFactory | null) {
     this.#usesRuntimeWeak = weak === undefined;
     this.#weak = weak === undefined ? (state) => new WeakRef(state) : weak;
@@ -134,13 +185,27 @@ export class ActionRegistry {
       }
     }
   }
-  register<T>(callId: string, decode: (value: unknown) => T): Call<T> {
+  /**
+   * Route `callId`'s completion to a new handle. A `provisional` handle was
+   * submitted in an open transaction: it waits for {@link transition}.
+   */
+  register<T>(
+    callId: string,
+    decode: (value: unknown) => T,
+    provisional = false,
+  ): Call<T> {
     this.assertSupported();
     this.#sweep();
-    const state = new CallState<T>(() => {
-      this.#active.set(callId, state as CallState<unknown>);
-    });
-    if (this.#closed)
+    const state = new CallState<T>(
+      () => {
+        this.#active.set(callId, state as CallState<unknown>);
+      },
+      provisional ? "provisional" : "committed",
+    );
+    // Closed, a committed call can no longer be observed; a provisional one
+    // still hears its transaction's fate, until the runtime ended.
+    if (provisional && this.#ended) state.rollBack();
+    else if (this.#closed && !provisional)
       state.settle({
         result: undefined,
         error: new CallError("client.closed"),
@@ -152,11 +217,28 @@ export class ActionRegistry {
       });
     return state;
   }
+  /**
+   * The runtime's `transactionCallState`: the local commit made the call
+   * durable, or a rollback discarded it. Nobody needs to be waiting.
+   */
+  transition(callId: string, state: "committed" | "rolledBack"): void {
+    this.#sweep();
+    const route = this.#routes.get(callId);
+    const call = route?.ref.deref();
+    if (!route || !call?.provisional) return;
+    if (state === "committed") {
+      call.commit();
+      if (!this.#closed) return;
+      call.settle({ result: undefined, error: new CallError("client.closed") });
+    } else call.rollBack();
+    this.#routes.delete(callId);
+  }
   complete(completion: Completion): void {
     this.#sweep();
     const route = this.#routes.get(completion.callId);
     const state = this.#active.get(completion.callId) ?? route?.ref.deref();
     if (!state) return;
+    state.commit();
     let outcome: CallOutcome<unknown>;
     if (completion.outcome.status === "failed") {
       outcome = {
@@ -183,18 +265,30 @@ export class ActionRegistry {
     this.#routes.delete(completion.callId);
     this.#active.delete(completion.callId);
   }
+  /**
+   * The client closes: every committed handle settles with `client.closed`.
+   * A provisional one stays routed until the runtime announces its fate.
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const [id, route] of this.#routes) {
       const state = this.#active.get(id) ?? route.ref.deref();
+      if (state?.provisional) continue;
       state?.settle({
         result: undefined,
         error: new CallError("client.closed"),
       });
+      this.#routes.delete(id);
     }
-    this.#routes.clear();
     this.#active.clear();
+  }
+  /** The runtime ended: no transaction can commit any more. */
+  ended(): void {
+    this.close();
+    this.#ended = true;
+    for (const route of this.#routes.values()) route.ref.deref()?.rollBack();
+    this.#routes.clear();
   }
   #sweep(): void {
     for (const [id, route] of this.#routes) {

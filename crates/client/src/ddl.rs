@@ -15,6 +15,7 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_mutation_operation",
     "axton_mutation_dependency",
     "axton_mutation_prerequisite",
+    "axton_local_write",
     "axton_rejection",
     "axton_query_cache",
     "axton_load",
@@ -138,6 +139,17 @@ CREATE TABLE IF NOT EXISTS axton_mutation_prerequisite (
   key TEXT NOT NULL, error TEXT,
   PRIMARY KEY (ordinal, key)
 );
+CREATE TABLE IF NOT EXISTS axton_local_write (
+  sequence INTEGER PRIMARY KEY,
+  ordinal INTEGER NOT NULL,
+  position INTEGER,
+  disposition TEXT NOT NULL CHECK (disposition IN ('independent','accepted')),
+  model TEXT NOT NULL, identity TEXT NOT NULL,
+  op TEXT NOT NULL CHECK (op IN ('create','update','delete')),
+  \"values\" TEXT,
+  CHECK ((disposition = 'independent') = (position IS NULL))
+);
+CREATE INDEX IF NOT EXISTS axton_local_write_record ON axton_local_write (model, identity, sequence);
 CREATE TABLE IF NOT EXISTS axton_rejection (
   ordinal INTEGER PRIMARY KEY, name TEXT NOT NULL, code TEXT NOT NULL, detail TEXT
 );

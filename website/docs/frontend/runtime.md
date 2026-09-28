@@ -130,7 +130,7 @@ TypeScript's `readSql` takes an optional positional second argument; Dart uses n
     });
     ```
 
-Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
+Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. A Mutation queued with `tx.mutations` inside a savepoint belongs to it: rolling the savepoint back discards that Mutation and its `local` changes, and its Call fails with `transaction_rolled_back`, while Mutations queued outside the savepoint are kept. A savepoint cannot start while a Mutation's `local` callback runs ([queue Mutations in a transaction](client-api.md#queue-mutations-in-a-transaction)). Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
 
 ## Server connection
 

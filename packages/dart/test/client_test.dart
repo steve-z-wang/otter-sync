@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:axton/axton.dart';
 import 'package:test/test.dart';
 
+import 'fake_carrier.dart';
+
 /// One client over a fresh temporary file with the Entry schema, plus a way to
 /// reopen the same file. Every clause below starts from its own copy.
 class Fixture {
@@ -653,6 +655,704 @@ void main() {
       );
       expect(errors, [isA<StateError>()]);
     });
+  });
+
+  group('Mutations in a transaction', _mutationTests);
+}
+
+/// Entry with the `Recent` Load, plus `Publish` (creates an Entry), `Ping`
+/// and the `Find` Query.
+Map<String, dynamic> _mutationSchema() {
+  Map<String, dynamic> scalar(String name) => {'kind': 'scalar', 'name': name};
+  final fields = [
+    {'name': 'id', 'nullable': false, 'type': scalar('string')},
+    {'name': 'text', 'nullable': false, 'type': scalar('string')},
+    {'name': 'note', 'nullable': true, 'type': scalar('string')},
+  ];
+  return {
+    'enums': [],
+    'models': [
+      {
+        'name': 'Entry',
+        'version': 1,
+        'identity': ['id'],
+        'fields': fields,
+      },
+    ],
+    'resultModels': [
+      {
+        'name': 'Entry',
+        'version': 1,
+        'identity': ['id'],
+        'fields': fields,
+        'enums': [],
+      },
+    ],
+    'loads': [
+      {
+        'name': 'Recent',
+        'version': 1,
+        'inputs': [],
+        'outputs': [
+          {
+            'name': 'entries',
+            'kind': 'model',
+            'cardinality': 'list',
+            'source': 'handlerIdentity',
+            'model': 'Entry',
+            'modelReadVersion': 1,
+            'handlerType': {
+              'kind': 'identity',
+              'model': 'Entry',
+              'fields': [
+                {'name': 'id', 'type': scalar('string')},
+              ],
+            },
+          },
+        ],
+        'input': {'models': [], 'enums': []},
+        'outputEnums': [],
+      },
+    ],
+    'actions': [
+      {
+        'name': 'Publish',
+        'version': 1,
+        'inputs': [
+          {
+            'kind': 'model',
+            'name': 'entry',
+            'model': 'Entry',
+            'operation': 'create',
+            'cardinality': 'single',
+          },
+        ],
+        'outputs': [],
+      },
+      {'name': 'Ping', 'version': 1, 'inputs': [], 'outputs': []},
+      {
+        'name': 'Find',
+        'version': 1,
+        'kind': 'query',
+        'inputs': [],
+        'outputs': [],
+      },
+    ],
+  };
+}
+
+Map<String, dynamic> _create(String id, String text) => {
+  'model': 'Entry',
+  'op': 'create',
+  'identity': {'id': id},
+  'values': {'text': text, 'note': null},
+};
+Map<String, dynamic> _remove(String id) => {
+  'model': 'Entry',
+  'op': 'delete',
+  'identity': {'id': id},
+};
+Map<String, dynamic> _publish(String id) => {
+  'entry': {'id': id, 'text': 'published', 'note': null},
+};
+String _decode(dynamic _) => 'decoded';
+const _capability = 'invalid transaction capability';
+Matcher _stateError(Object message) => throwsA(
+  isA<StateError>().having((error) => error.message, 'message', message),
+);
+Matcher _callError(String code) =>
+    throwsA(isA<CallError>().having((error) => error.code, 'code', code));
+
+/// The durable queue and the two Entries the Publish clauses touch.
+Future<Map<String, Object?>> _mutationState(Client client) async => {
+  'pending': (await client.syncState())['pending'],
+  'draft': (await client.read('Entry', {'id': 'draft'}))?['text'],
+  'published': (await client.read('Entry', {'id': 'p'}))?['text'],
+};
+const _untouched = {'pending': 0, 'draft': 'local', 'published': null};
+
+/// Freeze the next push and accept every call in it, with the authority of
+/// each Entry it creates; the freeze body is returned.
+Future<Map<String, dynamic>> _accept(
+  Client client, {
+  List<Map<String, dynamic>> records = const [],
+}) async {
+  final batch = jsonDecode((await client.freeze())!) as Map<String, dynamic>;
+  final mutations = (batch['mutations'] as List).cast<Map<String, dynamic>>();
+  await client.acknowledge(batch['batchSequence'] as int, {
+    'clientId': batch['clientId'],
+    'batchSequence': batch['batchSequence'],
+    'rejections': [],
+    'completions': [
+      for (final mutation in mutations)
+        {
+          'callId': mutation['callId'],
+          'outcome': {'status': 'succeeded', 'result': null},
+        },
+    ],
+    'records': [
+      ...records,
+      for (final mutation in mutations)
+        if ((mutation['args'] as Map)['entry'] case final Map entry)
+          {
+            'model': 'Entry',
+            'identity': {'id': entry['id']},
+            'stamp': 1,
+            'state': {'text': entry['text'], 'note': entry['note']},
+          },
+    ],
+  });
+  return batch;
+}
+
+void _mutationTests() {
+  test('outer commands are refused without reaching the runtime while a '
+      'local submission is unfinished', () async {
+    // A runtime that parks the submission until the test answers it.
+    String? transaction;
+    String? submission;
+    final carrier = FakeCarrier((envelope) {
+      final requestId = envelope['requestId'] as String?;
+      final command = envelope['command'] as Map<String, dynamic>?;
+      if (envelope['type'] == 'callbackResult') {
+        return [
+          {
+            'type': 'taskCompleted',
+            'requestId': transaction,
+            'ok': false,
+            'value': null,
+            'error': envelope['error'],
+          },
+        ];
+      }
+      if (envelope['type'] != 'task' &&
+          envelope['type'] != 'transactionCommand') {
+        return null;
+      }
+      final local = command?['local'] == true;
+      switch (command?['kind']) {
+        case 'transaction':
+          transaction = requestId;
+          return [
+            {
+              'type': 'effect',
+              'effectId': '5',
+              'operation': {
+                'kind': 'callback',
+                'transactionId': 'tx',
+                'requestId': requestId,
+              },
+            },
+          ];
+        case 'submitMutation' when local:
+          submission = requestId;
+          return [];
+        case 'submitMutation':
+          return [
+            completed(requestId!, {'callId': 'plain', 'ordinal': 2}),
+          ];
+        default:
+          return [completed(requestId!)];
+      }
+    });
+    final fake = await Client.open(
+      path: 'unused',
+      schema: const {},
+      carrier: carrier,
+    );
+    try {
+      await expectLater(
+        fake.transaction((tx) async {
+          final submitted = tx.submitMutation(
+            'Publish',
+            1,
+            {'id': 'p'},
+            _decode,
+            local: (_) async {},
+          );
+          for (final refused in [
+            tx.read('Entry', {'id': 'e'}),
+            tx.direct(const {}),
+            tx.submitMutation('Ping', 1, const {}, _decode),
+            tx.channels.subscribe('book'),
+            tx.savepoint(() async {}),
+          ]) {
+            await expectLater(refused, _stateError(_capability));
+          }
+          carrier.publish([
+            completed(submission!, {'callId': 'call', 'ordinal': 1}),
+          ]);
+          await submitted;
+          // Completed: the parent handle is admitted again; a submission
+          // without a callback blocks nothing.
+          final plain = tx.submitMutation('Ping', 1, const {}, _decode);
+          await tx.read('Entry', {'id': 'e'});
+          await plain;
+        }),
+        _stateError(_capability),
+      );
+      expect(carrier.commands.map((command) => command['kind']), [
+        'transaction',
+        'submitMutation',
+        'submitMutation',
+        'read',
+      ]);
+      expect(carrier.commands[1], {
+        'kind': 'submitMutation',
+        'name': 'Publish',
+        'version': 1,
+        'args': {'id': 'p'},
+        'local': true,
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  late Directory dir;
+  late Client client;
+  Map<String, StoreHook>? hooks;
+  Future<Client> open() => Client.open(
+    path: '${dir.path}/db',
+    schema: _mutationSchema(),
+    libraryPath: Platform.environment['AXTON_LIBRARY']!,
+    onStore: hooks,
+  );
+  setUp(() async {
+    hooks = null;
+    dir = await Directory.systemTemp.createTemp('axton-dart-mutations-');
+    client = await open();
+    await client.direct(_create('draft', 'local'));
+  });
+  tearDown(() async {
+    await client.close();
+    await dir.delete(recursive: true);
+  });
+
+  test('a local callback runs inside its submission and its Call is '
+      'provisional until the commit', () async {
+    final order = <String>[];
+    final running = client.transaction((tx) async {
+      final call = await tx.submitMutation(
+        'Publish',
+        1,
+        _publish('p'),
+        _decode,
+        local: (local) async {
+          order.add('local');
+          // The callback reads the call's optimism and earlier writes.
+          expect(
+            (await local.read('Entry', {'id': 'p'}))!['text'],
+            'published',
+          );
+          expect(local, isA<LocalTransaction>());
+          await local.direct(_remove('draft'));
+        },
+      );
+      order.add('submitted');
+      // Durable absence before the commit is checked by an independent
+      // SQLite reader in the Node harness; here the handle shows it.
+      expect(call.status, CallStatus.pending);
+      // An early wait is an observation error only: caught, the call stays
+      // usable.
+      await expectLater(call.wait(), _callError('transaction_uncommitted'));
+      expect(call.status, CallStatus.pending);
+      expect(await tx.read('Entry', {'id': 'draft'}), isNull);
+      return (call, 7);
+    });
+    final (call, value) = await running;
+    expect(value, 7);
+    expect(order, ['local', 'submitted']);
+    expect(await _mutationState(client), {
+      'pending': 1,
+      'draft': null,
+      'published': 'published',
+    });
+    final waiting = call.wait();
+    final batch = await _accept(client);
+    // The companion delete is never sent.
+    expect(jsonEncode(batch).contains('draft'), isFalse);
+    expect(((await waiting) as CallSuccess<String>).result, 'decoded');
+    expect(call.status, CallStatus.succeeded);
+    expect(await client.read('Entry', {'id': 'draft'}), isNull);
+  });
+
+  test('several Calls commit together and complete separately', () async {
+    final (first, second) = await client.transaction(
+      (tx) async => (
+        await tx.submitMutation('Ping', 1, const {}, _decode),
+        await tx.submitMutation('Ping', 1, const {}, (_) => 'second'),
+      ),
+    );
+    expect((await client.syncState())['pending'], 2);
+    // Completion arrives before anybody waits: the handle was routed at
+    // submission and keeps the outcome.
+    await _accept(client);
+    expect(((await first.wait()) as CallSuccess<String>).result, 'decoded');
+    expect(((await second.wait()) as CallSuccess<String>).result, 'second');
+    expect(await client.transaction((_) async => 'plain'), 'plain');
+  });
+
+  test('a Call leaked from a failed transaction is rolled back', () async {
+    final thrown = StateError('rollback');
+    late Call<String> leaked;
+    await expectLater(
+      client.transaction((tx) async {
+        leaked = await tx.submitMutation(
+          'Publish',
+          1,
+          _publish('p'),
+          _decode,
+          local: (local) => local.direct(_remove('draft')),
+        );
+        throw thrown;
+      }),
+      throwsA(same(thrown)),
+    );
+    expect(leaked.status, CallStatus.failed);
+    await expectLater(leaked.wait(), _callError('transaction_rolled_back'));
+    await expectLater(leaked.wait(), _callError('transaction_rolled_back'));
+    expect(await _mutationState(client), _untouched);
+    // An uncaught early wait fails the transaction like any thrown error.
+    await expectLater(
+      client.transaction((tx) async {
+        final call = await tx.submitMutation('Ping', 1, const {}, _decode);
+        await call.wait();
+      }),
+      _callError('transaction_uncommitted'),
+    );
+    expect(await _mutationState(client), _untouched);
+  });
+
+  test(
+    'a failed local callback fails its submission and the transaction',
+    () async {
+      Future<void> attempt(
+        Future<void> Function(WritePort local) local,
+        Matcher submission,
+      ) async {
+        await expectLater(
+          client.transaction((tx) async {
+            await expectLater(
+              tx.submitMutation(
+                'Publish',
+                1,
+                _publish('p'),
+                _decode,
+                local: local,
+              ),
+              submission,
+            );
+          }),
+          throwsA(anything),
+        );
+        expect(await _mutationState(client), _untouched);
+      }
+
+      // Thrown: the submission fails with that very value.
+      final thrown = StateError('boom');
+      await attempt((local) async {
+        await local.direct(_remove('draft'));
+        throw thrown;
+      }, throwsA(same(thrown)));
+      // A caught failed command still fails it.
+      await attempt((local) async {
+        await local.direct(_remove('draft'));
+        await local.direct(_create('p', 'twice')).catchError((Object _) {});
+      }, throwsA(isA<StateError>()));
+      // Unawaited work fails it.
+      await attempt((local) async {
+        unawaited(local.direct(_remove('draft')));
+      }, _stateError('unawaited transaction operation'));
+      // A refused submission never runs its callback.
+      var ran = false;
+      await expectLater(
+        client.transaction(
+          (tx) => tx.submitMutation(
+            'Find',
+            1,
+            const {},
+            _decode,
+            local: (_) async => ran = true,
+          ),
+        ),
+        _stateError(contains('cannot be submitted in a transaction')),
+      );
+      expect(ran, isFalse);
+      expect(await _mutationState(client), _untouched);
+    },
+  );
+
+  test('the local adapter exposes only local reads and writes and expires '
+      'with its callback', () async {
+    late WritePort captured;
+    Object? refusal;
+    await expectLater(
+      client.transaction((tx) async {
+        await tx.submitMutation(
+          'Publish',
+          1,
+          _publish('p'),
+          _decode,
+          local: (local) async {
+            captured = local;
+            expect(local, isNot(isA<Transaction>()));
+            expect(local, isNot(isA<SubmitMutationPort>()));
+            final raw = local as LocalTransaction;
+            expect(await raw.readSql('SELECT 1 AS one'), [
+              {'one': 1},
+            ]);
+            expect(await raw.query('Entry'), hasLength(2));
+            await local.direct(_remove('draft'));
+          },
+        );
+        // An expired handle is refused as the runtime refuses a stale
+        // capability, and poisons the open transaction even when caught.
+        try {
+          await captured.direct(_create('late', 'late'));
+        } catch (error) {
+          refusal = error;
+        }
+      }),
+      _stateError(_capability),
+    );
+    expect(refusal, isA<StateError>());
+    expect((refusal as StateError).message, _capability);
+    expect(await _mutationState(client), _untouched);
+    expect(await client.read('Entry', {'id': 'late'}), isNull);
+    // Once the transaction ended the handle is simply closed.
+    await expectLater(
+      captured.read('Entry', {'id': 'p'}),
+      _stateError('transaction_closed'),
+    );
+  });
+
+  test('outer transaction commands are refused while a local callback is '
+      'unfinished', () async {
+    // A captured parent handle inside the callback.
+    await expectLater(
+      client.transaction((tx) async {
+        await tx.submitMutation(
+          'Publish',
+          1,
+          _publish('p'),
+          _decode,
+          local: (local) async {
+            await expectLater(
+              tx.direct(_create('x', 'x')),
+              _stateError(_capability),
+            );
+            await expectLater(
+              tx.submitMutation('Ping', 1, const {}, _decode),
+              _stateError(_capability),
+            );
+            await expectLater(
+              tx.channels.subscribe('book'),
+              _stateError(_capability),
+            );
+            await expectLater(
+              tx.savepoint(() async {}),
+              _stateError(_capability),
+            );
+            await local.direct(_remove('draft'));
+          },
+        );
+      }),
+      _stateError(_capability),
+    );
+    expect(await _mutationState(client), _untouched);
+    // Pipelined behind an unawaited submission: refused whatever the timing.
+    await expectLater(
+      client.transaction((tx) async {
+        final submission = tx.submitMutation(
+          'Publish',
+          1,
+          _publish('p'),
+          _decode,
+          local: (local) => local.direct(_remove('draft')),
+        );
+        await expectLater(
+          tx.read('Entry', {'id': 'draft'}),
+          _stateError(_capability),
+        );
+        await submission;
+        // Once the submission completed the parent handle works again.
+        expect(await tx.read('Entry', {'id': 'draft'}), isNull);
+      }),
+      _stateError(_capability),
+    );
+    expect(await _mutationState(client), _untouched);
+  });
+
+  test('client calls, Loads and Fetches stay refused inside a local '
+      'callback', () async {
+    final job = await client.startLoad('Recent', 1, const {});
+    await client.transaction((tx) async {
+      await tx.submitMutation(
+        'Publish',
+        1,
+        _publish('p'),
+        _decode,
+        local: (local) async {
+          Matcher load(String code) =>
+              throwsA(isA<LoadException>().having((e) => e.code, 'code', code));
+          await expectLater(
+            client.startLoad('Recent', 1, const {}),
+            load('transaction_active'),
+          );
+          await expectLater(job.wait(), load('transaction_active'));
+          await expectLater(
+            client.invalidateLoad('Recent', const {}),
+            load('transaction_active'),
+          );
+          await expectLater(
+            client.fetchModel('Entry', 1, {'id': 'draft'}, (row) => row),
+            _callError('transaction_active'),
+          );
+          await expectLater(
+            client.invokeQuery('Find', 1, const {}, _decode),
+            _callError('transaction_active'),
+          );
+          await expectLater(
+            client.invokeAction('Ping', 1, const {}, _decode),
+            _callError('transaction_active'),
+          );
+          await expectLater(
+            client.read('Entry', {'id': 'p'}),
+            _stateError('transaction_active'),
+          );
+          await local.direct(_remove('draft'));
+        },
+      );
+    });
+    expect(await _mutationState(client), {
+      'pending': 1,
+      'draft': null,
+      'published': 'published',
+    });
+  });
+
+  test('close during a local callback releases its submission and commits '
+      'nothing', () async {
+    final entered = Completer<void>();
+    final gate = Completer<void>();
+    late Future<Call<String>> submission;
+    final running = client.transaction((tx) async {
+      submission = tx.submitMutation(
+        'Publish',
+        1,
+        _publish('p'),
+        _decode,
+        local: (local) async {
+          entered.complete();
+          await gate.future;
+          await local.direct(_remove('draft')).catchError((Object _) {});
+        },
+      );
+      await submission;
+    });
+    await entered.future;
+    final closing = client.close();
+    gate.complete();
+    await expectLater(running, throwsA(anything));
+    await expectLater(submission, throwsA(anything));
+    await closing;
+    client = await open();
+    expect(await _mutationState(client), _untouched);
+    // A provisional Call the close rolled back.
+    final inside = Completer<void>();
+    final hold = Completer<void>();
+    late Call<String> call;
+    final holding = client.transaction((tx) async {
+      call = await tx.submitMutation('Ping', 1, const {}, _decode);
+      inside.complete();
+      await hold.future;
+    });
+    await inside.future;
+    final closed = client.close();
+    hold.complete();
+    await expectLater(holding, throwsA(anything));
+    await closed;
+    expect(call.status, CallStatus.failed);
+    await expectLater(call.wait(), _callError('transaction_rolled_back'));
+    client = await open();
+    expect(await _mutationState(client), _untouched);
+  });
+
+  test('an onStore callback cannot submit a Mutation or run a local '
+      'callback', () async {
+    var refused = 0;
+    var ran = false;
+    await client.close();
+    hooks = {
+      'Entry': (tx, _) async {
+        await expectLater(
+          tx.submitMutation(
+            'Ping',
+            1,
+            const {},
+            _decode,
+            local: (_) async => ran = true,
+          ),
+          _stateError('store hook cannot submit a Mutation'),
+        );
+        refused++;
+      },
+    };
+    client = await open();
+    await client.invokeAction('Ping', 1, const {}, _decode);
+    await expectLater(
+      _accept(
+        client,
+        records: [
+          {
+            'model': 'Entry',
+            'identity': {'id': 's'},
+            'stamp': 1,
+            'state': {'text': 'server', 'note': null},
+          },
+        ],
+      ),
+      throwsA(anything),
+    );
+    expect(refused, 1);
+    expect(ran, isFalse);
+    expect(await client.read('Entry', {'id': 's'}), isNull);
+  });
+
+  test('a savepoint rollback ends only the Calls of its scope', () async {
+    final (kept, discarded) = await client.transaction((tx) async {
+      final kept = await tx.submitMutation('Ping', 1, const {}, _decode);
+      late Call<String> discarded;
+      await expectLater(
+        tx.savepoint<void>(() async {
+          discarded = await tx.submitMutation(
+            'Publish',
+            1,
+            _publish('p'),
+            _decode,
+            local: (local) => local.direct(_remove('draft')),
+          );
+          throw StateError('undo');
+        }),
+        _stateError('undo'),
+      );
+      expect(discarded.status, CallStatus.failed);
+      await expectLater(
+        discarded.wait(),
+        _callError('transaction_rolled_back'),
+      );
+      await expectLater(kept.wait(), _callError('transaction_uncommitted'));
+      return (kept, discarded);
+    });
+    expect(await _mutationState(client), {
+      'pending': 1,
+      'draft': 'local',
+      'published': null,
+    });
+    await _accept(client);
+    expect(await kept.wait(), isA<CallSuccess<String>>());
+    await expectLater(discarded.wait(), _callError('transaction_rolled_back'));
   });
 }
 

@@ -2,7 +2,7 @@
 // integration/generated-api` type-checks this file, and every
 // `@ts-expect-error` below has to be the error it names; the Dart twin is
 // misuse.dart ([#150](https://github.com/zanminwang/axton/issues/150)).
-import type {GeneratedClient, GeneratedTransaction, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks, Entry} from '../client.ts';
+import type {GeneratedClient, GeneratedTransaction, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks, Entry, ApplicationTransaction, CompanionContext, PublishEntryOutput} from '../client.ts';
 
 const badHooks:StoreHooks={
  entry:async(tx,changes)=>{
@@ -11,7 +11,7 @@ const badHooks:StoreHooks={
   // @ts-expect-error the incoming row has no invented field
    void change.row.missing;
   }
-  // @ts-expect-error remote calls are unavailable within the local transaction
+  // @ts-expect-error onStore queues no Mutation: its transaction is local-only
   void tx.mutations;
   // @ts-expect-error Fetch is unavailable within the onStore transaction
   void tx.fetch;
@@ -82,4 +82,47 @@ export async function fetchMisuse(client:GeneratedClient,tx:GeneratedTransaction
  const result=await client.fetch.placement({shelf:'s',at});
  // @ts-expect-error the result may be null
  void result.label;
+}
+
+// Transactional Mutation enqueue: an application transaction queues typed
+// Mutations only, `local` is a transaction-only option, and a Mutation's
+// `local` callback has Models only. The runtime refuses the same misuse.
+export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTransaction,local:CompanionContext,row:Entry){
+ const id=row.id;
+ // @ts-expect-error there is no direct route inside a transaction
+ await tx.mutations.call.rename({id,title:'t'});
+ // @ts-expect-error Queries are unavailable inside a transaction
+ void tx.queries;
+ // @ts-expect-error Fetch is unavailable inside a transaction
+ void tx.fetch;
+ // @ts-expect-error a Mutation keeps its declared args
+ await tx.mutations.rename({id,title:1});
+ // @ts-expect-error `local` is an option, never a business arg
+ await tx.mutations.rename({id,title:'t',local:async()=>{}});
+ // @ts-expect-error the callback receives the companion context, not a raw port
+ await tx.mutations.rename({id,title:'t'},{local:async(local:{direct(operation:object):Promise<void>;channels:object})=>{void local;}});
+ // @ts-expect-error a store selection names only store-eligible outputs
+ await tx.mutations.publishEntry({entry:row,composition:id},{store:{missing:false}});
+ // @ts-expect-error the Call observes the declared output
+ const wrong:Promise<import('../client.ts').Call<string>>=tx.mutations.publishEntry({entry:row,composition:id});
+ // @ts-expect-error standalone Mutations take no local callback
+ await client.mutations.rename({id,title:'t'},{local:async()=>{}});
+ // @ts-expect-error direct Mutations take no local callback
+ await client.mutations.call.rename({id,title:'t'},{local:async()=>{}});
+ // @ts-expect-error the callback queues no Mutation
+ void local.mutations;
+ // @ts-expect-error the callback modifies no Channel
+ void local.channels;
+ // @ts-expect-error the callback opens no savepoint and exposes no raw port
+ void local.transaction.savepoint;
+ // @ts-expect-error the callback cannot watch
+ local.models.composition.watch({},()=>{});
+ // @ts-expect-error the callback reads no sync state
+ void local.models.composition.syncState;
+ await tx.mutations.publishEntry({entry:row,composition:id},{local:async inner=>{
+  // @ts-expect-error nested enqueue is unavailable inside the callback
+  await inner.mutations.rename({id,title:'t'});
+ }});
+ const call:PublishEntryOutput|undefined=(await (await tx.mutations.publishEntry({entry:row,composition:id})).wait()).result;
+ return [wrong,call];
 }

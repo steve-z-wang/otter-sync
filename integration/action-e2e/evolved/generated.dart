@@ -562,6 +562,19 @@ class StoreHooks {
  const StoreHooks({this.todo});
 }
 class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
+/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints.
+class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
+/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
+class TransactionMutations {
+ final SubmitMutationPort _port; TransactionMutations(this._port);
+ Future<Call<AddTodoOutput>> addTodo({required TodoCreateInput todo, AddTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<AddTodoOutput>('AddTodo', 2, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<DeleteTodoOutput>> deleteTodo({required TodoDelete todo, DeleteTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<DeleteTodoOutput>('DeleteTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<RetitleTodosOutput>> retitleTodos({required String query, required String title, RetitleTodosStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RetitleTodosOutput>('RetitleTodos', 2, {'query': _dartActionEncode(query), 'title': _dartActionEncode(title)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<SendEmailOutput>> sendEmail({required String to, required String subject, required String body, SendEmailStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<SendEmailOutput>('SendEmail', 1, {'to': _dartActionEncode(to), 'subject': _dartActionEncode(subject), 'body': _dartActionEncode(body)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ Future<Call<UpdateTodoOutput>> updateTodo({required UpdateTodoTodoUpdate todo, UpdateTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<UpdateTodoOutput>('UpdateTodo', 2, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+}
+/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.
+class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
@@ -585,7 +598,7 @@ class GeneratedClient {
   return GeneratedClient._(client, connection);
   } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
  }
- Future<T> transaction<T>(Future<T> Function(GeneratedTransaction tx) body) => client.transaction((tx) => body(GeneratedTransaction(tx)));
+ Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.

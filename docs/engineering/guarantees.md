@@ -17,7 +17,7 @@ A native Load page is one operation in this sense: its declared output is applie
 | L1 | Reads show the authoritative base with pending local edits replayed in order. A transaction sees its own writes; other readers see them after commit. |
 | L2 | Committed records, queued mutations and rejections survive database reopen. |
 | L3 | A failed transaction rolls back its changes. A nested savepoint can roll back its own scope without discarding the outer transaction. |
-| L4 | Direct writes never enter the push queue. Companion edits follow their mutation's acceptance or rejection. Direct edits to an authoritative record survive rejection of a pending mutation, but later server authority may replace them. A record whose create is still pending has no authoritative base: if the create is rejected the record goes, direct edits included. A page the client has already applied does not undo a direct edit. |
+| L4 | Direct writes never enter the push queue. Companion edits follow their mutation's acceptance or rejection at their place in local order: apart from server authority for the record, settling a mutation neither undoes nor reorders a later direct write or a later mutation's companion, whatever order the outcomes arrive in. Direct edits to an authoritative record survive rejection of a pending mutation, but later server authority may replace them. A record whose create is still pending has no authoritative base: if the create is rejected the record goes, direct edits included. A page the client has already applied does not undo a direct edit. |
 | L5 | Local deletion applies the cascades declared by the schema, with the same rollback scope as the initiating operation. |
 
 ## P. Push

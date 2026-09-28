@@ -131,6 +131,41 @@ async function loadContract(client: GeneratedClient) {
   void [refreshed, ordinary, noArgs, flagged, byClient, name, phase, pages, error, waited, disposed, restored, recent, defaults, invalidated, options];
 }
 
+// Transactional Mutation enqueue: `tx.mutations` queues typed Mutations in the
+// application transaction; each returns its own Call, and the transaction
+// returns whatever its callback returns.
+async function transactionContract(client: GeneratedClient) {
+  const one: Call<AddTodoOutput> = await client.transaction(async tx => {
+    const current = await tx.models.todo.get(identity);
+    if (!current) throw Error('Todo not found');
+    return await tx.mutations.addTodo(input, {
+      store: { matches: false },
+      local: async local => {
+        const seen: Todo | null = await local.models.todo.get(identity);
+        await local.models.todo.update(identity, { title: seen?.title ?? 'Local' });
+        await local.models.project.delete(composite);
+        await local.models.note.create({ memo: null });
+      },
+    });
+  });
+  const pair = await client.transaction(async tx => {
+    const first = await tx.mutations.editAndRead({ todo: { id: 'A' } }, { local: async local => { await local.models.todo.delete(identity); } });
+    const second = await tx.mutations.sendEmail({ to: 'team@example.test', subject: 'Todo', body: 'Created' });
+    await tx.models.todo.create(created);
+    return { first, second };
+  });
+  const first: Call<EditAndReadOutput> = pair.first;
+  const second: Call<void> = pair.second;
+  // A business input named `store` stays apart from the store option.
+  const opened: Call<OpenTodoOutput> = await client.transaction(tx => tx.mutations.openTodo({ store: 'business' }, { store: { suggestions: false } }));
+  const pinged: Call<PingOutput> = await client.transaction(tx => tx.mutations.ping({}, { store: false }));
+  const plain: number = await client.transaction(async tx => { await tx.channels.subscribe('todos'); return 1; });
+  const nothing: void = await client.transaction(async tx => { await tx.models.todo.delete(identity); });
+  const outcome: CallOutcome<AddTodoOutput> = await one.wait();
+  const count: number | undefined = outcome.result?.count;
+  void [first, second, opened, pinged, plain, nothing, count];
+}
+
 type Tx = { db: unknown };
 const pingHandlerResult: PingHandlerOutput = undefined;
 const removeHandlerResult: RemoveTodoHandlerOutput = undefined;
@@ -192,4 +227,4 @@ const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): P
 const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
 declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
-void [loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];
+void [transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];

@@ -50,6 +50,18 @@
 //! A transaction command that arrives after the callback result, or that names
 //! a transaction that is not open, fails with `transaction_closed`.
 //!
+//! A `submitMutation` writes a named Mutation into the session. Its call is
+//! provisional - never frozen or sent - until the commit, which announces it
+//! with [`Event::TransactionCallState`] `committed` before the transaction
+//! task's success; a savepoint rollback announces its own scope's calls
+//! `rolledBack`, and a rollback, failed commit or close all of them. With
+//! `local`, the submission waits on an [`Operation::MutationLocal`] effect: a
+//! restricted capability of the same session, named by a `companionId`, whose
+//! local reads and writes are the only commands admitted while it runs - its
+//! writes becoming the call's companions - and whose own
+//! [`Input::CallbackResult`] answers the submission without ending the
+//! transaction. onStore callbacks submit no Mutation.
+//!
 //! [`Input::Close`] is priority control: it rolls back an open session, fails
 //! its parent task and every queued task with `client_closed`, cancels every
 //! outstanding effect, ends the observers and queues [`Event::RuntimeClosed`]

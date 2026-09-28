@@ -1130,6 +1130,31 @@ fn load_management_is_refused_inside_a_callback_or_a_store_hook() {
     let events = h.run();
     assert_eq!(completion(&events, "inner")["ok"], false);
     assert!(!completed(&events, "outer"));
+    // A Mutation's local callback is no wider: its Load command is refused
+    // and fails the submission.
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"submit","transactionId":transaction,
+        "command":{"kind":"submitMutation","name":"Ping","version":1,"args":{},"local":true}}),
+    );
+    let events = h.run();
+    let local = events
+        .iter()
+        .find(|e| e["operation"]["kind"] == "mutationLocal")
+        .unwrap_or_else(|| panic!("{events:?}"))
+        .clone();
+    let companion = local["operation"]["companionId"].clone();
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"local","transactionId":transaction,
+        "companionId":companion,"command":{"kind":"loadStart","name":"Recent","version":1,"args":{}}}),
+    );
+    let events = h.run();
+    assert_eq!(completion(&events, "local")["ok"], false);
+    h.submit(
+        json!({"type":"callbackResult","effectId":local["effectId"],"transactionId":transaction,
+        "companionId":companion,"ok":true}),
+    );
+    let events = h.run();
+    assert_eq!(completion(&events, "submit")["ok"], false);
     h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
     let events = h.run();
     assert_eq!(
@@ -1178,11 +1203,133 @@ fn load_management_is_refused_inside_a_callback_or_a_store_hook() {
         json!({"type":"transactionCommand","requestId":"local","transactionId":transaction,
         "command":{"kind":"read","key":{"model":"Entry","identity":{"id":"h"}}}}),
     );
+    // Nor can it submit a Mutation, with or without a local callback, or
+    // claim a companion token.
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"hook-submit","transactionId":transaction,
+        "command":{"kind":"submitMutation","name":"Ping","version":1,"args":{},"local":true}}),
+    );
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"hook-token","transactionId":transaction,
+        "companionId":"c1","command":{"kind":"read","key":{"model":"Entry","identity":{"id":"h"}}}}),
+    );
     let events = h.run();
     for n in 0..3 {
         assert_eq!(completion(&events, &format!("hook{n}"))["ok"], false);
     }
     assert_eq!(completion(&events, "local")["ok"], true);
+    assert_eq!(
+        completion(&events, "hook-submit")["error"],
+        "store hook cannot submit a Mutation"
+    );
+    assert_eq!(
+        completion(&events, "hook-token")["error"],
+        "invalid transaction capability"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["operation"]["kind"] == "mutationLocal"),
+        "{events:?}"
+    );
+    // The refused commands poisoned the hook: the page fails its job
+    // terminally, and it is not read again.
+    h.submit(json!({"type":"callbackResult","effectId":hook["effectId"],"transactionId":transaction,"ok":true}));
+    h.run();
+    let job = h.job(&id);
+    assert_eq!(job.phase, LoadPhase::Failed);
+    assert_eq!(job.error.unwrap().code, "load.hook_failed");
+    assert!(h.entry("h").is_none());
+    assert!(h.batches().iter().all(|(_, body)| !ids(body).contains(&id)));
+    assert_eq!(h.client().pending_count().unwrap(), 0);
+}
+
+/// A Load page is incoming authority like any delivery: while a Mutation's
+/// local callback holds the writer it waits, and it is stored - through its
+/// onStore hook - only after the transaction committed.
+#[test]
+fn a_load_page_waits_while_a_local_callback_holds_the_writer() {
+    let mut h = hooked();
+    h.connect(false);
+    let id = h.recent("start");
+    let (http, body) = h.batch();
+    h.task("tx", json!({"kind":"transaction"}));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|e| e["operation"]["kind"] == "callback")
+        .unwrap()
+        .clone();
+    let transaction = callback["operation"]["transactionId"].clone();
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"submit","transactionId":transaction,
+        "command":{"kind":"submitMutation","name":"Ping","version":1,"args":{},"local":true}}),
+    );
+    let events = h.run();
+    let local = events
+        .iter()
+        .find(|e| e["operation"]["kind"] == "mutationLocal")
+        .unwrap_or_else(|| panic!("{events:?}"))
+        .clone();
+    let companion = local["operation"]["companionId"].clone();
+    // The page arrives while the local callback runs.
+    let items: Vec<Value> = intents(&body)
+        .iter()
+        .map(|i| {
+            if i["loadId"] == id.as_str() {
+                page(i, &[("l", "loaded", 1)], None)
+            } else {
+                page(i, &[], None)
+            }
+        })
+        .collect();
+    h.ok(&http, &response(items));
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"read","transactionId":transaction,
+        "companionId":companion,"command":{"kind":"read","key":{"model":"Entry","identity":{"id":"l"}}}}),
+    );
+    h.submit(
+        json!({"type":"transactionCommand","requestId":"write","transactionId":transaction,
+        "companionId":companion,"command":{"kind":"direct","operation":{"model":"Entry","op":"create",
+            "identity":{"id":"mine"},"values":{"text":"local","note":null}}}}),
+    );
+    let events = h.run();
+    assert_eq!(
+        completion(&events, "read")["value"],
+        Value::Null,
+        "not stored"
+    );
+    assert_eq!(completion(&events, "write")["ok"], true);
+    h.submit(
+        json!({"type":"callbackResult","effectId":local["effectId"],"transactionId":transaction,
+        "companionId":companion,"ok":true}),
+    );
+    let events = h.run();
+    let call = completion(&events, "submit")["value"]["callId"].clone();
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["operation"]["kind"] == "storeCallback"),
+        "{events:?}"
+    );
+    assert!(h.entry("l").is_none());
+    assert_eq!(h.job(&id).pages, 0);
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
+    let events = h.run();
+    let committed = position(&events, |e| {
+        *e == json!({"type":"transactionCallState","callId":call,"state":"committed"})
+    });
+    let answered = position(&events, |e| e["requestId"] == "tx");
+    let hook = position(&events, |e| e["operation"]["kind"] == "storeCallback");
+    assert!(committed < answered && answered < hook, "{events:?}");
+    assert_eq!(h.entry("mine").unwrap()["text"], "local");
+    assert!(h.entry("l").is_none(), "the page waits for its hook");
+    let hook = events[hook].clone();
+    h.submit(json!({"type":"callbackResult","effectId":hook["effectId"],
+        "transactionId":hook["operation"]["transactionId"],"ok":true}));
+    h.run();
+    assert_eq!(h.entry("l").unwrap()["text"], "loaded");
+    assert_eq!(h.job(&id).phase, LoadPhase::Complete);
 }
 
 #[test]

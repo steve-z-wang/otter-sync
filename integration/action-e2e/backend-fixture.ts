@@ -12,6 +12,12 @@ export async function createFixture() {
   const notes: { id: string; body: string; mood: string; createdAt: Date; tag: string | null }[] = [];
   const onceCalls = { todoPage: 0, countTodos: 0 };
   let failQueries = false;
+  /** Every PublishEntry argument exactly as the handler received it. */
+  const publishes: { entry: { id: string; title: string; body: string }; media: { id: string; entryId: string; url: string }[]; placement: { id: string; entryId: string; journal: string; position: number } }[] = [];
+  let rejectPublish = false;
+  /** Entry identities PublishEntry rejects, so one push can mix outcomes. */
+  const rejectedEntries = new Set<string>();
+  let compositionLoads = 0;
   const mutations: Mutations<PgClient> = {
     async addTodo({ ctx, args }) {
       handlerCalls++;
@@ -59,6 +65,19 @@ export async function createFixture() {
       await ctx.tx.query("INSERT INTO action_e2e_note(id,body,mood,created_at,tag) VALUES($1,$2,$3,$4,$5)", [args.note.id, args.note.body, args.note.mood, args.note.createdAt.toISOString(), args.note.tag]);
       return { saved: { id: args.note.id } };
     },
+    // Stores the Entry, its media and its Journal placement in one backend
+    // transaction. While `rejectPublish` is set, or for an Entry listed in
+    // `rejectedEntries`, it rejects after the Entry and media are inserted,
+    // so the rejection must roll those back. A client's local companion
+    // writes never arrive here.
+    async publishEntry({ ctx, args }) {
+      handlerCalls++;
+      publishes.push(structuredClone(args));
+      await ctx.tx.query("INSERT INTO action_e2e_entry(id,title,body) VALUES($1,$2,$3)", [args.entry.id, args.entry.title, args.entry.body]);
+      for (const media of args.media) await ctx.tx.query("INSERT INTO action_e2e_media(id,entry_id,url) VALUES($1,$2,$3)", [media.id, media.entryId, media.url]);
+      if (rejectPublish || rejectedEntries.has(args.entry.id)) throw new CallRejected("publish.rejected");
+      await ctx.tx.query("INSERT INTO action_e2e_placement(id,entry_id,journal,position) VALUES($1,$2,$3,$4)", [args.placement.id, args.placement.entryId, args.placement.journal, args.placement.position]);
+    },
     async retitleTodos({ ctx, args }) {
       handlerCalls++;
       const rows = (await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE title ILIKE '%' || $1 || '%' RETURNING id", [args.query, args.title])).rows.map((row) => ({ id: String(row.id) })).sort((a, b) => a.id.localeCompare(b.id));
@@ -98,6 +117,36 @@ export async function createFixture() {
       }
       return rows;
     },
+    // Compositions are local to the client: the backend stores none, and
+    // `compositionLoads` shows whether it was ever asked for one.
+    async composition({ ids }) {
+      compositionLoads++;
+      return ids.map(() => null);
+    },
+    async entry({ ids, tx }) {
+      const rows: ({ id: string; title: string; body: string } | null)[] = [];
+      for (const { id } of ids) {
+        const row = (await tx.query("SELECT id,title,body FROM action_e2e_entry WHERE id=$1", [id])).rows[0];
+        rows.push(row ? { id: String(row.id), title: String(row.title), body: String(row.body) } : null);
+      }
+      return rows;
+    },
+    async media({ ids, tx }) {
+      const rows: ({ id: string; entryId: string; url: string } | null)[] = [];
+      for (const { id } of ids) {
+        const row = (await tx.query("SELECT id,entry_id,url FROM action_e2e_media WHERE id=$1", [id])).rows[0];
+        rows.push(row ? { id: String(row.id), entryId: String(row.entry_id), url: String(row.url) } : null);
+      }
+      return rows;
+    },
+    async placement({ ids, tx }) {
+      const rows: ({ id: string; entryId: string; journal: string; position: number } | null)[] = [];
+      for (const { id } of ids) {
+        const row = (await tx.query("SELECT id,entry_id,journal,position FROM action_e2e_placement WHERE id=$1", [id])).rows[0];
+        rows.push(row ? { id: String(row.id), entryId: String(row.entry_id), journal: String(row.journal), position: Number(row.position) } : null);
+      }
+      return rows;
+    },
     async todo({ ids, tx }) {
       loaderCalls++;
       const rows: ({ id: string; title: string } | null)[] = [];
@@ -120,12 +169,23 @@ export async function createFixture() {
     /** Real handler executions of the once-test Queries. */
     onceCalls,
     set failQueries(value: boolean) { failQueries = value; },
+    /** PublishEntry arguments in arrival order. */
+    publishes,
+    /** While set, PublishEntry rejects with `publish.rejected` after partial inserts, which its transaction rolls back. */
+    set rejectPublish(value: boolean) { rejectPublish = value; },
+    /** Entry identities PublishEntry rejects like `rejectPublish`, leaving other calls of the same push accepted. */
+    rejectedEntries,
+    /** Composition Loader executions: a local-only Model the backend should never look up. */
+    get compositionLoads() { return compositionLoads; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
       for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
       await pool.query("CREATE TABLE action_e2e_todo(id text PRIMARY KEY,title text NOT NULL)");
       await pool.query("CREATE TABLE action_e2e_note(id text PRIMARY KEY,body text NOT NULL,mood text NOT NULL,created_at text NOT NULL,tag text)");
       await pool.query("CREATE TABLE action_e2e_outbox(id bigserial PRIMARY KEY,recipient text NOT NULL,subject text NOT NULL,body text NOT NULL)");
+      await pool.query("CREATE TABLE action_e2e_entry(id text PRIMARY KEY,title text NOT NULL,body text NOT NULL)");
+      await pool.query("CREATE TABLE action_e2e_media(id text PRIMARY KEY,entry_id text NOT NULL REFERENCES action_e2e_entry(id),url text NOT NULL)");
+      await pool.query("CREATE TABLE action_e2e_placement(id text PRIMARY KEY,entry_id text NOT NULL REFERENCES action_e2e_entry(id),journal text NOT NULL,position integer NOT NULL)");
     },
     async listen() { listener = await backend.listen({ port: 0 }); return listener; },
     async close() { await listener?.close(); await pool.end(); },

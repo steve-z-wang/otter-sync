@@ -388,6 +388,150 @@
         "version": 1
       }
     },
+    "PublishEntry": {
+      "1": {
+        "input": {
+          "enums": [],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "title",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "body",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Entry"
+            },
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "entryId",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "url",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Media"
+            },
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "entryId",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "journal",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "position",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "int"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Placement"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Entry",
+            "name": "entry",
+            "operation": "create"
+          },
+          {
+            "cardinality": "list",
+            "kind": "model",
+            "model": "Media",
+            "name": "media",
+            "operation": "create"
+          },
+          {
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Placement",
+            "name": "placement",
+            "operation": "create"
+          }
+        ],
+        "kind": "mutation",
+        "name": "PublishEntry",
+        "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    },
     "RetitleTodos": {
       "1": {
         "input": {

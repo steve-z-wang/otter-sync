@@ -63,6 +63,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 request_id,
                 transaction_id,
                 scope,
+                companion_id,
                 command,
             } => {
                 if self.admit(&request_id) {
@@ -70,6 +71,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         request_id,
                         transaction_id,
                         scope,
+                        companion_id,
                         command,
                     });
                 }
@@ -77,9 +79,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Input::CallbackResult {
                 effect_id,
                 transaction_id,
+                companion_id,
                 ok,
                 error,
-            } => self.callback_result(&effect_id, &transaction_id, ok, error),
+            } => self.callback_result(
+                &effect_id,
+                &transaction_id,
+                companion_id.as_deref(),
+                ok,
+                error,
+            ),
             Input::EffectResult { effect_id, outcome } => {
                 self.effect_result(effect_id, outcome, now, entropy);
                 // Inbound work takes its place in the arrival order now, so an
@@ -404,12 +413,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         false
     }
     /// Priority close: roll back the open session, cancel every outstanding
-    /// effect, fail the parked parent, its queued commands and every queued
-    /// task with `client_closed`, fail direct calls as unavailable and the
+    /// effect (a local callback's too), turn the provisional calls
+    /// `rolledBack`, fail the parked parent, a submission waiting on its
+    /// local callback, its queued commands and every queued task with
+    /// `client_closed`, fail direct calls as unavailable and the
     /// prerequisite loop as closed, end the lanes and the observers, then
     /// announce the end. Nothing is applied after it.
     fn close(&mut self) {
-        let transaction = self.transaction.take();
+        let mut transaction = self.transaction.take();
         match transaction.as_ref().map(|transaction| &transaction.owner) {
             Some(TransactionOwner::Authority { .. }) => self.abort_authority_session(),
             Some(TransactionOwner::Application { .. }) => {
@@ -422,7 +433,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         for effect_id in std::mem::take(&mut self.effects).into_keys() {
             self.events.push(Event::CancelEffect { effect_id });
         }
+        if let Some(transaction) = &mut transaction {
+            let calls = std::mem::take(&mut transaction.calls);
+            self.call_transitions(calls, CallTransition::RolledBack);
+        }
         if let Some(transaction) = transaction {
+            let local = transaction.local;
             match transaction.owner {
                 TransactionOwner::Application { request_id } => {
                     self.complete(request_id, Err("client_closed".into()))
@@ -436,6 +452,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         continuation.fail(self, "client_closed".into(), None, None, &[], 0, 0)
                     }
                 },
+            }
+            if let Some(local) = local {
+                self.complete(local.request_id, Err("client_closed".into()));
             }
             for command in transaction.lane {
                 self.complete(command.request_id, Err("client_closed".into()));

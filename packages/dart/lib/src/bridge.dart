@@ -195,13 +195,26 @@ class _Abi implements Carrier {
   void detach(int runtime) => _detach(runtime);
 }
 
+/// Runs a Mutation's `local` callback over its capability's commands; throws
+/// its failure.
+typedef LocalRun =
+    Future<void> Function(
+      Future<dynamic> Function(Map<String, dynamic> command) send,
+    );
+
 /// One submitted input awaiting its `taskCompleted`.
 class _Route {
-  _Route({this.run, this.onValue}) : zone = Zone.current;
+  _Route({this.run, this.local, this.scope, this.onValue})
+    : zone = Zone.current;
   final completer = Completer<dynamic>();
 
   /// The transaction callback of a `transaction` task.
   final Future<void> Function(String transactionId)? run;
+
+  /// The `local` callback of a transaction `submitMutation`, and the scope its
+  /// commands carry.
+  final LocalRun? local;
+  final String? scope;
 
   /// Runs with the value of a successful completion while it is dispatched,
   /// before any later event: where an observer is claimed.
@@ -433,6 +446,10 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   /// after the commit that decided it.
   void Function(String callId, dynamic outcome)? onCallCompleted;
 
+  /// `transactionCallState`: a call submitted in a transaction became durable
+  /// with its commit (`committed`) or ended with a rollback (`rolledBack`).
+  void Function(String callId, String state)? onCallState;
+
   /// Claimed observers by id, with the zone each listened from. An observer
   /// is claimed while the completion of the task that named it is dispatched
   /// ([ObserverHost.task]'s `onValue`), and the runtime publishes its first
@@ -458,9 +475,11 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   /// closed: a process-wide listener costs one port, and never closing it
   /// means no runtime can ever hold a pointer to a closed callable, however
   /// its detach and a close raced. It does not keep the isolate alive on its
-  /// own: while anything waits on a runtime (an open, a task, a close) it
-  /// does, so an awaited outcome is always delivered, and a forgotten client
-  /// with nothing outstanding pins nothing.
+  /// own: while an open, a task or a close is outstanding it does, so their
+  /// answers are delivered, and a forgotten client with nothing outstanding
+  /// pins nothing. A pending `Call.wait()` is none of these and holds nothing:
+  /// a headless isolate awaiting only a Call can exit before the outcome
+  /// arrives (https://github.com/zanminwang/axton/issues/177).
   static NativeCallable<_WakeNative>? _wake;
   static int _held = 0;
 
@@ -587,6 +606,23 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     (id) => transactionCommandEnvelope(id, transactionId, scope, command),
   );
 
+  /// One Mutation submitted in the open callback transaction [transactionId].
+  /// With [local], the runtime parks the submission and asks for the callback,
+  /// which runs in this zone over commands carrying its companion capability;
+  /// its end is answered, and the submission completes only after it. A
+  /// callback that threw fails the submission with what it threw. [onValue]
+  /// runs with the answer while it is dispatched, before any later event.
+  Future<dynamic> submitMutation(
+    String transactionId,
+    String? scope,
+    Map<String, dynamic> command, {
+    LocalRun? local,
+    void Function(dynamic value)? onValue,
+  }) => _route(
+    _Route(local: local, scope: scope, onValue: onValue),
+    (id) => transactionCommandEnvelope(id, transactionId, scope, command),
+  );
+
   /// Answer one effect. A refusal means the runtime is gone, which fences the
   /// effect anyway.
   void effectResult(
@@ -707,6 +743,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
         _reports.add(diagnostic);
       case 'callCompleted':
         onCallCompleted?.call(event['callId'] as String, event['outcome']);
+      case 'transactionCallState':
+        onCallState?.call(event['callId'] as String, event['state'] as String);
       case 'observerChanged':
         _observe(
           event['observerId'] as String,
@@ -768,6 +806,10 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       _storeCallback(effectId, operation);
       return;
     }
+    if (operation['kind'] == 'mutationLocal') {
+      _mutationLocal(effectId, operation);
+      return;
+    }
     if (operation['kind'] != 'callback') {
       final effect = Effect(
         effectId,
@@ -826,6 +868,53 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
               error: error.toString(),
             ),
           );
+        },
+      );
+    });
+  }
+
+  /// A `mutationLocal` effect: run the `local` callback of the submission it
+  /// names, like a transaction callback, then answer with its companion id.
+  void _mutationLocal(String effectId, Map<String, dynamic> operation) {
+    final transactionId = operation['transactionId'] as String;
+    final companionId = operation['companionId'] as String;
+    final requestId = operation['requestId'];
+    final route = _routes[requestId];
+    final local = route?.local;
+    void answer({required bool ok, String? error}) => _submitQuietly(
+      callbackResultEnvelope(
+        effectId,
+        transactionId,
+        ok: ok,
+        error: error,
+        companionId: companionId,
+      ),
+    );
+    if (route == null || local == null) {
+      answer(ok: false, error: 'unknown mutation');
+      return;
+    }
+    _callbacks.add(effectId);
+    route.zone.scheduleMicrotask(() {
+      final pending = identical(_routes[requestId], route);
+      if (!_callbacks.remove(effectId) || !pending) return;
+      Future<dynamic> send(Map<String, dynamic> command) => _route(
+        _Route(),
+        (id) => transactionCommandEnvelope(
+          id,
+          transactionId,
+          route.scope,
+          command,
+          companionId: companionId,
+        ),
+      );
+      Future<void>.sync(() => local(send)).then(
+        (_) => answer(ok: true),
+        onError: (Object error, StackTrace stack) {
+          route
+            ..thrown = error
+            ..stack = stack;
+          answer(ok: false, error: error.toString());
         },
       );
     });
@@ -934,28 +1023,35 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     Map<String, dynamic> command,
   ) => {'type': 'task', 'requestId': requestId, 'command': command};
 
+  /// A command of an open callback transaction; [companionId] marks one of a
+  /// `local` callback.
   static Map<String, dynamic> transactionCommandEnvelope(
     String requestId,
     String transactionId,
     String? scope,
-    Map<String, dynamic> command,
-  ) => {
+    Map<String, dynamic> command, {
+    String? companionId,
+  }) => {
     'type': 'transactionCommand',
     'requestId': requestId,
     'transactionId': transactionId,
     if (scope != null) 'scope': scope,
+    if (companionId != null) 'companionId': companionId,
     'command': command,
   };
 
+  /// The end of a callback; [companionId] marks a `local` callback's.
   static Map<String, dynamic> callbackResultEnvelope(
     String effectId,
     String transactionId, {
     required bool ok,
     String? error,
+    String? companionId,
   }) => {
     'type': 'callbackResult',
     'effectId': effectId,
     'transactionId': transactionId,
+    if (companionId != null) 'companionId': companionId,
     'ok': ok,
     if (error != null) 'error': error,
   };

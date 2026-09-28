@@ -100,6 +100,94 @@ test("weak routing sweeps dead states but active waits remain live", async () =>
   assert.equal(registry.activeCount, 0);
 });
 
+const lifecycle = (code, execution) => (error) =>
+  error instanceof CallError &&
+  error.code === code &&
+  error.execution === execution;
+
+test("a provisional Call refuses an early wait, then observes normally once committed", async () => {
+  const registry = new ActionRegistry();
+  const call = registry.register("p", (value) => value, true);
+  assert.equal(call.status, "pending");
+  await assert.rejects(
+    call.wait(),
+    lifecycle("transaction_uncommitted", "unknown"),
+  );
+  // The refusal neither settles nor retains the Call.
+  assert.equal(call.status, "pending");
+  assert.equal(registry.activeCount, 0);
+  assert.equal(registry.routingCount, 1);
+  registry.transition("p", "committed");
+  const waiting = call.wait();
+  assert.equal(registry.activeCount, 1);
+  registry.complete({ callId: "p", outcome: { status: "succeeded", result: 1 } });
+  assert.deepEqual(await waiting, { result: 1, error: null });
+  assert.equal(call.status, "succeeded");
+});
+
+test("a rolled-back Call fails every wait and routes nothing more", async () => {
+  const registry = new ActionRegistry();
+  const rolled = registry.register("r", (value) => value, true);
+  const kept = registry.register("k", (value) => value, true);
+  registry.transition("r", "rolledBack");
+  assert.equal(rolled.status, "failed");
+  for (let i = 0; i < 2; i++)
+    await assert.rejects(
+      rolled.wait(),
+      lifecycle("transaction_rolled_back", "rejected"),
+    );
+  assert.equal(registry.routingCount, 1);
+  // A later transition or completion for it changes nothing.
+  registry.transition("r", "committed");
+  registry.complete({ callId: "r", outcome: { status: "succeeded", result: 1 } });
+  registry.transition("unknown", "rolledBack");
+  await assert.rejects(rolled.wait(), lifecycle("transaction_rolled_back", "rejected"));
+  assert.equal(kept.status, "pending");
+  await assert.rejects(kept.wait(), lifecycle("transaction_uncommitted", "unknown"));
+});
+
+test("weak routing drops an unobserved provisional Call", () => {
+  const references = [];
+  const registry = new ActionRegistry((state) => {
+    const reference = {
+      state,
+      deref() {
+        return this.state;
+      },
+    };
+    references.push(reference);
+    return reference;
+  });
+  registry.register("abandoned", (value) => value, true);
+  references[0].state = undefined;
+  registry.register("other", (value) => value, true);
+  assert.equal(registry.routingCount, 1);
+  registry.transition("abandoned", "committed");
+  registry.transition("other", "rolledBack");
+  assert.equal(registry.routingCount, 0);
+});
+
+test("close leaves provisional Calls to their transition and the runtime's end rolls back the rest", async () => {
+  const registry = new ActionRegistry();
+  const durable = registry.register("d", (value) => value);
+  const rolled = registry.register("r", (value) => value, true);
+  const committed = registry.register("c", (value) => value, true);
+  const orphan = registry.register("o", (value) => value, true);
+  registry.close();
+  assert.equal((await durable.wait()).error.code, "client.closed");
+  assert.equal(rolled.status, "pending");
+  registry.transition("r", "rolledBack");
+  registry.transition("c", "committed");
+  await assert.rejects(rolled.wait(), lifecycle("transaction_rolled_back", "rejected"));
+  assert.equal((await committed.wait()).error.code, "client.closed");
+  assert.equal(orphan.status, "pending");
+  registry.ended();
+  await assert.rejects(orphan.wait(), lifecycle("transaction_rolled_back", "rejected"));
+  const late = registry.register("late", (value) => value, true);
+  await assert.rejects(late.wait(), lifecycle("transaction_rolled_back", "rejected"));
+  assert.equal(registry.routingCount, 0);
+});
+
 test("missing WeakRef rejects before registration", () => {
   const registry = new ActionRegistry(null);
   assert.throws(

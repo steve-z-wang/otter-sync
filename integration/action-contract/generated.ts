@@ -550,3 +550,27 @@ export interface StoreHooks {
  readonly note?: StoreHandler<NoteIdentity, Note>;
 }
 export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }
+/** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */
+export type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };
+export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }
+/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints. */
+export class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }
+/** Transaction-only option: `local` runs inside the open transaction and its Model writes belong to that Mutation. */
+export type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };
+/** Mutations queued in an application transaction: each resolves with its `Call` after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route. */
+export function makeTransactionMutations(port:SubmitMutationPort) { const submit=(options:(CallOptions & CompanionOptions)|undefined):SubmitMutationOptions|undefined => { if (options===undefined) return undefined; const {local,...rest}=options; return local===undefined ? rest : {...rest,local:(companion:WritePort)=>local(new CompanionContext(companion))}; }; return {
+ addNotes: (args:AddNotesInput, options?:AddNotesOptions & CompanionOptions):Promise<Call<AddNotesOutput>> => port.submitMutation('AddNotes',1,encodeAddNotesInput(args),decodeAddNotesOutput,submit(options)),
+ addTodo: (args:AddTodoInput, options?:AddTodoOptions & CompanionOptions):Promise<Call<AddTodoOutput>> => port.submitMutation('AddTodo',2,encodeAddTodoInput(args),decodeAddTodoOutput,submit(options)),
+ deleteTodo: (args:DeleteTodoInput, options?:DeleteTodoOptions & CompanionOptions):Promise<Call<DeleteTodoOutput>> => port.submitMutation('DeleteTodo',1,encodeDeleteTodoInput(args),decodeDeleteTodoOutput,submit(options)),
+ edit: (args:EditInput, options?:EditOptions & CompanionOptions):Promise<Call<EditOutput>> => port.submitMutation('Edit',1,encodeEditInput(args),decodeEditOutput,submit(options)),
+ editAndRead: (args:EditAndReadInput, options?:EditAndReadOptions & CompanionOptions):Promise<Call<EditAndReadOutput>> => port.submitMutation('EditAndRead',1,encodeEditAndReadInput(args),decodeEditAndReadOutput,submit(options)),
+ link: (args:LinkInput, options?:LinkOptions & CompanionOptions):Promise<Call<LinkOutput>> => port.submitMutation('Link',1,encodeLinkInput(args),decodeLinkOutput,submit(options)),
+ openTodo: (args:OpenTodoInput, options?:OpenTodoOptions & CompanionOptions):Promise<Call<OpenTodoOutput>> => port.submitMutation('OpenTodo',1,encodeOpenTodoInput(args),decodeOpenTodoOutput,submit(options)),
+ ping: (args:PingInput, options?:PingOptions & CompanionOptions):Promise<Call<PingOutput>> => port.submitMutation('Ping',1,encodePingInput(args),decodePingOutput,submit(options)),
+ removeTodo: (args:RemoveTodoInput, options?:RemoveTodoOptions & CompanionOptions):Promise<Call<RemoveTodoOutput>> => port.submitMutation('RemoveTodo',1,encodeRemoveTodoInput(args),decodeRemoveTodoOutput,submit(options)),
+ search: (args:SearchInput, options?:SearchOptions & CompanionOptions):Promise<Call<SearchOutput>> => port.submitMutation('Search',1,encodeSearchInput(args),decodeSearchOutput,submit(options)),
+ sendEmail: (args:SendEmailInput, options?:SendEmailOptions & CompanionOptions):Promise<Call<SendEmailOutput>> => port.submitMutation('SendEmail',1,encodeSendEmailInput(args),decodeSendEmailOutput,submit(options)),
+ stateList: (args:StateListInput, options?:StateListOptions & CompanionOptions):Promise<Call<StateListOutput>> => port.submitMutation('StateList',2,encodeStateListInput(args),decodeStateListOutput,submit(options)),
+}; }
+/** The application transaction: local Models and Channels, and `mutations`, which queue typed Mutations in the same local commit. */
+export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; constructor(transaction:WritePort & SubmitMutationPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); } }

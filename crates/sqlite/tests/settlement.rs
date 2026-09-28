@@ -751,3 +751,704 @@ fn a_receipt_record_that_does_not_fit_is_skipped_and_the_batch_completes() {
     assert_eq!(c.record_stamp(&created()).unwrap(), 4);
     assert_quiet(&mut c);
 }
+
+// ------------------------------------------------- companion settlement order
+//
+// A companion is a local-only operation owned by one queued call. Its effect
+// keeps its local position among later independent writes and later
+// companions: acceptance retains it there, rejection omits it, and neither
+// outcome may undo or reorder what was written after it. `Entry comp` is a
+// local-only record the server never reports; each call's wire operation
+// edits `Entry e`, whose authority the receipt carries.
+
+#[derive(Clone, Copy, Debug)]
+enum Outcome {
+    Accepted,
+    Rejected,
+}
+const OUTCOMES: [Outcome; 2] = [Outcome::Accepted, Outcome::Rejected];
+
+fn entry_key(id: &str) -> RecordKey {
+    schema().record_key("Entry", &json!({ "id": id })).unwrap()
+}
+fn text_of(c: &mut Client<axton_sqlite::SqliteStore>, id: &str) -> Option<String> {
+    c.read(&entry_key(id))
+        .unwrap()
+        .map(|row| row["text"].as_str().unwrap().to_owned())
+}
+fn edit(id: &str, text: &str) -> Operation {
+    Operation {
+        identity: json!({ "id": id }),
+        ..update(text)
+    }
+}
+fn remove(id: &str) -> Operation {
+    Operation {
+        model: "Entry".into(),
+        op: OperationKind::Delete,
+        identity: json!({ "id": id }),
+        values: None,
+    }
+}
+/// A call that edits `Entry e` on the wire and carries `companion` locally.
+fn call(text: &str, companion: Vec<Operation>) -> Mutation {
+    let mut m = mutation(text);
+    m.companion = companion;
+    m
+}
+fn held(mut m: Mutation) -> Mutation {
+    m.prerequisites.push("hold".into());
+    m
+}
+fn direct(c: &mut Client<axton_sqlite::SqliteStore>, op: Operation) {
+    c.transaction(|tx| tx.direct(op)).unwrap();
+}
+fn enqueue(c: &mut Client<axton_sqlite::SqliteStore>, m: Mutation) -> u64 {
+    c.transaction(|tx| tx.enqueue(m)).unwrap()
+}
+/// A fresh client holding `Entry e` ("A") and the local-only `Entry comp`.
+fn start(comp: &str) -> (tempfile::TempDir, Client<axton_sqlite::SqliteStore>) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    seed(&mut c, "A");
+    direct(
+        &mut c,
+        create("Entry", "comp", json!({"text": comp, "note": null})),
+    );
+    (dir, c)
+}
+/// Freeze the next batch and settle all of it with `outcome`; an accepted
+/// batch carries the authority of `Entry e` at `stamp`.
+fn settle_next(c: &mut Client<axton_sqlite::SqliteStore>, outcome: Outcome, stamp: u64) {
+    let batch = PushRequest::decode(&c.freeze().unwrap().unwrap()).unwrap();
+    let sequence = batch.batch_sequence;
+    let r = match outcome {
+        Outcome::Accepted => receipt(c, sequence, vec![authority(Some("SERVER"), stamp)]),
+        Outcome::Rejected => {
+            let ordinals: Vec<u64> = batch.mutations.iter().map(|m| m.ordinal).collect();
+            rejecting(c, sequence, &ordinals, "denied", vec![])
+        }
+    };
+    c.acknowledge(sequence, r).unwrap();
+}
+/// Nothing pending, no base and no local write retained once every call has
+/// settled.
+fn assert_settled(c: &mut Client<axton_sqlite::SqliteStore>) {
+    assert_eq!(c.pending_count().unwrap(), 0, "nothing pending");
+    assert_eq!(c.before_image_count().unwrap(), 0, "no base is retained");
+    assert_eq!(
+        table_count(c, "axton_local_write"),
+        0,
+        "no local write is retained"
+    );
+}
+
+/// No later edit: acceptance keeps the companion's effect, rejection restores
+/// the record as it was before the call.
+#[test]
+fn without_later_edits_a_companion_is_kept_on_acceptance_and_undone_on_rejection() {
+    for outcome in OUTCOMES {
+        let (_dir, mut c) = start("old");
+        enqueue(&mut c, call("B", vec![remove("comp")]));
+        assert_eq!(text_of(&mut c, "comp"), None);
+        settle_next(&mut c, outcome, 2);
+        let expected = match outcome {
+            Outcome::Accepted => None,
+            Outcome::Rejected => Some("old".to_owned()),
+        };
+        assert_eq!(text_of(&mut c, "comp"), expected, "{outcome:?}");
+        assert_settled(&mut c);
+
+        let (_dir, mut c) = start("old");
+        enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+        settle_next(&mut c, outcome, 2);
+        let expected = match outcome {
+            Outcome::Accepted => "1",
+            Outcome::Rejected => "old",
+        };
+        assert_eq!(
+            text_of(&mut c, "comp").as_deref(),
+            Some(expected),
+            "{outcome:?}"
+        );
+        assert_settled(&mut c);
+    }
+}
+
+/// Delete as a companion, then recreate the same identity directly: the new
+/// content is neither deleted by acceptance nor replaced by the old content
+/// on rejection.
+#[test]
+fn a_direct_recreate_after_a_companion_delete_keeps_the_new_content() {
+    for outcome in OUTCOMES {
+        let (_dir, mut c) = start("old");
+        enqueue(&mut c, call("B", vec![remove("comp")]));
+        direct(
+            &mut c,
+            create("Entry", "comp", json!({"text":"new","note":null})),
+        );
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("new"));
+        settle_next(&mut c, outcome, 2);
+        assert_eq!(
+            text_of(&mut c, "comp").as_deref(),
+            Some("new"),
+            "{outcome:?}"
+        );
+        assert_settled(&mut c);
+    }
+}
+
+/// A later independent update of the same field wins over an earlier
+/// companion whichever way the companion's call settles.
+#[test]
+fn a_later_direct_update_outlives_an_earlier_companion_update() {
+    for outcome in OUTCOMES {
+        let (_dir, mut c) = start("0");
+        enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+        direct(&mut c, edit("comp", "2"));
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+        settle_next(&mut c, outcome, 2);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"), "{outcome:?}");
+        assert_settled(&mut c);
+    }
+}
+
+/// A later independent delete is not undone by rejecting an earlier companion,
+/// nor replaced by accepting it.
+#[test]
+fn a_later_direct_delete_outlives_an_earlier_companion_update() {
+    for outcome in OUTCOMES {
+        let (_dir, mut c) = start("0");
+        enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+        direct(&mut c, remove("comp"));
+        settle_next(&mut c, outcome, 2);
+        assert_eq!(text_of(&mut c, "comp"), None, "{outcome:?}");
+        assert_settled(&mut c);
+    }
+}
+
+/// Two calls' companions update one field, A before B. A is rejected and B
+/// accepted; whether both answers arrive together or either first, B's value
+/// stands, before and after the second answer.
+#[test]
+fn overlapping_companions_keep_local_order_whatever_order_their_outcomes_arrive() {
+    // Both answers in one receipt.
+    let (_dir, mut c) = start("0");
+    let a = enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+    enqueue(&mut c, call("C", vec![edit("comp", "2")]));
+    assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+    c.freeze().unwrap().unwrap();
+    let r = rejecting(&mut c, 1, &[a], "denied", vec![authority(Some("C"), 2)]);
+    c.acknowledge(1, r).unwrap();
+    assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"), "one receipt");
+    assert_settled(&mut c);
+
+    // B's acceptance first, while A is still pending.
+    let (_dir, mut c) = start("0");
+    enqueue(&mut c, held(call("B", vec![edit("comp", "1")])));
+    enqueue(&mut c, call("C", vec![edit("comp", "2")]));
+    settle_next(&mut c, Outcome::Accepted, 2);
+    assert_eq!(c.pending_count().unwrap(), 1, "A is still pending");
+    assert_eq!(
+        text_of(&mut c, "comp").as_deref(),
+        Some("2"),
+        "B's accepted companion stays above A's pending one"
+    );
+    c.set_readiness("hold", Readiness::Ready).unwrap();
+    settle_next(&mut c, Outcome::Rejected, 3);
+    assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"), "B first");
+    assert_settled(&mut c);
+
+    // A's rejection first, while B is still pending.
+    let (_dir, mut c) = start("0");
+    enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+    enqueue(&mut c, held(call("C", vec![edit("comp", "2")])));
+    settle_next(&mut c, Outcome::Rejected, 2);
+    assert_eq!(c.pending_count().unwrap(), 1, "B is still pending");
+    assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+    c.set_readiness("hold", Readiness::Ready).unwrap();
+    settle_next(&mut c, Outcome::Accepted, 2);
+    assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"), "A first");
+    assert_settled(&mut c);
+}
+
+/// A record whose only creation is a pending companion: a direct edit of it
+/// is kept when the creation is accepted and goes with it when rejected.
+#[test]
+fn a_direct_edit_follows_the_fate_of_a_pending_companion_create() {
+    for outcome in OUTCOMES {
+        let (_dir, mut c) = start("old");
+        enqueue(
+            &mut c,
+            call(
+                "B",
+                vec![create("Entry", "fresh", json!({"text":"n","note":null}))],
+            ),
+        );
+        direct(&mut c, edit("fresh", "n2"));
+        assert_eq!(text_of(&mut c, "fresh").as_deref(), Some("n2"));
+        settle_next(&mut c, outcome, 2);
+        let expected = match outcome {
+            Outcome::Accepted => Some("n2".to_owned()),
+            Outcome::Rejected => None,
+        };
+        assert_eq!(text_of(&mut c, "fresh"), expected, "{outcome:?}");
+        assert_settled(&mut c);
+    }
+}
+
+fn book(id: &str) -> RecordKey {
+    family_schema()
+        .record_key("Book", &json!({ "id": id }))
+        .unwrap()
+}
+fn comment(id: &str) -> RecordKey {
+    family_schema()
+        .record_key("Comment", &json!({ "id": id }))
+        .unwrap()
+}
+fn book_update(id: &str, title: &str) -> Operation {
+    Operation {
+        model: "Book".into(),
+        op: OperationKind::Update,
+        identity: json!({ "id": id }),
+        values: Some(json!({ "title": title })),
+    }
+}
+fn book_authority(id: &str, title: &str, stamp: u64) -> AuthorityRecord {
+    AuthorityRecord {
+        model: "Book".into(),
+        identity: json!({ "id": id }),
+        stamp,
+        state: json!({ "title": title }),
+        error: None,
+    }
+}
+
+/// A companion delete owns its cascade: the Comment it removed follows the
+/// call's outcome, while a Book recreated directly afterwards and a Comment
+/// created under it are later independent writes that survive both outcomes,
+/// including a settlement of unrelated work while the call is still pending.
+#[test]
+fn a_companion_cascade_follows_its_call_and_spares_later_children() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Client::open(
+            axton_sqlite::SqliteStore::open(dir.path().join("db")).unwrap(),
+            family_schema(),
+        )
+        .unwrap();
+        c.transaction(|tx| {
+            tx.direct(create("Book", "b", json!({"title":"B"})))?;
+            tx.direct(create("Book", "other", json!({"title":"O"})))?;
+            tx.direct(create("Book", "unrelated", json!({"title":"U"})))?;
+            tx.direct(create("Comment", "c", json!({"bookId":"b","text":"C"})))
+        })
+        .unwrap();
+        let mut owner = Mutation::new("Edit", vec![book_update("other", "O2")]);
+        owner.companion.push(Operation {
+            model: "Book".into(),
+            op: OperationKind::Delete,
+            identity: json!({"id":"b"}),
+            values: None,
+        });
+        owner.prerequisites.push("hold".into());
+        let owner = c.transaction(|tx| tx.enqueue(owner)).unwrap();
+        assert!(c.read(&comment("c")).unwrap().is_none(), "cascaded");
+        c.transaction(|tx| {
+            tx.enqueue(Mutation::new("Edit", vec![book_update("unrelated", "U2")]))?;
+            tx.direct(create("Book", "b", json!({"title":"B2"})))?;
+            tx.direct(create("Comment", "c2", json!({"bookId":"b","text":"C2"})))
+        })
+        .unwrap();
+        // Unrelated work settles while the owner is held back.
+        c.freeze().unwrap().unwrap();
+        let r = receipt(&mut c, 1, vec![book_authority("unrelated", "U2", 1)]);
+        c.acknowledge(1, r).unwrap();
+        assert_eq!(c.read(&book("b")).unwrap().unwrap()["title"], "B2");
+        assert!(
+            c.read(&comment("c2")).unwrap().is_some(),
+            "a child of the recreated Book is not the pending delete's"
+        );
+        assert!(c.read(&comment("c")).unwrap().is_none());
+        c.set_readiness("hold", Readiness::Ready).unwrap();
+        c.freeze().unwrap().unwrap();
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 2, vec![book_authority("other", "O2", 1)]),
+            Outcome::Rejected => rejecting(&mut c, 2, &[owner], "denied", vec![]),
+        };
+        c.acknowledge(2, r).unwrap();
+        assert_eq!(
+            c.read(&book("b")).unwrap().unwrap()["title"],
+            "B2",
+            "{outcome:?}"
+        );
+        assert!(c.read(&comment("c2")).unwrap().is_some(), "{outcome:?}");
+        assert_eq!(
+            c.read(&comment("c")).unwrap().is_some(),
+            matches!(outcome, Outcome::Rejected),
+            "the cascade follows its call: {outcome:?}"
+        );
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+    }
+}
+
+/// Reopen with a later direct write and an accepted companion still ordered
+/// behind pending work: the visible rows and the eventual settlement are the
+/// same as without the restart.
+#[test]
+fn local_order_survives_reopen_while_earlier_work_is_pending() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut c = open(&path);
+        seed(&mut c, "A");
+        direct(
+            &mut c,
+            create("Entry", "comp", json!({"text":"0","note":null})),
+        );
+        enqueue(&mut c, held(call("B", vec![edit("comp", "1")])));
+        enqueue(&mut c, call("C", vec![edit("comp", "2")]));
+        direct(&mut c, edit("comp", "3"));
+        enqueue(&mut c, call("D", vec![edit("comp", "4")]));
+        direct(&mut c, edit("comp", "5"));
+        // The two unheld calls are accepted; their companions now sit between
+        // the held call's pending companion and the later direct writes.
+        settle_next(&mut c, Outcome::Accepted, 2);
+        assert_eq!(c.pending_count().unwrap(), 1);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("5"));
+        drop(c);
+        let mut c = open(&path);
+        assert_eq!(c.pending_count().unwrap(), 1);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("5"));
+        c.set_readiness("hold", Readiness::Ready).unwrap();
+        settle_next(&mut c, outcome, 3);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("5"), "{outcome:?}");
+        assert_settled(&mut c);
+        drop(c);
+        let mut c = open(&path);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("5"), "{outcome:?}");
+        assert_settled(&mut c);
+    }
+}
+
+/// A direct write stays above the pending edits written before it when one of
+/// them is rejected; server authority for the record may still replace it (L4).
+#[test]
+fn a_direct_write_stays_above_earlier_pending_edits_until_authority_replaces_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    seed(&mut c, "A");
+    enqueue(&mut c, mutation("B"));
+    enqueue(&mut c, held(mutation("C")));
+    direct(&mut c, update("D"));
+    assert_eq!(text_of(&mut c, "e").as_deref(), Some("D"));
+    settle_next(&mut c, Outcome::Rejected, 0);
+    assert_eq!(
+        text_of(&mut c, "e").as_deref(),
+        Some("D"),
+        "the direct write was made after the pending edit C"
+    );
+    c.set_readiness("hold", Readiness::Ready).unwrap();
+    settle_next(&mut c, Outcome::Accepted, 2);
+    assert_eq!(
+        text_of(&mut c, "e").as_deref(),
+        Some("SERVER"),
+        "the receipt's authority replaces the direct write"
+    );
+    assert_settled(&mut c);
+}
+
+/// A file written before the local write journal existed opens in place: its
+/// queue is untouched, the journal is added empty beside it, and a companion
+/// queued there settles as it would have.
+#[test]
+fn a_file_without_the_local_write_journal_gains_it_in_place() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut c = Client::open_at(
+            &path,
+            schema(),
+            Box::new(|p| axton_sqlite::SqliteStore::open(p)),
+            false,
+        )
+        .unwrap();
+        seed(&mut c, "A");
+        direct(
+            &mut c,
+            create("Entry", "comp", json!({"text":"0","note":null})),
+        );
+        enqueue(&mut c, call("B", vec![edit("comp", "1")]));
+        let frozen = c.freeze().unwrap().unwrap();
+        drop(c);
+        axton_sqlite::SqliteStore::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE axton_local_write")
+            .unwrap();
+        let mut c = Client::open_at(
+            &path,
+            schema(),
+            Box::new(|p| axton_sqlite::SqliteStore::open(p)),
+            false,
+        )
+        .unwrap();
+        assert!(!c.schema_state().rebuilt);
+        assert_eq!(c.pending_count().unwrap(), 1);
+        assert_eq!(
+            c.freeze().unwrap().unwrap(),
+            frozen,
+            "the queue is untouched"
+        );
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+        direct(&mut c, edit("comp", "2"));
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 1, vec![authority(Some("SERVER"), 2)]),
+            Outcome::Rejected => rejecting(&mut c, 1, &[1], "denied", vec![]),
+        };
+        c.acknowledge(1, r).unwrap();
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"), "{outcome:?}");
+        assert_settled(&mut c);
+    }
+}
+
+fn family(path: &std::path::Path) -> Client<axton_sqlite::SqliteStore> {
+    Client::open(
+        axton_sqlite::SqliteStore::open(path).unwrap(),
+        family_schema(),
+    )
+    .unwrap()
+}
+fn book_delete(id: &str) -> Operation {
+    Operation {
+        model: "Book".into(),
+        op: OperationKind::Delete,
+        identity: json!({ "id": id }),
+        values: None,
+    }
+}
+fn comment_update(id: &str, text: &str) -> Operation {
+    Operation {
+        model: "Comment".into(),
+        op: OperationKind::Update,
+        identity: json!({ "id": id }),
+        values: Some(json!({ "text": text })),
+    }
+}
+fn title(c: &mut Client<axton_sqlite::SqliteStore>, id: &str) -> Option<String> {
+    c.read(&book(id))
+        .unwrap()
+        .map(|row| row["title"].as_str().unwrap().to_owned())
+}
+fn comment_text(c: &mut Client<axton_sqlite::SqliteStore>, id: &str) -> Option<String> {
+    c.read(&comment(id))
+        .unwrap()
+        .map(|row| row["text"].as_str().unwrap().to_owned())
+}
+/// `Book b` ("B") with `Comment c` ("C"), and `Book other`, all local.
+fn family_start(path: &std::path::Path) -> Client<axton_sqlite::SqliteStore> {
+    let mut c = family(path);
+    c.transaction(|tx| {
+        tx.direct(create("Book", "b", json!({"title":"B"})))?;
+        tx.direct(create("Book", "other", json!({"title":"O"})))?;
+        tx.direct(create("Comment", "c", json!({"bookId":"b","text":"C"})))
+    })
+    .unwrap();
+    c
+}
+/// The status of the queued call `ordinal` on `key`: whether it diverged.
+fn diverged(c: &mut Client<axton_sqlite::SqliteStore>, key: &RecordKey, ordinal: u64) -> bool {
+    c.record_status(key).unwrap()["pending"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["ordinal"] == ordinal && p["diverged"] == true)
+}
+
+/// One call's companions delete a Book, recreate it and recreate its Comment:
+/// the cascade of the delete sits at the delete, before the recreations, so
+/// the recreated Comment replays while the call is pending and survives
+/// acceptance; rejection restores both records.
+#[test]
+fn a_companion_cascade_keeps_its_place_before_later_companions_of_the_same_call() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = family_start(&dir.path().join("db"));
+        // An earlier call on the Comment, rejected below, forces a rebuild of
+        // the Comment while the companion call is still pending.
+        let earlier = c
+            .transaction(|tx| tx.enqueue(Mutation::new("Edit", vec![comment_update("c", "E")])))
+            .unwrap();
+        let mut m = Mutation::new("Edit", vec![book_update("other", "O2")]);
+        m.companion = vec![
+            book_delete("b"),
+            create("Book", "b", json!({"title":"B2"})),
+            create("Comment", "c", json!({"bookId":"b","text":"C2"})),
+        ];
+        m.prerequisites.push("hold".into());
+        let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+        assert_eq!(comment_text(&mut c, "c").as_deref(), Some("C2"));
+        c.freeze().unwrap().unwrap();
+        let r = rejecting(&mut c, 1, &[earlier], "denied", vec![]);
+        c.acknowledge(1, r).unwrap();
+        assert_eq!(
+            comment_text(&mut c, "c").as_deref(),
+            Some("C2"),
+            "the rebuilt Comment replays the call's recreation"
+        );
+        assert!(
+            !diverged(&mut c, &comment("c"), owner),
+            "no replay conflict"
+        );
+        assert_eq!(title(&mut c, "b").as_deref(), Some("B2"));
+        c.set_readiness("hold", Readiness::Ready).unwrap();
+        c.freeze().unwrap().unwrap();
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 2, vec![book_authority("other", "O2", 1)]),
+            Outcome::Rejected => rejecting(&mut c, 2, &[owner], "denied", vec![]),
+        };
+        c.acknowledge(2, r).unwrap();
+        let expected = match outcome {
+            Outcome::Accepted => (Some("B2"), Some("C2")),
+            Outcome::Rejected => (Some("B"), Some("C")),
+        };
+        assert_eq!(
+            (
+                title(&mut c, "b").as_deref(),
+                comment_text(&mut c, "c").as_deref()
+            ),
+            expected,
+            "{outcome:?}"
+        );
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+    }
+}
+
+/// The same order holds for the cascade of a wire delete: it sits at the
+/// delete, so a later wire recreation of the child in the same call replays.
+#[test]
+fn a_wire_cascade_keeps_its_place_before_later_operations_of_the_same_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = family_start(&dir.path().join("db"));
+    let earlier = c
+        .transaction(|tx| tx.enqueue(Mutation::new("Edit", vec![comment_update("c", "E")])))
+        .unwrap();
+    let mut m = Mutation::new(
+        "Replace",
+        vec![
+            book_delete("b"),
+            create("Book", "b", json!({"title":"B2"})),
+            create("Comment", "c", json!({"bookId":"b","text":"C2"})),
+        ],
+    );
+    m.prerequisites.push("hold".into());
+    let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+    c.freeze().unwrap().unwrap();
+    let r = rejecting(&mut c, 1, &[earlier], "denied", vec![]);
+    c.acknowledge(1, r).unwrap();
+    assert_eq!(comment_text(&mut c, "c").as_deref(), Some("C2"));
+    assert!(!diverged(&mut c, &comment("c"), owner));
+}
+
+/// A pending wire delete keeps extending to a child the server delivers for
+/// the deleted parent while a later call's recreation of that parent is
+/// pending: only a local recreation stops the extension.
+#[test]
+fn a_pending_wire_delete_still_hides_a_delivered_child_of_a_parent_recreated_by_a_later_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = family_start(&dir.path().join("db"));
+    c.transaction(|tx| tx.set_channel("a".into(), true))
+        .unwrap();
+    acknowledge(&mut c, &[("a", 0)]);
+    let mut delete = Mutation::new("Delete", vec![book_delete("b")]);
+    delete.prerequisites.push("hold".into());
+    c.transaction(|tx| {
+        tx.enqueue(delete)?;
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![create("Book", "b", json!({"title":"B2"}))],
+        ))
+    })
+    .unwrap();
+    assert_eq!(title(&mut c, "b").as_deref(), Some("B2"));
+    let delivered = AuthorityRecord {
+        model: "Comment".into(),
+        identity: json!({"id":"x"}),
+        stamp: 1,
+        state: json!({"bookId":"b","text":"X"}),
+        error: None,
+    };
+    c.apply_page(multi(&[("a", 0, 1, 1)], vec![delivered]))
+        .unwrap();
+    assert_eq!(
+        comment_text(&mut c, "x"),
+        None,
+        "the pending delete of the old parent extends to its delivered child"
+    );
+}
+
+/// A file written before companion cascades were companions stored a
+/// companion delete's cascade as an effect of its call. Acceptance still
+/// keeps that cascade with the companion, so the child does not come back.
+#[test]
+fn an_old_queued_companion_cascade_stored_as_an_effect_settles_with_its_companion() {
+    for outcome in OUTCOMES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut c = family_start(&path);
+        let mut m = Mutation::new("Edit", vec![book_update("other", "O2")]);
+        m.companion.push(book_delete("b"));
+        let owner = c.transaction(|tx| tx.enqueue(m)).unwrap();
+        drop(c);
+        // Rewrite the call's operations as the earlier runtime stored them:
+        // wire operations, then companions, then every cascade as an effect;
+        // and remove the journal, which that runtime did not have.
+        let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+        raw.execute_batch(&format!(
+            "DELETE FROM axton_mutation_operation WHERE ordinal={owner};
+             INSERT INTO axton_mutation_operation (ordinal, position, kind, model, identity, op, \"values\") VALUES
+               ({owner}, 0, 'wire', 'Book', '{{\"id\":\"other\"}}', 'update', '{{\"title\":\"O2\"}}'),
+               ({owner}, 1, 'companion', 'Book', '{{\"id\":\"b\"}}', 'delete', NULL),
+               ({owner}, 2, 'effect', 'Comment', '{{\"id\":\"c\"}}', 'delete', NULL);
+             DROP TABLE axton_local_write;"
+        ))
+        .unwrap();
+        drop(raw);
+        let mut c = family(&path);
+        assert_eq!(
+            c.read_sql(
+                "SELECT kind FROM axton_mutation_operation WHERE model='Comment'",
+                &[]
+            )
+            .unwrap(),
+            vec![json!({"kind":"effect"})],
+            "an old-format row"
+        );
+        assert_eq!(comment_text(&mut c, "c"), None);
+        c.freeze().unwrap().unwrap();
+        let r = match outcome {
+            Outcome::Accepted => receipt(&mut c, 1, vec![book_authority("other", "O2", 1)]),
+            Outcome::Rejected => rejecting(&mut c, 1, &[owner], "denied", vec![]),
+        };
+        c.acknowledge(1, r).unwrap();
+        let expected = match outcome {
+            Outcome::Accepted => (None, None),
+            Outcome::Rejected => (Some("B"), Some("C")),
+        };
+        assert_eq!(
+            (
+                title(&mut c, "b").as_deref(),
+                comment_text(&mut c, "c").as_deref()
+            ),
+            expected,
+            "{outcome:?}"
+        );
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+        assert_eq!(table_count(&mut c, "axton_local_write"), 0);
+    }
+}

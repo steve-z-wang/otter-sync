@@ -149,7 +149,8 @@ pub(super) fn execute<S: ClientStore + 'static>(
 }
 
 /// Execute one read or write of the open application transaction inside its
-/// session. The savepoint commands are the transaction's own.
+/// session. The savepoint commands and `submitMutation`, which may start a
+/// local callback, are the transaction's own.
 pub(super) fn execute_in_session<S: ClientStore>(
     client: &mut Client<S>,
     command: &TransactionCommand,
@@ -196,8 +197,9 @@ pub(super) fn execute_in_session<S: ClientStore>(
         TransactionCommand::Malformed { error } => return Err(invalid(error.clone())),
         TransactionCommand::Savepoint
         | TransactionCommand::Release { .. }
-        | TransactionCommand::RollbackSavepoint { .. } => {
-            return Err(invalid("a savepoint is the transaction's own command"));
+        | TransactionCommand::RollbackSavepoint { .. }
+        | TransactionCommand::SubmitMutation { .. } => {
+            return Err(invalid("a transaction lifecycle is not a client command"));
         }
     })
 }

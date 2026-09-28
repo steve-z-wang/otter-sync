@@ -413,11 +413,25 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
         assert.equal(typeof input.requestId, "string");
         assert.equal(typeof input.transactionId, "string");
         assert.ok(input.scope === undefined || typeof input.scope === "string");
+        // A local callback's commands carry its companion capability.
+        assert.ok(
+          input.companionId === undefined ||
+            typeof input.companionId === "string",
+        );
         assert.equal(typeof input.command.kind, "string");
+        if (input.command.kind === "submitMutation")
+          assert.ok(
+            input.command.local === undefined ||
+              typeof input.command.local === "boolean",
+          );
         break;
       case "callbackResult":
         assert.equal(typeof input.effectId, "string");
         assert.equal(typeof input.transactionId, "string");
+        assert.ok(
+          input.companionId === undefined ||
+            typeof input.companionId === "string",
+        );
         assert.equal(typeof input.ok, "boolean");
         assert.ok(
           input.ok ? !("error" in input) : typeof input.error === "string",
@@ -448,6 +462,7 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
     "report",
     "runtimeClosed",
     "taskCompleted",
+    "transactionCallState",
   ]);
   const operations = new Set();
   const codes = new Set();
@@ -476,6 +491,11 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
           assert.equal(typeof event.operation.transactionId, "string");
           assert.equal(typeof event.operation.requestId, "string");
         }
+        if (event.operation.kind === "mutationLocal") {
+          assert.equal(typeof event.operation.transactionId, "string");
+          assert.equal(typeof event.operation.companionId, "string");
+          assert.equal(typeof event.operation.requestId, "string");
+        }
         break;
       case "cancelEffect":
         assert.equal(typeof event.effectId, "string");
@@ -483,6 +503,10 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
       case "callCompleted":
         assert.equal(typeof event.callId, "string");
         assert.equal(typeof event.outcome, "object");
+        break;
+      case "transactionCallState":
+        assert.equal(typeof event.callId, "string");
+        assert.ok(["committed", "rolledBack"].includes(event.state));
         break;
       case "observerChanged":
         assert.equal(typeof event.observerId, "string");
@@ -516,6 +540,7 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
   assert.deepEqual([...operations].sort(), [
     "callback",
     "http",
+    "mutationLocal",
     "prerequisite",
     "refreshAuth",
     "socket",
@@ -580,7 +605,12 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
   });
   assert.equal(opened.clientId, "c");
   const seen = [];
-  for (const type of ["callCompleted", "observerChanged", "report"])
+  for (const type of [
+    "callCompleted",
+    "transactionCallState",
+    "observerChanged",
+    "report",
+  ])
     bridge.on(type, (event) => seen.push(event.type));
   const handled = [];
   bridge.onEffect("timer", (effectId, operation) =>
@@ -594,6 +624,8 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
   wake("9");
   assert.deepEqual(seen, [
     "callCompleted",
+    "transactionCallState",
+    "transactionCallState",
     ...Array(5).fill("observerChanged"),
     ...Array(4).fill("report"),
   ]);
@@ -622,6 +654,14 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
         transactionId: "tx7",
         ok: false,
         error: "unknown transaction",
+      },
+      {
+        type: "callbackResult",
+        effectId: "13",
+        transactionId: "tx7",
+        companionId: "c9",
+        ok: false,
+        error: "unknown mutation",
       },
     ],
   );

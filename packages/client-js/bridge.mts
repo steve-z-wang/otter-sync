@@ -26,7 +26,11 @@ export type EffectOutcome =
   | { ok: false; error: { message: string; status?: number } };
 
 export type BridgeEventType =
-  "callCompleted" | "observerChanged" | "report" | "cancelEffect";
+  | "callCompleted"
+  | "observerChanged"
+  | "report"
+  | "cancelEffect"
+  | "transactionCallState";
 
 /**
  * One observer's state as the runtime published it: a subscription status, a
@@ -63,6 +67,18 @@ export type TaskHooks = {
 type Callback = {
   requestId: string;
   start(effectId: string, transactionId: string): void;
+  effectId?: string;
+  cancelled?: true;
+  thrown?: { value: unknown };
+};
+/**
+ * The `local` callback of one transaction `submitMutation`: the runtime asks
+ * for it with a `mutationLocal` effect naming the submission's request, and
+ * the submission completes only after it ended.
+ */
+type LocalCallbackRoute = {
+  requestId: string;
+  start(effectId: string, transactionId: string, companionId: string): void;
   effectId?: string;
   cancelled?: true;
   thrown?: { value: unknown };
@@ -154,6 +170,8 @@ export class Bridge {
   #issued = 0;
   #routes = new Map<string, Route>();
   #callbacks = new Map<string, Callback>();
+  /** `local` callbacks by the request id of their submission. */
+  #locals = new Map<string, LocalCallbackRoute>();
   #storeHandlers = new Map<string, RawStoreHandler>();
   #storeCallbacks = new Map<string, StorePending>();
   #storeCauses = new Map<string, unknown>();
@@ -293,6 +311,76 @@ export class Bridge {
     }));
   }
 
+  /**
+   * Submit one Mutation in the transaction `transactionId`. With `local`, the
+   * runtime parks the submission and asks for the callback, which runs in the
+   * caller's async context over commands carrying its companion capability;
+   * its end is answered, and the submission settles only after it. A callback
+   * that threw rejects the submission with what it threw. `hooks.settled`
+   * runs with the answer while it is dispatched, before any later event.
+   */
+  submitMutation(
+    transactionId: string,
+    scope: string | undefined,
+    command: RecordValue,
+    local:
+      | ((send: (command: RecordValue) => Promise<any>) => Promise<void>)
+      | undefined,
+    hooks: TaskHooks = {},
+  ): Promise<any> {
+    const envelope = (requestId: string) => ({
+      type: "transactionCommand",
+      requestId,
+      transactionId,
+      ...(scope === undefined ? {} : { scope }),
+      command,
+    });
+    if (!local) return this.#submitRouted(envelope, hooks.settled);
+    let start!: (effect: { effectId: string; companionId: string }) => void;
+    const started = new Promise<{ effectId: string; companionId: string }>(
+      (resolve) => (start = resolve),
+    );
+    const route: LocalCallbackRoute = {
+      requestId: "",
+      start: (effectId, _transactionId, companionId) =>
+        start({ effectId, companionId }),
+    };
+    const done = this.#submitRouted((requestId) => {
+      route.requestId = requestId;
+      this.#locals.set(requestId, route);
+      return envelope(requestId);
+    }, hooks.settled);
+    // Registered here: the callback runs in the submitter's async context.
+    void started.then(async ({ effectId, companionId }) => {
+      if (route.cancelled || !this.#routes.has(route.requestId)) return;
+      const send = (command: RecordValue) =>
+        this.#submitRouted((requestId) => ({
+          type: "transactionCommand",
+          requestId,
+          transactionId,
+          ...(scope === undefined ? {} : { scope }),
+          companionId,
+          command,
+        }));
+      let result: RecordValue;
+      try {
+        await local(send);
+        result = { ok: true };
+      } catch (error) {
+        route.thrown = { value: error };
+        result = { ok: false, error: describe(error) };
+      }
+      this.#answer({
+        type: "callbackResult",
+        effectId,
+        transactionId,
+        companionId,
+        ...result,
+      });
+    });
+    return done;
+  }
+
   /** Answer one effect. A late answer is fenced in the runtime. */
   effectResult(effectId: string, outcome: EffectOutcome): void {
     this.#answer({ type: "effectResult", effectId, outcome });
@@ -388,6 +476,7 @@ export class Bridge {
     } catch (error) {
       this.#settle(requestId)?.reject(error);
       this.#callbacks.delete(requestId);
+      this.#locals.delete(requestId);
     }
     return settled;
   }
@@ -457,8 +546,11 @@ export class Bridge {
     switch (event.type) {
       case "taskCompleted": {
         const route = this.#settle(event.requestId);
-        const callback = this.#callbacks.get(event.requestId);
+        const callback =
+          this.#callbacks.get(event.requestId) ??
+          this.#locals.get(event.requestId);
         this.#callbacks.delete(event.requestId);
+        this.#locals.delete(event.requestId);
         if (!route) return;
         if (event.ok) {
           try {
@@ -490,6 +582,8 @@ export class Bridge {
       case "cancelEffect":
         this.#cancelCallback(event.effectId);
         this.#cancelStoreCallback(event.effectId);
+        return this.#emit(event.type, event);
+      case "transactionCallState":
         return this.#emit(event.type, event);
       case "callCompleted":
       case "report": {
@@ -554,6 +648,24 @@ export class Bridge {
         });
       callback.effectId = effectId;
       return callback.start(effectId, operation.transactionId);
+    }
+    if (operation.kind === "mutationLocal") {
+      const local = this.#locals.get(operation.requestId);
+      if (!local)
+        return this.#answer({
+          type: "callbackResult",
+          effectId,
+          transactionId: operation.transactionId,
+          companionId: operation.companionId,
+          ok: false,
+          error: "unknown mutation",
+        });
+      local.effectId = effectId;
+      return local.start(
+        effectId,
+        operation.transactionId,
+        operation.companionId,
+      );
     }
     const handler = this.#effects.get(operation.kind);
     if (!handler)
@@ -638,7 +750,10 @@ export class Bridge {
 
   /** A cancelled callback effect: its callback must not start any more. */
   #cancelCallback(effectId: string): void {
-    for (const callback of this.#callbacks.values())
+    for (const callback of [
+      ...this.#callbacks.values(),
+      ...this.#locals.values(),
+    ])
       if (callback.effectId === effectId) callback.cancelled = true;
   }
 
@@ -649,6 +764,7 @@ export class Bridge {
     const routes = [...this.#routes.values()];
     this.#routes.clear();
     this.#callbacks.clear();
+    this.#locals.clear();
     for (const pending of this.#storeCallbacks.values())
       cancelStorePending(pending);
     this.#storeCallbacks.clear();

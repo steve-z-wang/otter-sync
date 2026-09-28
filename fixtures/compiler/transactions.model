@@ -1,0 +1,11 @@
+// Transactional Mutation enqueue: an application transaction reads a local
+// Composition, queues PublishEntry and deletes the Composition as that
+// Mutation's local companion. Rename carries scalars only.
+model Composition {
+ id UUID
+ title String
+ body String
+ @@id(id)
+}
+mutation PublishEntry(entry Entry.create, composition UUID) { published Entry }
+mutation Rename(id UUID, title String)

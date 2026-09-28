@@ -210,6 +210,9 @@ impl<S: ClientStore> Client<S> {
             .as_ref()
             .ok_or_else(|| invalid("store preparation requires an active transaction"))?
             .id;
+        // From here on the session is incoming authority's: its hooks are
+        // local-only whatever handle they write through.
+        self.session.as_mut().unwrap().authority = true;
         let changed = self.session.as_ref().unwrap().changed.clone();
         let pulls = self.pulls.clone();
         self.session_savepoint()?;

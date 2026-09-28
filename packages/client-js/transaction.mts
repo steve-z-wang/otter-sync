@@ -1,19 +1,37 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { type RecordValue, type QuerySpec } from "./values.mts";
+import type { Call } from "./actions.mts";
+import {
+  callbackRefusal,
+  expiredRefusal,
+  submitMutation,
+  type MutationOptions,
+  type MutationPort,
+  type SubmissionHost,
+} from "./local.mts";
 export { strictJson, type RecordValue, type QuerySpec } from "./values.mts";
+export {
+  LocalTransaction,
+  type LocalCallback,
+  type MutationOptions,
+  type MutationPort,
+} from "./local.mts";
 /** One open savepoint: the scope token the runtime issued for it, once known. */
 type Frame = { scope?: string };
 /**
  * The commands of one application transaction callback. The runtime runs
  * them in submission order inside the transaction it owns, and refuses them
  * once the callback finished; this object keeps the language-side evidence:
- * async-context ownership of savepoints, unawaited work and first failure.
+ * async-context ownership of savepoints, unawaited work, first failure and
+ * which submissions still run a `local` callback.
  */
 export class Transaction {
   /** `inCallback()` knows the callback's own async context. */
   static readonly exactCallbackGuard = true;
   #send: (command: RecordValue, scope?: string) => Promise<any>;
   #open = true;
+  /** Submissions with a `local` callback that have not settled. */
+  #locals = 0;
   /** Settles once every command submitted so far has settled. */
   #tail: Promise<unknown> = Promise.resolve();
   #pending = 0;
@@ -24,9 +42,24 @@ export class Transaction {
   #publicToken = Symbol();
   #active: Frame | undefined;
   #scopes = new Set<Promise<unknown>>();
-  constructor(send: (command: RecordValue, scope?: string) => Promise<any>) {
+  #host: SubmissionHost;
+  constructor(
+    send: (command: RecordValue, scope?: string) => Promise<any>,
+    mutations?: MutationPort,
+  ) {
     this.#send = send;
+    this.#host = {
+      admit: () => this.#admit(),
+      track: (submit) => this.#track(submit),
+      running: (delta) => void (this.#locals += delta),
+      expired: () => expiredRefusal(this.#open, this.#poison),
+      mutations,
+    };
   }
+  /** Record a structural refusal: the transaction fails whatever is caught. */
+  #poison = (error: Error): void => {
+    this.#structural ??= error;
+  };
   /** Runtime cancellation fences an escaped handle before user code settles. */
   cancel(): void {
     this.#open = false;
@@ -59,10 +92,13 @@ export class Transaction {
   }
   /** Submit one command in the innermost open savepoint's scope. */
   #queue(command: RecordValue): Promise<any> {
+    return this.#track((scope) => this.#send(command, scope));
+  }
+  #track(submit: (scope: string | undefined) => Promise<any>): Promise<any> {
     this.#pending++;
     let work: Promise<any>;
     try {
-      work = this.#send(command, this.#active?.scope);
+      work = submit(this.#active?.scope);
     } catch (error) {
       work = Promise.reject(error);
     }
@@ -79,15 +115,38 @@ export class Transaction {
     return work;
   }
   #call(command: RecordValue): Promise<any> {
+    return this.#admit() ?? this.#queue(command);
+  }
+  /** The refusal of an outer command, if any, before it is submitted. */
+  #admit(): Promise<never> | undefined {
     // Object lifetime: an escaped transaction object refuses before admission.
     if (!this.#open) return Promise.reject(Error("transaction_closed"));
+    // A `local` callback owns the transaction until its submission settles:
+    // a captured or pipelined parent command is refused as the runtime would.
+    const refused = callbackRefusal(this.#locals, this.#poison);
+    if (refused) return refused;
     // Async-context guard: work from outside the innermost savepoint's context
     // would carry the wrong scope token.
     if (this.#active && this.#context.getStore() !== this.#active) {
       this.#structural = Error("overlapping savepoint work");
       return Promise.reject(this.#structural);
     }
-    return this.#queue(command);
+    return undefined;
+  }
+  /**
+   * Queue a named Mutation in this transaction. It settles after the
+   * Mutation's optimism and its `local` callback ran, with a Call that stays
+   * provisional until the transaction commits. The callback runs in this
+   * async context; outer commands are refused until the submission settled.
+   */
+  submitMutation<T>(
+    name: string,
+    version: number,
+    args: object,
+    decode: (value: unknown) => T,
+    options?: MutationOptions,
+  ): Promise<Call<T>> {
+    return submitMutation(this.#host, name, version, args, decode, options);
   }
   /**
    * The callback returned. Promise lifetime decides "unawaited": a command
@@ -140,6 +199,8 @@ export class Transaction {
   }
   savepoint<T>(body: () => Promise<T>): Promise<T> {
     if (!this.#open) return Promise.reject(Error("transaction_closed"));
+    const refused = callbackRefusal(this.#locals, this.#poison);
+    if (refused) return refused;
     // Async-context guard, as in `#call`.
     if (this.#active && this.#context.getStore() !== this.#active) {
       this.#structural = Error("overlapping savepoints");

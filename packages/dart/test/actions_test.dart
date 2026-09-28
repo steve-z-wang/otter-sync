@@ -94,6 +94,132 @@ void main() {
     expect(result.result, 'ready');
   });
 
+  Matcher lifecycle(String code, String execution) => throwsA(
+    isA<CallError>()
+        .having((error) => error.code, 'code', code)
+        .having((error) => error.execution, 'execution', execution),
+  );
+
+  test('a provisional Call refuses an early wait, then observes normally '
+      'once committed', () async {
+    final observers = ActionObservers();
+    final call = observers.register<int>(
+      'p',
+      (value) => value as int,
+      provisional: true,
+    );
+    expect(call.status, CallStatus.pending);
+    await expectLater(
+      call.wait(),
+      lifecycle('transaction_uncommitted', 'unknown'),
+    );
+    // The refusal neither settles nor retains the Call.
+    expect(call.status, CallStatus.pending);
+    expect(observers.routingCount, 1);
+    observers.transition('p', 'committed');
+    final waiting = call.wait();
+    observers.complete({
+      'callId': 'p',
+      'outcome': {'status': 'succeeded', 'result': 1},
+    });
+    expect(((await waiting) as CallSuccess<int>).result, 1);
+    expect(call.status, CallStatus.succeeded);
+  });
+
+  test('a rolled-back Call fails every wait and routes nothing more', () async {
+    final observers = ActionObservers();
+    final rolled = observers.register<int>(
+      'r',
+      (value) => value as int,
+      provisional: true,
+    );
+    final kept = observers.register<int>(
+      'k',
+      (value) => value as int,
+      provisional: true,
+    );
+    observers.transition('r', 'rolledBack');
+    expect(rolled.status, CallStatus.failed);
+    for (var i = 0; i < 2; i++) {
+      await expectLater(
+        rolled.wait(),
+        lifecycle('transaction_rolled_back', 'rejected'),
+      );
+    }
+    expect(observers.routingCount, 1);
+    // A later transition or completion for it changes nothing.
+    observers.transition('r', 'committed');
+    observers.complete({
+      'callId': 'r',
+      'outcome': {'status': 'succeeded', 'result': 1},
+    });
+    observers.transition('unknown', 'rolledBack');
+    await expectLater(
+      rolled.wait(),
+      lifecycle('transaction_rolled_back', 'rejected'),
+    );
+    expect(kept.status, CallStatus.pending);
+    await expectLater(
+      kept.wait(),
+      lifecycle('transaction_uncommitted', 'unknown'),
+    );
+  });
+
+  test('weak routing drops an unobserved provisional Call', () {
+    final refs = <_TestWeak>[];
+    final observers = ActionObservers(
+      weak: (state) {
+        final ref = _TestWeak(state);
+        refs.add(ref);
+        return ref;
+      },
+    );
+    observers.register<void>('abandoned', (_) {}, provisional: true);
+    refs.single.value = null;
+    observers.register<void>('other', (_) {}, provisional: true);
+    expect(observers.routingCount, 1);
+    observers.transition('abandoned', 'committed');
+    observers.transition('other', 'rolledBack');
+    expect(observers.routingCount, 0);
+  });
+
+  test('close leaves provisional Calls to their transition and the '
+      "runtime's end rolls back the rest", () async {
+    final observers = ActionObservers();
+    final durable = observers.register<void>('d', (_) {});
+    final rolled = observers.register<void>('r', (_) {}, provisional: true);
+    final committed = observers.register<void>('c', (_) {}, provisional: true);
+    final orphan = observers.register<void>('o', (_) {}, provisional: true);
+    observers.close();
+    expect(
+      ((await durable.wait()) as CallFailure<void>).error.code,
+      'client.closed',
+    );
+    expect(rolled.status, CallStatus.pending);
+    observers.transition('r', 'rolledBack');
+    observers.transition('c', 'committed');
+    await expectLater(
+      rolled.wait(),
+      lifecycle('transaction_rolled_back', 'rejected'),
+    );
+    expect(
+      ((await committed.wait()) as CallFailure<void>).error.code,
+      'client.closed',
+    );
+    expect(orphan.status, CallStatus.pending);
+    observers.ended();
+    await expectLater(
+      orphan.wait(),
+      lifecycle('transaction_rolled_back', 'rejected'),
+    );
+    final after = observers.register<void>('late', (_) {}, provisional: true);
+    await expectLater(
+      after.wait(),
+      lifecycle('transaction_rolled_back', 'rejected'),
+    );
+    expect(observers.routingCount, 0);
+  });
+
   late Directory directory;
   late Client client;
   setUp(() async {

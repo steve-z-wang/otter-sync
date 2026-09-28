@@ -163,7 +163,7 @@ A Load creates no Channel membership, subscription or cursor, and completing it 
 - **`forget()`** removes a completed, failed or cancelled job (`load.not_terminal` for a running one); `get` then returns `null`, and later calls through an old handle fail with `load.not_found`. Jobs are never removed automatically.
 - **`dispose()`** stops this handle's observers only; the job continues. A handle you never dispose stays in memory until the client closes, because it keeps receiving status snapshots, so dispose handles you no longer watch. `get` returns a new handle each time; several handles to one job share its ID and state.
 
-Closing the client rejects pending `wait()` calls with `client_closed` and keeps every job; reopening resumes them. Load calls are not allowed inside `client.transaction` or an `onStore` callback.
+Closing the client rejects pending `wait()` calls with `client_closed` and keeps every job; reopening resumes them. Load calls are not allowed inside `client.transaction`, a Mutation's `local` callback or an `onStore` callback.
 
 ## Keep loaded records current
 
@@ -194,7 +194,7 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | Code | Meaning |
 | --- | --- |
 | `load.invalid_options` | `refresh` without `once`, an option that is not a Boolean, or a `list` limit outside 1 to 100; in TypeScript also options that are not an object or name another option; nothing was started |
-| `transaction_active` | A Load call from inside `client.transaction` or an `onStore` callback |
+| `transaction_active` | A Load call from inside `client.transaction`, a Mutation's `local` callback or an `onStore` callback |
 | `load.unknown` | No Load of that name and version in this client's schema |
 | `load.invalid_args` | The start or invalidation arguments do not match the Load's inputs; nothing was written |
 | `load_version_unsupported`, `load.invalid`, `model_version_unsupported` | The backend does not retain this Load version, refused its arguments, or does not retain a Model version the client stores |

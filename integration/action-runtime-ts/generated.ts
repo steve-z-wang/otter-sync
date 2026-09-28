@@ -262,7 +262,7 @@ export interface RemoveMomentOutput {
  at: Date;
 }
 function encodeChangeInput(args:ChangeInput):Record<string,unknown> { return {
- todo: args.todo == null ? null : {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: args.todo == null ? null : ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
  at: args.at.toISOString(),
 }; }
 function decodeChangeOutput(value:unknown):ChangeOutput { const row=value as Record<string,unknown>; return {
@@ -280,7 +280,7 @@ function decodeFindOutput(value:unknown):FindOutput { const row=value as Record<
  todo: row.todo == null ? null : decodeTodo(row.todo as Record<string,unknown>),
 }; }
 function encodeMarkInput(args:MarkInput):Record<string,unknown> { return {
- moment: {...encodeMomentIdentity(args.moment),...encodeMomentPatch(args.moment)},
+ moment: ({...encodeMomentIdentity(args.moment),...encodeMomentPatch(args.moment)}),
 }; }
 function decodeMarkOutput(_value:unknown):void { return undefined; }
 function encodePingInput(args:PingInput):Record<string,unknown> { return {

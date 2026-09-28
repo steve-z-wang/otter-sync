@@ -213,7 +213,7 @@ function encodePingInput(args:PingInput):Record<string,unknown> { return {
 }; }
 function decodePingOutput(_value:unknown):void { return undefined; }
 function encodeRenameItemInput(args:RenameItemInput):Record<string,unknown> { return {
- item: {...encodeItemIdentity(args.item),...encodeItemPatch(args.item)},
+ item: ({...encodeItemIdentity(args.item),...encodeItemPatch(args.item)}),
 }; }
 function decodeRenameItemOutput(_value:unknown):void { return undefined; }
 /** Invocation options for AddItem; `store` selects which explicit Model outputs also update local Models. */

@@ -962,7 +962,7 @@ fn ts_action_encode_model_one(input: &Value, x: &str) -> String {
     let model = s(input, "model");
     match s(input, "operation") {
         "create" => format!("encode{model}Create({x})"),
-        "update" => format!("{{...encode{model}Identity({x}),...encode{model}Patch({x})}}"),
+        "update" => format!("({{...encode{model}Identity({x}),...encode{model}Patch({x})}})"),
         "delete" => format!("encode{model}Identity({x})"),
         _ => unreachable!(),
     }

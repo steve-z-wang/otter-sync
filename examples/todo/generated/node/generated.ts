@@ -157,7 +157,7 @@ function encodeAddTodoInput(args:AddTodoInput):Record<string,unknown> { return {
 }; }
 function decodeAddTodoOutput(_value:unknown):void { return undefined; }
 function encodeSetTodoDoneInput(args:SetTodoDoneInput):Record<string,unknown> { return {
- todo: {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
 }; }
 function decodeSetTodoDoneOutput(value:unknown):SetTodoDoneOutput { const row=value as Record<string,unknown>; return {
  todo: decodeTodo(row.todo as Record<string,unknown>),

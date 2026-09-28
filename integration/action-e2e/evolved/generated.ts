@@ -148,7 +148,7 @@ function decodeSendEmailOutput(value:unknown):SendEmailOutput { const row=value 
  messageId: row.messageId as string,
 }; }
 function encodeUpdateTodoInput(args:UpdateTodoInput):Record<string,unknown> { return {
- todo: {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
 }; }
 function decodeUpdateTodoOutput(_value:unknown):void { return undefined; }
 /** Invocation options for AddTodo; `store` selects which explicit Model outputs also update local Models. */

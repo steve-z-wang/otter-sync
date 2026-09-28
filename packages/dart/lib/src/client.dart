@@ -31,7 +31,6 @@ class Client implements WritePort, MutatePort {
   /// The Rust-owned runtime: it orders every task and owns the database.
   final Bridge _bridge;
   final String clientId;
-  Future<void>? _tasks;
   bool _closed = false;
   RuntimeConnection? _connection;
 
@@ -134,8 +133,17 @@ class Client implements WritePort, MutatePort {
     /// Test seam: the carrier to drive instead of the library's C ABI.
     Carrier? carrier,
     Map<String, StoreHook>? onStore,
+
+    /// Prerequisite handlers by the schema's prerequisite name, fixed for the
+    /// client's lifetime. The runtime runs one whenever a task of that name
+    /// becomes pending - after a commit, at open, after a reset - and retries
+    /// a [PrerequisiteRetry] with backoff.
+    Map<String, PrerequisiteHandler>? prerequisites,
   }) async {
     final hooks = Map<String, StoreHook>.of(onStore ?? const {});
+    final required = Map<String, PrerequisiteHandler>.of(
+      prerequisites ?? const {},
+    );
     late Client client;
     final bridge = await Bridge.open(
       path: path,
@@ -156,6 +164,13 @@ class Client implements WritePort, MutatePort {
                 _StoreHookInvocation(entry.value, changes).run,
                 cancellation,
               ),
+      },
+      prerequisiteHandlers: required.keys.toList(),
+      // Timers and prerequisite handlers are asked for from the first step,
+      // with or without a connection.
+      effects: {
+        'timer': timerHandler(),
+        if (required.isNotEmpty) 'prerequisite': prerequisiteHandler(required),
       },
     );
     client = Client._(bridge, bridge.opened['clientId'] as String);
@@ -615,31 +630,6 @@ class Client implements WritePort, MutatePort {
     _connecting.add(settled);
     unawaited(settled.whenComplete(() => _connecting.remove(settled)));
     return await connecting;
-  }
-
-  /// Run every pending prerequisite task this client has a handler for. Rust
-  /// picks each task and records its outcome; the handler runs as a
-  /// `prerequisite` effect.
-  Future<void> runPrerequisites(
-    Map<String, Future<void> Function(Map<String, dynamic>)> handlers,
-  ) => _inTransaction
-      ? Future.error(StateError('transaction_active'))
-      : _tasks ??= _runPrerequisites(handlers).whenComplete(() {
-          _tasks = null;
-        });
-  Future<void> _runPrerequisites(
-    Map<String, Future<void> Function(Map<String, dynamic>)> handlers,
-  ) async {
-    final handler = prerequisiteHandler(handlers);
-    _bridge.handleEffects('prerequisite', handler);
-    try {
-      await _task({
-        'kind': 'runPrerequisites',
-        'handlers': handlers.keys.toList(),
-      });
-    } finally {
-      _bridge.stopHandling('prerequisite', handler);
-    }
   }
 
   /// Test seams over the legacy commands: freeze the next push batch, settle

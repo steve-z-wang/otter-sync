@@ -359,13 +359,38 @@ export function startConnection(
 }
 
 /**
- * Install the application's prerequisite handlers for one `runPrerequisites`
- * task: the runtime picks each task and records its outcome, this only runs
- * `handlers[name](arguments)`. Answers the uninstall.
+ * Thrown by a prerequisite handler to say its failure is transient: the task
+ * stays pending and the runtime runs it again after its backoff (1 s,
+ * doubling per consecutive retry, at most 30 s). Anything else a handler
+ * throws fails the task with its message until the application resets it.
+ */
+export class PrerequisiteRetry extends Error {
+  constructor(message = "prerequisite retry", options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PrerequisiteRetry";
+  }
+}
+
+/**
+ * One prerequisite handler: it runs the host work for one task, such as an
+ * upload, with the task's schema-declared arguments. `signal` aborts when
+ * the client closes or the runtime no longer wants the run; a settlement
+ * after that is ignored.
+ */
+export type PrerequisiteHandler = (
+  arguments_: RecordValue,
+  signal: AbortSignal,
+) => Promise<void>;
+
+/**
+ * Install the application's prerequisite handlers, registered once at open:
+ * the runtime picks each task and records its outcome, this only runs
+ * `handlers[name](arguments, signal)` and says whether a failure was a
+ * {@link PrerequisiteRetry}. Answers the uninstall.
  */
 export function prerequisites(
   effects: Effects,
-  handlers: Record<string, (arguments_: RecordValue) => unknown>,
+  handlers: Record<string, PrerequisiteHandler>,
 ): () => void {
   const owner = {};
   const remove = effects.handle(
@@ -376,16 +401,25 @@ export function prerequisites(
         name: string;
         arguments: RecordValue;
       };
+      const abort = new AbortController();
       Promise.resolve()
-        .then(() => handlers[name]!(args))
+        .then(() => {
+          if (!Object.hasOwn(handlers, name))
+            throw Error("missing prerequisite handler");
+          return handlers[name]!(args, abort.signal);
+        })
         .then(
           () => effects.answer(effectId, { ok: true }),
           (thrown) =>
             effects.answer(effectId, {
               ok: false,
-              error: { message: reason(thrown) },
+              error: {
+                message: reason(thrown),
+                ...(thrown instanceof PrerequisiteRetry ? { retry: true } : {}),
+              },
             }),
         );
+      return () => abort.abort();
     },
   );
   return () => {

@@ -1,10 +1,8 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,readFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import {Client} from '../../../packages/client-js/index.mts';
-test('prerequisite failure stays optimistic and explicit retry unlocks Rust push',async()=>{
- const directory=await mkdtemp(join(tmpdir(),'axton-prerequisite-'));const schema=JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json',import.meta.url),'utf8'));schema.prerequisites=[{name:'Upload',fields:[{name:'key',type:'String'}]}];schema.requirements=[{model:'Entry',field:'note',name:'Upload',arguments:{key:'self'}}];
- const client=await Client.open({path:join(directory,'db'),schema});
- try{await client.transaction(tx=>tx.direct({model:'Entry',op:'create',identity:{id:'e'},values:{text:'A'}}));await client.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'e'},values:{note:'asset'}}]});let calls=0;const handlers={Upload:async args=>{assert.ok(['asset','second'].includes(args.key));if(++calls===1)throw Error('offline');}};
- await client.runPrerequisites(handlers);assert.equal((await client.read('Entry',{id:'e'})).note,'asset');assert.equal(await client.freeze(),null);let [task]=await client.pendingTasks();assert.equal(task.state,'failed');assert.equal(task.error,'offline');let status=await client.syncState('Entry',{id:'e'});assert.equal(status.pending[0].prerequisites[0].error,'offline');await client.setReadiness(task.key,'pending');await client.runPrerequisites(handlers);assert.equal(calls,2);assert.notEqual(await client.freeze(),null);
- // A task nobody handles fails with a reason instead of stopping the run; the reset task is then taken.
- await client.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'e'},values:{note:'second'}}]});await client.runPrerequisites({});[task]=await client.pendingTasks();assert.equal(task.state,'failed');assert.equal(task.error,'missing prerequisite handler');await client.setReadiness(task.key,'pending');await client.runPrerequisites(handlers);assert.equal(calls,3);assert.deepEqual(await client.pendingTasks(),[]);
- }finally{await client.close();await rm(directory,{recursive:true,force:true});}
-});
+// Prerequisite handlers registered at open (#185) through the Node client:
+// the native runtime and SQLite underneath.
+import test from "node:test";
+import { Transaction } from "../../../packages/client-js/transaction.mts";
+import { createServerConnection } from "../../../packages/client-js/live.mts";
+import { prerequisiteSuite } from "./prerequisite-harness.mjs";
+
+prerequisiteSuite(test, { Transaction, createServerConnection });

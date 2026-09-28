@@ -167,6 +167,7 @@ impl StoreContinuation {
                             message: error,
                             status: None,
                             refusal: None,
+                            retry: false,
                         }),
                     );
                 }

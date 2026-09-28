@@ -122,7 +122,7 @@ pub enum Input {
 /// The command of one task: everything an SDK asks of its runtime outside an
 /// application callback. Reads run on the committed state; every write owns
 /// its own local transaction; the lifecycles (`connect`, `invoke`,
-/// `runPrerequisites`, `transaction`, `scopeBootstrap`, `watch`) are decided
+/// `transaction`, `scopeBootstrap`, `watch`) are decided
 /// by the runtime. A counter the engine validates (`version` of a durable
 /// call, `subscriptionId`, `ordinal`, `sequence`) must be a positive safe
 /// integer and is refused otherwise.
@@ -182,7 +182,8 @@ pub enum Command {
         )]
         store: Option<Value>,
     },
-    /// Record a prerequisite task's readiness.
+    /// Record a prerequisite task's readiness. `pending` also clears the
+    /// task's backoff, so a handler registered at open runs it at once.
     Readiness { key: String, state: Readiness },
     /// Drop a queued call or mutation; its call completes as `dropped`.
     Drop {
@@ -305,8 +306,6 @@ pub enum Command {
         )]
         store: Option<Value>,
     },
-    /// Run the prerequisite tasks these handlers can take until none is left.
-    RunPrerequisites { handlers: Vec<String> },
     /// Observe a local query; answers the observer id.
     Watch {
         model: String,
@@ -555,6 +554,7 @@ impl EffectOutcome {
                 message: message.into(),
                 status,
                 refusal: None,
+                retry: false,
             }),
         }
     }
@@ -567,7 +567,11 @@ impl EffectOutcome {
 /// marked as an admission refusal (`axton-admission: refused`,
 /// [Protocol / Common](../../../../docs/engineering/architecture/protocol/common.md));
 /// with a `status`, it ends the connection instead of failing one request.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+/// `retry` is a prerequisite handler's declaration that the failure is
+/// transient: the task stays pending and runs again after the runtime's
+/// backoff ([#185](https://github.com/zanminwang/axton/issues/185)). Other
+/// effects ignore it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectError {
     pub message: String,
@@ -575,6 +579,8 @@ pub struct EffectError {
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retry: bool,
 }
 
 /// The `value` of a socket effect's results: the stream of one socket
@@ -754,8 +760,9 @@ pub enum Operation {
     /// The runtime issues at most one at a time.
     RefreshAuth,
     /// Run the application's prerequisite handler `name` with `arguments`;
-    /// answer `ok` when it resolves, or a failure whose message is the reason
-    /// to keep for the task `key`.
+    /// answer `ok` when it resolves, a failure with `retry: true` when it
+    /// declared the failure transient, or any other failure, whose message is
+    /// the reason the task `key` keeps.
     Prerequisite {
         key: String,
         name: String,

@@ -120,7 +120,7 @@ Several `client.mutations` calls commit locally one at a time and have separate 
 
 Declare a forward reference with `@reference(via: [field])` and an inverse with the related model type. Relations generate local navigation methods and let the runtime enforce the declared contract. The [relations fixture](https://github.com/zanminwang/axton/blob/main/fixtures/compiler/relations.model) shows `Book.comments` and `Comment.book`.
 
-Prerequisites declare host work that must finish before sending a durable call. For example, a schema can declare `prerequisite Uploaded(key String)` and use `@requires(Uploaded(key: self))` on a field. Your application provides the async callback through [runPrerequisites](../frontend/runtime.md#prerequisites). Prerequisites are not automatically implemented uploads.
+Prerequisites declare host work that must finish before sending a durable call. For example, a schema can declare `prerequisite Uploaded(key String)` and use `@requires(Uploaded(key: self))` on a field. Your application registers the async handler when it opens the client, and the client runs it whenever such a task is pending ([Prerequisites](../frontend/runtime.md#prerequisites)). Prerequisites are not automatically implemented uploads.
 
 Operand bindings and `@sequence(after: [...])` before a Mutation express operation dependencies. Use the [compiler's tested declarations](https://github.com/zanminwang/axton/blob/main/crates/compiler/tests/compiler.rs) as syntax examples for these advanced features; they affect scheduling, not just generated types.
 

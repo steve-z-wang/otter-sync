@@ -328,6 +328,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Something committed or asked for work: both lanes look again, and a
     /// lane sleeping on a timer drops it.
     pub(super) fn wake_lanes(&mut self, now: u64, entropy: u64) {
+        // A commit may have queued a prerequisite task, connected or not.
+        self.prerequisites.wake();
         if self.connection.is_none() {
             return;
         }

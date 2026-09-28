@@ -33,7 +33,7 @@ A [transaction that queues Mutations](client-api.md#queue-mutations-in-a-transac
 | A request times out | Let sync retry the persisted frozen request. The backend may already have committed it. |
 | Frozen work remains pending | Check connectivity and authentication; a receipt AXTON cannot apply is refused and the batch resent, so check `onError` on both sides. |
 | A Mutation or Query is rejected | Inspect its `wait()` outcome and record `syncState`, then dismiss the handled rejection. |
-| A prerequisite fails | Resolve its cause, reset its readiness to `pending`, then run its callback again. |
+| A prerequisite fails | Resolve its cause, then reset its readiness to `pending`; the client runs its handler again. |
 | Another client wrote to the same file | Close the stale instance and reopen it; keep one active client per file. |
 
 Do not manually delete pending batches, channel cursors or backend receipts to clear an error. These records work together to prevent duplicate execution and complete local changes from their receipts. Preserve the database for diagnosis when an error cannot be resolved through the public APIs.

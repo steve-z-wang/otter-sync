@@ -163,10 +163,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .connection
                 .as_ref()
                 .is_some_and(|c| c.downlink.dirty || c.push.dirty)
+            || self.prerequisites.ready()
             || self.load_ready()
     }
-    /// One lane unit: a ready continuation, else a Load unit, a Downlink pump
-    /// or a push-lane turn. The Load lane alternates with the other two: when
+    /// One lane unit: a ready continuation, else a prerequisite turn, a Load
+    /// unit, a Downlink pump or a push-lane turn. A prerequisite turn is one
+    /// read that runs only when a commit or an outcome made it dirty, so it
+    /// cannot starve the others. The Load lane alternates with the other two: when
     /// both have work, the one that did not have the last turn goes. A
     /// continuation that committed wakes both lanes.
     fn lane_unit(&mut self, now: u64, entropy: u64) {
@@ -179,11 +182,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     response,
                 } => self.apply_direct(request_id, response, now, entropy),
                 Ready::PrerequisiteOutcome { key, error } => self.prerequisite_outcome(key, error),
-                Ready::PrerequisiteNext => self.next_prerequisite(),
             }
             if self.client.generation() != generation {
                 self.wake_lanes(now, entropy);
             }
+            return;
+        }
+        if self.prerequisites.ready() {
+            self.prerequisite_turn(now);
             return;
         }
         let (downlink, push) = self
@@ -203,7 +209,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
     /// One ordinary task. The runtime-owned lifecycles - the transaction, the
-    /// connection, direct calls, prerequisites, rebuild and the observers -
+    /// connection, direct calls, readiness, rebuild and the observers -
     /// are decided here; everything else is a command against the client. A
     /// task that committed wakes both lanes.
     fn ordinary_unit(&mut self, now: u64, entropy: u64) {
@@ -310,8 +316,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.fetch(&request_id, model, *version, identity, store);
                 None
             }
-            Command::RunPrerequisites { handlers } => {
-                self.run_prerequisites(&request_id, handlers.clone())
+            Command::Readiness { key, .. } => {
+                self.prerequisite_readiness(key);
+                Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string()))
             }
             Command::Rebuild { discard_pending } => {
                 Some(self.rebuild(discard_pending.unwrap_or(false), now, entropy))
@@ -355,8 +362,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// fence - everything in flight belongs to the replaced replica. Lane
     /// effects are cancelled and the lanes start over in the same intent,
     /// direct calls fail with an unknown execution (Fetches with
-    /// `fetch.schema_changed`, their flights fenced), the prerequisite loop
-    /// moves on, every observer of the old replica ends and every abandoned
+    /// `fetch.schema_changed`, their flights fenced), the prerequisite handler
+    /// in flight is cancelled and the new replica scanned, every observer of the old replica ends and every abandoned
     /// durable call is completed. A refused rebuild changes nothing.
     fn rebuild(
         &mut self,
@@ -416,8 +423,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// effect (a local callback's too), turn the provisional calls
     /// `rolledBack`, fail the parked parent, a submission waiting on its
     /// local callback, its queued commands and every queued task with
-    /// `client_closed`, fail direct calls as unavailable and the
-    /// prerequisite loop as closed, end the lanes and the observers, then
+    /// `client_closed`, fail direct calls as unavailable, forget the
+    /// prerequisite handler run, end the lanes and the observers, then
     /// announce the end. Nothing is applied after it.
     fn close(&mut self) {
         let mut transaction = self.transaction.take();
@@ -464,7 +471,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.complete(task.request_id, Err("client_closed".into()));
         }
         self.fail_directs(direct::Failure::Unavailable);
-        self.finish_prerequisites(Err("client_closed".into()));
+        self.close_prerequisites();
         self.ready.clear();
         self.close_lanes();
         self.close_loads();

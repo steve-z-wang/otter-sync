@@ -849,6 +849,8 @@ const GENERATED_NAMES: &[&str] = &[
     "MutationName",
     "Mutations",
     "PendingMutation",
+    "PrerequisiteHandler",
+    "PrerequisiteRetry",
     "Present",
     "Queries",
     "QueryHandlerCall",

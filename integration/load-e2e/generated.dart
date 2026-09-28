@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;
 export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
@@ -466,7 +466,7 @@ class GeneratedClient {
  late final FetchModels fetch = FetchModels(client);
  GeneratedClient._(this.client, this.connection);
  /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
- static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
+ static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, Map<String, PrerequisiteHandler>? prerequisites, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
   final rawHooks = <String, StoreHook>{};
   final itemHook = onStore?.item;
   if (itemHook != null) rawHooks['Item'] = (tx, changes) => itemHook(GeneratedTransaction(tx), changes.map<StoreChange<ItemIdentity,Item>>((change) { final identity=ItemIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<ItemIdentity,Item>(identity,Item.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<ItemIdentity,Item>(identity); }).toList());
@@ -474,7 +474,7 @@ class GeneratedClient {
   if (tagHook != null) rawHooks['Tag'] = (tx, changes) => tagHook(GeneratedTransaction(tx), changes.map<StoreChange<TagIdentity,Tag>>((change) { final identity=TagIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<TagIdentity,Tag>(identity,Tag.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<TagIdentity,Tag>(identity); }).toList());
   final seenHook = onStore?.seen;
   if (seenHook != null) rawHooks['Seen'] = (tx, changes) => seenHook(GeneratedTransaction(tx), changes.map<StoreChange<SeenIdentity,Seen>>((change) { final identity=SeenIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<SeenIdentity,Seen>(identity,Seen.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<SeenIdentity,Seen>(identity); }).toList());
-  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks);
+  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks, prerequisites:prerequisites);
   try {
   final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
   return GeneratedClient._(client, connection);
@@ -492,9 +492,8 @@ class GeneratedClient {
  /// Remove unsent work and recompute local state; frozen work cannot be dropped.
  Future<void> drop(int ordinal) => client.drop(ordinal);
  Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();
- /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`.
+ /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`; `pending` runs its handler again at once.
  Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);
- Future<void> runPrerequisites(Map<String, Future<void> Function(Map<String,dynamic>)> handlers) => client.runPrerequisites(handlers);
  /// Start the background connection when `open` was called without a server.
  Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.

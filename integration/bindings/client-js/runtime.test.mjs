@@ -242,7 +242,6 @@ test('inside a callback, every task of the outer client rejects promptly with tr
    outcomes.setReadiness = await message(client.setReadiness('k', 'ready'));
    outcomes.drop = await message(client.drop(1));
    outcomes.dismissRejection = await message(client.dismissRejection(1));
-   outcomes.runPrerequisites = await message(client.runPrerequisites({}));
    const stopped = new Promise(resolve => client.watch('Entry', {}, value => rows.push(value), error => resolve(error)));
    watchError = await within(stopped, 1000);
    assert.equal((await tx.read('Entry', { id: 'e' })).text, 'inside');

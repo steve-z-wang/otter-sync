@@ -34,6 +34,8 @@ export 'src/connection.dart'
         AdmissionRefused,
         ActionTransportException,
         AxtonReport,
-        StoreHookFailure;
+        StoreHookFailure,
+        PrerequisiteRetry,
+        PrerequisiteHandler;
 
 export 'src/live.dart' show SyncServer, HttpFailure;

@@ -1,0 +1,27 @@
+prerequisite Uploaded(key String)
+model Space {
+ id String
+ members Member[]
+ @@id(id)
+}
+model Member {
+ spaceId String
+ userId String
+ avatar String? @requires(Uploaded(key: self))
+ space Space @reference(via: [spaceId], onTargetDelete: delete)
+ @@id(spaceId, userId)
+}
+model Request {
+ id String
+ spaceId String
+ space Space @reference(via: [spaceId], onTargetDelete: delete)
+ @@id(id)
+}
+mutation AddCoAuthors(members Member.create[])
+mutation RemoveCoAuthor(membership Member.delete)
+@sequence(after: [AddCoAuthors(members.space: request.space)])
+mutation Propose(request Request.create)
+@sequence(after: [RemoveCoAuthor(membership.space: space)])
+mutation DeleteSpace(space Space.delete)
+@sequence(after: [AddCoAuthors(members.space: requests.space)])
+mutation ProposeMany(requests Request.create[])

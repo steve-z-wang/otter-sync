@@ -107,9 +107,19 @@ impl Parser {
         let mut args = serde_json::Map::new();
         let mut positional = 0;
         while !self.eat(")") {
-            let named = self.tokens.get(self.i + 1).is_some_and(|t| t.text == ":");
+            // A name is `ident(.ident)*` before `:`; the dotted form is a
+            // sequence argument's relation path into the prior act's slot.
+            let mut end = self.i + 1;
+            while self.tokens.get(end).is_some_and(|t| t.text == ".") {
+                end += 2;
+            }
+            let named = self.tokens.get(end).is_some_and(|t| t.text == ":");
             let key = if named {
-                let k = self.ident()?;
+                let mut k = self.ident()?;
+                while self.eat(".") {
+                    k.push('.');
+                    k.push_str(&self.ident()?);
+                }
                 self.need(":")?;
                 k
             } else {

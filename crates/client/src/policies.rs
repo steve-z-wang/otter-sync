@@ -3,7 +3,7 @@ use crate::engine::Engine;
 use crate::store::ClientStore;
 use crate::{Mutation, OperationKind};
 use axton_core::{RecordKey, Result, Schema, canonical_json, invalid};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn derive<S: ClientStore>(
@@ -26,7 +26,7 @@ pub(crate) fn derive<S: ClientStore>(
         let key = schema.record_key(&op.model, &op.identity)?;
         let mut references = vec![key.clone()];
         for relation in &schema.model(&key.model)?.relations {
-            if let Some(target) = reference(engine, &key, &relation.name)? {
+            if let Some(target) = reference(engine, &key, &relation.name, &Map::new())? {
                 references.push(target);
             }
         }
@@ -84,12 +84,11 @@ pub(crate) fn derive<S: ClientStore>(
                         let path = path
                             .as_str()
                             .ok_or_else(|| invalid("invalid sequence path"))?;
-                        let source = resolve(engine, &current, path)?;
-                        if source.is_none()
-                            || !targets
-                                .get(target)
-                                .is_some_and(|keys| keys.contains(source.as_ref().unwrap()))
-                        {
+                        // Both sides are `slot.relations…`; a list slot
+                        // contributes every element, and the two must meet.
+                        let sources = resolve(engine, mutation, &current, path)?;
+                        let reached = resolve(engine, &prior.mutation, &targets, target)?;
+                        if !sources.iter().any(|key| reached.contains(key)) {
                             matches = false;
                             break;
                         }
@@ -151,7 +150,7 @@ fn slots(
             };
             let mut keys = Vec::new();
             for value in values {
-                let mut fields = serde_json::Map::new();
+                let mut fields = Map::new();
                 for field in &schema.model(model)?.identity {
                     fields.insert(
                         field.clone(),
@@ -190,29 +189,64 @@ fn slots(
     }
     Ok(result)
 }
+/// The records at `path`, a slot of `mutation` followed by relation names:
+/// one per record the slot holds whose relations resolve.
 fn resolve<S: ClientStore>(
     engine: &mut Engine<'_, S>,
+    mutation: &Mutation,
     slots: &BTreeMap<String, Vec<RecordKey>>,
     path: &str,
-) -> Result<Option<RecordKey>> {
+) -> Result<Vec<RecordKey>> {
     let mut parts = path.split('.');
     let first = parts.next().ok_or_else(|| invalid("empty path"))?;
-    let Some(keys) = slots.get(first).filter(|v| v.len() == 1) else {
-        return Ok(None);
-    };
-    let mut key = keys[0].clone();
-    for part in parts {
-        let Some(next) = reference(engine, &key, part)? else {
+    let relations: Vec<&str> = parts.collect();
+    let mut reached = vec![];
+    for key in slots.get(first).into_iter().flatten() {
+        if let Some(key) = follow(engine, mutation, key.clone(), &relations)? {
+            reached.push(key);
+        }
+    }
+    Ok(reached)
+}
+/// Follow `relations` from `key`, a record `owner` targets. The first step
+/// reads what the act itself carries, its identity and a create's or update's
+/// values, before the stored record; so a delete resolves from its identity
+/// even when neither a local row nor a held base remains. Later steps read
+/// stored records.
+fn follow<S: ClientStore>(
+    engine: &mut Engine<'_, S>,
+    owner: &Mutation,
+    mut key: RecordKey,
+    relations: &[&str],
+) -> Result<Option<RecordKey>> {
+    for (step, name) in relations.iter().enumerate() {
+        let mut carried = Map::new();
+        if step == 0 {
+            if let Some(identity) = key.identity.as_object() {
+                carried.extend(identity.clone());
+            }
+            for op in &owner.operations {
+                if engine.schema.record_key(&op.model, &op.identity)? == key
+                    && let Some(values) = op.values.as_ref().and_then(Value::as_object)
+                {
+                    carried.extend(values.clone());
+                }
+            }
+        }
+        let Some(next) = reference(engine, &key, name, &carried)? else {
             return Ok(None);
         };
         key = next;
     }
     Ok(Some(key))
 }
+/// The target of relation `name` of `key`: its fields from `carried`, else from
+/// the local row, else from the held authoritative base.
 fn reference<S: ClientStore>(
     engine: &mut Engine<'_, S>,
     key: &RecordKey,
     name: &str,
+    carried: &Map<String, Value>,
 ) -> Result<Option<RecordKey>> {
     let relation = engine
         .schema
@@ -222,14 +256,18 @@ fn reference<S: ClientStore>(
         .find(|r| r.name == name)
         .ok_or_else(|| invalid("unknown relation in dependency"))?
         .clone();
-    let row = match engine.read_row(key)? {
-        Some(row) => Some(row),
-        None => engine.truth(key)?,
-    };
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let mut identity = serde_json::Map::new();
+    let mut row = Map::new();
+    if !relation.fields.iter().all(|f| carried.contains_key(f)) {
+        let stored = match engine.read_row(key)? {
+            Some(row) => Some(row),
+            None => engine.truth(key)?,
+        };
+        if let Some(Value::Object(stored)) = stored {
+            row = stored;
+        }
+    }
+    row.extend(carried.clone());
+    let mut identity = Map::new();
     for (local, target) in relation.fields.iter().zip(&relation.target_fields) {
         let Some(value) = row.get(local).filter(|v| !v.is_null()) else {
             return Ok(None);

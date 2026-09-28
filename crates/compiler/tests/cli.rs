@@ -1216,3 +1216,28 @@ fn cli_model_fetch_uses_current_model_versions_and_leaves_operation_history() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The client engine's #179 scenarios load this compiled schema, so the
+/// fixture is the compiler's current output for its source.
+#[test]
+fn cli_sequence_paths_fixture_is_current() {
+    let (root, input) = workspace("sequence-paths");
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
+    fs::copy(
+        format!("{fixtures}/schemas/sequence-paths.model"),
+        input.join("sequence-paths.model"),
+    )
+    .unwrap();
+    let out = root.join("out");
+    assert!(
+        axton(&[input.as_os_str(), out.as_os_str()])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(out.join("schema.json")).unwrap(),
+        fs::read_to_string(format!("{fixtures}/schemas/sequence-paths.json")).unwrap(),
+        "regenerate fixtures/schemas/sequence-paths.json from fixtures/schemas/sequence-paths.model"
+    );
+    fs::remove_dir_all(root).unwrap();
+}

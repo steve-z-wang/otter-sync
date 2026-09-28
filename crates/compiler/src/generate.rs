@@ -4,7 +4,7 @@
 pub use crate::emit::{backend_typescript, client_typescript, dart, typescript};
 use crate::validate::{
     Action, ActionInput, ActionOutput, ActionOutputSource, ActionOutputType, Deprecation,
-    FieldType, Load, Mutation, Validated,
+    FieldType, Load, Mutation, Sequence, Validated,
 };
 use serde_json::{Value, json};
 
@@ -109,10 +109,7 @@ fn mutations(v: &Validated) -> Vec<Value> {
 fn action(v: &Validated, a: &Action) -> Value {
     let inputs = inputs(&a.inputs);
     let outputs = outputs(v, &a.outputs);
-    let sequence = a.sequence.as_ref().map(|s| json!({"after":s.after.iter().map(|call| json!({
-        "name":call.mutation,
-        "arguments":call.bindings.iter().map(|b| (b.slot.clone(), Value::from(b.path.join(".")))).collect::<serde_json::Map<_,_>>(),
-    })).collect::<Vec<_>>() }));
+    let sequence = a.sequence.as_ref().map(sequence);
     json!({"name":a.name,"version":a.version,"kind":a.kind,"inputs":inputs,"outputs":outputs,"sequence":sequence})
 }
 
@@ -234,16 +231,21 @@ fn mutation(m: &Mutation) -> Value {
             value
         })
         .collect();
-    let sequence = match &m.sequence {
-        None => Value::Null,
-        Some(sequence) => json!({
-            "after": sequence.after.iter().map(|call| json!({
-                "name": call.mutation,
-                "arguments": call.bindings.iter().map(|b| (b.slot.clone(), Value::from(b.path.join(".")))).collect::<serde_json::Map<_, _>>(),
-            })).collect::<Vec<_>>(),
-        }),
-    };
+    let sequence = m.sequence.as_ref().map_or(Value::Null, sequence);
     json!({"name":m.name,"version":m.version,"slots":slots,"sequence":sequence})
+}
+
+/// `{after: [{name, arguments: {"slot.relations…": "sourceSlot.relations…"}}]}`:
+/// an argument without relations keeps its bare slot name, so descriptors of
+/// existing sequences and their retained history are unchanged.
+fn sequence(s: &Sequence) -> Value {
+    json!({"after": s.after.iter().map(|call| json!({
+        "name": call.mutation,
+        "arguments": call.bindings.iter().map(|b| {
+            let key = std::iter::once(&b.slot).chain(&b.relations).cloned().collect::<Vec<_>>().join(".");
+            (key, Value::from(b.path.join(".")))
+        }).collect::<serde_json::Map<_, _>>(),
+    })).collect::<Vec<_>>()})
 }
 
 fn requirements(v: &Validated) -> Vec<Value> {

@@ -2,6 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { type RecordValue, type QuerySpec } from "./values.mts";
 import type { Call } from "./actions.mts";
 import {
+  unsentTransaction,
+  type TransactionFailures,
+  type TransactionRejections,
+} from "./unsent.mts";
+import {
   callbackRefusal,
   expiredRefusal,
   submitMutation,
@@ -79,6 +84,17 @@ export class Transaction {
           () => {},
         ),
     };
+  }
+  /** Dismiss a refusal as part of this transaction. */
+  get rejections(): TransactionRejections {
+    return unsentTransaction((command) => this.#call(command)).rejections;
+  }
+  /**
+   * Retry failed tasks or drop a failed act as part of this transaction:
+   * later commands see the effect, and it commits or rolls back with it.
+   */
+  get failures(): TransactionFailures {
+    return unsentTransaction((command) => this.#call(command)).failures;
   }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
     try {

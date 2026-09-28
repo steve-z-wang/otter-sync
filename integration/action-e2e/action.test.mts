@@ -376,6 +376,49 @@ test("a direct Mutation resolves after the backend commits and its authority app
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("a Mutation whose serialization conflicts outlast the retries is a retryable failure: it stays queued and the resend commits it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-mutation-conflict-"));
+  let client: GeneratedClient | undefined;
+  const original = globalThis.fetch;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    assert.equal((await (await client.mutations.addTodo({ todo: { id: "conflicted", title: "before" } })).wait()).error, null);
+    // Answers of /sync/mutations in order. After the first 500 the next push
+    // waits for `resend`, so the test can look at the queue in between.
+    const statuses: number[] = [];
+    let failed!: () => void, resend!: () => void;
+    const firstFailure = new Promise<void>((resolve) => { failed = resolve; });
+    const resendGate = new Promise<void>((resolve) => { resend = resolve; });
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path !== "/sync/mutations") return original(input, init);
+      if (statuses.includes(500)) await resendGate;
+      const response = await original(input, init);
+      statuses.push(response.status);
+      if (response.status === 500) failed();
+      return response;
+    }) as typeof fetch;
+    const calls = await fixture.pool.query("SELECT count(*)::int AS n FROM axton_call");
+    const handled = fixture.handlerCalls;
+    fixture.conflictUpdates = 4; // the first attempt and the pg shim's three retries
+    const update = await client.mutations.updateTodo({ todo: { id: "conflicted", title: "  after  " } });
+    await firstFailure;
+    assert.equal(fixture.handlerCalls - handled, 4, "one delivery ran the transaction four times, every attempt a serialization failure");
+    assert.equal((await client.syncState()).pending, 1, "the Mutation is still queued");
+    assert.deepEqual((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_call")).rows, calls.rows, "no outcome was saved for it");
+    assert.deepEqual((await fixture.pool.query("SELECT title FROM action_e2e_todo WHERE id='conflicted'")).rows, [{ title: "before" }]);
+    resend();
+    const outcome = await update.wait();
+    assert.equal(outcome.error, null, "never a rejection: the resend was accepted");
+    assert.deepEqual(statuses, [500, 200], "exhausted retries answer a server failure, and the client sends the same batch again");
+    assert.equal(fixture.handlerCalls - handled, 5, "the resend ran the handler once more and committed");
+    assert.equal(fixture.conflictUpdates, 0);
+    assert.deepEqual((await fixture.pool.query("SELECT title FROM action_e2e_todo WHERE id='conflicted'")).rows, [{ title: "after" }]);
+    assert.equal((await client.models.todo.get({ id: "conflicted" }))?.title, "after");
+    assert.equal((await client.syncState()).pending, 0);
+  } finally { globalThis.fetch = original; fixture.conflictUpdates = 0; await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test("explicit extra touches are stamped once and are not caller authority; outputs follow store", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-mutation-store-"));
   let client: GeneratedClient | undefined;

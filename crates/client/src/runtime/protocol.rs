@@ -312,6 +312,12 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spec: Option<WatchSpec>,
     },
+    /// Observe a read-only SQL statement over several Models
+    /// ([#184](https://github.com/zanminwang/axton/issues/184)); answers the
+    /// observer id. SQLite names the tables it reads, and the statement
+    /// re-runs only after a commit that writes one of them. Its snapshots are
+    /// a `watch`'s, and `unwatch` stops it.
+    WatchSql { sql: String, parameters: Vec<Value> },
     /// Stop publishing a watch.
     #[serde(rename_all = "camelCase")]
     Unwatch { observer_id: String },
@@ -675,7 +681,7 @@ pub enum Event {
     ///   "waiting-for-initialization"|"loading"|"catching-up"|"complete"|
     ///   "failed","error":null|{"code","message"}}}}` - the SDK
     ///   `SubscriptionStatus`, verbatim;
-    /// - a watch observer (`watch`): `{"kind":"watch","rows":[…]}`;
+    /// - a watch observer (`watch`, `watchSql`): `{"kind":"watch","rows":[…]}`;
     /// - a Load handle (`loadStart`, `loadGet`): `{"kind":"load","status":
     ///   {"id","name","version","phase","pages","error"}}`, the phase being
     ///   `pending`, `loading`, `waiting`, `complete`, `failed` or

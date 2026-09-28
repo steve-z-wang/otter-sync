@@ -2132,3 +2132,49 @@ fn an_admission_refusal_leaves_the_job_pending_for_a_later_connection() {
     let (_, again) = h.batch();
     assert_eq!(again, body, "the same frozen page and call ID");
 }
+
+/// A Load page commits Entry rows, so a statement reading Entry re-emits
+/// after each page; the job's own ledger commits write no table it reads and
+/// re-run nothing ([#184](https://github.com/zanminwang/axton/issues/184)).
+#[test]
+fn a_load_page_re_emits_a_watched_statement_and_its_ledger_commits_do_not() {
+    let mut h = host();
+    // Every re-run publishes: its `random()` column differs.
+    let answer = h.call(
+        "watch",
+        json!({"kind":"watchSql","sql":"SELECT group_concat(id) AS ids, random() AS r FROM Entry","parameters":[]}),
+    );
+    let observer = answer["value"]["observerId"].clone();
+    let ids = |events: &[Value]| -> Vec<Value> {
+        events
+            .iter()
+            .filter(|e| e["type"] == "observerChanged" && e["observerId"] == observer)
+            .map(|e| e["snapshot"]["rows"][0]["ids"].clone())
+            .collect()
+    };
+    h.task(
+        "start",
+        json!({"kind":"loadStart","name":"Entries","version":1,"args":{"projectId":PROJECT,"since":null}}),
+    );
+    let events = h.run();
+    assert!(completion(&events, "start")["ok"] == true);
+    assert!(ids(&events).is_empty(), "the start commits only its job");
+    h.connect(false);
+    let (http, body) = h.batch();
+    let intent = &intents(&body)[0];
+    h.ok(
+        &http,
+        &response(vec![page(
+            intent,
+            &[("a", "A", 1)],
+            Some(json!({"after":"a"})),
+        )]),
+    );
+    let events = h.run();
+    assert_eq!(ids(&events), [json!("a")], "the first page");
+    let (http, body) = h.batch();
+    let intent = &intents(&body)[0];
+    h.ok(&http, &response(vec![page(intent, &[("b", "B", 1)], None)]));
+    let events = h.run();
+    assert_eq!(ids(&events), [json!("a,b")], "the final page");
+}

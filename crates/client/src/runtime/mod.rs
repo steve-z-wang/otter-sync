@@ -109,6 +109,8 @@
 //!   handlers, registered at open, when a task becomes pending, with backoff.
 //! - `observers`: subscription status, Bootstrap waiters and local watches,
 //!   published as snapshots.
+//! - `sql_watches`: watched read-only SQL, re-run only after a commit that
+//!   writes a table it reads.
 //! - `commands`: the commands executed directly against the client: local
 //!   reads and writes, Scope and Bootstrap registrations, the sync state and
 //!   the protocol seams (`freeze`, `ack`, `pull`).
@@ -120,6 +122,7 @@ mod loads;
 mod observers;
 mod prerequisites;
 pub mod protocol;
+mod sql_watches;
 mod tasks;
 mod transactions;
 

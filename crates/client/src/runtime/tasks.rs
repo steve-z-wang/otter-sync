@@ -326,6 +326,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Command::ScopeSubscribe { scope } => Some(self.subscribe_scope(scope)),
             Command::ScopeBootstrap { .. } => self.bootstrap_scope(&request_id, &command),
             Command::Watch { model, spec } => Some(self.watch(model, spec.as_ref())),
+            Command::WatchSql { sql, parameters } => Some(self.watch_sql(sql, parameters)),
             Command::Unwatch { observer_id } => Some(self.unwatch(observer_id)),
             Command::LoadStart { .. }
             | Command::LoadGet { .. }

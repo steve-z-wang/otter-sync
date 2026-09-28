@@ -6,7 +6,7 @@ publish.workspace = true
 [dependencies]
 axton-core = { path = "../core" }
 axton-client = { path = "../client" }
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["hooks"] }
 serde_json.workspace = true
 [dev-dependencies]
 tempfile.workspace = true

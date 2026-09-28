@@ -951,6 +951,11 @@ impl<S: ClientStore> Client<S> {
         let rows = self.store.query_committed(sql, parameters)?;
         query::rows_to_objects(rows)
     }
+    /// The tables a watched read-only statement reads: SQLite's answer,
+    /// never the application's ([`ClientStore::read_tables`]).
+    pub fn sql_tables(&mut self, sql: &str) -> Result<BTreeSet<String>> {
+        self.store.read_tables(sql)
+    }
     pub fn session_sql(&mut self, sql: &str, parameters: &[Value]) -> Result<Vec<Value>> {
         if self.session.is_none() {
             return Err(invalid("no active transaction"));

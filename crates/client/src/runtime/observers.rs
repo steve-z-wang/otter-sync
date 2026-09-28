@@ -40,6 +40,8 @@
 //! publishes only a result that differs from the last one it published. A re-run that fails is reported
 //! and the watch stays. A callback transaction's writes are invisible to a
 //! watch until they commit: nothing re-runs while the session is open.
+//! A watched SQL statement (`watchSql`) is published here beside them, but
+//! re-runs only after a commit that writes a table it reads (`sql_watches`).
 use super::*;
 use crate::{BootstrapPhase, BootstrapState, ClientStore};
 use std::collections::BTreeSet;
@@ -58,6 +60,8 @@ pub(super) struct Observers {
     watches: BTreeMap<u64, Watch>,
     /// The Scopes the handshake of the session of this epoch covered.
     acknowledged: Option<(u64, BTreeSet<String>)>,
+    /// Watched read-only SQL, re-run by the tables it reads.
+    pub(super) sql: super::sql_watches::SqlWatches,
 }
 
 struct Registration {
@@ -496,6 +500,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
             }
         }
+        self.rerun_sql_watches();
         self.publish_statuses();
         let mut snapshots = vec![];
         for (id, watch) in &mut self.observers.watches {
@@ -508,6 +513,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
         }
         self.events.extend(snapshots);
+        self.publish_sql_watches();
     }
 
     // --- Watches -----------------------------------------------------------
@@ -542,8 +548,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// `unwatch {observerId}`: nothing more is published for it.
     pub(super) fn unwatch(&mut self, observer_id: &str) -> std::result::Result<Value, String> {
-        if let Ok(id) = observer_id.parse::<u64>() {
-            self.observers.watches.remove(&id);
+        if let Ok(id) = observer_id.parse::<u64>()
+            && self.observers.watches.remove(&id).is_none()
+        {
+            self.observers.sql.remove(id);
         }
         Ok(Value::Null)
     }
@@ -575,6 +583,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 snapshot: json!({"kind": "watch", "rows": watch.rows, "closed": true}),
             });
         }
+        self.close_sql_watches();
         self.observers.acknowledged = None;
     }
 }

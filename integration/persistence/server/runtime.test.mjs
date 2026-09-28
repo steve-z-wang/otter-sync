@@ -1173,7 +1173,9 @@ test('touching or publishing a device-only Model is refused at the call, naming 
  // backend.transaction refuses the same declaration and rolls its business write back.
  await assert.rejects(()=>deviceOnly.transaction(async({tx,touch})=>{await write(tx,'do-external','never');touch.draft({id:'d'});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
  await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/channel\("drafts"\)\.add: Model Draft has no Loader/);
- assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='do-external'")).length,0);
+ // backend.publish in a caller-owned transaction refuses it the same way; the caller's transaction rolls back.
+ await assert.rejects(()=>owned(async tx=>{await write(tx,'do-owned','never');await deviceOnly.publish(tx,({touch})=>{touch.draft({id:'d'});});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
+ for(const id of ['do-external','do-owned'])assert.equal((await db.$queryRawUnsafe('SELECT * FROM business_task WHERE id=$1',id)).length,0,id);
  assert.equal(await head('drafts'),headBefore);
 });
 test('an always-null Loader for a device-only Model keeps the registered behavior',async()=>{

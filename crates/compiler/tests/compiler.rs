@@ -2329,3 +2329,22 @@ mutation Join { member Member.create }
         }
     }
 }
+
+/// #179 lets any directive argument name be dotted at parse time; only a
+/// sequence argument gives the dots meaning, so other directives refuse it.
+#[test]
+fn dotted_argument_names_are_refused_outside_a_sequence() {
+    for (source, needle) in [
+        (
+            "model S { id String @@id(id) }\nmodel M { id String sId String s S @reference(via.x: [sId]) @@id(id) }",
+            "2:32: unknown reference argument",
+        ),
+        (
+            "prerequisite U(key String)\nmodel S { id String a String? @requires(U(key: self, key.x: self)) @@id(id) }",
+            "2:21: prerequisite argument mismatch",
+        ),
+    ] {
+        let err = compile(source).unwrap_err();
+        assert!(err.starts_with(needle), "{source}: {err}");
+    }
+}

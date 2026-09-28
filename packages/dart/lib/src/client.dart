@@ -7,6 +7,8 @@ import 'port.dart';
 import 'subscriptions.dart';
 import 'dart:async';
 
+part 'unsent.dart';
+
 /// A raw Model store hook; generated clients decode changes before calling it.
 typedef StoreHook =
     FutureOr<void> Function(Transaction tx, List<Map<String, dynamic>> changes);
@@ -92,6 +94,15 @@ class Client implements WritePort, MutatePort {
   /// The Scope surface the generated `scopes` facade delegates to, with no
   /// logic of its own.
   late final ClientScopes scopes = ClientScopes(this);
+
+  /// The refusals retained until dismissed, each with the act as submitted.
+  late final ClientRejections rejections = ClientRejections._(this);
+
+  /// The unsent acts blocked on a terminally failed prerequisite task.
+  late final ClientFailures failures = ClientFailures._(this);
+
+  /// The queue of unsettled acts.
+  late final ClientOutbound outbound = ClientOutbound._(this);
 
   final Object _txZoneKey = Object();
   Object? _activeTxToken;
@@ -848,6 +859,13 @@ class Transaction implements WritePort, SubmitMutationPort {
   void _cancel() => _open = false;
 
   late final channels = TransactionChannels._(this);
+
+  /// Dismiss a refusal as part of this transaction.
+  late final TransactionRejections rejections = TransactionRejections._(this);
+
+  /// Retry failed tasks or drop a failed act as part of this transaction:
+  /// later commands see the effect, and it commits or rolls back with it.
+  late final TransactionFailures failures = TransactionFailures._(this);
 
   /// Settles once every command submitted so far has settled.
   Future<void> _tail = Future<void>.value();

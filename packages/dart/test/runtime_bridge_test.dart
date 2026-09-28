@@ -915,6 +915,8 @@ void main() {
             refusal:
                 ((input['outcome'] as Map)['error'] as Map?)?['refusal']
                     as String?,
+            retry:
+                ((input['outcome'] as Map)['error'] as Map?)?['retry'] == true,
           ),
           'close' => Bridge.closeEnvelope,
           final type => fail('unknown input type $type'),
@@ -1161,10 +1163,6 @@ void main() {
           once: true,
           refresh: true,
         ),
-      );
-      await step(
-        '131',
-        () => client.runPrerequisites({'upload': (_) async {}}),
       );
       final rows = step(
         '132',

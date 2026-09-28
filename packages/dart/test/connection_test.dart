@@ -10,7 +10,7 @@ import 'dart:io';
 import 'package:axton/axton.dart';
 import 'package:axton/src/bridge.dart' show Effect, EffectHandler, RuntimeHost;
 import 'package:axton/src/connection.dart'
-    show deliverDiagnostic, prerequisiteHandler;
+    show deliverDiagnostic, prerequisiteHandler, timerHandler;
 import 'package:axton/src/live.dart' show ServerSession, SocketEvents;
 import 'package:test/test.dart';
 
@@ -177,7 +177,7 @@ void main() {
           'directTimeoutMs': 2,
           'refreshAuth': true,
         });
-        expect(host.handlers.keys, {'http', 'socket', 'timer', 'refreshAuth'});
+        expect(host.handlers.keys, {'http', 'socket', 'refreshAuth'});
         await connection.pause();
         await connection.resume();
         await connection.wake();
@@ -205,7 +205,7 @@ void main() {
         final connection = await connect();
         expect(host.tasks.single['refreshAuth'], false);
         expect(host.tasks.single['directTimeoutMs'], 30000);
-        expect(host.handlers.keys, {'http', 'socket', 'timer'});
+        expect(host.handlers.keys, {'http', 'socket'});
         await connection.close();
       },
     );
@@ -454,21 +454,20 @@ void main() {
     );
 
     test('a timer answers when it fires; a cancelled one never does', () async {
-      final connection = await connect();
+      // Timers belong to the client, not the connection: installed at open.
+      host.handleEffects('timer', timerHandler());
       final fired = host.effect({'kind': 'timer', 'millis': 5});
       final cancelled = host.effect({'kind': 'timer', 'millis': 20});
       host.cancel(cancelled);
       expect(await host.answerOf(fired), {'ok': true});
       await Future<void>.delayed(const Duration(milliseconds: 40));
       expect(host.of(cancelled), isEmpty);
-      await connection.close();
     });
 
     test('close aborts every effect its handlers still hold', () async {
       final network = ScriptedNetwork();
       final connection = await connect(network: network);
       final socket = host.effect({'kind': 'socket', 'subscribe': 's'});
-      final timer = host.effect({'kind': 'timer', 'millis': 20});
       await connection.close();
       final (_, cancellation, on) = network.sockets.single;
       var aborted = false;
@@ -477,7 +476,6 @@ void main() {
       expect(aborted, isTrue);
       await on.message('late');
       expect(host.of(socket), isEmpty);
-      expect(host.of(timer), isEmpty);
     });
 
     test('refreshAuth answers ok, or the failure it threw', () async {
@@ -498,49 +496,95 @@ void main() {
       await connection.close();
     });
 
-    test('a prerequisite handler answers ok, or the reason it threw', () async {
-      final calls = <Map<String, dynamic>>[];
-      host.handleEffects(
-        'prerequisite',
-        prerequisiteHandler({
-          'Upload': (arguments) async {
-            calls.add(arguments);
-            if (arguments['key'] == 'bad') throw StateError('offline');
-          },
-        }),
-      );
-      final ok = host.effect({
-        'kind': 'prerequisite',
-        'key': 't1',
-        'name': 'Upload',
-        'arguments': {'key': 'good'},
-      });
-      final failed = host.effect({
-        'kind': 'prerequisite',
-        'key': 't2',
-        'name': 'Upload',
-        'arguments': {'key': 'bad'},
-      });
-      final missing = host.effect({
-        'kind': 'prerequisite',
-        'key': 't3',
-        'name': 'Other',
-        'arguments': <String, dynamic>{},
-      });
-      expect(await host.answerOf(ok), {'ok': true});
-      expect(await host.answerOf(failed), {
-        'ok': false,
-        'error': {'message': 'Bad state: offline'},
-      });
-      expect(await host.answerOf(missing), {
-        'ok': false,
-        'error': {'message': 'missing prerequisite handler'},
-      });
-      expect(calls, [
-        {'key': 'good'},
-        {'key': 'bad'},
-      ]);
-    });
+    test(
+      'a prerequisite handler answers ok, a retry, or the reason it threw',
+      () async {
+        final calls = <Map<String, dynamic>>[];
+        host.handleEffects(
+          'prerequisite',
+          prerequisiteHandler({
+            'Upload': (arguments, cancelled) async {
+              calls.add(arguments);
+              if (arguments['key'] == 'bad') throw StateError('offline');
+              if (arguments['key'] == 'later') {
+                throw PrerequisiteRetry('try later');
+              }
+            },
+          }),
+        );
+        final retry = host.effect({
+          'kind': 'prerequisite',
+          'key': 't0',
+          'name': 'Upload',
+          'arguments': {'key': 'later'},
+        });
+        expect(await host.answerOf(retry), {
+          'ok': false,
+          'error': {'message': 'try later', 'retry': true},
+        });
+        calls.clear();
+        final ok = host.effect({
+          'kind': 'prerequisite',
+          'key': 't1',
+          'name': 'Upload',
+          'arguments': {'key': 'good'},
+        });
+        final failed = host.effect({
+          'kind': 'prerequisite',
+          'key': 't2',
+          'name': 'Upload',
+          'arguments': {'key': 'bad'},
+        });
+        final missing = host.effect({
+          'kind': 'prerequisite',
+          'key': 't3',
+          'name': 'Other',
+          'arguments': <String, dynamic>{},
+        });
+        expect(await host.answerOf(ok), {'ok': true});
+        expect(await host.answerOf(failed), {
+          'ok': false,
+          'error': {'message': 'Bad state: offline'},
+        });
+        expect(await host.answerOf(missing), {
+          'ok': false,
+          'error': {'message': 'missing prerequisite handler'},
+        });
+        expect(calls, [
+          {'key': 'good'},
+          {'key': 'bad'},
+        ]);
+      },
+    );
+
+    test(
+      'a cancelled prerequisite run completes its cancelled future and answers nothing',
+      () async {
+        final run = Completer<void>();
+        Future<void>? cancelled;
+        host.handleEffects(
+          'prerequisite',
+          prerequisiteHandler({
+            'Upload': (arguments, cancellation) {
+              cancelled = cancellation;
+              return run.future;
+            },
+          }),
+        );
+        final id = host.effect({
+          'kind': 'prerequisite',
+          'key': 't',
+          'name': 'Upload',
+          'arguments': <String, dynamic>{},
+        });
+        await pumpEventQueue();
+        host.cancel(id);
+        await cancelled!.timeout(const Duration(seconds: 1));
+        run.complete();
+        await pumpEventQueue();
+        expect(host.of(id), isEmpty);
+      },
+    );
   });
 
   group('reports', () {

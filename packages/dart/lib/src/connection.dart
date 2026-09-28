@@ -4,8 +4,9 @@
 ///
 /// Rust owns the push lane, the Downlink lane, direct calls, credential
 /// refresh coordination, timeouts and every retry. This file only executes the
-/// effects the runtime asks for - HTTP, the live socket, timers and the
-/// application's `refreshAuth` - with the platform network adapter, and aborts
+/// effects the runtime asks for - HTTP, the live socket, timers, the
+/// application's `refreshAuth` and prerequisite handlers - with the platform
+/// network adapter, and aborts
 /// each one when the runtime cancels it. It decides nothing.
 library;
 
@@ -117,12 +118,32 @@ class StoreHookFailure implements Exception {
   String toString() => 'StoreHookFailure($model, $path: $message)';
 }
 
-/// The `prerequisite` effect handler for [handlers]: run the application's
-/// handler with the task's arguments, in the zone that asked, and answer ok
-/// or a failure whose message is the reason the task keeps.
-EffectHandler prerequisiteHandler(
-  Map<String, Future<void> Function(Map<String, dynamic>)> handlers,
-) {
+/// Thrown by a prerequisite handler to say its failure is transient: the
+/// task stays pending and the runtime runs it again after its backoff (1 s,
+/// doubling per consecutive retry, at most 30 s). Anything else a handler
+/// throws fails the task with its text until the application resets it.
+class PrerequisiteRetry implements Exception {
+  PrerequisiteRetry([this.message = 'prerequisite retry']);
+  final String message;
+  @override
+  String toString() => 'PrerequisiteRetry: $message';
+}
+
+/// One prerequisite handler: the host work for one task, such as an upload,
+/// with the task's schema-declared [arguments]. [cancelled] completes when the
+/// client closes or the runtime no longer wants the run; a settlement after
+/// that is ignored.
+typedef PrerequisiteHandler =
+    Future<void> Function(
+      Map<String, dynamic> arguments,
+      Future<void> cancelled,
+    );
+
+/// The `prerequisite` effect handler for [handlers], registered at open: run
+/// the application's handler with the task's arguments, in the zone that
+/// opened the client, and answer ok, a retry for a [PrerequisiteRetry], or a
+/// failure whose message is the reason the task keeps.
+EffectHandler prerequisiteHandler(Map<String, PrerequisiteHandler> handlers) {
   final zone = Zone.current;
   return (effect) => zone.run(() {
     final handler = handlers[effect.operation['name']];
@@ -131,12 +152,34 @@ EffectHandler prerequisiteHandler(
       return;
     }
     Future<void>.sync(
-      () => handler(effect.operation['arguments'] as Map<String, dynamic>),
+      () => handler(
+        effect.operation['arguments'] as Map<String, dynamic>,
+        effect.cancelled,
+      ),
     ).then(
       (_) => effect.succeed(),
-      onError: (Object thrown) => effect.fail(thrown.toString()),
+      onError: (Object thrown) => thrown is PrerequisiteRetry
+          ? effect.fail(thrown.message, retry: true)
+          : effect.fail(thrown.toString()),
     );
   });
+}
+
+/// The `timer {millis}` effect handler, registered at open: answer when the
+/// timer fires; a cancellation clears it. The timer is created in the zone
+/// that opened the client. Deadlines, lane backoff and prerequisite retries
+/// all wait on it, with or without a connection.
+EffectHandler timerHandler() {
+  final zone = Zone.current;
+  return (effect) {
+    final timer = zone.run(
+      () => Timer(
+        Duration(milliseconds: effect.operation['millis'] as int),
+        effect.succeed,
+      ),
+    );
+    unawaited(effect.cancelled.then((_) => timer.cancel()));
+  };
 }
 
 /// The client is closing: stop [connection] without a task. The runtime's
@@ -157,7 +200,6 @@ class RuntimeConnection {
   late final Map<String, EffectHandler> _handlers = {
     'http': _http,
     'socket': _socket,
-    'timer': _timer,
     if (_refreshAuth != null) 'refreshAuth': _refresh,
   };
   bool _stopped = false;
@@ -320,15 +362,6 @@ class RuntimeConnection {
       ),
     ),
   );
-
-  /// `timer {millis}`: answer when it fires; a cancellation clears it.
-  void _timer(Effect effect) {
-    final timer = Timer(
-      Duration(milliseconds: effect.operation['millis'] as int),
-      effect.succeed,
-    );
-    unawaited(effect.cancelled.then((_) => timer.cancel()));
-  }
 
   /// `refreshAuth`: run the application's refresh once. A refresh that
   /// fails with a 401 or 403 ([HttpFailure], [AuthenticationExpired]) carries

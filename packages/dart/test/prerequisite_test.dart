@@ -1,118 +1,239 @@
+// Prerequisite handlers registered at open (#185): the native runtime runs
+// them whenever a task becomes pending and retries a PrerequisiteRetry with
+// its own backoff. The real runtime and SQLite underneath.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:axton/axton.dart';
 import 'package:test/test.dart';
 
+typedef _Handlers = Map<String, PrerequisiteHandler>;
+
 void main() {
-  test(
-    'prerequisite failure stays optimistic and explicit retry unlocks the push',
-    () async {
-      final dir = await Directory.systemTemp.createTemp(
-        'axton-dart-prerequisite-',
-      );
-      final schema =
-          jsonDecode(
-                await File('../../fixtures/schemas/entry.json').readAsString(),
-              )
-              as Map<String, dynamic>;
-      schema['prerequisites'] = [
-        {
-          'name': 'Upload',
-          'fields': [
-            {'name': 'key', 'type': 'String'},
-          ],
-        },
-      ];
-      schema['requirements'] = [
+  late Directory dir;
+  late Map<String, dynamic> schema;
+
+  setUp(() async {
+    dir = await Directory.systemTemp.createTemp('axton-dart-prerequisite-');
+    schema =
+        jsonDecode(
+              await File('../../fixtures/schemas/entry.json').readAsString(),
+            )
+            as Map<String, dynamic>;
+    schema['prerequisites'] = [
+      {
+        'name': 'RemoteBlob',
+        'fields': [
+          {'name': 'key', 'type': 'String'},
+        ],
+      },
+    ];
+    schema['requirements'] = [
+      {
+        'model': 'Entry',
+        'field': 'note',
+        'name': 'RemoteBlob',
+        'arguments': {'key': 'self'},
+      },
+    ];
+  });
+  tearDown(() => dir.delete(recursive: true));
+
+  Future<Client> open(_Handlers prerequisites) => Client.open(
+    path: '${dir.path}/db',
+    schema: schema,
+    libraryPath: Platform.environment['AXTON_LIBRARY']!,
+    prerequisites: prerequisites,
+  );
+
+  Future<void> attach(Client client, String key) async {
+    await client.transaction(
+      (tx) => tx.direct({
+        'model': 'Entry',
+        'op': 'create',
+        'identity': {'id': key},
+        'values': {'text': 'A'},
+      }),
+    );
+    await client.mutate({
+      'name': 'Edit',
+      'operations': [
         {
           'model': 'Entry',
-          'field': 'note',
-          'name': 'Upload',
-          'arguments': {'key': 'self'},
+          'op': 'update',
+          'identity': {'id': key},
+          'values': {'note': key},
         },
-      ];
-      final client = await Client.open(
-        path: '${dir.path}/db',
-        schema: schema,
-        libraryPath: Platform.environment['AXTON_LIBRARY']!,
-      );
+      ],
+    });
+  }
+
+  /// Poll [probe] until it holds; fail after five seconds.
+  Future<void> until(FutureOr<bool> Function() probe) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (!await probe()) {
+      expect(DateTime.now().isBefore(deadline), isTrue, reason: 'timed out');
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
+  Future<bool> settled(Client client) async =>
+      (await client.pendingTasks()).isEmpty;
+
+  test(
+    'a commit that queues a task runs its handler with no host call',
+    () async {
+      final calls = <Map<String, dynamic>>[];
+      final client = await open({
+        'RemoteBlob': (arguments, cancelled) async => calls.add(arguments),
+      });
       try {
-        await client.transaction(
-          (tx) => tx.direct({
-            'model': 'Entry',
-            'op': 'create',
-            'identity': {'id': 'e'},
-            'values': {'text': 'A'},
-          }),
-        );
-        await client.mutate({
-          'name': 'Edit',
-          'operations': [
-            {
-              'model': 'Entry',
-              'op': 'update',
-              'identity': {'id': 'e'},
-              'values': {'note': 'asset'},
-            },
-          ],
-        });
-        var calls = 0;
-        final handlers = <String, Future<void> Function(Map<String, dynamic>)>{
-          'Upload': (args) async {
-            expect(args['key'], anyOf('asset', 'second'));
-            if (++calls == 1) throw StateError('offline');
-          },
-        };
-        await client.runPrerequisites(handlers);
-        expect((await client.read('Entry', {'id': 'e'}))?['note'], 'asset');
-        expect(
-          await client.freeze(),
-          isNull,
-          reason: 'a failed prerequisite blocks the push',
-        );
-        var task = (await client.pendingTasks()).single;
-        expect(task['state'], 'failed');
-        expect(task['name'], 'Upload');
-        expect(task['error'], 'Bad state: offline');
-        final status = await client.recordSyncState('Entry', {'id': 'e'});
-        final prerequisite =
-            (status['pending'] as List).first['prerequisites'].first;
-        expect(prerequisite['error'], 'Bad state: offline');
-        await client.setReadiness(task['key'] as String, 'pending');
-        await client.runPrerequisites(handlers);
-        expect(calls, 2);
-        expect(await client.freeze(), isNotNull);
-        expect(await client.pendingTasks(), isEmpty);
-        await expectLater(
-          client.runPrerequisites({}),
-          completes,
-          reason: 'nothing pending needs no handler',
-        );
-        // A task nobody handles fails with a reason instead of stopping the
-        // run; once reset it is taken by a run that has the handler.
-        await client.mutate({
-          'name': 'Edit',
-          'operations': [
-            {
-              'model': 'Entry',
-              'op': 'update',
-              'identity': {'id': 'e'},
-              'values': {'note': 'second'},
-            },
-          ],
-        });
-        await client.runPrerequisites({});
-        task = (await client.pendingTasks()).single;
-        expect(task['state'], 'failed');
-        expect(task['error'], 'missing prerequisite handler');
-        await client.setReadiness(task['key'] as String, 'pending');
-        await client.runPrerequisites(handlers);
-        expect(calls, 3);
-        expect(await client.pendingTasks(), isEmpty);
+        await attach(client, 'asset');
+        await until(() => settled(client));
+        expect(calls, [
+          {'key': 'asset'},
+        ]);
       } finally {
         await client.close();
-        await dir.delete(recursive: true);
       }
+    },
+  );
+
+  test('a task pending at restart runs after reopen', () async {
+    final started = Completer<void>();
+    final first = await open({
+      'RemoteBlob': (arguments, cancelled) {
+        started.complete();
+        return Completer<void>().future;
+      },
+    });
+    await attach(first, 'asset');
+    await started.future;
+    await first.close();
+    final calls = <Map<String, dynamic>>[];
+    final second = await open({
+      'RemoteBlob': (arguments, cancelled) async => calls.add(arguments),
+    });
+    try {
+      await until(() => settled(second));
+      expect(calls, [
+        {'key': 'asset'},
+      ]);
+    } finally {
+      await second.close();
+    }
+  });
+
+  test('a transient failure retries with a growing backoff', () async {
+    // The runtime decides every delay; this zone records the timers it asks
+    // for and shortens them, so the test observes the backoff without
+    // waiting it out.
+    final delays = <int>[];
+    var calls = 0;
+    final client = await runZoned(
+      () => open({
+        'RemoteBlob': (arguments, cancelled) async {
+          if (++calls <= 3) throw PrerequisiteRetry('offline');
+        },
+      }),
+      zoneSpecification: ZoneSpecification(
+        createTimer: (self, parent, zone, duration, callback) {
+          if (duration >= const Duration(milliseconds: 500)) {
+            delays.add(duration.inMilliseconds);
+            duration = const Duration(milliseconds: 1);
+          }
+          return parent.createTimer(zone, duration, callback);
+        },
+      ),
+    );
+    try {
+      await attach(client, 'asset');
+      await until(() => settled(client));
+      expect(calls, 4);
+      expect(delays, hasLength(3));
+      for (var i = 0; i < delays.length; i++) {
+        // 1 s doubling per retry, within the runtime's ±20 % jitter.
+        final base = 1000 << i;
+        expect(delays[i], inInclusiveRange(base * 0.8, base * 1.2));
+      }
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a terminal failure stays failed and visible until a reset', () async {
+    var calls = 0;
+    final client = await open({
+      'RemoteBlob': (arguments, cancelled) async {
+        if (++calls == 1) throw StateError('file is gone');
+      },
+    });
+    try {
+      await attach(client, 'asset');
+      late Map<String, dynamic> task;
+      await until(() async {
+        final tasks = await client.pendingTasks();
+        if (tasks.isEmpty || tasks.single['state'] != 'failed') return false;
+        task = tasks.single;
+        return true;
+      });
+      expect(task['error'], 'Bad state: file is gone');
+      expect(task['name'], 'RemoteBlob');
+      final status = await client.recordSyncState('Entry', {'id': 'asset'});
+      expect(
+        (status['pending'] as List).first['prerequisites'].first['state'],
+        'failed',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(calls, 1, reason: 'not retried');
+      expect(await client.freeze(), isNull, reason: 'still blocks the push');
+      await client.setReadiness(task['key'] as String, 'pending');
+      await until(() => settled(client));
+      expect(calls, 2);
+    } finally {
+      await client.close();
+    }
+  });
+
+  // An error surfacing after close would be uncaught in this test's zone,
+  // which fails the test.
+  test(
+    'close during a run cancels it, does not hang and reports nothing',
+    () async {
+      final started = Completer<void>();
+      var cancelled = false;
+      final client = await open({
+        'RemoteBlob': (arguments, cancellation) {
+          started.complete();
+          final run = Completer<void>();
+          cancellation.then((_) {
+            cancelled = true;
+            run.completeError(StateError('aborted'));
+          });
+          return run.future;
+        },
+      });
+      await attach(client, 'asset');
+      await started.future;
+      await client.close().timeout(const Duration(seconds: 5));
+      await pumpEventQueue();
+      expect(cancelled, isTrue, reason: 'the run was cancelled');
+    },
+  );
+
+  test(
+    'a handler for a prerequisite the schema does not declare fails open',
+    () async {
+      await expectLater(
+        open({'Upload': (arguments, cancelled) async {}}),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('invalid prerequisite handler Upload'),
+          ),
+        ),
+      );
     },
   );
 }

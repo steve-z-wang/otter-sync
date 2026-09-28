@@ -264,13 +264,21 @@ class Effect {
 
   /// The effect failed, with the HTTP [status] the failure carried, if any,
   /// and the body of an admission [refusal]. It ends a socket stream too.
-  void fail(String message, {int? status, String? refusal}) {
+  /// [retry] marks a prerequisite handler's transient failure, which the
+  /// runtime retries with backoff.
+  void fail(
+    String message, {
+    int? status,
+    String? refusal,
+    bool retry = false,
+  }) {
     _send({
       'ok': false,
       'error': {
         'message': message,
         if (status != null) 'status': status,
         if (refusal != null) 'refusal': refusal,
+        if (retry) 'retry': true,
       },
     });
     _finish();
@@ -293,7 +301,7 @@ class Effect {
   }
 }
 
-/// What the connection and the prerequisite runner need from a runtime: tasks
+/// What the connection and the effect executors need from a runtime: tasks
 /// and effect handlers by operation kind. The [Bridge] is one; tests drive the
 /// handlers through a fake.
 abstract interface class RuntimeHost {
@@ -517,6 +525,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     bool discardPending = false,
     Carrier? carrier,
     Map<String, RawStoreHandler>? onStore,
+    List<String> prerequisiteHandlers = const [],
+    Map<String, EffectHandler> effects = const {},
   }) async {
     final handlers = Map<String, RawStoreHandler>.of(onStore ?? const {});
     final registrationZone = Zone.current;
@@ -528,12 +538,16 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'schema': schema,
       'discardPending': discardPending,
       'storeHooks': handlers.keys.toList(),
+      if (prerequisiteHandlers.isNotEmpty)
+        'prerequisiteHandlers': prerequisiteHandlers,
     });
     final (runtime, refused) = opener.open(request, _wakeRuntime);
     if (runtime == 0) throw StateError(refused ?? 'runtime open failed');
     // Registered before any wake can be delivered: the listener only posts to
-    // this isolate, which runs it after this synchronous section.
+    // this isolate, which runs it after this synchronous section. So are the
+    // [effects] executors the runtime may ask for from its first step.
     final bridge = Bridge._(opener, runtime, handlers, registrationZone);
+    effects.forEach(bridge.handleEffects);
     final route = _Route();
     bridge._routes['1'] = route;
     _hold();
@@ -1067,6 +1081,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     String? error,
     int? status,
     String? refusal,
+    bool retry = false,
   }) => {
     'type': 'effectResult',
     'effectId': effectId,
@@ -1078,6 +1093,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
           'message': error,
           if (status != null) 'status': status,
           if (refusal != null) 'refusal': refusal,
+          if (retry) 'retry': true,
         },
     },
   };

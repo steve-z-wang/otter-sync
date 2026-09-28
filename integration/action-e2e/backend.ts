@@ -179,12 +179,12 @@ export interface Queries<Tx> {
  todoPage: { v1(call: QueryHandlerCall<Tx, TodoPageInput>): Promise<TodoPageHandlerOutput> } | ((call: QueryHandlerCall<Tx, TodoPageInput>) => Promise<TodoPageHandlerOutput>);
 }
 export interface Loaders<Tx> {
- todo: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>);
- note: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>);
- composition: { v1(call: LoaderCall<Tx, CompositionIdentity>): Promise<readonly (Composition | null)[]> } | ((call: LoaderCall<Tx, CompositionIdentity>) => Promise<readonly (Composition | null)[]>);
- entry: { v1(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | ((call: LoaderCall<Tx, EntryIdentity>) => Promise<readonly (Entry | null)[]>);
- media: { v1(call: LoaderCall<Tx, MediaIdentity>): Promise<readonly (Media | null)[]> } | ((call: LoaderCall<Tx, MediaIdentity>) => Promise<readonly (Media | null)[]>);
- placement: { v1(call: LoaderCall<Tx, PlacementIdentity>): Promise<readonly (Placement | null)[]> } | ((call: LoaderCall<Tx, PlacementIdentity>) => Promise<readonly (Placement | null)[]>);
+ todo?: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>) | undefined;
+ note?: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>) | undefined;
+ composition?: { v1(call: LoaderCall<Tx, CompositionIdentity>): Promise<readonly (Composition | null)[]> } | ((call: LoaderCall<Tx, CompositionIdentity>) => Promise<readonly (Composition | null)[]>) | undefined;
+ entry?: { v1(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | ((call: LoaderCall<Tx, EntryIdentity>) => Promise<readonly (Entry | null)[]>) | undefined;
+ media?: { v1(call: LoaderCall<Tx, MediaIdentity>): Promise<readonly (Media | null)[]> } | ((call: LoaderCall<Tx, MediaIdentity>) => Promise<readonly (Media | null)[]>) | undefined;
+ placement?: { v1(call: LoaderCall<Tx, PlacementIdentity>): Promise<readonly (Placement | null)[]> } | ((call: LoaderCall<Tx, PlacementIdentity>) => Promise<readonly (Placement | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

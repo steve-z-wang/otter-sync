@@ -54,7 +54,7 @@ export interface Mutations<Tx> {
 export interface Queries<Tx> {
 }
 export interface Loaders<Tx> {
- entry: { v1(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | ((call: LoaderCall<Tx, EntryIdentity>) => Promise<readonly (Entry | null)[]>);
+ entry?: { v1(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | ((call: LoaderCall<Tx, EntryIdentity>) => Promise<readonly (Entry | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers: Handlers<Tx>; mutations?: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

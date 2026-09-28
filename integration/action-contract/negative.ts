@@ -246,9 +246,13 @@ declare const database: Database<{}>;
 declare const everyMutation: Mutations<{}>;
 declare const everyQuery: Queries<{}>;
 declare const everyLoader: Loaders<{}>;
+// @ts-expect-error A Model that registers a Loader registers every retained version (Todo retains v1 and v2).
+const partialLoader: Loaders<{}> = { todo: { async v1() { return []; } } };
+// @ts-expect-error A Loader key names a Model.
+const unknownLoader: Loaders<{}> = { tsak: async () => [] };
 // @ts-expect-error A schema that retains Loads requires the loads map.
 const withoutLoads = () => actionBackend.createBackend({ database, authenticate: () => 'alice', mutations: everyMutation, queries: everyQuery, loaders: everyLoader });
-void [effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
+void [partialLoader, unknownLoader, effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
 
 // Client Loads (#173): typed business args, call-site options apart from them.
 declare const job: Load<'ProjectTodos'>;

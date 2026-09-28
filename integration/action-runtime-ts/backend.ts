@@ -175,9 +175,9 @@ export interface Loads<Tx> {
  todoPages: { v1(call: LoadHandlerCall<Tx, TodoPagesInput>): Promise<TodoPagesHandlerOutput> } | ((call: LoadHandlerCall<Tx, TodoPagesInput>) => Promise<TodoPagesHandlerOutput>);
 }
 export interface Loaders<Tx> {
- todo: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>);
- moment: { v1(call: LoaderCall<Tx, MomentIdentity>): Promise<readonly (Moment | null)[]> } | ((call: LoaderCall<Tx, MomentIdentity>) => Promise<readonly (Moment | null)[]>);
- pin: { v1(call: LoaderCall<Tx, PinIdentity>): Promise<readonly (Pin | null)[]> } | ((call: LoaderCall<Tx, PinIdentity>) => Promise<readonly (Pin | null)[]>);
+ todo?: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>) | undefined;
+ moment?: { v1(call: LoaderCall<Tx, MomentIdentity>): Promise<readonly (Moment | null)[]> } | ((call: LoaderCall<Tx, MomentIdentity>) => Promise<readonly (Moment | null)[]>) | undefined;
+ pin?: { v1(call: LoaderCall<Tx, PinIdentity>): Promise<readonly (Pin | null)[]> } | ((call: LoaderCall<Tx, PinIdentity>) => Promise<readonly (Pin | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx>; loads: Loads<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

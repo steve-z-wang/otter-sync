@@ -142,13 +142,13 @@ export interface EntryV1 {
  status: "active" | "archived";
 }
 export interface Loaders<Tx> {
- draft: { v1(call: LoaderCall<Tx, DraftIdentity>): Promise<readonly (Draft | null)[]> } | ((call: LoaderCall<Tx, DraftIdentity>) => Promise<readonly (Draft | null)[]>);
- entry: { v1(call: LoaderCall<Tx, EntryV1Identity>): Promise<readonly (EntryV1 | null)[]>; v2(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> };
- placement: { v1(call: LoaderCall<Tx, PlacementIdentity>): Promise<readonly (Placement | null)[]> } | ((call: LoaderCall<Tx, PlacementIdentity>) => Promise<readonly (Placement | null)[]>);
- book: { v1(call: LoaderCall<Tx, BookIdentity>): Promise<readonly (Book | null)[]> } | ((call: LoaderCall<Tx, BookIdentity>) => Promise<readonly (Book | null)[]>);
- comment: { v1(call: LoaderCall<Tx, CommentIdentity>): Promise<readonly (Comment | null)[]> } | ((call: LoaderCall<Tx, CommentIdentity>) => Promise<readonly (Comment | null)[]>);
- counter: { v1(call: LoaderCall<Tx, CounterIdentity>): Promise<readonly (Counter | null)[]> } | ((call: LoaderCall<Tx, CounterIdentity>) => Promise<readonly (Counter | null)[]>);
- composition: { v1(call: LoaderCall<Tx, CompositionIdentity>): Promise<readonly (Composition | null)[]> } | ((call: LoaderCall<Tx, CompositionIdentity>) => Promise<readonly (Composition | null)[]>);
+ draft?: { v1(call: LoaderCall<Tx, DraftIdentity>): Promise<readonly (Draft | null)[]> } | ((call: LoaderCall<Tx, DraftIdentity>) => Promise<readonly (Draft | null)[]>) | undefined;
+ entry?: { v1(call: LoaderCall<Tx, EntryV1Identity>): Promise<readonly (EntryV1 | null)[]>; v2(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | undefined;
+ placement?: { v1(call: LoaderCall<Tx, PlacementIdentity>): Promise<readonly (Placement | null)[]> } | ((call: LoaderCall<Tx, PlacementIdentity>) => Promise<readonly (Placement | null)[]>) | undefined;
+ book?: { v1(call: LoaderCall<Tx, BookIdentity>): Promise<readonly (Book | null)[]> } | ((call: LoaderCall<Tx, BookIdentity>) => Promise<readonly (Book | null)[]>) | undefined;
+ comment?: { v1(call: LoaderCall<Tx, CommentIdentity>): Promise<readonly (Comment | null)[]> } | ((call: LoaderCall<Tx, CommentIdentity>) => Promise<readonly (Comment | null)[]>) | undefined;
+ counter?: { v1(call: LoaderCall<Tx, CounterIdentity>): Promise<readonly (Counter | null)[]> } | ((call: LoaderCall<Tx, CounterIdentity>) => Promise<readonly (Counter | null)[]>) | undefined;
+ composition?: { v1(call: LoaderCall<Tx, CompositionIdentity>): Promise<readonly (Composition | null)[]> } | ((call: LoaderCall<Tx, CompositionIdentity>) => Promise<readonly (Composition | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers: Handlers<Tx>; mutations: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

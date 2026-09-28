@@ -164,7 +164,7 @@ export interface TodoV1 {
  title: string;
 }
 export interface Loaders<Tx> {
- todo: { v1(call: LoaderCall<Tx, TodoV1Identity>): Promise<readonly (TodoV1 | null)[]>; v2(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> };
+ todo?: { v1(call: LoaderCall<Tx, TodoV1Identity>): Promise<readonly (TodoV1 | null)[]>; v2(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

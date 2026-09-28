@@ -158,6 +158,11 @@ if(false){
  const bareLoader:Loaders<Tx>['entry']=async()=>[];
  // @ts-expect-error every retained model version must be registered
  const partialLoader:Loaders<Tx>['entry']={v2:async({ids})=>ids.map(()=>row)};
+ // A Model without a Loader is device-only (#187): a Loaders map may omit it.
+ const deviceOnly:Loaders<Tx>={book:shorthandLoader,entry:versionedLoaders};
+ const noLoaders:Loaders<Tx>={};
+ // @ts-expect-error a Model that registers a Loader registers every retained version
+ const partialModel:Loaders<Tx>={entry:{v2:async({ids})=>ids.map(()=>row)}};
  // @ts-expect-error a v1 loader cannot return a value outside the v1 contract
  const wrongEnum:EntryV1={...v1Row,status:'typo'};
  // @ts-expect-error the v1 contract has no tags

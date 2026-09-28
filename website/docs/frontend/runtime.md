@@ -257,33 +257,54 @@ Phases are `queued` (not frozen) and `frozen` (request retained for sending or r
 
 ## Prerequisites
 
-A schema can require host I/O, such as an upload, before a durable call can be sent. The local change remains visible while this work is pending.
+A schema can require host I/O, such as an upload, before a durable call can be sent. The local change remains visible while this work is pending. Register one handler per prerequisite name when you open the client; the runtime runs it whenever a task becomes pending - when a Mutation that needs it is queued, when the client opens and finds one left from an earlier run, and when you reset one to `pending`. You never start the handlers yourself.
 
 === "TypeScript"
 
     ```ts
-    await client.runPrerequisites({
-      Uploaded: async args => { await uploadFile(args.key); },
+    const client = await GeneratedClient.open({
+      path: "app.sqlite",
+      prerequisites: {
+        Uploaded: async (args, signal) => {
+          const response = await fetch(`${backendUrl}/uploads/${String(args.key)}`, { method: "PUT", signal });
+          if (response.status >= 500) throw new PrerequisiteRetry(`upload: HTTP ${response.status}`);
+          if (!response.ok) throw Error(`upload refused: HTTP ${response.status}`);
+        },
+      },
     });
     ```
 
 === "Flutter"
 
     ```dart
-    await client.runPrerequisites({
-      'Uploaded': (args) async { await uploadFile(args['key']); },
-    });
+    final client = await GeneratedClient.open(
+      path: 'app.sqlite',
+      prerequisites: {
+        'Uploaded': (args, cancelled) async {
+          final request = await http.putUrl(Uri.parse('$backendUrl/uploads/${args['key']}'));
+          unawaited(cancelled.then((_) => request.abort()));
+          final response = await request.close();
+          if (response.statusCode >= 500) throw PrerequisiteRetry('upload: HTTP ${response.statusCode}');
+          if (response.statusCode >= 300) throw StateError('upload refused: HTTP ${response.statusCode}');
+        },
+      },
+    );
     ```
 
-`uploadFile` is application code. Dart accepts the equivalent map of async callbacks. Callbacks run one at a time and must tolerate retry after a crash or restart; starting a connection does not automatically supply or run your host callbacks.
+The request body is elided. A handler receives the task's schema-declared arguments and a cancellation - an `AbortSignal` in TypeScript, a `cancelled` future in Dart - that fires when the client closes. Handlers run one at a time and must tolerate running again after a crash or restart. Each name must be a prerequisite the schema declares, or `open` fails. A prerequisite you register no handler for is left for you to settle with `setReadiness`.
+
+| Handler | Result |
+| --- | --- |
+| Returns | The task is ready; its calls can be sent. |
+| Throws `PrerequisiteRetry` | Transient: the task stays pending and runs again after 1 s, then 2 s, 4 s and so on up to 30 s, with some jitter. The count starts again when the client reopens. |
+| Throws anything else | Terminal: the task is failed with the error's text and is not retried until you reset it. |
 
 | Method | Behavior |
 | --- | --- |
 | `pendingTasks()` | Return unresolved tasks, including `key`, `state`, schema-derived `name`/`arguments` and, for a failed task, `error` |
-| `runPrerequisites(handlers)` | Run pending tasks; success marks ready, a callback failure marks failed with the error's text, a task with no handler is marked failed with `missing prerequisite handler` |
-| `setReadiness(key, state)` | Set `ready`, `pending` or `failed`; use the task's opaque key, not a reconstructed key |
+| `setReadiness(key, state)` | Set `ready`, `pending` or `failed`; use the task's opaque key, not a reconstructed key. `pending` runs its handler again at once, even one waiting out a retry delay |
 
-Callback failures are recorded as failed tasks with their reason rather than rethrown by the runner; a task no handler covers is recorded the same way and the run goes on. Inspect `pendingTasks` or a record's `syncState` to display them. To retry, set the failed key to `pending`, then run callbacks again. Mark ready only when the prerequisite actually completed.
+Show failed tasks from `pendingTasks` or a record's `syncState`. To retry one, set its key to `pending`; to give up, drop the Mutation that needs it. Mark ready only when the prerequisite actually completed. Closing the client cancels a running handler and waits for nothing: whatever the handler does after that is ignored.
 
 ## Protocol primitives
 

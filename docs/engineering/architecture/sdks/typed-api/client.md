@@ -29,7 +29,8 @@ What an application sees:
 | `load.id`, `.status`, `.watch(listener)`, `.wait()`, `.cancel()`, `.retry()`, `.forget()`, `.dispose()` | one job's identity, projected status and observation; `wait()` resolves after the final page committed or throws `LoadError` (`LoadException` in Dart) |
 | `client.loads.get(id)`, `.list({ limit })`, `.invalidate.<name>(args)` | reattach by ID, the most recent jobs (1..100, default 50), and removal of one argument set's once registrations offline |
 | `client.syncState()`, `client.models.<model>.syncState(identity)` | the client's and one record's local sync state |
-| `clientId`, `connect()`, `pendingTasks()`, `setReadiness()`, `runPrerequisites()`, `drop()`, `dismissRejection()`, `querySpec()`, `readSql()`, `close()` | identity, connection, recovery and escape hatches, on the same object |
+| `clientId`, `connect()`, `pendingTasks()`, `setReadiness()`, `drop()`, `dismissRejection()`, `querySpec()`, `readSql()`, `close()` | identity, connection, recovery and escape hatches, on the same object |
+| `open({ prerequisites })` (Dart `open(prerequisites:)`), `PrerequisiteRetry` | the prerequisite handlers by prerequisite name, registered once and run by the runtime; a handler throws `PrerequisiteRetry` to be retried with backoff ([Prerequisites](../../schema/prerequisites.md#5-building-block-view)) |
 
 Every call becomes one task of the client's [runtime](../../client/runtime.md), submitted through the SDK Bridge and the [bindings](../bindings.md). Generated code depends on the runtime package (`@axton/client`, `package:axton`); the generic runtime depends on nothing generated.
 

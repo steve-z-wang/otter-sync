@@ -140,7 +140,7 @@ When permissions change, touch the affected records on the backend so every chan
 | Observation | Check |
 | --- | --- |
 | Empty local query after opening | Desired channel, running connection, loader output and read permission |
-| `queued` with failed prerequisites | Host callback failure; reset its readiness to pending and run it again |
+| `queued` with failed prerequisites | The handler failed terminally; reset its readiness to pending and the client runs it again |
 | `frozen` after a network failure | Connectivity/authentication; retain the frozen bytes for retry |
 | `frozen` long after the network recovered | Either the server refused the batch on identity or order grounds (401/403/409 `client.owner_mismatch`/`gap`/`overlap`) — the code reaches `onError` and the batch is resent as is because the server never ran it — or a received receipt was refused locally (it named another client or batch, or omitted an accepted record): check `onError` and the backend's loaders |
 | Server values do not update | Whether the record was added to the channel (`channel(name).todo.add`) and is still a member, and whether the handler touched every record it changed beyond its Model inputs (`touch.todo`) |

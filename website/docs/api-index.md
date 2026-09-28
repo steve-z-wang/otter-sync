@@ -52,7 +52,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `Transport`, `HttpRoute` (TypeScript) | Type the HTTP carrier a platform host build supplies (not passed to `open`/`connect`): it receives the route `push`, `pull`, `action`, `fetch` or `load` | [Server connection](frontend/runtime.md#server-connection) |
 | `RuntimeConnection`, `AuthenticationExpired` | Control Dart sync and identify authentication failures | [Connections](frontend/runtime.md#connection-controls) |
 | `syncState`, `models.<name>.syncState`, `dismissRejection`, `drop` | Inspect a record's pending work and handle rejected or unsent calls | [Recovery APIs](frontend/runtime.md#pending-work-and-recovery) |
-| `pendingTasks`, `runPrerequisites`, `setReadiness` | Complete prerequisite I/O before a durable call can be sent | [Prerequisites](frontend/runtime.md#prerequisites) |
+| `open({ prerequisites })`, `PrerequisiteRetry`, `pendingTasks`, `setReadiness` | Complete prerequisite I/O before a durable call can be sent | [Prerequisites](frontend/runtime.md#prerequisites) |
 | `freeze`, `acknowledge`, `applyPull` | Exercise the engine protocol in tests and tooling | [Protocol primitives](frontend/runtime.md#protocol-primitives) |
 | `ReadPort`, `WritePort`, `LivePort`, `FetchPort`, `FetchOptions`, model factories and codecs | Bind generated facades to a compatible runtime | [Generated extension points](frontend/client-api.md#extension-points) |
 | `loaderHooks`, `Native` | Prepare a loader call or supply the native backend binding | [Backend extension points](backend/api.md#extension-points) |

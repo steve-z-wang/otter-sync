@@ -81,7 +81,7 @@ def check():
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
         directory = Path(temp)
         ts = directory / 'examples.mts'
-        ts.write_text('''import { GeneratedClient, Edit, schema, AdmissionRefused } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
+        ts.write_text('''import { GeneratedClient, Edit, PrerequisiteRetry, schema, AdmissionRefused } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
 import type { Transaction } from '../../client-js/index.mts';
 declare const client: GeneratedClient;
 declare const backendUrl: string;

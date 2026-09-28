@@ -55,3 +55,7 @@ Receipts and pull changes carry a per-record stamp. A newer stamp replaces the r
 Cached records, queued calls, rejection details, saved `once` Query results and backend receipts persist. Client business results held by live `Call` handles are memory-only. Saved `once` results have no size limit; your application bounds them through the argument sets it uses and `invalidate`. The runtime does not impose a cache-size limit or automatically expire these entries. Backend call outcomes are retained without TTL or automatic pruning; backend invalidations compact by channel/Model/identity, but distinct identities still consume space.
 
 Measure database size, pending work and synchronization lag with your application's working set. Local reads, including read-only SQL, use on-disk SQLite tables. They do not copy the full record set into a separate query projection.
+
+## Read the tables with SQL
+
+Each Model has a table named exactly the Model name, with one column per field named exactly the field name. Every table AXTON owns is named `axton_*`; do not read or change those. Both rules are a stable contract, so SQL you write with `readSql` or `watchSql` keeps working across upgrades. See [local table layout](runtime.md#local-table-layout).

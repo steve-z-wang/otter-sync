@@ -50,12 +50,13 @@ When the schema compiled into the client differs from the one the database was b
 
 ## Escape-hatch reads
 
-Typed reads (`models.<name>.get`, `query`, relation accessors, `watch`) are in the [client API](client-api.md). Two untyped reads remain for cases the generated API does not cover. Both read local SQLite through Rust; results are `RecordValue` rows (`Record<string, unknown>` in TypeScript, `Map<String, dynamic>` in Dart).
+Typed reads (`models.<name>.get`, `query`, relation accessors, `watch`) are in the [client API](client-api.md). Untyped reads remain for cases the generated API does not cover. They read local SQLite through Rust; results are `RecordValue` rows (`Record<string, unknown>` in TypeScript, `Map<String, dynamic>` in Dart). SQL reads the Model tables described under [local table layout](#local-table-layout).
 
 | Method | Input | Result |
 | --- | --- | --- |
 | `querySpec(model, query)` | Model name and `filter`, `orderBy`, `limit` | Matching records with requested order/limit |
 | `readSql(sql, parameters)` | Read-only SQL and bound parameters | Result rows |
+| `watchSql(sql, parameters, …)` | Read-only SQL and bound parameters | The current rows, then each different result ([watch SQL](#watch-sql-over-several-models)) |
 
 TypeScript's `readSql` takes an optional positional second argument; Dart uses named `parameters:`.
 
@@ -87,6 +88,52 @@ TypeScript's `readSql` takes an optional positional second argument; Dart uses n
     ```
 
 `querySpec` calls its equality filter `filter`; the generated API calls it `where`. SQL rejects writes. Bind values instead of interpolating them into SQL.
+
+### Watch SQL over several Models
+
+`watchSql` keeps a read-only SQL answer current, such as a page that joins several Models. It delivers the current rows first, then each result that differs from the last one. The runtime asks SQLite which tables the statement reads; you never list them. It runs the statement again only after a commit that writes one of those tables: your own writes and transactions, optimistic Mutations and their settlement or rejection, Channel delivery, Loads and Fetches. A commit to any other Model does not run it.
+
+=== "TypeScript"
+
+    ```ts
+    const stop = client.watchSql(
+      'SELECT e.id, e.text, count(m.id) AS media FROM "Entry" e ' +
+        'LEFT JOIN "Media" m ON m.entryId = e.id WHERE e.note IS ? GROUP BY e.id',
+      [null],
+      rows => console.log(rows),
+      error => console.error(error),
+    );
+    // When the view is disposed:
+    stop();
+    ```
+
+=== "Flutter"
+
+    ```dart
+    final rows = client
+        .watchSql(
+          'SELECT e.id, e.text, count(m.id) AS media FROM "Entry" e '
+          'LEFT JOIN "Media" m ON m.entryId = e.id WHERE e.note IS ? GROUP BY e.id',
+          parameters: [null],
+        )
+        .listen(print, onError: (Object error) => print(error));
+    // When the view is disposed:
+    await rows.cancel();
+    ```
+
+TypeScript takes the parameters as the second argument and returns a function that stops the watch, like `watch`; Dart returns a `Stream` and takes named `parameters:`, like `readSql`. The statement must be a single read-only `SELECT` or `WITH … SELECT` over Model tables. A write, a `PRAGMA`, an engine table (`axton_*`) or a statement SQLite cannot run fails the watch at once: TypeScript calls `onError`, Dart ends the stream with the error. A later run that fails goes to the connection's `onError` and the watch stays. Calling it from inside a transaction callback fails with `transaction_active` (React Native waits for the commit instead). Closing the client ends the watch.
+
+A commit to a table the statement reads runs it again even when none of its rows changed; the result is then compared and nothing is delivered. Keep watched statements as narrow as the view needs.
+
+### Local table layout
+
+The layout SQL sees is a stable contract, so product SQL keeps working across AXTON upgrades:
+
+- A Model's table is named exactly the Model name (`"Entry"`, `"MomentPlacement"`), and each column exactly its field name. Quote names that are not lower case.
+- Every table AXTON owns is named `axton_*`. Do not read those tables; their layout can change in any release, and `watchSql` refuses them.
+- Changing either rule is a breaking change.
+
+A column holds the field's local value: an `Int` or `Boolean` is an integer (`1` or `0` for a boolean), a `Float` a real, a list JSON text, and a `String`, `Uuid`, enum or `DateTime` text, a `DateTime` as a UTC ISO 8601 instant in milliseconds. The table shows the local view, so rows include optimistic local changes and local-only records.
 
 ## Transactions and savepoints
 

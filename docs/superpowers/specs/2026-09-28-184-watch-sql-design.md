@@ -1,6 +1,6 @@
 # Reactive SQL over several Models, and a stable table contract (#184)
 
-Status: decided 2026-09-28 by the maintainer. Not yet implemented.
+Status: decided 2026-09-28 by the maintainer; implemented on branch `codex/184-watch-sql` ([plan](../plans/2026-09-28-184-watch-sql-plan.md)).
 
 ## Problem
 

@@ -9,6 +9,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `GeneratedClient.open` | Open a local database and optionally start background sync | [Generated client](frontend/client-api.md#open-a-client) |
 | `onStore`, `StoreHooks`, `StoreChange` | React to typed incoming Model changes inside their local storage transaction | [React to incoming records](frontend/client-api.md#react-to-incoming-records) |
 | `client.models.<model>` | Read, query, watch and follow relations in local data | [Model APIs](frontend/client-api.md#model-apis) |
+| `client.readSql`, `client.watchSql` | Read local data with SQL once, or keep a SQL answer over several Models current | [Escape-hatch reads](frontend/runtime.md#escape-hatch-reads), [Watch SQL](frontend/runtime.md#watch-sql-over-several-models), [Local table layout](frontend/runtime.md#local-table-layout) |
 | `client.fetch.<model>` | Read one record from the backend through its Loader, stored locally by default | [Fetch a record](frontend/client-api.md#fetch-a-record-from-the-backend) |
 | `client.transaction` | Commit local reads, direct writes and queued Mutations together | [Transactions](frontend/client-api.md#transactions) |
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |

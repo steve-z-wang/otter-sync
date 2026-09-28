@@ -7,9 +7,11 @@
  */
 export interface PostgresDriver<Tx> {
   /**
-   * Run `body` in one transaction at REPEATABLE READ: commit when it resolves,
+   * Run `body` in one transaction at SERIALIZABLE: commit when it resolves,
    * roll back when it throws, and retry the whole body a bounded number of
-   * times on a serialization failure (SQLSTATE 40001 or 40P01).
+   * times on a serialization failure (SQLSTATE 40001 or 40P01). The body may
+   * therefore run more than once; the last failure is thrown when the retries
+   * run out.
    */
   transaction<R>(body: (tx: Tx) => Promise<R>): Promise<R>;
   /**

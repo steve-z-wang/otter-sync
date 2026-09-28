@@ -20,7 +20,11 @@ const schema={enums:[],models:[{name:'Task',identity:['id'],fields:[{name:'id',t
 const config={schema,mutations:[{name:'edit',version:1,slots:[{name:'task',model:'Task',operation:'update',cardinality:'single',allowedPatchFields:['title']}]}]};
 const authenticate=async req=>req.headers.authorization==='Bearer alice'?'alice':null;
 const key=id=>JSON.stringify({id});
-before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await q(sql);await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');});
+before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await q(sql);await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');
+ // The lock-then-recheck races (#202). No foreign keys: a key check would make
+ // even the old level fail serialization, hiding the stale re-check.
+ for(const sql of ['CREATE TABLE IF NOT EXISTS race_book(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_author(id text PRIMARY KEY,book_id text NOT NULL)','CREATE TABLE IF NOT EXISTS race_archive(author_id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_post(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_star(id text PRIMARY KEY,post_id text NOT NULL)'])await q(sql);
+});
 after(()=>check.end());
 
 test('pg: a connection whose ROLLBACK fails is released as broken, a healthy one is released for reuse',async()=>{
@@ -36,6 +40,68 @@ test('pg: a connection whose ROLLBACK fails is released as broken, a healthy one
  assert.equal(await pgDriver(fakePool(false)).transaction(async()=>7),7);
  assert.equal(releases.at(-1),undefined);
 });
+
+// Lock-then-recheck (#202). `first` locks a parent row and changes its
+// children, then holds its transaction open. `second` fixes its snapshot while
+// `first` is still open - AXTON's own claim statements do that before a
+// handler runs - then locks the same parent, waiting for `first` to commit,
+// and re-checks the children to decide its write. Only promises order the two:
+// `second` reads its snapshot before `first` is allowed to commit.
+const race=async(transaction,{first,second})=>{
+ const runs={first:0,second:0};
+ let locked,fixed,commit;
+ const firstLocked=new Promise(resolve=>{locked=resolve;});const secondFixed=new Promise(resolve=>{fixed=resolve;});const firstGate=new Promise(resolve=>{commit=resolve;});
+ const a=transaction(async tx=>{runs.first++;await first(tx);if(runs.first===1){locked();await firstGate;}});
+ await Promise.race([firstLocked,a.then(()=>{throw new Error('first committed before holding its lock');})]);
+ const b=transaction(async tx=>{runs.second++;await second(tx,runs.second===1?fixed:()=>{});});
+ await Promise.race([secondFixed,b.then(()=>{throw new Error('second finished before fixing its snapshot');})]);
+ commit();
+ await a;await b;
+ return runs;
+};
+// Delete case: an Author leaves a Book while an Archive is written for them.
+// `leave` locks the Book, removes the Author and every Archive of theirs;
+// `archive` locks the Book, re-checks that the Author is still there and
+// writes their Archive. Either serial order leaves neither.
+const archiveRace=async(transaction,query,name)=>{
+ const book=`${name}-book`,author=`${name}-author`;
+ await q('INSERT INTO race_book(id) VALUES($1)',[book]);await q('INSERT INTO race_author(id,book_id) VALUES($1,$2)',[author,book]);
+ const runs=await race(transaction,{
+  first:async tx=>{
+   await query(tx,'SELECT id FROM race_book WHERE id=$1 FOR UPDATE',[book]);
+   await query(tx,'DELETE FROM race_author WHERE id=$1',[author]);
+   await query(tx,'DELETE FROM race_archive WHERE author_id=$1',[author]);
+  },
+  second:async(tx,fixed)=>{
+   await query(tx,'SELECT id FROM race_book WHERE id=$1',[book]);fixed();
+   await query(tx,'SELECT id FROM race_book WHERE id=$1 FOR UPDATE',[book]);
+   if((await query(tx,'SELECT id FROM race_author WHERE id=$1 AND book_id=$2',[author,book])).length>0)
+    await query(tx,'INSERT INTO race_archive(author_id) VALUES($1)',[author]);
+  },
+ });
+ return {runs,authors:await q('SELECT id FROM race_author WHERE id=$1',[author]),archives:await q('SELECT author_id FROM race_archive WHERE author_id=$1',[author])};
+};
+// Insert case, a phantom: a Star is added to a Post while the Post is deleted.
+// `star` locks the Post, re-checks it exists and inserts the Star; `remove`
+// locks the Post, deletes its Stars, then the Post. Either serial order leaves
+// neither.
+const starRace=async(transaction,query,name)=>{
+ const post=`${name}-post`,star=`${name}-star`;
+ await q('INSERT INTO race_post(id) VALUES($1)',[post]);
+ const runs=await race(transaction,{
+  first:async tx=>{
+   if((await query(tx,'SELECT id FROM race_post WHERE id=$1 FOR UPDATE',[post])).length>0)
+    await query(tx,'INSERT INTO race_star(id,post_id) VALUES($1,$2)',[star,post]);
+  },
+  second:async(tx,fixed)=>{
+   await query(tx,'SELECT id FROM race_post WHERE id=$1',[post]);fixed();
+   await query(tx,'SELECT id FROM race_post WHERE id=$1 FOR UPDATE',[post]);
+   await query(tx,'DELETE FROM race_star WHERE post_id=$1',[post]);
+   await query(tx,'DELETE FROM race_post WHERE id=$1',[post]);
+  },
+ });
+ return {runs,posts:await q('SELECT id FROM race_post WHERE id=$1',[post]),stars:await q('SELECT id FROM race_star WHERE post_id=$1',[post])};
+};
 
 const shims=[];
 {const pool=new Pool({connectionString:url});shims.push({name:'pg',database:pg(pool),close:()=>pool.end()});}
@@ -254,11 +320,15 @@ for(const shim of shims){
   assert.deepEqual(await inTx((tx,_,x)=>members(x)),[a]);
  });
  test(`[${shim.name}] a membership-only writer's no-op record UPDATE makes a stale-snapshot writer of the same record retry`,async()=>{
-  // B fixes its Repeatable Read snapshot by reading the record's memberships,
-  // then waits. A enrolls the record in a Channel and commits. B then writes
-  // the record row. With A's lockRecord guard the write conflicts and the
-  // runner restarts B, whose second attempt sees A's membership; without the
-  // guard (the foreign key's KEY SHARE lock only) B commits on its stale view.
+  // B fixes its snapshot by reading the record's memberships, then waits. A
+  // enrolls the record in a Channel and commits. B then writes the record row.
+  // With A's lockRecord guard the write conflicts and the runner restarts B,
+  // whose second attempt sees A's membership. Without the guard, Repeatable
+  // Read let B commit on its stale view (the foreign key's KEY SHARE lock
+  // only); at Serializable, the level every shim runs since #202, B's stale
+  // membership read and A's key check of the row B writes form a cycle, so B
+  // restarts either way. The guard stays for transactions AXTON does not open:
+  // a caller-owned transaction around backend.publish may run at Repeatable Read.
   const trial=async(name,guard)=>{
    const rec={model:'Task',identityKey:key(p(name))};const channel=p(`${name}-ch`);
    await inTx((tx,_,x)=>x({op:'ensureStamp',...rec}));
@@ -279,7 +349,7 @@ for(const shim of shims){
   assert.equal(guarded.stamp,2,'only the retried attempt advanced the stamp');
   assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[guarded.rec.identityKey]),[{stamp:2}]);
   const unguarded=await trial('rr-unguarded',false);
-  assert.deepEqual(unguarded.seen,[[]],'control: without the no-op UPDATE the stale writer commits once, never seeing the new membership');
+  assert.deepEqual(unguarded.seen,[[],[unguarded.channel]],'at Serializable the stale writer restarts even without the no-op UPDATE');
   assert.equal(unguarded.stamp,2);
   // The same conflict when B's write reaches the row while A still holds it:
   // B waits on A's row lock, and A's commit makes B restart rather than proceed.
@@ -307,8 +377,41 @@ for(const shim of shims){
   assert.equal(blocked,true,'B reached PostgreSQL and waited on the row A locked');
   assert.deepEqual(seen,[[],[channel]],'A\'s commit made B restart; the retry read the new membership');
  });
+ test(`[${shim.name}] lock-then-recheck, delete case: an Archive for an Author who already left never commits; exactly one transaction retries`,async()=>{
+  const {runs,authors,archives}=await archiveRace(driver.transaction,driver.query,p('leave'));
+  assert.deepEqual(runs,{first:1,second:2},'the re-check that read the departed Author failed serialization and ran again');
+  assert.deepEqual(authors,[],'the Author left');
+  assert.deepEqual(archives,[],'the serial outcome: the retry saw the Author gone and wrote no Archive');
+ });
+ test(`[${shim.name}] lock-then-recheck, insert case: a delete's cleanup never misses a Star created at the same moment; exactly one transaction retries`,async()=>{
+  const {runs,posts,stars}=await starRace(driver.transaction,driver.query,p('star'));
+  assert.deepEqual(runs,{first:1,second:2},'the cleanup that missed the phantom Star failed serialization and ran again');
+  assert.deepEqual(posts,[],'the Post is deleted');
+  assert.deepEqual(stars,[],'the serial outcome: the retry saw the Star and deleted it with its Post');
+ });
  test(`[${shim.name}] close`,async()=>{await shim.close();});
 }
+
+// Control: the same races at Repeatable Read, the level every shim used before
+// #202, commit the stale decision. This is what the tests above rule out.
+test('control: at Repeatable Read both lock-then-recheck races commit on a stale re-check',async()=>{
+ const pool=new Pool({connectionString:url});
+ const repeatableRead=async body=>{
+  const client=await pool.connect();
+  try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');const result=await body(client);await client.query('COMMIT');return result;}
+  catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
+ };
+ const query=async(client,sql,params)=>(await client.query(sql,params)).rows;
+ try{
+  const leave=await archiveRace(repeatableRead,query,'rr-leave');
+  assert.deepEqual(leave.runs,{first:1,second:1});
+  assert.deepEqual([leave.authors,leave.archives],[[],[{author_id:'rr-leave-author'}]],'an Archive for an Author who already left');
+  const star=await starRace(repeatableRead,query,'rr-star');
+  assert.deepEqual(star.runs,{first:1,second:1});
+  assert.deepEqual([star.posts,star.stars],[[],[{id:'rr-star-star'}]],'an orphan Star the cleanup missed');
+ }finally{await pool.end();}
+});
 
 test('the pg driver retries only serialization failures, a bounded number of times',async()=>{
  const attempts=[];const failing=codes=>({async connect(){return {async query(sql){if(sql==='COMMIT'){const code=codes.shift();if(code){attempts.push(code);throw Object.assign(new Error(code),{code});}}return {rows:[]};},release(){}};}});

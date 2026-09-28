@@ -11,7 +11,7 @@ export interface PrismaTransaction {
 export interface PrismaClientLike<Tx extends PrismaTransaction> {
   $transaction<R>(
     body: (tx: Tx) => Promise<R>,
-    options: { isolationLevel: "RepeatableRead"; timeout: number },
+    options: { isolationLevel: "Serializable"; timeout: number },
   ): Promise<R>;
 }
 
@@ -25,7 +25,7 @@ export function prismaDriver<Tx extends PrismaTransaction>(
       withRetries(
         () =>
           client.$transaction(body, {
-            isolationLevel: "RepeatableRead",
+            isolationLevel: "Serializable",
             timeout: options.timeout ?? 20000,
           }),
         isRetryableTransactionError,

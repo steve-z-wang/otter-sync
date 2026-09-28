@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   AxtonReport,
   Effects,
+  PrerequisiteRetry,
   prerequisites,
   startConnection,
 } from "../../../packages/client-js/connection.mts";
@@ -248,6 +249,9 @@ test("prerequisite effects run the named handler and keep the failure's reason",
     throwsValue: () => {
       throw "plain reason";
     },
+    retries: async () => {
+      throw new PrerequisiteRetry("try later");
+    },
   });
   bridge.effect("1", {
     kind: "prerequisite",
@@ -262,16 +266,43 @@ test("prerequisite effects run the named handler and keep the failure's reason",
     name: "throwsValue",
     arguments: {},
   });
+  bridge.effect("4", { kind: "prerequisite", key: "k4", name: "retries", arguments: {} });
+  bridge.effect("5", { kind: "prerequisite", key: "k5", name: "toString", arguments: {} });
   await settled();
   assert.deepEqual(seen, [{ id: "t" }]);
   // Each answers when its own handler settles; the order among them is free.
+  // Only a PrerequisiteRetry asks for a retry; a name that is not an own
+  // handler is missing, never an inherited method.
   assert.deepEqual(bridge.results.sort(([a], [b]) => a.localeCompare(b)), [
     ["1", { ok: true }],
     ["2", { ok: false, error: { message: "offline" } }],
     ["3", { ok: false, error: { message: "plain reason" } }],
+    ["4", { ok: false, error: { message: "try later", retry: true } }],
+    ["5", { ok: false, error: { message: "missing prerequisite handler" } }],
   ]);
   stop();
   assert.equal(bridge.handles("prerequisite"), false);
+});
+
+test("a cancelled prerequisite run aborts its signal and its late settlement is dropped", async () => {
+  const bridge = fakeBridge();
+  const effects = new Effects(bridge);
+  let signal;
+  let finish;
+  prerequisites(effects, {
+    upload: (_args, abort) => {
+      signal = abort;
+      return new Promise((resolve) => (finish = resolve));
+    },
+  });
+  bridge.effect("1", { kind: "prerequisite", key: "k", name: "upload", arguments: {} });
+  await settled();
+  assert.equal(signal.aborted, false);
+  bridge.cancel("1");
+  assert.equal(signal.aborted, true);
+  finish();
+  await settled();
+  assert.deepEqual(bridge.results, []);
 });
 
 test("reports reach onError: records as AxtonReports, errors with the runtime's message and status", async () => {

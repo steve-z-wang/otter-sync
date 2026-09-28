@@ -23,7 +23,10 @@ export type Opened = { clientId: string; schema: SchemaState };
 /** One effect's answer, as the runtime reads it. */
 export type EffectOutcome =
   | { ok: true; value?: unknown }
-  | { ok: false; error: { message: string; status?: number } };
+  | {
+      ok: false;
+      error: { message: string; status?: number; retry?: boolean };
+    };
 
 export type BridgeEventType =
   | "callCompleted"
@@ -201,9 +204,10 @@ export class Bridge {
   }
 
   /**
-   * Open a runtime. Its routing is installed before the runtime can answer;
-   * a failed open rejects with the engine message and detaches the runtime
-   * once it announced its end.
+   * Open a runtime. Its routing - and whatever `install` registers, such as
+   * effect executors - is in place before the runtime can answer; a failed
+   * open rejects with the engine message and detaches the runtime once it
+   * announced its end.
    */
   static async open(
     native: NativeCarrier,
@@ -213,12 +217,17 @@ export class Bridge {
       discardPending?: boolean;
       migration?: unknown;
       onStore?: Record<string, RawStoreHandler>;
+      /** The prerequisite names the host installs handlers for. */
+      prerequisiteHandlers?: string[];
     },
+    install?: (bridge: Bridge) => void,
   ): Promise<{ bridge: Bridge; opened: Opened }> {
     const bridge = new Bridge(native);
     const { onStore, ...wire } = request;
     // Capture names and function values before native open can publish work.
     bridge.#storeHandlers = new Map(Object.entries(onStore ?? {}));
+    // Effect executors the runtime may ask for from its first step.
+    install?.(bridge);
     const opened = bridge.#route<Opened>((requestId) => {
       bridge.#runtimeId = native.runtimeOpen(
         strictJson({

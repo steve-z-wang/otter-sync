@@ -29,6 +29,8 @@ export type {
 export {
   AdmissionRefused,
   AxtonReport,
+  PrerequisiteRetry,
+  type PrerequisiteHandler,
   type ReportDetails,
   type ReportKind,
 } from "./connection.mts";

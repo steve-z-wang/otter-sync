@@ -5,6 +5,7 @@ import {
   startConnection,
   type Connection,
   type ConnectionOptions,
+  type PrerequisiteHandler,
 } from "./connection.mts";
 export type { Connection, ConnectionOptions } from "./connection.mts";
 /** A rejection retained in the local inbox until dismissed. */
@@ -284,7 +285,6 @@ export function createClient<
   createServerConnection: (options: ServerOptions) => ServerConnection,
 ) {
   return class Client {
-    #tasks: Promise<void> | undefined;
     /** The live connection, and how to stop its effects without a task. */
     #connection: { handle: Connection; halt(): void } | undefined;
     /** Public transactions submitted and not yet settled. */
@@ -305,10 +305,10 @@ export function createClient<
     /** Load handles; the runtime owns every job and publishes its status. */
     readonly #loads: Loads;
     readonly clientId: string;
-    private constructor(bridge: Bridge, id: string) {
+    private constructor(bridge: Bridge, id: string, effects: Effects) {
       this.#bridge = bridge;
       this.clientId = id;
-      this.#effects = new Effects(bridge);
+      this.#effects = effects;
       this.#subscriptions = new Subscriptions(bridge, reportCallbackError);
       this.#loads = new Loads(
         {
@@ -380,8 +380,16 @@ export function createClient<
       /** Rebuild at once when the schema is incompatible, leaving unsent work in the old file. */
       discardPending?: boolean;
       onStore?: Record<string, StoreHook<Tx>>;
+      /**
+       * Prerequisite handlers by the schema's prerequisite name, fixed for
+       * the client's lifetime. The runtime runs one whenever a task of that
+       * name becomes pending - after a commit, at open, after a reset - and
+       * retries a {@link PrerequisiteRetry} with backoff.
+       */
+      prerequisites?: Record<string, PrerequisiteHandler>;
     }) {
-      const { onStore, ...wire } = options;
+      const { onStore, prerequisites: prerequisiteHandlers, ...wire } = options;
+      const required = { ...prerequisiteHandlers };
       let client!: Client;
       const handlers = Object.fromEntries(
         Object.entries(onStore ?? {}).map(([model, hook]) => [
@@ -399,11 +407,22 @@ export function createClient<
             ),
         ]),
       );
-      const { bridge, opened } = await Bridge.open(native, {
-        ...wire,
-        onStore: handlers,
-      });
-      client = new Client(bridge, opened.clientId);
+      let effects!: Effects;
+      const { bridge, opened } = await Bridge.open(
+        native,
+        {
+          ...wire,
+          onStore: handlers,
+          prerequisiteHandlers: Object.keys(required),
+        },
+        (bridge) => {
+          // Timers and prerequisite handlers are asked for from the first
+          // step, with or without a connection.
+          effects = new Effects(bridge);
+          prerequisites(effects, required);
+        },
+      );
+      client = new Client(bridge, opened.clientId, effects);
       return client;
     }
     /**
@@ -888,31 +907,6 @@ export function createClient<
         this.#connecting = false;
         finished();
       }
-    }
-    /**
-     * Run the prerequisite tasks the runtime picks for these handler names
-     * until none is left; it records each outcome. One run at a time.
-     */
-    runPrerequisites(
-      handlers: Record<string, (arguments_: RecordValue) => Promise<void>>,
-    ): Promise<void> {
-      // The prerequisite adapter is one handler slot per client: a concurrent
-      // call joins the running task instead of replacing its handlers.
-      try {
-        this.#guard();
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      if (this.#tasks) return this.#tasks;
-      const stop = prerequisites(this.#effects, handlers);
-      this.#tasks = this.#bridge
-        .task({ kind: "runPrerequisites", handlers: Object.keys(handlers) })
-        .then(() => undefined)
-        .finally(() => {
-          stop();
-          this.#tasks = undefined;
-        });
-      return this.#tasks;
     }
     /** Protocol seams for tests and tools; the connection never uses them. */
     freeze(): Promise<string | null> {

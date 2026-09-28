@@ -27,7 +27,11 @@ export type {
   HttpRoute,
   Transport,
 } from "../client-js/connection.mts";
-export { AdmissionRefused } from "../client-js/connection.mts";
+export {
+  AdmissionRefused,
+  PrerequisiteRetry,
+  type PrerequisiteHandler,
+} from "../client-js/connection.mts";
 export type { ServerOptions } from "../client-js/live.mts";
 export {
   LoadError,

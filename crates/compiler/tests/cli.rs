@@ -1224,7 +1224,7 @@ fn cli_sequence_paths_fixture_is_current() {
     let (root, input) = workspace("sequence-paths");
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures");
     fs::copy(
-        format!("{fixtures}/compiler/sequence-paths.model"),
+        format!("{fixtures}/schemas/sequence-paths.model"),
         input.join("sequence-paths.model"),
     )
     .unwrap();
@@ -1237,7 +1237,7 @@ fn cli_sequence_paths_fixture_is_current() {
     assert_eq!(
         fs::read_to_string(out.join("schema.json")).unwrap(),
         fs::read_to_string(format!("{fixtures}/schemas/sequence-paths.json")).unwrap(),
-        "regenerate fixtures/schemas/sequence-paths.json from fixtures/compiler/sequence-paths.model"
+        "regenerate fixtures/schemas/sequence-paths.json from fixtures/schemas/sequence-paths.model"
     );
     fs::remove_dir_all(root).unwrap();
 }

@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
 export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
@@ -18,7 +18,7 @@ class Note implements NoteCreateInput {
  const Note({required this.id,required this.at,required this.mood,required this.label});
  Map<String,dynamic> toRecord() => {
  'id': id,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'mood': mood.name,
  'label': label == null ? null : label!,
  };
@@ -48,7 +48,7 @@ class NotePatch {
  final Present<String?>? label;
  const NotePatch({this.at,this.mood,this.label});
  Map<String,dynamic> toRecord() => {
- if (at != null) 'at': at!.value.toUtc().toIso8601String(),
+ if (at != null) 'at': at!.value.toAxtonPrecision().toIso8601String(),
  if (mood != null) 'mood': mood!.value.name,
  if (label != null) 'label': label!.value == null ? null : label!.value!,
  };
@@ -62,7 +62,7 @@ class NoteCreate implements NoteCreateInput {
  @override
  Map<String,dynamic> toCreateRecord() => {
  'id': id,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'mood': mood.name,
  'label': label == null ? null : label!,
  };
@@ -75,7 +75,7 @@ class NoteFilter {
  const NoteFilter({this.id,this.at,this.mood,this.label});
  Map<String,dynamic> toRecord()=>{
  if(id!=null)'id':id!.value,
- if(at!=null)'at':at!.value.toUtc().toIso8601String(),
+ if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),
  if(mood!=null)'mood':mood!.value.name,
  if(label!=null)'label':label!.value == null ? null : label!.value!,
 };
@@ -228,7 +228,7 @@ abstract interface class QueryNowHandlers<Ctx> {
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
- if (value is DateTime) return value.toUtc().toIso8601String();
+ if (value is DateTime) return value.toAxtonPrecision().toIso8601String();
  if (value is Enum) return value.name;
  if (value is List) return value.map(_dartActionEncode).toList();
  if (value is _DartActionRecord) return value.toRecord();
@@ -313,14 +313,14 @@ class QueryInvalidations {
 class Loads {
  final Client client; Loads(this.client);
  late final LoadInvalidations invalidate = LoadInvalidations(client);
- Future<Load> notesSince({required DateTime? since, required List<Mood> moods, bool once = false, bool refresh = false}) => client.startLoad('NotesSince', 1, {'since': since == null ? null : since.toUtc().toIso8601String(), 'moods': moods.map((e) => e.name).toList()}, once: once, refresh: refresh);
+ Future<Load> notesSince({required DateTime? since, required List<Mood> moods, bool once = false, bool refresh = false}) => client.startLoad('NotesSince', 1, {'since': since == null ? null : since.toAxtonPrecision().toIso8601String(), 'moods': moods.map((e) => e.name).toList()}, once: once, refresh: refresh);
  Future<Load?> get(String id) => client.getLoad(id);
  Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);
 }
 /// Removes the once registrations of one Load argument set across its retained versions, offline; no job is cancelled and no Model deleted.
 class LoadInvalidations {
  final Client client; LoadInvalidations(this.client);
- Future<void> notesSince({required DateTime? since, required List<Mood> moods}) => client.invalidateLoad('NotesSince', {'since': since == null ? null : since.toUtc().toIso8601String(), 'moods': moods.map((e) => e.name).toList()});
+ Future<void> notesSince({required DateTime? since, required List<Mood> moods}) => client.invalidateLoad('NotesSince', {'since': since == null ? null : since.toAxtonPrecision().toIso8601String(), 'moods': moods.map((e) => e.name).toList()});
 }
 class LiveModels { final Client port; LiveModels(this.port);
  late final NoteLiveModel note = NoteLiveModel(port);

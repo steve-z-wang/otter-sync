@@ -241,7 +241,7 @@ fn dart_create_inputs_distinguish_omission_from_explicit_null() {
         " final int rank;",
         " const TodoCreate({this.id,this.title,this.status,this.createdAt,this.note,required this.memo,required this.rank});",
         " if (id != null) 'id': id!,",
-        " if (createdAt != null) 'createdAt': createdAt!.toUtc().toIso8601String(),",
+        " if (createdAt != null) 'createdAt': createdAt!.toAxtonPrecision().toIso8601String(),",
         " if (note != null) 'note': note!.value == null ? null : note!.value!,",
         " 'memo': memo == null ? null : memo!,",
         " 'rank': rank,",

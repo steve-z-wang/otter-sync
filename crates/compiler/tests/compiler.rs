@@ -2204,3 +2204,128 @@ fn model_fetch_helper_names_are_reserved_only_beside_models() {
     // An operation keeps its own `{Name}Options`; Fetch options are inline.
     compile("model Todo { id String @@id(id) } query Fetch() { value String }").unwrap();
 }
+
+/// #179: the prior side of a sequence argument may follow references from the
+/// prior act's slot; a list slot means any of its elements.
+const PRIOR_PATH: &str = "model Space { id String members Member[] @@id(id) }
+model Member { spaceId String userId String space Space @reference(via: [spaceId]) @@id(spaceId, userId) }
+model Request { id String spaceId String space Space @reference(via: [spaceId]) @@id(id) }
+mutation AddCoAuthors(members Member.create[])
+mutation RemoveCoAuthor(membership Member.delete)
+@sequence(after: [AddCoAuthors(members.space: request.space)])
+mutation Propose(request Request.create)
+@sequence(after: [RemoveCoAuthor(membership.space: space), AddCoAuthors(members.space: space)])
+mutation DeleteSpace(space Space.delete)
+mutation Join { member Member.create }
+mutation Ask {
+ request Request.create
+ @@sequence(after: [Join(member.space: request.space)])
+}";
+
+#[test]
+fn sequence_prior_side_may_be_a_relation_path_into_a_prior_slot() {
+    let valid = validate(&parse(PRIOR_PATH).unwrap()).unwrap();
+    let propose = valid.actions.iter().find(|a| a.name == "Propose").unwrap();
+    let binding = &propose.sequence.as_ref().unwrap().after[0].bindings[0];
+    assert_eq!(
+        (
+            binding.slot.as_str(),
+            binding.relations.as_slice(),
+            binding.path.as_slice()
+        ),
+        (
+            "members",
+            &["space".to_string()][..],
+            &["request".to_string(), "space".to_string()][..]
+        )
+    );
+    let descriptor = compile(PRIOR_PATH).unwrap();
+    let action = |name: &str| {
+        descriptor["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        action("Propose")["sequence"],
+        serde_json::json!({"after":[{"name":"AddCoAuthors","arguments":{"members.space":"request.space"}}]})
+    );
+    assert_eq!(
+        action("DeleteSpace")["sequence"],
+        serde_json::json!({"after":[
+            {"name":"RemoveCoAuthor","arguments":{"membership.space":"space"}},
+            {"name":"AddCoAuthors","arguments":{"members.space":"space"}},
+        ]})
+    );
+    let ask = descriptor["mutations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == "Ask")
+        .unwrap();
+    assert_eq!(
+        ask["sequence"],
+        serde_json::json!({"after":[{"name":"Join","arguments":{"member.space":"request.space"}}]})
+    );
+}
+
+#[test]
+fn sequence_prior_paths_that_do_not_resolve_are_refused_at_the_directive() {
+    let models = "model Space { id String members Member[] @@id(id) }
+model Member { spaceId String userId String space Space @reference(via: [spaceId]) @@id(spaceId, userId) }
+model Request { id String spaceId String space Space @reference(via: [spaceId]) @@id(id) }
+mutation AddCoAuthors(members Member.create[])
+mutation Join { member Member.create }
+";
+    for (sequence, needles) in [
+        (
+            "@sequence(after: [AddCoAuthors(nobody.space: request.space)])\nmutation Propose(request Request.create)",
+            &["unknown sequence target slot nobody"][..],
+        ),
+        (
+            "@sequence(after: [AddCoAuthors(members.spaceId: request.space)])\nmutation Propose(request Request.create)",
+            &["spaceId", "Member", "not a relation"],
+        ),
+        (
+            "@sequence(after: [AddCoAuthors(members.nope: request.space)])\nmutation Propose(request Request.create)",
+            &["unknown sequence relation path nope", "Member"],
+        ),
+        (
+            "@sequence(after: [AddCoAuthors(members.space.members: request.space)])\nmutation Propose(request Request.create)",
+            &["unknown sequence relation path members", "Space"],
+        ),
+        (
+            "@sequence(after: [AddCoAuthors(members.space: request)])\nmutation Propose(request Request.create)",
+            &[
+                "sequence target model mismatch for members.space",
+                "Space",
+                "Request",
+            ],
+        ),
+        (
+            "@sequence(after: [AddCoAuthors(members.space: request.spaceId)])\nmutation Propose(request Request.create)",
+            &["spaceId", "Request", "not a relation"],
+        ),
+        (
+            "mutation Ask {\n request Request.create\n @@sequence(after: [Join(member.user: request.space)])\n}",
+            &["8:2:", "unknown sequence relation path user", "Member"],
+        ),
+        (
+            "mutation Ask {\n request Request.create\n @@sequence(after: [Join(member.space: request)])\n}",
+            &["8:2:", "sequence target model mismatch for member.space"],
+        ),
+    ] {
+        let source = format!("{models}{sequence}");
+        let err = validate(&parse(&source).unwrap()).unwrap_err();
+        assert!(
+            err.starts_with("6:1:") || err.starts_with("8:2:"),
+            "{sequence}: {err}"
+        );
+        for needle in needles {
+            assert!(err.contains(needle), "{sequence}: {err}");
+        }
+    }
+}

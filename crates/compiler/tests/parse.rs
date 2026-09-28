@@ -483,3 +483,18 @@ fn default_keeps_its_expression_kind_and_position() {
         "@default is not a relation attribute"
     );
 }
+
+#[test]
+fn sequence_argument_names_may_be_relation_paths() {
+    let d = parse("@sequence(after: [Add(members.space: request.space, other: request)])\nmutation Propose(request Request.create)").unwrap();
+    let call = &d.actions[0].sequence.as_ref().unwrap().arguments["after"][0];
+    assert_eq!(call["arguments"]["members.space"], "request.space");
+    assert_eq!(call["arguments"]["other"], "request");
+    for (source, message) in [(
+        "@sequence(after: [Add(members.space request)]) mutation A()",
+        "1:37: expected ,",
+    )] {
+        let error = parse(source).unwrap_err();
+        assert!(error.starts_with(message), "{source}: {error}");
+    }
+}

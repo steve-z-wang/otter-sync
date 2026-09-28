@@ -300,12 +300,95 @@ pub struct SequenceCall {
     pub mutation: String,
     pub bindings: Vec<SequenceBinding>,
 }
-/// The target mutation's `slot` receives the record at `path`: a slot of the
-/// declaring mutation followed by relation names.
+/// `slot.relations…: path`: the record the target mutation's `slot` holds,
+/// followed through `relations` (for a list slot, any element's), is the
+/// record at `path`, a slot of the declaring mutation followed by relation
+/// names. Relations are references, never inverses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SequenceBinding {
     pub slot: String,
+    pub relations: Vec<String>,
     pub path: Vec<String>,
+}
+
+/// One `@sequence` argument, `slot.relations…: sourceSlot.relations…`: each
+/// side follows references from its slot's model, and both must reach the
+/// same model. Errors point at the directive.
+fn sequence_binding(
+    models: &[Model],
+    target: &[&Slot],
+    source: &[&Slot],
+    key: &str,
+    expression: &Value,
+    pos: Pos,
+) -> Result<SequenceBinding, String> {
+    let mut relations: Vec<String> = key.split('.').map(str::to_string).collect();
+    let slot = relations.remove(0);
+    let target_slot = target
+        .iter()
+        .find(|s| s.name == slot)
+        .ok_or_else(|| at(pos, format!("unknown sequence target slot {slot}")))?;
+    let path: Vec<String> = expression
+        .as_str()
+        .ok_or_else(|| at(pos, "sequence requires slot path"))?
+        .split('.')
+        .map(str::to_string)
+        .collect();
+    let source_slot = source
+        .iter()
+        .find(|s| s.name == path[0])
+        .ok_or_else(|| at(pos, format!("unknown sequence source slot {}", path[0])))?;
+    let prior = sequence_path(models, &target_slot.model, &relations, pos)?;
+    let current = sequence_path(models, &source_slot.model, &path[1..], pos)?;
+    if prior != current {
+        return Err(at(
+            pos,
+            format!(
+                "sequence target model mismatch for {key}: it reaches {prior}, {} reaches {current}",
+                path.join(".")
+            ),
+        ));
+    }
+    Ok(SequenceBinding {
+        slot,
+        relations,
+        path,
+    })
+}
+
+/// The model reached from `start` through the references `relations`. A
+/// segment that is a stored field, an inverse or unknown is refused.
+fn sequence_path(
+    models: &[Model],
+    start: &str,
+    relations: &[String],
+    pos: Pos,
+) -> Result<String, String> {
+    let mut current = start;
+    for part in relations {
+        let model = models
+            .iter()
+            .find(|m| m.name == current)
+            .ok_or_else(|| at(pos, format!("unknown sequence model {current}")))?;
+        let Some(relation) = model.relations.iter().find(|r| r.name == *part) else {
+            return Err(if model.fields.iter().any(|f| f.name == *part) {
+                at(
+                    pos,
+                    format!(
+                        "sequence path segment {part} of {} is a field, not a relation",
+                        model.name
+                    ),
+                )
+            } else {
+                at(
+                    pos,
+                    format!("unknown sequence relation path {part} on {}", model.name),
+                )
+            });
+        };
+        current = &relation.target;
+    }
+    Ok(current.to_string())
 }
 
 fn is_model<'a>(d: &'a Declarations, name: &str) -> Option<&'a ModelDecl> {
@@ -1251,46 +1334,23 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                 .as_object()
                 .ok_or_else(|| at(qpos, "sequence requires invocation"))?;
             let mut bindings = vec![];
-            for (slot, expression) in args {
-                let target_slot = target
-                    .slots
-                    .iter()
-                    .find(|x| x.name == *slot)
-                    .ok_or_else(|| at(qpos, "unknown sequence target slot"))?;
-                let path: Vec<String> = expression
-                    .as_str()
-                    .ok_or_else(|| at(qpos, "sequence requires slot path"))?
-                    .split('.')
-                    .map(str::to_string)
-                    .collect();
-                let source_slot = m
-                    .slots
-                    .iter()
-                    .find(|x| x.name == path[0])
-                    .ok_or_else(|| at(qpos, "unknown sequence source slot"))?;
-                let source_pos = decl.slots[m
-                    .slots
-                    .iter()
-                    .position(|x| x.name == source_slot.name)
-                    .unwrap()]
-                .pos;
-                let mut current = model(&source_slot.model)
-                    .ok_or_else(|| at(source_pos, "unknown mutation model"))?;
-                for part in &path[1..] {
-                    let relation = current
-                        .relations
-                        .iter()
-                        .find(|r| r.name == *part)
-                        .ok_or_else(|| at(qpos, "unknown sequence relation path"))?;
-                    current = model(&relation.target).unwrap();
+            let target_slots: Vec<&Slot> = target.slots.iter().collect();
+            let source_slots: Vec<&Slot> = m.slots.iter().collect();
+            for (key, expression) in args {
+                // A source slot of an undeclared model is reported at the slot.
+                let source = expression.as_str().and_then(|p| p.split('.').next());
+                if let Some(i) = m.slots.iter().position(|x| Some(x.name.as_str()) == source) {
+                    model(&m.slots[i].model)
+                        .ok_or_else(|| at(decl.slots[i].pos, "unknown mutation model"))?;
                 }
-                if current.name != target_slot.model {
-                    return Err(at(qpos, "sequence target model mismatch"));
-                }
-                bindings.push(SequenceBinding {
-                    slot: slot.clone(),
-                    path,
-                });
+                bindings.push(sequence_binding(
+                    &models,
+                    &target_slots,
+                    &source_slots,
+                    key,
+                    expression,
+                    qpos,
+                )?);
             }
             calls.push(SequenceCall {
                 mutation: target.name.clone(),
@@ -1470,50 +1530,26 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                 .as_object()
                 .ok_or_else(|| at(qpos, "sequence requires invocation"))?;
             let mut bindings = vec![];
-            for (slot_name, expression) in args {
-                let target_slot = target
-                    .inputs
+            let model_slots = |inputs: &'_ [ActionInput]| -> Vec<Slot> {
+                inputs
                     .iter()
-                    .find_map(|input| match input {
-                        ActionInput::Model { slot } if slot.name == *slot_name => Some(slot),
-                        _ => None,
+                    .filter_map(|input| match input {
+                        ActionInput::Model { slot } => Some(slot.clone()),
+                        ActionInput::Value { .. } => None,
                     })
-                    .ok_or_else(|| at(qpos, format!("unknown sequence target slot {slot_name}")))?;
-                let path: Vec<String> = expression
-                    .as_str()
-                    .ok_or_else(|| at(qpos, "sequence requires slot path"))?
-                    .split('.')
-                    .map(str::to_string)
-                    .collect();
-                let source_slot = actions[i]
-                    .inputs
-                    .iter()
-                    .find_map(|input| match input {
-                        ActionInput::Model { slot } if slot.name == path[0] => Some(slot),
-                        _ => None,
-                    })
-                    .ok_or_else(|| at(qpos, format!("unknown sequence source slot {}", path[0])))?;
-                let mut current = model(&source_slot.model).unwrap();
-                for part in &path[1..] {
-                    let relation = current
-                        .relations
-                        .iter()
-                        .find(|r| r.name == *part)
-                        .ok_or_else(|| {
-                            at(qpos, format!("unknown sequence relation path {part}"))
-                        })?;
-                    current = model(&relation.target).unwrap();
-                }
-                if current.name != target_slot.model {
-                    return Err(at(
-                        qpos,
-                        format!("sequence target model mismatch for {slot_name}"),
-                    ));
-                }
-                bindings.push(SequenceBinding {
-                    slot: slot_name.clone(),
-                    path,
-                });
+                    .collect()
+            };
+            let (target_slots, source_slots) =
+                (model_slots(&target.inputs), model_slots(&actions[i].inputs));
+            for (key, expression) in args {
+                bindings.push(sequence_binding(
+                    &models,
+                    &target_slots.iter().collect::<Vec<_>>(),
+                    &source_slots.iter().collect::<Vec<_>>(),
+                    key,
+                    expression,
+                    qpos,
+                )?);
             }
             calls.push(SequenceCall {
                 mutation: target.name.clone(),

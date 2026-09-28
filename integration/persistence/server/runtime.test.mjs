@@ -968,6 +968,20 @@ test('backend.publish refuses a transaction the framework already owns',async()=
  await assert.rejects(()=>backend.transaction(async({tx})=>{await backend.publish(tx,({touch})=>{touch.task({id:'owned-nested'});});}),/already/);
  assert.equal(await recordStamp('owned-nested'),null);
 });
+test('a throw inside the backend.publish body settles nothing and releases the caller transaction for a later publication',async()=>{
+ const before=await head('owned');const refused=new Error('body refused');
+ const wake=await owned(async tx=>{
+  await write(tx,'owned-body-throw','kept business row');
+  await assert.rejects(()=>backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-body-throw'});channel('owned').task.add({id:'owned-body-throw'});throw refused;}),error=>error===refused,'the body error is the original one');
+  await assert.rejects(()=>backend.publish(tx,({channel})=>{channel(' ').task.add({id:'owned-body-throw'});}),/nonblank/,'a refused declaration rejects the same way');
+  return backend.publish(tx,({touch})=>{touch.task({id:'owned-body-throw'});});
+ });
+ wake();
+ assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-body-throw'"))[0].count,1n,'the caller write commits');
+ assert.equal(await recordStamp('owned-body-throw'),1,'only the later publication stamps the record');
+ assert.deepEqual(await members('owned-body-throw'),[],'the failed body enrolled nothing');
+ assert.deepEqual(await invalidations('owned-body-throw'),[]);assert.equal(await head('owned'),before);
+});
 test('re-adding an unchanged member keeps its stamp and publishes nothing; a later touch reaches its Channel without another add',async()=>{
  await external(backend,'shared',[{model:'Task',identity:{id:'stamp-probe'}}]);
  const stampOf=()=>recordStamp('stamp-probe');

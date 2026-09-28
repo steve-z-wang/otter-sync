@@ -31,6 +31,7 @@ export 'src/connection.dart'
     show
         RuntimeConnection,
         AuthenticationExpired,
+        AdmissionRefused,
         ActionTransportException,
         AxtonReport,
         StoreHookFailure;

@@ -262,12 +262,16 @@ class Effect {
   /// One result of a socket stream; the stream goes on.
   void emit(Object value) => _send({'ok': true, 'value': value});
 
-  /// The effect failed, with the HTTP [status] the failure carried, if any.
-  /// It ends a socket stream too.
-  void fail(String message, {int? status}) {
+  /// The effect failed, with the HTTP [status] the failure carried, if any,
+  /// and the body of an admission [refusal]. It ends a socket stream too.
+  void fail(String message, {int? status, String? refusal}) {
     _send({
       'ok': false,
-      'error': {'message': message, if (status != null) 'status': status},
+      'error': {
+        'message': message,
+        if (status != null) 'status': status,
+        if (refusal != null) 'refusal': refusal,
+      },
     });
     _finish();
   }

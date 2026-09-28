@@ -166,17 +166,20 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.prerequisites.backoff.remove(key);
         self.prerequisites.dirty = true;
     }
-    /// The backoff timer fired: tasks whose delay passed may run.
+    /// The backoff timer fired: every task due by then may run. The host's
+    /// timer is the clock of record, so a timer that fires a little ahead of
+    /// the runtime's own clock is not waited for again.
     pub(super) fn prerequisite_timer_fired(&mut self, effect_id: &str) {
-        if self
-            .prerequisites
-            .timer
-            .as_ref()
-            .is_some_and(|(timer, _)| timer == effect_id)
-        {
-            self.prerequisites.timer = None;
-            self.prerequisites.dirty = true;
+        let state = &mut self.prerequisites;
+        let Some((_, fired)) = state.timer.take_if(|(timer, _)| timer == effect_id) else {
+            return;
+        };
+        for backoff in state.backoff.values_mut() {
+            if backoff.due <= fired {
+                backoff.due = 0;
+            }
         }
+        state.dirty = true;
     }
     /// Keep one timer, for the earliest task that still waits.
     fn arm_prerequisite_timer(&mut self, now: u64) {

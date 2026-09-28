@@ -473,3 +473,19 @@ fn every_outcome_wakes_the_push_lane() {
     h.run();
     assert_eq!(pushes(&h), 1, "the success released the mutation");
 }
+
+#[test]
+fn the_host_timer_is_the_clock_of_record_for_a_retry() {
+    let mut h = Host::new(&["RemoteBlob"]);
+    h.attach("asset");
+    h.run();
+    let (effect, _) = h.one("prerequisite");
+    h.fail(&effect, "offline", true);
+    h.run();
+    let (timer, _) = h.one("timer");
+    // The timer fires before the runtime's clock reaches the due time.
+    h.succeed(&timer);
+    h.run();
+    assert!(h.outstanding("timer").is_empty(), "not waited for again");
+    h.one("prerequisite");
+}

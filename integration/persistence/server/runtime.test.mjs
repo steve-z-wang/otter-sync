@@ -5,6 +5,7 @@ import {createRequire} from 'node:module';
 import * as serverSdk from '../../../packages/server/index.mts';
 import {createBackend,MutationRejected,EngineError} from '../../../packages/server/index.mts';
 import {prisma,prismaDriver} from '../../../packages/postgres/index.mts';
+import {isRetryableTransactionError} from '../../../packages/server/retryable.mts';
 const require=createRequire(import.meta.url);
 const {PrismaClient}=require('../../bindings/node/generated/client');
 const native=require('../../../bindings/node/axton-node.node');
@@ -971,4 +972,15 @@ test('the pull route dispatches by mode over HTTP and refuses any other mode',as
  // The same dispatch through the direct backend call, with no HTTP in between.
  await assert.rejects(()=>backend.pull('alice',JSON.stringify({mode:'snapshot',channel:'route',models:{Task:1},after:0,until:origin})),/mode/);
  await assert.rejects(()=>bootstrap('route',2,1),/request.invalid|origin/);
+});
+// #183: Prisma 7 driver adapters report a raw query's serialization conflict
+// as P2010 with the adapter's error under meta.driverAdapterError and no
+// meta.code; the classifier must still see a retryable conflict.
+test('a Prisma 7 driver-adapter write conflict is retryable; other adapter errors are not',()=>{
+ const adapter=cause=>Object.assign(new Error('Raw query failed'),{code:'P2010',meta:{driverAdapterError:{name:'DriverAdapterError',cause}}});
+ assert.equal(isRetryableTransactionError(adapter({kind:'TransactionWriteConflict'})),true);
+ assert.equal(isRetryableTransactionError(adapter({kind:'postgres',code:'40001'})),true);
+ assert.equal(isRetryableTransactionError(adapter({kind:'postgres',code:'40P01'})),true);
+ assert.equal(isRetryableTransactionError(adapter({kind:'UniqueConstraintViolation'})),false);
+ assert.equal(isRetryableTransactionError(adapter({kind:'postgres',code:'23505'})),false);
 });

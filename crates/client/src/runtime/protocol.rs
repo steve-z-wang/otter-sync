@@ -554,6 +554,7 @@ impl EffectOutcome {
             error: Some(EffectError {
                 message: message.into(),
                 status,
+                refusal: None,
             }),
         }
     }
@@ -562,13 +563,18 @@ impl EffectOutcome {
 /// Why an effect failed, as the host saw it. `status` is the HTTP status the
 /// failure carried, when it had one: the runtime tells a refusal the server
 /// decided from a transport failure by it, and a 401 is what asks for a
-/// credential refresh.
+/// credential refresh. `refusal` is the response body of an answer the server
+/// marked as an admission refusal (`axton-admission: refused`,
+/// [Protocol / Common](../../../../docs/engineering/architecture/protocol/common.md));
+/// with a `status`, it ends the connection instead of failing one request.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectError {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
 }
 
 /// The `value` of a socket effect's results: the stream of one socket
@@ -804,6 +810,16 @@ pub enum Diagnostic {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<u16>,
     },
+    /// The server refused this client's admission: its answer to a push,
+    /// pull, direct call, Load batch or socket upgrade carried the admission
+    /// marker. The connection has stopped - nothing is retried and no
+    /// credential refresh is asked for - and this is reported once for it.
+    /// `body` is the refusal's JSON body, or its text when it is not JSON.
+    Refused {
+        message: String,
+        status: u16,
+        body: Value,
+    },
     /// The SDK violated the bridge contract: a malformed envelope or a
     /// duplicate active request id. Nothing executed for it.
     Protocol { message: String },
@@ -834,6 +850,7 @@ mod tests {
             json!({"type":"callbackResult","effectId":"5","transactionId":"tx7","ok":false,"error":"boom"}),
             json!({"type":"effectResult","effectId":"101","outcome":{"ok":true,"value":{"event":"message","body":"{}"}}}),
             json!({"type":"effectResult","effectId":"102","outcome":{"ok":false,"error":{"message":"pull failed","status":401}}}),
+            json!({"type":"effectResult","effectId":"103","outcome":{"ok":false,"error":{"message":"push refused","status":426,"refusal":"{\"minimumBuild\":7}"}}}),
             json!({"type":"close"}),
         ];
         for wire in inputs {
@@ -952,6 +969,16 @@ mod tests {
                     diagnostic: Diagnostic::Error {
                         message: "HTTP 503".into(),
                         status: Some(503),
+                    },
+                },
+            ),
+            (
+                json!({"type":"report","diagnostic":{"kind":"refused","message":"push refused","status":426,"body":{"minimumBuild":7}}}),
+                Event::Report {
+                    diagnostic: Diagnostic::Refused {
+                        message: "push refused".into(),
+                        status: 426,
+                        body: json!({"minimumBuild":7}),
                     },
                 },
             ),

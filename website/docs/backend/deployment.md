@@ -32,7 +32,7 @@ The proxy must do three things:
 
 1. **Forward the POST routes** (`/sync/mutations`, `/sync/actions`, `/sync/fetch`, `/sync/loads` and `/sync/pull`) to the loopback listener unchanged, including the request body. The body limit is enforced by the backend; a stricter limit at the proxy is fine.
 2. **Pass the WebSocket upgrade through** on `/sync/live`. The upgrade is an HTTP `GET` with `Upgrade: websocket`; the proxy has to forward that request and then relay bytes in both directions until either side closes. Set the proxy's idle timeout for this route long enough for a quiet subscription: the backend sends nothing while no record changes.
-3. **Preserve the `Authorization` header** on every request and on the upgrade. Both SDKs send `Authorization: Bearer <token>`, and `authenticate` reads it from the forwarded request. A proxy that strips or replaces it makes every request `401` and refuses every upgrade.
+3. **Preserve the `Authorization` header** on every request and on the upgrade. Both SDKs send `Authorization: Bearer <token>`, and `authenticate` reads it from the forwarded request. A proxy that strips or replaces it makes every request `401` and refuses every upgrade. The same goes for any `headers` your clients send for [`admit`](api.md#admission), and for the `axton-admission` response header on the way back: without it a refusal is an ordinary error that clients retry.
 
 A minimal nginx location that meets these requirements:
 

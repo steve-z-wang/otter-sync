@@ -816,6 +816,7 @@ fn validate_load(
 /// runtime packages they import, declare. A model or enum with one of these
 /// names would collide with them in the generated file.
 const GENERATED_NAMES: &[&str] = &[
+    "AdmissionRefused",
     "BootstrapError",
     "BootstrapFailedException",
     "BootstrapPhase",

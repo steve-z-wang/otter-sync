@@ -529,7 +529,9 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
         break;
       case "report":
         assert.ok(
-          ["records", "error", "protocol"].includes(event.diagnostic.kind),
+          ["records", "error", "protocol", "refused"].includes(
+            event.diagnostic.kind,
+          ),
         );
         break;
       case "runtimeClosed":
@@ -627,7 +629,7 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
     "transactionCallState",
     "transactionCallState",
     ...Array(5).fill("observerChanged"),
-    ...Array(4).fill("report"),
+    ...Array(5).fill("report"),
   ]);
   assert.deepEqual(handled, [["7", 250]]);
   const answered = submitted.filter((input) => input.type !== "callbackResult");

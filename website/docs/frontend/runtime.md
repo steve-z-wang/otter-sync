@@ -140,9 +140,12 @@ Pass `server` when opening the generated client, or call `client.connect` after 
 
     ```ts
     const connection = await client.connect(
-      { url: backendUrl, token: () => accessToken },
+      { url: backendUrl, token: () => accessToken, headers: { 'x-app-build': '42' } },
       {
-        onError: error => console.error(error),
+        onError: error => {
+          if (error instanceof AdmissionRefused) console.warn('update required', error.body);
+          else console.error(error);
+        },
         refreshAuth: async () => { accessToken = await renewAccessToken(); },
       },
     );
@@ -152,8 +155,18 @@ Pass `server` when opening the generated client, or call `client.connect` after 
 
     ```dart
     final connection = await client.connect(
-      SyncServer(url: backendUrl, token: () => accessToken),
-      onError: (error) => print(error),
+      SyncServer(
+        url: backendUrl,
+        token: () => accessToken,
+        headers: {'x-app-build': '42'},
+      ),
+      onError: (error) {
+        if (error is AdmissionRefused) {
+          print('update required: ${error.body}');
+        } else {
+          print(error);
+        }
+      },
       refreshAuth: () async { accessToken = await renewAccessToken(); },
     );
     ```
@@ -162,11 +175,14 @@ Pass `server` when opening the generated client, or call `client.connect` after 
 | --- | --- | --- |
 | `url` | HTTP or HTTPS backend base URL | HTTP or HTTPS backend base URL |
 | `token` | String or function returning a string/promise | Function returning a string/future |
+| `headers` | Optional `Record<string, string>` | Optional `Map<String, String>` |
 | `onError` | `(error: unknown) => void`, in connection options | Named callback on `connect` / `open` |
 | `refreshAuth` | `() => Promise<void>`, in connection options | Named async callback on `connect` / `open` |
 | Direct timeout | `connection.directTimeoutMs` on `open`, or `directTimeoutMs` on `connect`: integer milliseconds, 1–2,147,483,647; default 30,000 | `directTimeout` on `open` / `connect`: positive `Duration`; default 30 seconds |
 
 Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A platform host build (such as the Node and React Native packages) supplies the HTTP carrier; `open` and `connect` take no carrier. Such a TypeScript carrier implements `Transport`: it receives an `HttpRoute` (`push`, `pull`, `action`, `fetch` or `load`) and the request body, and the built-in carrier posts them to `/sync/mutations`, `/sync/pull`, `/sync/actions`, `/sync/fetch` and `/sync/loads`, and refuses any other route. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
+
+`headers` travel with every request and the WebSocket upgrade, for example your app's platform and build so the backend's [`admit`](../backend/api.md#admission) can turn away an outdated release. Headers AXTON sets itself (`Authorization`, `Content-Type`, the WebSocket handshake) are refused when you connect. If the backend refuses the client, `onError` receives one `AdmissionRefused` carrying the `status` and `body` the backend chose, and the connection stops: nothing is retried, `refreshAuth` is not called, and local reads and writes go on. Queued work waits; connect again (for example after an update, with new `headers`) to resume. On React Native a refused WebSocket upgrade is not visible, so the refusal arrives with the first HTTP request instead.
 
 ### Catch-up and live updates
 

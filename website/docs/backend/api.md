@@ -39,7 +39,7 @@ The generated `Options<Tx>` requires:
 | `loaders: Loaders<Tx>` | Implement the read function for each supported model version |
 | `loads: Loads<Tx>` | Implement the page handler of each retained Load version ([Load handlers](#load-handlers)) |
 
-`mutations`, `queries` or `loads` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
+`mutations`, `queries` or `loads` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
 
 ## What your backend owns
 
@@ -229,6 +229,20 @@ A change allocates one **stamp** per record; delivering it allocates a **cursor*
 
 `devAuth(): Authenticate` treats `Authorization: Bearer <userId>` as the identity without verification. It is provided for local development, not production authentication. See [authentication and account changes](../frontend/sync.md#authentication-and-account-changes).
 
+## Admission
+
+`admit?: Admit` decides whether a client may use the listener at all, for example to turn away app builds below your supported floor. It receives Node's `IncomingMessage`, including the `headers` the client was configured with ([server connection](../frontend/runtime.md#server-connection)), and the user ID `authenticate` returned, or `null` when there is none. Return `null` or `undefined` to admit, or an `AdmissionRefusal` `{ status, body }` to refuse:
+
+```ts
+const minimumBuild = 42; // your supported floor
+const admit: Options<Prisma.TransactionClient>['admit'] = (request) => {
+  const build = Number(request.headers['x-app-build']);
+  return build < minimumBuild ? { status: 426, body: { minimumBuild } } : null;
+};
+```
+
+It runs on every listener route and the WebSocket upgrade, after `authenticate` and before anything else, so a refusal wins over `401`. The response has your `status` (400-599), your JSON `body` and the header `axton-admission: refused`; the client SDKs stop the connection and hand `onError` one `AdmissionRefused` instead of retrying. A hook that throws, or returns anything else, is a server error: `500 { code: "server" }`, and the error goes to `onError`. `admit` is optional; without it every authenticated request is admitted.
+
 ## Errors
 
 | Interface | Use |
@@ -248,6 +262,7 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
+| (your `admit` refusal) | Your status, with `axton-admission: refused` | Your JSON body ([Admission](#admission)) |
 | `request.invalid` | 400 | Malformed body, or a pull cursor ahead of the channel head |
 | `client.owner_mismatch` | 403 | The client identity belongs to another user |
 | `gap`, `overlap` | 409 | The batch sequence is not the next one and not a retry of the last |

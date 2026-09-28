@@ -34,7 +34,7 @@ Both examples open local storage. To start background sync, supply `server` as s
 | Option | Required | Behavior |
 | --- | --- | --- |
 | `path` | Yes | SQLite file to create or reopen. The application selects a writable directory. Use a separate file per signed-in user. |
-| `server` | No | Backend URL and credentials: `ServerOptions` in TypeScript, `SyncServer` in Dart. AXTON manages durable and direct Mutation and Query requests, HTTP catch-up and WebSocket updates. |
+| `server` | No | Backend URL, credentials and optional `headers` sent with every request ([server connection](runtime.md#server-connection)): `ServerOptions` in TypeScript, `SyncServer` in Dart. AXTON manages durable and direct Mutation and Query requests, HTTP catch-up and WebSocket updates. |
 | `onStore` | No | Per-Model callbacks for incoming server authority, run inside its local storage transaction before the authority is stored. |
 | `connection` (TypeScript) | No | `onError`, `refreshAuth` and `directTimeoutMs` for the connection. `onError` also receives an `AxtonReport` for each record AXTON could not apply ([Sync](sync.md#recover-from-connection-failures)). |
 | `onError`, `refreshAuth`, `directTimeout` (Dart) | No | Callbacks and a `Duration` for direct requests, passed to `open`. |

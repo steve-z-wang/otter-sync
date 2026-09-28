@@ -612,6 +612,15 @@ fn generated_clients_expose_one_server_connection() {
     let dart = axton_compiler::dart(&schema);
     assert!(dart.contains("show RuntimeConnection, SyncServer"));
     assert!(dart.contains("SyncServer? server"));
+    // An admission refusal is observed through the generated import alone
+    // (#181), and no Model may take its name.
+    assert!(dart.contains("SyncServer, AdmissionRefused, Call,"));
+    assert!(
+        axton_compiler::client_typescript(&schema, "@example/custom-runtime")
+            .contains("export { AdmissionRefused, CallError,")
+    );
+    let error = compile("model AdmissionRefused { id String @@id(id) }").unwrap_err();
+    assert!(error.contains("the generated client uses"), "{error}");
     assert!(dart.contains("client.connect(server"));
     assert!(!dart.contains("LiveTransport"));
     assert!(!dart.contains("Transport? transport"));
@@ -1453,7 +1462,7 @@ fn action_dart_emits_concrete_client_and_versioned_handler_contracts() {
     let v = compile("model Todo { id String title String @@id(id) } query Search(query String?) { relatedTodo Todo? } mutation Ping()").unwrap();
     let dart = axton_compiler::dart(&v);
     for expected in [
-        "show RuntimeConnection, SyncServer, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
+        "show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
         "required String? query",
         "class TodoIdentity",
         "required this.relatedTodo",
@@ -1502,7 +1511,7 @@ fn action_dart_binds_shared_runtime_and_retained_codecs() {
     let v = compile("enum Mood { calm loud } model Note { id String at DateTime mood Mood @@id(id) } mutation Save(note Note.create, changed Note.update<at>?, stamps DateTime[], when DateTime?) { saved Note? at DateTime moods Mood[] }").unwrap();
     let dart = axton_compiler::dart(&v);
     for expected in [
-        "show RuntimeConnection, SyncServer, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
+        "show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
         "late final Mutations mutations = Mutations(client)",
         "client.invokeAction<SaveOutput>('Save', 1",
         "client.invokeDirectAction<SaveOutput>('Save', 1",

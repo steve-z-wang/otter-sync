@@ -32,6 +32,19 @@ class AuthenticationExpired implements Exception {
   const AuthenticationExpired();
 }
 
+/// The server refused this client's admission: [status] and [body] are what
+/// the backend's `admit` answered ([body] is the response text when it is not
+/// JSON). Handed to `onError` once; the connection has stopped and retries
+/// nothing. Connect again, with other [SyncServer.headers], to try again.
+class AdmissionRefused implements Exception {
+  const AdmissionRefused(this.status, this.body, [this.message = '']);
+  final int status;
+  final Object? body;
+  final String message;
+  @override
+  String toString() => 'AdmissionRefused($status: ${jsonEncode(body)})';
+}
+
 /// The HTTP status a transport error carried: what tells the runtime a
 /// refusal the server decided from a transport failure, and a 401 from both.
 int? statusOf(Object error) => switch (error) {
@@ -67,6 +80,14 @@ void deliverDiagnostic(
       }
     case 'error' || 'protocol':
       deliver(StateError(diagnostic['message'] as String));
+    case 'refused':
+      deliver(
+        AdmissionRefused(
+          diagnostic['status'] as int,
+          diagnostic['body'],
+          diagnostic['message'] as String,
+        ),
+      );
     case 'storeHook':
       deliver(
         StoreHookFailure(
@@ -194,9 +215,13 @@ class RuntimeConnection {
 
   /// Hand one `report` diagnostic to `onError`, in the zone that connected.
   /// A closed handle hears nothing: a later connection's reports are not its.
+  /// A `refused` diagnostic means the runtime already stopped this
+  /// connection: the handle ends first, so `onError` may connect again.
   void report(Map<String, dynamic> diagnostic) {
+    if (_stopped) return;
+    if (diagnostic['kind'] == 'refused') _abandon();
     final onError = _onError;
-    if (onError == null || _stopped) return;
+    if (onError == null) return;
     _zone.run(() => deliverDiagnostic(diagnostic, onError));
   }
 
@@ -268,8 +293,11 @@ class RuntimeConnection {
     };
     sent.then(
       effect.succeed,
-      onError: (Object error) =>
-          effect.fail(_message(error), status: statusOf(error)),
+      onError: (Object error) => effect.fail(
+        _message(error),
+        status: statusOf(error),
+        refusal: refusalOf(error),
+      ),
     );
   });
 
@@ -284,8 +312,11 @@ class RuntimeConnection {
         message: (text) async =>
             effect.emit({'event': 'message', 'body': text}),
         overflow: () async => effect.emit({'event': 'overflow'}),
-        closed: (error, _) =>
-            effect.fail(_message(error), status: statusOf(error)),
+        closed: (error, _) => effect.fail(
+          _message(error),
+          status: statusOf(error),
+          refusal: refusalOf(error),
+        ),
       ),
     ),
   );

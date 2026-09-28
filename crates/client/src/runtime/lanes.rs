@@ -274,7 +274,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
 
     /// Stop: everything `pause` abandons, the lanes stop for good, direct
     /// calls in flight fail as unavailable and the intent is cleared.
-    fn stop_lanes(&mut self) {
+    pub(super) fn stop_lanes(&mut self) {
         if let Some((_, epoch)) = self
             .connection
             .as_ref()

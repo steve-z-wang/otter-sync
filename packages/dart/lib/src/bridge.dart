@@ -262,12 +262,16 @@ class Effect {
   /// One result of a socket stream; the stream goes on.
   void emit(Object value) => _send({'ok': true, 'value': value});
 
-  /// The effect failed, with the HTTP [status] the failure carried, if any.
-  /// It ends a socket stream too.
-  void fail(String message, {int? status}) {
+  /// The effect failed, with the HTTP [status] the failure carried, if any,
+  /// and the body of an admission [refusal]. It ends a socket stream too.
+  void fail(String message, {int? status, String? refusal}) {
     _send({
       'ok': false,
-      'error': {'message': message, if (status != null) 'status': status},
+      'error': {
+        'message': message,
+        if (status != null) 'status': status,
+        if (refusal != null) 'refusal': refusal,
+      },
     });
     _finish();
   }
@@ -1062,6 +1066,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     Object? value,
     String? error,
     int? status,
+    String? refusal,
   }) => {
     'type': 'effectResult',
     'effectId': effectId,
@@ -1069,7 +1074,11 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'ok': ok,
       if (value != null) 'value': value,
       if (error != null)
-        'error': {'message': error, if (status != null) 'status': status},
+        'error': {
+          'message': error,
+          if (status != null) 'status': status,
+          if (refusal != null) 'refusal': refusal,
+        },
     },
   };
 

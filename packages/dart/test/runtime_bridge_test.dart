@@ -912,6 +912,9 @@ void main() {
                     as String?,
             status:
                 ((input['outcome'] as Map)['error'] as Map?)?['status'] as int?,
+            refusal:
+                ((input['outcome'] as Map)['error'] as Map?)?['refusal']
+                    as String?,
           ),
           'close' => Bridge.closeEnvelope,
           final type => fail('unknown input type $type'),

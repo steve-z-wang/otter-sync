@@ -834,11 +834,14 @@ export function createClient<
           throw Error("connect requires server: {url, token}");
         const directTimeoutMs = directTimeout(options);
         const live = createServerConnection(server);
+        // A refused admission already stopped the runtime's connection.
+        let ended = () => {};
         const stop = startConnection(
           this.#bridge,
           this.#effects,
           live,
           options,
+          () => ended(),
         );
         try {
           await this.#bridge.task({
@@ -879,6 +882,7 @@ export function createClient<
           },
         };
         this.#connection = { handle: connection, halt };
+        ended = halt;
         return connection;
       } finally {
         this.#connecting = false;

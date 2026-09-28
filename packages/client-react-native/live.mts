@@ -1,7 +1,11 @@
-import { httpTransport } from "../client-js/transport.mts";
+import { clientHeaders, httpTransport } from "../client-js/transport.mts";
 import type { ServerOptions, ServerConnection } from "../client-js/live.mts";
 
-/** The native WebSocket API has no pause/resume; the Rust controller handles lost-frame recovery. */
+/**
+ * The native WebSocket API has no pause/resume; the Rust controller handles
+ * lost-frame recovery. It also hides a refused upgrade's status, headers and
+ * body, so an admission refusal reaches the runtime from the HTTP routes.
+ */
 interface Socket {
   onopen: (() => void) | null;
   onmessage: ((event: { data: unknown }) => void) | null;
@@ -26,6 +30,7 @@ export function createServerConnection(
   const http = new URL(options.url);
   http.protocol =
     http.protocol === "https:" || http.protocol === "wss:" ? "https:" : "http:";
+  const headers = clientHeaders(options.headers);
   return {
     push: httpTransport({
       ...options,
@@ -82,7 +87,7 @@ export function createServerConnection(
         .then((token) => {
           if (ended) return;
           socket = new SocketClass(base.toString(), [], {
-            headers: { authorization: `Bearer ${token}` },
+            headers: { ...headers, authorization: `Bearer ${token}` },
           });
           socket.onopen = () => {
             if (ended) return;

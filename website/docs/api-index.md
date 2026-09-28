@@ -36,6 +36,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `createBackend`, `Options<Tx>` | Connect your implementations to the backend runtime | [Backend setup](backend/api.md#createbackend), [What your backend owns](backend/api.md#what-your-backend-owns) |
 | `backend.listen` | Serve sync requests and close the listener | [Listener](backend/api.md#listener), [Deploy the backend](backend/deployment.md) |
 | `Authenticate`, `devAuth` | Identify the caller | [Authentication](backend/api.md#authentication) |
+| `admit`, `Admit`, `AdmissionRefusal` | Refuse an outdated or unwanted client with your own status and body | [Admission](backend/api.md#admission) |
 | `CallRejected`, `translateRejection`, `onError`, `EngineError` | Reject business operations and diagnose failures | [Errors](backend/api.md#errors) |
 | `backend.transaction`, `TransactionCall` | Write outside a handler with the same `touch` and `channel`; subscribers wake after commit | [Background writes](backend/api.md#background-writes) |
 | `pg`, `prisma`, `drizzle`, `PostgresDriver`, `persistence` | Run business and sync storage in one PostgreSQL transaction through your own access tool | [Database](backend/database.md) |
@@ -46,7 +47,8 @@ Use this index to find the interface you call or implement. Local Model examples
 | --- | --- | --- |
 | React Native `databasePath` | Resolve a persistent local database path | [React Native setup](frontend/platforms.md#react-native) |
 | `Client`, `Transaction`, `QuerySpec`, `RecordValue` | Access the generic runtime beneath generated APIs | [Client runtime](frontend/runtime.md) |
-| `ServerOptions`, `SyncServer`, `ConnectionOptions` | Configure the backend connection and refresh credentials | [Server connection](frontend/runtime.md#server-connection) |
+| `ServerOptions`, `SyncServer`, `ConnectionOptions` | Configure the backend connection, its headers, and refresh credentials | [Server connection](frontend/runtime.md#server-connection) |
+| `AdmissionRefused` | Recognize a backend's admission refusal in `onError`; the connection has stopped | [Server connection](frontend/runtime.md#server-connection) |
 | `Transport`, `HttpRoute` (TypeScript) | Type the HTTP carrier a platform host build supplies (not passed to `open`/`connect`): it receives the route `push`, `pull`, `action`, `fetch` or `load` | [Server connection](frontend/runtime.md#server-connection) |
 | `RuntimeConnection`, `AuthenticationExpired` | Control Dart sync and identify authentication failures | [Connections](frontend/runtime.md#connection-controls) |
 | `syncState`, `models.<name>.syncState`, `dismissRejection`, `drop` | Inspect a record's pending work and handle rejected or unsent calls | [Recovery APIs](frontend/runtime.md#pending-work-and-recovery) |

@@ -1,5 +1,10 @@
 import WebSocket from "ws";
-import { httpTransport } from "./transport.mts";
+import {
+  ADMISSION_HEADER,
+  clientHeaders,
+  httpTransport,
+  responseError,
+} from "./transport.mts";
 import type { SocketEvents, Transport } from "./connection.mts";
 
 export type ServerConnection = {
@@ -15,7 +20,16 @@ export type ServerConnection = {
 export type ServerOptions = {
   url: string;
   token: string | (() => string | Promise<string>);
+  /**
+   * Sent with every request and the live upgrade, e.g. the application's
+   * platform and build for the backend's `admit`. The headers AXTON sets
+   * itself (`authorization`, `content-type`, the WebSocket handshake) are
+   * refused.
+   */
+  headers?: Readonly<Record<string, string>>;
 };
+/** The most of a refused upgrade's body that is read. */
+const REFUSAL_BYTES = 64 * 1024;
 /** Frames waiting to be handed to Rust while the previous one is; beyond this the buffer is dropped and the worker recovers. */
 const BUFFERED_FRAMES = 64;
 /** Sockets and HTTP for one server; no sync decisions. */
@@ -28,6 +42,7 @@ export function createServerConnection(
   const http = new URL(options.url);
   http.protocol =
     http.protocol === "wss:" || http.protocol === "https:" ? "https:" : "http:";
+  const headers = clientHeaders(options.headers);
   return {
     push: httpTransport({
       ...options,
@@ -78,17 +93,32 @@ export function createServerConnection(
         .then((token) => {
           if (ended) return;
           socket = new WebSocket(base, {
-            headers: { authorization: `Bearer ${token}` },
+            headers: { ...headers, authorization: `Bearer ${token}` },
             maxPayload: 8 * 1024 * 1024,
           });
           const current = socket;
           current.on("error", (error) => finish(error));
           current.on("unexpected-response", (_request, response) => {
-            response.resume();
-            finish(
-              Object.assign(Error(`live failed: ${response.statusCode}`), {
-                status: response.statusCode,
-              }),
+            // A refused upgrade: its body is read only when the server marked
+            // it as an admission refusal, whose body the runtime reports.
+            const status = response.statusCode ?? 0;
+            if (response.headers[ADMISSION_HEADER] !== "refused") {
+              response.resume();
+              finish(responseError("live", status, "", false));
+              return;
+            }
+            let text = "";
+            response.setEncoding("utf8");
+            response.on("data", (chunk: string) => {
+              text += chunk;
+              if (text.length > REFUSAL_BYTES) response.destroy();
+            });
+            response.on("end", () =>
+              finish(responseError("live", status, text, true)),
+            );
+            response.on("error", (error) => finish(error));
+            response.on("close", () =>
+              finish(responseError("live", status, text, false)),
             );
           });
           current.on("close", (code, reason) =>

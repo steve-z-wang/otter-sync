@@ -431,6 +431,52 @@ test('loader safely converts PostgreSQL BigInt scalar and list values without wi
     assert.equal(page.changes[0].state, null);
   }
 });
+/** A refused upgrade as a client sees it: status, admission marker and body. */
+const refusedUpgrade=(url,headers)=>new Promise((resolve,reject)=>{
+ const socket=new serverSdk.WebSocket(`${url.replace('http','ws')}/sync/live`,{headers});
+ socket.on('open',()=>{socket.terminate();reject(new Error('upgrade admitted'));});
+ socket.on('error',()=>{});
+ socket.on('unexpected-response',(_request,response)=>{let text='';response.setEncoding('utf8');response.on('data',chunk=>{text+=chunk;});response.on('end',()=>resolve({status:response.statusCode,marker:response.headers['axton-admission'],type:response.headers['content-type'],body:text}));});
+});
+test('admission sees client headers and the identity, refuses an old build on every route and the upgrade with its own status and body, and admits a current build',async()=>{
+ const seen=[];const errors=[];
+ const admitted=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task(call){return readTasks(call);}},
+  admit:(request,userId)=>{
+   seen.push([request.url,request.headers['x-app-build']??null,userId]);
+   const build=request.headers['x-app-build'];
+   if(build==='throw')throw new Error('admit broke');
+   if(build==='bad')return {status:200,body:{}};
+   return Number(build)<7?{status:426,body:{minimumBuild:7}}:null;
+  }});
+ const server=await admitted.listen({port:0});
+ const post=(path,headers,body='{}')=>fetch(`${server.url}/sync/${path}`,{method:'POST',headers,body});
+ try{
+  const old={authorization:'Bearer alice','x-app-build':'6'};
+  for(const path of ['mutations','pull','actions','loads','fetch']){
+   const refused=await post(path,old);
+   assert.equal(refused.status,426,path);assert.equal(refused.headers.get('axton-admission'),'refused',path);
+   assert.match(refused.headers.get('content-type'),/^application\/json/);assert.deepEqual(await refused.json(),{minimumBuild:7},path);
+  }
+  assert.deepEqual(await refusedUpgrade(server.url,old),{status:426,marker:'refused',type:'application/json; charset=utf-8',body:'{"minimumBuild":7}'});
+  assert.deepEqual(seen.map(([url])=>url),['/sync/mutations','/sync/pull','/sync/actions','/sync/loads','/sync/fetch','/sync/live']);
+  assert.ok(seen.every(([,build,userId])=>build==='6'&&userId==='alice'),'every route sees the header and the identity');
+  // Admission decides before a missing identity is refused: an old build without a token is told to update.
+  seen.length=0;
+  const anonymous=await post('pull',{'x-app-build':'6'});assert.equal(anonymous.status,426);assert.deepEqual(seen[0],['/sync/pull','6',null]);
+  // A current build is admitted: the engine answers, and an absent identity is still 401.
+  const current=await post('pull',{authorization:'Bearer alice','x-app-build':'7'},pullBody({shared:0}));assert.equal(current.status,200);assert.equal(current.headers.get('axton-admission'),null);
+  assert.equal((await post('pull',{'x-app-build':'7'})).status,401);
+  const socket=new serverSdk.WebSocket(`${server.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice','x-app-build':'7'}});
+  await new Promise((resolve,reject)=>{socket.on('open',resolve);socket.on('error',reject);});socket.close();
+  // A hook that throws, or answers a refusal that is not one, is a server error.
+  const admitErrors=()=>errors.map(e=>e.message).filter(m=>/admit/.test(m));
+  assert.deepEqual(admitErrors(),[]);
+  const broken=await post('pull',{authorization:'Bearer alice','x-app-build':'throw'});assert.equal(broken.status,500);assert.deepEqual(await broken.json(),{code:'server'});
+  const invalid=await post('pull',{authorization:'Bearer alice','x-app-build':'bad'});assert.equal(invalid.status,500);assert.equal(invalid.headers.get('axton-admission'),null);
+  const upgrade=await refusedUpgrade(server.url,{authorization:'Bearer alice','x-app-build':'throw'});assert.equal(upgrade.status,500);assert.equal(upgrade.marker,undefined);
+  assert.deepEqual(admitErrors(),['admit broke','admit must answer null or {status: 400..599, body: JSON}','admit broke']);
+ }finally{await server.close();}
+});
 test('listen answers pull over HTTP with authentication and closes cleanly',async()=>{
  const server=await backend.listen({port:0});
  try{

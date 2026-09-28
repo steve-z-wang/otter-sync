@@ -84,11 +84,29 @@ export class AxtonReport extends Error {
   }
 }
 
+/**
+ * The server refused this client's admission: `status` and `body` are what
+ * the backend's `admit` answered (`body` is the response text when it is not
+ * JSON). Handed to `onError` once; the connection has stopped and retries
+ * nothing. Connect again, with other `headers`, to try again.
+ */
+export class AdmissionRefused extends Error {
+  readonly status: number;
+  readonly body: unknown;
+  constructor(status: number, body: unknown, message: string) {
+    super(message);
+    this.name = "AdmissionRefused";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 /** What a runtime `report` event carries (`Diagnostic` in [protocol.rs](../../crates/client/src/runtime/protocol.rs)). */
 export type Diagnostic =
   | { kind: "records"; reports: ReportDetails[] }
   | { kind: "error"; message: string; status?: number }
   | { kind: "protocol"; message: string }
+  | { kind: "refused"; message: string; status: number; body: unknown }
   | {
       kind: "storeHook";
       code: "store_hook_failed";
@@ -136,14 +154,21 @@ export function reason(thrown: unknown): string {
     return "failed";
   }
 }
-/** A failed effect: its message, and the HTTP status it carried if any. */
+/**
+ * A failed effect: its message, the HTTP status it carried if any, and the
+ * body of an admission refusal.
+ */
 function failure(error: unknown): EffectOutcome {
-  const status = (error as { status?: unknown } | null)?.status;
+  const { status, refusal } = (error ?? {}) as {
+    status?: unknown;
+    refusal?: unknown;
+  };
   return {
     ok: false,
     error: {
       message: reason(error),
       ...(typeof status === "number" ? { status } : {}),
+      ...(typeof refusal === "string" ? { refusal } : {}),
     },
   };
 }
@@ -232,13 +257,16 @@ export class Effects {
  * Install one connection's effects - HTTP to its server, its socket and the
  * application's `refreshAuth` - and hand the runtime's reports to `onError`.
  * Answers the uninstall, which also aborts every platform resource the
- * connection still holds.
+ * connection still holds. A `refused` report means the runtime already
+ * stopped the connection: `ended` runs before `onError` hears it, so the
+ * application can connect again from its handler.
  */
 export function startConnection(
   bridge: EffectBridge,
   effects: Effects,
   network: EffectNetwork,
   options: ConnectionOptions,
+  ended: () => void = () => {},
 ): () => void {
   const owner = {};
   const fail = (effectId: string, error: unknown) =>
@@ -286,27 +314,36 @@ export function startConnection(
   const onError = options.onError;
   uninstall.push(
     bridge.on("report", ({ diagnostic }: { diagnostic: Diagnostic }) => {
+      if (diagnostic.kind === "refused") ended();
       if (!onError) return;
       // A lane failure is the runtime's report of it: its message, and the
       // HTTP status it carried when it had one.
       const errors =
         diagnostic.kind === "records"
           ? diagnostic.reports.map((report) => new AxtonReport(report))
-          : [
-              Object.assign(
-                Error(diagnostic.message),
-                diagnostic.kind === "error" && diagnostic.status !== undefined
-                  ? { status: diagnostic.status }
-                  : diagnostic.kind === "storeHook"
-                    ? {
-                        code: diagnostic.code,
-                        model: diagnostic.model,
-                        path: diagnostic.path,
-                        cause: diagnostic.cause,
-                      }
-                    : {},
-              ),
-            ];
+          : diagnostic.kind === "refused"
+            ? [
+                new AdmissionRefused(
+                  diagnostic.status,
+                  diagnostic.body,
+                  diagnostic.message,
+                ),
+              ]
+            : [
+                Object.assign(
+                  Error(diagnostic.message),
+                  diagnostic.kind === "error" && diagnostic.status !== undefined
+                    ? { status: diagnostic.status }
+                    : diagnostic.kind === "storeHook"
+                      ? {
+                          code: diagnostic.code,
+                          model: diagnostic.model,
+                          path: diagnostic.path,
+                          cause: diagnostic.cause,
+                        }
+                      : {},
+                ),
+              ];
       for (const error of errors)
         try {
           onError(error);

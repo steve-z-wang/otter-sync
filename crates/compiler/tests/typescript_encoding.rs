@@ -15,5 +15,8 @@ fn a_list_of_update_operands_encodes_each_element_as_an_object() {
         ts.contains("=> ({...encodeTIdentity(") && ts.contains("...encodeTPatch("),
         "missing parenthesized update encoder: {ts}"
     );
-    assert!(!ts.contains("=> {...encodeTIdentity("), "block-bodied arrow: {ts}");
+    assert!(
+        !ts.contains("=> {...encodeTIdentity("),
+        "block-bodied arrow: {ts}"
+    );
 }

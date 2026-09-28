@@ -166,6 +166,7 @@ impl StoreContinuation {
                         direct::transport_failure(&EffectError {
                             message: error,
                             status: None,
+                            refusal: None,
                         }),
                     );
                 }

@@ -66,7 +66,12 @@ pub(super) fn code(error: &str) -> Value {
 /// The `details` of an unknown execution caused by `cause`:
 /// `{"code":"action.execution_unknown","message","status"?}`.
 pub(super) fn transport_failure(cause: &EffectError) -> Value {
-    let mut details = json!({ "code": EXECUTION_UNKNOWN, "message": cause.message });
+    with_cause(EXECUTION_UNKNOWN, cause)
+}
+
+/// The `details` of `error` caused by `cause`: `{"code","message","status"?}`.
+fn with_cause(error: &str, cause: &EffectError) -> Value {
+    let mut details = caused(error, &cause.message);
     if let Some(status) = cause.status {
         details["status"] = json!(status);
     }
@@ -92,6 +97,9 @@ pub(super) enum Failure {
     Lost,
     /// A rebuild replaced the replica the call belongs to.
     Replaced,
+    /// The server refused this client's admission on the call's own request:
+    /// unavailable, with the refusal as its cause.
+    Refused(EffectError),
 }
 impl Failure {
     /// Action calls: unavailable, otherwise an unknown execution.
@@ -103,10 +111,12 @@ impl Failure {
                 transport_failure(&EffectError {
                     message: TIMED_OUT.into(),
                     status: None,
+                    refusal: None,
                 }),
             ),
             Self::Transport(cause) => (EXECUTION_UNKNOWN, transport_failure(cause)),
             Self::Lost | Self::Replaced => (EXECUTION_UNKNOWN, code(EXECUTION_UNKNOWN)),
+            Self::Refused(cause) => (UNAVAILABLE, with_cause(UNAVAILABLE, cause)),
         }
     }
     /// Fetches: a read claims nothing about side effects.
@@ -114,15 +124,13 @@ impl Failure {
         match self {
             Self::Unavailable => (FETCH_UNAVAILABLE, code(FETCH_UNAVAILABLE)),
             Self::Timeout => (FETCH_TIMEOUT, caused(FETCH_TIMEOUT, TIMED_OUT)),
-            Self::Transport(cause) => {
-                let mut details = caused(FETCH_TRANSPORT_FAILED, &cause.message);
-                if let Some(status) = cause.status {
-                    details["status"] = json!(status);
-                }
-                (FETCH_TRANSPORT_FAILED, details)
-            }
+            Self::Transport(cause) => (
+                FETCH_TRANSPORT_FAILED,
+                with_cause(FETCH_TRANSPORT_FAILED, cause),
+            ),
             Self::Lost => (FETCH_TRANSPORT_FAILED, code(FETCH_TRANSPORT_FAILED)),
             Self::Replaced => (FETCH_SCHEMA_CHANGED, code(FETCH_SCHEMA_CHANGED)),
+            Self::Refused(cause) => (FETCH_UNAVAILABLE, with_cause(FETCH_UNAVAILABLE, cause)),
         }
     }
 }
@@ -522,6 +530,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     transport_failure(&EffectError {
                         message: error.to_string(),
                         status: None,
+                        refusal: None,
                     }),
                 ),
                 _ => unreachable!(),
@@ -563,6 +572,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 transport_failure(&EffectError {
                     message: e.to_string(),
                     status: None,
+                    refusal: None,
                 }),
             )),
         };

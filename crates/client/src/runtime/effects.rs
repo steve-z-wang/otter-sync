@@ -100,6 +100,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
         return Err(outcome.error.unwrap_or_else(|| EffectError {
             message: "request failed".into(),
             status: None,
+            refusal: None,
         }));
     }
     match outcome.value {
@@ -113,6 +114,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
                 return Err(EffectError {
                     message: format!("HTTP {status}"),
                     status: Some(status),
+                    refusal: None,
                 });
             }
             match answer.remove("body") {
@@ -120,14 +122,26 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
                 _ => Err(EffectError {
                     message: "invalid HTTP result: body must be a string".into(),
                     status,
+                    refusal: None,
                 }),
             }
         }
         _ => Err(EffectError {
             message: "invalid HTTP result".into(),
             status: None,
+            refusal: None,
         }),
     }
+}
+
+/// The admission refusal a failed effect carries: a `refusal` body together
+/// with the status it was answered with. Either alone is an ordinary failure.
+fn admission_refusal(outcome: &EffectOutcome) -> Option<EffectError> {
+    outcome
+        .error
+        .as_ref()
+        .filter(|error| !outcome.ok && error.status.is_some() && error.refusal.is_some())
+        .cloned()
 }
 
 impl<S: ClientStore + 'static> ClientRuntime<S> {
@@ -175,6 +189,20 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         now: u64,
         entropy: u64,
     ) {
+        if let Some(error) = admission_refusal(&outcome)
+            && matches!(
+                self.effects.get(&effect_id),
+                Some(
+                    EffectKind::Push
+                        | EffectKind::Pull { .. }
+                        | EffectKind::Socket { .. }
+                        | EffectKind::DirectHttp { .. }
+                        | EffectKind::LoadHttp { .. }
+                )
+            )
+        {
+            return self.refused(&effect_id, error);
+        }
         match self.effects.get(&effect_id) {
             None | Some(EffectKind::Callback) => {}
             Some(EffectKind::Socket { epoch }) => {
@@ -211,6 +239,36 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
 
+    /// The server refused this client's admission on one of the connection's
+    /// requests. That answers the client, not the request: it is reported
+    /// once and the connection stops as `stop` stops it - no credential
+    /// refresh, no backoff, no reconnect. The direct call whose request was
+    /// refused fails with the refusal as its cause, every other call still
+    /// out fails unavailable, and the frozen batch, Load pages and
+    /// subscriptions stay for a later `connect`. Results of the requests the
+    /// stop abandoned are fenced like any cancelled effect's.
+    fn refused(&mut self, effect_id: &str, error: EffectError) {
+        let Some(kind) = self.effects.remove(effect_id) else {
+            return;
+        };
+        if let EffectKind::DirectHttp { request_id } = kind {
+            self.fail_call(&request_id, direct::Failure::Refused(error.clone()));
+        }
+        if self.connection.is_none() {
+            return;
+        }
+        let (Some(status), Some(body)) = (error.status, error.refusal) else {
+            return;
+        };
+        let body = serde_json::from_str(&body).unwrap_or(Value::String(body));
+        self.report(Diagnostic::Refused {
+            message: error.message,
+            status,
+            body,
+        });
+        self.stop_lanes();
+    }
+
     /// One result of a socket stream. A frame or an overflow goes to the
     /// worker; the end of the stream - `closed` or a failure - is reported,
     /// refreshes credentials on 401, and then tells the worker it closed.
@@ -226,6 +284,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             let error = outcome.error.unwrap_or_else(|| EffectError {
                 message: "socket failed".into(),
                 status: None,
+                refusal: None,
             });
             return self.socket_ended(&effect_id, epoch, error, now, entropy);
         }
@@ -242,6 +301,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 let error = EffectError {
                     message: "socket closed".into(),
                     status: None,
+                    refusal: None,
                 };
                 self.socket_ended(&effect_id, epoch, error, now, entropy);
             }
@@ -348,6 +408,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             outcome.error.unwrap_or_else(|| EffectError {
                 message: "refreshAuth failed".into(),
                 status: None,
+                refusal: None,
             })
         });
         if let Some(refused) = &refused {

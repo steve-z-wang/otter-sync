@@ -3234,6 +3234,150 @@ fn a_response_in_hand_survives_stop_but_not_close() {
     assert_eq!(h.text("e"), Some(json!("server")));
 }
 
+/// An admission refusal as a host reports it: the status and the body of a
+/// response the server marked as refusing this client.
+fn refuse(h: &mut Host, id: &str, status: u16, body: &str) {
+    h.answer(
+        id,
+        json!({"ok":false,"error":{"message":format!("refused: {status}"),"status":status,"refusal":body}}),
+    );
+}
+/// The admission refusals reported, in order.
+fn refusals(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "report" && e["diagnostic"]["kind"] == "refused")
+        .map(|e| e["diagnostic"].clone())
+        .collect()
+}
+
+/// A server that refuses this client's admission refuses the client, not one
+/// request: the refusal is reported once, with its status and body, and the
+/// connection stops - no credential refresh, no backoff, no reconnect - while
+/// local work goes on and the frozen batch waits for a later connection
+/// (#181).
+#[test]
+fn an_admission_refusal_stops_the_connection_once_and_a_later_connect_resumes() {
+    let mut h = host();
+    h.connect(true);
+    let socket = h.streaming(0);
+    h.task(
+        "submit",
+        json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+    );
+    h.run();
+    let (push, frozen) = h.http("push");
+    h.task("seed", create("e", "seed"));
+    h.task("call", rename("server"));
+    h.run();
+    let (action, _) = h.http("action");
+
+    refuse(&mut h, &push, 426, r#"{"minimumBuild":7}"#);
+    let events = h.run();
+    assert_eq!(
+        refusals(&events),
+        [json!({"kind":"refused","message":"refused: 426","status":426,"body":{"minimumBuild":7}})]
+    );
+    assert_eq!(errors(&events), Vec::<String>::new(), "not a lane failure");
+    assert!(cancelled(&events, &socket) && cancelled(&events, &action));
+    // A call still out is unavailable, as at `stop`; nothing else is left for
+    // the host to run.
+    assert!(events.contains(&failed_with(
+        "call",
+        "action.unavailable",
+        json!({"code":"action.unavailable"})
+    )));
+    assert!(
+        h.open.is_empty(),
+        "no refresh, timer or socket: {:?}",
+        h.open
+    );
+    assert_eq!(connections(&events), ["offline"]);
+
+    // A refusal that arrives for a request already abandoned is not heard.
+    refuse(&mut h, &socket, 426, r#"{"minimumBuild":7}"#);
+    assert_eq!(h.run(), Vec::<Value>::new());
+    // Local work goes on; nothing is sent.
+    h.task("local", create("x", "local"));
+    assert!(h.run().contains(&done("local", Value::Null)));
+    assert!(h.open.is_empty(), "{:?}", h.open);
+    h.task("offline", rename("offline"));
+    assert!(h.run().contains(&failed("offline", "action.unavailable")));
+
+    // A later connection starts over: the frozen batch is sent unchanged.
+    h.connect(true);
+    assert_eq!(h.http("push").1, frozen);
+    assert_eq!(h.outstanding("socket", None).len(), 1);
+}
+
+/// Every lane and direct route hears a refusal the same way: a refused
+/// socket, catch-up or direct call stops the connection once.
+#[test]
+fn a_refusal_on_the_socket_a_catch_up_or_a_direct_call_stops_the_connection() {
+    // The upgrade.
+    let mut h = host();
+    h.connect(true);
+    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.run();
+    let socket = h.socket();
+    refuse(&mut h, &socket, 403, r#"{"reason":"blocked"}"#);
+    let events = h.run();
+    assert_eq!(refusals(&events)[0]["body"], json!({"reason":"blocked"}));
+    assert!(h.open.is_empty(), "{:?}", h.open);
+
+    // A catch-up.
+    let mut h = host();
+    h.connect(false);
+    let socket = h.streaming(0);
+    h.frame(&socket, &page(5, 6, "e", "gap"));
+    h.run();
+    let (pull, _) = h.http("pull");
+    refuse(&mut h, &pull, 426, "not json");
+    let events = h.run();
+    assert_eq!(
+        refusals(&events),
+        [json!({"kind":"refused","message":"refused: 426","status":426,"body":"not json"})],
+        "a body that is not JSON is kept as text"
+    );
+    assert!(cancelled(&events, &socket));
+    assert!(h.open.is_empty(), "{:?}", h.open);
+
+    // A direct call alone: its own request was refused, so the refusal is
+    // its cause.
+    let mut h = host();
+    h.connect(true);
+    h.task("call", echo(json!({})));
+    h.run();
+    let (action, _) = h.http("action");
+    refuse(&mut h, &action, 426, "{}");
+    let events = h.run();
+    assert_eq!(refusals(&events).len(), 1);
+    assert!(events.contains(&failed_with(
+        "call",
+        "action.unavailable",
+        json!({"code":"action.unavailable","message":"refused: 426","status":426})
+    )));
+    assert!(h.open.is_empty(), "{:?}", h.open);
+
+    // A refusal needs its status: without one it is an ordinary failure.
+    let mut h = host();
+    h.connect(false);
+    h.task("call", echo(json!({})));
+    h.run();
+    let (action, _) = h.http("action");
+    h.answer(
+        &action,
+        json!({"ok":false,"error":{"message":"odd","refusal":"{}"}}),
+    );
+    let events = h.run();
+    assert!(refusals(&events).is_empty());
+    assert!(events.contains(&failed_with(
+        "call",
+        "action.execution_unknown",
+        json!({"code":"action.execution_unknown","message":"odd"})
+    )));
+}
+
 // --- Command contract --------------------------------------------------------
 
 /// Whether a task failed, with its error.

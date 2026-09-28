@@ -2102,3 +2102,33 @@ fn invalid_business_arguments_are_coded_for_every_start_and_invalidation() {
         "nothing was stored"
     );
 }
+
+/// An admission refusal is the client's, not the page's: the batch is
+/// abandoned without failing its job or counting an attempt, nothing is
+/// retried, and a later connection resends the same frozen page (#181).
+#[test]
+fn an_admission_refusal_leaves_the_job_pending_for_a_later_connection() {
+    let mut h = host();
+    let id = h.recent("start");
+    h.connect(true);
+    let (http, body) = h.batch();
+    h.answer(
+        &http,
+        json!({"ok":false,"error":{"message":"load failed: 426","status":426,"refusal":"{\"minimumBuild\":7}"}}),
+    );
+    let events = h.run();
+    let refused: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "report" && e["diagnostic"]["kind"] == "refused")
+        .collect();
+    assert_eq!(refused.len(), 1, "{events:?}");
+    assert_eq!(refused[0]["diagnostic"]["body"], json!({"minimumBuild":7}));
+    assert_eq!(errors(&events), Vec::<String>::new());
+    assert!(h.open.is_empty(), "nothing is retried: {:?}", h.open);
+    let job = h.job(&id);
+    assert_eq!((job.phase, job.attempts), (LoadPhase::Pending, 0));
+
+    h.connect(true);
+    let (_, again) = h.batch();
+    assert_eq!(again, body, "the same frozen page and call ID");
+}

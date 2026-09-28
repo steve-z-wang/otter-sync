@@ -1094,7 +1094,7 @@ test('a record republished above the origin leaves the historical interval betwe
  assert.equal(second.records.length,9);
  assert.ok(!second.records.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
 });
-test('a bootstrap page reads content and stamps at its own repeatable-read snapshot',async()=>{
+test('a bootstrap page reads content and stamps at its own transaction snapshot',async()=>{
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});channel('coherent').task.add({id:'coherent'});});
  const origin=await head('coherent');const before=await recordStamp('coherent');
  // A concurrent transaction rewrites and republishes the record after the page

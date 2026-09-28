@@ -121,7 +121,12 @@ export interface Persistence {
   call(request: Record<string, any>): Promise<unknown>;
 }
 export interface Database<T> {
-  /** Must provide a coherent snapshot and roll back rejected callbacks. Retry serialization failures. */
+  /**
+   * Must provide serializable isolation (PostgreSQL SERIALIZABLE: one
+   * snapshot for the whole transaction, and a serialization failure instead
+   * of any non-serial outcome), roll back rejected callbacks and retry
+   * serialization failures by running the whole body again.
+   */
   transaction: <R>(body: (tx: T) => Promise<R>) => Promise<R>;
   persistence: (tx: T) => Persistence;
 }

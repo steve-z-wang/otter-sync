@@ -48,9 +48,10 @@ export const ENSURE_STAMP =
  * a JSON array of identity keys). Only a record without a stamp is inserted
  * at 1; an existing row is read, never rewritten or locked. The outer SELECT
  * reads the transaction snapshot, which cannot see this statement's own
- * inserts, hence COALESCE. Under Repeatable Read, a key whose row another
- * transaction inserted or re-stamped after the snapshot fails the INSERT with
- * a serialization error the runner retries, so a Load page over records under
+ * inserts, hence COALESCE. The transaction keeps one snapshot (SERIALIZABLE,
+ * like Repeatable Read before it), so a key whose row another transaction
+ * inserted or re-stamped after the snapshot fails the INSERT with a
+ * serialization error the runner retries, and a Load page over records under
  * heavy write churn can retry repeatedly before it succeeds.
  */
 export const READ_STAMPS =
@@ -63,9 +64,11 @@ export const READ_STAMPS =
 /**
  * Write-lock an existing record row without changing its stamp. A no-op UPDATE
  * rather than `SELECT … FOR UPDATE`: it writes a new row version, so a
- * concurrent Repeatable Read writer of the row fails serialization and retries
- * instead of acting on a membership snapshot taken before this commit. Never
- * creates a row.
+ * concurrent writer of the row fails serialization and retries instead of
+ * acting on a membership snapshot taken before this commit. SERIALIZABLE
+ * alone already rules out a non-serial outcome; the write conflict also
+ * holds in a caller-owned transaction at Repeatable Read (`backend.publish`).
+ * Never creates a row.
  */
 export const LOCK_RECORD =
   "UPDATE axton_record SET stamp=stamp WHERE model=$1 AND identity_key=$2 RETURNING stamp";

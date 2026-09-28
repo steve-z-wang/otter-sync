@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { createServer } from "node:http";
+import { createServer, STATUS_CODES } from "node:http";
 import type { IncomingMessage, RequestListener, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
@@ -23,6 +23,7 @@ export type {
   RuntimeTouch,
 } from "./effects.mts";
 export type { JsonValue, LoadNext } from "./host-contract.mts";
+import type { JsonValue } from "./host-contract.mts";
 const require = createRequire(import.meta.url);
 /** What escaped one Load item's transaction, as the carrier observed it. */
 export type LoadFault =
@@ -127,6 +128,26 @@ export interface Database<T> {
 export type Authenticate = (
   request: IncomingMessage,
 ) => Promise<string | null | undefined> | string | null | undefined;
+/**
+ * An admission refusal: the HTTP status and JSON body the listener answers,
+ * marked `axton-admission: refused` so a client stops its connection instead
+ * of retrying. `status` is 400..599.
+ */
+export type AdmissionRefusal = { status: number; body: JsonValue };
+/**
+ * Decides, before any route runs, whether a client may use the listener: its
+ * request (the headers the client was configured with included) and the user
+ * id `authenticate` resolved, or `null` without one. Answer `null` or
+ * `undefined` to admit, or the refusal to answer instead.
+ */
+export type Admit = (
+  request: IncomingMessage,
+  userId: string | null,
+) =>
+  | Promise<AdmissionRefusal | null | undefined>
+  | AdmissionRefusal
+  | null
+  | undefined;
 /** Development only: the bearer token is used verbatim as the user id. Never use in production. */
 export function devAuth(): Authenticate {
   return (request) => {
@@ -431,6 +452,13 @@ export interface BackendOptions<T> {
   config: object;
   database: Database<T>;
   authenticate: Authenticate;
+  /**
+   * Admission for every `listen` route and the live upgrade, after
+   * `authenticate` and before anything else: a refusal is answered with its
+   * own status and body instead of `401` or the route. Throwing, or answering
+   * something that is not a refusal, is a server error.
+   */
+  admit?: Admit | undefined;
   /** Legacy slot mutations (`mutation Name { slots }`), by lower-camel name. */
   handlers?: Record<string, HandlerRegistration<T>> | undefined;
   /** Every retained Mutation version, by lower-camel name. */
@@ -1423,6 +1451,16 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     const trimmed = id.trim();
     return trimmed === "" ? null : trimmed;
   };
+  const admit = async (
+    request: IncomingMessage,
+  ): Promise<{ owner: string | null; refusal: Refusal | null }> => {
+    const owner = await authenticate(request);
+    if (!options.admit) return { owner, refusal: null };
+    return {
+      owner,
+      refusal: checkedRefusal(await options.admit(request, owner)),
+    };
+  };
   const listen = async ({
     port,
     host = "127.0.0.1",
@@ -1433,13 +1471,13 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     const server = createServer(
       createHttpHandler({
         backend: api,
-        authenticate,
+        admit,
         onError,
       }),
     );
     const live = attachLive(server, {
       backend: api,
-      authenticate,
+      admit,
       onError,
     });
     await new Promise<void>((resolve, reject) => {
@@ -1476,6 +1514,29 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   };
   return { ...api, listen };
 }
+/** The response header that marks an admission refusal. */
+const ADMISSION_HEADER = "axton-admission";
+/** An admission refusal ready to answer: its status and JSON text. */
+type Refusal = { status: number; body: string };
+/**
+ * What `admit` answered, checked: `null` admits, a refusal needs a status of
+ * 400..599 and a body JSON can encode. Anything else is a defect of the hook.
+ */
+function checkedRefusal(answer: unknown): Refusal | null {
+  if (answer === null || answer === undefined) return null;
+  const { status, body } = answer as Partial<AdmissionRefusal>;
+  const text = body === undefined ? undefined : JSON.stringify(body);
+  if (
+    !Number.isInteger(status) ||
+    (status as number) < 400 ||
+    (status as number) > 599 ||
+    typeof text !== "string"
+  )
+    throw new TypeError(
+      "admit must answer null or {status: 400..599, body: JSON}",
+    );
+  return { status: status as number, body: text };
+}
 interface HttpBackend {
   push(owner: string, request: Uint8Array | string): Promise<string>;
   pull(owner: string, request: Uint8Array | string): Promise<string>;
@@ -1483,9 +1544,13 @@ interface HttpBackend {
   loads(owner: string, request: Uint8Array | string): Promise<string>;
   fetch(owner: string, request: Uint8Array | string): Promise<string>;
 }
+/** Authenticate a request, then ask the application's `admit` about it. */
+type Admission = (
+  request: IncomingMessage,
+) => Promise<{ owner: string | null; refusal: Refusal | null }>;
 function createHttpHandler(options: {
   backend: HttpBackend;
-  authenticate: (request: IncomingMessage) => Promise<string | null>;
+  admit: Admission;
   maxBodyBytes?: number;
   onError?: (error: unknown) => void;
 }): RequestListener {
@@ -1514,7 +1579,16 @@ function createHttpHandler(options: {
       return;
     }
     try {
-      const owner = await options.authenticate(request);
+      const { owner, refusal: refused } = await options.admit(request);
+      if (refused) {
+        response.writeHead(refused.status, {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          [ADMISSION_HEADER]: "refused",
+        });
+        response.end(refused.body);
+        return;
+      }
       if (!owner?.trim()) {
         send(401, { code: "unauthenticated" });
         return;
@@ -1593,7 +1667,7 @@ function attachLive(
   server: Server,
   options: {
     backend: LiveBackend;
-    authenticate: (request: IncomingMessage) => Promise<string | null>;
+    admit: Admission;
     maxPayloadBytes?: number;
     onError?: (error: unknown) => void;
   },
@@ -1608,6 +1682,15 @@ function attachLive(
       `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : "Error"}\r\nConnection: close\r\n\r\n`,
     );
   };
+  const refuseAdmission = (socket: Duplex, { status, body }: Refusal) => {
+    socket.end(
+      `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? "Error"}\r\n` +
+        `Content-Type: application/json; charset=utf-8\r\n` +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+        `Cache-Control: no-store\r\n${ADMISSION_HEADER}: refused\r\n` +
+        `Connection: close\r\n\r\n${body}`,
+    );
+  };
   const upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     void (async () => {
       if (request.url?.split("?")[0] !== "/sync/live") return;
@@ -1617,14 +1700,19 @@ function attachLive(
       }
       let owner: string | null;
       try {
-        owner = await options.authenticate(request);
+        const admission = await options.admit(request);
+        if (closing || socket.destroyed) {
+          refuse(socket, 503);
+          return;
+        }
+        if (admission.refusal) {
+          refuseAdmission(socket, admission.refusal);
+          return;
+        }
+        owner = admission.owner;
       } catch (error) {
         options.onError?.(error);
         refuse(socket, 500);
-        return;
-      }
-      if (closing || socket.destroyed) {
-        refuse(socket, 503);
         return;
       }
       if (!owner?.trim()) {

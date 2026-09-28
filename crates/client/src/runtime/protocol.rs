@@ -565,7 +565,7 @@ impl EffectOutcome {
 /// decided from a transport failure by it, and a 401 is what asks for a
 /// credential refresh. `refusal` is the response body of an answer the server
 /// marked as an admission refusal (`axton-admission: refused`,
-/// [Protocol / Common](../../../../docs/engineering/architecture/protocol/common.md#admission));
+/// [Protocol / Common](../../../../docs/engineering/architecture/protocol/common.md));
 /// with a `status`, it ends the connection instead of failing one request.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

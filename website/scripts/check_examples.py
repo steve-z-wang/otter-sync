@@ -81,7 +81,7 @@ def check():
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'packages/dart') as temp:
         directory = Path(temp)
         ts = directory / 'examples.mts'
-        ts.write_text('''import { GeneratedClient, Edit, schema } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
+        ts.write_text('''import { GeneratedClient, Edit, schema, AdmissionRefused } from '../../../integration/e2e/fixtures/round-trip/generated/client.ts';
 import type { Transaction } from '../../client-js/index.mts';
 declare const client: GeneratedClient;
 declare const backendUrl: string;
@@ -139,7 +139,7 @@ late GeneratedClient client;
     with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/e2e/fixtures/round-trip') as temp:
         backend = Path(temp) / 'backend.mts'
         backend.write_text('''import { PrismaClient, type Prisma } from '@prisma/client';
-import { createBackend, Entry } from '../generated/backend.ts';
+import { createBackend, Entry, type Options } from '../generated/backend.ts';
 import { prisma } from '../../../../../packages/postgres/index.mts';
 declare const db: PrismaClient;
 declare const backend: ReturnType<typeof createBackend<Prisma.TransactionClient>>;

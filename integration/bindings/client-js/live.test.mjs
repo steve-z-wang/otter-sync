@@ -556,20 +556,20 @@ test('the HTTP transport maps every runtime route and refuses an unknown one', a
 });
 /** A fake backend admitting only `x-app-build` 7 or later, on every route and the upgrade (#181). */
 async function admissionServer(){
- const seen=[];const stamps={next:0};
+ const seen=[];const stamps={next:0};const state={marked:true};
  const refusal='{"minimumBuild":7}';
  const old=req=>Number(req.headers['x-app-build'])<7;
  const server=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);
   seen.push([req.url,req.headers['x-app-build'],req.headers.authorization]);
-  if(old(req)){res.writeHead(426,{'content-type':'application/json','axton-admission':'refused'});res.end(refusal);return;}
+  if(old(req)){res.writeHead(426,{'content-type':'application/json',...(state.marked?{'axton-admission':'refused'}:{})});res.end(refusal);return;}
   const body=JSON.parse(Buffer.concat(chunks));
   res.end(JSON.stringify(req.url==='/sync/mutations'?receiptFor(body,stamps):emptyPage(body)));});
  const ws=new WebSocketServer({noServer:true});
  server.on('upgrade',(req,socket,head)=>{seen.push([req.url,req.headers['x-app-build'],req.headers.authorization]);
-  if(old(req)){socket.end(`HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\naxton-admission: refused\r\nContent-Length: ${refusal.length}\r\n\r\n${refusal}`);return;}
+  if(old(req)){socket.end(`HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\n${state.marked?'axton-admission: refused\r\n':''}Content-Length: ${refusal.length}\r\n\r\n${refusal}`);return;}
   ws.handleUpgrade(req,socket,head,s=>s.on('message',m=>s.send(ack(JSON.parse(m)))));});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
- return {seen,url:`http://127.0.0.1:${server.address().port}`,async close(){for(const s of ws.clients)s.terminate();await new Promise(r=>ws.close(r));await new Promise(r=>server.close(r));}};
+ return {seen,state,url:`http://127.0.0.1:${server.address().port}`,async close(){for(const s of ws.clients)s.terminate();await new Promise(r=>ws.close(r));await new Promise(r=>server.close(r));}};
 }
 test('client headers reach every HTTP route and the upgrade; AXTON\'s own headers cannot be replaced',async()=>{
  const server=await admissionServer();
@@ -585,6 +585,22 @@ test('client headers reach every HTTP route and the upgrade; AXTON\'s own header
   for(const name of ['Authorization','content-type','Sec-WebSocket-Key','upgrade'])
    assert.throws(()=>createServerConnection({url:server.url,token:'t',headers:{[name]:'x'}}),/reserved header/);
   assert.throws(()=>createServerConnection({url:server.url,token:'t',headers:{'x-build':7}}),/header x-build must be a string/);
+ }finally{await server.close();}
+});
+test('a marked refusal carries its status and body on HTTP and on the upgrade; an unmarked 426 is an ordinary failure',async()=>{
+ const server=await admissionServer();
+ try{
+  const live=createServerConnection({url:server.url,token:'secret',headers:{'x-app-build':'6'}});
+  const refused=async()=>{
+   const http=await timeout(live.push('pull','{}').then(()=>assert.fail('admitted'),e=>e));
+   const closed=Promise.withResolvers();
+   live.open(subscribe,new AbortController().signal,handlers({closed:closed.resolve}));
+   const upgrade=await timeout(closed.promise);
+   return [http,upgrade].map(e=>[e.status,e.refusal]);
+  };
+  assert.deepEqual(await refused(),[[426,'{"minimumBuild":7}'],[426,'{"minimumBuild":7}']]);
+  server.state.marked=false;
+  assert.deepEqual(await refused(),[[426,undefined],[426,undefined]]);
  }finally{await server.close();}
 });
 test('an admission refusal reaches onError once as an AdmissionRefused, the connection stops, and connecting with current headers syncs',async()=>{

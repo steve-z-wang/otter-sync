@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1}]}') as Map<String,dynamic>;
 /// What a fresh create of Item accepts: a complete [Item], or a [ItemCreate] that may omit fields with creation defaults.
@@ -136,6 +136,12 @@ class GeneratedClient {
  Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();
  /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`; `pending` runs its handler again at once.
  Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);
+ /// The refusals retained until dismissed, each with the act as submitted: `watch`, `get` and `dismiss`.
+ late final rejections = client.rejections;
+ /// The unsent acts blocked on a terminally failed prerequisite task: `watch`, `retry` and `drop`.
+ late final failures = client.failures;
+ /// The queue of unsettled acts: `watchPending`.
+ late final outbound = client.outbound;
  /// Start the background connection when `open` was called without a server.
  Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.

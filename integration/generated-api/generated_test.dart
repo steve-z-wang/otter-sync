@@ -161,6 +161,14 @@ void main(){
    expect(state.pending.every((p)=>p.phase=='queued' && !p.diverged),isTrue);
    expect(state.rejections,isEmpty);
    expect((await client.syncState())['pending'],greaterThan(0));
+   // Unsent work through the generated client: typed streams and resolutions.
+   final List<RefusedAct> refused=await client.rejections.watch().first;
+   expect(refused,isEmpty);
+   final List<FailedAct> failed=await client.failures.watch().first;
+   expect(failed,isEmpty);
+   expect(await client.outbound.watchPending().first,greaterThan(0));
+   expect(await client.rejections.get(99),isNull);
+   await client.transaction((tx)async{await tx.rejections.dismiss(99);await tx.failures.retry(const ['none']);});
    expect(client.clientId,isNotEmpty);
    expect(await client.client.freeze(),isNotNull);
   }finally{await client.close();await temp.delete(recursive:true);}

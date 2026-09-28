@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"name":"Clock","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"query","name":"Clock","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"models":[],"prerequisites":[],"requirements":[],"resultModels":[]}') as Map<String,dynamic>;
@@ -153,8 +153,8 @@ class TransactionMutations {
  final SubmitMutationPort _port; TransactionMutations(this._port);
  Future<Call<PingOutput>> ping({PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
 }
-/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.
-class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }
+/// The application transaction: local Models and Channels, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
@@ -188,6 +188,12 @@ class GeneratedClient {
  Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();
  /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`; `pending` runs its handler again at once.
  Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);
+ /// The refusals retained until dismissed, each with the act as submitted: `watch`, `get` and `dismiss`.
+ late final rejections = client.rejections;
+ /// The unsent acts blocked on a terminally failed prerequisite task: `watch`, `retry` and `drop`.
+ late final failures = client.failures;
+ /// The queue of unsettled acts: `watchPending`.
+ late final outbound = client.outbound;
  /// Start the background connection when `open` was called without a server.
  Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.

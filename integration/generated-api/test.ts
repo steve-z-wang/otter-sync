@@ -5,7 +5,7 @@ import {createRequire} from 'node:module';
 import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {GeneratedClient,CallError,type Call,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus} from './client.ts';
+import {GeneratedClient,CallError,type Call,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus,type RefusedAct,type FailedAct,type FailedTask,type SubmittedAct} from './client.ts';
 import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status, Composition, PublishEntryOutput, RenameOutput, SubmitMutationOptions, SubmitMutationPort} from './generated.ts';
 import {ApplicationTransaction,CompanionContext} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
@@ -413,11 +413,14 @@ function scriptedTransaction(){
  const submitted:{name:string;version:number;args:object;options:SubmitMutationOptions|undefined}[]=[];
  const outer:object[]=[];
  const companions:object[]=[];
+ const resolutions:object[]=[];
  const companionPort:WritePort={...reads,async read(){return compositionRow},async direct(op){companions.push(op);}};
  const port:WritePort&SubmitMutationPort&{channels:GeneratedTransaction['channels']}={
   ...reads,
   async direct(op){outer.push(op);},
   channels:{async subscribe(){},async unsubscribe(){}},
+  rejections:{async dismiss(id){resolutions.push({dismiss:id});}},
+  failures:{async retry(taskKeys){resolutions.push({retry:taskKeys});},async drop(ordinal){resolutions.push({drop:ordinal});}},
   async submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>{
    submitted.push({name,version,args,options});
    await options?.local?.(companionPort);
@@ -425,7 +428,7 @@ function scriptedTransaction(){
    return {status:'pending',async wait(){return {result,error:null};}};
   },
  };
- return {port,submitted,outer,companions};
+ return {port,submitted,outer,companions,resolutions};
 }
 // Typed shapes: the callback returns any value, including one or several Calls.
 async function transactionShapes(client:GeneratedClient){
@@ -444,7 +447,18 @@ async function transactionShapes(client:GeneratedClient){
  const nothing:void=await client.transaction(async tx=>{await tx.models.composition.delete({id:compositionId});});
  const outcome=await published.wait();
  const at:Date|undefined=outcome.result?.published.at;
- return [scalar,pair,counted,nothing,at];
+ // Unsent work: typed streams on the client, resolutions in the transaction.
+ const stop:()=>void=client.rejections.watch((items:RefusedAct[])=>{const act:SubmittedAct|undefined=items[0]?.act;void act?.args;});
+ client.failures.watch((items:FailedAct[])=>{const task:FailedTask|undefined=items[0]?.tasks[0];void task?.error;},(error:unknown)=>void error);
+ client.outbound.watchPending((count:number)=>void count);
+ const refused:RefusedAct|null=await client.rejections.get(1);
+ await client.rejections.dismiss(1);
+ await client.failures.retry(['key']);
+ await client.failures.drop(1);
+ await client.transaction(async tx=>{await tx.failures.drop(1);await tx.failures.retry(['key']);await tx.rejections.dismiss(2);return tx.mutations.rename({id:compositionId,title:'fixed'});});
+ // @ts-expect-error task keys are a list
+ await client.failures.retry('key');
+ return [scalar,pair,counted,nothing,at,stop,refused];
 }
 void transactionShapes;
 async function checkTransactionMutations(){
@@ -482,6 +496,11 @@ async function checkTransactionMutations(){
  assert.equal('watch' in context.models.composition,false);
  await tx.models.composition.delete({id:compositionId});
  assert.deepEqual(scripted.outer,[{model:'Composition',op:'delete',identity:{id:compositionId}}],'ordinary writes stay independent');
+ // Resolutions of unsent work reach the raw transaction unchanged.
+ await tx.failures.drop(3);
+ await tx.failures.retry(['k']);
+ await tx.rejections.dismiss(4);
+ assert.deepEqual(scripted.resolutions,[{drop:3},{retry:['k']},{dismiss:4}]);
  // The generated client passes the application facade to `transaction` and
  // the local-only facade to onStore.
  let hooks:Record<string,(tx:unknown,changes:unknown[])=>void|Promise<void>>|undefined;

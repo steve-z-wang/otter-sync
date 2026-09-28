@@ -27,6 +27,7 @@ export type {
   Transport,
 } from "./connection.mts";
 export {
+  AdmissionRefused,
   AxtonReport,
   type ReportDetails,
   type ReportKind,

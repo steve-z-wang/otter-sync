@@ -70,3 +70,12 @@ test('native socket closure reports failure and a new open creates a new socket'
   const again=Promise.withResolvers();live.open(subscribe,new AbortController().signal,handlers({closed:again.resolve}));
   await tick();assert.notEqual(Socket.last,socket);Socket.last.onerror({message:'refused'});assert.match((await again.promise).message,/refused/);
 });
+
+test('client headers ride the native upgrade beside the credential, which they cannot replace',async()=>{
+  const abort=new AbortController();
+  createServerConnection({url:'http://localhost',token:'alice',headers:{'x-app-build':'7'}},Socket).open(subscribe,abort.signal,handlers());
+  await tick();
+  assert.deepEqual(Socket.last.options.headers,{'x-app-build':'7',authorization:'Bearer alice'});
+  abort.abort();
+  assert.throws(()=>createServerConnection({url:'http://localhost',token:'alice',headers:{authorization:'Bearer mallory'}},Socket),/reserved header authorization/);
+});

@@ -554,3 +554,58 @@ test('the HTTP transport maps every runtime route and refuses an unknown one', a
     assert.equal(paths.length, 4, 'nothing was posted for an unknown route');
   } finally { await new Promise(r => server.close(r)); }
 });
+/** A fake backend admitting only `x-app-build` 7 or later, on every route and the upgrade (#181). */
+async function admissionServer(){
+ const seen=[];const stamps={next:0};
+ const refusal='{"minimumBuild":7}';
+ const old=req=>Number(req.headers['x-app-build'])<7;
+ const server=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);
+  seen.push([req.url,req.headers['x-app-build'],req.headers.authorization]);
+  if(old(req)){res.writeHead(426,{'content-type':'application/json','axton-admission':'refused'});res.end(refusal);return;}
+  const body=JSON.parse(Buffer.concat(chunks));
+  res.end(JSON.stringify(req.url==='/sync/mutations'?receiptFor(body,stamps):emptyPage(body)));});
+ const ws=new WebSocketServer({noServer:true});
+ server.on('upgrade',(req,socket,head)=>{seen.push([req.url,req.headers['x-app-build'],req.headers.authorization]);
+  if(old(req)){socket.end(`HTTP/1.1 426 Upgrade Required\r\nContent-Type: application/json\r\naxton-admission: refused\r\nContent-Length: ${refusal.length}\r\n\r\n${refusal}`);return;}
+  ws.handleUpgrade(req,socket,head,s=>s.on('message',m=>s.send(ack(JSON.parse(m)))));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ return {seen,url:`http://127.0.0.1:${server.address().port}`,async close(){for(const s of ws.clients)s.terminate();await new Promise(r=>ws.close(r));await new Promise(r=>server.close(r));}};
+}
+test('client headers reach every HTTP route and the upgrade; AXTON\'s own headers cannot be replaced',async()=>{
+ const server=await admissionServer();
+ try{
+  const live=createServerConnection({url:server.url,token:'secret',headers:{'x-app-build':'7'}});
+  for(const route of ['push','pull','action','fetch','load'])await timeout(live.push(route,'{"cursors":{},"mutations":[]}'));
+  const opened=Promise.withResolvers();const abort=new AbortController();
+  live.open(subscribe,abort.signal,handlers({message:async()=>opened.resolve()}));
+  await timeout(opened.promise);abort.abort();
+  assert.deepEqual(server.seen,[
+   ['/sync/mutations','7','Bearer secret'],['/sync/pull','7','Bearer secret'],['/sync/actions','7','Bearer secret'],
+   ['/sync/fetch','7','Bearer secret'],['/sync/loads','7','Bearer secret'],['/sync/live','7','Bearer secret']]);
+  for(const name of ['Authorization','content-type','Sec-WebSocket-Key','upgrade'])
+   assert.throws(()=>createServerConnection({url:server.url,token:'t',headers:{[name]:'x'}}),/reserved header/);
+  assert.throws(()=>createServerConnection({url:server.url,token:'t',headers:{'x-build':7}}),/header x-build must be a string/);
+ }finally{await server.close();}
+});
+test('an admission refusal reaches onError once as an AdmissionRefused, the connection stops, and connecting with current headers syncs',async()=>{
+ const fixture=await openClient();const {client}=fixture;const errors=[];const server=await admissionServer();
+ try{
+  await client.subscribe('scope');
+  await client.mutate({name:'Edit',operations:[{model:'Entry',op:'create',identity:{id:'live'},values:{text:'written'}}]});
+  await client.connect({url:server.url,token:'secret',headers:{'x-app-build':'6'}},{onError:e=>errors.push(e),refreshAuth:async()=>assert.fail('a refusal is not an authentication failure')});
+  await until(()=>errors.length>0);
+  const refused=server.seen.length;
+  await new Promise(r=>setTimeout(r,600));
+  assert.equal(errors.length,1,`reported once: ${errors.map(e=>e.message)}`);
+  assert.ok(errors[0] instanceof runtime.AdmissionRefused);
+  assert.equal(errors[0].status,426);assert.deepEqual(errors[0].body,{minimumBuild:7});
+  assert.equal(server.seen.length,refused,'nothing is retried after the refusal');
+  assert.equal((await client.syncState()).pending,1,'the batch stays for a later connection');
+  // The refused connection ended its handle: the same client connects again.
+  server.seen.length=0;
+  await client.connect({url:server.url,token:'secret',headers:{'x-app-build':'7'}},{onError:e=>errors.push(e)});
+  await until(async()=>(await client.syncState()).pending===0);
+  assert.equal(errors.length,1);
+  assert.ok(server.seen.every(([,build,token])=>build==='7'&&token==='Bearer secret'),JSON.stringify(server.seen));
+ }finally{await fixture.close();await server.close();}
+});

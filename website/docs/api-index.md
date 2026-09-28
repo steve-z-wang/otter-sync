@@ -28,6 +28,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.connection` | Pause, resume or wake background sync | [Connections](frontend/runtime.md#connection-controls) |
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |
+| Dart `toAxtonPrecision()` (`AxtonDateTime`) | Get the UTC, millisecond `DateTime` AXTON stores for a value, to compare it with one read back | [Dates and times](frontend/client-api.md#dates-and-times) |
 | `Mutations<Tx>`, `Queries<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>` | Implement each operation's authoritative business logic | [Handlers](backend/api.md#handlers) |
 | `Loads<Tx>`, `LoadContext<Tx>`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
 | `Loaders<Tx>`, `LoaderCall` | Return current records for synchronization | [Loaders](backend/api.md#loaders) |

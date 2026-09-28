@@ -6,8 +6,8 @@ extension AxtonDateTime on DateTime {
   ///
   /// Generated code encodes every `DateTime` it writes or sends through this
   /// method, and every `DateTime` it reads is already in this form. Dart's
-  /// `==` also compares [isUtc], so compare a value you created with a stored
-  /// one through this method or with [isAtSameMomentAs].
+  /// `==` also compares [isUtc] and microseconds, so compare a value you
+  /// created with one read back as `readBack == value.toAxtonPrecision()`.
   DateTime toAxtonPrecision() {
     final utc = toUtc();
     return utc.microsecond == 0

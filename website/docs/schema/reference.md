@@ -50,7 +50,7 @@ Dart output imports `package:axton/axton.dart`. Commit the history used to gener
 | `Int` | `number` | `int` | Integer within the supported JSON safe range |
 | `Float` | `number` | `double` | Finite number |
 | `Bool` / `Boolean` | `boolean` | `bool` | Boolean |
-| `DateTime` | `Date` | `DateTime` | Converted to/from UTC wire text |
+| `DateTime` | `Date` | `DateTime` | A UTC instant at millisecond precision; Dart drops microseconds when writing and reads UTC ([dates and times](../frontend/client-api.md#dates-and-times)) |
 | Enum name | Generated enum type | Generated enum type | One declared value |
 | `T?` | Nullable type | Nullable type | Field can be null |
 | `T[]` | Array | List | List of scalar/enum values |
@@ -116,7 +116,7 @@ A reference names the local fields matching the target identity. `onTargetDelete
 
 ## Mutations and Queries
 
-`mutation Name(inputs) { outputs }` and `query Name(inputs) { outputs }` each define one generated input/output pair. A Mutation may change business state or perform external effects; a Query reads without business side effects. Braces may be omitted when there are no explicit outputs. Ordinary inputs use scalar or enum types; `String?` is a required argument whose value can be null. Mutation Model operands use `Model.create`, `Model.update<fields>` or `Model.delete`, optionally followed by `?` or `[]`. An optional Model operand may be omitted or null; a list has zero or more elements. Omitted update fields stay omitted, while explicit null clears a nullable field. TypeScript flattens operands into `ModelCreate`, `ModelUpdate<K>` and `ModelDelete`; Dart uses `Present<T>` to represent supplied patch fields.
+`mutation Name(inputs) { outputs }` and `query Name(inputs) { outputs }` each define one generated input/output pair. A Mutation may change business state or perform external effects; a Query reads without business side effects. Braces may be omitted when there are no explicit outputs. Ordinary inputs use scalar or enum types; `String?` is a required argument whose value can be null. Mutation Model operands use `Model.create`, `Model.update<fields>` or `Model.delete`, optionally followed by `?` or `[]`. An optional Model operand may be omitted or null, and the two mean the same: the call records `null` and the handler receives `null`. A list has zero or more elements. Omitted update fields stay omitted, while explicit null clears a nullable field. TypeScript flattens operands into `ModelCreate`, `ModelUpdate<K>` and `ModelDelete`; Dart uses `Present<T>` to represent supplied patch fields.
 
 A Query takes ordinary inputs only: a Model operand or `@sequence` on a Query is refused with a diagnostic at its source line. The older keyword `action` is refused with a diagnostic naming `mutation` and `query`. Mutations and Queries share one namespace, after lower-camel normalization; `call` is reserved as a Mutation name and `enqueue` as a Query name.
 

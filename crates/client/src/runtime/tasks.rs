@@ -321,11 +321,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.prerequisite_readiness(key);
                 Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string()))
             }
+            // A retry that did not commit leaves the backoff alone.
             Command::RetryTasks { keys } => {
-                for key in keys {
-                    self.prerequisite_readiness(key);
+                let outcome =
+                    commands::execute(&mut self.client, &command).map_err(|e| e.to_string());
+                if outcome.is_ok() {
+                    for key in keys {
+                        self.prerequisite_readiness(key);
+                    }
                 }
-                Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string()))
+                Some(outcome)
             }
             Command::UnsentWatch { view } => Some(self.unsent_watch(*view)),
             Command::Rebuild { discard_pending } => {

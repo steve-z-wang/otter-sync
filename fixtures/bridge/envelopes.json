@@ -56,6 +56,7 @@
     {"type":"effectResult","effectId":"101","outcome":{"ok":true,"value":{"event":"overflow"}}},
     {"type":"effectResult","effectId":"101","outcome":{"ok":true,"value":{"event":"closed"}}},
     {"type":"effectResult","effectId":"102","outcome":{"ok":false,"error":{"message":"pull failed","status":401}}},
+    {"type":"effectResult","effectId":"105","outcome":{"ok":false,"error":{"message":"push failed: 426 {\"minimumBuild\":7}","status":426,"refusal":"{\"minimumBuild\":7}"}}},
     {"type":"effectResult","effectId":"103","outcome":{"ok":false,"error":{"message":"offline"}}},
     {"type":"effectResult","effectId":"104","outcome":{"ok":true,"value":{"status":200,"body":"{}"}}},
     {"type":"close"}
@@ -91,6 +92,7 @@
     {"type":"report","diagnostic":{"kind":"error","message":"socket closed"}},
     {"type":"report","diagnostic":{"kind":"error","message":"HTTP 503","status":503}},
     {"type":"report","diagnostic":{"kind":"protocol","message":"duplicate request id 42"}},
+    {"type":"report","diagnostic":{"kind":"refused","message":"push failed: 426 {\"minimumBuild\":7}","status":426,"body":{"minimumBuild":7}}},
     {"type":"runtimeClosed"}
   ]
 }

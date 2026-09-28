@@ -1066,6 +1066,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     Object? value,
     String? error,
     int? status,
+    String? refusal,
   }) => {
     'type': 'effectResult',
     'effectId': effectId,
@@ -1073,7 +1074,11 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'ok': ok,
       if (value != null) 'value': value,
       if (error != null)
-        'error': {'message': error, if (status != null) 'status': status},
+        'error': {
+          'message': error,
+          if (status != null) 'status': status,
+          if (refusal != null) 'refusal': refusal,
+        },
     },
   };
 

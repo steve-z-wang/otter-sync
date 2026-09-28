@@ -881,6 +881,93 @@ test('notify and bindTransaction are gone; backend.transaction is the only exter
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-only-path','only path');touch.task({id:'tx-only-path'});channel('shared').task.add({id:'tx-only-path'});});
  assert.equal(await head('shared'),before+1);
 });
+// #180: a transaction the application opened and owns. `owned` is the caller's
+// own runner (Prisma, Repeatable Read, its own retry loop): AXTON never opens it.
+const owned=async body=>{for(let attempt=1;;attempt++){try{return await db.$transaction(body,{isolationLevel:'RepeatableRead'});}catch(error){if(attempt<4&&isRetryableTransactionError(error))continue;throw error;}}};
+const members=async id=>(await db.$queryRawUnsafe('SELECT channel FROM axton_membership WHERE model=$1 AND identity_key=$2 ORDER BY channel','Task',key(id))).map(r=>r.channel);
+test('backend.publish settles in a caller-owned transaction; its wake, called after commit, reaches a live subscriber once',async()=>{
+ const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
+ const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
+ socket.send(JSON.stringify({type:'subscribe',channels:['owned'],models:{Task:1}}));while(frames.length<1)await delay(5);
+ let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
+ const from=await head('owned');
+ const wake=await owned(async tx=>{
+  await write(tx,'owned-1','owned write');
+  const wake=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-1'});channel('owned').task.add({id:'owned-1'});});
+  assert.equal(typeof wake,'function');
+  assert.equal(await recordStamp('owned-1'),null,'nothing is visible outside the caller transaction before it commits');
+  return wake;
+ });
+ assert.equal(await recordStamp('owned-1'),1,'the stamp committed with the caller transaction');
+ assert.deepEqual(await invalidations('owned-1'),[['owned',from+1,1]],'one position at that stamp');
+ assert.deepEqual(await members('owned-1'),['owned']);
+ await delay(80);assert.equal(woke,0,'the framework does not guess at the caller commit');assert.equal(frames.length,1);
+ wake();
+ while(frames.length<2)await delay(5);
+ assert.equal(woke,1);
+ assert.deepEqual(frames[1].changes,[{model:'Task',identity:{id:'owned-1'},stamp:1,state:{title:'owned write'}}]);
+ assert.deepEqual(frames[1].cursors.owned,{from,to:from+1,head:from+1});
+ unsubscribe();socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));await server.close();
+});
+test('a throw after backend.publish rolls back the business row with every AXTON table; no wake is handed out',async()=>{
+ let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
+ const before=await head('owned');
+ await assert.rejects(()=>owned(async tx=>{
+  await write(tx,'owned-rollback','never');
+  await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-rollback'});channel('owned').task.add({id:'owned-rollback'});});
+  throw new Error('after publication');
+ }),/after publication/);
+ await delay(20);assert.equal(woke,0);
+ assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-rollback'"))[0].count,0n);
+ assert.equal(await recordStamp('owned-rollback'),null);assert.deepEqual(await invalidations('owned-rollback'),[]);assert.deepEqual(await members('owned-rollback'),[]);
+ assert.equal(await head('owned'),before);
+ unsubscribe();
+});
+test('a publication inside a caller savepoint rolls back with that savepoint; the rest of the transaction commits',async()=>{
+ const before=await head('owned');
+ const wakes=await owned(async tx=>{
+  await tx.$executeRawUnsafe('SAVEPOINT caller_act');
+  await write(tx,'owned-savepoint','rejected act');
+  const undone=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-savepoint'});channel('owned').task.add({id:'owned-savepoint'});});
+  await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT caller_act');
+  await write(tx,'owned-kept','kept act');
+  const kept=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-kept'});channel('owned').task.add({id:'owned-kept'});});
+  return [undone,kept];
+ });
+ for(const wake of wakes)wake();
+ assert.equal(await recordStamp('owned-savepoint'),null);assert.deepEqual(await members('owned-savepoint'),[]);
+ assert.deepEqual(await invalidations('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
+});
+test('a conflicted caller transaction retries and its publication commits once',async()=>{
+ await backend.transaction(async({tx,channel,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});channel('owned').task.add({id:'owned-race'});});
+ const from=await head('owned');assert.equal(await recordStamp('owned-race'),1);
+ let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
+ let bodies=0,entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});const failures=[];
+ const caller=owned(async tx=>{
+  bodies++;
+  // The first attempt fixes its snapshot, then waits while another writer touches the same record.
+  await tx.$queryRawUnsafe('SELECT stamp FROM axton_record WHERE identity_key=$1',key('owned-race'));
+  if(bodies===1){entered();await gate;}
+  await write(tx,'owned-race-note',`attempt ${bodies}`);
+  try{return await backend.publish(tx,({touch})=>{touch.task({id:'owned-race'});});}
+  catch(error){failures.push(error);throw error;}
+ });
+ await inside;
+ await backend.transaction(async({touch})=>{touch.task({id:'owned-race'});});
+ await delay(0);woke=0;
+ release();
+ const wake=await caller;
+ assert.equal(bodies,2,'the stale attempt failed inside the publication and the caller ran its body again');
+ assert.equal(failures.length,1);assert.ok(isRetryableTransactionError(failures[0]),'the database conflict reaches the caller unwrapped');
+ assert.equal(await recordStamp('owned-race'),3,'the concurrent touch and the one committed publication');
+ assert.deepEqual(await invalidations('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
+ await delay(20);assert.equal(woke,0,'no attempt wakes by itself');wake();await delay(0);assert.equal(woke,1);
+ unsubscribe();
+});
+test('backend.publish refuses a transaction the framework already owns',async()=>{
+ await assert.rejects(()=>backend.transaction(async({tx})=>{await backend.publish(tx,({touch})=>{touch.task({id:'owned-nested'});});}),/already/);
+ assert.equal(await recordStamp('owned-nested'),null);
+});
 test('re-adding an unchanged member keeps its stamp and publishes nothing; a later touch reaches its Channel without another add',async()=>{
  await external(backend,'shared',[{model:'Task',identity:{id:'stamp-probe'}}]);
  const stampOf=()=>recordStamp('stamp-probe');

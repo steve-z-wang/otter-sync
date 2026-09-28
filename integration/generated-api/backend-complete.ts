@@ -46,3 +46,5 @@ export const backend = createBackend<Tx>({
 });
 // An external write declares through the same handles and answers its own value.
 export const external: Promise<number> = backend.transaction(async ({ tx, channel, touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); channel("c").book.add({ id: "b" }); return tx.rows.size; });
+// A write in a transaction the application owns declares through the same handles; the wake is called after that transaction commits.
+export const owned: Promise<() => void> = backend.publish({ rows: new Map() }, ({ touch, channel }) => { touch.book({ id: "b" }); channel("c").book.add({ id: "b" }); });

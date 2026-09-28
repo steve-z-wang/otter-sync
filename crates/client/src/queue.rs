@@ -231,8 +231,12 @@ impl<S: ClientStore> Engine<'_, S> {
                 self.exec("axton_mutation_dependency", "INSERT OR IGNORE INTO axton_mutation_dependency (ordinal, depends_on, kind) VALUES (?,?,?)", &[json!(ordinal), json!(dep), json!(kind)])?;
             }
         }
+        // A new requirement on a task that already failed inherits its
+        // failure: the act reports it at once and waits, like every other act
+        // on the task, for an explicit retry, which covers them all
+        // ([#204](https://github.com/zanminwang/axton/issues/204)).
         for key in &mutation.prerequisites {
-            self.exec("axton_mutation_prerequisite", "INSERT OR IGNORE INTO axton_mutation_prerequisite (ordinal, key, error) VALUES (?,?,NULL)", &[json!(ordinal), json!(key)])?;
+            self.exec("axton_mutation_prerequisite", "INSERT OR IGNORE INTO axton_mutation_prerequisite (ordinal, key, error) VALUES (?,?,(SELECT MAX(error) FROM axton_mutation_prerequisite WHERE key=?))", &[json!(ordinal), json!(key), json!(key)])?;
         }
         Ok(())
     }

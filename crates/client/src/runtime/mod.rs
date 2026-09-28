@@ -111,6 +111,8 @@
 //!   published as snapshots.
 //! - `sql_watches`: watched read-only SQL, re-run only after a commit that
 //!   writes a table it reads.
+//! - `unsent`: the unsent-work observers and the resolutions a transaction
+//!   announces at its commit.
 //! - `commands`: the commands executed directly against the client: local
 //!   reads and writes, Scope and Bootstrap registrations, the sync state and
 //!   the protocol seams (`freeze`, `ack`, `pull`).
@@ -125,6 +127,7 @@ pub mod protocol;
 mod sql_watches;
 mod tasks;
 mod transactions;
+mod unsent;
 
 pub use protocol::*;
 
@@ -157,6 +160,8 @@ pub struct ClientRuntime<S: ClientStore> {
     loads: loads::Loads,
     /// Subscription and watch observers, and the Bootstrap waiters.
     observers: observers::Observers,
+    /// The unsent-work observers.
+    unsent: unsent::Unsent,
     /// Admissions so far: ordinary tasks and effect results are numbered in
     /// arrival order, and lane work is scheduled by that order too.
     admitted: u64,
@@ -210,6 +215,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             prerequisites: prerequisites::Prerequisites::default(),
             loads: loads::Loads::default(),
             observers: observers::Observers::default(),
+            unsent: unsent::Unsent::default(),
             admitted: 0,
             lane_since: None,
             issued: 0,

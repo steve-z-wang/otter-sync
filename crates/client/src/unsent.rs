@@ -1,0 +1,207 @@
+//! Unsent work, account-wide: the acts the server refused, with the act as
+//! submitted, and the queued acts blocked on a terminally failed prerequisite
+//! task, with their resolutions ([#186](https://github.com/zanminwang/axton/issues/186),
+//! [#205](https://github.com/zanminwang/axton/issues/205),
+//! [#204](https://github.com/zanminwang/axton/issues/204)).
+//!
+//! These are read models over the queue and the rejection inbox; they add no
+//! table. A refusal keeps the whole act in `axton_rejection.detail.mutation`
+//! from the moment it is recorded ([Settlement](../../../docs/engineering/architecture/client/engine/settlement.md)),
+//! and a failed act is a queued, unsent act one of whose tasks carries an
+//! error. The shapes here are public and stable: an application recovers an
+//! author's words from a refusal's `act`.
+use crate::engine::{Engine, as_u64};
+use crate::store::ClientStore;
+use crate::{Mutation, Operation};
+use axton_core::{CallCompletion, Rejection, Result, invalid};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+/// An act as it was submitted: the call's arguments (after their one-time
+/// default fill; `null` for a legacy mutation, which has none) and its Model
+/// operations with their values. Local companions and cascade effects are not
+/// part of the act.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubmittedAct {
+    pub args: Option<Value>,
+    pub operations: Vec<Operation>,
+}
+impl SubmittedAct {
+    fn of(mutation: &Mutation) -> Self {
+        Self {
+            args: mutation.args.clone(),
+            operations: mutation.operations.clone(),
+        }
+    }
+}
+
+/// One retained refusal. `id` is the act's ordinal, the key `get` and
+/// `dismiss` take.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RefusedAct {
+    pub id: u64,
+    pub name: String,
+    pub version: u64,
+    pub code: String,
+    pub act: SubmittedAct,
+}
+
+/// A prerequisite task that failed terminally: its key, the prerequisite
+/// name and arguments of a schema-derived key (`None` for an opaque one) and
+/// the reason it failed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FailedTask {
+    pub key: String,
+    pub name: Option<String>,
+    pub arguments: Option<Value>,
+    pub error: String,
+}
+
+/// A queued act that waits on at least one failed task.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FailedAct {
+    pub ordinal: u64,
+    pub name: String,
+    pub version: u64,
+    pub act: SubmittedAct,
+    pub tasks: Vec<FailedTask>,
+}
+
+/// The refusal a rejection row describes. A row whose detail predates the
+/// retained act, or lacks part of it, reads as an act with no args and no
+/// operations rather than failing the whole list.
+fn refused(ordinal: u64, name: String, code: String, detail: &str) -> RefusedAct {
+    let detail: Value = serde_json::from_str(detail).unwrap_or(Value::Null);
+    let mutation = &detail["mutation"];
+    let args = mutation.get("args").filter(|a| !a.is_null()).cloned();
+    let operations = mutation
+        .get("operations")
+        .and_then(|ops| serde_json::from_value(ops.clone()).ok())
+        .unwrap_or_default();
+    RefusedAct {
+        id: ordinal,
+        name,
+        version: mutation["version"].as_u64().unwrap_or(1),
+        code,
+        act: SubmittedAct { args, operations },
+    }
+}
+
+fn failed_task(key: &str, error: &str) -> FailedTask {
+    let invocation = serde_json::from_str::<Value>(key)
+        .ok()
+        .filter(Value::is_object);
+    FailedTask {
+        key: key.to_string(),
+        name: invocation
+            .as_ref()
+            .and_then(|i| i["name"].as_str())
+            .map(str::to_string),
+        arguments: invocation
+            .as_ref()
+            .and_then(|i| i.get("arguments"))
+            .cloned(),
+        error: error.to_string(),
+    }
+}
+
+impl<S: ClientStore> Engine<'_, S> {
+    /// Every retained refusal, oldest first.
+    pub fn refused_acts(&mut self) -> Result<Vec<RefusedAct>> {
+        self.refused_where("", &[])
+    }
+    /// One retained refusal, or `None`.
+    pub fn refused_act(&mut self, id: u64) -> Result<Option<RefusedAct>> {
+        Ok(self
+            .refused_where("WHERE ordinal=?", &[serde_json::json!(id)])?
+            .into_iter()
+            .next())
+    }
+    fn refused_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<RefusedAct>> {
+        let rows = self.rows(
+            &format!(
+                "SELECT ordinal, name, code, detail FROM axton_rejection {filter} ORDER BY ordinal"
+            ),
+            params,
+        )?;
+        rows.rows
+            .iter()
+            .map(|r| {
+                Ok(refused(
+                    as_u64(&r[0])?,
+                    r[1].as_str().unwrap_or_default().to_string(),
+                    r[2].as_str().unwrap_or_default().to_string(),
+                    r[3].as_str().unwrap_or("null"),
+                ))
+            })
+            .collect()
+    }
+    /// The unsent acts waiting on a failed task, oldest first, each with its
+    /// failed tasks in key order. A task's state is the one every act waiting
+    /// on it shares ([`Engine::prerequisite_keys`]).
+    pub fn failed_acts(&mut self) -> Result<Vec<FailedAct>> {
+        let failed: BTreeMap<String, String> = self
+            .prerequisite_keys()?
+            .into_iter()
+            .filter_map(|(key, error)| error.map(|error| (key, error)))
+            .collect();
+        if failed.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut acts = vec![];
+        for queued in self.queued()? {
+            if queued.push.is_some() {
+                continue;
+            }
+            let tasks: Vec<FailedTask> = queued
+                .mutation
+                .prerequisites
+                .iter()
+                .filter_map(|key| failed.get(key).map(|error| failed_task(key, error)))
+                .collect();
+            if tasks.is_empty() {
+                continue;
+            }
+            acts.push(FailedAct {
+                ordinal: queued.ordinal,
+                name: queued.mutation.name.clone(),
+                version: queued.mutation.version,
+                act: SubmittedAct::of(&queued.mutation),
+                tasks,
+            });
+        }
+        Ok(acts)
+    }
+    /// Make each task pending again, for every act waiting on it. A key no
+    /// act waits on changes nothing.
+    pub fn retry_tasks(&mut self, keys: &[String]) -> Result<()> {
+        for key in keys {
+            self.reset_prerequisite(key)?;
+        }
+        Ok(())
+    }
+    /// Remove unsent act `ordinal` and its optimism, recording no refusal
+    /// for it: the author decided. Its lifecycle dependents are refused
+    /// `dependency.rejected` and retained as refusals. Answers the terminal
+    /// completions of the Calls it removed; an unknown ordinal changes
+    /// nothing, and an act already sent cannot be discarded.
+    pub fn discard(&mut self, ordinal: u64) -> Result<Vec<CallCompletion>> {
+        match self.queued_one(ordinal)? {
+            None => return Ok(vec![]),
+            Some(q) if q.push.is_some() => {
+                return Err(invalid(
+                    "cannot drop a sent mutation with unknown/accepted outcome",
+                ));
+            }
+            Some(_) => {}
+        }
+        let (affected, completions) = self.mark_rejected_with_completions(&[Rejection {
+            ordinal,
+            code: "dropped".into(),
+        }])?;
+        self.delete_rejection(ordinal)?;
+        self.rebuild_held(&affected)?;
+        Ok(completions)
+    }
+}

@@ -121,6 +121,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.loads.clock = self.loads.clock.max(now);
         let ran = self.unit(now, entropy);
         if ran {
+            self.publish_unsent();
             self.publish();
         }
         ran
@@ -320,6 +321,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.prerequisite_readiness(key);
                 Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string()))
             }
+            Command::RetryTasks { keys } => {
+                for key in keys {
+                    self.prerequisite_readiness(key);
+                }
+                Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string()))
+            }
+            Command::UnsentWatch { view } => Some(self.unsent_watch(*view)),
             Command::Rebuild { discard_pending } => {
                 Some(self.rebuild(discard_pending.unwrap_or(false), now, entropy))
             }
@@ -327,7 +335,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Command::ScopeBootstrap { .. } => self.bootstrap_scope(&request_id, &command),
             Command::Watch { model, spec } => Some(self.watch(model, spec.as_ref())),
             Command::WatchSql { sql, parameters } => Some(self.watch_sql(sql, parameters)),
-            Command::Unwatch { observer_id } => Some(self.unwatch(observer_id)),
+            Command::Unwatch { observer_id } => {
+                self.unwatch_unsent(observer_id);
+                Some(self.unwatch(observer_id))
+            }
             Command::LoadStart { .. }
             | Command::LoadGet { .. }
             | Command::LoadStatus { .. }
@@ -347,7 +358,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // travels as `callCompleted`, after the commit that decided it.
             if matches!(
                 command,
-                Command::Ack { .. } | Command::Pull { .. } | Command::Drop { .. }
+                Command::Ack { .. }
+                    | Command::Pull { .. }
+                    | Command::Drop { .. }
+                    | Command::Discard { .. }
             ) {
                 self.seam_completions(value);
             }
@@ -477,6 +491,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.close_lanes();
         self.close_loads();
         self.close_observers();
+        self.close_unsent();
         self.lifecycle = Lifecycle::Closed;
         self.events.push(Event::RuntimeClosed);
     }

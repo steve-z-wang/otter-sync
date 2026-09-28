@@ -153,13 +153,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
     /// Record what the handler came to: `None` resolves the task, a reason
-    /// fails it and is kept.
+    /// fails it and is kept. The commit re-runs the observers, which is how
+    /// a failed act reaches `failures`.
     pub(super) fn prerequisite_outcome(&mut self, key: String, error: Option<String>) {
         self.prerequisites.backoff.remove(&key);
         self.prerequisites.dirty = true;
+        let generation = self.client.generation();
         if let Err(e) = self.client.outcome(&key, error.as_deref()) {
             self.error(format!("prerequisite outcome: {e}"));
         }
+        self.committed_since(generation);
     }
     /// The application changed a task's readiness: its backoff is over.
     pub(super) fn prerequisite_readiness(&mut self, key: &str) {

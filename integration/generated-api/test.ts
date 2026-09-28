@@ -161,6 +161,8 @@ if(false){
  // A Model without a Loader is device-only (#187): a Loaders map may omit it.
  const deviceOnly:Loaders<Tx>={book:shorthandLoader,entry:versionedLoaders};
  const noLoaders:Loaders<Tx>={};
+ // A standalone version of an optional member is typed through NonNullable.
+ const entryV2:NonNullable<Loaders<Tx>['entry']>['v2']=async({ids})=>ids.map(()=>row);
  // @ts-expect-error a Model that registers a Loader registers every retained version
  const partialModel:Loaders<Tx>={entry:{v2:async({ids})=>ids.map(()=>row)}};
  // @ts-expect-error a v1 loader cannot return a value outside the v1 contract

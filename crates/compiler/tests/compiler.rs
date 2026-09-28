@@ -702,7 +702,7 @@ fn generated_clients_are_the_whole_client() {
         "class Mutate { final MutatePort port;",
         "Map<String, PrerequisiteHandler>? prerequisites,",
         "onStore:rawHooks, prerequisites:prerequisites);",
-        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;",
+        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;",
     ] {
         assert!(dart.contains(member), "missing {member}: {dart}");
     }
@@ -1537,13 +1537,44 @@ fn action_dart_binds_shared_runtime_and_retained_codecs() {
         "Duration directTimeout = const Duration(seconds: 30)",
         "directTimeout:directTimeout",
         "DateTime.parse(",
-        ".toUtc().toIso8601String()",
+        ".toAxtonPrecision().toIso8601String()",
         "if (changed != null)",
         "class NoteLiveModel extends NoteTxModel",
     ] {
         assert!(dart.contains(expected), "missing {expected}: {dart}");
     }
     assert!(!dart.contains("abstract interface class Call<T>"), "{dart}");
+}
+
+#[test]
+fn dart_encodes_every_date_time_at_axton_precision() {
+    // #189: every DateTime generated Dart writes or sends goes through the
+    // SDK's one truncation to UTC milliseconds, the precision the core stores.
+    let v = compile("model Slot { shelf String at DateTime moved DateTime? @@id(shelf, at) } mutation Move(slot Slot.update<moved>?, when DateTime, maybe DateTime?, stamps DateTime[]) { at DateTime } query Near(at DateTime) { at DateTime } load Since(at DateTime?) { slots Slot[] }").unwrap();
+    let dart = axton_compiler::dart(&v);
+    for expected in [
+        "'at': at.toAxtonPrecision().toIso8601String(),",
+        "'moved': moved == null ? null : moved!.toAxtonPrecision().toIso8601String(),",
+        "if (moved != null) 'moved': moved!.value == null ? null : moved!.value!.toAxtonPrecision().toIso8601String(),",
+        "if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),",
+        "if (value is DateTime) return value.toAxtonPrecision().toIso8601String();",
+        "{'at': at == null ? null : at.toAxtonPrecision().toIso8601String()}",
+        "PrerequisiteHandler, AxtonDateTime;",
+    ] {
+        assert!(dart.contains(expected), "missing {expected}: {dart}");
+    }
+    assert!(!dart.contains(".toUtc().toIso8601String()"), "{dart}");
+    // Generated Dart re-exports the extension, so no Model or enum may take its name.
+    for source in [
+        "model AxtonDateTime { id String @@id(id) }",
+        "enum AxtonDateTime { a b }",
+    ] {
+        let error = compile(source).unwrap_err();
+        assert!(
+            error.contains("the generated client uses"),
+            "{source}: {error}"
+        );
+    }
 }
 
 #[test]

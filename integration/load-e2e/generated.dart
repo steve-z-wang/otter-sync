@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
 export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
@@ -315,7 +315,7 @@ abstract interface class QueryHandlers<Ctx> {
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
- if (value is DateTime) return value.toUtc().toIso8601String();
+ if (value is DateTime) return value.toAxtonPrecision().toIso8601String();
  if (value is Enum) return value.name;
  if (value is List) return value.map(_dartActionEncode).toList();
  if (value is _DartActionRecord) return value.toRecord();

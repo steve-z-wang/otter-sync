@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"single","kind":"value","list":false,"name":"composition","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}}],"kind":"mutation","name":"PublishEntry","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":2,"name":"published","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Rename","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book"}]},"knownFields":{"Book":["id","title"]},"name":"AddBook","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Book","name":"book","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment"}]},"knownFields":{"Comment":["id","bookId","text"]},"name":"AddComment","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Comment","name":"comment","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft"}]},"knownFields":{"Draft":["id","body","mood","created","note","memo"]},"name":"AddDraft","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Draft","name":"draft","operation":"create"}],"version":1},{"input":{"enums":[{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"CreateEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title"],"cardinality":"single","model":"Entry","name":"target","operation":"update"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"EditEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["title","note","at"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":2},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"cardinality":"optional","model":"Entry","name":"maybe","operation":"delete"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","title","note","at","tags","status"]},"name":"RemoveEntries","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"list","model":"Entry","name":"entries","operation":"delete"},{"allowedPatchFields":["note"],"cardinality":"optional","model":"Entry","name":"maybe","operation":"update"}],"version":2}],"enums":[{"name":"Mood","values":["calm","busy"]},{"name":"Status","values":["active","archived"]}],"models":[{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":"q \'single\' \\"double\\" \'\'\' \\"\\"\\" \$dollar \${x} \\\\ back\\nline"},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"busy"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"n"},"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":2},{"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","relations":[{"fields":["bookId"],"name":"book","onDelete":"delete","target":"Book","targetFields":["id"]}],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Book","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"bookId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Comment","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"index","nullable":true,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Counter","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"created","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"memo","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[{"name":"Status","values":["active","archived"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tags","nullable":false,"type":{"element":{"kind":"scalar","name":"string"},"kind":"list"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"identity":["id"],"name":"Entry","version":2},{"enums":[],"fields":[{"name":"shelf","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["shelf","at"],"name":"Placement","version":1}]}') as Map<String,dynamic>;
@@ -22,7 +22,7 @@ class Draft implements DraftCreateInput {
  'id': id,
  'body': body,
  'mood': mood.name,
- 'created': created.toUtc().toIso8601String(),
+ 'created': created.toAxtonPrecision().toIso8601String(),
  'note': note == null ? null : note!,
  'memo': memo == null ? null : memo!,
  };
@@ -58,7 +58,7 @@ class DraftPatch {
  Map<String,dynamic> toRecord() => {
  if (body != null) 'body': body!.value,
  if (mood != null) 'mood': mood!.value.name,
- if (created != null) 'created': created!.value.toUtc().toIso8601String(),
+ if (created != null) 'created': created!.value.toAxtonPrecision().toIso8601String(),
  if (note != null) 'note': note!.value == null ? null : note!.value!,
  if (memo != null) 'memo': memo!.value == null ? null : memo!.value!,
  };
@@ -77,7 +77,7 @@ class Entry implements EntryCreateInput {
  'id': id,
  'title': title,
  'note': note == null ? null : note!,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'tags': tags.map((e) => e).toList(),
  'status': status.name,
  };
@@ -113,7 +113,7 @@ class EntryPatch {
  Map<String,dynamic> toRecord() => {
  if (title != null) 'title': title!.value,
  if (note != null) 'note': note!.value == null ? null : note!.value!,
- if (at != null) 'at': at!.value.toUtc().toIso8601String(),
+ if (at != null) 'at': at!.value.toAxtonPrecision().toIso8601String(),
  if (tags != null) 'tags': tags!.value.map((e) => e).toList(),
  if (status != null) 'status': status!.value.name,
  };
@@ -127,7 +127,7 @@ class Placement implements PlacementCreateInput {
  const Placement({required this.shelf,required this.at,required this.label});
  Map<String,dynamic> toRecord() => {
  'shelf': shelf,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'label': label,
  };
  factory Placement.fromRecord(Map<String,dynamic> row) => Placement(
@@ -145,7 +145,7 @@ class PlacementIdentity {
  const PlacementIdentity({required this.shelf,required this.at});
  Map<String,dynamic> toRecord() => {
  'shelf': shelf,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  };
  factory PlacementIdentity.fromRecord(Map<String,dynamic> row) => PlacementIdentity(
  shelf: row['shelf'] as String,
@@ -324,7 +324,7 @@ class DraftCreate implements DraftCreateInput {
  if (id != null) 'id': id!,
  if (body != null) 'body': body!,
  if (mood != null) 'mood': mood!.name,
- if (created != null) 'created': created!.toUtc().toIso8601String(),
+ if (created != null) 'created': created!.toAxtonPrecision().toIso8601String(),
  if (note != null) 'note': note!.value == null ? null : note!.value!,
  'memo': memo == null ? null : memo!,
  };
@@ -342,7 +342,7 @@ class EntryCreate implements EntryCreateInput {
  'id': id,
  'title': title,
  'note': note == null ? null : note!,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'tags': tags.map((e) => e).toList(),
  'status': status.name,
  };
@@ -355,7 +355,7 @@ class PlacementCreate implements PlacementCreateInput {
  @override
  Map<String,dynamic> toCreateRecord() => {
  'shelf': shelf,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'label': label,
  };
 }
@@ -425,7 +425,7 @@ class EditEntryEntryUpdate {
  Map<String,dynamic> toRecord() => {
  if (title != null) 'title': title!.value,
  if (note != null) 'note': note!.value == null ? null : note!.value!,
- if (at != null) 'at': at!.value.toUtc().toIso8601String(),
+ if (at != null) 'at': at!.value.toAxtonPrecision().toIso8601String(),
  };
 }
 Map<String,dynamic> editEntry({required EditEntryEntryUpdate entry}) { final operations=<Map<String,dynamic>>[];
@@ -472,7 +472,7 @@ class DraftFilter {
  if(id!=null)'id':id!.value,
  if(body!=null)'body':body!.value,
  if(mood!=null)'mood':mood!.value.name,
- if(created!=null)'created':created!.value.toUtc().toIso8601String(),
+ if(created!=null)'created':created!.value.toAxtonPrecision().toIso8601String(),
  if(note!=null)'note':note!.value == null ? null : note!.value!,
  if(memo!=null)'memo':memo!.value == null ? null : memo!.value!,
 };
@@ -490,7 +490,7 @@ class EntryFilter {
  if(id!=null)'id':id!.value,
  if(title!=null)'title':title!.value,
  if(note!=null)'note':note!.value == null ? null : note!.value!,
- if(at!=null)'at':at!.value.toUtc().toIso8601String(),
+ if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),
  if(status!=null)'status':status!.value.name,
 };
 }
@@ -503,7 +503,7 @@ class PlacementFilter {
  const PlacementFilter({this.shelf,this.at,this.label});
  Map<String,dynamic> toRecord()=>{
  if(shelf!=null)'shelf':shelf!.value,
- if(at!=null)'at':at!.value.toUtc().toIso8601String(),
+ if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),
  if(label!=null)'label':label!.value,
 };
 }
@@ -808,7 +808,7 @@ abstract interface class QueryHandlers<Ctx> {
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
- if (value is DateTime) return value.toUtc().toIso8601String();
+ if (value is DateTime) return value.toAxtonPrecision().toIso8601String();
  if (value is Enum) return value.name;
  if (value is List) return value.map(_dartActionEncode).toList();
  if (value is _DartActionRecord) return value.toRecord();

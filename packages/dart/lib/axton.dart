@@ -1,6 +1,7 @@
 library;
 
 export 'src/client.dart';
+export 'src/date_time.dart';
 export 'src/actions.dart'
     show
         Call,

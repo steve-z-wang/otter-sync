@@ -10,6 +10,8 @@ export async function createFixture() {
   let queryCalls = 0;
   /** Every AddNote argument exactly as a handler received it. */
   const notes: { id: string; body: string; mood: string; createdAt: Date; tag: string | null }[] = [];
+  /** Every Restamp argument exactly as the handler received it (#189). */
+  const restamps: { note?: { id: string; createdAt?: Date } | null; at: Date }[] = [];
   const onceCalls = { todoPage: 0, countTodos: 0 };
   let failQueries = false;
   /** Every PublishEntry argument exactly as the handler received it. */
@@ -63,6 +65,13 @@ export async function createFixture() {
       notes.push({ ...args.note });
       await ctx.tx.query("INSERT INTO action_e2e_note(id,body,mood,created_at,tag) VALUES($1,$2,$3,$4,$5)", [args.note.id, args.note.body, args.note.mood, args.note.createdAt.toISOString(), args.note.tag]);
       return { saved: { id: args.note.id } };
+    },
+    // Moves a Note's createdAt when `note` is given and echoes `at` (#189).
+    async restamp({ ctx, args }) {
+      handlerCalls++;
+      restamps.push(structuredClone(args));
+      if (args.note?.createdAt) await ctx.tx.query("UPDATE action_e2e_note SET created_at=$2 WHERE id=$1", [args.note.id, args.note.createdAt.toISOString()]);
+      return { at: args.at };
     },
     // Stores the Entry, its media and its Journal placement in one backend
     // transaction. While `rejectPublish` is set, or for an Entry listed in
@@ -162,6 +171,8 @@ export async function createFixture() {
     get queryCalls() { return queryCalls; },
     get loaderCalls() { return loaderCalls; },
     notes,
+    /** Restamp arguments in arrival order. */
+    restamps,
     /** Real handler executions of the once-test Queries. */
     onceCalls,
     set failQueries(value: boolean) { failQueries = value; },

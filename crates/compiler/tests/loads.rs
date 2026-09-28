@@ -479,7 +479,7 @@ fn the_client_starts_invalidates_and_reattaches_typed_loads() {
     for expected in [
         "export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;\nclass Present<T>",
         " late final LoadInvalidations invalidate = LoadInvalidations(client);",
-        " Future<Load> projectTodos({required String projectId, required Status? status, required List<String> tags, required DateTime at, bool once = false, bool refresh = false}) => client.startLoad('ProjectTodos', 1, {'projectId': projectId, 'status': status == null ? null : status.name, 'tags': tags, 'at': at.toUtc().toIso8601String()}, once: once, refresh: refresh);",
+        " Future<Load> projectTodos({required String projectId, required Status? status, required List<String> tags, required DateTime at, bool once = false, bool refresh = false}) => client.startLoad('ProjectTodos', 1, {'projectId': projectId, 'status': status == null ? null : status.name, 'tags': tags, 'at': at.toAxtonPrecision().toIso8601String()}, once: once, refresh: refresh);",
         " Future<Load> allNotes({bool once = false, bool refresh = false}) => client.startLoad('AllNotes', 1, {}, once: once, refresh: refresh);",
         // Business inputs own `once` and `refresh`: the controls fall back.
         " Future<Load> flagged({required bool once, required String refresh, bool callOnce = false, bool callRefresh = false}) => client.startLoad('Flagged', 1, {'once': once, 'refresh': refresh}, once: callOnce, refresh: callRefresh);",

@@ -299,6 +299,8 @@ These examples use the [operation fixture](https://github.com/zanminwang/axton/b
     print([page.todos, page.nextCursor]);
     ```
 
+Both calls leave out the optional `patch` operand. Leaving an optional Model operand out means exactly the same as passing `null`: the queued call records it as `null` and the handler receives `null`, on either route. A nullable argument such as `status` or `cursor` is still required; pass a value or `null`.
+
 The overrides use the other route. `mutations.call` waits for the final Mutation outcome, and `queries.enqueue` queues a Query to run after reconnecting. The fixture's `SendEmail` Mutation has no outputs, so its durable call is a `Call<void>`:
 
 === "TypeScript"
@@ -614,7 +616,30 @@ A channel name must match what your backend publishes to. A subscription is a re
 | `EntryOrderField`, `EntryOrder` (Dart) | Typed ordering field and direction. |
 | `Present<T>` (Dart) | Distinguishes omission from an explicitly supplied value, including null. |
 
-UUID fields are strings; DateTime fields use language date/time values and encode to UTC strings. Avoid integers outside the JSON/JavaScript safe range. See the [schema compiler reference](../schema/reference.md) for the supported field types.
+UUID fields are strings. Avoid integers outside the JSON/JavaScript safe range. See the [schema compiler reference](../schema/reference.md) for the supported field types.
+
+### Dates and times
+
+A `DateTime` field, argument or result holds a UTC instant at millisecond precision, the precision of a JavaScript `Date`, on every client and on the server. A TypeScript `Date` already has that precision, so a stored `Date` has the same `getTime()` as the one you wrote.
+
+A Dart `DateTime` can carry microseconds and a local time zone. Generated Dart drops the sub-millisecond part before it writes or sends a value, so a record you read back holds exactly what was stored, and a later copy from the backend compares equal to it. Every `DateTime` Dart reads is in UTC (`isUtc` is true), including one you wrote as a local time. Dart's `==` compares `isUtc` and microseconds as well as the instant, and `isAtSameMomentAs` still sees microseconds, so compare a value you created with one read back through `toAxtonPrecision()`, which returns what AXTON stores for it:
+
+=== "TypeScript"
+
+    ```ts
+    const picked = new Date(2026, 8, 28, 14, 30);
+    console.log(picked.toISOString()); // the UTC text AXTON stores and returns
+    ```
+
+=== "Flutter"
+
+    ```dart
+    final picked = DateTime(2026, 9, 28, 14, 30, 0, 0, 250); // local, with microseconds
+    final stored = picked.toAxtonPrecision(); // what a DateTime field reads back as
+    print(stored.isUtc); // true
+    print(stored == picked); // false: == also compares isUtc and microseconds
+    // A value read back compares equal to picked.toAxtonPrecision().
+    ```
 
 ## Extension points
 

@@ -194,6 +194,45 @@ void main(){
    expect((await client.models.draft.get(DraftIdentity(id:copy.id)))?.body,'full');
   }finally{await client.close();await temp.delete(recursive:true);}
  });
+ // DateTime precision ([#189](https://github.com/zanminwang/axton/issues/189)):
+ // AXTON keeps a UTC instant at millisecond precision, and generated Dart
+ // truncates before it writes, so every read returns exactly what was stored.
+ test('a microsecond DateTime reads back as its UTC millisecond truncation',()async{
+  final micro=DateTime.utc(2026,9,28,12,34,56,789,123);
+  final milli=DateTime.utc(2026,9,28,12,34,56,789);
+  final local=DateTime(2026,9,28,14,0,0,0,456);
+  expect(micro.toAxtonPrecision(),milli,reason:'the helper is re-exported by generated code');
+  expect(Placement(shelf:'s',at:micro,label:'x').toRecord()['at'],'2026-09-28T12:34:56.789Z');
+  expect(PlacementIdentity(shelf:'s',at:micro).toRecord()['at'],'2026-09-28T12:34:56.789Z');
+  expect(EntryPatch(at:Present(micro)).toRecord()['at'],'2026-09-28T12:34:56.789Z');
+  expect(EntryFilter(at:Present(micro)).toRecord()['at'],'2026-09-28T12:34:56.789Z');
+  final temp=await Directory.systemTemp.createTemp('generated-api-precision-');
+  final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY'] ?? '../../target/debug/libaxton_dart.dylib');
+  try{
+   await client.transaction((tx)async{
+    await tx.models.placement.create(Placement(shelf:'s',at:micro,label:'utc'));
+    await tx.models.entry.create(Entry(id:id,title:'t',note:null,at:local,tags:const [],status:Status.active));
+   });
+   // A DateTime identity: the microsecond value and its truncation name one record.
+   final placed=await client.models.placement.get(PlacementIdentity(shelf:'s',at:micro));
+   expect(placed?.at,milli);
+   expect(placed!.at.isUtc,isTrue);
+   expect(await client.models.placement.get(PlacementIdentity(shelf:'s',at:milli)),isNotNull);
+   expect((await client.models.placement.query(where:PlacementFilter(at:Present(micro)))).single.label,'utc');
+   await client.models.placement.update(PlacementIdentity(shelf:'s',at:micro),const PlacementPatch(label:Present('moved')));
+   expect((await client.models.placement.query()).single.label,'moved',reason:'the update found the same record');
+   // A local DateTime reads back as the same instant in UTC.
+   final entry=await client.models.entry.get(const EntryIdentity(id:id));
+   expect(entry!.at,local.toAxtonPrecision());
+   expect(entry.at,DateTime(2026,9,28,14).toUtc());
+   expect(entry.at.isUtc,isTrue);
+   expect(entry.at==local,isFalse,reason:'Dart == compares isUtc and microseconds too');
+   await client.models.entry.update(const EntryIdentity(id:id),EntryPatch(at:Present(micro)));
+   expect((await client.models.entry.get(const EntryIdentity(id:id)))!.at,milli);
+   final watched=await client.models.entry.watch(where:EntryFilter(at:Present(micro))).firstWhere((rows)=>rows.isNotEmpty).timeout(const Duration(seconds:2));
+   expect(watched.single.at,milli);
+  }finally{await client.close();await temp.delete(recursive:true);}
+ });
  // The generated Scope facade ([#150](https://github.com/zanminwang/axton/issues/150)):
  // one handle per registration, typed handle members, and the retained
  // `channels` spelling on that same ledger path.

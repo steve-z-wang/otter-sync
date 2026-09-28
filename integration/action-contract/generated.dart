@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
 export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
@@ -108,7 +108,7 @@ class Note implements NoteCreateInput {
  'id': id,
  'body': body,
  'pinned': pinned,
- 'at': at.toUtc().toIso8601String(),
+ 'at': at.toAxtonPrecision().toIso8601String(),
  'tag': tag == null ? null : tag!,
  'memo': memo == null ? null : memo!,
  };
@@ -144,7 +144,7 @@ class NotePatch {
  Map<String,dynamic> toRecord() => {
  if (body != null) 'body': body!.value,
  if (pinned != null) 'pinned': pinned!.value,
- if (at != null) 'at': at!.value.toUtc().toIso8601String(),
+ if (at != null) 'at': at!.value.toAxtonPrecision().toIso8601String(),
  if (tag != null) 'tag': tag!.value == null ? null : tag!.value!,
  if (memo != null) 'memo': memo!.value == null ? null : memo!.value!,
  };
@@ -188,7 +188,7 @@ class NoteCreate implements NoteCreateInput {
  if (id != null) 'id': id!,
  if (body != null) 'body': body!,
  if (pinned != null) 'pinned': pinned!,
- if (at != null) 'at': at!.toUtc().toIso8601String(),
+ if (at != null) 'at': at!.toAxtonPrecision().toIso8601String(),
  if (tag != null) 'tag': tag!.value == null ? null : tag!.value!,
  'memo': memo == null ? null : memo!,
  };
@@ -233,7 +233,7 @@ class NoteFilter {
  if(id!=null)'id':id!.value,
  if(body!=null)'body':body!.value,
  if(pinned!=null)'pinned':pinned!.value,
- if(at!=null)'at':at!.value.toUtc().toIso8601String(),
+ if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),
  if(tag!=null)'tag':tag!.value == null ? null : tag!.value!,
  if(memo!=null)'memo':memo!.value == null ? null : memo!.value!,
 };
@@ -820,7 +820,7 @@ abstract interface class QueryGetTodosHandlers<Ctx> {
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
- if (value is DateTime) return value.toUtc().toIso8601String();
+ if (value is DateTime) return value.toAxtonPrecision().toIso8601String();
  if (value is Enum) return value.name;
  if (value is List) return value.map(_dartActionEncode).toList();
  if (value is _DartActionRecord) return value.toRecord();

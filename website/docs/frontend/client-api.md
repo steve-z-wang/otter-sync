@@ -218,7 +218,7 @@ Failures reject with `CallError`:
 | `fetch.timeout` | The direct timeout passed |
 | `fetch.transport_failed` | The request or credential refresh failed; `cause` carries the message and the HTTP status, if any |
 | `fetch.invalid_response` | The response did not answer this request |
-| `fetch.store_failed` | The record could not be stored: an `onStore` callback threw (it is the `cause`, and the callback's writes are rolled back), the local commit failed, or local content has the same stamp as different backend content. The last case happens when a business write skipped `touch`, so the record did not get a new stamp |
+| `fetch.store_failed` | The record could not be stored: an `onStore` callback threw (it is the `cause`, and the callback's writes are rolled back), the local commit failed, or local content has the same stamp as different backend content. The last case happens when a business write skipped `touch`, so the record did not get a new stamp, or when a [local write](#local-writes-to-synced-models) changed a record the client already held at that stamp |
 | `fetch.schema_pending` | The local database is waiting to be rebuilt for an incompatible schema change |
 | `fetch.schema_changed` | The local database was rebuilt while the call waited |
 
@@ -535,7 +535,17 @@ Fields with a [creation default](../schema/reference.md#creation-defaults) may b
 
 `create` does not return the generated values; read or watch the Model, or use a Mutation output, to see them.
 
-`create(record)`, `update(identity, patch)` and `delete(identity)` return `Promise<void>` / `Future<void>`. They change local storage without calling the backend. Use `client.mutations.<name>` for backend work. A later server update for the same identity may replace the cached local record; the application owns any conflict policy. Invalid identities, field values, references or uniqueness constraints can reject a local write and roll back the transaction.
+`create(record)`, `update(identity, patch)` and `delete(identity)` return `Promise<void>` / `Future<void>`. They change local storage without calling the backend. Use `client.mutations.<name>` for backend work. Newer server data for the same identity replaces the local record ([below](#local-writes-to-synced-models)); the application owns any other conflict policy. Invalid identities, field values, references or uniqueness constraints can reject a local write and roll back the transaction.
+
+### Local writes to synced Models
+
+A local write may target a Model that Channels also deliver. For example, an application can store a profile it looked up over REST before any Channel has delivered that person. The write is never sent, and newer server data for that identity replaces it:
+
+- **It is never sent.** A `tx.models` or `client.models` write never becomes a queued call or a backend request, whatever Model it targets.
+- **Newer server data replaces it.** A Channel update, a [Load](loads.md) page, a [Fetch](#fetch-a-record-from-the-backend) or a Mutation's receipt that carries a newer version of the same identity replaces the local write. Nothing restores the local write afterwards, not a later rejection and not a restart. A record that exists only because of a local write has no server version yet, so the first server data for it replaces it.
+- **A rejection does not undo it.** A local write can land on a record that a pending Mutation also changes. If the backend rejects that Mutation, AXTON removes only that Mutation's changes, including its `local` changes, and the local write stays until newer server data replaces it. The exception is a record whose only creation is a pending Mutation: if that create is rejected, the record goes, local writes included.
+
+Avoid overwriting a record the client already holds from the server unless newer server data will follow. If the same version arrives again after the local write, AXTON reports it as a conflict instead of replacing the write. A Channel update keeps the local write and reports the conflict through `onError`. A Load page that carries the same version fails its Load with `load.store_failed`, and a Fetch rejects with `fetch.store_failed`; the local write stays in both cases ([#196](https://github.com/zanminwang/axton/issues/196)).
 
 ## Channels
 

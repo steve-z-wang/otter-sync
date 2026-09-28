@@ -107,7 +107,7 @@ async fn read(
 ) -> Result<FetchResponse> {
     let key = key.ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?;
     if !config.loaders.contains(&key.model) {
-        return Err(unregistered());
+        return Err(unregistered(&key.model));
     }
     let stamp = match request.store {
         true => Some(ensure_stamp(&key, host).await?),

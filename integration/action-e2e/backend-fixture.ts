@@ -17,7 +17,6 @@ export async function createFixture() {
   let rejectPublish = false;
   /** Entry identities PublishEntry rejects, so one push can mix outcomes. */
   const rejectedEntries = new Set<string>();
-  let compositionLoads = 0;
   const mutations: Mutations<PgClient> = {
     async addTodo({ ctx, args }) {
       handlerCalls++;
@@ -117,12 +116,9 @@ export async function createFixture() {
       }
       return rows;
     },
-    // Compositions are local to the client: the backend stores none, and
-    // `compositionLoads` shows whether it was ever asked for one.
-    async composition({ ids }) {
-      compositionLoads++;
-      return ids.map(() => null);
-    },
+    // No Composition Loader: Compositions are device-only (#187). The backend
+    // stores none, publishes none, and would refuse to start if a Mutation
+    // named one on the wire.
     async entry({ ids, tx }) {
       const rows: ({ id: string; title: string; body: string } | null)[] = [];
       for (const { id } of ids) {
@@ -175,8 +171,6 @@ export async function createFixture() {
     set rejectPublish(value: boolean) { rejectPublish = value; },
     /** Entry identities PublishEntry rejects like `rejectPublish`, leaving other calls of the same push accepted. */
     rejectedEntries,
-    /** Composition Loader executions: a local-only Model the backend should never look up. */
-    get compositionLoads() { return compositionLoads; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
       for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);

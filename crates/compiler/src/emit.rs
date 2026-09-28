@@ -1407,7 +1407,11 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
         o.push_str("}\n");
     }
     // Loader registration mirrors handlers: every retained version under the
-    // model name, a bare function only for a v1-only model.
+    // model name, a bare function only for a v1-only model. Each member is
+    // optional: a Model without a Loader is device-only (#187), and the
+    // backend refuses at startup a descriptor that would put it on the wire.
+    // `| undefined` keeps `Loaders<Tx>["model"]` assignable back to its member
+    // under `exactOptionalPropertyTypes`; the runtime reads it as omitted.
     o.push_str("export interface Loaders<Tx> {\n");
     for m in models {
         let n = s(m, "name");
@@ -1429,12 +1433,12 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
         if versions.len() == 1 && versions[0]["version"].as_u64() == Some(1) {
             writeln!(
                 o,
-                " {}: {grouped} | ((call: LoaderCall<Tx, {n}Identity>) => Promise<readonly ({n} | null)[]>);",
+                " {}?: {grouped} | ((call: LoaderCall<Tx, {n}Identity>) => Promise<readonly ({n} | null)[]>) | undefined;",
                 lower(n)
             )
             .unwrap();
         } else {
-            writeln!(o, " {}: {grouped};", lower(n)).unwrap();
+            writeln!(o, " {}?: {grouped} | undefined;", lower(n)).unwrap();
         }
     }
     o.push_str("}\n");

@@ -467,7 +467,12 @@ export interface BackendOptions<T> {
   queries?: Record<string, QueryHandlerRegistration<T>> | undefined;
   /** Every retained Load version, by lower-camel name. */
   loads?: Record<string, LoadHandlerRegistration<T>> | undefined;
-  loaders: Record<string, LoaderRegistration<T>>;
+  /**
+   * Every retained version of each Model's read contract, by lower-camel
+   * name. A Model left out (or `undefined`) is device-only: never published,
+   * and no retained Mutation, Query or Load may name it on the wire.
+   */
+  loaders: Record<string, LoaderRegistration<T> | undefined>;
   loaderHooks?: Record<
     string,
     { prepareForViewer(call: LoaderCall<T, any>): Promise<void> }
@@ -740,13 +745,28 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     );
   const schemaModels = descriptor.schema?.models ?? [];
   const modelNames = schemaModels.map((model) => model.name);
+  // A Model whose Loader is omitted (undefined) is device-only (#187): the
+  // engine is told only the registered Models, refuses at `validateConfig` any
+  // retained descriptor that would put another on the wire, and never
+  // publishes one. A key naming no Model is a typo, never an omission.
+  for (const key of Object.keys(options.loaders))
+    if (!modelNames.some((name) => lowerFirst(name) === key))
+      throw new Error(`Unknown loader ${key}: no Model ${key}`);
+  const loadedModels = modelNames.filter(
+    (name) => options.loaders[lowerFirst(name)] !== undefined,
+  );
   const config = JSON.stringify({
     ...options.config,
-    loaders: modelNames,
+    loaders: loadedModels,
   });
   native.validateConfig(config);
-  // Refuses Models whose accessors collide or take a Channel's add/remove.
-  const createEffects = effectsFor(schemaModels, descriptor.schema?.enums);
+  // Refuses Models whose accessors collide or take a Channel's add/remove,
+  // and declarations naming a device-only Model.
+  const createEffects = effectsFor(
+    schemaModels,
+    descriptor.schema?.enums,
+    new Set(loadedModels),
+  );
   // Every retained model read contract; a config without `models` retains each
   // model at the schema's own version, as the engine does.
   const retainedModels = new Map<string, number[]>();
@@ -761,7 +781,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       [...(retainedModels.get(m.name) ?? []), m.version].sort((a, b) => a - b),
     );
   const loaderTable = new Map<string, Loader<T>>();
-  for (const name of modelNames) {
+  for (const name of loadedModels) {
     const key = lowerFirst(name);
     const table = versioned<Loader<T>>(
       "loader",

@@ -494,7 +494,8 @@ fn backend_emitter_declares_handlers_loaders_and_references() {
     assert!(ts.contains("export interface Loaders<Tx> {"));
     assert!(
         ts.contains(
-            " book: { v1(call: LoaderCall<Tx, BookIdentity>): Promise<readonly (Book | null)[]> } | ((call: LoaderCall<Tx, BookIdentity>) => Promise<readonly (Book | null)[]>);"
+            // Every Loader is optional: a Model without one is device-only (#187).
+            " book?: { v1(call: LoaderCall<Tx, BookIdentity>): Promise<readonly (Book | null)[]> } | ((call: LoaderCall<Tx, BookIdentity>) => Promise<readonly (Book | null)[]>) | undefined;"
         )
     );
     assert!(ts.contains("export function Book(identity: BookIdentity): Extract<RecordRef, { model: \"Book\" }> { return { model: \"Book\", identity }; }"));
@@ -1199,18 +1200,18 @@ fn backend_emitter_groups_loader_versions_under_the_model_name() {
         "the latest version keeps the plain name: {ts}"
     );
     assert!(
-        ts.contains(" task: { v1(call: LoaderCall<Tx, TaskV1Identity>): Promise<readonly (TaskV1 | null)[]>; v2(call: LoaderCall<Tx, TaskIdentity>): Promise<readonly (Task | null)[]> };\n"),
+        ts.contains(" task?: { v1(call: LoaderCall<Tx, TaskV1Identity>): Promise<readonly (TaskV1 | null)[]>; v2(call: LoaderCall<Tx, TaskIdentity>): Promise<readonly (Task | null)[]> } | undefined;\n"),
         "{ts}"
     );
     assert!(
-        ts.contains(" note: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>);\n"),
+        ts.contains(" note?: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>) | undefined;\n"),
         "{ts}"
     );
     // Without a history the schema's own version is the only retained one; a
     // single non-v1 version has no shorthand.
     let ts = axton_compiler::backend_typescript(&v, "@axton/server");
     assert!(
-        ts.contains(" task: { v2(call: LoaderCall<Tx, TaskIdentity>): Promise<readonly (Task | null)[]> };\n"),
+        ts.contains(" task?: { v2(call: LoaderCall<Tx, TaskIdentity>): Promise<readonly (Task | null)[]> } | undefined;\n"),
         "{ts}"
     );
     assert!(!ts.contains("TaskV1"), "{ts}");

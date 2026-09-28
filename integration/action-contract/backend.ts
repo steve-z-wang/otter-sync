@@ -270,9 +270,9 @@ export interface TodoV1 {
  state: "open" | "closed";
 }
 export interface Loaders<Tx> {
- todo: { v1(call: LoaderCall<Tx, TodoV1Identity>): Promise<readonly (TodoV1 | null)[]>; v2(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> };
- project: { v1(call: LoaderCall<Tx, ProjectIdentity>): Promise<readonly (Project | null)[]> } | ((call: LoaderCall<Tx, ProjectIdentity>) => Promise<readonly (Project | null)[]>);
- note: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>);
+ todo?: { v1(call: LoaderCall<Tx, TodoV1Identity>): Promise<readonly (TodoV1 | null)[]>; v2(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | undefined;
+ project?: { v1(call: LoaderCall<Tx, ProjectIdentity>): Promise<readonly (Project | null)[]> } | ((call: LoaderCall<Tx, ProjectIdentity>) => Promise<readonly (Project | null)[]>) | undefined;
+ note?: { v1(call: LoaderCall<Tx, NoteIdentity>): Promise<readonly (Note | null)[]> } | ((call: LoaderCall<Tx, NoteIdentity>) => Promise<readonly (Note | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx>; loads: Loads<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

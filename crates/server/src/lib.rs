@@ -186,6 +186,7 @@ impl Config {
         for loader in &c.loaders {
             c.schema.model(loader).map_err(config_invalid)?;
         }
+        c.refuse_device_only_on_the_wire()?;
         let mut c = c;
         if c.models.is_empty() {
             c.models = c
@@ -243,6 +244,79 @@ impl Config {
             }
         }
         Ok(c)
+    }
+    /// A Model without a Loader is device-only
+    /// ([#187](https://github.com/zanminwang/axton/issues/187)): it is never
+    /// published, so no retained Mutation may carry it in a wire slot, and no
+    /// retained Mutation, Query or Load may return it, since every Model
+    /// output resolves through its Loader.
+    fn refuse_device_only_on_the_wire(&self) -> Result<()> {
+        let refuse = |kind: &str,
+                      name: &str,
+                      version: u64,
+                      place: &str,
+                      member: &str,
+                      model: &str| {
+            if self.loaders.iter().any(|loader| loader == model) {
+                return Ok(());
+            }
+            Err(Error::new(
+                code::CONFIG_INVALID,
+                format!(
+                    "{kind} {name} v{version} {place} {member} names Model {model}, which has no Loader; a Model without a Loader is device-only and never on the wire"
+                ),
+            ))
+        };
+        for m in &self.mutations {
+            for slot in &m.slots {
+                refuse(
+                    "Mutation",
+                    &m.name,
+                    m.version,
+                    "slot",
+                    &slot.name,
+                    &slot.model,
+                )?;
+            }
+        }
+        for action in &self.schema.actions {
+            let kind = match action.kind {
+                axton_core::CallKind::Mutation => "Mutation",
+                axton_core::CallKind::Query => "Query",
+            };
+            for input in &action.inputs {
+                if let axton_core::ActionInputDescriptor::Model { name, model, .. } = input {
+                    refuse(kind, &action.name, action.version, "slot", name, model)?;
+                }
+            }
+            for output in &action.outputs {
+                if let Some(model) = &output.model {
+                    refuse(
+                        kind,
+                        &action.name,
+                        action.version,
+                        "output",
+                        &output.name,
+                        model,
+                    )?;
+                }
+            }
+        }
+        for load in &self.schema.loads {
+            for output in &load.outputs {
+                if let Some(model) = &output.model {
+                    refuse(
+                        "Load",
+                        &load.name,
+                        load.version,
+                        "output",
+                        &output.name,
+                        model,
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
     /// Check a client's declared read contracts: every declared model must
     /// exist and every declared version must be retained. Nothing is inferred

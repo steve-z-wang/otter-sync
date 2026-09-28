@@ -298,7 +298,7 @@ async fn resolve(
     host: &impl Host,
 ) -> Result<Vec<AuthorityRecord>> {
     if !config.loaders.iter().any(|loader| loader == model) {
-        return Err(Error::new(code::LOADER_UNREGISTERED, "unregistered loader"));
+        return Err(crate::settlement::unregistered(model));
     }
     let version = intent.models[model];
     let contract = config

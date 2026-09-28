@@ -115,9 +115,9 @@ export interface Loads<Tx> {
  projectItems: { v1(call: LoadHandlerCall<Tx, ProjectItemsInput>): Promise<ProjectItemsHandlerOutput> } | ((call: LoadHandlerCall<Tx, ProjectItemsInput>) => Promise<ProjectItemsHandlerOutput>);
 }
 export interface Loaders<Tx> {
- item: { v1(call: LoaderCall<Tx, ItemIdentity>): Promise<readonly (Item | null)[]> } | ((call: LoaderCall<Tx, ItemIdentity>) => Promise<readonly (Item | null)[]>);
- tag: { v1(call: LoaderCall<Tx, TagIdentity>): Promise<readonly (Tag | null)[]> } | ((call: LoaderCall<Tx, TagIdentity>) => Promise<readonly (Tag | null)[]>);
- seen: { v1(call: LoaderCall<Tx, SeenIdentity>): Promise<readonly (Seen | null)[]> } | ((call: LoaderCall<Tx, SeenIdentity>) => Promise<readonly (Seen | null)[]>);
+ item?: { v1(call: LoaderCall<Tx, ItemIdentity>): Promise<readonly (Item | null)[]> } | ((call: LoaderCall<Tx, ItemIdentity>) => Promise<readonly (Item | null)[]>) | undefined;
+ tag?: { v1(call: LoaderCall<Tx, TagIdentity>): Promise<readonly (Tag | null)[]> } | ((call: LoaderCall<Tx, TagIdentity>) => Promise<readonly (Tag | null)[]>) | undefined;
+ seen?: { v1(call: LoaderCall<Tx, SeenIdentity>): Promise<readonly (Seen | null)[]> } | ((call: LoaderCall<Tx, SeenIdentity>) => Promise<readonly (Seen | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx>; loads: Loads<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

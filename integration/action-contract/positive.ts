@@ -230,4 +230,6 @@ const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): P
 const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
 declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
-void [transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];
+// A Model without a Loader is device-only (#187): the map may omit it, and the backend refuses at startup a Mutation that names it on the wire.
+const deviceOnlyLoaders: Loaders<Tx> = { todo: loaders.todo, project: loaders.project };
+void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];

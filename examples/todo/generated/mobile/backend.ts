@@ -71,8 +71,8 @@ export interface Mutations<Tx> {
 export interface Queries<Tx> {
 }
 export interface Loaders<Tx> {
- user: { v1(call: LoaderCall<Tx, UserIdentity>): Promise<readonly (User | null)[]> } | ((call: LoaderCall<Tx, UserIdentity>) => Promise<readonly (User | null)[]>);
- todo: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>);
+ user?: { v1(call: LoaderCall<Tx, UserIdentity>): Promise<readonly (User | null)[]> } | ((call: LoaderCall<Tx, UserIdentity>) => Promise<readonly (User | null)[]>) | undefined;
+ todo?: { v1(call: LoaderCall<Tx, TodoIdentity>): Promise<readonly (Todo | null)[]> } | ((call: LoaderCall<Tx, TodoIdentity>) => Promise<readonly (Todo | null)[]>) | undefined;
 }
 export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx> };
 export function createBackend<Tx>(options: Options<Tx>) {

@@ -883,7 +883,6 @@ test("the PublishEntry backend fixture stores Entry, media and placement togethe
     media: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_media WHERE entry_id=$1", [id])).rows[0].n),
     placements: Number((await fixture.pool.query("SELECT count(*)::int AS n FROM action_e2e_placement WHERE entry_id=$1", [id])).rows[0].n),
   });
-  const compositionLoads = fixture.compositionLoads;
   try {
     client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
     const accepted = await (await client.mutations.publishEntry(input("publish-ok"))).wait();
@@ -906,8 +905,46 @@ test("the PublishEntry backend fixture stores Entry, media and placement togethe
     assert.equal(await client.models.media.get({ id: "publish-no-m1" }), null);
     assert.equal(await client.models.placement.get({ id: "publish-no-p" }), null);
     assert.equal((await client.syncState()).pending, 0);
-    assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
   } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a device-only Composition (no Loader): plain local writes and reads work and never reach the wire", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-device-only-"));
+  let client: GeneratedClient | undefined;
+  const original = globalThis.fetch;
+  /** Every request the client makes, with its body minus the read-contract `models` map, which names every Model. */
+  const requests: { path: string; body: string }[] = [];
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    let body = typeof init?.body === "string" ? init.body : "";
+    try { const { models, ...rest } = JSON.parse(body); body = JSON.stringify(rest); } catch { /* not JSON */ }
+    requests.push({ path, body });
+    return original(input, init);
+  }) as typeof fetch;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
+    await client.models.composition.create({ id: "device-a", title: "draft a", body: "local only" });
+    await client.models.composition.create({ id: "device-b", title: "draft b", body: "local only" });
+    await client.models.composition.update({ id: "device-a" }, { body: "edited locally" });
+    await client.models.composition.delete({ id: "device-b" });
+    assert.deepEqual(await client.models.composition.get({ id: "device-a" }), { id: "device-a", title: "draft a", body: "edited locally" });
+    assert.equal(await client.models.composition.get({ id: "device-b" }), null);
+    assert.equal((await client.syncState()).pending, 0, "a local write queues nothing");
+    assert.deepEqual(requests.filter(({ path }) => path === "/sync/mutations"), [], "nothing was pushed for the local writes");
+    // A later business call is pushed on its own and names no Composition.
+    const added = await (await client.mutations.addTodo({ todo: { id: "device-only-todo", title: "after local drafts" } })).wait();
+    assert.equal(added.error, null);
+    assert.ok(requests.some(({ path }) => path === "/sync/mutations"), "the business call was pushed");
+    for (const { path, body } of requests) assert.doesNotMatch(body, /composition|device-a|device-b/i, `${path} carries no Composition`);
+    assert.equal(Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_record WHERE model='Composition'")).rows[0].n), 0, "the backend stamped no Composition");
+    // A Fetch reaches a backend with no Loader to read one: a saved rejection that leaves the local row alone.
+    await assert.rejects(client.fetch.composition({ id: "device-a" }), (error: { code?: string }) => error.code === "loader.unregistered");
+    assert.deepEqual(await client.models.composition.get({ id: "device-a" }), { id: "device-a", title: "draft a", body: "edited locally" });
+  } finally {
+    globalThis.fetch = original;
+    await client?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 /** PublishEntry business input for Entry `id`, built from a Composition's content. */
@@ -945,7 +982,6 @@ test("tx.mutations.publishEntry deletes its Composition as a local companion: ac
   const directory = await mkdtemp(join(tmpdir(), "axton-publish-companion-"));
   let client: GeneratedClient | undefined;
   const capture = capturePushes();
-  const compositionLoads = fixture.compositionLoads;
   const publishedBefore = fixture.publishes.length;
   const draft = (id: string) => ({ id, title: `draft ${id}`, body: `body ${id}` });
   let localRuns = 0;
@@ -1014,7 +1050,6 @@ test("tx.mutations.publishEntry deletes its Composition as a local companion: ac
     assert.deepEqual(pushed.map((call) => [call.name, call.args]), [["PublishEntry", publishInput("entry-ok", draft("comp-ok"))], ["PublishEntry", publishInput("entry-no", draft("comp-no"))]], "only the business calls are pushed");
     for (const body of capture.bodies) assert.equal(leaksComposition(body, ["comp-ok", "comp-ok-re", "comp-no", "comp-no-re", "comp-side"]), false, `push carries no companion: ${JSON.stringify(body)}`);
     assert.deepEqual(fixture.publishes.slice(publishedBefore), [publishInput("entry-ok", draft("comp-ok")), publishInput("entry-no", draft("comp-no"))], "handlers receive exactly the business input");
-    assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
   } finally {
     capture.stop();
     fixture.rejectedEntries.delete("entry-no");
@@ -1027,7 +1062,6 @@ test("queued transactional PublishEntry survives offline reopen and settles with
   const directory = await mkdtemp(join(tmpdir(), "axton-publish-reopen-"));
   const path = join(directory, "client.sqlite");
   let client: GeneratedClient | undefined;
-  const compositionLoads = fixture.compositionLoads;
   const runs = { kept: 0, restored: 0 };
   const draft = (id: string) => ({ id, title: `draft ${id}`, body: `body ${id}` });
   const capture = capturePushes();
@@ -1066,7 +1100,6 @@ test("queued transactional PublishEntry survives offline reopen and settles with
     const pushed = capture.bodies.flatMap((body) => body.mutations.map((call) => (call.args as { entry: { id: string } }).entry.id));
     assert.deepEqual([...new Set(pushed)].sort(), ["reopen-entry-no", "reopen-entry-ok"]);
     for (const body of capture.bodies) assert.equal(leaksComposition(body, ["reopen-kept", "reopen-restored"]), false, `push carries no companion: ${JSON.stringify(body)}`);
-    assert.equal(fixture.compositionLoads, compositionLoads);
   } finally {
     capture.stop();
     fixture.rejectedEntries.delete("reopen-entry-no");
@@ -1077,7 +1110,6 @@ test("queued transactional PublishEntry survives offline reopen and settles with
 
 test("Dart tx.mutations.publishEntry keeps or restores its companion delete across reopen, and the backend sees only business input", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-action-dart-publish-"));
-  const compositionLoads = fixture.compositionLoads;
   const publishedBefore = fixture.publishes.length;
   for (const id of ["dart-entry-no", "dart-entry-live-no"]) fixture.rejectedEntries.add(id);
   try {
@@ -1098,5 +1130,4 @@ test("Dart tx.mutations.publishEntry keeps or restores its companion delete acro
     publishInput("dart-entry-live-no", draft("dart-comp-live-no")),
   ], "handlers receive exactly the business input, once each");
   assert.deepEqual((await fixture.pool.query("SELECT id FROM action_e2e_entry WHERE id LIKE 'dart-entry-%' ORDER BY id")).rows, [{ id: "dart-entry-ok" }]);
-  assert.equal(fixture.compositionLoads, compositionLoads, "the backend never looks up a Composition");
 });

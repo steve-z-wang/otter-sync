@@ -248,13 +248,25 @@ function entriesOf(
  * Validates `models` (and the `enums` their identities use) once and answers
  * a factory of callback-scoped collectors. A malformed configuration throws
  * here, at startup.
+ *
+ * `loaded` names the Models with a registered Loader. Any other Model is
+ * device-only ([#187](https://github.com/zanminwang/axton/issues/187)): it is
+ * never published, so every declaration naming it throws at the call.
+ * Without `loaded`, every Model may be declared.
  */
 export function effectsFor(
   models: readonly EffectModel[],
   enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
 ): () => EffectCollector {
   const entries = entriesOf(models, enums);
   const byName = new Map(entries.map((entry) => [entry.name, entry]));
+  const publishable = (model: string, caller: string) => {
+    if (loaded && !loaded.has(model))
+      throw new Error(
+        `${caller}: Model ${model} has no Loader, so it is device-only and cannot be published`,
+      );
+  };
   /** Resolves one explicit reference; a raw identity names no Model and fails. */
   const reference = (
     value: unknown,
@@ -271,6 +283,7 @@ export function effectsFor(
       );
     const entry = byName.get(model);
     if (!entry) throw new Error(`${caller}: unknown Model ${model}`);
+    publishable(model, caller);
     return {
       model,
       identity: entry.snapshot((value as RecordRef).identity, caller),
@@ -312,6 +325,7 @@ export function effectsFor(
       define(touch, entry.key, (identity: object) => {
         const caller = `touch.${entry.key}`;
         assertOpen(caller);
+        publishable(entry.name, caller);
         change(entry.name, entry.snapshot(identity, caller));
       });
     Object.freeze(touch);
@@ -333,6 +347,7 @@ export function effectsFor(
           define(membership, verb, (identity: object) => {
             const caller = `${label}.${entry.key}.${verb}`;
             assertOpen(caller);
+            publishable(entry.name, caller);
             intent(name, entry.name, entry.snapshot(identity, caller), present);
           });
         define(handle, entry.key, Object.freeze(membership));
@@ -376,6 +391,7 @@ export function effectsFor(
 export function createEffects(
   models: readonly EffectModel[],
   enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
 ): EffectCollector {
-  return effectsFor(models, enums)();
+  return effectsFor(models, enums, loaded)();
 }

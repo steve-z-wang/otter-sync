@@ -64,12 +64,14 @@ test('backend validates config and complete registrations at startup',()=>{
  const base={...config,schema:structuredClone(schema)};
  assert.throws(()=>createBackend({config:{...base,mutations:[{name:'bad',version:0,slots:[]}]},native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/invalid mutation descriptor/);
  assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/Missing handler edit for edit v1/);
- assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Missing loader task for Task v1/);
+ // Omitting the Loader of a Model a slot writes is refused by the engine, naming the Mutation, slot and Model.
+ assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Mutation edit v1 slot task names Model Task, which has no Loader/);
+ // A Loader under a key that names no Model is a typo, never a silent device-only Model.
+ assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
  // A hand-written config gets the compiler's accessor rules: unique, and neither add nor remove.
  const withModel=name=>({...base,schema:{...base.schema,models:[...base.schema.models,{...base.schema.models[0],name}]}});
- const loaders={task:async()=>[],add:async()=>[]};
- assert.throws(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders}),/Model Add generates the accessor add, which a Channel reserves/);
- assert.throws(()=>createBackend({config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders}),/Models Task and task both generate the accessor task/);
+ assert.throws(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}),/Model Add generates the accessor add, which a Channel reserves/);
+ assert.throws(()=>createBackend({config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
 });
 test('loader registration names every retained model version and a function means v1 only',()=>{
  const base={...config,schema:structuredClone(schema)};
@@ -1130,4 +1132,57 @@ test('a Prisma 7 driver-adapter write conflict is retryable; other adapter error
  assert.equal(isRetryableTransactionError(adapter({kind:'postgres',code:'40P01'})),true);
  assert.equal(isRetryableTransactionError(adapter({kind:'UniqueConstraintViolation'})),false);
  assert.equal(isRetryableTransactionError(adapter({kind:'postgres',code:'23505'})),false);
+});
+// #187: a Model without a Loader is device-only. Draft is written only on the device.
+const draftModel={name:'Draft',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false}]};
+const withDraft={...config,schema:{...structuredClone(schema),models:[...structuredClone(schema).models,draftModel]}};
+test('a backend omitting the Loader of a device-only Model starts; a Mutation writing it in a slot does not',async()=>{
+ const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async({input,tx})=>write(tx,input.task.identity.id,input.task.patch.title)},loaders:{task:readTasks}});
+ const result=JSON.parse(await deviceOnly.push('alice',push('device-only-starts',1,[mutation(1,'still served','device-only-a')])));
+ assert.deepEqual(result.rejections,[]);
+ assert.deepEqual(result.records,[authority('device-only-a',1,{title:'still served'})]);
+ // A pull and a live pull of Task are served as before; a client declaring Draft's read contract is accepted.
+ assert.ok(Array.isArray(JSON.parse(await deviceOnly.pull('alice',pullBody({shared:0},{Task:1,Draft:1}))).changes));
+ const slot={name:'saveDraft',version:1,slots:[{name:'draft',model:'Draft',operation:'create',cardinality:'single'}]};
+ assert.throws(()=>createBackend({config:{...withDraft,mutations:[...withDraft.mutations,slot]},database:database(),authenticate,handlers:{edit:async()=>{},saveDraft:async()=>{}},loaders:{task:readTasks}}),/Mutation saveDraft v1 slot draft names Model Draft, which has no Loader/);
+ // An explicitly undefined registration is the same omission; null stays a missing registration.
+ createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:undefined}});
+ assert.throws(()=>createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:null}}),/Missing loader draft for Draft v1/);
+});
+test('touching or publishing a device-only Model is refused at the call, naming the Model; nothing is published',async()=>{
+ const errors=[];
+ const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx,channel,touch}){
+  await write(tx,input.task.identity.id,input.task.patch.title);
+  if(input.task.patch.title==='touch')touch.draft({id:'d'});
+  if(input.task.patch.title==='add')channel('drafts').draft.add({id:'d'});
+  if(input.task.patch.title==='remove')channel('drafts').draft.remove({id:'d'});
+  if(input.task.patch.title==='mixed')channel('drafts').add([{model:'Task',identity:{id:'x'}},{model:'Draft',identity:{id:'d'}}]);
+ }},loaders:{task:readTasks}});
+ const headBefore=await head('drafts');
+ const result=JSON.parse(await deviceOnly.push('alice',push('device-only-touch',1,[mutation(1,'touch','do-1'),mutation(2,'add','do-2'),mutation(3,'remove','do-3'),mutation(4,'mixed','do-4'),mutation(5,'fine','do-5')])));
+ assert.deepEqual(result.rejections,[1,2,3,4].map(ordinal=>({ordinal,code:'handler.failed'})));
+ assert.deepEqual(result.records,[authority('do-5',1,{title:'fine'})]);
+ assert.deepEqual(errors.map(e=>e.message),[
+  'touch.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'channel("drafts").draft.add: Model Draft has no Loader, so it is device-only and cannot be published',
+  'channel("drafts").draft.remove: Model Draft has no Loader, so it is device-only and cannot be published',
+  'channel("drafts").add: Model Draft has no Loader, so it is device-only and cannot be published',
+ ]);
+ assert.equal(await head('drafts'),headBefore,'nothing reached the Channel');
+ assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_record WHERE model='Draft'")).length,0,'no Draft was stamped');
+ // backend.transaction refuses the same declaration and rolls its business write back.
+ await assert.rejects(()=>deviceOnly.transaction(async({tx,touch})=>{await write(tx,'do-external','never');touch.draft({id:'d'});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
+ await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/channel\("drafts"\)\.add: Model Draft has no Loader/);
+ // backend.publish in a caller-owned transaction refuses it the same way; the caller's transaction rolls back.
+ await assert.rejects(()=>owned(async tx=>{await write(tx,'do-owned','never');await deviceOnly.publish(tx,({touch})=>{touch.draft({id:'d'});});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
+ for(const id of ['do-external','do-owned'])assert.equal((await db.$queryRawUnsafe('SELECT * FROM business_task WHERE id=$1',id)).length,0,id);
+ assert.equal(await head('drafts'),headBefore);
+});
+test('an always-null Loader for a device-only Model keeps the registered behavior',async()=>{
+ // Before #187 every Model needed a Loader, so device-only Models registered one answering null.
+ const nulls=createBackend({config:withDraft,database:database(),authenticate,handlers:{async edit({input,tx,touch,channel}){await write(tx,input.task.identity.id,input.task.patch.title);touch.draft({id:'null-d'});channel('null-drafts').draft.add({id:'null-d'});}},loaders:{task:readTasks,async draft({ids}){return ids.map(()=>null);}}});
+ const result=JSON.parse(await nulls.push('alice',push('always-null',1,[mutation(1,'with draft','null-a')])));
+ assert.deepEqual(result.rejections,[]);
+ const page=JSON.parse(await nulls.pull('alice',pullBody({'null-drafts':0},{Task:1,Draft:1})));
+ assert.deepEqual(page.changes.map(c=>[c.model,c.identity,c.state]),[['Draft',{id:'null-d'},null]]);
 });

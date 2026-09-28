@@ -231,3 +231,20 @@ test('closing refuses every later declaration, including through escaped handles
  effects.close();
  assert.deepEqual(effects.settlement(),expected,'closing twice is harmless');
 });
+
+test('a Model outside the loaded set is device-only: every declaration naming it fails at the call',()=>{
+ const effects=createEffects(models,[],new Set(['Todo','Pin']));
+ const refused=caller=>({message:`${caller}: Model Moment has no Loader, so it is device-only and cannot be published`});
+ const at=new Date(0);
+ assert.throws(()=>effects.touch.moment({at}),refused('touch.moment'));
+ assert.throws(()=>effects.channel('c').moment.add({at}),refused('channel("c").moment.add'));
+ assert.throws(()=>effects.channel('c').moment.remove({at}),refused('channel("c").moment.remove'));
+ assert.throws(()=>effects.channel('c').add([Todo({id:'t'}),Moment({at})]),refused('channel("c").add'));
+ assert.throws(()=>effects.channel('c').remove([Moment({at})]),refused('channel("c").remove'));
+ // Loaded Models declare as before; the refused mixed call appended nothing.
+ effects.touch.todo({id:'t'});
+ effects.channel('c').todo.add({id:'t'});
+ assert.deepEqual(effects.settlement(),{changes:[{model:'Todo',identity:{id:'t'}}],memberships:[add('c','Todo',{id:'t'})]});
+ // Without a loaded set every Model declares, as a collector always did.
+ fresh().touch.moment({at});
+});

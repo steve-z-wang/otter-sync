@@ -1188,6 +1188,10 @@ fn handler_changes_naming_an_unregistered_model_are_an_error() {
     );
     let err = process(&config, &body, &host).unwrap_err();
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
+    assert_eq!(
+        err.message,
+        "Model Note has no registered Loader: it is device-only and never published"
+    );
     assert_eq!(host.count("advanceStamp"), 0);
     assert_eq!(host.count("saveReceipt"), 0);
     // The same for a membership of an unregistered model.
@@ -1196,4 +1200,10 @@ fn handler_changes_naming_an_unregistered_model_are_an_error() {
     host.settle(1, settled(json!([]), json!([add("shared", "Note", "n")])));
     let err = process(&config, &body, &host).unwrap_err();
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
+    assert!(err.message.contains("Model Note"), "{err}");
+    assert_eq!(
+        host.count("publish"),
+        0,
+        "a device-only Model is never published"
+    );
 }

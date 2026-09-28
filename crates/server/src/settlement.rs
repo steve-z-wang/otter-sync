@@ -14,15 +14,21 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Records in canonical key order, deduplicated by `(model, identity)`.
 pub(crate) type Changes = BTreeMap<String, RecordKey>;
 
-pub(crate) fn unregistered() -> Error {
-    Error::new(code::LOADER_UNREGISTERED, "unregistered loader")
+/// The one refusal of a Model without a registered Loader: device-only
+/// ([#187](https://github.com/zanminwang/axton/issues/187)), so never
+/// published, read back, pulled, fetched or loaded.
+pub(crate) fn unregistered(model: &str) -> Error {
+    Error::new(
+        code::LOADER_UNREGISTERED,
+        format!("Model {model} has no registered Loader: it is device-only and never published"),
+    )
 }
 
 /// Resolve a record a handler named into a canonical key, refusing models
 /// this backend does not load.
 pub(crate) fn resolve(config: &Config, record: &RecordRef) -> Result<RecordKey> {
     if !config.loaders.contains(&record.model) {
-        return Err(unregistered());
+        return Err(unregistered(&record.model));
     }
     config
         .schema
@@ -66,7 +72,7 @@ pub(crate) async fn settle_changes(
 ) -> Result<BTreeMap<String, u64>> {
     for key in changed.values() {
         if !config.loaders.contains(&key.model) {
-            return Err(unregistered());
+            return Err(unregistered(&key.model));
         }
     }
     // The last intent per (record, Channel) pair is its desired state.

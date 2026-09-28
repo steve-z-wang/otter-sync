@@ -521,6 +521,80 @@
     {
       "input": {
         "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "uuid"
+                }
+              },
+              {
+                "name": "createdAt",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "dateTime"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Note"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "allowedPatchFields": [
+            "createdAt"
+          ],
+          "cardinality": "optional",
+          "kind": "model",
+          "model": "Note",
+          "name": "note",
+          "operation": "update"
+        },
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "at",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "kind": "mutation",
+      "name": "Restamp",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "name": "at",
+          "source": "handlerValue",
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
         "models": []
       },
       "inputs": [

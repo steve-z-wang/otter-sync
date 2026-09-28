@@ -34,6 +34,10 @@ model Note {
  @@id(id)
 }
 mutation AddNote(note Note.create) { saved Note }
+// DateTime precision and optional operands (#189): the handler receives every
+// DateTime at UTC millisecond precision, and leaving the optional `note` out
+// is the same as passing null.
+mutation Restamp(note Note.update<createdAt>?, at DateTime) { at DateTime }
 // Retitles a Todo and rewrites a Note through an explicit extra touch. The Note
 // is not caller authority, so a caller that declares only Todo can run it; the
 // Note reaches its own Channel's subscribers (#140).

@@ -1131,3 +1131,55 @@ test("Dart tx.mutations.publishEntry keeps or restores its companion delete acro
   ], "handlers receive exactly the business input, once each");
   assert.deepEqual((await fixture.pool.query("SELECT id FROM action_e2e_entry WHERE id LIKE 'dart-entry-%' ORDER BY id")).rows, [{ id: "dart-entry-ok" }]);
 });
+
+// ---- DateTime precision and omitted optional operands (#189) ----
+
+test("Dart microsecond DateTimes cross the backend at UTC millisecond precision, and an omitted operand is null", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-dart-datetime-"));
+  const notesBefore = fixture.notes.length;
+  const restampsBefore = fixture.restamps.length;
+  let expected: { note: string; created: string; moved: string; at: string };
+  try {
+    const root = process.cwd();
+    const { stdout, stderr } = await execFileAsync("dart", [
+      "run", "action_e2e_datetime.dart", url, join(directory, "client.sqlite"),
+      join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`),
+    ], { cwd: join(root, "integration/action-runtime-dart"), timeout: 30_000 });
+    assert.match(stdout, /Dart DateTime precision and omitted operand: passed/, stderr);
+    expected = JSON.parse(stdout.trim().split("\n").at(-1)!);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+  assert.equal(expected.created, "2026-09-28T12:34:56.789Z");
+  assert.equal(expected.at, "2026-09-28T16:00:00.002Z");
+  const created = fixture.notes.slice(notesBefore);
+  assert.equal(created.length, 1);
+  assert.equal(created[0]!.createdAt.toISOString(), expected.created, "the AddNote handler received the truncated instant");
+  const restamps = fixture.restamps.slice(restampsBefore);
+  assert.deepEqual(restamps.map(({ note, at }) => ({ note: note && { id: note.id, createdAt: note.createdAt?.toISOString() }, at: at.toISOString() })), [
+    { note: null, at: expected.at },
+    { note: null, at: expected.at },
+    { note: { id: expected.note, createdAt: expected.moved }, at: expected.at },
+    { note: { id: expected.note, createdAt: expected.created }, at: expected.at },
+    { note: null, at: expected.at },
+  ], "queued calls in order, then the direct and the online durable call");
+  assert.deepEqual(restamps[0], restamps[1], "an omitted operand and an explicit null reach the handler identically");
+  assert.deepEqual((await fixture.pool.query("SELECT created_at FROM action_e2e_note WHERE id=$1", [expected.note])).rows, [{ created_at: expected.created }]);
+});
+
+test("TypeScript: an omitted optional operand records and reaches the handler exactly as null", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-action-omitted-"));
+  let client: GeneratedClient | undefined;
+  try {
+    client = await GeneratedClient.open({ path: join(directory, "client.sqlite") });
+    const at = new Date("2026-09-28T17:00:00.003Z");
+    await client.mutations.restamp({ at });
+    await client.mutations.restamp({ note: null, at });
+    const queued = await client.readSql("SELECT args FROM axton_mutation ORDER BY ordinal");
+    assert.equal(queued.length, 2);
+    assert.equal(queued[0]!.args, queued[1]!.args, "omitted and null record identical args");
+    assert.deepEqual(JSON.parse(String(queued[0]!.args)), { note: null, at: at.toISOString() });
+    const before = fixture.restamps.length;
+    await client.connect(server());
+    await wait(async () => (await client!.syncState()).pending === 0, "Restamp calls drained");
+    assert.deepEqual(fixture.restamps.slice(before), [{ note: null, at }, { note: null, at }], "the handler receives null both times");
+  } finally { await client?.close(); await rm(directory, { recursive: true, force: true }); }
+});

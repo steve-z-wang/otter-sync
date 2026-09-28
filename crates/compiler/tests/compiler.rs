@@ -621,6 +621,14 @@ fn generated_clients_expose_one_server_connection() {
     );
     let error = compile("model AdmissionRefused { id String @@id(id) }").unwrap_err();
     assert!(error.contains("the generated client uses"), "{error}");
+    // The prerequisite handler types are re-exported the same way (#185).
+    for name in ["PrerequisiteRetry", "PrerequisiteHandler"] {
+        let error = compile(&format!("model {name} {{ id String @@id(id) }}")).unwrap_err();
+        assert!(
+            error.contains("the generated client uses"),
+            "{name}: {error}"
+        );
+    }
     assert!(dart.contains("client.connect(server"));
     assert!(!dart.contains("LiveTransport"));
     assert!(!dart.contains("Transport? transport"));
@@ -640,7 +648,9 @@ fn generated_clients_are_the_whole_client() {
         "drop(ordinal: number)",
         "pendingTasks()",
         "setReadiness(key: string",
-        "runPrerequisites(",
+        "prerequisites?: Record<string, PrerequisiteHandler>",
+        "...(options.prerequisites === undefined ? {} : { prerequisites: options.prerequisites })",
+        "export { AdmissionRefused, CallError, PrerequisiteRetry,",
         "async connect(server: ServerOptions",
         "querySpec(model: string",
         "readSql(sql: string",
@@ -648,6 +658,10 @@ fn generated_clients_are_the_whole_client() {
         assert!(ts.contains(member), "missing {member}: {ts}");
     }
     assert!(!ts.contains("status()"), "{ts}");
+    assert!(
+        !ts.contains("runPrerequisites"),
+        "handlers are registered at open: {ts}"
+    );
     let schema = compile(
         "model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> } mutation Touch { entry Entry.update<title> }",
     )
@@ -685,9 +699,13 @@ fn generated_clients_are_the_whole_client() {
         "Future<RuntimeConnection> connect(SyncServer server",
         "Future<SyncState> syncState(EntryIdentity identity)",
         "class Mutate { final MutatePort port;",
+        "Map<String, PrerequisiteHandler>? prerequisites,",
+        "onStore:rawHooks, prerequisites:prerequisites);",
+        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler;",
     ] {
         assert!(dart.contains(member), "missing {member}: {dart}");
     }
+    assert!(!dart.contains("runPrerequisites"), "{dart}");
 }
 
 #[test]

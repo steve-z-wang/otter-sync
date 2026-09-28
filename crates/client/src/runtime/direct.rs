@@ -112,6 +112,7 @@ impl Failure {
                     message: TIMED_OUT.into(),
                     status: None,
                     refusal: None,
+                    retry: false,
                 }),
             ),
             Self::Transport(cause) => (EXECUTION_UNKNOWN, transport_failure(cause)),
@@ -531,6 +532,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         message: error.to_string(),
                         status: None,
                         refusal: None,
+                        retry: false,
                     }),
                 ),
                 _ => unreachable!(),
@@ -573,6 +575,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     message: e.to_string(),
                     status: None,
                     refusal: None,
+                    retry: false,
                 }),
             )),
         };

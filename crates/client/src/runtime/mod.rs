@@ -82,8 +82,9 @@
 //! and overflow recovery hold even while a callback keeps the writer. [`ClientRuntime::step`]
 //! then runs one unit: the application transaction's own lane first, then
 //! ordinary tasks and *lane units* - a ready continuation (a receipt, a direct
-//! response, a prerequisite outcome), else a Load unit or a Downlink pump or
-//! a push-lane turn, the Load lane alternating with the other two - in the
+//! response, a prerequisite outcome), else a prerequisite turn, a Load unit,
+//! a Downlink pump or a push-lane turn, the Load lane alternating with the
+//! Downlink and push lanes - in the
 //! order they were admitted, so neither starves. Each unit holds
 //! at most one local transaction and none is held across an effect: prepare,
 //! effect and apply are three units. Every ordinary task or continuation that
@@ -104,7 +105,8 @@
 //!   Fetch flights, their deadlines and fences.
 //! - `loads`: native Load commands, the Load worker's batches as effects,
 //!   page application, and the Load handles' observers and waiters.
-//! - `prerequisites`: the prerequisite loop over application handlers.
+//! - `prerequisites`: the scheduler that runs the application's prerequisite
+//!   handlers, registered at open, when a task becomes pending, with backoff.
 //! - `observers`: subscription status, Bootstrap waiters and local watches,
 //!   published as snapshots.
 //! - `commands`: the commands executed directly against the client: local
@@ -145,7 +147,8 @@ pub struct ClientRuntime<S: ClientStore> {
     /// Effect results turned into local work, one unit each, in arrival order.
     ready: VecDeque<effects::Ready>,
     directs: direct::Directs,
-    prerequisites: Option<prerequisites::Loop>,
+    /// The prerequisite handlers registered at open and their scheduler.
+    prerequisites: prerequisites::Prerequisites,
     /// The Load worker, its batches in flight, and the Load handles'
     /// observers and waiters.
     loads: loads::Loads,
@@ -201,7 +204,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             effects: BTreeMap::new(),
             ready: VecDeque::new(),
             directs: direct::Directs::default(),
-            prerequisites: None,
+            prerequisites: prerequisites::Prerequisites::default(),
             loads: loads::Loads::default(),
             observers: observers::Observers::default(),
             admitted: 0,

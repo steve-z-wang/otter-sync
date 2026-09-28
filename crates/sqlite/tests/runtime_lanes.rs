@@ -1,6 +1,6 @@
 //! The runtime owns the operation lifecycles
 //! ([#134](https://github.com/zanminwang/axton/issues/134)): the connection
-//! lanes, the Downlink worker, direct calls, Query once, prerequisites,
+//! lanes, the Downlink worker, direct calls, Query once,
 //! rebuild fencing, and the observers - subscription status, Bootstrap
 //! waiters and local watches - over a real SQLite store. The test is
 //! the host: it answers every effect the runtime asks for, with a fixed
@@ -2020,67 +2020,6 @@ fn query_once_is_decided_fetched_joined_and_released_by_the_runtime() {
         "action.unavailable",
         json!({"code":"action.unavailable"})
     )));
-}
-
-#[test]
-fn prerequisites_run_as_effects_and_every_outcome_wakes_the_push_lane() {
-    let mut h = host();
-    h.connect(false);
-    h.task("seed", create("e", "seed"));
-    let key = |id: &str| json!({"name":"upload","arguments":{"id":id}}).to_string();
-    h.task(
-        "edit",
-        json!({"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"text":"edited"}}],"prerequisites":[key("a"),key("b")]}}),
-    );
-    h.run();
-    assert!(h.outstanding("http", Some("push")).is_empty(), "blocked");
-    h.task(
-        "run",
-        json!({"kind":"runPrerequisites","handlers":["upload"]}),
-    );
-    h.task(
-        "twice",
-        json!({"kind":"runPrerequisites","handlers":["upload"]}),
-    );
-    let events = h.run();
-    assert!(events.contains(&failed("twice", "prerequisites already running")));
-    let (first, op) = h.one("prerequisite", None);
-    assert_eq!(op["name"], "upload");
-    assert_eq!(op["key"], key("a"));
-    assert_eq!(op["arguments"], json!({"id":"a"}));
-    // A failing handler keeps its reason; the loop goes on.
-    let generation = h.client().generation();
-    h.fail(&first, "disk full", None);
-    h.run();
-    assert_ne!(h.client().generation(), generation, "the outcome committed");
-    let (second, op) = h.one("prerequisite", None);
-    assert_eq!(op["key"], key("b"));
-    h.task("tasks", json!({"kind":"tasks"}));
-    let events = h.run();
-    let tasks = h.completion(&events, "tasks")["value"].clone();
-    let a = tasks
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["key"] == key("a"))
-        .unwrap();
-    assert_eq!(
-        (a["state"].clone(), a["error"].clone()),
-        (json!("failed"), json!("disk full"))
-    );
-    h.answer(&second, json!({"ok":true,"value":null}));
-    let events = h.run();
-    assert!(events.contains(&done("run", Value::Null)));
-    assert!(h.outstanding("prerequisite", None).is_empty());
-    // The push lane woke after each outcome and found the mutation still
-    // blocked by the failed task.
-    assert!(h.outstanding("http", Some("push")).is_empty());
-    h.task(
-        "ready",
-        json!({"kind":"readiness","key":key("a"),"state":"ready"}),
-    );
-    h.run();
-    h.http("push");
 }
 
 /// A replica left incompatible with unsent work: rebuild is pending, and

@@ -1001,6 +1001,17 @@ impl<S: ClientStore> Client<S> {
             .map(|model| model.name.clone())
             .collect()
     }
+    /// The prerequisite names the requested schema declares: the target
+    /// schema while an incompatible old replica drains.
+    pub(crate) fn target_prerequisites(&self) -> BTreeSet<String> {
+        self.origin
+            .as_ref()
+            .map_or(&self.schema, |origin| &origin.target)
+            .prerequisites
+            .iter()
+            .filter_map(|p| p["name"].as_str().map(str::to_string))
+            .collect()
+    }
     pub(crate) fn store_hooks_active(&self) -> bool {
         self.schema_state.pending.is_none()
     }
@@ -1087,28 +1098,6 @@ impl<S: ClientStore> Client<S> {
                 .into_iter()
                 .map(|(key, error)| task(&key, error.as_deref()))
                 .collect())
-        })
-    }
-    /// The next task the host can run, given the names it has handlers for.
-    /// A pending task no handler covers fails with that reason and the walk
-    /// goes on, so the host only calls handlers; which task, whether one is
-    /// runnable and when the run ends are decided here.
-    pub fn next_task(&mut self, handlers: &[String]) -> Result<Option<Value>> {
-        self.write(|e| {
-            for (key, error) in e.prerequisite_keys()? {
-                if error.is_some() {
-                    continue;
-                }
-                let task = task(&key, None);
-                let handled = task["name"]
-                    .as_str()
-                    .is_some_and(|name| handlers.iter().any(|h| h == name));
-                if handled {
-                    return Ok(Some(task));
-                }
-                e.fail_prerequisite(&key, "missing prerequisite handler")?;
-            }
-            Ok(None)
         })
     }
     /// What running a task came to: `None` resolves it, `Some(reason)` fails

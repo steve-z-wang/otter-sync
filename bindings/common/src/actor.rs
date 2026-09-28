@@ -345,30 +345,39 @@ fn open_runtime(request: &Value) -> axton_client::Result<ClientRuntime<SqliteSto
         Some(Value::Bool(discard)) => *discard,
         Some(_) => return Err(axton_client::invalid("discardPending must be bool")),
     };
-    let hooks = match request.get("storeHooks") {
-        None => vec![],
-        Some(Value::Array(names)) => names
-            .iter()
-            .map(|name| {
-                name.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| axton_client::invalid("storeHooks must contain Model names"))
-            })
-            .collect::<axton_client::Result<Vec<_>>>()?,
-        Some(_) => return Err(axton_client::invalid("storeHooks must be an array")),
-    };
-    let runtime = ClientRuntime::open_at(
+    let hooks = names(request, "storeHooks", "Model names")?;
+    let prerequisites = names(request, "prerequisiteHandlers", "prerequisite names")?;
+    let mut runtime = ClientRuntime::open_at(
         path,
         Schema::from_value(request["schema"].clone())?,
         Box::new(|file| SqliteStore::open(file)),
         discard,
     )?;
-    if hooks.is_empty() {
-        return Ok(runtime);
+    // Registrations are validated against the requested schema before the
+    // actor can admit work and survive rebuild on this runtime object.
+    if !hooks.is_empty() {
+        runtime = runtime.register_store_hooks(hooks)?;
     }
-    // Registration is validated against the requested schema before the actor
-    // can admit work and survives rebuild on this runtime object.
-    runtime.register_store_hooks(hooks)
+    if !prerequisites.is_empty() {
+        runtime = runtime.register_prerequisite_handlers(prerequisites)?;
+    }
+    Ok(runtime)
+}
+
+/// The optional array of strings `field` of the open request.
+fn names(request: &Value, field: &str, what: &str) -> axton_client::Result<Vec<String>> {
+    match request.get(field) {
+        None => Ok(vec![]),
+        Some(Value::Array(names)) => names
+            .iter()
+            .map(|name| {
+                name.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| axton_client::invalid(format!("{field} must contain {what}")))
+            })
+            .collect(),
+        Some(_) => Err(axton_client::invalid(format!("{field} must be an array"))),
+    }
 }
 
 /// The actor's thread: open, then admit and step until the runtime closes or

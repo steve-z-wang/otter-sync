@@ -40,11 +40,12 @@ pub(super) enum EffectKind {
     DirectTimer {
         request_id: String,
     },
-    /// One prerequisite handler run of the `runPrerequisites` task.
+    /// One prerequisite handler run, for the task `key`.
     Prerequisite {
-        request_id: String,
         key: String,
     },
+    /// The earliest prerequisite retry is due.
+    PrerequisiteTimer,
     /// The HTTP request of the Load worker's `batch`.
     LoadHttp {
         batch: u64,
@@ -66,10 +67,9 @@ pub(super) enum Ready {
         request_id: String,
         response: String,
     },
-    /// A prerequisite handler settled: record it in one transaction.
+    /// A prerequisite handler succeeded or failed for good: record it in
+    /// one transaction.
     PrerequisiteOutcome { key: String, error: Option<String> },
-    /// The prerequisite loop's next turn: pick the next task.
-    PrerequisiteNext,
 }
 
 /// Work waiting for the credential refresh in flight, resumed when it settles.
@@ -101,6 +101,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
             message: "request failed".into(),
             status: None,
             refusal: None,
+            retry: false,
         }));
     }
     match outcome.value {
@@ -115,6 +116,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
                     message: format!("HTTP {status}"),
                     status: Some(status),
                     refusal: None,
+                    retry: false,
                 });
             }
             match answer.remove("body") {
@@ -123,6 +125,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
                     message: "invalid HTTP result: body must be a string".into(),
                     status,
                     refusal: None,
+                    retry: false,
                 }),
             }
         }
@@ -130,6 +133,7 @@ pub(super) fn http_body(outcome: EffectOutcome) -> std::result::Result<String, E
             message: "invalid HTTP result".into(),
             status: None,
             refusal: None,
+            retry: false,
         }),
     }
 }
@@ -227,9 +231,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         self.direct_result(request_id, outcome)
                     }
                     EffectKind::DirectTimer { request_id } => self.direct_timeout(request_id),
-                    EffectKind::Prerequisite { request_id, key } => {
-                        self.prerequisite_result(request_id, key, outcome)
+                    EffectKind::Prerequisite { key } => {
+                        self.prerequisite_result(key, outcome, now, entropy)
                     }
+                    EffectKind::PrerequisiteTimer => self.prerequisite_timer_fired(&effect_id),
                     EffectKind::LoadHttp { batch } => self.load_result(batch, outcome),
                     EffectKind::LoadDeadline { batch } => self.load_deadline(batch),
                     EffectKind::LoadTimer => self.load_timer_fired(&effect_id),
@@ -285,6 +290,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 message: "socket failed".into(),
                 status: None,
                 refusal: None,
+                retry: false,
             });
             return self.socket_ended(&effect_id, epoch, error, now, entropy);
         }
@@ -302,6 +308,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     message: "socket closed".into(),
                     status: None,
                     refusal: None,
+                    retry: false,
                 };
                 self.socket_ended(&effect_id, epoch, error, now, entropy);
             }
@@ -409,6 +416,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 message: "refreshAuth failed".into(),
                 status: None,
                 refusal: None,
+                retry: false,
             })
         });
         if let Some(refused) = &refused {

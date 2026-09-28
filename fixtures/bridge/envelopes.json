@@ -30,7 +30,6 @@
     {"type":"task","requestId":"128","command":{"kind":"connect","directTimeoutMs":30000,"refreshAuth":true}},
     {"type":"task","requestId":"129","command":{"kind":"connection","event":"pause"}},
     {"type":"task","requestId":"130","command":{"kind":"invoke","name":"GetTodo","version":1,"args":{"id":"t"},"store":{"todo":false},"once":true,"refresh":true}},
-    {"type":"task","requestId":"131","command":{"kind":"runPrerequisites","handlers":["upload"]}},
     {"type":"task","requestId":"132","command":{"kind":"watch","model":"Todo","spec":{"filter":{"done":false}}}},
     {"type":"task","requestId":"133","command":{"kind":"unwatch","observerId":"3"}},
     {"type":"transactionCommand","requestId":"134","transactionId":"tx7","command":{"kind":"read","key":{"model":"Todo","identity":{"id":"t"}}}},
@@ -58,6 +57,7 @@
     {"type":"effectResult","effectId":"102","outcome":{"ok":false,"error":{"message":"pull failed","status":401}}},
     {"type":"effectResult","effectId":"105","outcome":{"ok":false,"error":{"message":"push failed: 426 {\"minimumBuild\":7}","status":426,"refusal":"{\"minimumBuild\":7}"}}},
     {"type":"effectResult","effectId":"103","outcome":{"ok":false,"error":{"message":"offline"}}},
+    {"type":"effectResult","effectId":"105","outcome":{"ok":false,"error":{"message":"offline","retry":true}}},
     {"type":"effectResult","effectId":"104","outcome":{"ok":true,"value":{"status":200,"body":"{}"}}},
     {"type":"close"}
   ],

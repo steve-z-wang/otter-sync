@@ -177,12 +177,12 @@ fn accepted_wire_rows_do_not_promote_companion_over_server_authority() {
     assert_eq!(c.pending_count().unwrap(), 0);
 }
 
-/// The runner's decisions are Rust's: which task comes next, that a task
-/// nobody handles fails with a reason instead of stopping the run, and that a
-/// reported failure keeps its reason where `pending_tasks` and the record
-/// status show it.
+/// What a handler came to is recorded in Rust: a reported failure keeps its
+/// reason where `pending_tasks` and the record status show it, a reset makes
+/// the task pending again, and a success releases the mutation. An opaque key
+/// carries no name, so it is only ever settled through readiness.
 #[test]
-fn next_task_walks_pending_tasks_fails_unhandled_ones_and_records_reasons() {
+fn outcomes_keep_their_reason_and_a_reset_makes_the_task_pending_again() {
     let dir = tempfile::tempdir().unwrap();
     let mut value = serde_json::to_value(schema()).unwrap();
     value["requirements"] =
@@ -206,23 +206,16 @@ fn next_task_walks_pending_tasks_fails_unhandled_ones_and_records_reasons() {
         Ok(())
     })
     .unwrap();
-    let handlers = vec!["Upload".to_string()];
-    // The opaque key has no name, so no handler can take it: it fails with a
-    // reason and the walk continues to the task the host can run.
-    let task = c.next_task(&handlers).unwrap().unwrap();
-    assert_eq!(task["name"], "Upload");
-    assert_eq!(task["arguments"], json!({"key":"asset"}));
-    let upload_key = task["key"].as_str().unwrap().to_string();
     let tasks = c.pending_tasks().unwrap();
+    let upload = tasks.iter().find(|t| t["name"] == "Upload").unwrap();
+    assert_eq!(upload["arguments"], json!({"key":"asset"}));
+    assert_eq!(upload["state"], "pending");
+    let upload_key = upload["key"].as_str().unwrap().to_string();
     let scan = tasks.iter().find(|t| t["key"] == "scan:1").unwrap();
-    assert_eq!(scan["state"], "failed");
-    assert_eq!(scan["error"], "missing prerequisite handler");
+    assert!(scan.get("name").is_none(), "an opaque key has no name");
+    assert_eq!(scan["state"], "pending");
     // A failure reported by the host keeps its reason.
     c.outcome(&upload_key, Some("offline")).unwrap();
-    assert!(
-        c.next_task(&handlers).unwrap().is_none(),
-        "failed tasks are not retried"
-    );
     let tasks = c.pending_tasks().unwrap();
     let upload = tasks.iter().find(|t| t["key"] == upload_key).unwrap();
     assert_eq!(upload["state"], "failed");
@@ -234,15 +227,15 @@ fn next_task_walks_pending_tasks_fails_unhandled_ones_and_records_reasons() {
     assert!(c.freeze().unwrap().is_none());
     // Reset and succeed: the task is gone and the mutation can be sent.
     c.set_readiness(&upload_key, Readiness::Pending).unwrap();
-    let again = c.next_task(&handlers).unwrap().unwrap();
-    assert_eq!(again["key"], upload_key);
+    let tasks = c.pending_tasks().unwrap();
+    let again = tasks.iter().find(|t| t["key"] == upload_key).unwrap();
+    assert_eq!(again["state"], "pending");
     assert!(again.get("error").is_none());
     c.outcome(&upload_key, None).unwrap();
-    assert!(c.next_task(&handlers).unwrap().is_none());
     assert_eq!(
         c.pending_tasks().unwrap().len(),
         1,
-        "only the unhandled key remains"
+        "only the opaque key remains"
     );
     assert!(c.freeze().unwrap().is_some());
 }

@@ -1,0 +1,504 @@
+{
+  "actions": [
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "spaceId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "userId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "avatar",
+                "nullable": true,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "spaceId",
+              "userId"
+            ],
+            "name": "Member"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "list",
+          "kind": "model",
+          "model": "Member",
+          "name": "members",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "AddCoAuthors",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [
+        {
+          "fields": [
+            {
+              "name": "key",
+              "type": "String"
+            }
+          ],
+          "name": "Uploaded"
+        }
+      ],
+      "requirements": [
+        {
+          "arguments": {
+            "key": "self"
+          },
+          "field": "avatar",
+          "model": "Member",
+          "name": "Uploaded"
+        }
+      ],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Space"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Space",
+          "name": "space",
+          "operation": "delete"
+        }
+      ],
+      "kind": "mutation",
+      "name": "DeleteSpace",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": {
+        "after": [
+          {
+            "arguments": {
+              "membership.space": "space"
+            },
+            "name": "RemoveCoAuthor"
+          }
+        ]
+      },
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "spaceId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Request"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Request",
+          "name": "request",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "Propose",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": {
+        "after": [
+          {
+            "arguments": {
+              "members.space": "request.space"
+            },
+            "name": "AddCoAuthors"
+          }
+        ]
+      },
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "spaceId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Request"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "list",
+          "kind": "model",
+          "model": "Request",
+          "name": "requests",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "ProposeMany",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": {
+        "after": [
+          {
+            "arguments": {
+              "members.space": "requests.space"
+            },
+            "name": "AddCoAuthors"
+          }
+        ]
+      },
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "spaceId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "userId",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "spaceId",
+              "userId"
+            ],
+            "name": "Member"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Member",
+          "name": "membership",
+          "operation": "delete"
+        }
+      ],
+      "kind": "mutation",
+      "name": "RemoveCoAuthor",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    }
+  ],
+  "clientPolicies": [],
+  "enums": [],
+  "models": [
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Space",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "spaceId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "userId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "avatar",
+          "nullable": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "spaceId",
+        "userId"
+      ],
+      "name": "Member",
+      "relations": [
+        {
+          "fields": [
+            "spaceId"
+          ],
+          "name": "space",
+          "onDelete": "delete",
+          "target": "Space",
+          "targetFields": [
+            "id"
+          ]
+        }
+      ],
+      "unique": [],
+      "version": 1
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "spaceId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Request",
+      "relations": [
+        {
+          "fields": [
+            "spaceId"
+          ],
+          "name": "space",
+          "onDelete": "delete",
+          "target": "Space",
+          "targetFields": [
+            "id"
+          ]
+        }
+      ],
+      "unique": [],
+      "version": 1
+    }
+  ],
+  "prerequisites": [
+    {
+      "fields": [
+        {
+          "name": "key",
+          "type": "String"
+        }
+      ],
+      "name": "Uploaded"
+    }
+  ],
+  "requirements": [
+    {
+      "arguments": {
+        "key": "self"
+      },
+      "field": "avatar",
+      "model": "Member",
+      "name": "Uploaded"
+    }
+  ],
+  "resultModels": [
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "spaceId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "userId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "avatar",
+          "nullable": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "spaceId",
+        "userId"
+      ],
+      "name": "Member",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "spaceId",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Request",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Space",
+      "version": 1
+    }
+  ]
+}

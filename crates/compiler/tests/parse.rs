@@ -490,11 +490,6 @@ fn sequence_argument_names_may_be_relation_paths() {
     let call = &d.actions[0].sequence.as_ref().unwrap().arguments["after"][0];
     assert_eq!(call["arguments"]["members.space"], "request.space");
     assert_eq!(call["arguments"]["other"], "request");
-    for (source, message) in [(
-        "@sequence(after: [Add(members.space request)]) mutation A()",
-        "1:37: expected ,",
-    )] {
-        let error = parse(source).unwrap_err();
-        assert!(error.starts_with(message), "{source}: {error}");
-    }
+    let error = parse("@sequence(after: [Add(members.space request)]) mutation A()").unwrap_err();
+    assert!(error.starts_with("1:37: expected ,"), "{error}");
 }

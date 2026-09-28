@@ -27,7 +27,7 @@ The compiled descriptor `{name, version, slots, sequence}` goes to the client as
 
 **Bindings.** `(relation: parentSlot)` ties a create slot to a single parent slot of the relation's target model. The server checks that each child's foreign key equals the parent's identity, so a client cannot attach a child to a parent it did not create in the same mutation.
 
-**Version and sequence.** `@@version(n)` defaults to 1. `@@sequence(after: [Target(targetSlot: sourceSlot.path)])` declares that an instance waits for earlier queued instances of `Target` whose slot holds the record the path resolves to; how that becomes a dependency is described in [Dependencies](../client/engine/push/dependencies.md).
+**Version and sequence.** `@@version(n)` defaults to 1. `@@sequence(after: [Target(targetSlot.path: sourceSlot.path)])` declares that an instance waits for earlier queued instances of `Target` whose side reaches the same record as its own. Each side is a slot followed by zero or more relation names, and a list slot on either side contributes each of its elements; `Target()` with no arguments waits for every earlier instance. For example, `AddCoAuthors(members.space: request.space)` waits only for earlier `AddCoAuthors` that add a member to the request's Space. Every path segment must be a reference, not a stored field or an inverse, and both sides must reach the same Model; otherwise the compiler refuses the directive. The `@sequence` of a [Mutation](actions.md) uses the same arguments. How a sequence becomes a dependency is described in [Dependencies](../client/engine/push/dependencies.md).
 
 **Decoding on the server.** Operations are matched to slots in order by `(model, op)`; a list slot consumes every consecutive match. A later slot with the same `(model, op)` as an earlier non-single slot, with no single slot fixing a position between them, is refused by the compiler as `ambiguous slot`, so the walk is deterministic for every emitted schema. Failures have stable codes: an unknown mutation, a wrong shape or a missing required create field is `mutation.invalid`; an empty patch decodes to `patch: {}` and the update is a no-op that still stamps, reads back and may publish its record; a known field outside the allowed patch fields is `<name>.not_allowed`; a binding mismatch is `<name>.invalid` ([Server Push](../server/engine/push.md)).
 
@@ -51,11 +51,12 @@ An incompatible change to a mutation's input requires `@@version(n+1)`; compatib
 
 ## 10. Quality Requirements
 
-- **Slot shapes, bindings and sequences that do not resolve are refused at compile time.** Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `schema_and_mutations`, `relationships_bindings_and_dependency_metadata`, `rejects_dependency_typos`.
+- **Slot shapes, bindings and sequences that do not resolve are refused at compile time.** Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `schema_and_mutations`, `relationships_bindings_and_dependency_metadata`, `rejects_dependency_typos`, `sequence_prior_paths_that_do_not_resolve_are_refused_at_the_directive`.
+- **A sequence path on either side is emitted as written, and one without relations keeps its existing descriptor.** Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `sequence_prior_side_may_be_a_relation_path_into_a_prior_slot`; [compiler/tests/cli.rs](../../../../crates/compiler/tests/cli.rs) `cli_sequence_paths_fixture_is_current`.
 - **An incompatible input change at the same version is refused, a compatible one accepted, and old inputs are retained.** Evidence: [compiler/tests/history.rs](../../../../crates/compiler/tests/history.rs); [compiler/tests/cli.rs](../../../../crates/compiler/tests/cli.rs) `cli_retains_history_and_does_not_overwrite_on_break`.
 - **The server decodes known fields, ignores unknown ones, and refuses disallowed patches and binding mismatches with stable codes.** Evidence: [server/tests/runtime.rs](../../../../crates/server/tests/runtime.rs).
 
-Tests read, not executed.
+Tests read, not executed, except the two sequence-path tests: `cargo test -p axton-compiler --locked` (2026-09-28).
 
 ## 11. Risks and Technical Debt
 

@@ -1864,3 +1864,130 @@ fn a_session_savepoint_rollback_discards_its_calls() {
         vec![op_row("companion", "Composition", "c2", "update")]
     );
 }
+
+/// The compiled #179 schema: `Propose` waits for earlier `AddCoAuthors` whose
+/// `members[*].space` is its `request.space`, and `DeleteSpace` for earlier
+/// `RemoveCoAuthor` whose `membership.space` is its `space`.
+fn sequence_paths_schema() -> Schema {
+    Schema::from_value(
+        serde_json::from_str(include_str!(
+            "../../../fixtures/schemas/sequence-paths.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+fn dependencies(client: &mut Client<SqliteStore>) -> Vec<Value> {
+    client
+        .read_sql(
+            "SELECT ordinal, depends_on, kind FROM axton_mutation_dependency ORDER BY ordinal, depends_on",
+            &[],
+        )
+        .unwrap()
+}
+
+/// #179: a relation path on the prior side waits only for earlier pending acts
+/// whose path reaches the same record (any element of a list slot on either
+/// side), resolves
+/// through a delete slot from the identity the act carries, and is a durable
+/// dependency that still holds after the client reopens.
+#[test]
+fn sequence_prior_path_waits_only_for_earlier_acts_on_the_same_record_across_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut client = open(&path, sequence_paths_schema());
+    client
+        .transaction(|tx| {
+            for id in ["A", "B", "C"] {
+                tx.direct(Operation {
+                    model: "Space".into(),
+                    op: OperationKind::Create,
+                    identity: json!({"id":id}),
+                    values: Some(json!({})),
+                })?;
+            }
+            tx.direct(Operation {
+                model: "Member".into(),
+                op: OperationKind::Create,
+                identity: json!({"spaceId":"B","userId":"old"}),
+                values: Some(json!({"avatar":null})),
+            })
+        })
+        .unwrap();
+    // Blocked on its upload: an earlier pending act on B and A.
+    let add = client
+        .submit_action(
+            "AddCoAuthors",
+            1,
+            json!({"members":[
+                {"spaceId":"B","userId":"u1","avatar":null},
+                {"spaceId":"A","userId":"u2","avatar":"photo"},
+            ]}),
+        )
+        .unwrap()
+        .ordinal;
+    let propose = |client: &mut Client<SqliteStore>, id: &str, space: &str| {
+        client
+            .submit_action("Propose", 1, json!({"request":{"id":id,"spaceId":space}}))
+            .unwrap()
+            .ordinal
+    };
+    let on_c = propose(&mut client, "r1", "C");
+    let on_a = propose(&mut client, "r2", "A");
+    let on_b = propose(&mut client, "r3", "B");
+    // A list slot on the declaring side: any element's path counts too.
+    let propose_many = |client: &mut Client<SqliteStore>, requests: Value| {
+        client
+            .submit_action("ProposeMany", 1, json!({ "requests": requests }))
+            .unwrap()
+            .ordinal
+    };
+    let many_on_a = propose_many(
+        &mut client,
+        json!([{"id":"r4","spaceId":"C"},{"id":"r5","spaceId":"A"}]),
+    );
+    let many_on_c = propose_many(&mut client, json!([{"id":"r6","spaceId":"C"}]));
+    let remove = |client: &mut Client<SqliteStore>, space: &str, user: &str| {
+        client
+            .submit_action(
+                "RemoveCoAuthor",
+                1,
+                json!({"membership":{"spaceId":space,"userId":user}}),
+            )
+            .unwrap()
+            .ordinal
+    };
+    let remove_b = remove(&mut client, "B", "old");
+    // The membership is still a pending create, so no stored row or base
+    // remains: the path resolves from the identity the delete carries.
+    let remove_a = remove(&mut client, "A", "u2");
+    let delete_a = client
+        .submit_action("DeleteSpace", 1, json!({"space":{"id":"A"}}))
+        .unwrap()
+        .ordinal;
+    let expected = vec![
+        json!({"ordinal":on_a,"depends_on":add,"kind":"sequence"}),
+        json!({"ordinal":on_b,"depends_on":add,"kind":"sequence"}),
+        json!({"ordinal":many_on_a,"depends_on":add,"kind":"sequence"}),
+        json!({"ordinal":remove_a,"depends_on":add,"kind":"lifecycle"}),
+        json!({"ordinal":delete_a,"depends_on":remove_a,"kind":"sequence"}),
+    ];
+    assert_eq!(dependencies(&mut client), expected);
+    drop(client);
+
+    let mut client = open(&path, sequence_paths_schema());
+    assert_eq!(dependencies(&mut client), expected);
+    let batch =
+        PushRequest::decode_actions(&client.freeze().unwrap().unwrap(), &sequence_paths_schema())
+            .unwrap();
+    assert_eq!(
+        batch
+            .mutations
+            .iter()
+            .map(|m| m.ordinal)
+            .collect::<Vec<_>>(),
+        vec![on_c, many_on_c, remove_b],
+        "only the acts that wait for nothing still blocked leave"
+    );
+}

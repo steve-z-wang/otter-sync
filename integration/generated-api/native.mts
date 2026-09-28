@@ -29,6 +29,15 @@ try {
  await client.transaction(tx=>tx.models.book.delete({id:'local'}));
  await new Promise(r=>setTimeout(r,20));stop();
  if(seen[0]!==2||seen[seen.length-1]!==1)throw Error(`watch ${seen}`);
+ // Read-only SQL over several Models through the generated client (#184):
+ // a commit to either joined Model re-emits the join.
+ const joined:unknown[]=[];const stopJoined=client.watchSql('SELECT b.title AS title, c.text AS text FROM Book b JOIN Comment c ON c.bookId = b.id ORDER BY c.id',[],rows=>joined.push(rows.map(r=>`${r.title}:${r.text}`)));
+ await new Promise(r=>setTimeout(r,20));
+ await client.mutate.addComment({comment:{id:'c2',bookId:'b',text:'Second'}});
+ await new Promise(r=>setTimeout(r,20));
+ await client.transaction(tx=>tx.models.book.update({id:'b'},{title:'Renamed'}));
+ await new Promise(r=>setTimeout(r,20));stopJoined();
+ if(JSON.stringify(joined)!==JSON.stringify([['Book:Comment'],['Book:Comment','Book:Second'],['Renamed:Comment','Renamed:Second']]))throw Error(`watchSql ${JSON.stringify(joined)}`);
  // Creation defaults (#27): omitted fields of a fresh create are filled once by the native client.
  await client.transaction(async tx=>{await tx.models.draft.create({memo:null});await tx.models.draft.create({memo:'explicit',note:null,body:'mine'});});
  await client.mutate.addDraft({draft:{memo:'queued'}});

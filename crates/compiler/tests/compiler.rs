@@ -655,6 +655,7 @@ fn generated_clients_are_the_whole_client() {
         "async connect(server: ServerOptions",
         "querySpec(model: string",
         "readSql(sql: string",
+        "watchSql(sql: string, parameters: unknown[] = [], listener: (rows: RecordValue[]) => void, onError?: (error: unknown) => void): () => void { return this.client.watchSql(sql, parameters, listener, onError); }",
     ] {
         assert!(ts.contains(member), "missing {member}: {ts}");
     }
@@ -703,6 +704,7 @@ fn generated_clients_are_the_whole_client() {
         "Map<String, PrerequisiteHandler>? prerequisites,",
         "onStore:rawHooks, prerequisites:prerequisites);",
         "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;",
+        "Stream<List<Map<String,dynamic>>> watchSql(String sql, {List<dynamic> parameters = const []}) => client.watchSql(sql, parameters: parameters);",
     ] {
         assert!(dart.contains(member), "missing {member}: {dart}");
     }

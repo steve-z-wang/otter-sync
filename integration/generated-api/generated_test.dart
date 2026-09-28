@@ -143,6 +143,17 @@ void main(){
     await tx.models.book.update(const BookIdentity(id:'local'),const BookPatch(title:Present('Local edited')));
    });
    expect((await client.models.book.get(const BookIdentity(id:'local')))?.title,'Local edited');
+   // Read-only SQL over several Models through the generated client (#184).
+   final joined=<List<String>>[];
+   final watching=client.watchSql('SELECT b.title AS title, c.text AS text FROM Book b JOIN Comment c ON c.bookId = b.id WHERE b.id = ? ORDER BY c.id',parameters:const ['b']).listen((rows)=>joined.add([for(final r in rows)'${r['title']}:${r['text']}']));
+   Future<void> until(int count)async{for(var i=0;i<400&&joined.length<count;i++){await Future<void>.delayed(const Duration(milliseconds:5));}}
+   await until(1);
+   await client.mutate.addComment(comment:const Comment(id:'c2',bookId:'b',text:'Second'));
+   await until(2);
+   await client.transaction((tx)=>tx.models.book.update(const BookIdentity(id:'b'),const BookPatch(title:Present('Renamed'))));
+   await until(3);
+   await watching.cancel();
+   expect(joined,[['Book:Comment'],['Book:Comment','Book:Second'],['Renamed:Comment','Renamed:Second']]);
    // A mutation outside a transaction is its own transaction; its record's sync state is typed.
    final ordinal=await client.mutate.editEntry(entry:const EditEntryEntryUpdate(identity:EntryIdentity(id:id),note:Present('outside')));
    final state=await client.models.entry.syncState(const EntryIdentity(id:id));

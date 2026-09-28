@@ -77,5 +77,7 @@ export class GeneratedClient {
  querySpec(model: string, query: QuerySpec = {}): Promise<RecordValue[]> { return this.client.querySpec(model, query); }
  /** Escape hatch: read-only SQL over the local database. */
  readSql(sql: string, parameters: unknown[] = []): Promise<RecordValue[]> { return this.client.readSql(sql, parameters); }
+ /** Read-only SQL over several Models, re-run after every commit that writes a table it reads: `listener` receives the current rows, then each different result. Returns a function that stops it. */
+ watchSql(sql: string, parameters: unknown[] = [], listener: (rows: RecordValue[]) => void, onError?: (error: unknown) => void): () => void { return this.client.watchSql(sql, parameters, listener, onError); }
  close() { return this.client.close(); }
 }

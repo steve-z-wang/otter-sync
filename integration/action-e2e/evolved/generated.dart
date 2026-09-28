@@ -618,5 +618,7 @@ class GeneratedClient {
  Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);
  /// Escape hatch: read-only SQL over the local database.
  Future<List<Map<String,dynamic>>> readSql(String sql, {List<dynamic> parameters = const []}) => client.readSql(sql, parameters: parameters);
+ /// Read-only SQL over several Models: the current rows, then each different result after a commit that writes a table it reads.
+ Stream<List<Map<String,dynamic>>> watchSql(String sql, {List<dynamic> parameters = const []}) => client.watchSql(sql, parameters: parameters);
  Future<void> close() => client.close();
 }

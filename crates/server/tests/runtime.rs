@@ -177,6 +177,76 @@ fn startup_validates_the_retained_model_contracts() {
     assert!(axton_server::Config::decode(unknown_model).is_err());
 }
 
+/// A Model without a Loader is device-only ([#187](https://github.com/zanminwang/axton/issues/187)):
+/// startup refuses any retained descriptor that would put it on the wire or
+/// resolve it through its Loader, naming the operation, the slot or output
+/// and the Model. Omitting a Loader nothing needs is accepted.
+#[test]
+fn startup_refuses_a_descriptor_naming_a_model_without_a_loader() {
+    let id = json!({"name":"id","type":{"kind":"scalar","name":"string"},"nullable":false});
+    let draft = json!({"name":"Draft","identity":["id"],"fields":[id]});
+    let identity = json!({"kind":"identity","model":"Draft","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]});
+    let output = json!({"name":"drafts","kind":"model","modelReadVersion":1,"model":"Draft","cardinality":"list","source":"handlerIdentity","handlerType":identity});
+    let with_draft = |edit: &dyn Fn(&mut Value)| {
+        let mut c = config();
+        c["schema"]["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(draft.clone());
+        c["schema"]["resultModels"] =
+            json!([{"name":"Draft","version":1,"identity":["id"],"fields":[id],"enums":[]}]);
+        edit(&mut c);
+        c
+    };
+    // Nothing names Draft: the backend starts without its Loader.
+    let decoded = axton_server::Config::decode(with_draft(&|_| {})).unwrap();
+    assert_eq!(decoded.loaders, ["Task"]);
+    for (label, edit, message) in [
+        (
+            "slot mutation",
+            Box::new(|c: &mut Value| {
+                c["mutations"].as_array_mut().unwrap().push(json!({"name":"saveDraft","version":2,"slots":[{"name":"draft","model":"Draft","operation":"create","cardinality":"single"}]}));
+            }) as Box<dyn Fn(&mut Value)>,
+            "Mutation saveDraft v2 slot draft names Model Draft, which has no Loader",
+        ),
+        (
+            "typed Mutation operand",
+            Box::new(|c: &mut Value| {
+                c["schema"]["actions"] = json!([{"name":"SaveDraft","version":1,"kind":"mutation","inputs":[{"kind":"model","name":"draft","model":"Draft","operation":"update","cardinality":"list"}],"outputs":[]}]);
+            }),
+            "Mutation SaveDraft v1 slot draft names Model Draft, which has no Loader",
+        ),
+        (
+            "Query output",
+            Box::new(|c: &mut Value| {
+                c["schema"]["actions"] = json!([{"name":"FindDrafts","version":3,"kind":"query","inputs":[],"outputs":[output]}]);
+            }),
+            "Query FindDrafts v3 output drafts names Model Draft, which has no Loader",
+        ),
+        (
+            "Load output",
+            Box::new(|c: &mut Value| {
+                c["schema"]["loads"] = json!([{"name":"AllDrafts","version":1,"inputs":[],"outputs":[output],"input":{"models":[],"enums":[]},"outputEnums":[]}]);
+            }),
+            "Load AllDrafts v1 output drafts names Model Draft, which has no Loader",
+        ),
+    ] {
+        let error = axton_server::Config::decode(with_draft(&*edit))
+            .err()
+            .unwrap_or_else(|| panic!("{label}: a Loader-less Model on the wire must be refused"));
+        assert_eq!(error.code, axton_server::code::CONFIG_INVALID, "{label}");
+        assert!(
+            error.message.contains(message),
+            "{label}: {}",
+            error.message
+        );
+        // Registering the Loader accepts the same descriptor.
+        let mut loaded = with_draft(&*edit);
+        loaded["loaders"] = json!(["Task", "Draft"]);
+        axton_server::Config::decode(loaded).unwrap_or_else(|e| panic!("{label}: {e}"));
+    }
+}
+
 /// A host whose `claim` answers with the given owner and last sequence and
 /// which records every `handle` call, for asserting protocol refusals in
 /// process without a database.

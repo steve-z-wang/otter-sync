@@ -34,7 +34,7 @@ pub(crate) async fn read_back(
     let mut versions: BTreeMap<&str, u64> = BTreeMap::new();
     for key in targets.values() {
         if !config.loaders.contains(&key.model) {
-            return Err(unregistered());
+            return Err(unregistered(&key.model));
         }
         let Some(version) = declared.get(&key.model) else {
             return Ok(Outcome::Refused(code::MODEL_VERSION_UNSUPPORTED.into()));

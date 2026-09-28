@@ -120,7 +120,7 @@ pub(crate) fn validate_row(
         return Err(storage_invalid("invalid invalidation order"));
     }
     if !config.loaders.contains(&row.model) {
-        return Err(Error::new(code::LOADER_UNREGISTERED, "unregistered loader"));
+        return Err(crate::settlement::unregistered(&row.model));
     }
     let key = config
         .schema

@@ -100,6 +100,8 @@ Future<void> useClient(GeneratedClient client) async {
     store: const EditAndReadStore.outputs(todo: false),
   );
   final String readTitle = read.todo.title;
+  // A list of update operands encodes each element as an object (#182).
+  await client.mutations.call.editMany(todos: const [EditManyTodosUpdate(id: 'A', title: Present('Renamed')), EditManyTodosUpdate(id: 'B')]);
   await client.mutations.call.ping();
   final Call<void> searched = await client.mutations.search(query: null);
   await client.mutations.call.search(query: 'term');
@@ -181,6 +183,12 @@ Future<EditHandlerOutput> handleEdit(
   MutationHandlerCall<Object, EditInput> call,
 ) async {
   call.args.todo.id;
+}
+
+Future<EditManyHandlerOutput> handleEditMany(
+  MutationHandlerCall<Object, EditManyInput> call,
+) async {
+  call.args.todos.map((todo) => todo.id);
 }
 
 Future<EditAndReadHandlerOutput> handleEditAndRead(
@@ -278,6 +286,7 @@ void main() {
   handleNotes;
   handleEdit;
   handleEditAndRead;
+  handleEditMany;
   find;
   useClient;
 }

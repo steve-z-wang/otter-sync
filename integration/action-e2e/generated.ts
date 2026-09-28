@@ -510,7 +510,7 @@ function encodeAddTodoInput(args:AddTodoInput):Record<string,unknown> { return {
 }; }
 function decodeAddTodoOutput(_value:unknown):void { return undefined; }
 function encodeAnnotateTodoInput(args:AnnotateTodoInput):Record<string,unknown> { return {
- todo: {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
  note: args.note,
  body: args.body,
 }; }
@@ -525,7 +525,7 @@ function encodeDeleteTodoInput(args:DeleteTodoInput):Record<string,unknown> { re
 }; }
 function decodeDeleteTodoOutput(_value:unknown):void { return undefined; }
 function encodeEditAndShowInput(args:EditAndShowInput):Record<string,unknown> { return {
- todo: {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
  shown: args.shown,
 }; }
 function decodeEditAndShowOutput(value:unknown):EditAndShowOutput { const row=value as Record<string,unknown>; return {
@@ -573,7 +573,7 @@ function decodeTodoPageOutput(value:unknown):TodoPageOutput { const row=value as
  next: row.next == null ? null : row.next as string,
 }; }
 function encodeUpdateTodoInput(args:UpdateTodoInput):Record<string,unknown> { return {
- todo: {...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)},
+ todo: ({...encodeTodoIdentity(args.todo),...encodeTodoPatch(args.todo)}),
 }; }
 function decodeUpdateTodoOutput(_value:unknown):void { return undefined; }
 /** Invocation options for AddNote; `store` selects which explicit Model outputs also update local Models. */

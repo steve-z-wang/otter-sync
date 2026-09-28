@@ -32,6 +32,8 @@ mutation Edit(todo Todo.update)
 mutation EditAndRead(todo Todo.update) {
  todo Todo
 }
+// A list of update operands encodes each element as an object (#182).
+mutation EditMany(todos Todo.update<title>[])
 // GetTodos v1 is retained as a Mutation; v2 is the same read as a Query.
 @version(2) query GetTodos() { todos Todo[] }
 @version(2) mutation StateList() { states Status[] }

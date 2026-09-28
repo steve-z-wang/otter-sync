@@ -703,6 +703,59 @@
         "version": 1
       }
     },
+    "EditMany": {
+      "1": {
+        "input": {
+          "enums": [],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "title",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Todo"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "allowedPatchFields": [
+              "title"
+            ],
+            "cardinality": "list",
+            "kind": "model",
+            "model": "Todo",
+            "name": "todos",
+            "operation": "update"
+          }
+        ],
+        "kind": "mutation",
+        "name": "EditMany",
+        "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    },
     "FindTodos": {
       "1": {
         "input": {

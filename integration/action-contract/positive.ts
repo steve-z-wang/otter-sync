@@ -53,6 +53,8 @@ async function clientContract(client: GeneratedClient) {
   const editedCall: Call<void> = await client.mutations.edit({ todo: { id: 'A' } });
   const read: EditAndReadOutput = await client.mutations.call.editAndRead({ todo: { id: 'A', state: 'closed' } });
   const readTitle: string = read.todo.title;
+  // A list of update operands encodes each element as an object (#182).
+  await client.mutations.call.editMany({ todos: [{ id: 'A', title: 'Renamed' }, { id: 'B' }] });
   await client.mutations.editAndRead({ todo: { id: 'A' } }, { store: { todo: false } });
   const noOutput: PingOutput = await client.mutations.call.ping({});
   await client.mutations.call.deleteTodo({ todo: deletion });
@@ -187,6 +189,7 @@ const handlers: Mutations<Tx> = {
   deleteTodo: { async v1({ args }) { void args.todo.id; } },
   edit: async ({ args }) => { void args.todo.id; },
   editAndRead: async ({ args }) => { void args.todo.id; return output; },
+  editMany: async ({ args }) => { void args.todos.map(todo => todo.id); },
   sendEmail: { async v1({ args }) { void args.to; void args.subject; void args.body; } },
   // v1 of GetTodos stays a Mutation; its v2 is registered as a Query.
   getTodos: async ({ ctx }) => { ctx.touch.todo({ id: 't' }); return oldGetTodos; },

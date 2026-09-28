@@ -52,6 +52,20 @@ const pagesOf = (loadId: string) =>
     dropped: exchange.dropped,
   })));
 const handledCalls = (loadId: string) => fixture.handled.filter((page) => page.loadId === loadId).map((page) => page.callId);
+/**
+ * The continuation each page call of one job handed its handler, one entry per
+ * call ID in order. Items of one batch run in concurrent Serializable
+ * transactions, so PostgreSQL may abort one and the driver run its handler
+ * again (#202); every run of a call must have received the same continuation.
+ */
+const handledContinuations = (loadId: string) => {
+  const byCall = new Map<string, unknown>();
+  for (const page of fixture.handled.filter((handled) => handled.loadId === loadId)) {
+    if (byCall.has(page.callId)) assert.deepEqual(page.continuation, byCall.get(page.callId), "a retried run received the same continuation");
+    else byCall.set(page.callId, page.continuation);
+  }
+  return [...byCall.values()];
+};
 const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
@@ -104,7 +118,7 @@ test("the backend pages both Loads over HTTP: structured state, a final empty pa
   const projectPages = await follow("ProjectItems", { project: "raw" }, project, (by(project).outcome as { next: LoadRequestItem["continuation"] }).next);
   assert.deepEqual(projectPages.map((p) => p.items), [["raw-3", "raw-4"], ["raw-5"], []], "the final page is empty and completes");
   assert.equal(projectPages.at(-1)!.next, null);
-  assert.deepEqual(fixture.handled.filter((h) => h.loadId === project).map((h) => h.continuation), [
+  assert.deepEqual(handledContinuations(project), [
     null,
     { state: { after: "raw-2", page: 1, trail: ["raw-1", "raw-2"], meta: { size: 2, nested: { flags: [true, false, null], label: "p1" } } } },
     { state: { after: "raw-4", page: 2, trail: ["raw-1", "raw-2", "raw-3", "raw-4"], meta: { size: 2, nested: { flags: [true, false, null], label: "p2" } } } },
@@ -112,7 +126,7 @@ test("the backend pages both Loads over HTTP: structured state, a final empty pa
   ], "the handler received each structured state exactly as it answered it");
   const catalogPages = await follow("Catalog", { shelf: "raw" }, catalog, { state: null });
   assert.deepEqual(catalogPages.map((p) => p.items), [["raw-shelf-3", "raw-shelf-4"], ["raw-shelf-5"]]);
-  assert.deepEqual(fixture.handled.filter((h) => h.loadId === catalog).map((h) => h.continuation), [null, { state: null }, { state: { offset: [4, "items", { big: "9007199254740993" }] } }]);
+  assert.deepEqual(handledContinuations(catalog), [null, { state: null }, { state: { offset: [4, "items", { big: "9007199254740993" }] } }]);
 
   // The same page call IDs again: the saved outcomes, with no handler run.
   const handled = fixture.handled.length;

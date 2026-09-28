@@ -6,7 +6,8 @@ export function isRetryableTransactionError(error: unknown): boolean {
     seen.add(current);
     const value = current as {
       code?: string;
-      meta?: { code?: string };
+      kind?: string;
+      meta?: { code?: string; driverAdapterError?: unknown };
       cause?: unknown;
     };
     if (
@@ -20,6 +21,14 @@ export function isRetryableTransactionError(error: unknown): boolean {
       (value.meta?.code === "40001" || value.meta?.code === "40P01")
     )
       return true;
+    // Prisma 7 driver adapters: a raw query's P2010 carries the adapter's
+    // error in `meta.driverAdapterError`, whose structured `cause` names a
+    // write conflict or (`kind: "postgres"`) the SQLSTATE `code` checked above.
+    if (value.kind === "TransactionWriteConflict") return true;
+    if (value.meta?.driverAdapterError !== undefined) {
+      if (isRetryableTransactionError(value.meta.driverAdapterError))
+        return true;
+    }
     current = value.cause;
   }
   return false;

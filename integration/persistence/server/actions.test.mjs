@@ -216,10 +216,15 @@ test('retryable handler and Loader errors cross native bridge unchanged on every
   const findConfig = { schema: { enums: [], models: config.schema.models, resultModels: config.schema.resultModels, actions: [{ name: 'Find', version: 1, inputs: [], outputs: [{ name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: 'handlerIdentity', handlerType: { kind: 'identity', model: 'Todo', fields: [{ name: 'id', type: { kind: 'scalar', name: 'string' } }] } }] }] }, mutations: [], loaders: ['Todo'] };
   const body = (clientId, callId, name, models) => JSON.stringify({ clientId, batchSequence: 1, models, mutations: [{ ordinal: 1, callId, name, version: 1, args: {} }] });
   try {
-    for (const [index, { name, database }] of shims.entries()) {
-      const fault = () => name === 'prisma'
-        ? Object.assign(new Error('retryable Prisma fault'), { code: 'P2010', meta: { code: '40P01' } })
-        : Object.assign(new Error('retryable SQL fault'), { code: '40P01' });
+    // `prisma-adapter`: Prisma 7 with a driver adapter reports a raw query's
+    // conflict as P2010 with the adapter's error under meta.driverAdapterError (#183).
+    const faults = {
+      prisma: () => Object.assign(new Error('retryable Prisma fault'), { code: 'P2010', meta: { code: '40P01' } }),
+      'prisma-adapter': () => Object.assign(new Error('Raw query failed'), { code: 'P2010', meta: { driverAdapterError: { name: 'DriverAdapterError', cause: { kind: 'TransactionWriteConflict' } } } }),
+    };
+    const cases = [...shims, { name: 'prisma-adapter', database: shims[0].database }];
+    for (const [index, { name, database }] of cases.entries()) {
+      const fault = faults[name] ?? (() => Object.assign(new Error('retryable SQL fault'), { code: '40P01' }));
       const reported = [];
       let handlerAttempts = 0;
       const handlerBackend = createBackend({ config: bumpConfig, native, database, authenticate: () => 'alice', onError: error => reported.push(error), mutations: { async bump() {

@@ -1241,3 +1241,39 @@ fn cli_sequence_paths_fixture_is_current() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cli_reports_its_version() {
+    for flag in ["--version", "-V"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_axton"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("axton {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
+
+#[test]
+fn cli_generated_typescript_imports_the_public_packages_by_default() {
+    let (root, input) = workspace("default-runtime");
+    let out = root.join("out");
+    fs::write(
+        input.join("test.model"),
+        "model Todo { id String @@id(id) } mutation AddTodo(todo Todo.create)",
+    )
+    .unwrap();
+    let result = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let backend = fs::read_to_string(out.join("backend.ts")).unwrap();
+    let client = fs::read_to_string(out.join("client.ts")).unwrap();
+    assert!(backend.contains("from \"@axtonjs/server\""), "{backend}");
+    assert!(client.contains("from \"@axtonjs/client\""), "{client}");
+}

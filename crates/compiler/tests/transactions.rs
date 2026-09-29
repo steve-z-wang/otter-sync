@@ -75,7 +75,7 @@ fn typescript_application_transactions_queue_typed_mutations() {
     assert!(!queries.contains("CompanionOptions"), "{queries}");
     assert!(!line(&ts, "export type PublishEntryOptions").contains("local"));
 
-    let client = axton_compiler::client_typescript(&v, "@axton/client");
+    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
     assert!(
         client.contains(" transaction<T>(body: (tx: ApplicationTransaction) => Promise<T>): Promise<T> { return this.client.transaction((tx) => body(new ApplicationTransaction(tx))); }"),
         "{client}"
@@ -207,7 +207,7 @@ fn schemas_without_mutations_keep_the_local_transaction() {
     ] {
         let v = compile(source).unwrap();
         let ts = axton_compiler::typescript(&v);
-        let client = axton_compiler::client_typescript(&v, "@axton/client");
+        let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
         let dart = axton_compiler::dart(&v);
         for text in [&ts, &client, &dart] {
             for absent in [

@@ -10,12 +10,14 @@ cargo run -p axton-compiler -- compile INPUT_DIR OUTPUT_DIR \
   --client-runtime CLIENT_IMPORT
 ```
 
+`axton --version` prints the compiler's version.
+
 | Argument / option | Meaning |
 | --- | --- |
 | `INPUT_DIR` | Directory containing `.model` files; sorted and compiled together |
 | `OUTPUT_DIR` | Destination for generated artifacts |
-| `--backend-runtime SPEC` | TypeScript backend import; default `@axton/server` |
-| `--client-runtime SPEC` | TypeScript client import; default `@axton/client` |
+| `--backend-runtime SPEC` | TypeScript backend import; default `@axtonjs/server` |
+| `--client-runtime SPEC` | TypeScript client import; default `@axtonjs/client` |
 | `--mutation-history FILE` | Override the retained mutation history path; default `INPUT_DIR/history/mutations.json` |
 | `--initialize-mutation-history` | Allow a missing explicitly selected mutation history file; only version 1 declarations |
 | `--model-history FILE` | Override the retained model history path; default `INPUT_DIR/history/models.json` |

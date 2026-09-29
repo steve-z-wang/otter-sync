@@ -10,7 +10,7 @@ export const SAVE_RECEIPT =
  * A concurrent duplicate waits here for the first transaction to commit.
  */
 export const CLAIM_CALL_INSERT =
-  "INSERT INTO axton_call(owner_id,call_id,request) VALUES($1,$2,$3) ON CONFLICT(owner_id,call_id) DO NOTHING RETURNING call_id";
+  "INSERT INTO axton_call(owner_id,call_id,request) VALUES($1,$2,$3) ON CONFLICT(owner_id,call_id) DO NOTHING RETURNING call_id, ctid::text AS tid";
 /** Only when the insert returned nothing: read and lock the stored call. */
 export const CLAIM_CALL_LOCK =
   "SELECT request,response FROM axton_call WHERE owner_id=$1 AND call_id=$2 FOR UPDATE";
@@ -18,6 +18,17 @@ export const SAVE_CALL =
   // The full creating transaction ID survives savepoints and prevents a later
   // transaction from completing an unexpectedly committed placeholder.
   "UPDATE axton_call SET response=$3 WHERE owner_id=$1 AND call_id=$2 AND response IS NULL AND claim_tx=pg_current_xact_id() RETURNING call_id";
+/**
+ * Save the fresh claim this transaction just inserted, found by its row
+ * position (`$4`, the `ctid` the insert returned) instead of an index read: a
+ * transaction takes no predicate lock on a row version it wrote itself. The
+ * claim row is written only here, so its position holds until the save. A
+ * position that is no longer this transaction's unsaved claim (rolled back
+ * with a savepoint, or left by an earlier transaction on a reused connection)
+ * matches nothing, and `SAVE_CALL` decides.
+ */
+export const SAVE_CLAIMED_CALL =
+  "UPDATE axton_call SET response=$3 WHERE ctid=$4::tid AND owner_id=$1 AND call_id=$2 AND response IS NULL AND claim_tx=pg_current_xact_id() RETURNING call_id";
 export const HEAD = "SELECT head FROM axton_channel WHERE channel=$1";
 /**
  * The Channel's retained positions whose record is still a member, in cursor

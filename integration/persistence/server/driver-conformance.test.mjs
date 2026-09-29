@@ -195,22 +195,40 @@ for(const shim of shims){
   });
   assert.deepEqual(await q('SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2',['alice',id]),[{response:'{"ok":true}'}]);
  });
- test(`[${shim.name}] a fresh call claim reads nothing from axton_call; a duplicate reads and locks the stored call`,async()=>{
+ test(`[${shim.name}] a fresh call claim and its save read nothing from axton_call; a duplicate reads and locks the stored call`,async()=>{
   const id=p('claim-footprint'),call=['axton_call','axton_call_pkey'];
   const fresh=await inTx(async(tx,query,a)=>{
    const pid=await pidOf(query);
    const claimed=await a({op:'claimCall',owner:'alice',callId:id,request:'{"n":1}'});
-   const locks=await sireadOn(pid,call);
+   const claimLocks=await sireadOn(pid,call);
    await a({op:'saveCall',owner:'alice',callId:id,response:'{"ok":1}'});
-   return {claimed,locks};
+   return {claimed,claimLocks,saveLocks:await sireadOn(pid,call)};
   });
-  assert.deepEqual(fresh,{claimed:{fresh:true,request:'{"n":1}',response:null},locks:[]},'the inserted row answers the claim; no SIREAD lock on the table or its key');
+  assert.deepEqual(fresh,{claimed:{fresh:true,request:'{"n":1}',response:null},claimLocks:[],saveLocks:[]},'the inserted row answers the claim and is saved in place; no SIREAD lock on the table or its key');
+  assert.deepEqual(await q('SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2',['alice',id]),[{response:'{"ok":1}'}]);
   const duplicate=await inTx(async(tx,query,a)=>{
    const pid=await pidOf(query);
    return {claimed:await a({op:'claimCall',owner:'alice',callId:id,request:'{"n":2}'}),locks:await sireadOn(pid,call)};
   });
   assert.deepEqual(duplicate.claimed,{fresh:false,request:'{"n":1}',response:'{"ok":1}'});
   assert.ok(duplicate.locks.length>0,'a duplicate reads the stored call');
+ });
+ test(`[${shim.name}] saveCall finds its claim after another claim came between, and refuses one its savepoint rolled back`,async()=>{
+  const first=p('save-first'),second=p('save-second'),undone=p('save-undone');
+  await inTx(async(tx,query,a)=>{
+   await a({op:'claimCall',owner:'alice',callId:first,request:'{}'});
+   await a({op:'claimCall',owner:'alice',callId:second,request:'{}'});
+   await a({op:'saveCall',owner:'alice',callId:first,response:'"1"'});
+   await a({op:'saveCall',owner:'alice',callId:second,response:'"2"'});
+  });
+  assert.deepEqual(await q('SELECT call_id,response FROM axton_call WHERE call_id=ANY($1) ORDER BY call_id',[[first,second]]),[{call_id:first,response:'"1"'},{call_id:second,response:'"2"'}]);
+  await assert.rejects(()=>inTx(async(tx,query,a)=>{
+   await query('SAVEPOINT axton_claim_undone');
+   await a({op:'claimCall',owner:'alice',callId:undone,request:'{}'});
+   await query('ROLLBACK TO SAVEPOINT axton_claim_undone');
+   await a({op:'saveCall',owner:'alice',callId:undone,response:'{}'});
+  }),/Call not claimed/);
+  assert.deepEqual(await q('SELECT * FROM axton_call WHERE call_id=$1',[undone]),[]);
  });
  test(`[${shim.name}] readStamps of new keys reads nothing from axton_record`,async()=>{
   const keys=[key(p('stamp-new-a')),key(p('stamp-new-b'))];
@@ -470,6 +488,20 @@ test('[pg] on near-empty tables readStamps reads an existing stamp by its primar
   assert.ok(read.locks.includes('tuple axton_record'),'the existing rows are read');
   assert.deepEqual((await xmins()).filter(row=>row.identity_key!==key('n1')),before,'existing rows are not rewritten');
  }finally{await t.close();}
+});
+
+test('[pg] a connection reused by the next transaction saves only calls that transaction claimed',async()=>{
+ const pool=new Pool({connectionString:url,max:1});const database=pg(pool);const {driver}=database;
+ const a=(tx,r)=>answer(driver,tx,r);const id='reused-connection-call';
+ try{
+  await assert.rejects(()=>driver.transaction(async tx=>{await a(tx,{op:'claimCall',owner:'alice',callId:id,request:'{}'});throw new Error('rolled back');}),/rolled back/);
+  await assert.rejects(()=>driver.transaction(tx=>a(tx,{op:'saveCall',owner:'alice',callId:id,response:'{}'})),/Call not claimed/,'the rolled-back claim is not saved');
+  await driver.transaction(async tx=>{
+   assert.deepEqual(await a(tx,{op:'claimCall',owner:'alice',callId:id,request:'{}'}),{fresh:true,request:'{}',response:null});
+   await a(tx,{op:'saveCall',owner:'alice',callId:id,response:'"saved"'});
+  });
+  assert.deepEqual(await q('SELECT response FROM axton_call WHERE call_id=$1',[id]),[{response:'"saved"'}]);
+ }finally{await pool.end();}
 });
 
 test('[pg] readStamps still fails serialization for a key inserted or re-stamped after its snapshot',async()=>{

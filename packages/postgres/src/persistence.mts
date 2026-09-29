@@ -71,6 +71,18 @@ const checkMembershipRequest = (
 };
 
 /**
+ * The position of the last fresh claim made through each transaction object,
+ * so `saveCall` can update that row without reading it (`SAVE_CLAIMED_CALL`).
+ * A tool that reuses one object across transactions (a `pg` pool client) can
+ * leave an entry behind; its row is not the next transaction's claim, so the
+ * statement matches nothing and `SAVE_CALL` answers as before.
+ */
+const lastClaim = new WeakMap<
+  object,
+  { owner: string; callId: string; tid: string }
+>();
+
+/**
  * Answer the persistence half of the host contract through a driver, inside
  * the transaction the driver's runner opened. `handle` and `load` never reach
  * here; an operation added to the contract without an arm is a compile error.
@@ -121,6 +133,12 @@ export async function answer<Tx>(
       // every other call's claim, so only a duplicate or a concurrent claim
       // (the insert returned nothing) reads and locks the stored row.
       if (inserted.length === 1) {
+        if (typeof tx === "object" && tx !== null)
+          lastClaim.set(tx, {
+            owner: r.owner,
+            callId: r.callId,
+            tid: String(inserted[0]!.tid),
+          });
         const claimed: ClaimedCall = {
           fresh: true,
           request: r.request,
@@ -141,7 +159,23 @@ export async function answer<Tx>(
       return claimed;
     }
     case "saveCall": {
-      const rows = await q(SQL.SAVE_CALL, r.owner, r.callId, r.response);
+      // An index read here would take the predicate lock the fresh claim
+      // avoided; the claim's own position needs none.
+      const claim =
+        typeof tx === "object" && tx !== null ? lastClaim.get(tx) : undefined;
+      let rows: Record<string, unknown>[] = [];
+      if (claim && claim.owner === r.owner && claim.callId === r.callId) {
+        lastClaim.delete(tx as object);
+        rows = await q(
+          SQL.SAVE_CLAIMED_CALL,
+          r.owner,
+          r.callId,
+          r.response,
+          claim.tid,
+        );
+      }
+      if (rows.length === 0)
+        rows = await q(SQL.SAVE_CALL, r.owner, r.callId, r.response);
       if (rows.length !== 1)
         throw new Error("Call not claimed or already completed");
       const acknowledged: Acknowledged = null;

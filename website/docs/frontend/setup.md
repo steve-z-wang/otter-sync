@@ -30,7 +30,7 @@ bash scripts/build.sh
 
     Run `flutter pub get`, or `dart pub get` in a Dart application. The package currently requires Dart 3.12 or newer. Generated code imports `package:axton/axton.dart`.
 
-    For desktop development, `libraryPath` points to `target/debug/libaxton_dart.dylib` on macOS or `libaxton_dart.so` on Linux. Outside iOS it is required; on iOS, omitting it uses process-linked native symbols. Mobile packaging needs platform-specific native build/link steps; see [platform setup](platforms.md). Choose a writable application directory for the SQLite file.
+    A checkout's package bundles no native library, so `libraryPath` is required: `target/debug/libaxton_dart.dylib` on macOS or `libaxton_dart.so` on Linux. A released package's build hook bundles the library for each supported target, iOS and Android included; see [platform setup](platforms.md). Choose a writable application directory for the SQLite file.
 
 ## Open local storage
 

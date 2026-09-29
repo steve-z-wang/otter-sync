@@ -64,7 +64,7 @@ Future<void> main() async {
   try {
     client = await bounded(
       'OPEN',
-      Client.open(path: databasePath, schema: _schema, owner: 'ios-smoke'),
+      Client.open(path: databasePath, schema: _schema),
     );
     if (expectedFile.existsSync()) {
       final row = await bounded(
@@ -123,7 +123,7 @@ Future<void> main() async {
       client = null;
       client = await bounded(
         'REOPEN',
-        Client.open(path: databasePath, schema: _schema, owner: 'ios-smoke'),
+        Client.open(path: databasePath, schema: _schema),
       );
       final reopened = await bounded(
         'REOPEN_READ',

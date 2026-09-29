@@ -16,15 +16,29 @@ import type {
 } from "./host-contract.mts";
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
+export { isRetryableTransactionError } from "./retryable.mts";
 export type {
   RecordRef,
   RuntimeChannel,
   RuntimeModelMembership,
   RuntimeTouch,
 } from "./effects.mts";
-export type { JsonValue, LoadNext } from "./host-contract.mts";
+export type {
+  Acknowledged,
+  Claimed,
+  ClaimedCall,
+  Head,
+  HostRequest,
+  Invalidation,
+  JsonValue,
+  LoadNext,
+  Locked,
+  Memberships,
+  Published,
+  Stamped,
+  Stamps,
+} from "./host-contract.mts";
 import type { JsonValue } from "./host-contract.mts";
-const require = createRequire(import.meta.url);
 /** What escaped one Load item's transaction, as the carrier observed it. */
 export type LoadFault =
   | { kind: "engine"; code: string; message: string }
@@ -693,7 +707,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
 ) {
   const native = typedNative(
     options.native ??
-      (require("../../bindings/node/axton-node.node") as Native),
+      (createRequire(import.meta.url)("@axtonjs/native") as Native),
   );
   // Nothing is dropped silently: without a handler, failures go to the console.
   const onError: (error: unknown) => void =

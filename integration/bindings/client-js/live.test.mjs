@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { WebSocketServer } from '../../../packages/server/node_modules/ws/wrapper.mjs';
+import { WebSocketServer } from 'ws';
 import * as runtime from '../../../packages/client-js/index.mts';
 import {createServerConnection} from '../../../packages/client-js/live.mts';
 

@@ -1,12 +1,16 @@
 name: Verify
 on:
   push:
+    # A version tag is verified by release-publish.yml, which calls this workflow.
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: verify-${{ github.ref }}
+  # github.workflow names the caller when release-publish.yml calls this one.
+  group: verify-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   host:
@@ -17,17 +21,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26.4.0'
           package-manager-cache: false
-      - uses: dart-lang/setup-dart@v1
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
         with:
           sdk: '3.12.1'
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: '1.98.1'
           components: rustfmt, clippy

@@ -10,8 +10,9 @@ import type {
   Published,
   Stamped,
   Stamps,
-} from "../../server/host-contract.mts";
-import type { Database, Persistence } from "../../server/index.mts";
+  Database,
+  Persistence,
+} from "@axtonjs/server";
 import type { PostgresDriver } from "./driver.mts";
 import * as SQL from "./sql.mts";
 

@@ -1,0 +1,76 @@
+{
+  "floors": {
+    "node": ">=22.18.0",
+    "dart": ">=3.12.0"
+  },
+  "host": [
+    {
+      "name": "darwin-arm64",
+      "rust": "aarch64-apple-darwin",
+      "npm": {
+        "os": "darwin",
+        "cpu": "arm64"
+      },
+      "addon": "axton-node.darwin-arm64.node",
+      "cli": "axton",
+      "dartLibrary": "libaxton_dart.dylib"
+    },
+    {
+      "name": "linux-x64-gnu",
+      "rust": "x86_64-unknown-linux-gnu",
+      "npm": {
+        "os": "linux",
+        "cpu": "x64",
+        "libc": "glibc"
+      },
+      "addon": "axton-node.linux-x64-gnu.node",
+      "cli": "axton",
+      "dartLibrary": "libaxton_dart.so",
+      "baseline": "Debian 12 bookworm (glibc 2.36)"
+    }
+  ],
+  "mobile": [
+    {
+      "name": "ios-arm64",
+      "platform": "ios",
+      "rust": "aarch64-apple-ios",
+      "staticLibrary": "libaxton_dart.a",
+      "dynamicLibrary": "libaxton_dart.dylib"
+    },
+    {
+      "name": "ios-arm64-simulator",
+      "platform": "ios-simulator",
+      "rust": "aarch64-apple-ios-sim",
+      "staticLibrary": "libaxton_dart.a",
+      "dynamicLibrary": "libaxton_dart.dylib"
+    },
+    {
+      "name": "ios-x64-simulator",
+      "platform": "ios-simulator",
+      "rust": "x86_64-apple-ios",
+      "staticLibrary": "libaxton_dart.a",
+      "dynamicLibrary": "libaxton_dart.dylib"
+    },
+    {
+      "name": "android-arm64-v8a",
+      "platform": "android",
+      "abi": "arm64-v8a",
+      "rust": "aarch64-linux-android",
+      "dynamicLibrary": "libaxton_dart.so"
+    },
+    {
+      "name": "android-armeabi-v7a",
+      "platform": "android",
+      "abi": "armeabi-v7a",
+      "rust": "armv7-linux-androideabi",
+      "dynamicLibrary": "libaxton_dart.so"
+    },
+    {
+      "name": "android-x86_64",
+      "platform": "android",
+      "abi": "x86_64",
+      "rust": "x86_64-linux-android",
+      "dynamicLibrary": "libaxton_dart.so"
+    }
+  ]
+}

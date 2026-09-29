@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { WebSocketServer } from '../../../packages/server/node_modules/ws/wrapper.mjs';
+import { WebSocketServer } from 'ws';
 import * as runtime from '../../../packages/client-js/index.mts';
 // The registry and the Bridge, for what only an exact runtime script can produce.
 import { Subscriptions } from '../../../packages/client-js/subscriptions.mts';

@@ -38,7 +38,7 @@ Both examples open local storage. To start background sync, supply `server` as s
 | `onStore` | No | Per-Model callbacks for incoming server authority, run inside its local storage transaction before the authority is stored. |
 | `connection` (TypeScript) | No | `onError`, `refreshAuth` and `directTimeoutMs` for the connection. `onError` also receives an `AxtonReport` for each record AXTON could not apply ([Sync](sync.md#recover-from-connection-failures)). |
 | `onError`, `refreshAuth`, `directTimeout` (Dart) | No | Callbacks and a `Duration` for direct requests, passed to `open`. |
-| `libraryPath` (Dart) | Outside iOS | Absolute native library path; iOS can use symbols linked into the process. |
+| `libraryPath` (Dart) | From a checkout | Absolute path of a native library to load instead of the one the package's build hook bundles. A checkout bundles none. |
 | `migration` | No | Defaults and optional cursor rewind for an explicitly changed schema. See [runtime migration](runtime.md#opening-and-schema-changes). |
 
 Returns `Promise<GeneratedClient>` / `Future<GeneratedClient>`. Opening can fail on native library loading, an unwritable or incompatible database, or an invalid schema. Completion means local storage is open, not that initial server data has arrived. Omitting `server` keeps the client local-only.

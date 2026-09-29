@@ -5,7 +5,7 @@ source "$root/scripts/env.sh"
 cd "$root"
 npm ci
 node scripts/release/version.mjs check
-node --test integration/release/version.test.mjs
+node --test integration/release/*.test.mjs
 bash scripts/build.sh
 cargo fmt --all --check
 cargo test --workspace --locked
@@ -44,3 +44,4 @@ bash integration/load-e2e/run.sh
 node --test integration/e2e/todo-ui.test.mjs
 bash integration/e2e/todo-run.sh
 python3 website/scripts/check_examples.py
+bash integration/release/verify-installed.sh

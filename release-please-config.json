@@ -30,6 +30,7 @@
         { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/postgres'].dependencies['@axtonjs/server']" },
         { "type": "json", "path": "package-lock.json", "jsonpath": "$.packages['packages/cli'].version" },
         { "type": "generic", "path": "packages/dart/pubspec.yaml" },
+        { "type": "generic", "path": "packages/dart/hook/native_manifest.dart" },
         { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" },
         { "type": "toml", "path": "bindings/node/Cargo.toml", "jsonpath": "$.package.version" }
       ]

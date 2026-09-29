@@ -39,13 +39,23 @@ export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 
 Focused database and end-to-end runners create temporary PostgreSQL clusters and clean them up on exit. Their commands are linked under [Integration](integration/README.md) and [End-to-end](end-to-end.md). The [generated API runner](../../../integration/generated-api/verify.sh) regenerates its checked-in fixtures; inspect any resulting changes.
 
+## Release packages
+
+```sh
+node scripts/release/version.mjs check
+node --test integration/release/*.test.mjs
+bash integration/release/verify-installed.sh
+```
+
+The version check compares every manifest, internal pin and lockfile with the version in `.release-please-manifest.json`; the tests check it and the [target inventory](../../../scripts/release/targets.json). The [installed-package runner](../../../integration/release/verify-installed.sh) builds this host's release addon and compiler, packs the npm packages with [pack.sh](../../../scripts/release/pack.sh), installs them into a scratch project outside the repository and exercises them there, including a round trip against a temporary PostgreSQL cluster. It installs third-party packages from the npm registry.
+
 ## Full host gate
 
 ```sh
 bash scripts/test.sh
 ```
 
-The script builds artifacts, checks Rust formatting and linting, runs Rust and language tests, then exercises persistence, generated APIs, end-to-end flows and documentation examples. [CI](../../../.github/workflows/verify.yml) runs it on macOS and Linux and additionally checks optimized artifacts. [Device smoke tests](../../../integration/platform/README.md) are separate.
+The script checks the release version, builds artifacts, checks Rust formatting and linting, runs Rust and language tests, then exercises persistence, generated APIs, end-to-end flows, documentation examples and the installed npm packages. [CI](../../../.github/workflows/verify.yml) runs it on macOS and Linux and additionally checks optimized artifacts. [Device smoke tests](../../../integration/platform/README.md) are separate.
 
 Performance diagnostics are also separate from correctness tests:
 

@@ -10,11 +10,10 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:axton/src/native_manifest.dart';
 import 'package:code_assets/code_assets.dart';
 import 'package:crypto/crypto.dart';
 import 'package:hooks/hooks.dart';
-
-import 'native_manifest.dart';
 
 void main(List<String> args) async {
   await build(args, (input, output) async {

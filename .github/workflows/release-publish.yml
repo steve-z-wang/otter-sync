@@ -369,7 +369,8 @@ jobs:
           cat "$RUNNER_TEMP/plan"
           while read -r action file; do
             [[ "$action" == publish ]] || continue
-            if ! npm publish "release/$file" --tag alpha --access public; then
+            # ./ keeps npm from reading release/<file> as a GitHub repository.
+            if ! npm publish "./release/$file" --tag alpha --access public; then
               echo "::error::npm publish $file failed. Before a package's first release, configure trusted publishing: publish this release's archives by hand, add the trusted publisher, then re-run this job (docs/engineering/releasing.md)."
               exit 1
             fi

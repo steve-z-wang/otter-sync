@@ -1,6 +1,8 @@
-/// Writes `hook/native_manifest.dart` for a release: the package version and
-/// the SHA-256 of every Dart target's library, read from a directory that
+/// Writes `lib/src/native_manifest.dart` for a release: the package version
+/// and the SHA-256 of every Dart target's library, read from a directory that
 /// holds them under their release file names, `libaxton_dart-<V>-<target>.<ext>`.
+/// It lives under `lib/` because pub.dev accepts no `hook/` Dart file other
+/// than `build.dart` and `link.dart`; the build hook imports it from there.
 ///
 /// ```sh
 /// dart run tool/write_native_manifest.dart --artifacts DIR [--package DIR] [--targets FILE]
@@ -61,7 +63,7 @@ void main(List<String> args) {
     entries.writeln("  '$target': (file: '$name', sha256: '$digest'),");
   }
 
-  final out = File('${package.path}/hook/native_manifest.dart');
+  final out = File('${package.path}/lib/src/native_manifest.dart');
   out.writeAsStringSync('''
 // The native libraries of this package's release, written by
 // tool/write_native_manifest.dart when the release is staged. A checkout

@@ -31,8 +31,16 @@ if [[ -z "$packs" ]]; then
   bash "$root/scripts/release/pack.sh" "$packs" "$work/artifacts" "$host"
 fi
 packs="$(cd "$packs" && pwd)"
-shopt -s nullglob
-archives=("$packs"/*.tgz)
+# Every archive except the platform packages of other hosts, which npm refuses.
+host="$(node -p 'process.platform === "linux" ? `linux-${process.arch}-${process.report.getReport().header.glibcVersionRuntime ? "gnu" : "musl"}` : `${process.platform}-${process.arch}`')"
+archives=()
+for archive in "$packs"/*.tgz; do
+  case "$(basename "$archive")" in
+    axtonjs-native-"$host"-* | axtonjs-cli-"$host"-*) ;;
+    axtonjs-native-darwin-* | axtonjs-native-linux-* | axtonjs-cli-darwin-* | axtonjs-cli-linux-*) continue ;;
+  esac
+  [[ -f "$archive" ]] && archives+=("$archive")
+done
 [[ ${#archives[@]} -gt 0 ]] || fail "no .tgz archives in $packs"
 
 project="$work/project"

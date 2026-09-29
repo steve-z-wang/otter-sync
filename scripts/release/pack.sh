@@ -12,7 +12,8 @@
 # host target in scripts/release/targets.json is packed. The two selector
 # packages are staged as copies so the source tree stays unchanged. OUT
 # receives the archives and `packed.json`, npm's report of every archive, plus
-# the Dart SDK staged under OUT/dart/axton.
+# the Dart SDK staged under OUT/dart/axton and archived as
+# OUT/axton-dart-<V>.tar.gz, the tree `dart pub publish` uploads.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [[ $# -ge 2 ]] || { echo "usage: $0 OUT ARTIFACTS [TARGET...]" >&2; exit 2; }
@@ -67,11 +68,13 @@ dart_package="$out/dart/axton"
 rm -rf "$dart_package"
 mkdir -p "$dart_package"
 git ls-files packages/dart | tar -cf - -T - | tar -xf - -C "$dart_package" --strip-components=2
+rm "$dart_package/pubspec.lock" # pub never uploads it
 cp LICENSE "$dart_package/LICENSE"
-[[ ! -f CHANGELOG.md ]] || cp CHANGELOG.md "$dart_package/CHANGELOG.md"
+cp CHANGELOG.md "$dart_package/CHANGELOG.md"
 if compgen -G "$artifacts/libaxton_dart-*" >/dev/null; then
   (cd packages/dart && dart run tool/write_native_manifest.dart --artifacts "$artifacts" --package "$dart_package")
 else
   echo "no libaxton_dart artifacts in $artifacts: the staged Dart package lists no native libraries" >&2
 fi
+COPYFILE_DISABLE=1 tar -czf "$out/axton-dart-$version.tar.gz" -C "$dart_package" .
 node -e 'for (const p of require(process.argv[1])) console.log(`${p.filename} (${p.files.length} files)`)' "$out/packed.json"

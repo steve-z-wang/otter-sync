@@ -6,7 +6,7 @@ The server engine is pure protocol logic in Rust: it never opens a connection or
 - Operation execution — Claim each Mutation or Query call independently, run its handler in a savepoint, refuse a Query settlement with effects, resolve Model outputs through versioned loaders and save its result for immutable replay.
 - [Pull](pull.md) — Find changes by channel cursor and invoke loaders to return records.
 - [Publish](publish.md) — Settle changed records and persistent Channel memberships: one stamp per changed record, one cursor per affected Channel/record pair.
-- [Loads](loads.md) — Run each native Load page in its own application transaction: claim, read-only Handler, batched Loader and stamp resolution, saved outcome and replay by call ID.
+- [Loads](loads.md) — Run each native Load page in its own application transaction: claim, Handler (no business writes, add-only Channel enrollment), batched Loader and stamp resolution, enrollment settlement, saved outcome and replay by call ID.
 
 ## How the parts work together
 

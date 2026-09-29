@@ -31,7 +31,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |
 | Dart `toAxtonPrecision()` (`AxtonDateTime`) | Get the UTC, millisecond `DateTime` AXTON stores for a value, to compare it with one read back | [Dates and times](frontend/client-api.md#dates-and-times) |
 | `Mutations<Tx>`, `Queries<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>` | Implement each operation's authoritative business logic | [Handlers](backend/api.md#handlers) |
-| `Loads<Tx>`, `LoadContext<Tx>`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
+| `Loads<Tx>`, `LoadContext<Tx>`, `LoadChannel`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration, optionally adding the records it returns to Channels | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
 | `Loaders<Tx>`, `LoaderCall` | Return current records for synchronization | [Loaders](backend/api.md#loaders) |
 | `touch`, `Touch` | Declare a record a handler changed beyond its Model inputs, so it is stamped and delivered to its Channels (not returned to the caller) | [Channels](backend/api.md#channels) |
 | `channel(name)`, `Channel`, `ModelMembership`, `RecordRef`, Model reference functions | Add records to a Channel once, or remove them, so every later change reaches its subscribers | [Channels](backend/api.md#channels) |

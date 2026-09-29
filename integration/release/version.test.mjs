@@ -55,20 +55,21 @@ test("the copied version files agree before any edit", (t) => {
 });
 
 test("a manifest at another version is reported", (t) => {
+  // Versions no real release reaches, so a release bump never collides.
   const root = copyVersionFiles(t);
   editJson(root, "packages/server/package.json", (manifest) => {
-    manifest.version = "0.2.0";
+    manifest.version = "90.0.0";
   });
   editText(root, "Cargo.toml", (text) =>
-    text.replace(/(\[workspace\.package\]\nversion = )"[^"]+"/, '$1"0.1.1"'),
+    text.replace(/(\[workspace\.package\]\nversion = )"[^"]+"/, '$1"91.0.0"'),
   );
   editText(root, "packages/dart/pubspec.yaml", (text) =>
-    text.replace(/version: \S+ # x-release-please-version/, "version: 0.3.0 # x-release-please-version"),
+    text.replace(/version: \S+ # x-release-please-version/, "version: 92.0.0 # x-release-please-version"),
   );
   const problems = check(root);
-  assert.ok(problems.some((p) => p.startsWith("packages/server/package.json $.version: 0.2.0")), problems.join("\n"));
-  assert.ok(problems.some((p) => p.startsWith("Cargo.toml $.workspace.package.version: 0.1.1")), problems.join("\n"));
-  assert.ok(problems.some((p) => p.startsWith("packages/dart/pubspec.yaml: 0.3.0")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("packages/server/package.json $.version: 90.0.0")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("Cargo.toml $.workspace.package.version: 91.0.0")), problems.join("\n"));
+  assert.ok(problems.some((p) => p.startsWith("packages/dart/pubspec.yaml: 92.0.0")), problems.join("\n"));
 });
 
 test("an internal dependency must pin the release version exactly", (t) => {

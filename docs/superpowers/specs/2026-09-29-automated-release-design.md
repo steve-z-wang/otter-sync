@@ -1,6 +1,6 @@
 # AXTON automated distribution and Oasis adoption
 
-Status: release-PR approach selected by the user; documentation only. Reviewed against local source and registry documentation on 2026-09-29. No package has been published by this work.
+Status: release-PR approach selected by the user; documentation only. Reviewed against local source and registry documentation on 2026-09-29. No package has been published by this work. The maintainer scoped the first release to alpha distribution on 2026-09-29 (see [Alpha distribution](#alpha-distribution)).
 
 ## Outcome and scope
 
@@ -18,29 +18,33 @@ Oasis builds native code in `ops/axton/build.sh` and its Dockerfile. iOS relies 
 
 ## Distribution contract
 
-All release artifacts use exact version V and come from the same tagged commit. Package names below are intended names; ownership and availability must be verified before implementation publishes anything. If unavailable, select an owned namespace once and update every generated import, manifest, and setup instruction before the first release. Do not silently publish under an unrelated name.
+All release artifacts use exact version V and come from the same tagged commit. npm packages use the `axtonjs` organization, which the maintainer created and owns (2026-09-29) because `@axton` was unavailable. The pub.dev package name `axton` is available, and the CLI command stays `axton`. Verify each exact name/version is still unpublished before implementation publishes anything. Do not silently publish under an unrelated name.
 
 | Artifact | Distribution | Public interface |
 | --- | --- | --- |
-| `@axton/server` | npm | Existing backend API; compiled `.mjs` and `.d.mts` |
-| `@axton/client` | npm | Existing JS client API; compiled `.mjs` and `.d.mts` |
-| `@axton/postgres` | npm | Root API plus explicit `./prisma`, `./pg`, `./drizzle`, `./migration.sql` exports |
-| `@axton/native` | npm | Internal loader, exact platform-package dependencies |
-| `@axton/native-<target>` | npm | One Node addon per supported host target |
-| `@axton/cli` | npm | `axton` command, exact compiler platform dependencies |
-| `@axton/cli-<target>` | npm | One precompiled compiler executable per supported host target |
-| `axton` | pub.dev | Dart client with native asset hook and matching library hashes |
+| `@axtonjs/server` | npm | Existing backend API; compiled `.mjs` and `.d.mts` |
+| `@axtonjs/client` | npm | Existing JS client API; compiled `.mjs` and `.d.mts` |
+| `@axtonjs/postgres` | npm | Root API plus explicit `./prisma`, `./pg`, `./drizzle`, `./migration.sql` exports |
+| `@axtonjs/native` | npm | Internal loader, exact platform-package dependencies |
+| `@axtonjs/native-<target>` | npm | One Node addon per supported host target |
+| `@axtonjs/cli` | npm | `axton` command, exact compiler platform dependencies |
+| `@axtonjs/cli-<target>` | npm | One precompiled compiler executable per supported host target |
+| `axton` | pub.dev (unlisted) | Dart client with native asset hook (or FFI-plugin fallback) and matching library hashes |
 | Dart native archives | GitHub Release | Versioned archives and SHA-256 checksums |
 
 Keep the Rust implementation private to these distributions; consumers do not need Cargo, rustup, or cargo-ndk. Normal platform toolchains such as Flutter, Xcode and Android SDK remain required.
 
+### Alpha distribution
+
+The first release is an alpha. Versions stay 0.x. npm packages publish under the `alpha` dist-tag and the workflow never sets or moves `latest` (the registry may point `latest` at a brand-new package's first version; verify and record what it does); consumers, Oasis included, pin exact versions. pub.dev packages publish normally; after the first upload the maintainer marks the package unlisted on pub.dev's admin page, a human step. Every package README states that AXTON is alpha: the API is unstable and not for production use.
+
 ### Initial supported targets
 
-Node addon and CLI: macOS arm64 and x64; Linux GNU/glibc x64 and arm64. Build Linux artifacts against a documented baseline no newer than Debian 12 (Oasis uses bookworm). Verify actual target architecture and shared-library requirements. Alpine/musl and Windows must fail clearly as unsupported; never silently compile from source.
+Node addon and CLI: darwin-arm64 and linux-x64-gnu only. Build the Linux artifact against a documented glibc baseline no newer than Debian 12 (Oasis uses bookworm). darwin-x64 and linux-arm64 are future additions. Verify actual target architecture and shared-library requirements. Other hosts, including Alpine/musl and Windows, must fail clearly as unsupported; never silently compile from source.
 
-Dart host tests: macOS arm64/x64 and Linux GNU x64/arm64. Flutter: iOS device arm64, iOS simulator arm64/x64, Android arm64-v8a, armeabi-v7a and x86_64. Use an explicit checked-in target table. Do not infer supported targets from whichever build happened to finish.
+Dart host tests: darwin-arm64 and linux-x64. Flutter: iOS device arm64, iOS simulator arm64/x64, Android arm64-v8a, armeabi-v7a and x86_64. Use an explicit checked-in target table. Do not infer supported targets from whichever build happened to finish.
 
-Dart build hooks download libraries at build time, validate a SHA-256 embedded in the published package, cache by version/target/hash and link them into the application. No runtime download. Missing files, hash mismatch and unsupported targets fail with an actionable error. Cold-cache and warm-cache behavior are both tested. SDK hooks must work at the existing Dart >=3.12.0 floor and Oasis's pinned Flutter version; if that combination cannot package iOS correctly, resolve the packaging approach before first publication rather than silently increasing the floor. Validate release-mode retention of C ABI symbols on iOS, not only simulator debug.
+Dart build hooks download libraries at build time, validate a SHA-256 embedded in the published package, cache by version/target/hash and link them into the application. No runtime download. Missing files, hash mismatch and unsupported targets fail with an actionable error. Cold-cache and warm-cache behavior are both tested. SDK hooks must work at the existing Dart >=3.12.0 floor and Oasis's pinned Flutter 3.44.1; validate release-mode retention of C ABI symbols on iOS, not only simulator debug. A feasibility spike settles this before other release work. If hooks cannot package correctly on that toolchain, including iOS release, the SDK instead ships as a standard Flutter FFI plugin whose podspec and Gradle build ship or download the same prebuilt, hash-checked libraries; never silently raise the floor.
 
 The hook's hash manifest is generated from verified build artifacts before packing the Dart SDK. Publish the same staged source tree that was inspected and tested. Host tests must discover the installed asset without an Oasis checkout path. Keep explicit library injection available for AXTON's source-level tests if still needed.
 
@@ -48,7 +52,7 @@ The hook's hash manifest is generated from verified build artifacts before packi
 
 Compile `.mts` to executable `.mjs` and emit `.d.mts`, with matching package exports. Rewrite internal emitted import suffixes through a tested build configuration. Do not merely rename files. Server/client import the shared native package, whose platform dependencies pin V exactly. Test ESM import, Node CommonJS `require(esm)`, and Oasis's real Jest/Nest loading path; do not add a second CJS build unless these checks demonstrate it is required.
 
-The compiler generates bare package imports (`@axton/server`, `@axton/client`) by default, while explicit source-runtime overrides remain available to AXTON's internal fixtures. The compiler's version output, all SDK manifests, binaries and release manifest agree. Keep Prisma peer metadata honest: current AXTON metadata says <7 while Oasis uses Prisma 7. Verify the existing adapter against Oasis's version before declaring support; distribution must not silently introduce an incompatible peer range.
+The compiler generates bare package imports (`@axtonjs/server`, `@axtonjs/client`) by default, while explicit source-runtime overrides remain available to AXTON's internal fixtures. The compiler's version output, all SDK manifests, binaries and release manifest agree. Keep Prisma peer metadata honest: current AXTON metadata says <7 while Oasis uses Prisma 7. Verify the existing adapter against Oasis's version before declaring support; distribution must not silently introduce an incompatible peer range.
 
 ## One version and automatic publication
 
@@ -66,19 +70,19 @@ Release-please handles version/tag/release notes, not package publication. Keep 
 2. Builds the full target matrix and packs all packages in staging.
 3. Produces `release-manifest.json` containing V, commit SHA, artifact names/targets, sizes, hashes and npm archive integrity values. Tests packages installed outside the source checkout.
 4. Uploads verified Dart native archives to a public GitHub prerelease with immutable versioned URLs. These assets must be anonymously downloadable before pub.dev consumers can install the package; a private draft is insufficient.
-5. Publishes npm packages in dependency order under a non-default `candidate` dist-tag and publishes the inspected Dart package from the tag-triggered job.
+5. Publishes npm packages in dependency order under the `alpha` dist-tag and publishes the inspected Dart package from the tag-triggered job.
 6. Installs V from the real registries on clean runners; validates compiler, native loading and basic persistent client/server operation.
-7. Moves npm `latest` to V and marks the GitHub release complete only after all checks pass. Do not let an older delayed run overwrite a newer completed version's latest pointer.
+7. Marks the GitHub release complete only after all checks pass. Nothing moves npm `latest`.
 
-Registry publication is not atomic. A stable pub.dev version can become visible before final completion; the design does not pretend a GitHub completion marker hides it. Pre-publication installed-package tests are the principal protection. Oasis only adopts a completed release.
+Registry publication is not atomic. A pub.dev version can become visible before final completion; the design does not pretend a GitHub completion marker hides it. Pre-publication installed-package tests are the principal protection. Oasis only adopts a completed release, by exact version.
 
-Use concurrency per version with `cancel-in-progress: false`; retries for the same tag must not race. Do not merge the next release PR while the preceding release is incomplete. Promotion checks that V is newer than the existing latest before updating it. Existing tags at a different SHA fail closed. These are workflow checks and an operator rule, not a custom scheduler.
+Use concurrency per version with `cancel-in-progress: false`; retries for the same tag must not race. Do not merge the next release PR while the preceding release is incomplete. Existing tags at a different SHA fail closed. These are workflow checks and an operator rule, not a custom scheduler.
 
 ### Failure and repair
 
-Persist verified archives and the manifest as release assets so retries do not depend on expiring Actions artifacts. On retry, use original bytes; skip an existing package only after verifying its integrity/provenance against the manifest. A matching name/version alone is not evidence. If bytes differ or retained artifacts are unavailable, stop rather than rebuild and pretend it is the same release.
+Recovery is minimal. Persist verified archives and the manifest as release assets so retries do not depend on expiring Actions artifacts. On retry, skip an artifact already published only if its integrity matches the manifest; otherwise stop. A matching name/version alone is not evidence, and a retry never rebuilds.
 
-Retry a failed tag-triggered run to preserve pub.dev's required event context. Restore network access or permissions, then resume missing publications. A bad published artifact requires a new forward version; package rollback does not imply a database downgrade. Document deprecation/retraction options but do not automate destructive registry actions. Never replace native binaries at an existing version URL.
+Retry a failed tag-triggered run to preserve pub.dev's required event context. A bad published artifact requires a new forward version; package rollback does not imply a database downgrade. Do not automate destructive registry actions. Never replace native binaries at an existing version URL.
 
 ## First publication and human-owned setup
 
@@ -86,10 +90,11 @@ The first release has an explicit bootstrap phase because package administration
 
 | Owner action | When | Agent work around it |
 | --- | --- | --- |
-| Sign in to npm; verify email, publishing/2FA access and ownership of the selected scope | Before first upload | Inventory every SDK and platform package; prepare inspected archives and exact commands |
+| Sign in to npm; verify email, publishing/2FA access for the `axtonjs` organization | Before first upload | Inventory every SDK and platform package; prepare inspected archives and exact commands |
 | Sign in to pub.dev with a Google account; confirm package name | Before first upload | Prepare SDK, LICENSE, README, changelog and passing publish dry run |
 | Complete browser login/2FA for initial real uploads | After artifact review | Publish the verified V artifacts; do not request passwords or OTPs in chat |
 | Configure npm trusted publisher for every npm package, bound to `zanminwang/axton`, `release-publish.yml`, environment `release` | After package creation where necessary | Produce exact package checklist; subsequent uploads use OIDC |
+| Mark the `axton` package unlisted on pub.dev's admin page | After first Dart upload | Link the admin page; confirm the listing state |
 | Enable pub.dev GitHub automation: repository `zanminwang/axton`, pattern `v{{version}}`, environment `release` | After first Dart upload | Validate tag workflow against these exact values |
 | Create/install GitHub release App scoped to AXTON with Contents and Pull requests write; store App ID and private key in GitHub configuration | Before automatic tagging | Reference `AXTON_RELEASE_APP_ID` variable and `AXTON_RELEASE_APP_PRIVATE_KEY` secret; no key in source or chat |
 | Grant required repository settings access; protect main and version tags | Before enabling automatic releases | Configure workflow permissions and release environment without per-release manual approval |
@@ -115,7 +120,8 @@ Do not rewrite historical SQL migration files or dated work logs merely because 
 - Dart/Flutter installed packages load matching native code on the declared matrix, including iOS release symbol retention.
 - First genuine release exists on npm, pub.dev and GitHub; package ownership belongs to the user's accounts.
 - A later real merge demonstrates automatic tag creation and OIDC publication, with no manual per-release action.
-- Partial-publication retry, duplicate version, mismatched integrity and delayed promotion have executable tests.
+- The workflow never sets npm `latest`; the pub.dev package is unlisted; every README carries the alpha notice.
+- The retry skip/verify rule (skip on matching integrity, stop otherwise) has a small executable test.
 - Oasis passes required checks using exact package versions and contains no active dependency on vendored AXTON source.
 - Existing device data, unsent calls and backend schema remain compatible; no migration/reset is introduced by packaging.
 
@@ -132,3 +138,5 @@ Do not rewrite historical SQL migration files or dated work logs merely because 
 ## Self-review record
 
 Corrected six hazards during review: source `.mts` packages in node_modules; pub.dev's tag-only OIDC; GITHUB_TOKEN tag pushes not starting publication; native assets hidden in draft releases; non-atomic cross-registry visibility; unnecessary custom version scheduling (replaced by release-please). Added explicit Prisma 7 verification, iOS release linking, integrity-checked retries and preservation of historical migrations. Account ownership, name availability and actual binary/platform success remain implementation evidence to obtain, not claims made by this document.
+
+Maintainer decisions, 2026-09-29: npm scope `@axtonjs` (the maintainer's `axtonjs` organization; `@axton` was unavailable); alpha distribution (`alpha` dist-tag, no `latest` promotion, unlisted pub.dev package, alpha READMEs, 0.x); two host targets for the first release; minimal skip-or-stop recovery without registry doubles; the Dart native-asset spike runs first, with the FFI-plugin fallback.

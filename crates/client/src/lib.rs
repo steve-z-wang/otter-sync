@@ -1420,8 +1420,14 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn discard(&mut self, ordinal: u64) -> Result<Vec<CallCompletion>> {
         self.resolution()?;
         let completions = self.savepoint(|tx| tx.engine.discard(ordinal))?;
-        // A call this transaction submitted and discarded takes no companion.
-        self.submitted.remove(&ordinal);
+        // A call this transaction submitted and then discarded, or refused
+        // with it as a lifecycle dependent, is gone and takes no companion.
+        let submitted: Vec<u64> = self.submitted.iter().copied().collect();
+        for call in submitted {
+            if self.engine.queued_one(call)?.is_none() {
+                self.submitted.remove(&call);
+            }
+        }
         Ok(completions)
     }
     /// A store hook's transaction resolves no unsent work.

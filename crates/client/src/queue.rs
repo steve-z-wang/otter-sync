@@ -348,7 +348,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(result)
     }
-    fn queued_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<Queued>> {
+    pub(crate) fn queued_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<Queued>> {
         let mutations = self.rows(
             &format!(
                 "SELECT ordinal, name, version, push, diverged, call_id, args, store FROM axton_mutation {filter} ORDER BY ordinal"

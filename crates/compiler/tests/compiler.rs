@@ -673,7 +673,6 @@ fn generated_clients_are_the_whole_client() {
         assert!(ts.contains(member), "missing {member}: {ts}");
     }
     assert!(!ts.contains("status()"), "{ts}");
-
     assert!(
         !ts.contains("runPrerequisites"),
         "handlers are registered at open: {ts}"

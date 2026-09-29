@@ -459,3 +459,80 @@ fn dismissing_in_a_transaction_commits_or_rolls_back_with_it() {
         .unwrap();
     assert!(client.refused_acts().unwrap().is_empty());
 }
+
+/// The order of a drop and a new requirement on the same failed key decides
+/// (ruled 2026-09-28 on #205): a call submitted while the failed call still
+/// waits inherits the failure, but once the drop removed the only waiting
+/// call the failed task is gone, and a replacement submitted after it starts
+/// a fresh, pending task. Both orders in one transaction.
+#[test]
+fn in_one_transaction_a_replacement_submitted_after_the_drop_starts_afresh_but_one_submitted_before_it_inherits_the_failure()
+ {
+    let submit = |tx: &mut ClientTransaction<'_, SqliteStore>, text: &str| {
+        tx.submit_mutation(
+            "Write",
+            1,
+            json!({"note":{"id":"n","text":text,"blob":"X"}}),
+            ActionCallOptions::default(),
+        )
+    };
+    // Drop first: the replacement's task is pending, and a handler runs it.
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let original = write(&mut client, "draft", Some("X"));
+    client.outcome(&blob("X"), Some("upload refused")).unwrap();
+    client
+        .transaction(|tx| {
+            tx.discard(original.ordinal)?;
+            submit(tx, "fixed")
+        })
+        .unwrap();
+    assert!(client.failed_acts().unwrap().is_empty());
+    assert_eq!(client.pending_tasks().unwrap()[0]["state"], "pending");
+    assert_eq!(client.pending_count().unwrap(), 1);
+    // Submit first, then drop: the replacement joined the failed task and
+    // keeps its failure after the original is gone.
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let original = write(&mut client, "draft", Some("X"));
+    client.outcome(&blob("X"), Some("upload refused")).unwrap();
+    let late = client
+        .transaction(|tx| {
+            let call = submit(tx, "fixed")?;
+            tx.discard(original.ordinal)?;
+            Ok(call)
+        })
+        .unwrap();
+    assert_eq!(ordinals(&client.failed_acts().unwrap()), vec![late.ordinal]);
+    assert_eq!(client.pending_tasks().unwrap()[0]["state"], "failed");
+}
+
+/// A call whose row was written before failures were inherited, with a NULL
+/// error beside a failed row of the same key, is still listed: the key
+/// decides, not the row.
+#[test]
+fn a_call_written_before_inheritance_is_listed_by_its_failed_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut client = seeded(&dir);
+    let first = write(&mut client, "one", Some("X"));
+    client.outcome(&blob("X"), Some("upload refused")).unwrap();
+    let second = write(&mut client, "two", Some("X"));
+    drop(client);
+    let mut store = SqliteStore::open(&path).unwrap();
+    store
+        .execute(
+            "UPDATE axton_mutation_prerequisite SET error=NULL WHERE ordinal=?",
+            &[json!(second.ordinal)],
+        )
+        .unwrap();
+    drop(store);
+    let mut client = open(&path);
+    assert_eq!(
+        ordinals(&client.failed_acts().unwrap()),
+        vec![first.ordinal, second.ordinal]
+    );
+    // A call waiting on no failed key is not read at all.
+    write(&mut client, "three", None);
+    assert_eq!(client.failed_acts().unwrap().len(), 2);
+}

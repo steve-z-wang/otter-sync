@@ -6,13 +6,13 @@
 //! [#205](https://github.com/zanminwang/axton/issues/205),
 //! [#204](https://github.com/zanminwang/axton/issues/204)). The test is the
 //! host over a real SQLite store; no sleeps, no threads.
-mod common;
-
 use axton_client::runtime::{ClientRuntime, Input};
 use axton_client::*;
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const NOW: u64 = 1_000;
 const ENTROPY: u64 = 200;
@@ -43,9 +43,51 @@ fn write(text: &str, blob: Option<&str>) -> Value {
     json!({"note":{"id":"n","text":text,"blob":blob}})
 }
 
+/// A SQLite store whose next `commit` fails once when armed.
+struct Faulty {
+    inner: SqliteStore,
+    fail_commit: Arc<AtomicBool>,
+}
+impl ClientStore for Faulty {
+    fn begin(&mut self) -> Result<()> {
+        self.inner.begin()
+    }
+    fn commit(&mut self) -> Result<()> {
+        if self.fail_commit.swap(false, Ordering::SeqCst) {
+            return Err(invalid("injected commit failure"));
+        }
+        self.inner.commit()
+    }
+    fn rollback(&mut self) -> Result<()> {
+        self.inner.rollback()
+    }
+    fn savepoint(&mut self, name: &str) -> Result<()> {
+        self.inner.savepoint(name)
+    }
+    fn release(&mut self, name: &str) -> Result<()> {
+        self.inner.release(name)
+    }
+    fn rollback_to(&mut self, name: &str) -> Result<()> {
+        self.inner.rollback_to(name)
+    }
+    fn execute(&mut self, sql: &str, parameters: &[Value]) -> Result<usize> {
+        self.inner.execute(sql, parameters)
+    }
+    fn execute_batch(&mut self, sql: &str) -> Result<()> {
+        self.inner.execute_batch(sql)
+    }
+    fn query(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query(sql, parameters)
+    }
+    fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
+        self.inner.query_committed(sql, parameters)
+    }
+}
+
 struct Host {
-    runtime: ClientRuntime<SqliteStore>,
+    runtime: ClientRuntime<Faulty>,
     open: BTreeMap<String, Value>,
+    fail_commit: Arc<AtomicBool>,
     _dir: tempfile::TempDir,
 }
 struct Tx {
@@ -55,8 +97,12 @@ struct Tx {
 impl Host {
     fn new(handlers: &[&str], hooks: &[&str]) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let client =
-            Client::open(SqliteStore::open(dir.path().join("db")).unwrap(), schema()).unwrap();
+        let fail_commit = Arc::new(AtomicBool::new(false));
+        let store = Faulty {
+            inner: SqliteStore::open(dir.path().join("db")).unwrap(),
+            fail_commit: fail_commit.clone(),
+        };
+        let client = Client::open(store, schema()).unwrap();
         let runtime =
             ClientRuntime::with_store_hooks(client, hooks.iter().map(|h| h.to_string()).collect())
                 .unwrap()
@@ -65,6 +111,7 @@ impl Host {
         let mut host = Self {
             runtime,
             open: BTreeMap::new(),
+            fail_commit,
             _dir: dir,
         };
         host.task(
@@ -717,7 +764,14 @@ fn neither_a_store_hook_nor_a_local_callback_resolves_unsent_work() {
         json!({"kind":"channel","channel":"feed","subscribed":true}),
     );
     h.run();
-    common::acknowledge(h.runtime.client(), &[("feed", 0)]);
+    let client = h.runtime.client();
+    let state = client.subscription_state("feed").unwrap().unwrap();
+    client
+        .initialize_subscriptions(
+            &BTreeMap::from([("feed".to_string(), state.subscription_id)]),
+            &BTreeMap::from([("feed".to_string(), 0)]),
+        )
+        .unwrap();
     let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[
         {"model":"Note","identity":{"id":"o"},"stamp":1,"state":{"text":"server","blob":null}}]});
     h.task("pull", json!({"kind":"pull","page":page}));
@@ -758,5 +812,88 @@ fn neither_a_store_hook_nor_a_local_callback_resolves_unsent_work() {
     }
     h.callback(&hook, true);
     h.run();
+    assert_eq!(h.runtime.client().pending_count().unwrap(), 1);
+}
+
+/// A transaction's commit fails: its resolutions were rolled back with it, so
+/// nothing they would announce is announced - no Call completion for the
+/// drop, no handler run for the retry.
+#[test]
+fn a_failed_commit_announces_no_resolution() {
+    let mut h = Host::new(&["RemoteBlob"], &[]);
+    let original = h.value(
+        "submit",
+        json!({"kind":"submitAction","name":"Write","version":1,"args":write("draft",Some("X"))}),
+    );
+    let ordinal = original["ordinal"].as_u64().unwrap();
+    h.settle_handler(false);
+    let other = h.value(
+        "other",
+        json!({"kind":"submitAction","name":"Create","version":1,"args":{"note":{"id":"m","text":"x","blob":null}}}),
+    );
+    let tx = h.begin("tx");
+    h.command(
+        "drop",
+        &tx,
+        None,
+        json!({"kind":"discard","ordinal":other["ordinal"]}),
+    );
+    h.command(
+        "retry",
+        &tx,
+        None,
+        json!({"kind":"retryTasks","keys":[blob("X")]}),
+    );
+    let events = h.run();
+    assert_eq!(completion(&events, "drop")["ok"], true);
+    assert_eq!(completion(&events, "retry")["ok"], true);
+    h.fail_commit.store(true, Ordering::SeqCst);
+    h.callback(&tx, true);
+    let events = h.run();
+    assert_eq!(completion(&events, "tx")["ok"], false, "{events:?}");
+    assert!(call_completions(&events).is_empty(), "{events:?}");
+    assert!(
+        h.prerequisites().is_empty(),
+        "no handler after a failed commit"
+    );
+    assert_eq!(h.failures(), vec![ordinal]);
+    assert_eq!(h.runtime.client().pending_count().unwrap(), 2);
+}
+
+/// Close while a transaction that holds resolutions is open rolls it back and
+/// announces none of them.
+#[test]
+fn close_with_an_open_transaction_announces_no_resolution() {
+    let mut h = Host::new(&["RemoteBlob"], &[]);
+    let original = h.value(
+        "submit",
+        json!({"kind":"submitAction","name":"Write","version":1,"args":write("draft",Some("X"))}),
+    );
+    h.settle_handler(false);
+    let tx = h.begin("tx");
+    h.command(
+        "drop",
+        &tx,
+        None,
+        json!({"kind":"discard","ordinal":original["ordinal"]}),
+    );
+    h.command(
+        "retry",
+        &tx,
+        None,
+        json!({"kind":"retryTasks","keys":[blob("X")]}),
+    );
+    h.run();
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    assert!(call_completions(&events).is_empty(), "{events:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["type"] == "effect" && e["operation"]["kind"] == "prerequisite"),
+        "{events:?}"
+    );
+    assert_eq!(completion(&events, "tx")["error"], "client_closed");
+    assert_eq!(events.last().unwrap()["type"], "runtimeClosed");
     assert_eq!(h.runtime.client().pending_count().unwrap(), 1);
 }

@@ -6,8 +6,8 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {GeneratedClient,CallError,type Call,type BootstrapPhase,type BootstrapStatus,type Subscription,type SubscriptionStatus,type RefusedAct,type FailedAct,type FailedTask,type SubmittedAct} from './client.ts';
-import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status, Composition, PublishEntryOutput, RenameOutput, SubmitMutationOptions, SubmitMutationPort} from './generated.ts';
-import {ApplicationTransaction,CompanionContext} from './generated.ts';
+import type {StoreHooks, StoreChange, EntryIdentity, Placement, Status, Composition, PublishEntryOutput, RenameOutput, SubmitMutationOptions, SubmitMutationPort, UnsentResolutionPort} from './generated.ts';
+import {ApplicationTransaction,CompanionContext,makeTransactionMutations} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
 import {Client as RawClient} from '../../packages/client-js/index.mts';
 import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,Mutate,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
@@ -415,7 +415,7 @@ function scriptedTransaction(){
  const companions:object[]=[];
  const resolutions:object[]=[];
  const companionPort:WritePort={...reads,async read(){return compositionRow},async direct(op){companions.push(op);}};
- const port:WritePort&SubmitMutationPort&{channels:GeneratedTransaction['channels']}={
+ const port:WritePort&SubmitMutationPort&UnsentResolutionPort&{channels:GeneratedTransaction['channels']}={
   ...reads,
   async direct(op){outer.push(op);},
   channels:{async subscribe(){},async unsubscribe(){}},
@@ -496,6 +496,10 @@ async function checkTransactionMutations(){
  assert.equal('watch' in context.models.composition,false);
  await tx.models.composition.delete({id:compositionId});
  assert.deepEqual(scripted.outer,[{model:'Composition',op:'delete',identity:{id:compositionId}}],'ordinary writes stay independent');
+ // A port that only submits is enough for the Mutation facade; the
+ // resolutions of unsent work are the application transaction's alone.
+ const submitOnly:SubmitMutationPort={submitMutation:(name,version,args,decode,options)=>scripted.port.submitMutation(name,version,args,decode,options)};
+ await makeTransactionMutations(submitOnly).rename({id:compositionId,title:'z'});
  // Resolutions of unsent work reach the raw transaction unchanged.
  await tx.failures.drop(3);
  await tx.failures.retry(['k']);
@@ -516,7 +520,7 @@ async function checkTransactionMutations(){
     return {first,second,label:'value'};
    });
    assert.equal(returned.label,'value','the callback value is returned unchanged');
-   assert.equal(scripted.submitted.length,5);
+   assert.equal(scripted.submitted.length,6);
    await hooks!.Composition!(scripted.port,[]);
    assert.ok(storeTx instanceof GeneratedTransaction);
    assert.equal(storeTx instanceof ApplicationTransaction,false);

@@ -435,7 +435,7 @@ The request body is elided. A handler receives the task's schema-declared argume
 
 Show failed tasks from [`failures.watch`](#unsent-work), `pendingTasks` or a record's `syncState`. To retry one, call `failures.retry([key])` or set its key to `pending`; to give up, drop the call that needs it with `failures.drop`. Mark ready only when the prerequisite actually completed. Closing the client cancels a running handler and waits for nothing: whatever the handler does after that is ignored.
 
-A task that failed stays failed while any call waits on it. A call queued later that needs the same task inherits the failure: it is listed in `failures` at once, with that task, and does not wait silently. The task is not reset for it; retrying stays your decision, and one retry covers every call that waits on the task. Once no call waits on a task, a later call that needs it starts a fresh, pending task.
+A task that failed stays failed while any call waits on it. A call queued later that needs the same task inherits the failure: it is listed in `failures` at once, with that task, and does not wait silently. The task is not reset for it; retrying stays your decision, and one retry covers every call that waits on the task. Once no call waits on a task, a later call that needs it starts a fresh, pending task. So order matters in a repair: drop the failed call first, then queue the replacement, and the replacement starts the task afresh, which its handler runs once the transaction commits; queue the replacement first and it joins the failed task and keeps its failure.
 
 ## Protocol primitives
 

@@ -71,8 +71,9 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
 ];
 
 /// Names the generated clients declare beside a current Mutation for
-/// transactional Mutation enqueue; `SubmitMutationPort` is also the Dart
-/// runtime's port those clients bind to.
+/// transactional Mutation enqueue and the transaction's resolutions of unsent
+/// work; `SubmitMutationPort` is also the Dart runtime's port those clients
+/// bind to.
 const TRANSACTION_HELPERS: &[&str] = &[
     "ApplicationTransaction",
     "CompanionContext",
@@ -80,6 +81,7 @@ const TRANSACTION_HELPERS: &[&str] = &[
     "SubmitMutationOptions",
     "SubmitMutationPort",
     "TransactionMutations",
+    "UnsentResolutionPort",
 ];
 
 /// Members of the generated Dart `{Name}Store` selector (and `Object`).

@@ -32,11 +32,12 @@ fn typescript_application_transactions_queue_typed_mutations() {
     let ts = axton_compiler::typescript(&v);
     for expected in [
         "export type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };",
-        "export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; readonly rejections:{ dismiss(id:number):Promise<void> }; readonly failures:{ retry(taskKeys:string[]):Promise<void>; drop(ordinal:number):Promise<void> }; }",
+        "export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }",
+        "export interface UnsentResolutionPort { readonly rejections:{ dismiss(id:number):Promise<void> }; readonly failures:{ retry(taskKeys:string[]):Promise<void>; drop(ordinal:number):Promise<void> }; }",
         "export class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }",
         "export type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };",
         // Resolutions of unsent work belong to the application transaction (#205).
-        "export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; readonly rejections:SubmitMutationPort['rejections']; readonly failures:SubmitMutationPort['failures']; constructor(transaction:WritePort & SubmitMutationPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); this.rejections=transaction.rejections; this.failures=transaction.failures; } }",
+        "export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; readonly rejections:UnsentResolutionPort['rejections']; readonly failures:UnsentResolutionPort['failures']; constructor(transaction:WritePort & SubmitMutationPort & UnsentResolutionPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); this.rejections=transaction.rejections; this.failures=transaction.failures; } }",
     ] {
         assert!(ts.contains(expected), "missing {expected}: {ts}");
     }
@@ -216,6 +217,7 @@ fn schemas_without_mutations_keep_the_local_transaction() {
                 "SubmitMutation",
                 "submitMutation",
                 "TransactionMutations",
+                "UnsentResolutionPort",
             ] {
                 assert!(!text.contains(absent), "{source}: {absent} in {text}");
             }
@@ -242,6 +244,7 @@ fn transaction_mutation_helper_names_are_reserved_beside_mutations() {
         "SubmitMutationOptions",
         "SubmitMutationPort",
         "TransactionMutations",
+        "UnsentResolutionPort",
     ] {
         let error = compile(&format!(
             "model {name} {{ id String @@id(id) }}\nmutation Ping()"

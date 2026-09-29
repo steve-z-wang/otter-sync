@@ -149,8 +149,16 @@ impl<S: ClientStore> Engine<'_, S> {
         if failed.is_empty() {
             return Ok(vec![]);
         }
+        // Only the calls waiting on a failed key are read: every table the
+        // queue reader filters has an `ordinal` column. A key rather than a
+        // row decides, so a row written before failures were inherited
+        // (#204) is still listed.
+        let waiting = self.queued_where(
+            "WHERE ordinal IN (SELECT ordinal FROM axton_mutation_prerequisite WHERE key IN (SELECT key FROM axton_mutation_prerequisite WHERE error IS NOT NULL))",
+            &[],
+        )?;
         let mut acts = vec![];
-        for queued in self.queued()? {
+        for queued in waiting {
             if queued.push.is_some() {
                 continue;
             }

@@ -209,9 +209,9 @@ pub enum HostRequest {
         stamp: u64,
     },
     /// Write-lock one existing record row without changing its stamp
-    /// (`UPDATE ... SET stamp=stamp`), so a concurrent Repeatable Read writer of
-    /// the same row restarts instead of acting on a stale snapshot. Never
-    /// creates a row: an absent record answers `null`.
+    /// (`UPDATE ... SET stamp=stamp`), so a concurrent writer of the same row
+    /// whose snapshot predates this commit restarts instead of acting on it.
+    /// Never creates a row: an absent record answers `null`.
     LockRecord { model: String, identity_key: String },
     /// The Channels this record is a persistent member of, independent of
     /// invalidations and subscribers.

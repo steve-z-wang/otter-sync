@@ -326,7 +326,7 @@ test('a malformed UUID declared in a push rejects only its mutation; well-formed
   ['Ticket','{"id":"123e4567-e89b-42d3-a456-426614174000"}'],['Ticket','{"id":"123e4567-e89b-82d3-b456-426614174001"}'],
  ],'the engine canonicalized each accepted identity');
 });
-test('repeatable-read runner keeps head, scan, and loader coherent across concurrent publication',async()=>{
+test('the serializable runner keeps head, scan, and loader coherent across concurrent publication',async()=>{
  await external(backend,'snapshot',[{model:'Task',identity:{id:'a'}}]);let changed=false;
  const reader=createBackend({config:{...config,mutations:[]},database:{transaction:run,persistence:tx=>{const storage=store(tx);return {call:async r=>{const result=await storage.call(r);if(r.op==='head'&&!changed){changed=true;await external(backend,'snapshot',[{model:'Task',identity:{id:'b'}}]);}return result;}}}},authenticate,handlers:{},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const page=JSON.parse(await reader.pull('alice',pullBody({snapshot:0})));assert.equal(to(page,'snapshot'),1);assert.equal(page.changes.length,1);
@@ -583,7 +583,7 @@ test('an external write advances the stamp on every call; a push re-enrolling an
 });
 test('concurrent first publications initialise one stamp of 1 and never overwrite an established one',async()=>{
  const ensure=tx=>store(tx).call({op:'ensureStamp',model:'Task',identityKey:key('ensure-race')});
- // The production runner: REPEATABLE READ with serialization retries, so a
+ // The production runner: SERIALIZABLE with serialization retries, so a
  // loser that sees the winner's row only after its snapshot retries and reads 1.
  
  assert.deepEqual(await Promise.all([run(ensure),run(ensure),run(ensure)]),[1,1,1]);
@@ -726,7 +726,7 @@ test('the Prisma driver retries only serialization failures, a bounded number of
  const failing=(codes)=>({async $transaction(body,options){attempts.push(options);const code=codes.shift();await body({attempt:attempts.length});bodies.push(attempts.length);if(code)throw Object.assign(new Error(`fail ${code.code}`),code);return 'committed';}});
  const conflict={code:'P2034'};const rawConflict={code:'P2010',meta:{code:'40001'}};const deadlock={code:'P2010',meta:{code:'40P01'}};const unique={code:'P2002'};
  assert.equal(await prismaDriver(failing([conflict,rawConflict,deadlock])).transaction(async()=>'body'),'committed','the fourth attempt succeeds within the default of three retries');
- assert.equal(attempts.length,4);assert.deepEqual(bodies,[1,2,3,4],'the body runs once per attempt');assert.deepEqual(attempts[0],{isolationLevel:'RepeatableRead',timeout:20000});
+ assert.equal(attempts.length,4);assert.deepEqual(bodies,[1,2,3,4],'the body runs once per attempt');assert.deepEqual(attempts[0],{isolationLevel:'Serializable',timeout:20000});
  attempts.length=0;bodies.length=0;
  await assert.rejects(()=>prismaDriver(failing([conflict,conflict,conflict,conflict])).transaction(async()=>{}),error=>error.code==='P2034'&&error.message==='fail P2034');
  assert.equal(attempts.length,4,'three retries after the first attempt, then the failure is reported');
@@ -740,7 +740,7 @@ test('the Prisma driver retries only serialization failures, a bounded number of
  const bundled=prisma(failing([conflict]),{retries:1,timeout:5});await bundled.transaction(async()=>{});
  assert.deepEqual(attempts.map(o=>o.timeout),[5,5],'prisma() passes retries and timeout to the runner');
 });
-test('a RepeatableRead conflict on the real database retries the whole body once and commits it exactly once',async()=>{
+test('a serialization conflict on the real database retries the whole body once and commits it exactly once',async()=>{
  await db.$executeRawUnsafe("INSERT INTO axton_channel(channel,head) VALUES('serial',0) ON CONFLICT(channel) DO UPDATE SET head=0");
  let bodies=0;let entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});
  const first=run(async tx=>{bodies++;const [{head}]=await tx.$queryRawUnsafe("SELECT head FROM axton_channel WHERE channel='serial'");if(bodies===1){entered();await gate;}
@@ -966,6 +966,19 @@ test('a conflicted caller transaction retries and its publication commits once',
  await delay(20);assert.equal(woke,0,'no attempt wakes by itself');wake();await delay(0);assert.equal(woke,1);
  unsubscribe();
 });
+// A caller may run its own transaction at Serializable, the level every shim
+// uses since #202; the settlement is the same.
+test('backend.publish settles the same way in a caller-owned Serializable transaction',async()=>{
+ const from=await head('owned');
+ const wake=await db.$transaction(async tx=>{
+  await write(tx,'owned-serializable','serializable write');
+  return backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-serializable'});channel('owned').task.add({id:'owned-serializable'});});
+ },{isolationLevel:'Serializable'});
+ wake();
+ assert.equal(await recordStamp('owned-serializable'),1);
+ assert.deepEqual(await invalidations('owned-serializable'),[['owned',from+1,1]]);
+ assert.deepEqual(await members('owned-serializable'),['owned']);
+});
 test('backend.publish refuses a transaction the framework already owns',async()=>{
  await assert.rejects(()=>backend.transaction(async({tx})=>{await backend.publish(tx,({touch})=>{touch.task({id:'owned-nested'});});}),/already/);
  assert.equal(await recordStamp('owned-nested'),null);
@@ -1081,7 +1094,7 @@ test('a record republished above the origin leaves the historical interval betwe
  assert.equal(second.records.length,9);
  assert.ok(!second.records.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
 });
-test('a bootstrap page reads content and stamps at its own repeatable-read snapshot',async()=>{
+test('a bootstrap page reads content and stamps at its own transaction snapshot',async()=>{
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});channel('coherent').task.add({id:'coherent'});});
  const origin=await head('coherent');const before=await recordStamp('coherent');
  // A concurrent transaction rewrites and republishes the record after the page

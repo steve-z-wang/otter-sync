@@ -121,7 +121,12 @@ export interface Persistence {
   call(request: Record<string, any>): Promise<unknown>;
 }
 export interface Database<T> {
-  /** Must provide a coherent snapshot and roll back rejected callbacks. Retry serialization failures. */
+  /**
+   * Must provide serializable isolation (PostgreSQL SERIALIZABLE: one
+   * snapshot for the whole transaction, and a serialization failure instead
+   * of any non-serial outcome), roll back rejected callbacks and retry
+   * serialization failures by running the whole body again.
+   */
   transaction: <R>(body: (tx: T) => Promise<R>) => Promise<R>;
   persistence: (tx: T) => Persistence;
 }
@@ -485,7 +490,10 @@ export interface BackendOptions<T> {
    * to the client only as that mutation's rejection code), and every
    * server-side failure clients see only as `{ code: "server" }` -
    * authenticate throws, persistence faults, loader defects, live drain
-   * failures.
+   * failures. A handler or loader failure is reported from inside the
+   * application transaction, before it commits: when that transaction is
+   * then retried after a serialization failure, the same failure can be
+   * reported again, once per attempt.
    */
   onError?: (error: unknown) => void;
 }

@@ -34,7 +34,7 @@ export function pgDriver(
           // the error to `release` so the pool discards it instead of reusing it.
           let broken: Error | undefined;
           try {
-            await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+            await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
             try {
               const result = await body(client);
               await client.query("COMMIT");

@@ -47,7 +47,7 @@ The compiler writes TypeScript and Dart clients, typed backend interfaces, descr
 
 ## Declare Mutations and Queries
 
-Declare each backend operation by its business intent. A **Mutation** may change business state or perform external effects, such as sending email. A **Query** reads without business side effects. Both use `Name(inputs) { outputs }` with the same input and output types; how a call is delivered is chosen by the client method, not by the schema ([routes](../frontend/client-api.md#mutations-and-queries)).
+Declare each backend operation by its business intent. A **Mutation** may change business state or perform external effects, such as sending email; the handler records such an effect in its transaction and performs it after commit, because it can run more than once ([handlers](../backend/api.md#handlers)). A **Query** reads without business side effects. Both use `Name(inputs) { outputs }` with the same input and output types; how a call is delivered is chosen by the client method, not by the schema ([routes](../frontend/client-api.md#mutations-and-queries)).
 
 This standalone schema is a small declaration example, separate from the [integration schema](https://github.com/zanminwang/axton/blob/main/integration/action-contract/schema.model) used in the [frontend examples](../frontend/client-api.md#mutations-and-queries).
 

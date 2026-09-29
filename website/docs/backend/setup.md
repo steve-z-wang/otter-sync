@@ -66,7 +66,7 @@ See [background writes](api.md#background-writes).
 
 ## Transaction ownership
 
-The outer transaction belongs to the application. Persistence, Handler, and Loader callbacks all receive that same transaction. The runner must provide a coherent snapshot (Repeatable Read or stronger), roll back on rejected promises, and retry serialization conflicts. Every shim of [`@axton/postgres`](database.md) supplies this contract.
+The outer transaction belongs to the application. Persistence, Handler, and Loader callbacks all receive that same transaction. The runner must provide serializable isolation, roll back on rejected promises, and retry serialization conflicts by running the whole body again. Every shim of [`@axton/postgres`](database.md) supplies this contract.
 
 ## Call results
 

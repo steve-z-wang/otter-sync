@@ -52,6 +52,25 @@ const pagesOf = (loadId: string) =>
     dropped: exchange.dropped,
   })));
 const handledCalls = (loadId: string) => fixture.handled.filter((page) => page.loadId === loadId).map((page) => page.callId);
+/**
+ * The continuation each page call of one job handed its handler, one entry per
+ * call ID in order. Items of one batch run in concurrent Serializable
+ * transactions, so PostgreSQL may abort one and the driver run its handler
+ * again (#202). A retry is told apart from a double run by its transaction:
+ * exactly one run of each call happened in the transaction that saved it
+ * (`axton_call.claim_tx`), and every run received the same continuation.
+ */
+const handledContinuations = async (loadId: string) => {
+  const runs = fixture.handled.filter((handled) => handled.loadId === loadId);
+  const callIds = [...new Set(runs.map((run) => run.callId))];
+  const saved = new Map((await fixture.pool.query("SELECT call_id, claim_tx::text AS xact FROM axton_call WHERE call_id = ANY($1)", [callIds])).rows.map((row) => [String(row.call_id), String(row.xact)]));
+  return callIds.map((callId) => {
+    const ofCall = runs.filter((run) => run.callId === callId);
+    assert.equal(ofCall.filter((run) => run.xact === saved.get(callId)).length, 1, "exactly one run in the transaction that saved the page; any other was a rolled-back retry");
+    for (const run of ofCall) assert.deepEqual(run.continuation, ofCall[0]!.continuation, "a retried run received the same continuation");
+    return ofCall[0]!.continuation;
+  });
+};
 const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
@@ -104,7 +123,7 @@ test("the backend pages both Loads over HTTP: structured state, a final empty pa
   const projectPages = await follow("ProjectItems", { project: "raw" }, project, (by(project).outcome as { next: LoadRequestItem["continuation"] }).next);
   assert.deepEqual(projectPages.map((p) => p.items), [["raw-3", "raw-4"], ["raw-5"], []], "the final page is empty and completes");
   assert.equal(projectPages.at(-1)!.next, null);
-  assert.deepEqual(fixture.handled.filter((h) => h.loadId === project).map((h) => h.continuation), [
+  assert.deepEqual(await handledContinuations(project), [
     null,
     { state: { after: "raw-2", page: 1, trail: ["raw-1", "raw-2"], meta: { size: 2, nested: { flags: [true, false, null], label: "p1" } } } },
     { state: { after: "raw-4", page: 2, trail: ["raw-1", "raw-2", "raw-3", "raw-4"], meta: { size: 2, nested: { flags: [true, false, null], label: "p2" } } } },
@@ -112,7 +131,7 @@ test("the backend pages both Loads over HTTP: structured state, a final empty pa
   ], "the handler received each structured state exactly as it answered it");
   const catalogPages = await follow("Catalog", { shelf: "raw" }, catalog, { state: null });
   assert.deepEqual(catalogPages.map((p) => p.items), [["raw-shelf-3", "raw-shelf-4"], ["raw-shelf-5"]]);
-  assert.deepEqual(fixture.handled.filter((h) => h.loadId === catalog).map((h) => h.continuation), [null, { state: null }, { state: { offset: [4, "items", { big: "9007199254740993" }] } }]);
+  assert.deepEqual(await handledContinuations(catalog), [null, { state: null }, { state: { offset: [4, "items", { big: "9007199254740993" }] } }]);
 
   // The same page call IDs again: the saved outcomes, with no handler run.
   const handled = fixture.handled.length;

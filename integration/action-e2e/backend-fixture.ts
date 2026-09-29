@@ -17,6 +17,8 @@ export async function createFixture() {
   /** Every PublishEntry argument exactly as the handler received it. */
   const publishes: { entry: { id: string; title: string; body: string }; media: { id: string; entryId: string; url: string }[]; placement: { id: string; entryId: string; journal: string; position: number } }[] = [];
   let rejectPublish = false;
+  /** UpdateTodo attempts left that end in a real serialization failure (#202). */
+  let conflictUpdates = 0;
   /** Entry identities PublishEntry rejects, so one push can mix outcomes. */
   const rejectedEntries = new Set<string>();
   const mutations: Mutations<PgClient> = {
@@ -28,6 +30,13 @@ export async function createFixture() {
     },
     async updateTodo({ ctx, args }) {
       handlerCalls++;
+      if (conflictUpdates > 0) {
+        conflictUpdates--;
+        // A real conflict, not a thrown code: read the row, let another
+        // connection change and commit it, then write it from this snapshot.
+        await ctx.tx.query("SELECT title FROM action_e2e_todo WHERE id=$1", [args.todo.id]);
+        await pool.query("UPDATE action_e2e_todo SET title=title WHERE id=$1", [args.todo.id]);
+      }
       const changed = await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE id=$1 RETURNING id", [args.todo.id, args.todo.title?.trim()]);
       if (changed.rows.length === 0) throw new CallRejected("todo.missing");
     },
@@ -182,6 +191,9 @@ export async function createFixture() {
     set rejectPublish(value: boolean) { rejectPublish = value; },
     /** Entry identities PublishEntry rejects like `rejectPublish`, leaving other calls of the same push accepted. */
     rejectedEntries,
+    /** The next this-many UpdateTodo attempts each fail PostgreSQL serialization (40001) on their write. */
+    get conflictUpdates() { return conflictUpdates; },
+    set conflictUpdates(value: number) { conflictUpdates = value; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
       for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);

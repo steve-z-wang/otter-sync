@@ -12,7 +12,7 @@ export interface DrizzleTransaction {
 export interface DrizzleDatabase<Tx extends DrizzleTransaction> {
   transaction<R>(
     body: (tx: Tx) => Promise<R>,
-    options: { isolationLevel: "repeatable read" },
+    options: { isolationLevel: "serializable" },
   ): Promise<R>;
 }
 
@@ -44,7 +44,7 @@ export function drizzleDriver<Tx extends DrizzleTransaction>(
   return {
     transaction: (body) =>
       withRetries(
-        () => db.transaction(body, { isolationLevel: "repeatable read" }),
+        () => db.transaction(body, { isolationLevel: "serializable" }),
         isRetryableTransactionError,
         options.retries ?? 3,
       ),

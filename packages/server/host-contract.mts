@@ -141,8 +141,10 @@ export type PublishRequest = {
 };
 /**
  * Write-lock one existing record row without changing its stamp, so a
- * concurrent Repeatable Read writer of the row restarts instead of acting on
- * a stale snapshot. Never creates a row: an absent record answers `null`.
+ * concurrent writer of the row whose snapshot predates this commit restarts
+ * instead of acting on it, whether the transaction is serializable or a
+ * caller-owned one at Repeatable Read. Never creates a row: an absent record
+ * answers `null`.
  */
 export type LockRecordRequest = {
   op: "lockRecord";

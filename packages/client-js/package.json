@@ -1,1 +1,1 @@
-{"name":"@axton/client","version":"0.1.0","private":true,"type":"module","exports":"./index.mts","engines":{"node":">=22.18.0"},"dependencies":{"ws":"^8.21.3"}}
+{"name":"@axtonjs/client","version":"0.1.0","private":true,"type":"module","exports":"./index.mts","engines":{"node":">=22.18.0"},"dependencies":{"ws":"^8.21.3"}}

@@ -1,6 +1,7 @@
 name: axton
 description: Schema-driven local-first state client backed by Rust.
-version: 0.1.0
+version: 0.1.0 # x-release-please-version
+repository: https://github.com/zanminwang/axton
 publish_to: none
 environment:
   sdk: '>=3.12.0 <4.0.0'

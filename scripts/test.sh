@@ -4,6 +4,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$root/scripts/env.sh"
 cd "$root"
 npm ci
+node scripts/release/version.mjs check
+node --test integration/release/version.test.mjs
 bash scripts/build.sh
 cargo fmt --all --check
 cargo test --workspace --locked

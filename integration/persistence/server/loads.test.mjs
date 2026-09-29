@@ -101,10 +101,18 @@ test('each batch item is its own transaction: a rejected handler rolls back its 
     assert.equal((await q('SELECT note FROM load_audit WHERE note=$1', [`open-${name}:${good.callId}`])).length, 1, name);
     for (const item of [good, bad, unknown]) assert.equal((await saved(item.callId)).length, 1, `${name}: every terminal outcome is saved`);
     // Same-transaction identity: the handler and its Loader read one transaction; siblings never share it.
-    const handled = new Map(seen.handled.map(call => [call.callId, call.txid]));
-    assert.equal(seen.loaded.length, 1, name);
-    assert.equal(seen.loaded[0].txid, handled.get(good.callId), `${name}: Loader runs in the page's transaction`);
-    assert.notEqual(handled.get(good.callId), handled.get(bad.callId), `${name}: batch items share no transaction`);
+    // The items run in concurrent Serializable transactions, so PostgreSQL may
+    // abort one and the driver run it again (#202): judge the runs in the
+    // transaction that saved each page (`claim_tx`), and require every other
+    // run to be in a transaction that did not commit it.
+    const committed = async callId => (await q('SELECT claim_tx::text AS txid FROM axton_call WHERE call_id=$1', [callId]))[0].txid;
+    const [goodTx, badTx] = [await committed(good.callId), await committed(bad.callId)];
+    const runsIn = (runs, txid) => runs.filter(run => run.txid === txid).length;
+    assert.equal(runsIn(seen.handled.filter(call => call.callId === good.callId), goodTx), 1, `${name}: one handler run in the page's committed transaction`);
+    assert.equal(runsIn(seen.loaded, goodTx), 1, `${name}: Loader runs in the page's transaction, once`);
+    assert.equal(runsIn(seen.handled.filter(call => call.callId === bad.callId), badTx), 1, name);
+    assert.notEqual(goodTx, badTx, `${name}: batch items share no transaction`);
+    assert.equal(runsIn(seen.loaded, badTx), 0, `${name}: the rejected page read nothing`);
     assert.deepEqual(seen.handled[0].keys, ['callId', 'loadId', 'tx', 'userId'], `${name}: read-only Load context`);
     assert.equal(seen.handled.find(call => call.callId === good.callId).loadId, good.loadId);
   }

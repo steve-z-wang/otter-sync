@@ -10,6 +10,10 @@
  * through any escaped handle, is refused. The Rust engine owns what the
  * declarations mean: it infers input targets, reduces membership intents to
  * their final state and settles them.
+ *
+ * A Load page declares through a narrower collector: add-only Channel
+ * handles, with repeated pairs stored once and the page's enrollment bounded
+ * like the engine bounds it.
  */
 import type {
   HostRecordRef,
@@ -54,6 +58,48 @@ export interface EffectCollector {
   /** Refuses every later declaration, through any handle. Idempotent. */
   close(): void;
 }
+/** One Model's add-only membership writer on a Load's Channel: `channel(name).todo`. */
+export interface RuntimeLoadModelMembership {
+  add(identity: object): void;
+}
+/**
+ * A Load's Channel handle: one add-only writer per Model under its
+ * lower-first accessor, plus `add` for mixed lists of record references. No
+ * `remove` exists on it at runtime.
+ */
+export type RuntimeLoadChannel = {
+  readonly [model: string]: RuntimeLoadModelMembership;
+} & {
+  add(records: readonly RecordRef[]): void;
+};
+/**
+ * Why a Load's declarations cannot settle: its enrollment passed a bound
+ * (`overflow`), or a declaration was refused (`invalid`). Kept even when the
+ * handler caught the error, so a page never enrolls part of what it meant.
+ */
+export type LoadEffectFailure = {
+  kind: "overflow" | "invalid";
+  /** What the declaration threw: an `Error`, or whatever a caller's getter threw. */
+  error: unknown;
+};
+export interface LoadEffectCollector {
+  /** Selects a Channel by name. Creates nothing: the name is only validated. */
+  channel(name: string): RuntimeLoadChannel;
+  /** Owned copies of the distinct additions, in first-declaration order. */
+  memberships(): readonly MembershipIntent[];
+  /** The first overflow, else the first refused declaration; `undefined` when neither happened. */
+  failure(): LoadEffectFailure | undefined;
+  /** Refuses every later declaration, through any handle. Idempotent. */
+  close(): void;
+}
+/**
+ * One Load page's enrollment bounds, counted over distinct Channel/record
+ * pairs: the engine's `LOAD_ENROLLMENT_PAIRS` and `LOAD_ENROLLMENT_BYTES`
+ * (`axton_core::limits`), shared through
+ * `fixtures/protocol/load-enrollment-limits.json`.
+ */
+export const LOAD_ENROLLMENT_PAIRS = 1000;
+export const LOAD_ENROLLMENT_BYTES = 1024 * 1024;
 /** A configured Model descriptor, as the compiled schema's `models` holds it. */
 export type EffectModel = {
   name: string;
@@ -74,7 +120,12 @@ type Entry = {
   name: string;
   key: string;
   snapshot(value: unknown, caller: string): Identity;
+  /** A snapshot as the engine canonicalizes it (`Schema::record_key`). */
+  canonical(identity: Identity): Identity;
 };
+/** How one encoded component is spelled canonically; most are already. */
+type Canonical = (value: unknown) => unknown;
+const same: Canonical = (value) => value;
 const INVALID = Symbol("invalid");
 
 /**
@@ -89,7 +140,7 @@ const UUID =
  * stricter than the engine, never more lenient.
  */
 const ZONED =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:[Zz]|[+-](\d{2}):(\d{2}))$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(?:[Zz]|([+-])(\d{2}):(\d{2}))$/;
 /** Whether `text` is a date-time the engine accepts: a zoned RFC 3339 date-time with real calendar fields. */
 function zoned(text: string): boolean {
   const parts = ZONED.exec(text);
@@ -101,7 +152,7 @@ function zoned(text: string): boolean {
   const days =
     month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
   const offset =
-    parts[7] === undefined || (Number(parts[7]) < 24 && Number(parts[8]) < 60);
+    parts[8] === undefined || (Number(parts[9]) < 24 && Number(parts[10]) < 60);
   return (
     month >= 1 &&
     month <= 12 &&
@@ -115,6 +166,27 @@ function zoned(text: string): boolean {
 }
 
 /**
+ * A date-time `zoned` accepted, as the engine canonicalizes it: the UTC
+ * instant with milliseconds, a fraction beyond them truncated.
+ */
+function instant(text: string): string {
+  const parts = ZONED.exec(text)!;
+  const [year, month, day, hour, minute, second] = parts
+    .slice(1, 7)
+    .map(Number) as [number, number, number, number, number, number];
+  const millis = Number((parts[7] ?? "").padEnd(3, "0").slice(0, 3));
+  const at = new Date(0);
+  at.setUTCFullYear(year, month - 1, day);
+  at.setUTCHours(hour, minute, second, millis);
+  const offset =
+    parts[8] === undefined
+      ? 0
+      : (parts[8] === "-" ? -1 : 1) *
+        (Number(parts[9]) * 60 + Number(parts[10]));
+  return new Date(at.getTime() - offset * 60_000).toISOString();
+}
+
+/**
  * Encodes one identity component as the engine receives it, or answers
  * INVALID. Every rule matches the engine's, so a declaration the collector
  * accepts is never refused when the engine resolves it.
@@ -124,7 +196,11 @@ function component(
   field: string,
   type: unknown,
   enums: ReadonlyMap<string, readonly string[]>,
-): [expected: string, encode: (value: unknown) => unknown] {
+): [
+  expected: string,
+  encode: (value: unknown) => unknown,
+  canonical: Canonical,
+] {
   const { kind, name } = (type ?? {}) as { kind?: unknown; name?: unknown };
   if (kind === "enum") {
     const values = typeof name === "string" ? enums.get(name) : undefined;
@@ -135,28 +211,36 @@ function component(
     return [
       `one of ${values.join(", ")}`,
       (v) => (typeof v === "string" && values.includes(v) ? v : INVALID),
+      same,
     ];
   }
   if (kind === "scalar")
     switch (name) {
       case "string":
-        return ["a string", (v) => (typeof v === "string" ? v : INVALID)];
+        return ["a string", (v) => (typeof v === "string" ? v : INVALID), same];
       case "uuid":
         return [
           "a UUID (36 characters, RFC 4122 variant, version 1 to 8)",
           (v) => (typeof v === "string" && UUID.test(v) ? v : INVALID),
+          (v) => (v as string).toLowerCase(),
         ];
       case "boolean":
-        return ["a boolean", (v) => (typeof v === "boolean" ? v : INVALID)];
+        return [
+          "a boolean",
+          (v) => (typeof v === "boolean" ? v : INVALID),
+          same,
+        ];
       case "int":
         return [
           "a safe integer",
           (v) => (Number.isSafeInteger(v) ? v : INVALID),
+          same,
         ];
       case "float":
         return [
           "a finite number",
           (v) => (typeof v === "number" && Number.isFinite(v) ? v : INVALID),
+          same,
         ];
       case "dateTime":
         // A decoded Date is encoded now; a wire string (a legacy slot
@@ -172,6 +256,7 @@ function component(
                 : v;
             return typeof text === "string" && zoned(text) ? text : INVALID;
           },
+          (v) => instant(v as string),
         ];
     }
   throw new Error(
@@ -221,6 +306,12 @@ function entriesOf(
         );
       return [field, ...component(name, field, declared.type, values)] as const;
     });
+    const canonical = (identity: Identity): Identity => {
+      const copy = {};
+      for (const [field, , , spell] of components)
+        define(copy, field, spell(identity[field]));
+      return Object.freeze(copy);
+    };
     const snapshot = (value: unknown, caller: string): Identity => {
       if (value === null || typeof value !== "object")
         throw new Error(`${caller}: ${name} identity must be an object`);
@@ -240,9 +331,80 @@ function entriesOf(
       }
       return Object.freeze(copy);
     };
-    return { name, key, snapshot };
+    return { name, key, snapshot, canonical };
   });
 }
+
+/** A resolved declaration: the Model's entry and the owned identity. */
+type Declared = { entry: Entry; identity: Identity };
+/**
+ * What every collector over one configuration shares: the validated Models
+ * and the per-call checks that refuse a device-only Model, a malformed
+ * reference or a blank Channel name.
+ */
+type Declarations = {
+  entries: readonly Entry[];
+  publishable(model: string, caller: string): void;
+  /** Resolves a mixed list whole, so a caught failure declares nothing. */
+  list(records: unknown, caller: string): Declared[];
+  channelName(name: unknown): void;
+};
+function declarationsOf(
+  models: readonly EffectModel[],
+  enums: readonly EffectEnum[],
+  loaded: ReadonlySet<string> | undefined,
+): Declarations {
+  const entries = entriesOf(models, enums);
+  const byName = new Map(entries.map((entry) => [entry.name, entry]));
+  const publishable = (model: string, caller: string) => {
+    if (loaded && !loaded.has(model))
+      throw new Error(
+        `${caller}: Model ${model} has no Loader, so it is device-only and cannot be published`,
+      );
+  };
+  /** Resolves one explicit reference; a raw identity names no Model and fails. */
+  const reference = (value: unknown, caller: string): Declared => {
+    const model = (value as { model?: unknown } | null)?.model;
+    if (
+      value === null ||
+      typeof value !== "object" ||
+      typeof model !== "string"
+    )
+      throw new Error(
+        `${caller}: each element must be a record reference such as Todo({ id }); a raw identity names no Model`,
+      );
+    const entry = byName.get(model);
+    if (!entry) throw new Error(`${caller}: unknown Model ${model}`);
+    publishable(model, caller);
+    return {
+      entry,
+      identity: entry.snapshot((value as RecordRef).identity, caller),
+    };
+  };
+  return {
+    entries,
+    publishable,
+    list(records, caller) {
+      if (!Array.isArray(records))
+        throw new Error(`${caller}: expected an array of record references`);
+      const resolved = [];
+      for (let index = 0; index < records.length; index++)
+        resolved.push(reference(records[index], caller));
+      return resolved;
+    },
+    channelName(name) {
+      // Non-empty after JS `trim()`. The engine applies its own check
+      // (`check_channel`, Rust `trim()`) at settlement; the two trims differ
+      // on a few code points such as U+FEFF and U+0085.
+      if (typeof name !== "string" || name.trim() === "")
+        throw new Error("channel: a Channel name must be a nonblank string");
+    },
+  };
+}
+const closed = (caller: string) =>
+  new Error(
+    `${caller}: the callback has settled and its declarations are closed`,
+  );
 
 /**
  * Validates `models` (and the `enums` their identities use) once and answers
@@ -259,46 +421,18 @@ export function effectsFor(
   enums: readonly EffectEnum[] = [],
   loaded?: ReadonlySet<string>,
 ): () => EffectCollector {
-  const entries = entriesOf(models, enums);
-  const byName = new Map(entries.map((entry) => [entry.name, entry]));
-  const publishable = (model: string, caller: string) => {
-    if (loaded && !loaded.has(model))
-      throw new Error(
-        `${caller}: Model ${model} has no Loader, so it is device-only and cannot be published`,
-      );
-  };
-  /** Resolves one explicit reference; a raw identity names no Model and fails. */
-  const reference = (
-    value: unknown,
-    caller: string,
-  ): { model: string; identity: Identity } => {
-    const model = (value as { model?: unknown } | null)?.model;
-    if (
-      value === null ||
-      typeof value !== "object" ||
-      typeof model !== "string"
-    )
-      throw new Error(
-        `${caller}: each element must be a record reference such as Todo({ id }); a raw identity names no Model`,
-      );
-    const entry = byName.get(model);
-    if (!entry) throw new Error(`${caller}: unknown Model ${model}`);
-    publishable(model, caller);
-    return {
-      model,
-      identity: entry.snapshot((value as RecordRef).identity, caller),
-    };
-  };
+  const { entries, publishable, list, channelName } = declarationsOf(
+    models,
+    enums,
+    loaded,
+  );
   return () => {
     let open = true;
     const changes: HostRecordRef[] = [];
     const changed = new Set<string>();
     const memberships: MembershipIntent[] = [];
     const assertOpen = (caller: string) => {
-      if (!open)
-        throw new Error(
-          `${caller}: the callback has settled and its declarations are closed`,
-        );
+      if (!open) throw closed(caller);
     };
     const change = (model: string, identity: Identity) => {
       const key = `${model}\u0000${JSON.stringify(Object.values(identity))}`;
@@ -331,11 +465,7 @@ export function effectsFor(
     Object.freeze(touch);
     const channel = (name: string): RuntimeChannel => {
       assertOpen("channel");
-      // Non-empty after JS `trim()`. The engine applies its own check
-      // (`check_channel`, Rust `trim()`) at settlement; the two trims differ
-      // on a few code points such as U+FEFF and U+0085.
-      if (typeof name !== "string" || name.trim() === "")
-        throw new Error("channel: a Channel name must be a nonblank string");
+      channelName(name);
       const label = `channel(${JSON.stringify(name)})`;
       const handle = Object.create(null);
       for (const entry of entries) {
@@ -359,17 +489,8 @@ export function effectsFor(
         define(handle, verb, (records: readonly RecordRef[]) => {
           const caller = `${label}.${verb}`;
           assertOpen(caller);
-          if (!Array.isArray(records))
-            throw new Error(
-              `${caller}: expected an array of record references`,
-            );
-          // Every element is resolved before any is declared, so a caught
-          // failure leaves no partial declaration behind.
-          const resolved = [];
-          for (let index = 0; index < records.length; index++)
-            resolved.push(reference(records[index], caller));
-          for (const { model, identity } of resolved)
-            intent(name, model, identity, present);
+          for (const { entry, identity } of list(records, caller))
+            intent(name, entry.name, identity, present);
         });
       return Object.freeze(handle) as RuntimeChannel;
     };
@@ -394,4 +515,163 @@ export function createEffects(
   loaded?: ReadonlySet<string>,
 ): EffectCollector {
   return effectsFor(models, enums, loaded)();
+}
+
+/** JSON with every object's keys in `Array.prototype.sort` order, as `axton_core::canonical_json` spells it. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const members = value as Record<string, unknown>;
+  return `{${Object.keys(members)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(members[key])}`)
+    .join(",")}}`;
+}
+
+/**
+ * What one distinct pair counts toward `LOAD_ENROLLMENT_BYTES`: the UTF-8
+ * length of the intent's canonical JSON, its identity canonical.
+ */
+export function enrollmentBytes(intent: MembershipIntent): number {
+  return Buffer.byteLength(canonicalJson(intent), "utf8");
+}
+
+/**
+ * A lone UTF-16 surrogate is not Unicode text: `JSON.stringify` escapes it,
+ * and the engine then refuses the whole answer.
+ */
+const LONE_SURROGATE = /\p{Surrogate}/u;
+/** A declaration past a bound: the page fails `load.page_too_large`. */
+class EnrollmentOverflow extends Error {}
+
+/**
+ * The add-only counterpart of `effectsFor`, for Load pages: over the same
+ * validated configuration, it answers a factory of collectors whose Channel
+ * handles only add. A repeated Channel/record pair, as the engine
+ * canonicalizes it, is stored once; the declaration that would pass
+ * `LOAD_ENROLLMENT_PAIRS` or `LOAD_ENROLLMENT_BYTES` throws and stores
+ * nothing. Every refused declaration is kept as the collector's `failure`,
+ * so a handler that catches one still fails its page.
+ */
+export function loadEffectsFor(
+  models: readonly EffectModel[],
+  enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
+): () => LoadEffectCollector {
+  const { entries, publishable, list, channelName } = declarationsOf(
+    models,
+    enums,
+    loaded,
+  );
+  return () => {
+    let open = true;
+    let failed: LoadEffectFailure | undefined;
+    /** Distinct additions by their canonical encoding, in first-declaration order. */
+    const pairs = new Map<string, MembershipIntent>();
+    let bytes = 0;
+    /** Runs one declaration, keeping its refusal even if the handler catches it. */
+    const declare = <R,>(body: () => R): R => {
+      try {
+        return body();
+      } catch (error) {
+        const kind =
+          error instanceof EnrollmentOverflow ? "overflow" : "invalid";
+        if (
+          failed === undefined ||
+          (kind === "overflow" && failed.kind !== kind)
+        )
+          failed = { kind, error };
+        throw error;
+      }
+    };
+    const assertOpen = (caller: string) => {
+      if (!open) throw closed(caller);
+    };
+    /** Adds every new pair of one declaration, or none when they pass a bound. */
+    const enroll = (channel: string, declared: Declared[], caller: string) => {
+      const fresh = new Map<string, MembershipIntent>();
+      let more = 0;
+      for (const { entry, identity } of declared) {
+        const key = canonicalJson({
+          channel,
+          model: entry.name,
+          identity: entry.canonical(identity),
+          present: true,
+        });
+        if (pairs.has(key) || fresh.has(key)) continue;
+        fresh.set(
+          key,
+          Object.freeze({
+            channel,
+            model: entry.name,
+            identity,
+            present: true,
+          }) as MembershipIntent,
+        );
+        more += Buffer.byteLength(key, "utf8");
+        if (pairs.size + fresh.size > LOAD_ENROLLMENT_PAIRS)
+          throw new EnrollmentOverflow(
+            `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Channel/record pairs`,
+          );
+        if (bytes + more > LOAD_ENROLLMENT_BYTES)
+          throw new EnrollmentOverflow(
+            `${caller}: the Load page's enrollment encodes to more than ${LOAD_ENROLLMENT_BYTES} bytes`,
+          );
+      }
+      for (const [key, intent] of fresh) pairs.set(key, intent);
+      bytes += more;
+    };
+    const channel = (name: string): RuntimeLoadChannel =>
+      declare(() => {
+        assertOpen("channel");
+        channelName(name);
+        if (LONE_SURROGATE.test(name))
+          throw new Error(
+            "channel: a Channel name must be Unicode text, without a lone surrogate",
+          );
+        const label = `channel(${JSON.stringify(name)})`;
+        const handle = Object.create(null);
+        for (const entry of entries) {
+          const membership = Object.create(null);
+          define(membership, "add", (identity: object) =>
+            declare(() => {
+              const caller = `${label}.${entry.key}.add`;
+              assertOpen(caller);
+              publishable(entry.name, caller);
+              enroll(
+                name,
+                [{ entry, identity: entry.snapshot(identity, caller) }],
+                caller,
+              );
+            }),
+          );
+          define(handle, entry.key, Object.freeze(membership));
+        }
+        define(handle, "add", (records: readonly RecordRef[]) =>
+          declare(() => {
+            const caller = `${label}.add`;
+            assertOpen(caller);
+            enroll(name, list(records, caller), caller);
+          }),
+        );
+        return Object.freeze(handle) as RuntimeLoadChannel;
+      });
+    return Object.freeze({
+      channel,
+      memberships: (): readonly MembershipIntent[] => [...pairs.values()],
+      failure: () => failed,
+      close() {
+        open = false;
+      },
+    });
+  };
+}
+
+/** One Load collector over `models`, validating them first. */
+export function createLoadEffects(
+  models: readonly EffectModel[],
+  enums: readonly EffectEnum[] = [],
+  loaded?: ReadonlySet<string>,
+): LoadEffectCollector {
+  return loadEffectsFor(models, enums, loaded)();
 }

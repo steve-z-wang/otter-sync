@@ -113,7 +113,7 @@ test('each batch item is its own transaction: a rejected handler rolls back its 
     assert.equal(runsIn(seen.handled.filter(call => call.callId === bad.callId), badTx), 1, name);
     assert.notEqual(goodTx, badTx, `${name}: batch items share no transaction`);
     assert.equal(runsIn(seen.loaded, badTx), 0, `${name}: the rejected page read nothing`);
-    assert.deepEqual(seen.handled[0].keys, ['callId', 'loadId', 'tx', 'userId'], `${name}: read-only Load context`);
+    assert.deepEqual(seen.handled[0].keys, ['callId', 'channel', 'loadId', 'tx', 'userId'], `${name}: a Load context adds to Channels and has no touch`);
     assert.equal(seen.handled.find(call => call.callId === good.callId).loadId, good.loadId);
   }
 });
@@ -325,4 +325,88 @@ test('Load registration names every retained version and keeps wrong-kind diagno
   const mixed = structuredClone(config);
   mixed.schema.actions = [{ name: 'Ping', version: 1, inputs: [], outputs: [] }];
   assert.throws(() => createBackend({ ...base, config: mixed, mutations: { ping: async () => {} }, loads: { projectTodos: async () => ({}), ping: async () => ({}) } }), /loads\.ping: Ping v1 \(mutation\) retains no load version; register it under mutations/);
+});
+
+/** Every Channel a Todo belongs to, sorted. */
+const channelsOf = async id => (await q("SELECT channel FROM axton_membership WHERE model='Todo' AND identity_key=$1 ORDER BY channel", [JSON.stringify({ id })])).map(row => row.channel);
+/** Records which of `channels` wake, until `stop`. */
+const listen = (app, channels) => { const woken = []; const stops = channels.map(channel => app.onCommitted(channel, () => woken.push(channel))); return { woken, stop: () => stops.forEach(stop => stop()) }; };
+/** One page over `enroll-*` rows whose handler is `body({ ctx, rows })`. */
+const enrolling = (database, body, extra = {}) => createBackend({ config, native, database, authenticate: () => 'alice', onError: () => {}, loaders: loaders(database, { handled: [], loaded: [] }), ...extra,
+  loads: { async projectTodos({ ctx, args }) {
+    const rows = await database.driver.query(ctx.tx, 'SELECT id FROM load_todo WHERE project=$1 ORDER BY id', [args.projectId]);
+    await body({ ctx, rows });
+    return { data: { todos: rows.map(row => ({ id: row.id })) }, next: null };
+  } } });
+
+test('a Load enrolls the records it declares on every shim, waking the Channel after commit; a replay enrolls nothing', async () => {
+  for (const { name, database } of shims) {
+    const project = `enroll-${name}`;
+    await seed(project, project, 'alice', 3);
+    const channel = `project:${project}`;
+    let runs = 0;
+    const app = enrolling(database, ({ ctx, rows }) => {
+      runs++;
+      // Only the declared subset: the third returned row is not enrolled.
+      ctx.channel(channel).todo.add({ id: rows[0].id });
+      ctx.channel(channel).add([{ model: 'Todo', identity: { id: rows[1].id } }, { model: 'Todo', identity: { id: rows[0].id } }]);
+    });
+    const wakes = listen(app, [channel]);
+    const item = page(project);
+    const [done] = outcomes(await app.loads('alice', batch(item)));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(done.outcome.status, 'succeeded', name);
+    assert.deepEqual(await channelsOf(`${project}-1`), [channel], name);
+    assert.deepEqual(await channelsOf(`${project}-2`), [channel], name);
+    assert.deepEqual(await channelsOf(`${project}-3`), [], `${name}: returning a record does not enroll it`);
+    assert.deepEqual(wakes.woken, [channel], `${name}: one wake, after commit`);
+    const [replayed] = outcomes(await app.loads('alice', batch(item)));
+    assert.deepEqual(replayed, done, name);
+    assert.equal(runs, 1, `${name}: the replay ran no handler`);
+    assert.deepEqual(wakes.woken, [channel], `${name}: and woke nobody`);
+    wakes.stop();
+  }
+});
+
+test('a caught overflow or refused declaration fails the saved page with no enrollment and no wake', async () => {
+  const { database } = shims.find(shim => shim.name === 'pg');
+  await seed('enroll-fail', 'enroll-fail', 'alice', 1);
+  const cases = [
+    ['overflow', ({ ctx, rows }) => { try { for (let n = 0; n <= 1000; n++) ctx.channel(`fail-${n}`).todo.add({ id: rows[0].id }); } catch {} }, 'load.page_too_large'],
+    ['invalid', ({ ctx, rows }) => { ctx.channel('fail-0').todo.add({ id: rows[0].id }); try { ctx.channel('fail-1').todo.add({}); } catch {} }, 'handler.failed'],
+  ];
+  for (const [label, body, code] of cases) {
+    const reported = [];
+    const app = enrolling(database, body, { onError: error => reported.push(error) });
+    const wakes = listen(app, ['fail-0', 'fail-1']);
+    const item = page('enroll-fail');
+    const [failed] = outcomes(await app.loads('alice', batch(item)));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(failed.outcome.status, 'failed', label);
+    assert.equal(failed.outcome.error.code, code, label);
+    assert.equal((await saved(item.callId))[0].response.outcome.status, 'failed', `${label}: a saved terminal outcome`);
+    assert.deepEqual(await channelsOf('enroll-fail-1'), [], `${label}: no partial enrollment`);
+    assert.deepEqual(wakes.woken, [], `${label}: no wake`);
+    assert.equal(reported.length, 1, `${label}: reported`);
+    wakes.stop();
+  }
+});
+
+test('a transaction retry runs the handler with fresh declarations: only the committed attempt enrolls and wakes', async () => {
+  const { database } = shims.find(shim => shim.name === 'pg');
+  await seed('enroll-retry', 'enroll-retry', 'alice', 1);
+  let attempts = 0;
+  const app = enrolling(database, ({ ctx, rows }) => {
+    attempts++;
+    ctx.channel(`retry-${attempts}`).todo.add({ id: rows[0].id });
+    if (attempts === 1) throw Object.assign(new Error('could not serialize access'), { code: '40001' });
+  });
+  const wakes = listen(app, ['retry-1', 'retry-2']);
+  const [done] = outcomes(await app.loads('alice', batch(page('enroll-retry'))));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(done.outcome.status, 'succeeded');
+  assert.equal(attempts, 2, 'the driver retried the serialization failure');
+  assert.deepEqual(await channelsOf('enroll-retry-1'), ['retry-2'], 'the aborted attempt left nothing behind');
+  assert.deepEqual(wakes.woken, ['retry-2']);
+  wakes.stop();
 });

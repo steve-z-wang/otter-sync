@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {createEffects} from '../../../packages/server/effects.mts';
+import {createEffects,createLoadEffects,enrollmentBytes,LOAD_ENROLLMENT_PAIRS,LOAD_ENROLLMENT_BYTES} from '../../../packages/server/effects.mts';
 import {Todo,Moment,Pin} from '../../action-runtime-ts/backend.ts';
 
 // The real compiled schema: Todo {id String}, Moment {at DateTime} and the
@@ -247,4 +247,208 @@ test('a Model outside the loaded set is device-only: every declaration naming it
  assert.deepEqual(effects.settlement(),{changes:[{model:'Todo',identity:{id:'t'}}],memberships:[add('c','Todo',{id:'t'})]});
  // Without a loaded set every Model declares, as a collector always did.
  fresh().touch.moment({at});
+});
+
+// The add-only collector a Load handler declares through: `ctx.channel(name)`.
+const limits=JSON.parse(await readFile(new URL('../../../fixtures/protocol/load-enrollment-limits.json',import.meta.url),'utf8'));
+const scalar=name=>({kind:'scalar',name});
+const ticket={name:'Ticket',identity:['id'],fields:[{name:'id',type:scalar('uuid'),nullable:false}]};
+const freshLoad=(loaded)=>createLoadEffects([...models,ticket],[],loaded);
+
+test('a Load Channel handle adds only: no remove or touch exists on any runtime object',()=>{
+ const effects=freshLoad();
+ const channel=effects.channel('c');
+ assert.equal(Object.getPrototypeOf(channel),null);
+ assert.ok(Object.isFrozen(channel));
+ assert.deepEqual(Object.keys(channel),['todo','moment','pin','ticket','add']);
+ for(const key of ['todo','moment','pin','ticket']){
+  assert.equal(Object.getPrototypeOf(channel[key]),null);
+  assert.ok(Object.isFrozen(channel[key]),key);
+  assert.deepEqual(Object.keys(channel[key]),['add'],key);
+  assert.equal('remove' in channel[key],false,key);
+ }
+ assert.equal('remove' in channel,false);
+ assert.equal('touch' in channel,false);
+ assert.equal('touch' in effects,false,'the collector has no touch to hand out');
+ assert.equal('settlement' in effects,false,'nor a change settlement');
+ assert.ok(Object.isFrozen(effects));
+ // The facade cannot be widened after the fact.
+ assert.throws(()=>{channel.remove=()=>{};},TypeError);
+ assert.throws(()=>{channel.todo.remove=()=>{};},TypeError);
+});
+
+test('Load declarations snapshot typed identities at the call, in first-declaration order',()=>{
+ const effects=freshLoad();
+ const identity={id:'A',title:'not identity'};
+ const at=new Date('2026-01-01T00:00:00.000Z');
+ const pin={todo:'t',at:new Date('2026-02-01T00:00:00.000Z'),label:'x'};
+ const channel=effects.channel('project:1');
+ channel.todo.add(identity);
+ channel.moment.add({at});
+ channel.pin.add(pin);
+ channel.ticket.add({id:'123e4567-e89b-42d3-a456-426614174000'});
+ identity.id='B';at.setUTCFullYear(2030);pin.todo='other';pin.at.setUTCFullYear(2031);
+ assert.deepEqual(effects.memberships(),[
+  add('project:1','Todo',{id:'A'}),
+  add('project:1','Moment',{at:'2026-01-01T00:00:00.000Z'}),
+  add('project:1','Pin',{todo:'t',at:'2026-02-01T00:00:00.000Z'}),
+  add('project:1','Ticket',{id:'123e4567-e89b-42d3-a456-426614174000'}),
+ ]);
+ assert.equal(effects.failure(),undefined);
+ // Owned, frozen copies.
+ const listed=effects.memberships();
+ listed.push(add('forged','Todo',{id:'x'}));
+ assert.throws(()=>{listed[0].identity.id='forged';},TypeError);
+ assert.equal(effects.memberships().length,4);
+});
+
+test('a repeated Channel/record pair is one intent, however it is spelled; another Channel is another pair',()=>{
+ const effects=freshLoad();
+ const a=effects.channel('a');
+ a.todo.add({id:'1'});
+ a.add([Todo({id:'1'}),Todo({id:'1'})]);
+ effects.channel('a').todo.add({id:'1'});
+ effects.channel('b').todo.add({id:'1'});
+ // The engine canonicalizes a UUID to lower case and a date-time to UTC
+ // milliseconds; the collector deduplicates by the same canonical record.
+ a.ticket.add({id:'123E4567-E89B-42D3-A456-426614174000'});
+ a.ticket.add({id:'123e4567-e89b-42d3-a456-426614174000'});
+ a.moment.add({at:new Date('2026-01-01T00:00:00.000Z')});
+ a.moment.add({at:'2026-01-01T05:30:00.000999+05:30'});
+ a.moment.add({at:'2026-01-01T00:00:00z'});
+ a.add([Pin({todo:'t',at:new Date(0)}),Pin({todo:'t',at:'1970-01-01T00:00:00Z'})]);
+ assert.deepEqual(effects.memberships(),[
+  add('a','Todo',{id:'1'}),add('b','Todo',{id:'1'}),
+  add('a','Ticket',{id:'123E4567-E89B-42D3-A456-426614174000'}),
+  add('a','Moment',{at:'2026-01-01T00:00:00.000Z'}),
+  add('a','Pin',{todo:'t',at:'1970-01-01T00:00:00.000Z'}),
+ ]);
+});
+
+test('a mixed Load list takes explicit references and appends nothing when any element fails',()=>{
+ const effects=freshLoad();
+ const at=new Date('2026-01-01T00:00:00.000Z');
+ const channel=effects.channel('mixed');
+ channel.add([Todo({id:'A'}),Moment({at}),Pin({todo:'t',at}),{model:'Todo',identity:{id:'B',title:'extra'}}]);
+ channel.add([]);
+ assert.deepEqual(effects.memberships(),[
+  add('mixed','Todo',{id:'A'}),add('mixed','Moment',{at:'2026-01-01T00:00:00.000Z'}),
+  add('mixed','Pin',{todo:'t',at:'2026-01-01T00:00:00.000Z'}),add('mixed','Todo',{id:'B'}),
+ ]);
+ assert.equal(effects.failure(),undefined);
+ assert.throws(()=>channel.add([Todo({id:'C'}),{id:'D'}]),/record reference/);
+ assert.equal(effects.memberships().length,4,'the refused list appended nothing');
+});
+
+test('every refused Load declaration leaves the collector failed with its first error, even when caught',()=>{
+ const cases=[
+  ['blank Channel',e=>e.channel('  '),/Channel name/],
+  ['non-string Channel',e=>e.channel(7),/Channel name/],
+  // A lone surrogate is not Unicode text: the engine could not decode the answer.
+  ['lone surrogate Channel',e=>e.channel('a\ud800'),/Channel name/],
+  ['missing identity',e=>e.channel('c').todo.add({}),/Todo identity field id is missing/],
+  ['malformed identity',e=>e.channel('c').todo.add({id:1}),/Todo identity field id must be a string/],
+  ['bad UUID',e=>e.channel('c').ticket.add({id:'nope'}),/UUID/],
+  ['invalid Date',e=>e.channel('c').moment.add({at:new Date('nope')}),/Moment identity field at/],
+  ['not a list',e=>e.channel('c').add(Todo({id:'A'})),/array of record references/],
+  ['raw identity in a list',e=>e.channel('c').add([{id:'A'}]),/record reference/],
+  ['unknown Model',e=>e.channel('c').add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/],
+ ];
+ for(const [label,declare,pattern] of cases){
+  const effects=freshLoad();
+  effects.channel('ok').todo.add({id:'kept'});
+  let thrown;
+  try{declare(effects);}catch(error){thrown=error;}
+  assert.match(thrown?.message??'',pattern,label);
+  // Later valid declarations still record, but cannot clear the failure.
+  effects.channel('ok').todo.add({id:'later'});
+  const failure=effects.failure();
+  assert.equal(failure?.kind,'invalid',label);
+  assert.equal(failure.error,thrown,`${label}: the first refused declaration`);
+  try{effects.channel('').todo;}catch{}
+  assert.equal(effects.failure().error,thrown,`${label}: the first failure wins`);
+ }
+});
+
+test('a device-only Model is refused at every Load declaration naming it',()=>{
+ const effects=freshLoad(new Set(['Todo','Pin']));
+ const at=new Date(0);
+ const refused=caller=>({message:`${caller}: Model Moment has no Loader, so it is device-only and cannot be published`});
+ assert.throws(()=>effects.channel('c').moment.add({at}),refused('channel("c").moment.add'));
+ assert.throws(()=>effects.channel('c').add([Todo({id:'t'}),Moment({at})]),refused('channel("c").add'));
+ assert.equal(effects.failure().kind,'invalid');
+ effects.channel('c').todo.add({id:'t'});
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'t'})]);
+});
+
+test('closing refuses every later Load declaration, including through escaped handles',()=>{
+ const effects=freshLoad();
+ const channel=effects.channel('c');
+ const todo=channel.todo;
+ todo.add({id:'A'});
+ effects.close();
+ assert.throws(()=>todo.add({id:'B'}),/closed/);
+ assert.throws(()=>channel.add([Todo({id:'B'})]),/closed/);
+ assert.throws(()=>effects.channel('c'),/closed/);
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'A'})],'still readable after close');
+ effects.close();
+});
+
+test('the Load enrollment bounds are the shared fixture, and a pair measures as the engine encodes it',()=>{
+ assert.equal(LOAD_ENROLLMENT_PAIRS,limits.pairs);
+ assert.equal(LOAD_ENROLLMENT_BYTES,limits.bytes);
+ assert.ok(limits.intents.length>0);
+ for(const {name,intent,bytes,encoded} of limits.intents){
+  assert.equal(Buffer.byteLength(encoded,'utf8'),bytes,`${name}: the fixture agrees with itself`);
+  assert.equal(enrollmentBytes(intent),bytes,name);
+ }
+});
+
+const pairBytes=channel=>enrollmentBytes(add(channel,'Todo',{id:'t1'}));
+
+test('Load enrollment is bounded by distinct pairs after deduplication; the pair past the bound throws and stays failed',()=>{
+ const channels=Array.from({length:LOAD_ENROLLMENT_PAIRS},(_,n)=>`c${n}`);
+ const effects=freshLoad();
+ for(const name of [...channels,...channels])effects.channel(name).todo.add({id:'t1'});
+ assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'exactly the bound, each pair declared twice');
+ assert.equal(effects.failure(),undefined);
+ let thrown;
+ try{effects.channel('one-more').todo.add({id:'t1'});}catch(error){thrown=error;}
+ assert.match(thrown?.message??'',/more than 1000 Channel\/record pairs/);
+ assert.deepEqual(effects.failure(),{kind:'overflow',error:thrown});
+ assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'the crossing pair is not stored');
+ // A repeat of a counted pair is still no new pair.
+ effects.channel('c0').todo.add({id:'t1'});
+ assert.equal(effects.failure().kind,'overflow','the overflow is kept');
+});
+
+test('Load enrollment is bounded by encoded bytes after deduplication, one byte over fails',()=>{
+ const count=256,each=LOAD_ENROLLMENT_BYTES/count;
+ const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
+ assert.equal(channels.reduce((sum,c)=>sum+pairBytes(c),0),LOAD_ENROLLMENT_BYTES);
+ const effects=freshLoad();
+ for(const name of channels)effects.channel(name).todo.add({id:'t1'});
+ effects.channel(channels[0]).add([Todo({id:'t1'})]);
+ assert.equal(effects.failure(),undefined,'a repeated pair counts once');
+ assert.equal(effects.memberships().length,count);
+ const over=freshLoad();
+ for(const name of channels.slice(0,-1))over.channel(name).todo.add({id:'t1'});
+ assert.throws(()=>over.channel(channels.at(-1)+'x').todo.add({id:'t1'}),/more than 1048576 bytes/);
+ assert.equal(over.failure().kind,'overflow');
+});
+
+test('a mixed list that crosses the bound appends none of its pairs; overflow outranks an earlier invalid declaration',()=>{
+ const effects=freshLoad();
+ try{effects.channel('c').todo.add({});}catch{}
+ assert.equal(effects.failure().kind,'invalid');
+ for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)effects.channel('c').todo.add({id:`t${n}`});
+ assert.throws(()=>effects.channel('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'}),Todo({id:'new-2'})]),/more than 1000/);
+ assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS-1,'nothing from the crossing list');
+ assert.equal(effects.failure().kind,'overflow');
+ // Duplicates within a list count once: exactly one new pair fits.
+ const fits=freshLoad();
+ for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)fits.channel('c').todo.add({id:`t${n}`});
+ fits.channel('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'})]);
+ assert.equal(fits.memberships().length,LOAD_ENROLLMENT_PAIRS);
+ assert.equal(fits.failure(),undefined);
 });

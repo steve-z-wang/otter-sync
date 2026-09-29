@@ -5,8 +5,10 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   effectsFor,
+  loadEffectsFor,
   lowerFirst,
   type RuntimeChannel,
+  type RuntimeLoadChannel,
   type RuntimeTouch,
 } from "./effects.mts";
 import type {
@@ -19,6 +21,8 @@ export { WebSocket } from "ws";
 export type {
   RecordRef,
   RuntimeChannel,
+  RuntimeLoadChannel,
+  RuntimeLoadModelMembership,
   RuntimeModelMembership,
   RuntimeTouch,
 } from "./effects.mts";
@@ -347,16 +351,19 @@ export interface QueryContext<Tx> {
   callId: string;
 }
 /**
- * Trusted framework context of one Load page. Like a Query it carries no
- * `channel` or `touch`: a Load reads without business side effects, and the
- * framework cannot inspect arbitrary SQL on `tx`. `callId` is the page's
- * durable call ID and `loadId` its job.
+ * Trusted framework context of one Load page. A Load reads without business
+ * side effects, so it carries no `touch`, and the framework cannot inspect
+ * arbitrary SQL on `tx`. `channel(name)` only adds: it enrolls records this
+ * page returns into a Channel, which the engine settles with the page. Its
+ * handles close when the handler settles. `callId` is the page's durable
+ * call ID and `loadId` its job.
  */
 export interface LoadContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
   loadId: string;
+  channel(name: string): RuntimeLoadChannel;
 }
 /**
  * One page of a Load: `continuation` is `null` on the first page and the
@@ -775,6 +782,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     descriptor.schema?.enums,
     new Set(loadedModels),
   );
+  const createLoadEffects = loadEffectsFor(
+    schemaModels,
+    descriptor.schema?.enums,
+    new Set(loadedModels),
+  );
   // Every retained model read contract; a config without `models` retains each
   // model at the schema's own version, as the engine does.
   const retainedModels = new Map<string, number[]>();
@@ -1109,25 +1121,59 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             onError(error);
             return callbackJson({ error: error.message });
           };
+          // One fresh add-only collector per attempt: a retried transaction
+          // runs the handler again and never inherits these declarations.
+          // They close when the handler settles, before its answer is read,
+          // so neither an escaped handle nor a getter declares later.
+          const effects = createLoadEffects();
           // The handler's answer is judged inside its error boundary, like
           // the call itself: reading it can throw (a getter, a Proxy), and
           // whatever it answered is this page's saved outcome, never a host
           // fault. A continuation that is not portable JSON is refused
           // before `callbackJson` could coerce it; any other unencodable
-          // answer is a failure. A Load context has no declaration handles:
-          // its answer carries identities and a continuation, never changes
-          // or memberships.
+          // answer is a failure. Only `data` and `next` are read from it:
+          // the page's memberships are its declarations, never a returned
+          // property, and are attached only when there are some.
           try {
-            const page: unknown = await handler({
-              ctx: {
-                tx,
-                userId: req.owner,
-                callId: req.callId,
-                loadId: req.loadId,
-              },
-              args,
-              continuation: req.continuation,
-            });
+            let page: unknown;
+            let thrown: { error: unknown } | undefined;
+            try {
+              page = await handler({
+                ctx: {
+                  tx,
+                  userId: req.owner,
+                  callId: req.callId,
+                  loadId: req.loadId,
+                  channel: effects.channel,
+                },
+                args,
+                continuation: req.continuation,
+              });
+            } catch (error) {
+              if (isRetryableTransactionError(error)) throw error;
+              thrown = { error };
+            } finally {
+              effects.close();
+            }
+            // A refused declaration fails the page even when the handler
+            // caught it, so no page enrolls part of what it declared: an
+            // enrollment past its bound first, then any other refusal, then
+            // what the handler itself threw.
+            const failure = effects.failure();
+            if (failure?.kind === "overflow") {
+              onError(failure.error);
+              return callbackJson({ rejection: "load.page_too_large" });
+            }
+            if (failure) {
+              onError(failure.error);
+              return callbackJson({
+                error:
+                  failure.error instanceof Error
+                    ? failure.error.message
+                    : String(failure.error),
+              });
+            }
+            if (thrown) return callbackJson(refusal(thrown.error));
             if (
               page === null ||
               typeof page !== "object" ||
@@ -1142,9 +1188,14 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               );
               return callbackJson({ rejection: "load.invalid_continuation" });
             }
+            const memberships = effects.memberships();
             let answer: string;
             try {
-              answer = callbackJson({ data, next });
+              answer = callbackJson(
+                memberships.length
+                  ? { data, next, memberships }
+                  : { data, next },
+              );
             } catch (error) {
               return invalid(
                 error instanceof Error ? error.message : String(error),

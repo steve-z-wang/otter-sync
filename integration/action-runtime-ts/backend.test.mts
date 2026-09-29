@@ -616,7 +616,7 @@ test("Load handlers take decoded args and a read-only context and answer identit
       userId,
     })),
     requests.map(() => ({
-      keys: ["callId", "loadId", "tx", "userId"],
+      keys: ["callId", "channel", "loadId", "tx", "userId"],
       since: at,
       statuses: ["open", "closed"],
       loadId: "load-1",

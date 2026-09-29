@@ -367,6 +367,9 @@ test('a refused declaration fails the page with its message, even when the handl
  const invalid=[
   ['blank Channel',ctx=>ctx.channel(' '),/Channel name/],
   ['missing identity',ctx=>ctx.channel('c').task.add({}),/Task identity field id is missing/],
+  // Not a host fault: an identity the bridge could not send fails the page as the handler's.
+  ['lone surrogate identity',ctx=>ctx.channel('c').task.add({id:'t-\ud800'}),/Task identity field id must be Unicode text/],
+  ['lone surrogate identity in a list',ctx=>ctx.channel('c').add([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/Task identity field id must be Unicode text/],
   ['raw identity in a list',ctx=>ctx.channel('c').add([{id:'t-1'}]),/record reference/],
   ['unknown Model',ctx=>ctx.channel('c').add([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
  ];

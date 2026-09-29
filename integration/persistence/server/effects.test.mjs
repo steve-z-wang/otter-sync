@@ -340,12 +340,28 @@ test('a mixed Load list takes explicit references and appends nothing when any e
  assert.equal(effects.memberships().length,4,'the refused list appended nothing');
 });
 
+test('a Load identity with a lone surrogate is refused at the declaration; a mixed list appends none of its pairs',()=>{
+ const effects=freshLoad();
+ const channel=effects.channel('c');
+ // A well-formed pair of surrogates is Unicode text and declares as usual.
+ channel.todo.add({id:'emoji \ud83d\ude00'});
+ assert.throws(()=>channel.todo.add({id:'\ud800'}),{message:'channel("c").todo.add: Todo identity field id must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>channel.pin.add({todo:'t\udfff',at:new Date(0)}),{message:'channel("c").pin.add: Pin identity field todo must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B\ud800'}),Todo({id:'C'})]),{message:'channel("c").add: Todo identity field id must be Unicode text, without a lone surrogate'});
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'emoji \ud83d\ude00'})],'no refused pair, and nothing from the refused list');
+ assert.equal(effects.failure().kind,'invalid','the caught refusal leaves the collector failed');
+ assert.match(effects.failure().error.message,/todo\.add: Todo identity field id must be Unicode text/,'the first refusal wins');
+});
+
 test('every refused Load declaration leaves the collector failed with its first error, even when caught',()=>{
  const cases=[
   ['blank Channel',e=>e.channel('  '),/Channel name/],
   ['non-string Channel',e=>e.channel(7),/Channel name/],
   // A lone surrogate is not Unicode text: the engine could not decode the answer.
   ['lone surrogate Channel',e=>e.channel('a\ud800'),/Channel name/],
+  // Nor in a string identity component: the host could not send the answer.
+  ['lone surrogate identity',e=>e.channel('c').todo.add({id:'a\udc00'}),/Todo identity field id must be Unicode text/],
+  ['lone surrogate identity in a list',e=>e.channel('c').add([Todo({id:'A'}),Pin({todo:'\ud800b',at:new Date(0)})]),/Pin identity field todo must be Unicode text/],
   ['missing identity',e=>e.channel('c').todo.add({}),/Todo identity field id is missing/],
   ['malformed identity',e=>e.channel('c').todo.add({id:1}),/Todo identity field id must be a string/],
   ['bad UUID',e=>e.channel('c').ticket.add({id:'nope'}),/UUID/],

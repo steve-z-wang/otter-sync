@@ -376,6 +376,8 @@ test('a caught overflow or refused declaration fails the saved page with no enro
   const cases = [
     ['overflow', ({ ctx, rows }) => { try { for (let n = 0; n <= 1000; n++) ctx.channel(`fail-${n}`).todo.add({ id: rows[0].id }); } catch {} }, 'load.page_too_large'],
     ['invalid', ({ ctx, rows }) => { ctx.channel('fail-0').todo.add({ id: rows[0].id }); try { ctx.channel('fail-1').todo.add({}); } catch {} }, 'handler.failed'],
+    // A saved handler failure, not a retryable host fault: the bridge could not carry the identity.
+    ['lone surrogate identity', ({ ctx, rows }) => { ctx.channel('fail-0').todo.add({ id: rows[0].id }); try { ctx.channel('fail-1').todo.add({ id: `${rows[0].id}\ud800` }); } catch {} }, 'handler.failed'],
   ];
   for (const [label, body, code] of cases) {
     const reported = [];

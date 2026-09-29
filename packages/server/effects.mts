@@ -587,8 +587,17 @@ export function loadEffectsFor(
     const assertOpen = (caller: string) => {
       if (!open) throw closed(caller);
     };
-    /** Adds every new pair of one declaration, or none when they pass a bound. */
+    /**
+     * Adds every new pair of one declaration, or none when an identity string
+     * is not Unicode text or the pairs pass a bound.
+     */
     const enroll = (channel: string, declared: Declared[], caller: string) => {
+      for (const { entry, identity } of declared)
+        for (const [field, value] of Object.entries(identity))
+          if (typeof value === "string" && LONE_SURROGATE.test(value))
+            throw new Error(
+              `${caller}: ${entry.name} identity field ${field} must be Unicode text, without a lone surrogate`,
+            );
       const fresh = new Map<string, MembershipIntent>();
       let more = 0;
       for (const { entry, identity } of declared) {

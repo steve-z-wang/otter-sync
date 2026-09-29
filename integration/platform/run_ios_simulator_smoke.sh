@@ -3,7 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-app_dir="$script_dir/ios_smoke"
+work="$(mktemp -d "${TMPDIR:-/tmp}/axton-ios-smoke.XXXXXX")"
+app_dir="$work/ios_smoke"
 bundle_id="dev.localfirststate.axtonIosSmoke"
 device_name="Local First State Smoke $$"
 device_id=""
@@ -18,12 +19,34 @@ cleanup() {
     xcrun simctl shutdown "$device_id" >/dev/null 2>&1 || true
     xcrun simctl delete "$device_id" >/dev/null 2>&1 || true
   fi
+  rm -rf -- "$work"
 }
 trap cleanup EXIT
 
 source "$repo_root/scripts/env.sh"
-rustup target add aarch64-apple-ios-sim
-cargo build -p axton-dart --target aarch64-apple-ios-sim
+cd "$repo_root"
+
+# The app runs as a consumer would: a copy outside the repository depends on a
+# staged axton package whose build hook bundles the simulator libraries, named
+# and hashed as a release names them, from the app's local_artifacts directory.
+cp -R "$script_dir/ios_smoke" "$app_dir"
+rm -rf "$app_dir/build" "$app_dir/.dart_tool"
+version="$(sed -n 's/^version: \([^ ]*\).*/\1/p' "$repo_root/packages/dart/pubspec.yaml")"
+mkdir -p "$app_dir/build/axton-libraries" "$work/axton"
+node -e '
+  const table = require(process.argv[1]);
+  console.log(JSON.stringify({ host: [], mobile: table.mobile.filter((t) => t.platform === "ios-simulator") }));
+' "$repo_root/scripts/release/targets.json" >"$work/targets.json"
+for target in $(node -p 'require(process.argv[1]).mobile.map((t) => `${t.name}:${t.rust}`).join(" ")' "$work/targets.json"); do
+  name="${target%%:*}" triple="${target#*:}"
+  rustup target add "$triple"
+  IPHONEOS_DEPLOYMENT_TARGET=13.0 cargo build --locked -p axton-dart --target "$triple"
+  cp "$repo_root/target/$triple/debug/libaxton_dart.dylib" "$app_dir/build/axton-libraries/libaxton_dart-$version-$name.dylib"
+done
+git ls-files packages/dart | tar -cf - -T - | tar -xf - -C "$work/axton" --strip-components=2
+(cd "$repo_root/packages/dart" && dart run tool/write_native_manifest.dart \
+  --artifacts "$app_dir/build/axton-libraries" --package "$work/axton" --targets "$work/targets.json")
+printf 'dependency_overrides:\n  axton:\n    path: %s\n' "$work/axton" >"$app_dir/pubspec_overrides.yaml"
 
 runtime_id="$(xcrun simctl list runtimes available | awk '/iOS 18[.]/ { gsub(/[()]/, "", $NF); print $NF; exit }')"
 device_type="$(xcrun simctl list devicetypes | awk -F '[()]' '/iPhone 16/ { print $2; exit }')"
@@ -52,7 +75,7 @@ console_file="$data_container/tmp/axton-smoke-console.txt"
 wait_for_result() {
   local expected="$1"
   local attempt
-  for attempt in $(seq 1 60); do
+  for attempt in $(seq 1 180); do
     if [[ -f "$result_file" ]] && [[ "$(head -n 1 "$result_file")" == "$expected" ]]; then
       echo "$expected"
       return 0
@@ -85,7 +108,8 @@ finish_launch() {
 launch_app
 wait_for_result AXTON_SMOKE_PHASE1_OK
 finish_launch
-xcrun simctl terminate "$device_id" "$bundle_id"
+# Ending the console launch usually ends the app too.
+xcrun simctl terminate "$device_id" "$bundle_id" >/dev/null 2>&1 || true
 launch_app
 wait_for_result AXTON_SMOKE_RESTART_OK
 finish_launch

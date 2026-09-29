@@ -43,3 +43,7 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Resolved against a package staged by run_ios_simulator_smoke.sh
+pubspec.lock
+pubspec_overrides.yaml

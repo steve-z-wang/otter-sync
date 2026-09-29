@@ -47,7 +47,9 @@ node --test integration/release/*.test.mjs
 bash integration/release/verify-installed.sh
 ```
 
-The version check compares every manifest, internal pin and lockfile with the version in `.release-please-manifest.json`; the tests check it and the [target inventory](../../../scripts/release/targets.json). The [installed-package runner](../../../integration/release/verify-installed.sh) builds this host's release addon and compiler, packs the npm packages with [pack.sh](../../../scripts/release/pack.sh), installs them into a scratch project outside the repository and exercises them there, including a round trip against a temporary PostgreSQL cluster. It installs third-party packages from the npm registry.
+The version check compares every manifest, internal pin and lockfile with the version in `.release-please-manifest.json`; the tests check it, the [target inventory](../../../scripts/release/targets.json), and the [release manifest](../../../scripts/release/manifest.mjs) with its retry rule against scripted registry answers. The [installed-package runner](../../../integration/release/verify-installed.sh) builds this host's release addon and compiler, packs the npm packages with [pack.sh](../../../scripts/release/pack.sh), installs them into a scratch project outside the repository and exercises them there, including a round trip against a temporary PostgreSQL cluster. It installs third-party packages from the npm registry. With `--registry V` it installs version V from npm instead.
+
+[verify-dart.sh](../../../integration/release/verify-dart.sh) does the same for the Dart package: given a directory with a staged `axton-dart-<V>.tar.gz` and the release's libraries, or `--registry V` for pub.dev and the GitHub release, it runs a Dart application outside the repository whose build hook bundles this host's library, and opens, writes and reopens a local database without `libraryPath`. The [release workflow](../../../.github/workflows/release-publish.yml) runs both runners before and after publishing ([Releasing](../releasing.md)).
 
 ## Full host gate
 

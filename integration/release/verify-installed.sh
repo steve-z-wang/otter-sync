@@ -5,8 +5,9 @@
 # that is written and reopened, and a round trip against a disposable
 # PostgreSQL backend. Nothing in the project imports the repository.
 #
-#   bash integration/release/verify-installed.sh            pack this host's packages first
-#   bash integration/release/verify-installed.sh PACK_DIR   use the *.tgz archives in PACK_DIR
+#   bash integration/release/verify-installed.sh               pack this host's packages first
+#   bash integration/release/verify-installed.sh PACK_DIR      use the *.tgz archives in PACK_DIR
+#   bash integration/release/verify-installed.sh --registry V  install version V from the npm registry
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$root/scripts/env.sh"
@@ -19,7 +20,11 @@ trap cleanup EXIT
 fail() { echo "verify-installed: $*" >&2; exit 1; }
 
 packs="${1:-}"
-if [[ -z "$packs" ]]; then
+archives=()
+if [[ "$packs" == --registry ]]; then
+  [[ -n "${2:-}" ]] || fail "--registry needs a version"
+  for package in native server client postgres cli; do archives+=("@axtonjs/$package@$2"); done
+elif [[ -z "$packs" ]]; then
   bash "$root/scripts/build.sh"
   host="$(node -p 'require(process.argv[1]).host.find((t) => t.rust === process.argv[2]).name' "$root/scripts/release/targets.json" "$(rustc -vV | sed -n 's/^host: //p')")"
   (cd "$root" && cargo build --release --locked -p axton-compiler)
@@ -30,18 +35,19 @@ if [[ -z "$packs" ]]; then
   packs="$work/packs"
   bash "$root/scripts/release/pack.sh" "$packs" "$work/artifacts" "$host"
 fi
-packs="$(cd "$packs" && pwd)"
-# Every archive except the platform packages of other hosts, which npm refuses.
-host="$(node -p 'process.platform === "linux" ? `linux-${process.arch}-${process.report.getReport().header.glibcVersionRuntime ? "gnu" : "musl"}` : `${process.platform}-${process.arch}`')"
-archives=()
-for archive in "$packs"/*.tgz; do
-  case "$(basename "$archive")" in
-    axtonjs-native-"$host"-* | axtonjs-cli-"$host"-*) ;;
-    axtonjs-native-darwin-* | axtonjs-native-linux-* | axtonjs-cli-darwin-* | axtonjs-cli-linux-*) continue ;;
-  esac
-  [[ -f "$archive" ]] && archives+=("$archive")
-done
-[[ ${#archives[@]} -gt 0 ]] || fail "no .tgz archives in $packs"
+if [[ ${#archives[@]} -eq 0 ]]; then
+  packs="$(cd "$packs" && pwd)"
+  # Every archive except the platform packages of other hosts, which npm refuses.
+  host="$(node -p 'process.platform === "linux" ? `linux-${process.arch}-${process.report.getReport().header.glibcVersionRuntime ? "gnu" : "musl"}` : `${process.platform}-${process.arch}`')"
+  for archive in "$packs"/*.tgz; do
+    case "$(basename "$archive")" in
+      axtonjs-native-"$host"-* | axtonjs-cli-"$host"-*) ;;
+      axtonjs-native-darwin-* | axtonjs-native-linux-* | axtonjs-cli-darwin-* | axtonjs-cli-linux-*) continue ;;
+    esac
+    [[ -f "$archive" ]] && archives+=("$archive")
+  done
+  [[ ${#archives[@]} -gt 0 ]] || fail "no .tgz archives in $packs"
+fi
 
 project="$work/project"
 cp -R "$root/integration/release/installed" "$project"
@@ -83,4 +89,4 @@ initdb -D "$work/pg/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$work/pg/data" -l "$work/pg/log" -o "-p $port -h 127.0.0.1 -k $work/pg" start >/dev/null
 DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres" node --test installed.test.mts
 node --test loading.test.mjs
-echo "verify-installed: ${#archives[@]} archives verified from $packs"
+echo "verify-installed: verified ${archives[*]}"

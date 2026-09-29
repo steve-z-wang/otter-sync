@@ -311,3 +311,71 @@ fn a_subscription_ledger_without_bootstrap_columns_gains_them_in_place() {
             .any(|(name, _, _)| name == "bootstrap_state")
     );
 }
+
+/// The local layout is a public, stable contract
+/// ([#184](https://github.com/zanminwang/axton/issues/184)): a Model's table
+/// is named exactly the Model and its columns exactly its fields, in
+/// declaration order; every other table the engine owns - the framework
+/// tables and each Model's before-image table - is named `axton_*`. The
+/// engine creates no view or trigger.
+#[test]
+fn model_tables_carry_model_and_field_names_and_every_engine_table_is_prefixed() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = |name: &str, nullable: bool| json!({"name":name,"nullable":nullable,"type":{"kind":"scalar","name":"string"}});
+    let schema = Schema::from_value(json!({"enums":[],"models":[
+        {"name":"Space","identity":["id"],"fields":[text("id", false), text("title", false)]},
+        {"name":"MomentPlacement","identity":["id"],"fields":[
+            text("id", false), text("spaceId", false),
+            {"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}},
+            text("note", true)],
+         "unique":[["spaceId","position"]],
+         "relations":[{"name":"space","target":"Space","fields":["spaceId"],"targetFields":["id"],"onDelete":"delete"}]}
+    ]}))
+    .unwrap();
+    let path = dir.path().join("db");
+    drop(axton_client::Client::open(SqliteStore::open(&path).unwrap(), schema).unwrap());
+    let mut s = SqliteStore::open(&path).unwrap();
+    let names = |s: &mut SqliteStore, kind: &str| -> Vec<String> {
+        s.query_committed(
+            "SELECT name FROM sqlite_schema WHERE type = ? AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+            &[json!(kind)],
+        )
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|r| r[0].as_str().unwrap().to_string())
+        .collect()
+    };
+    let tables = names(&mut s, "table");
+    let models = ["MomentPlacement", "Space"];
+    for model in models {
+        assert!(tables.iter().any(|t| t == model), "{tables:?}");
+    }
+    let engine: Vec<&String> = tables
+        .iter()
+        .filter(|t| !models.contains(&t.as_str()))
+        .collect();
+    assert!(
+        engine.iter().all(|t| t.starts_with("axton_")),
+        "an engine table escapes the prefix: {engine:?}"
+    );
+    for table in FRAMEWORK_TABLES
+        .iter()
+        .map(|t| t.to_string())
+        .chain(models.iter().map(|m| format!("axton_before_{m}")))
+    {
+        assert!(engine.contains(&&table), "{table} in {engine:?}");
+    }
+    let fields = |s: &mut SqliteStore, table: &str| -> Vec<String> {
+        columns(s, table)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect()
+    };
+    assert_eq!(fields(&mut s, "Space"), ["id", "title"]);
+    assert_eq!(
+        fields(&mut s, "MomentPlacement"),
+        ["id", "spaceId", "position", "note"]
+    );
+    assert!(names(&mut s, "view").is_empty() && names(&mut s, "trigger").is_empty());
+}

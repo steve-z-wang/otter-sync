@@ -94,6 +94,84 @@ fn readonly_sql_sees_optimistic_rows_and_refuses_write_statements() {
     c.rollback_session().unwrap();
 }
 
+/// The tables a watched statement reads are SQLite's answer, never the
+/// application's: a join names each Model table once, a `count(*)` or a
+/// differently cased name resolves to the stored table, and a CTE is not a
+/// table. Only one read-only `SELECT` (or `WITH … SELECT`) that reads no
+/// engine table is accepted, and preparing it changes nothing about later
+/// reads and writes ([#184](https://github.com/zanminwang/axton/issues/184)).
+#[test]
+fn sql_tables_are_the_model_tables_a_select_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Client::open(
+        SqliteStore::open(dir.path().join("db")).unwrap(),
+        family_schema(),
+    )
+    .unwrap();
+    let tables = |c: &mut Client<SqliteStore>, sql: &str| {
+        c.sql_tables(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        tables(
+            &mut c,
+            "SELECT b.title, c.text FROM Book b JOIN Comment c ON c.bookId = b.id"
+        ),
+        ["Book", "Comment"]
+    );
+    assert_eq!(tables(&mut c, "SELECT count(*) AS n FROM book"), ["Book"]);
+    assert_eq!(
+        tables(
+            &mut c,
+            "WITH titled AS (SELECT id FROM \"Book\") SELECT count(*) AS n FROM titled"
+        ),
+        ["Book"]
+    );
+    assert_eq!(
+        tables(
+            &mut c,
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) \
+             SELECT i, (SELECT count(*) FROM Comment) AS c FROM n"
+        ),
+        ["Comment"]
+    );
+    assert_eq!(tables(&mut c, "SELECT 1 AS one"), Vec::<String>::new());
+    for refused in [
+        "INSERT INTO Book (id, title) VALUES ('b', 't')",
+        "UPDATE Book SET title = 'x'",
+        "DELETE FROM Book RETURNING id",
+        "CREATE TABLE Other (id TEXT)",
+        "PRAGMA table_info(Book)",
+        "EXPLAIN SELECT id FROM Book",
+        "EXPLAIN QUERY PLAN SELECT id FROM Book",
+        "SELECT 1 AS one; SELECT 2 AS two",
+        "SELECT model FROM axton_record",
+        "SELECT count(*) AS n FROM AXTON_BEFORE_Book",
+        "SELECT id FROM Book WHERE id IN (SELECT identity FROM axton_record)",
+        "SELECT id FROM Missing",
+    ] {
+        assert!(c.sql_tables(refused).is_err(), "{refused} is refused");
+    }
+    // The authorizer lived for one prepare only.
+    c.transaction(|tx| {
+        tx.direct(create("Book", "b", json!({"title":"Title"})))?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        c.read_sql("SELECT count(*) AS n FROM axton_record", &[])
+            .unwrap(),
+        vec![json!({"n":0})],
+        "readSql is unchanged"
+    );
+    assert_eq!(
+        c.read_sql("SELECT title FROM Book", &[]).unwrap(),
+        vec![json!({"title":"Title"})]
+    );
+}
+
 #[test]
 fn transport_pulls_only_subscribed_channels_and_the_receipt_completes_the_push() {
     let dir = tempfile::tempdir().unwrap();

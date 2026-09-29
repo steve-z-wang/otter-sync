@@ -699,7 +699,31 @@ class Client implements WritePort, MutatePort {
   Stream<List<Map<String, dynamic>>> watch(
     String model, {
     Map<String, dynamic> where = const {},
-  }) => Stream<List<Map<String, dynamic>>>.multi((sink) {
+  }) => _observeRows({
+    'kind': 'watch',
+    'model': model,
+    'spec': {'filter': where},
+  });
+
+  /// The rows of read-only [sql] over several Models, with bound
+  /// [parameters] ([#184](https://github.com/zanminwang/axton/issues/184)):
+  /// the committed result when the stream is listened to, then every
+  /// different result after a commit that writes a table the statement
+  /// reads. SQLite names those tables; nothing is listed here. Only one
+  /// read-only `SELECT` (or `WITH … SELECT`) over Model tables is accepted:
+  /// a write or an engine table (`axton_*`) ends the stream with its error,
+  /// like any first failure. Errors, cancelling and closing are [watch]'s.
+  Stream<List<Map<String, dynamic>>> watchSql(
+    String sql, {
+    List<dynamic> parameters = const [],
+  }) =>
+      _observeRows({'kind': 'watchSql', 'sql': sql, 'parameters': parameters});
+
+  /// Register a row observer when listened to and deliver what the runtime
+  /// publishes for it.
+  Stream<List<Map<String, dynamic>>> _observeRows(
+    Map<String, dynamic> command,
+  ) => Stream<List<Map<String, dynamic>>>.multi((sink) {
     // The watch task is submitted when the stream is listened to.
     if (_inTransaction) {
       sink
@@ -721,11 +745,7 @@ class Client implements WritePort, MutatePort {
 
     _bridge
         .task(
-          {
-            'kind': 'watch',
-            'model': model,
-            'spec': {'filter': where},
-          },
+          command,
           onValue: (value) {
             final id = (value as Map)['observerId'] as String;
             // Cancelled before the runtime named the observer.

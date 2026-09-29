@@ -5042,3 +5042,412 @@ fn a_local_callback_keeps_deliveries_waiting_until_its_transaction_commits() {
         assert_eq!(h.text("m4"), Some(json!("diff")));
     }
 }
+
+// --- Watched SQL (#184) ------------------------------------------------------
+
+/// The Entry schema with three more Models: `Media` and `Person` belong to
+/// an Entry by `entryId`, and `Note` stands alone.
+fn journal_schema() -> Value {
+    let mut schema = schema_value();
+    let text = |name: &str, nullable: bool| json!({"name":name,"nullable":nullable,"type":{"kind":"scalar","name":"string"}});
+    let models = schema["models"].as_array_mut().unwrap();
+    models.push(json!({"name":"Media","identity":["id"],"fields":[
+        text("id", false), text("entryId", false), text("url", false), text("caption", true)]}));
+    models.push(json!({"name":"Person","identity":["id"],"fields":[
+        text("id", false), text("entryId", false), text("name", false)]}));
+    models.push(
+        json!({"name":"Note","identity":["id"],"fields":[text("id", false), text("body", false)]}),
+    );
+    schema
+}
+/// A Journal page: each Entry with its Media and its Person.
+const JOURNAL: &str = "SELECT e.id AS entry, e.text AS text, m.url AS media, p.name AS person \
+    FROM Entry e JOIN Media m ON m.entryId = e.id JOIN Person p ON p.entryId = e.id ORDER BY e.id";
+/// Every re-run of this statement publishes: its `random()` column differs.
+const PROBE: &str = "SELECT count(*) AS n, random() AS r FROM Entry";
+fn put(model: &str, id: &str, values: Value) -> Value {
+    json!({"kind":"direct","operation":{"model":model,"op":"create","identity":{"id":id},"values":values}})
+}
+fn change(model: &str, id: &str, values: Value) -> Value {
+    json!({"kind":"direct","operation":{"model":model,"op":"update","identity":{"id":id},"values":values}})
+}
+fn watch_sql(sql: &str, parameters: Value) -> Value {
+    json!({"kind":"watchSql","sql":sql,"parameters":parameters})
+}
+/// The rows of every snapshot `observer` published, in order.
+fn rows(events: &[Value], observer: &Value) -> Vec<Value> {
+    snapshots(events, observer)
+        .into_iter()
+        .map(|snapshot| snapshot["rows"].clone())
+        .collect()
+}
+fn journal(entry: &str, text: &str, media: &str, person: &str) -> Value {
+    json!({"entry":entry,"text":text,"media":media,"person":person})
+}
+impl Host {
+    /// Register `sql` as request `id`: its observer and the events.
+    fn watch_sql(&mut self, id: &str, sql: &str, parameters: Value) -> (Value, Vec<Value>) {
+        self.task(id, watch_sql(sql, parameters));
+        let events = self.run();
+        let observer = self.completion(&events, id)["value"]["observerId"].clone();
+        assert!(observer.is_string(), "{events:?}");
+        assert!(
+            position(&events, |e| e["requestId"] == id)
+                < position(&events, |e| e["observerId"] == observer),
+            "the first rows follow the registration"
+        );
+        (observer, events)
+    }
+    /// Run `command` to quiescence: the events.
+    fn commit(&mut self, id: &str, command: Value) -> Vec<Value> {
+        self.task(id, command);
+        let events = self.run();
+        assert_eq!(self.completion(&events, id)["ok"], true, "{events:?}");
+        events
+    }
+}
+
+/// A join over three Models re-emits after a commit to each of them. A
+/// commit that writes none of its tables does not re-run it, and one that
+/// leaves its answer unchanged emits nothing.
+#[test]
+fn a_join_over_three_models_re_emits_after_a_commit_to_each_and_nothing_else() {
+    let mut h = host_with(journal_schema());
+    h.commit("entry", put("Entry", "e", json!({"text":"first"})));
+    h.commit(
+        "media",
+        put("Media", "m", json!({"entryId":"e","url":"a.jpg"})),
+    );
+    h.commit(
+        "person",
+        put("Person", "p", json!({"entryId":"e","name":"Ann"})),
+    );
+    let (page, events) = h.watch_sql("journal", JOURNAL, json!([]));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "first", "a.jpg", "Ann")])]
+    );
+    let (probe, events) = h.watch_sql("probe", PROBE, json!([]));
+    assert_eq!(rows(&events, &probe).len(), 1);
+
+    // A commit to each joined Model re-emits the join.
+    let events = h.commit("text", change("Entry", "e", json!({"text":"second"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "a.jpg", "Ann")])]
+    );
+    assert_eq!(rows(&events, &probe).len(), 1, "Entry is the probe's table");
+    let events = h.commit("url", change("Media", "m", json!({"url":"b.jpg"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "b.jpg", "Ann")])]
+    );
+    assert!(
+        rows(&events, &probe).is_empty(),
+        "Media is not read by the probe"
+    );
+    let events = h.commit("name", change("Person", "p", json!({"name":"Bea"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "b.jpg", "Bea")])]
+    );
+    assert!(rows(&events, &probe).is_empty());
+
+    // An unrelated Model, a Scope registration and a queued call write no
+    // table either statement reads: neither re-runs.
+    let generation = h.client().generation();
+    let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
+    let events = [
+        events,
+        h.commit("scope", json!({"kind":"scopeSubscribe","scope":"book"})),
+        h.commit(
+            "queued",
+            json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+        ),
+    ]
+    .concat();
+    assert!(h.client().generation() >= generation + 3);
+    assert!(rows(&events, &page).is_empty() && rows(&events, &probe).is_empty());
+    // A commit to a joined table that leaves the answer unchanged re-runs the
+    // join and publishes nothing.
+    let events = h.commit(
+        "caption",
+        change("Media", "m", json!({"caption":"unselected"})),
+    );
+    assert!(rows(&events, &page).is_empty(), "{events:?}");
+}
+
+/// Settlement, optimistic apply, rejection rollback, replay under a pending
+/// call, Channel delivery and Fetch each commit a table the statement reads,
+/// and each re-emits it.
+#[test]
+fn every_commit_path_re_emits_a_watched_statement() {
+    let mut h = host_with(journal_schema());
+    h.connect(false);
+    let socket = h.streaming(0);
+    let client_id = h.client().client_id().to_string();
+    h.commit("seed", put("Entry", "e", json!({"text":"seed"})));
+    let (entries, events) = h.watch_sql(
+        "entries",
+        "SELECT id, text, note FROM Entry WHERE id >= ? ORDER BY id",
+        json!([""]),
+    );
+    let row = |id: &str, text: &str, note: Option<&str>| json!({"id":id,"text":text,"note":note});
+    assert_eq!(rows(&events, &entries), [json!([row("e", "seed", None)])]);
+    let rename = |text: &str| json!({"kind":"submitAction","name":"Rename","version":1,"args":{"entry":{"id":"e","text":text}}});
+    // A receipt answering every call of `body`: the rejected ordinal fails,
+    // the others succeed; `records` travel with it.
+    let answer = |body: &str, rejected: bool, records: Value| {
+        let push: Value = serde_json::from_str(body).unwrap();
+        let mutations = push["mutations"].as_array().unwrap();
+        let completions: Vec<Value> = mutations
+            .iter()
+            .map(|m| {
+                let outcome = if rejected {
+                    json!({"status":"failed","code":"refused","execution":"rejected"})
+                } else {
+                    json!({"status":"succeeded","result":{"text":"server"}})
+                };
+                json!({"callId":m["callId"],"outcome":outcome})
+            })
+            .collect();
+        let rejections: Vec<Value> = if rejected {
+            mutations
+                .iter()
+                .map(|m| json!({"ordinal":m["ordinal"],"code":"refused"}))
+                .collect()
+        } else {
+            vec![]
+        };
+        json!({"clientId":client_id,"batchSequence":push["batchSequence"],"rejections":rejections,
+            "completions":completions,"records":records})
+        .to_string()
+    };
+
+    // Optimistic apply, then settlement with the server's authority.
+    let events = h.commit("mine", rename("mine"));
+    assert_eq!(rows(&events, &entries), [json!([row("e", "mine", None)])]);
+    let (push, body) = h.http("push");
+    h.ok(
+        &push,
+        &answer(
+            &body,
+            false,
+            json!([{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]),
+        ),
+    );
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([row("e", "server", None)])],
+        "settlement"
+    );
+
+    // A rejected call rolls its optimism back.
+    let events = h.commit("doomed", rename("doomed"));
+    assert_eq!(rows(&events, &entries), [json!([row("e", "doomed", None)])]);
+    let (push, body) = h.http("push");
+    h.ok(&push, &answer(&body, true, json!([])));
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([row("e", "server", None)])],
+        "rejection rollback"
+    );
+
+    // Newer authority under a pending call replays the call over it.
+    let events = h.commit("pending", rename("pending"));
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([row("e", "pending", None)])]
+    );
+    h.frame(
+        &socket,
+        &json!({"cursors":{"book":{"from":0,"to":2,"head":2}},"changes":[
+            {"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":"channel","note":"n"}}]})
+        .to_string(),
+    );
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([row("e", "pending", Some("n"))])],
+        "replay"
+    );
+
+    // Channel delivery of a record nothing pends on.
+    h.frame(&socket, &page(2, 3, "f", "delivered"));
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([
+            row("e", "pending", Some("n")),
+            row("f", "delivered", None)
+        ])],
+        "Channel delivery"
+    );
+
+    // A Fetch stores the Loader's record.
+    h.task("fetch", fetch("g"));
+    h.run();
+    let (http, body) = h.http("fetch");
+    h.ok(&http, &fetched(&body, Some("fetched"), 4));
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([
+            row("e", "pending", Some("n")),
+            row("f", "delivered", None),
+            row("g", "fetched", None)
+        ])],
+        "Fetch"
+    );
+}
+
+/// A write statement, an engine table and a statement SQLite cannot prepare
+/// are refused and register nothing. A watched statement then lives like a
+/// `watch`: bound parameters, a failed re-run reported while the watch stays,
+/// a callback transaction's writes unseen until they commit, `unwatch`, a
+/// rebuild that re-runs it and a close that ends it.
+#[test]
+fn a_watched_statement_refuses_writes_and_engine_tables_and_lives_like_a_watch() {
+    let mut h = host();
+    for (id, sql) in [
+        ("write", "DELETE FROM Entry RETURNING id"),
+        ("pragma", "PRAGMA table_info(Entry)"),
+        ("engine", "SELECT count(*) AS n FROM axton_mutation"),
+        (
+            "before",
+            "SELECT e.id FROM Entry e JOIN axton_before_Entry b ON b.id = e.id",
+        ),
+        ("missing", "SELECT id FROM Nope"),
+    ] {
+        h.task(id, watch_sql(sql, json!([])));
+        let events = h.run();
+        assert_eq!(h.completion(&events, id)["ok"], false, "{sql}");
+        assert!(
+            !events.iter().any(|e| e["type"] == "observerChanged"),
+            "{events:?}"
+        );
+    }
+
+    h.commit("seed", create("e", "first"));
+    let (one, events) = h.watch_sql("one", "SELECT text FROM Entry WHERE id = ?", json!(["e"]));
+    assert_eq!(rows(&events, &one), [json!([{"text":"first"}])]);
+    // Fails to run while exactly two Entries exist.
+    let (fragile, events) = h.watch_sql(
+        "fragile",
+        "SELECT CASE WHEN count(*) = 2 THEN abs(-9223372036854775807 - 1) ELSE count(*) END AS n FROM Entry",
+        json!([]),
+    );
+    assert_eq!(rows(&events, &fragile), [json!([{"n":1}])]);
+    let events = h.commit("second", create("f", "second"));
+    assert_eq!(errors(&events).len(), 1, "{events:?}");
+    assert!(rows(&events, &fragile).is_empty() && rows(&events, &one).is_empty());
+    let events = h.commit("third", create("g", "third"));
+    assert_eq!(
+        rows(&events, &fragile),
+        [json!([{"n":3}])],
+        "the watch stayed"
+    );
+
+    // A callback's write is not visible until it commits.
+    h.task("tx", json!({"kind":"transaction"}));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|e| e["type"] == "effect" && e["operation"]["kind"] == "callback")
+        .unwrap()
+        .clone();
+    let transaction = callback["operation"]["transactionId"].clone();
+    h.submit(json!({"type":"transactionCommand","requestId":"write","transactionId":transaction,"command":{"kind":"direct","operation":{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"text":"inside"}}}}));
+    let events = h.run();
+    assert!(events.contains(&done("write", Value::Null)));
+    assert!(
+        !events.iter().any(|e| e["type"] == "observerChanged"),
+        "{events:?}"
+    );
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
+    let events = h.run();
+    assert!(
+        position(&events, |e| *e == done("tx", Value::Null))
+            < position(&events, |e| e["observerId"] == one)
+    );
+    assert_eq!(rows(&events, &one), [json!([{"text":"inside"}])]);
+
+    // unwatch: nothing more for that observer; the other goes on.
+    h.task("stop", json!({"kind":"unwatch","observerId":one}));
+    let events = [h.run(), h.commit("fourth", create("h", "fourth"))].concat();
+    assert!(events.contains(&done("stop", Value::Null)));
+    assert!(rows(&events, &one).is_empty());
+    assert_eq!(rows(&events, &fragile), [json!([{"n":4}])]);
+
+    // Close ends it with its last rows.
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    assert_eq!(
+        snapshots(&events, &fragile),
+        [json!({"kind":"watch","rows":[{"n":4}],"closed":true})]
+    );
+    assert!(snapshots(&events, &one).is_empty());
+}
+
+/// A rebuild keeps a watched statement and re-runs it over the new replica.
+#[test]
+fn a_rebuild_keeps_a_watched_statement_and_re_runs_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Host::of(pending_rebuild(dir.path()), Some(dir));
+    let (entries, events) = h.watch_sql("entries", "SELECT id FROM Entry", json!([]));
+    assert_eq!(rows(&events, &entries), [json!([{"id":"e"}])]);
+    h.task("rebuild", json!({"kind":"rebuild","discardPending":true}));
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &entries),
+        [json!([])],
+        "the unsent row stayed in the old file"
+    );
+    let events = h.commit(
+        "seed",
+        put("Entry", "f", json!({"text":"fresh","due":"today"})),
+    );
+    assert_eq!(rows(&events, &entries), [json!([{"id":"f"}])]);
+}
+
+/// A watched statement's engine watcher lives exactly as long as the watch:
+/// `unwatch` and close remove it, and a statement that reads no table
+/// registers none, so mounting and unmounting a view leaves nothing behind.
+#[test]
+fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registers_none() {
+    let mut h = host_with(journal_schema());
+    let before = h.client().watcher_count();
+    let (none, events) = h.watch_sql("constant", "SELECT 1 AS one", json!([]));
+    assert_eq!(rows(&events, &none), [json!([{"one":1}])]);
+    let (schema, _) = h.watch_sql(
+        "schema",
+        "SELECT count(*) AS n FROM sqlite_master",
+        json!([]),
+    );
+    assert_eq!(
+        h.client().watcher_count(),
+        before,
+        "no table a commit writes, no watcher"
+    );
+    // Mount and unmount a view over rarely written data many times.
+    for round in 0..5 {
+        let (notes, _) = h.watch_sql(&format!("notes{round}"), "SELECT id FROM Note", json!([]));
+        assert_eq!(h.client().watcher_count(), before + 1);
+        h.commit(
+            &format!("stop{round}"),
+            json!({"kind":"unwatch","observerId":notes}),
+        );
+        assert_eq!(h.client().watcher_count(), before, "round {round}");
+    }
+    let (kept, _) = h.watch_sql("kept", JOURNAL, json!([]));
+    assert_eq!(h.client().watcher_count(), before + 1);
+    let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
+    assert!(rows(&events, &none).is_empty() && rows(&events, &schema).is_empty());
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    assert_eq!(snapshots(&events, &kept)[0]["closed"], true);
+    assert_eq!(snapshots(&events, &none)[0]["closed"], true);
+    assert_eq!(h.client().watcher_count(), before, "close removes it");
+}

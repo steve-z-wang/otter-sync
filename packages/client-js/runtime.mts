@@ -969,6 +969,40 @@ export function createClient<
       listener: (rows: RecordValue[]) => void,
       onError: (error: unknown) => void = () => {},
     ) {
+      return this.#observeRows(
+        { kind: "watch", model, spec: { filter: where } },
+        listener,
+        onError,
+      );
+    }
+    /**
+     * Observe read-only SQL over several Models ([#184](https://github.com/zanminwang/axton/issues/184)).
+     * The runtime asks SQLite which tables the statement reads, runs it on
+     * the committed state and re-runs it only after a commit that writes one
+     * of them, publishing a result only when it differs from the last one;
+     * `listener` receives the current rows first. Only one read-only
+     * `SELECT` (or `WITH … SELECT`) over Model tables is accepted: a write
+     * or an engine table (`axton_*`) is refused through `onError`, like any
+     * first failure. Errors and stopping are `watch`'s.
+     */
+    watchSql(
+      sql: string,
+      parameters: unknown[] = [],
+      listener: (rows: RecordValue[]) => void,
+      onError: (error: unknown) => void = () => {},
+    ) {
+      return this.#observeRows(
+        { kind: "watchSql", sql, parameters },
+        listener,
+        onError,
+      );
+    }
+    /** Register a row observer and deliver what the runtime publishes for it. */
+    #observeRows(
+      command: RecordValue,
+      listener: (rows: RecordValue[]) => void,
+      onError: (error: unknown) => void,
+    ) {
       const fail = (error: unknown) => {
         try {
           onError(error);
@@ -978,31 +1012,28 @@ export function createClient<
       };
       let stopped = false;
       let unwatch: (() => void) | undefined;
-      this.#task(
-        { kind: "watch", model, spec: { filter: where } },
-        {
-          // Routed while the completion is dispatched: the first rows are
-          // published behind it in the same batch.
-          settled: ({ observerId }: { observerId: string }) => {
-            const detach = this.#bridge.observe(observerId, (snapshot) => {
-              // A closed watch's last rows are the ones already delivered.
-              if (stopped || snapshot.closed) return;
-              try {
-                listener(snapshot.rows);
-              } catch (error) {
-                fail(error);
-              }
-            });
-            // The route stays until the runtime confirms nothing follows.
-            unwatch = () =>
-              void this.#bridge
-                .task({ kind: "unwatch", observerId })
-                .catch(() => {})
-                .finally(detach);
-            if (stopped) unwatch();
-          },
+      this.#task(command, {
+        // Routed while the completion is dispatched: the first rows are
+        // published behind it in the same batch.
+        settled: ({ observerId }: { observerId: string }) => {
+          const detach = this.#bridge.observe(observerId, (snapshot) => {
+            // A closed watch's last rows are the ones already delivered.
+            if (stopped || snapshot.closed) return;
+            try {
+              listener(snapshot.rows);
+            } catch (error) {
+              fail(error);
+            }
+          });
+          // The route stays until the runtime confirms nothing follows.
+          unwatch = () =>
+            void this.#bridge
+              .task({ kind: "unwatch", observerId })
+              .catch(() => {})
+              .finally(detach);
+          if (stopped) unwatch();
         },
-      ).catch((error) => {
+      }).catch((error) => {
         // The first query failed: the runtime registered nothing.
         if (!stopped) fail(error);
       });

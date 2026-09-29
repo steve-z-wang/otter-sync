@@ -1028,7 +1028,7 @@ void main() {
             'state': {'scope': 'book', 'subscriptionId': 1},
             'observerId': '9',
           },
-          'watch' => {'observerId': '3'},
+          'watch' || 'watchSql' => {'observerId': '3'},
           'savepoint' => {'scope': 'sp1'},
           _ => null,
         }),
@@ -1170,6 +1170,15 @@ void main() {
       );
       await pumpEventQueue();
       await step('133', () async => (await rows).cancel());
+      final joined = step(
+        '131',
+        () async => client
+            .watchSql(command('131')['sql'] as String, parameters: [false])
+            .listen((_) {}),
+      );
+      await pumpEventQueue();
+      expected.add(command('133'));
+      await (await joined).cancel();
       // Close is priority control: it stops the connection without a task.
     } finally {
       await client.close();

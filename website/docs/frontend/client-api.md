@@ -160,7 +160,7 @@ Returns a typed list. `where` is an equality filter; supplied fields must all ma
     await subscription.cancel();
     ```
 
-TypeScript returns an unsubscribe function; Dart returns `Stream<List<Entry>>`. A listener receives an initial query result and distinct results after committed local changes, including sync changes. Identical query results are suppressed. `watch` accepts equality filters, not `query`'s ordering or limit options. It reports current query results, not a log of every intermediate write.
+TypeScript returns an unsubscribe function; Dart returns `Stream<List<Entry>>`. A listener receives an initial query result and distinct results after committed local changes, including sync changes. Identical query results are suppressed. `watch` accepts equality filters, not `query`'s ordering or limit options. It reports current query results, not a log of every intermediate write. To keep an answer that joins several Models current, use [`watchSql`](runtime.md#watch-sql-over-several-models).
 
 ### Follow a relation
 
@@ -600,7 +600,7 @@ A channel name must match what your backend publishes to. A subscription is a re
 - `client.syncState()` returns the client's pending count, cursors, channels and rejections; `client.models.<name>.syncState(identity)` returns one record's pending calls and rejections, typed by the Model. Neither sends network requests. See [pending work and recovery](runtime.md#pending-work-and-recovery).
 - `client.clientId` is this database's durable client identity.
 - `client.connection` is the connection created by `open` or `client.connect`. It is `undefined` / `null` when there is none. See [connection controls](runtime.md#connection-controls).
-- Recovery, prerequisite and escape-hatch members (`dismissRejection`, `drop`, `pendingTasks`, `setReadiness`, `querySpec`, `readSql`) are on the same object; see the [client runtime reference](runtime.md).
+- Recovery, prerequisite and escape-hatch members (`dismissRejection`, `drop`, `pendingTasks`, `setReadiness`, `querySpec`, `readSql`, `watchSql`) are on the same object; see the [client runtime reference](runtime.md).
 - `await client.close()` stops the connection and releases the local database handle. Close the client when its owning application scope ends; cancel individual watchers when their views end. Calls after close fail.
 
 ## Generated data types

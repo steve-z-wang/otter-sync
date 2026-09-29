@@ -61,6 +61,16 @@ Beside the database: the sidecar `<path>.current`, written as `<path>.current.tm
 
 Code: [client/ddl.rs](../../../../../crates/client/src/ddl.rs) (`check_layout` → `Layout`, `FRAMEWORK_DDL`, `reconcile`); [client/schema_store.rs](../../../../../crates/client/src/schema_store.rs) (descriptor read and write, sidecar, next free file, removal of an abandoned file); the open flow, `rebuild` and the pending counts in [client/lib.rs](../../../../../crates/client/src/lib.rs) (`open_at`, `rebuild_beside`, `rebuild`); the compatibility rule in [core/schema.rs](../../../../../crates/core/src/schema.rs) (`Schema::compatibility`, `Compatibility`, `AdditiveStep`).
 
+### The table contract
+
+Applications read the Model tables with their own SQL, `readSql` once and `watchSql` reactively ([Queries](../engine/local-operations/queries.md)), so the layout they see is a public, stable contract ([#184](https://github.com/zanminwang/axton/issues/184)):
+
+- a Model's table is named exactly the Model name (`Space`, `MomentPlacement`), and each column exactly its field name, in declaration order;
+- every table the engine owns is named `axton_*`: the framework tables above and each Model's `axton_before_<Model>`. Applications must not read them, and `watchSql` refuses a statement that does;
+- changing either rule is a breaking change.
+
+The compiler refuses a Model named with the `axton_` or `sqlite_` prefix, so no Model table can collide with an engine one. An audit of every table the client creates found none outside the prefix, so nothing was renamed. The unique indexes (`<Model>_<fields>_unique`) and SQLite's own `sqlite_*` objects are not tables and not part of the contract; the engine creates no view or trigger.
+
 ## 6. Runtime View
 
 The comparison is the compiler's model rule ([Models §9](../../schema/models.md#9-architecture-decisions)), never a hash: a hash can tell that something changed, not whether the change is safe.
@@ -92,6 +102,8 @@ Consequences worth knowing: a field rename is a removal plus an addition, so it 
 
 **Selection is a sidecar, not a rename.** Renaming the live file under an open connection is not atomic on every platform; a one-line pointer written by temp-and-rename is. The sidecar is written last, so a crash at any earlier point leaves a file the next open discards.
 
+**The table layout is a public contract ([#184](https://github.com/zanminwang/axton/issues/184)).** Product SQL needs names that survive an upgrade, and the layout already carried the schema's names. Promising it, with the `axton_` prefix as the only boundary, is cheaper than a stable view layer and costs no storage change; the price is that renaming a Model table or column scheme becomes a breaking change.
+
 **Ruling: a file without a descriptor adopts the schema it opens with** when reconciliation succeeds. Such files predate the rule and were, by construction, reconciled by the same DDL; refusing or rebuilding them would discard working replicas for no gain.
 
 ## 10. Quality Requirements
@@ -106,6 +118,7 @@ Consequences worth knowing: a field rename is a removal plus an addition, so it 
 - **Unsent work keeps the old file open with its stored schema until sent; the frozen bytes are unchanged; then `rebuild` switches the same handle.** Evidence: `unsent_work_keeps_the_old_file_open_until_it_is_sent_then_rebuild_switches`.
 - **Discarding reports the mutations and direct records left behind and keeps the file.** Evidence: `discarding_pending_work_reports_what_the_old_file_keeps`.
 - **A descriptor-less current file adopts the schema it opens with.** Evidence: `a_current_layout_file_without_a_descriptor_adopts_the_schema_it_opens_with`.
+- **Model tables and columns carry exactly the Model and field names; every other table the engine creates is `axton_*`, and there is no view or trigger.** Evidence: [sqlite/tests/ddl.rs](../../../../../crates/sqlite/tests/ddl.rs) `model_tables_carry_model_and_field_names_and_every_engine_table_is_prefixed`, executed 2026-09-28 with `cargo test -p axton-sqlite --locked`.
 - **Every rule of the comparison names its reason.** Evidence: [core/tests/compatibility.rs](../../../../../crates/core/tests/compatibility.rs).
 - **Across the runtime and SDKs: `syncState().schema`, a refused rebuild while work is unsent, the report, the empty fresh file.** Evidence: [sqlite/tests/runtime.rs](../../../../../crates/sqlite/tests/runtime.rs) `an_incompatible_schema_keeps_its_file_until_the_work_is_settled_and_rebuilt`; [integration/bindings/client-js/rebuild.test.mjs](../../../../../integration/bindings/client-js/rebuild.test.mjs); [packages/dart/test/client_test.dart](../../../../../packages/dart/test/client_test.dart) `an incompatible schema keeps unsent work in the old file until rebuild is asked to leave it`.
 - **End to end: the rebuilt client converges like a fresh one; a restart follows the sidecar.** Evidence: [sim/tests/upgrade.rs](../../../../../crates/sim/tests/upgrade.rs).

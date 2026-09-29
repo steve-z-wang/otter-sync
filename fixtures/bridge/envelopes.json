@@ -30,6 +30,7 @@
     {"type":"task","requestId":"128","command":{"kind":"connect","directTimeoutMs":30000,"refreshAuth":true}},
     {"type":"task","requestId":"129","command":{"kind":"connection","event":"pause"}},
     {"type":"task","requestId":"130","command":{"kind":"invoke","name":"GetTodo","version":1,"args":{"id":"t"},"store":{"todo":false},"once":true,"refresh":true}},
+    {"type":"task","requestId":"131","command":{"kind":"watchSql","sql":"SELECT t.title, u.name FROM Todo t JOIN User u ON u.id = t.ownerId WHERE t.done = ?","parameters":[false]}},
     {"type":"task","requestId":"132","command":{"kind":"watch","model":"Todo","spec":{"filter":{"done":false}}}},
     {"type":"task","requestId":"133","command":{"kind":"unwatch","observerId":"3"}},
     {"type":"transactionCommand","requestId":"134","transactionId":"tx7","command":{"kind":"read","key":{"model":"Todo","identity":{"id":"t"}}}},

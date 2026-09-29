@@ -6,7 +6,7 @@
 //! use the committed reader and each of its writes owns its own local
 //! transaction. A callback's commands run inside the session it owns. The
 //! lifecycles - `transaction`, `connect`, `connection`, `invoke`, `fetch`,
-//! `rebuild`, `scopeSubscribe`, `scopeBootstrap`, `watch`
+//! `rebuild`, `scopeSubscribe`, `scopeBootstrap`, `watch`, `watchSql`
 //! and `unwatch` - are the runtime's own and never reach [`execute`].
 use super::protocol::{Command, TransactionCommand};
 use crate::*;
@@ -131,6 +131,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Rebuild { .. }
         | Command::ScopeSubscribe { .. }
         | Command::Watch { .. }
+        | Command::WatchSql { .. }
         | Command::Unwatch { .. }
         | Command::LoadStart { .. }
         | Command::LoadGet { .. }

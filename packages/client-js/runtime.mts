@@ -65,6 +65,7 @@ import {
   Bridge,
   reportCallbackError,
   type NativeCarrier,
+  type ObserverSnapshot,
   type TaskError,
   type TaskHooks,
   type RawStoreChange,
@@ -335,9 +336,9 @@ export function createClient<
       this.#effects = effects;
       this.#subscriptions = new Subscriptions(bridge, reportCallbackError);
       const unsent = unsentClient(
-        bridge,
-        (command, hooks) => this.#task(command, hooks),
-        reportCallbackError,
+        (command) => this.#task(command),
+        (command, pick, listener, onError) =>
+          this.#observe(command, pick, listener, onError ?? (() => {})),
       );
       this.rejections = unsent.rejections;
       this.failures = unsent.failures;
@@ -1035,6 +1036,24 @@ export function createClient<
       listener: (rows: RecordValue[]) => void,
       onError: (error: unknown) => void,
     ) {
+      return this.#observe(
+        command,
+        (snapshot) => snapshot.rows,
+        listener,
+        onError,
+      );
+    }
+    /**
+     * Register an observer and deliver `pick` of each snapshot the runtime
+     * publishes for it: rows for a watch, the items or count of an
+     * unsent-work observer.
+     */
+    #observe<T>(
+      command: RecordValue,
+      pick: (snapshot: ObserverSnapshot) => T,
+      listener: (value: T) => void,
+      onError: (error: unknown) => void,
+    ) {
       const fail = (error: unknown) => {
         try {
           onError(error);
@@ -1052,7 +1071,7 @@ export function createClient<
             // A closed watch's last rows are the ones already delivered.
             if (stopped || snapshot.closed) return;
             try {
-              listener(snapshot.rows);
+              listener(pick(snapshot));
             } catch (error) {
               fail(error);
             }

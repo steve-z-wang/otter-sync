@@ -734,7 +734,18 @@ class Client implements WritePort, MutatePort {
   /// publishes for it.
   Stream<List<Map<String, dynamic>>> _observeRows(
     Map<String, dynamic> command,
-  ) => Stream<List<Map<String, dynamic>>>.multi((sink) {
+  ) => _observe(
+    command,
+    (snapshot) => (snapshot['rows'] as List).cast<Map<String, dynamic>>(),
+  );
+
+  /// Register an observer when listened to and deliver [pick] of each
+  /// snapshot the runtime publishes for it: rows for a watch, the items or
+  /// count of an unsent-work observer.
+  Stream<T> _observe<T>(
+    Map<String, dynamic> command,
+    T Function(Map<String, dynamic> snapshot) pick,
+  ) => Stream<T>.multi((sink) {
     // The watch task is submitted when the stream is listened to.
     if (_inTransaction) {
       sink
@@ -745,13 +756,13 @@ class Client implements WritePort, MutatePort {
     String? observer;
     var cancelled = false;
     void deliver(Map<String, dynamic> snapshot) {
-      // The terminal snapshot carries the rows already delivered.
+      // The terminal snapshot carries the result already delivered.
       if (snapshot['closed'] == true) {
         observer = null;
         sink.close();
         return;
       }
-      sink.add((snapshot['rows'] as List).cast<Map<String, dynamic>>());
+      sink.add(pick(snapshot));
     }
 
     _bridge

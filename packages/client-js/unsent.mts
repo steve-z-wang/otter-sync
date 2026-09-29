@@ -6,11 +6,10 @@
  * ([#186](https://github.com/zanminwang/axton/issues/186),
  * [#205](https://github.com/zanminwang/axton/issues/205)).
  *
- * The runtime reads, re-reads after every commit and compares; this module
- * only delivers what it publishes, with the lifecycle of `watch`.
+ * The runtime reads, re-reads after every commit and compares; the client
+ * delivers what it publishes through the observer registration `watch` uses.
  */
 import type { RecordValue } from "./values.mts";
-import type { Bridge, TaskHooks } from "./bridge.mts";
 
 /** One Model operation of an act, with its values. */
 export type ActOperation = {
@@ -112,41 +111,65 @@ export type TransactionFailures = {
   drop(ordinal: number): Promise<void>;
 };
 
-type View = "rejections" | "failures" | "pending";
+/**
+ * The client's own observer registration: it submits `command` behind the
+ * client's guard and delivers `pick` of each snapshot to `listener`, with the
+ * lifecycle of `watch`.
+ */
+export type Observe = <T>(
+  command: RecordValue,
+  pick: (snapshot: any) => T,
+  listener: (value: T) => void,
+  onError?: (error: unknown) => void,
+) => () => void;
 
 /**
  * The client's namespaces over `task`, which submits a task behind the
- * client's guard, and the bridge that routes observer snapshots.
+ * client's guard, and `observe`, which registers an observer the way `watch`
+ * does.
  */
 export function unsentClient(
-  bridge: Bridge,
-  task: (command: RecordValue, hooks?: TaskHooks) => Promise<any>,
-  report: (error: unknown) => void,
+  task: (command: RecordValue) => Promise<any>,
+  observe: Observe,
 ): {
   rejections: ClientRejections;
   failures: ClientFailures;
   outbound: ClientOutbound;
 } {
-  const observe =
-    <T,>(view: View, pick: (snapshot: any) => T) =>
-    (listener: (value: T) => void, onError?: (error: unknown) => void) =>
-      watchUnsent(bridge, task, report, view, pick, listener, onError);
   return {
     rejections: {
-      watch: observe("rejections", (snapshot) => snapshot.items),
+      watch: (listener, onError) =>
+        observe(
+          { kind: "unsentWatch", view: "rejections" },
+          (snapshot): RefusedAct[] => snapshot.items,
+          listener,
+          onError,
+        ),
       get: (id) => task({ kind: "rejectionGet", id }),
       dismiss: (id) =>
         task({ kind: "dismiss", ordinal: id }).then(() => undefined),
     },
     failures: {
-      watch: observe("failures", (snapshot) => snapshot.items),
+      watch: (listener, onError) =>
+        observe(
+          { kind: "unsentWatch", view: "failures" },
+          (snapshot): FailedAct[] => snapshot.items,
+          listener,
+          onError,
+        ),
       retry: (taskKeys) =>
         task({ kind: "retryTasks", keys: taskKeys }).then(() => undefined),
       drop: (ordinal) =>
         task({ kind: "discard", ordinal }).then(() => undefined),
     },
     outbound: {
-      watchPending: observe("pending", (snapshot) => snapshot.count),
+      watchPending: (listener, onError) =>
+        observe(
+          { kind: "unsentWatch", view: "pending" },
+          (snapshot): number => snapshot.count,
+          listener,
+          onError,
+        ),
     },
   };
 }
@@ -166,64 +189,5 @@ export function unsentTransaction(
       drop: (ordinal) =>
         call({ kind: "discard", ordinal }).then(() => undefined),
     },
-  };
-}
-
-/**
- * One unsent-work observer, with the lifecycle of `watch`: the runtime
- * publishes the current result after the registration and every different
- * result after a commit; `listener` receives each. The returned function
- * stops delivery at once and unregisters the observer. `onError` receives
- * the registration's failure and the listener's exceptions; a re-run that
- * fails is the runtime's to report, and the observer stays.
- */
-function watchUnsent<T>(
-  bridge: Bridge,
-  task: (command: RecordValue, hooks?: TaskHooks) => Promise<any>,
-  report: (error: unknown) => void,
-  view: View,
-  pick: (snapshot: any) => T,
-  listener: (value: T) => void,
-  onError: (error: unknown) => void = () => {},
-): () => void {
-  const fail = (error: unknown) => {
-    try {
-      onError(error);
-    } catch (thrown) {
-      report(thrown);
-    }
-  };
-  let stopped = false;
-  let unwatch: (() => void) | undefined;
-  task(
-    { kind: "unsentWatch", view },
-    {
-      // Routed while the completion is dispatched: the first result is
-      // published behind it in the same batch.
-      settled: ({ observerId }: { observerId: string }) => {
-        const detach = bridge.observe(observerId, (snapshot) => {
-          // A closed observer's last result is the one already delivered.
-          if (stopped || snapshot.closed) return;
-          try {
-            listener(pick(snapshot));
-          } catch (error) {
-            fail(error);
-          }
-        });
-        unwatch = () =>
-          void bridge
-            .task({ kind: "unwatch", observerId })
-            .catch(() => {})
-            .finally(detach);
-        if (stopped) unwatch();
-      },
-    },
-  ).catch((error) => {
-    if (!stopped) fail(error);
-  });
-  return () => {
-    if (stopped) return;
-    stopped = true;
-    unwatch?.();
   };
 }

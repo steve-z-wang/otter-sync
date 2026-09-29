@@ -125,8 +125,8 @@ class ClientRejections {
 
   /// The retained refusals, oldest first: the current list when the stream
   /// is listened to, then every different list after a commit.
-  Stream<List<RefusedAct>> watch() => _client._watchUnsent(
-    'rejections',
+  Stream<List<RefusedAct>> watch() => _client._observe(
+    {'kind': 'unsentWatch', 'view': 'rejections'},
     (snapshot) => [
       for (final item in snapshot['items'] as List)
         RefusedAct.fromRecord(_record(item)!),
@@ -152,8 +152,8 @@ class ClientFailures {
 
   /// The failed acts, oldest first: the current list, then every different
   /// list after a commit.
-  Stream<List<FailedAct>> watch() => _client._watchUnsent(
-    'failures',
+  Stream<List<FailedAct>> watch() => _client._observe(
+    {'kind': 'unsentWatch', 'view': 'failures'},
     (snapshot) => [
       for (final item in snapshot['items'] as List)
         FailedAct.fromRecord(_record(item)!),
@@ -180,8 +180,10 @@ class ClientOutbound {
   ClientOutbound._(this._client);
 
   /// The number of queued, unsettled acts: now, then every different count.
-  Stream<int> watchPending() =>
-      _client._watchUnsent('pending', (snapshot) => snapshot['count'] as int);
+  Stream<int> watchPending() => _client._observe({
+    'kind': 'unsentWatch',
+    'view': 'pending',
+  }, (snapshot) => snapshot['count'] as int);
 }
 
 /// `tx.rejections`: dismiss a refusal as part of the transaction.
@@ -207,63 +209,4 @@ class TransactionFailures {
   Future<void> drop(int ordinal) async {
     await _tx._send({'kind': 'discard', 'ordinal': ordinal});
   }
-}
-
-extension _UnsentObserver on Client {
-  /// One unsent-work observer with the lifecycle of [Client.watch]: the
-  /// observer is registered when the stream is listened to; a registration
-  /// that fails ends the stream with its error; cancelling unregisters it;
-  /// closing the client completes it.
-  Stream<T> _watchUnsent<T>(
-    String view,
-    T Function(Map<String, dynamic> snapshot) pick,
-  ) => Stream<T>.multi((sink) {
-    if (_inTransaction) {
-      sink
-        ..addError(StateError('transaction_active'))
-        ..close();
-      return;
-    }
-    String? observer;
-    var cancelled = false;
-    void deliver(Map<String, dynamic> snapshot) {
-      // The terminal snapshot carries the result already delivered.
-      if (snapshot['closed'] == true) {
-        observer = null;
-        sink.close();
-        return;
-      }
-      sink.add(pick(snapshot));
-    }
-
-    _bridge
-        .task(
-          {'kind': 'unsentWatch', 'view': view},
-          onValue: (value) {
-            final id = (value as Map)['observerId'] as String;
-            if (cancelled) {
-              unawaited(_unwatch(id));
-              return;
-            }
-            observer = id;
-            _bridge.listen(id, deliver);
-          },
-        )
-        .then<void>(
-          (_) {},
-          onError: (Object error, StackTrace stack) {
-            if (cancelled) return;
-            sink.addError(error, stack);
-            sink.close();
-          },
-        );
-    sink.onCancel = () {
-      cancelled = true;
-      final id = observer;
-      observer = null;
-      if (id == null) return null;
-      _bridge.unlisten(id);
-      return _unwatch(id);
-    };
-  });
 }

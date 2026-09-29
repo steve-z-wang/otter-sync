@@ -1,8 +1,10 @@
 name: axton
-description: Schema-driven local-first state client backed by Rust.
+description: >-
+  Dart client for AXTON, a schema-driven framework for local-first
+  applications with an application-owned backend. Alpha.
 version: 0.1.0 # x-release-please-version
+homepage: https://github.com/zanminwang/axton#readme
 repository: https://github.com/zanminwang/axton
-publish_to: none
 environment:
   sdk: '>=3.12.0 <4.0.0'
 dependencies:

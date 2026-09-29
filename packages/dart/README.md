@@ -1,10 +1,27 @@
-# AXTON Dart client
+# axton
 
-See the [documentation](../../website/docs/frontend/setup.md).
+> **Alpha.** AXTON is alpha software: its API is unstable and it is not ready for production use.
+
+AXTON's Dart client for Dart and Flutter applications. See [client setup](https://github.com/zanminwang/axton/blob/main/website/docs/frontend/setup.md) for usage and reference.
+
+## Native library
+
+The client runs AXTON's Rust runtime from a native library. The package's build hook bundles it for these targets: macOS arm64 and Linux x64 hosts; iOS arm64 devices and arm64/x64 simulators; Android arm64-v8a, armeabi-v7a and x86_64. It downloads the library for the target from this version's [GitHub release](https://github.com/zanminwang/axton/releases), checks its SHA-256 against the one the package records and caches it; a later build reuses the cache without the network. An unsupported target, a failed download or a different file fails the build.
+
+To build without GitHub, for example before a release is published, put the release's library files in a directory and name it in the application's `pubspec.yaml`. Relative paths are resolved from that file. Each file must still match its recorded SHA-256.
+
+```yaml
+hooks:
+  user_defines:
+    axton:
+      local_artifacts: path/to/libraries
+```
+
+`Client.open(libraryPath: ...)` loads a library file instead of the bundled one. A checkout of the AXTON repository bundles none, so its tests pass `libraryPath`.
 
 ## How it runs
 
-The client is a thin carrier over the Rust-owned client runtime. The runtime owns the database, task ordering, both sync lanes, direct calls, retries, timeouts, credential-refresh coordination, and every status it publishes. This package only moves messages and runs the platform work the runtime asks for. See [SDK bindings](../../docs/engineering/architecture/sdks/bindings.md) for the contract.
+The client is a thin carrier over the Rust-owned client runtime. The runtime owns the database, task ordering, both sync lanes, direct calls, retries, timeouts, credential-refresh coordination, and every status it publishes. This package only moves messages and runs the platform work the runtime asks for. See [SDK bindings](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/sdks/bindings.md) for the contract.
 
 - **Admission.** Each call submits one complete task through the C ABI (`axton_runtime_submit`). Admission only copies the task into the runtime's mailbox. The returned `Future` settles from the task's `taskCompleted` event.
 - **Wake and drain.** The runtime wakes the isolate through a single `NativeCallable.listener`. The isolate drains the published events in order on its own event loop. Each `taskCompleted` settles its waiter, `observerChanged` feeds subscription and watch streams, `callCompleted` settles `Call` handles, and `report` reaches the connection's `onError`. A handle that a completion names, such as a `Call`, a subscription, or a watch, is registered while that completion is dispatched. A later event in the same batch therefore always finds it.

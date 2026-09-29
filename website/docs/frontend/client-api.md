@@ -601,6 +601,7 @@ A channel name must match what your backend publishes to. A subscription is a re
 - `client.clientId` is this database's durable client identity.
 - `client.connection` is the connection created by `open` or `client.connect`. It is `undefined` / `null` when there is none. See [connection controls](runtime.md#connection-controls).
 - Recovery, prerequisite and escape-hatch members (`dismissRejection`, `drop`, `pendingTasks`, `setReadiness`, `querySpec`, `readSql`, `watchSql`) are on the same object; see the [client runtime reference](runtime.md).
+- `client.rejections`, `client.failures` and `client.outbound` watch the refused calls, the calls stuck on a failed prerequisite and the pending count account-wide, and resolve them; `rejections` and `failures` are also on the transaction of a schema with Mutations. See [unsent work](runtime.md#unsent-work).
 - `await client.close()` stops the connection and releases the local database handle. Close the client when its owning application scope ends; cancel individual watchers when their views end. Calls after close fail.
 
 ## Generated data types

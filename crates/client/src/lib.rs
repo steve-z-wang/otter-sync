@@ -28,6 +28,7 @@ pub mod store;
 mod store_delivery;
 pub mod subscriptions;
 pub mod transport;
+pub mod unsent;
 
 pub use actions::{ActionCallOptions, SubmittedCall};
 pub use axton_core::*;
@@ -53,6 +54,7 @@ pub use store::*;
 pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
+pub use unsent::{FailedAct, FailedTask, RefusedAct, SubmittedAct};
 
 use engine::Engine;
 use serde::{Deserialize, Serialize};
@@ -1142,6 +1144,29 @@ impl<S: ClientStore> Client<S> {
     pub fn rejections(&mut self) -> Result<Vec<Rejection>> {
         self.view(|e| e.rejections())
     }
+    /// Every retained refusal with the act as submitted, oldest first
+    /// ([#186](https://github.com/zanminwang/axton/issues/186)).
+    pub fn refused_acts(&mut self) -> Result<Vec<RefusedAct>> {
+        self.view(|e| e.refused_acts())
+    }
+    /// One retained refusal, or `None`.
+    pub fn refused_act(&mut self, id: u64) -> Result<Option<RefusedAct>> {
+        self.view(|e| e.refused_act(id))
+    }
+    /// The unsent acts blocked on a terminally failed task.
+    pub fn failed_acts(&mut self) -> Result<Vec<FailedAct>> {
+        self.view(|e| e.failed_acts())
+    }
+    /// Make the tasks pending again, in one local transaction.
+    pub fn retry_tasks(&mut self, keys: &[String]) -> Result<()> {
+        self.write(|e| e.retry_tasks(keys))
+    }
+    /// Remove unsent work and its optimism without recording a refusal for
+    /// it; lifecycle dependents are refused. Answers the removed Calls'
+    /// completions.
+    pub fn discard(&mut self, ordinal: u64) -> Result<Vec<CallCompletion>> {
+        self.write(|e| e.discard(ordinal))
+    }
     pub fn record_status(&mut self, key: &RecordKey) -> Result<Value> {
         let key = self.schema.record_key(&key.model, &key.identity)?;
         self.view(|e| {
@@ -1374,6 +1399,43 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     }
     pub fn direct(&mut self, operation: Operation) -> Result<()> {
         self.savepoint(|tx| tx.engine.direct(operation))
+    }
+    /// Dismiss a retained refusal as part of this transaction
+    /// ([#205](https://github.com/zanminwang/axton/issues/205)).
+    pub fn dismiss_rejection(&mut self, id: u64) -> Result<()> {
+        self.resolution()?;
+        self.savepoint(|tx| tx.engine.delete_rejection(id))
+    }
+    /// Make the tasks pending again as part of this transaction; nothing runs
+    /// them before it commits.
+    pub fn retry_tasks(&mut self, keys: &[String]) -> Result<()> {
+        self.resolution()?;
+        self.savepoint(|tx| tx.engine.retry_tasks(keys))
+    }
+    /// Discard unsent act `ordinal` as part of this transaction: its
+    /// optimism is gone for every later read and submission here, and a
+    /// later submission is neither planned over it nor sequenced after it.
+    /// Answers the removed Calls' completions, final only once the
+    /// transaction commits.
+    pub fn discard(&mut self, ordinal: u64) -> Result<Vec<CallCompletion>> {
+        self.resolution()?;
+        let completions = self.savepoint(|tx| tx.engine.discard(ordinal))?;
+        // A call this transaction submitted and then discarded, or refused
+        // with it as a lifecycle dependent, is gone and takes no companion.
+        let submitted: Vec<u64> = self.submitted.iter().copied().collect();
+        for call in submitted {
+            if self.engine.queued_one(call)?.is_none() {
+                self.submitted.remove(&call);
+            }
+        }
+        Ok(completions)
+    }
+    /// A store hook's transaction resolves no unsent work.
+    fn resolution(&self) -> Result<()> {
+        if self.local_only {
+            return Err(invalid("store hook cannot resolve unsent work"));
+        }
+        Ok(())
     }
 }
 

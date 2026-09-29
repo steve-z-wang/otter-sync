@@ -48,6 +48,16 @@ pub(super) struct Transaction {
     /// The calls submitted in the transaction and not rolled back, in
     /// order: provisional until the commit.
     pub(super) calls: Vec<String>,
+    /// What the transaction's resolutions of unsent work announce once it
+    /// commits, in order ([#205](https://github.com/zanminwang/axton/issues/205)).
+    pub(super) resolved: Vec<Resolved>,
+}
+/// One announcement a resolution made in a transaction defers to its commit.
+pub(super) enum Resolved {
+    /// A discarded Call, or a dependent refused with it, completed.
+    Completed(crate::CallCompletion),
+    /// A task was made pending: its backoff is over.
+    Retried(String),
 }
 /// One running Mutation local callback: the restricted capability its
 /// token admits and the submission waiting for its end.
@@ -76,6 +86,7 @@ impl Transaction {
             current_model: None,
             local: None,
             calls: vec![],
+            resolved: vec![],
         }
     }
 }
@@ -213,6 +224,9 @@ struct Scope {
     /// How many calls were submitted before it opened: a rollback turns the
     /// later ones `rolledBack`.
     calls: usize,
+    /// How many resolutions were made before it opened: a rollback forgets
+    /// the later ones.
+    resolved: usize,
 }
 pub(super) struct Continuation {
     pub(super) request_id: String,
@@ -515,15 +529,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // no call is announced rolled back.
             TransactionCommand::RollbackSavepoint { .. } => match self.pop_scope() {
                 None => Err(crate::invalid("no open savepoint to roll back")),
-                Some((restored, calls)) => self.client.session_rollback_savepoint().map(|()| {
-                    let mut discarded = vec![];
-                    if let Some(open) = &mut self.transaction {
-                        open.failure = restored;
-                        discarded = open.calls.split_off(calls.min(open.calls.len()));
-                    }
-                    self.call_transitions(discarded, CallTransition::RolledBack);
-                    Some(Value::Null)
-                }),
+                Some((restored, calls, resolved)) => {
+                    self.client.session_rollback_savepoint().map(|()| {
+                        let mut discarded = vec![];
+                        if let Some(open) = &mut self.transaction {
+                            open.failure = restored;
+                            discarded = open.calls.split_off(calls.min(open.calls.len()));
+                            open.resolved.truncate(resolved);
+                        }
+                        self.call_transitions(discarded, CallTransition::RolledBack);
+                        Some(Value::Null)
+                    })
+                }
             },
             TransactionCommand::Enqueue { .. } if authority => {
                 Err(crate::invalid("store hook cannot enqueue"))
@@ -539,6 +556,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 store,
                 local,
             } => self.submit_mutation(&command.request_id, name, *version, args, store, local),
+            TransactionCommand::Dismiss { .. }
+            | TransactionCommand::RetryTasks { .. }
+            | TransactionCommand::Discard { .. } => self.resolve_in_transaction(&command.command),
             // The local callback's writes are its call's companions (`own`
             // guarantees an open local callback).
             TransactionCommand::Direct { operation } if own => {
@@ -680,22 +700,25 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if let Some(open) = &mut self.transaction {
             let failure = open.failure.clone();
             let calls = open.calls.len();
+            let resolved = open.resolved.len();
             open.scopes.push(Scope {
                 token: token.clone(),
                 failure,
                 calls,
+                resolved,
             });
         }
         Ok(json!({ "scope": token }))
     }
     /// Pop the top scope - the client pops its savepoint name before the
     /// store call can fail, so the stacks stay aligned - and answer the
-    /// failure it opened under and the calls submitted before it.
-    fn pop_scope(&mut self) -> Option<(Option<String>, usize)> {
+    /// failure it opened under and the calls submitted and resolutions made
+    /// before it.
+    fn pop_scope(&mut self) -> Option<(Option<String>, usize, usize)> {
         self.transaction
             .as_mut()
             .and_then(|open| open.scopes.pop())
-            .map(|scope| (scope.failure, scope.calls))
+            .map(|scope| (scope.failure, scope.calls, scope.resolved))
     }
     /// Commit or roll back once the callback finished, then settle its
     /// unawaited commands and the parent task.
@@ -705,6 +728,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         };
         self.effects.remove(&open.effect_id);
         let calls = std::mem::take(&mut open.calls);
+        let resolved = std::mem::take(&mut open.resolved);
         // A local callback still running was not awaited: its effect is
         // cancelled and its submission closed.
         let local = open.local.take();
@@ -812,6 +836,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     CallTransition::RolledBack
                 };
                 self.call_transitions(calls, state);
+                if committed.is_ok() {
+                    self.announce_resolved(resolved);
+                }
                 self.committed_since(generation);
                 // What the callback queued or subscribed is the lanes' work
                 // now, as after any other commit.

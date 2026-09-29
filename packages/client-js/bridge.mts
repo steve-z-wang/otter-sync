@@ -41,7 +41,8 @@ export type BridgeEventType =
  * follows it.
  */
 export type ObserverSnapshot = {
-  kind: "subscription" | "watch" | "load";
+  kind:
+    "subscription" | "watch" | "load" | "rejections" | "failures" | "pending";
   closed?: true;
   [field: string]: any;
 };

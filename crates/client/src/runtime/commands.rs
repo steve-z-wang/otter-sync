@@ -117,6 +117,12 @@ pub(super) fn execute<S: ClientStore + 'static>(
             client.dismiss_rejection(*ordinal)?;
             Value::Null
         }
+        Command::RejectionGet { id } => serde_json::to_value(client.refused_act(*id)?)?,
+        Command::RetryTasks { keys } => {
+            client.retry_tasks(keys)?;
+            Value::Null
+        }
+        Command::Discard { ordinal } => json!({"completions":client.discard(*ordinal)?}),
         Command::RecordStatus { key } => client.record_status(key)?,
         Command::Tasks => json!(client.pending_tasks()?),
         Command::Status => {
@@ -133,6 +139,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Watch { .. }
         | Command::WatchSql { .. }
         | Command::Unwatch { .. }
+        | Command::UnsentWatch { .. }
         | Command::LoadStart { .. }
         | Command::LoadGet { .. }
         | Command::LoadStatus { .. }
@@ -198,7 +205,10 @@ pub(super) fn execute_in_session<S: ClientStore>(
         TransactionCommand::Savepoint
         | TransactionCommand::Release { .. }
         | TransactionCommand::RollbackSavepoint { .. }
-        | TransactionCommand::SubmitMutation { .. } => {
+        | TransactionCommand::SubmitMutation { .. }
+        | TransactionCommand::Dismiss { .. }
+        | TransactionCommand::RetryTasks { .. }
+        | TransactionCommand::Discard { .. } => {
             return Err(invalid("a transaction lifecycle is not a client command"));
         }
     })

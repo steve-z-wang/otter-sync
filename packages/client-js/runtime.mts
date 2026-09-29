@@ -65,6 +65,7 @@ import {
   Bridge,
   reportCallbackError,
   type NativeCarrier,
+  type ObserverSnapshot,
   type TaskError,
   type TaskHooks,
   type RawStoreChange,
@@ -112,6 +113,24 @@ import {
   type QueryOptions,
 } from "./actions.mts";
 import type { MutationPort } from "./local.mts";
+import {
+  unsentClient,
+  type ClientFailures,
+  type ClientOutbound,
+  type ClientRejections,
+} from "./unsent.mts";
+export type {
+  ActOperation,
+  ClientFailures,
+  ClientOutbound,
+  ClientRejections,
+  FailedAct,
+  FailedTask,
+  RefusedAct,
+  SubmittedAct,
+  TransactionFailures,
+  TransactionRejections,
+} from "./unsent.mts";
 import {
   Loads,
   type Load,
@@ -305,11 +324,25 @@ export function createClient<
     /** Load handles; the runtime owns every job and publishes its status. */
     readonly #loads: Loads;
     readonly clientId: string;
+    /** The refusals retained until dismissed, each with the act as submitted. */
+    readonly rejections: ClientRejections;
+    /** The unsent acts blocked on a terminally failed prerequisite task. */
+    readonly failures: ClientFailures;
+    /** The queue of unsettled acts. */
+    readonly outbound: ClientOutbound;
     private constructor(bridge: Bridge, id: string, effects: Effects) {
       this.#bridge = bridge;
       this.clientId = id;
       this.#effects = effects;
       this.#subscriptions = new Subscriptions(bridge, reportCallbackError);
+      const unsent = unsentClient(
+        (command) => this.#task(command),
+        (command, pick, listener, onError) =>
+          this.#observe(command, pick, listener, onError ?? (() => {})),
+      );
+      this.rejections = unsent.rejections;
+      this.failures = unsent.failures;
+      this.outbound = unsent.outbound;
       this.#loads = new Loads(
         {
           task: (command, hooks, writes) => {
@@ -1003,6 +1036,24 @@ export function createClient<
       listener: (rows: RecordValue[]) => void,
       onError: (error: unknown) => void,
     ) {
+      return this.#observe(
+        command,
+        (snapshot) => snapshot.rows,
+        listener,
+        onError,
+      );
+    }
+    /**
+     * Register an observer and deliver `pick` of each snapshot the runtime
+     * publishes for it: rows for a watch, the items or count of an
+     * unsent-work observer.
+     */
+    #observe<T>(
+      command: RecordValue,
+      pick: (snapshot: ObserverSnapshot) => T,
+      listener: (value: T) => void,
+      onError: (error: unknown) => void,
+    ) {
       const fail = (error: unknown) => {
         try {
           onError(error);
@@ -1020,7 +1071,7 @@ export function createClient<
             // A closed watch's last rows are the ones already delivered.
             if (stopped || snapshot.closed) return;
             try {
-              listener(snapshot.rows);
+              listener(pick(snapshot));
             } catch (error) {
               fail(error);
             }

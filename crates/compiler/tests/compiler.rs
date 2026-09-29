@@ -622,8 +622,17 @@ fn generated_clients_expose_one_server_connection() {
     );
     let error = compile("model AdmissionRefused { id String @@id(id) }").unwrap_err();
     assert!(error.contains("the generated client uses"), "{error}");
-    // The prerequisite handler types are re-exported the same way (#185).
-    for name in ["PrerequisiteRetry", "PrerequisiteHandler"] {
+    // The prerequisite handler types are re-exported the same way (#185),
+    // and so are the unsent-work item types (#186).
+    for name in [
+        "PrerequisiteRetry",
+        "PrerequisiteHandler",
+        "RefusedAct",
+        "FailedAct",
+        "FailedTask",
+        "SubmittedAct",
+        "ActOperation",
+    ] {
         let error = compile(&format!("model {name} {{ id String @@id(id) }}")).unwrap_err();
         assert!(
             error.contains("the generated client uses"),
@@ -652,6 +661,10 @@ fn generated_clients_are_the_whole_client() {
         "prerequisites?: Record<string, PrerequisiteHandler>",
         "...(options.prerequisites === undefined ? {} : { prerequisites: options.prerequisites })",
         "export { AdmissionRefused, CallError, PrerequisiteRetry,",
+        "type RefusedAct, type SubmittedAct }",
+        "get rejections(): Client[\"rejections\"] { return this.client.rejections; }",
+        "get failures(): Client[\"failures\"] { return this.client.failures; }",
+        "get outbound(): Client[\"outbound\"] { return this.client.outbound; }",
         "async connect(server: ServerOptions",
         "querySpec(model: string",
         "readSql(sql: string",
@@ -703,8 +716,11 @@ fn generated_clients_are_the_whole_client() {
         "class Mutate { final MutatePort port;",
         "Map<String, PrerequisiteHandler>? prerequisites,",
         "onStore:rawHooks, prerequisites:prerequisites);",
-        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;",
+        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;",
         "Stream<List<Map<String,dynamic>>> watchSql(String sql, {List<dynamic> parameters = const []}) => client.watchSql(sql, parameters: parameters);",
+        "late final rejections = client.rejections;",
+        "late final failures = client.failures;",
+        "late final outbound = client.outbound;",
     ] {
         assert!(dart.contains(member), "missing {member}: {dart}");
     }
@@ -1561,7 +1577,7 @@ fn dart_encodes_every_date_time_at_axton_precision() {
         "if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),",
         "if (value is DateTime) return value.toAxtonPrecision().toIso8601String();",
         "{'at': at == null ? null : at.toAxtonPrecision().toIso8601String()}",
-        "PrerequisiteHandler, AxtonDateTime;",
+        "PrerequisiteHandler, AxtonDateTime,",
     ] {
         assert!(dart.contains(expected), "missing {expected}: {dart}");
     }

@@ -57,7 +57,7 @@ pub(crate) fn ts_generated(v: &Value, o: &mut String) {
         return;
     }
     o.push_str("/** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */\nexport type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };\n");
-    o.push_str("export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }\n");
+    o.push_str("export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }\n/** The raw application transaction's resolutions of unsent work, which only `ApplicationTransaction` needs. */\nexport interface UnsentResolutionPort { readonly rejections:{ dismiss(id:number):Promise<void> }; readonly failures:{ retry(taskKeys:string[]):Promise<void>; drop(ordinal:number):Promise<void> }; }\n");
     o.push_str("/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints. */\nexport class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }\n");
     o.push_str("/** Transaction-only option: `local` runs inside the open transaction and its Model writes belong to that Mutation. */\nexport type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };\n");
     o.push_str("/** Mutations queued in an application transaction: each resolves with its `Call` after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route. */\nexport function makeTransactionMutations(port:SubmitMutationPort) { const submit=(options:(CallOptions & CompanionOptions)|undefined):SubmitMutationOptions|undefined => { if (options===undefined) return undefined; const {local,...rest}=options; return local===undefined ? rest : {...rest,local:(companion:WritePort)=>local(new CompanionContext(companion))}; }; return {\n");
@@ -65,7 +65,7 @@ pub(crate) fn ts_generated(v: &Value, o: &mut String) {
         writeln!(o, " {}: (args:{name}Input, options?:{name}Options & CompanionOptions):Promise<Call<{name}Output>> => port.submitMutation('{name}',{version},encode{name}Input(args),decode{name}Output,submit(options)),", lower(name)).unwrap();
     }
     o.push_str("}; }\n");
-    o.push_str("/** The application transaction: local Models and Channels, and `mutations`, which queue typed Mutations in the same local commit. */\nexport class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; constructor(transaction:WritePort & SubmitMutationPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); } }\n");
+    o.push_str("/** The application transaction: local Models and Channels, `mutations`, which queue typed Mutations in the same local commit, and `rejections` / `failures`, which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it. */\nexport class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; readonly rejections:UnsentResolutionPort['rejections']; readonly failures:UnsentResolutionPort['failures']; constructor(transaction:WritePort & SubmitMutationPort & UnsentResolutionPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); this.rejections=transaction.rejections; this.failures=transaction.failures; } }\n");
 }
 
 /// The Dart twin of [`ts_generated`]. `SubmitMutationPort` is the runtime's
@@ -103,5 +103,5 @@ pub(crate) fn dart_generated(v: &Value, o: &mut String) {
         .unwrap();
     }
     o.push_str("}\n");
-    o.push_str("/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.\nclass ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }\n");
+    o.push_str("/// The application transaction: local Models and Channels, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.\nclass ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }\n");
 }

@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
@@ -359,8 +359,8 @@ class TransactionMutations {
  Future<Call<PingOutput>> ping({PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
  Future<Call<TouchOutput>> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
 }
-/// The application transaction: local Models and Channels, and [mutations], which queue typed Mutations in the same local commit.
-class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); ApplicationTransaction(super.transaction); }
+/// The application transaction: local Models and Channels, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
@@ -400,6 +400,12 @@ class GeneratedClient {
  Future<List<Map<String,dynamic>>> pendingTasks() => client.pendingTasks();
  /// Mark a prerequisite task by its opaque key: `ready`, `pending` or `failed`; `pending` runs its handler again at once.
  Future<void> setReadiness(String key, String state) => client.setReadiness(key, state);
+ /// The refusals retained until dismissed, each with the act as submitted: `watch`, `get` and `dismiss`.
+ late final rejections = client.rejections;
+ /// The unsent acts blocked on a terminally failed prerequisite task: `watch`, `retry` and `drop`.
+ late final failures = client.failures;
+ /// The queue of unsettled acts: `watchPending`.
+ late final outbound = client.outbound;
  /// Start the background connection when `open` was called without a server.
  Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.

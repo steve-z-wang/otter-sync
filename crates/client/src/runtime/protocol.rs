@@ -383,10 +383,45 @@ pub enum Command {
     #[serde(rename_all = "camelCase")]
     LoadDispose { observer_id: String },
 
+    // --- Unsent work (#186) ---
+    /// Observe unsent work; answers the observer id. Its snapshots are
+    /// `{"kind":"rejections","items"}`, `{"kind":"failures","items"}` or
+    /// `{"kind":"pending","count"}`, re-run after every commit and published
+    /// only when they differ, like a watch. `unwatch` ends it.
+    UnsentWatch { view: UnsentView },
+    /// One retained refusal with the act as submitted, or `null`.
+    RejectionGet {
+        #[serde(deserialize_with = "counter")]
+        id: u64,
+    },
+    /// Make these prerequisite tasks pending again, in one local
+    /// transaction, and clear their backoff so a handler runs them at once.
+    RetryTasks { keys: Vec<String> },
+    /// Remove an unsent act and its optimism without recording a refusal for
+    /// it; its lifecycle dependents are refused. Its Call completes as
+    /// `dropped`.
+    Discard {
+        #[serde(deserialize_with = "counter")]
+        ordinal: u64,
+    },
+
     /// Never on the wire: a command that did not decode. Its request is
     /// completed with `error`, the decoding failure.
     #[serde(skip)]
     Malformed { error: String },
+}
+
+/// The unsent work an `unsentWatch` observes
+/// ([#186](https://github.com/zanminwang/axton/issues/186)).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UnsentView {
+    /// The retained refusals, each with the act as submitted.
+    Rejections,
+    /// The unsent acts blocked on a terminally failed task.
+    Failures,
+    /// The number of queued, unsettled acts.
+    Pending,
 }
 
 /// What a `watch` observes: the rows of its model matching `filter` (every
@@ -482,6 +517,23 @@ pub enum TransactionCommand {
             skip_serializing_if = "Option::is_none"
         )]
         local: Option<Value>,
+    },
+    /// Resolutions of unsent work as part of the transaction
+    /// ([#205](https://github.com/zanminwang/axton/issues/205)): each takes
+    /// effect for the later commands of the transaction and commits or rolls
+    /// back with it. What they announce - a discarded Call's completion, a
+    /// retried task's handler run - waits for the commit. The onStore
+    /// transaction and a local callback cannot issue them.
+    Dismiss {
+        #[serde(deserialize_with = "counter")]
+        ordinal: u64,
+    },
+    RetryTasks {
+        keys: Vec<String>,
+    },
+    Discard {
+        #[serde(deserialize_with = "counter")]
+        ordinal: u64,
     },
     /// Open a savepoint; answers `{scope}`, the token its commands name.
     Savepoint,
@@ -682,6 +734,11 @@ pub enum Event {
     ///   "failed","error":null|{"code","message"}}}}` - the SDK
     ///   `SubscriptionStatus`, verbatim;
     /// - a watch observer (`watch`, `watchSql`): `{"kind":"watch","rows":[…]}`;
+    /// - an unsent-work observer (`unsentWatch`): `{"kind":"rejections",
+    ///   "items":[{"id","name","version","code","act":{"args","operations"}}]}`,
+    ///   `{"kind":"failures","items":[{"ordinal","name","version","act",
+    ///   "tasks":[{"key","name","arguments","error"}]}]}` or
+    ///   `{"kind":"pending","count"}`;
     /// - a Load handle (`loadStart`, `loadGet`): `{"kind":"load","status":
     ///   {"id","name","version","phase","pages","error"}}`, the phase being
     ///   `pending`, `loading`, `waiting`, `complete`, `failed` or
@@ -693,8 +750,8 @@ pub enum Event {
     /// A terminal snapshot adds `"closed": true` and nothing follows it for
     /// that observer: a subscription that was removed, replaced by a rebuild
     /// or stopped with the runtime (`active: false`, `connection: "stopped"`),
-    /// or a watch ended by the runtime's close (carrying its last rows). An
-    /// `unwatch` ends a watch with no snapshot.
+    /// or a watch or unsent-work observer ended by the runtime's close
+    /// (carrying its last result). An `unwatch` ends either with no snapshot.
     #[serde(rename_all = "camelCase")]
     ObserverChanged {
         observer_id: String,

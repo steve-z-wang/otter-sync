@@ -510,12 +510,44 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
         break;
       case "observerChanged":
         assert.equal(typeof event.observerId, "string");
-        assert.ok(["subscription", "watch"].includes(event.snapshot.kind));
+        assert.ok(
+          ["subscription", "watch", "rejections", "failures", "pending"].includes(
+            event.snapshot.kind,
+          ),
+        );
         assert.ok(
           event.snapshot.closed === undefined || event.snapshot.closed === true,
         );
         if (event.snapshot.kind === "watch")
           assert.ok(Array.isArray(event.snapshot.rows));
+        else if (event.snapshot.kind === "rejections")
+          for (const item of event.snapshot.items)
+            assert.deepEqual(Object.keys(item).sort(), [
+              "act",
+              "code",
+              "id",
+              "name",
+              "version",
+            ]);
+        else if (event.snapshot.kind === "failures")
+          for (const item of event.snapshot.items) {
+            assert.deepEqual(Object.keys(item).sort(), [
+              "act",
+              "name",
+              "ordinal",
+              "tasks",
+              "version",
+            ]);
+            for (const task of item.tasks)
+              assert.deepEqual(Object.keys(task).sort(), [
+                "arguments",
+                "error",
+                "key",
+                "name",
+              ]);
+          }
+        else if (event.snapshot.kind === "pending")
+          assert.equal(typeof event.snapshot.count, "number");
         else
           assert.deepEqual(Object.keys(event.snapshot.status).sort(), [
             "active",
@@ -556,6 +588,10 @@ test("the shared envelope fixtures carry the shapes the bridge sends and switche
     "subscription.closed",
   ]);
   assert.deepEqual([...snapshots].sort(), [
+    "failures",
+    "pending",
+    "pending:closed",
+    "rejections",
     "subscription",
     "subscription:closed",
     "watch",
@@ -628,7 +664,7 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
     "callCompleted",
     "transactionCallState",
     "transactionCallState",
-    ...Array(5).fill("observerChanged"),
+    ...Array(9).fill("observerChanged"),
     ...Array(5).fill("report"),
   ]);
   assert.deepEqual(handled, [["7", 250]]);

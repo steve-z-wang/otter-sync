@@ -55,6 +55,18 @@ export type {
   Rejection,
   SchemaState,
 } from "../client-js/runtime.mts";
+export type {
+  ActOperation,
+  ClientFailures,
+  ClientOutbound,
+  ClientRejections,
+  FailedAct,
+  FailedTask,
+  RefusedAct,
+  SubmittedAct,
+  TransactionFailures,
+  TransactionRejections,
+} from "../client-js/runtime.mts";
 
 const native = requireNativeModule<{
   runtimeOpen(request: string): string;

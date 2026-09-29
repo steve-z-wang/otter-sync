@@ -1,6 +1,11 @@
 import type { RecordValue, QuerySpec } from "../client-js/values.mts";
 import type { Call } from "../client-js/actions.mts";
 import {
+  unsentTransaction,
+  type TransactionFailures,
+  type TransactionRejections,
+} from "../client-js/unsent.mts";
+import {
   callbackRefusal,
   expiredRefusal,
   submitMutation,
@@ -71,6 +76,14 @@ export class Transaction {
           () => {},
         ),
     };
+  }
+  /** Dismiss a refusal as part of this transaction. */
+  get rejections(): TransactionRejections {
+    return unsentTransaction((command) => this.#call(command)).rejections;
+  }
+  /** Retry failed tasks or drop a failed act as part of this transaction. */
+  get failures(): TransactionFailures {
+    return unsentTransaction((command) => this.#call(command)).failures;
   }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
     this.#activeCallback = true;

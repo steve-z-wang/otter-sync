@@ -816,6 +816,7 @@ fn validate_load(
 /// runtime packages they import, declare. A model or enum with one of these
 /// names would collide with them in the generated file.
 const GENERATED_NAMES: &[&str] = &[
+    "ActOperation",
     "AdmissionRefused",
     "AxtonDateTime",
     "BootstrapError",
@@ -838,6 +839,8 @@ const GENERATED_NAMES: &[&str] = &[
     "ClientSyncState",
     "Connection",
     "DirectMutations",
+    "FailedAct",
+    "FailedTask",
     "GeneratedClient",
     "GeneratedTransaction",
     "FutureOr",
@@ -859,6 +862,7 @@ const GENERATED_NAMES: &[&str] = &[
     "QueuedQueries",
     "ReadPort",
     "RebuildReport",
+    "RefusedAct",
     "Rejection",
     "RuntimeConnection",
     "Scopes",
@@ -874,6 +878,7 @@ const GENERATED_NAMES: &[&str] = &[
     "StoreHooks",
     "StoreUpsert",
     "SyncServer",
+    "SubmittedAct",
     "SyncState",
     "Transaction",
     "TxModels",

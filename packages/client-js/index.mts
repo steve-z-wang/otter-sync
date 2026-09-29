@@ -57,6 +57,18 @@ export type {
   Rejection,
   SchemaState,
 } from "./runtime.mts";
+export type {
+  ActOperation,
+  ClientFailures,
+  ClientOutbound,
+  ClientRejections,
+  FailedAct,
+  FailedTask,
+  RefusedAct,
+  SubmittedAct,
+  TransactionFailures,
+  TransactionRejections,
+} from "./runtime.mts";
 const native = createRequire(import.meta.url)(
   "../../bindings/node/axton-node.node",
 ) as NativeCarrier;

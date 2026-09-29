@@ -1,6 +1,6 @@
 # Enroll loaded records into Channels
 
-Status: requested Load capability, with engineering boundaries recorded for review; not implemented. Based on `08e20cca`, including Serializable backend transactions, durable Loads, device-only Models and persistent Channel membership.
+Status: implemented on branch `codex/load-channel-enrollment`; the owning contract is guarantee N8 in [Guarantees](../../engineering/guarantees.md#n-native-loads). Based on `08e20cca`, including Serializable backend transactions, durable Loads, device-only Models and persistent Channel membership.
 
 Implementation sequence: [plan](../plans/2026-09-29-load-channel-enrollment-plan.md).
 
@@ -132,4 +132,4 @@ Pages with no additions retain the existing batched readStamps/Loader path and i
 | 7 | Loader/refusal/size/coverage failures, expired handles, forged remove/touch, bounded additions and batch sibling isolation are tested. |
 | 8 | Once/cancellation/subscription semantics are documented accurately; no schema history, client protocol or new persistence table is introduced. |
 
-Evidence for this document: current sources and existing tests were inspected. No implementation or runtime tests were executed as part of writing it.
+Evidence for this document: current sources and existing tests were inspected. No implementation or runtime tests were executed as part of writing it; the implementation's executed evidence is listed under guarantee N8 in [Guarantees](../../engineering/guarantees.md#n-native-loads).

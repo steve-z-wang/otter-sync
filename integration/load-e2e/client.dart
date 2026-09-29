@@ -1,5 +1,7 @@
 // The generated Dart client against the Load end-to-end backend:
-// `dart run client.dart URL PATH LIBRARY`. The backend holds Items dart-1..3.
+// `dart run client.dart URL PATH LIBRARY [enroll]`. The backend holds the
+// Items dart-1..3; with `enroll`, the Items dart-enr-1..3 that its
+// ProjectItems handler adds to Channel `items:dart-enr`.
 import 'dart:io';
 import 'package:axton/axton.dart' as sdk;
 
@@ -33,9 +35,36 @@ Future<sdk.LoadStatus?> statusOf(app.GeneratedClient client, String id) async {
   return null;
 }
 
+/// Subscribe and wait for the first handshake, then Load records its handler
+/// enrolls: a later change by another client arrives through the Channel with
+/// no second add.
+Future<void> enrollment(sdk.SyncServer server, String path, String libraryPath) async {
+  final reader = await app.GeneratedClient.open(path: '$path.reader', libraryPath: libraryPath, server: server);
+  final writer = await app.GeneratedClient.open(path: '$path.writer', libraryPath: libraryPath, server: server);
+  try {
+    final subscription = await reader.scopes.subscribe('items:dart-enr');
+    await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
+    final load = await reader.loads.projectItems(project: 'dart-enr');
+    await load.wait();
+    load.dispose();
+    final loaded = await reader.models.item.query(where: const app.ItemFilter(project: app.Present('dart-enr')));
+    check(loaded.length == 3 && loaded.every((item) => item.title == '${item.id} title'), 'the Load stored its page rows: $loaded');
+    final renamed = reader.models.item
+        .watch(where: const app.ItemFilter(project: app.Present('dart-enr')))
+        .firstWhere((items) => items.any((item) => item.id == 'dart-enr-2' && item.title == 'renamed'));
+    await writer.mutations.call.renameItem(item: const app.RenameItemItemUpdate(id: 'dart-enr-2', title: app.Present('renamed')));
+    await renamed.timeout(const Duration(seconds: 20));
+    stdout.writeln('Dart Load enrollment: passed');
+  } finally {
+    await writer.close();
+    await reader.close();
+  }
+}
+
 Future<void> main(List<String> args) async {
-  final [url, path, libraryPath] = args;
+  final [url, path, libraryPath, ...mode] = args;
   final server = sdk.SyncServer(url: url, token: () => 'alice');
+  if (mode case ['enroll']) return enrollment(server, path, libraryPath);
   var hookRuns = 0;
   Future<void> hook(app.GeneratedTransaction tx, List<app.StoreChange<app.ItemIdentity, app.Item>> changes) async {
     hookRuns++;

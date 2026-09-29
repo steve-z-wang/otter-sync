@@ -533,7 +533,7 @@ test("declaration handles close when the handler or external body settles, even 
   }
 });
 
-test("Load handlers take decoded args and a read-only context and answer identity pages", async () => {
+test("Load handlers take decoded args and a context with a channel and no touch, and answer identity pages", async () => {
   const at = "2026-01-01T00:00:00.000Z";
   const seen: Record<string, unknown>[] = [];
   const answers: unknown[] = [];

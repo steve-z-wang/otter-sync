@@ -2,7 +2,7 @@ import type { Call, CallOutcome, GeneratedClient, Load, LoadOptions, LoadPhase, 
 import { LoadError } from './client.ts';
 import { Project, Todo } from './backend.ts';
 import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, EditOutput, EditAndReadOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadChannel, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
 import { createBackend } from './backend.ts';
 import type { Database } from '../../packages/server/index.mts';
 
@@ -208,6 +208,8 @@ const loaders: Loaders<Tx> = {
 };
 // Loads (#173): a page answers every declared identity list and a portable continuation.
 const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
+// A Load enrolls records into a Channel, add only: by the lower-first Model accessor or a mixed reference list; a composite identity names every component.
+const loadChannel = (ctx: LoadContext<Tx>): void => { const channel: LoadChannel = ctx.channel('tenant:t'); channel.todo.add({ id: 't' }); channel.project.add({ tenantId: 't', id: 'p' }); channel.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); return channel.add([]); };
 const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
 const nullState: LoadNext = { state: null };
 const loads: Loads<Tx> = {
@@ -217,7 +219,7 @@ const loads: Loads<Tx> = {
     const status: 'open' | 'closed' | 'archived' | null = args.status;
     const tags: string[] = args.tags;
     void [projectId, status, tags];
-    if (continuation === null) return firstPage;
+    if (continuation === null) { ctx.channel(`project:${projectId}`).todo.add({ id: 't' }); return firstPage; }
     const state: JsonValue = continuation.state;
     void state;
     return { data: { todos: [], projects: [] }, next: null };
@@ -226,10 +228,10 @@ const loads: Loads<Tx> = {
   async flaggedTodos({ args }) { const once: boolean = args.once; const refresh: string = args.refresh; void [once, refresh]; return { data: { todos: [] }, next: null }; },
   async clientTodos({ args }) { const client: string = args.client; void client; return { data: { todos: [] }, next: null }; },
 };
-const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => ({ data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState });
+const projectTodos = async ({ ctx, args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => { ctx.channel('tags').add(args.tags.map(id => Todo({ id }))); return { data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState }; };
 const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
 declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
 // A Model without a Loader is device-only (#187): the map may omit it, and the backend refuses at startup a Mutation that names it on the wire.
 const deviceOnlyLoaders: Loaders<Tx> = { todo: loaders.todo, project: loaders.project };
-void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];
+void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, loadChannel, versionedLoads, startBackend];

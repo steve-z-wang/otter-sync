@@ -188,11 +188,16 @@ const loaders: Loaders<Tx> = {
   },
 };
 void [handlers, loaders];
-// Loads (#173): typed args, a read-only context and identity pages.
+// Loads (#173): typed args, a context whose Channels only add, and identity pages.
 declare const loadCtx: LoadContext<Tx>;
 void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
-// @ts-expect-error a Load context has no membership writer
-loadCtx.channel("project:1");
+// A Load context adds page records to Channels, and only adds.
+loadCtx.channel("project:1").todo.add({ id: "A" });
+loadCtx
+  .channel("project:1")
+  .add([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
+// @ts-expect-error a Load Channel cannot remove
+loadCtx.channel("project:1").todo.remove({ id: "A" });
 // @ts-expect-error a Load context has no change declaration
 loadCtx.touch.todo({ id: "A" });
 const loads: Loads<Tx> = {

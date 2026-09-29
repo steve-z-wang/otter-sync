@@ -144,6 +144,11 @@ if(false){
  const returned:Handlers<Tx>['addBook']=async()=>({channel:'c'});
  // @ts-expect-error loaders receive no channel
  const channelled:Loaders<Tx>['book']=async({ids,channel})=>ids.map(id=>({...id,title:String(channel)}));
+ // A schema without Loads declares no Load context or its add-only Channel.
+ // @ts-expect-error no Load is declared, so the backend declares no LoadChannel
+ type NoLoadChannel=import('./backend.ts').LoadChannel;
+ // @ts-expect-error no Load is declared, so the backend declares no LoadContext
+ type NoLoadContext=import('./backend.ts').LoadContext<Tx>;
 
  // Loaders follow the same shape; a retained older contract has its own record type.
  const v1Row:EntryV1={id:row.id,title:'old',note:null,at:row.at,status:'active'};

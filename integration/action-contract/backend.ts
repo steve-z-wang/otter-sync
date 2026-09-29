@@ -207,12 +207,20 @@ export interface Queries<Tx> {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 /** A page's `continuation` is `null` on the first page, and answering `next: null` completes the Load; `{ state }` continues it, and `{ state: null }` is a legitimate state. At most 64 KiB encoded and 64 levels deep. */
 export type LoadNext = null | { state: JsonValue };
-/** A Load page's context: like a Query it has no `channel` or `touch`. `callId` is the page's durable call ID and `loadId` its job. */
+/** A Load page's Channel handle: it only adds records this page returns, by Model or as a mixed list. */
+export interface LoadChannel {
+ todo: { add(identity: TodoIdentity): void };
+ project: { add(identity: ProjectIdentity): void };
+ note: { add(identity: NoteIdentity): void };
+ add(records: readonly RecordRef[]): void;
+}
+/** A Load page's context: it has no `touch`, and its `channel` only adds. `callId` is the page's durable call ID and `loadId` its job. */
 export interface LoadContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
  loadId: string;
+ channel(name: string): LoadChannel;
 }
 /** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */
 export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };

@@ -142,7 +142,7 @@ Repeat the npm ownership/availability check for every generated native/CLI targe
 - [ ] Have the user mark `axton` unlisted on pub.dev's admin page; confirm the listing state.
 - [ ] Fetch the installed versions from npm/pub.dev and run the clean fixtures. Mark GitHub release complete only after verification; record where npm `latest` points (the registry may set it on a package's first version).
 - [ ] Configure npm trusted publishing for every SDK/CLI/native platform package. Configure pub.dev `zanminwang/axton`, `v{{version}}`, environment `release` after the first package exists.
-- [ ] Register/install the release GitHub App with Contents and Pull requests write on AXTON only. Set repository variable `AXTON_RELEASE_APP_ID` and secret `AXTON_RELEASE_APP_PRIVATE_KEY` through GitHub settings. Align main/tag rules with the bot's required permissions; avoid per-release approval gates.
+- [ ] Register/install the release GitHub App with Contents and Pull requests write on AXTON only. Set repository variable `AXTON_RELEASE_APP_CLIENT_ID` (the App's Client ID, which `actions/create-github-app-token` v3 takes in place of the deprecated App ID) and secret `AXTON_RELEASE_APP_PRIVATE_KEY` through GitHub settings. Align main/tag rules with the bot's required permissions; avoid per-release approval gates.
 - [ ] Record the actual release URL, npm/pub.dev versions and artifact checksums in the implementation result. Do not claim automation is proven yet.
 
 ## Task 8 — Prove unattended publishing and document recovery

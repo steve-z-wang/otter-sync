@@ -96,7 +96,7 @@ The first release has an explicit bootstrap phase because package administration
 | Configure npm trusted publisher for every npm package, bound to `zanminwang/axton`, `release-publish.yml`, environment `release` | After package creation where necessary | Produce exact package checklist; subsequent uploads use OIDC |
 | Mark the `axton` package unlisted on pub.dev's admin page | After first Dart upload | Link the admin page; confirm the listing state |
 | Enable pub.dev GitHub automation: repository `zanminwang/axton`, pattern `v{{version}}`, environment `release` | After first Dart upload | Validate tag workflow against these exact values |
-| Create/install GitHub release App scoped to AXTON with Contents and Pull requests write; store App ID and private key in GitHub configuration | Before automatic tagging | Reference `AXTON_RELEASE_APP_ID` variable and `AXTON_RELEASE_APP_PRIVATE_KEY` secret; no key in source or chat |
+| Create/install GitHub release App scoped to AXTON with Contents and Pull requests write; store its Client ID and private key in GitHub configuration | Before automatic tagging | Reference `AXTON_RELEASE_APP_CLIENT_ID` variable and `AXTON_RELEASE_APP_PRIVATE_KEY` secret; no key in source or chat |
 | Grant required repository settings access; protect main and version tags | Before enabling automatic releases | Configure workflow permissions and release environment without per-release manual approval |
 
 A domain-verified pub.dev publisher is optional. It needs domain verification and can be set up after the initial Google-account publication; it is not a first-release dependency. No account is needed on nodejs.org or dart.dev for package hosting: the registries are npmjs.com and pub.dev.

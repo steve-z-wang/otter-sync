@@ -33,11 +33,45 @@ export const RETRYABLE_SQLSTATES: ReadonlySet<string> = new Set([
   "40P01",
 ]);
 
-/** Run `attempt` up to `retries + 1` times while `isRetryable(error)` holds. */
+/**
+ * The first retry waits below this many milliseconds; each later one doubles
+ * the bound, so with the default three retries a call waits under 140 ms in
+ * all (20 + 40 + 80) before its last failure is reported. Chosen by
+ * measurement: on near-empty framework tables, where page-level predicate
+ * locks make transactions on disjoint rows conflict, a shorter wait left
+ * noticeably more calls exhausting their retries ([Persistence
+ * §11](../../../docs/engineering/architecture/server/persistence.md)).
+ */
+export const RETRY_BACKOFF_BASE_MS = 20;
+/** No single retry waits 400 milliseconds or more, however many `retries` allow. */
+export const RETRY_BACKOFF_CAP_MS = 400;
+
+/**
+ * How long to wait before retry number `retry` (0 for the first): full
+ * jitter, a uniformly random delay below `min(cap, base * 2^retry)`.
+ * Transactions that failed serialization together would otherwise restart
+ * together and collide again; spreading them apart lets them commit in turn.
+ */
+export function retryDelay(
+  retry: number,
+  random: () => number = Math.random,
+): number {
+  const ceiling = Math.min(
+    RETRY_BACKOFF_CAP_MS,
+    RETRY_BACKOFF_BASE_MS * 2 ** retry,
+  );
+  return Math.floor(random() * ceiling);
+}
+
+/**
+ * Run `attempt` up to `retries + 1` times while `isRetryable(error)` holds,
+ * waiting `delay(n)` milliseconds before retry `n` (default `retryDelay`).
+ */
 export async function withRetries<R>(
   attempt: () => Promise<R>,
   isRetryable: (error: unknown) => boolean,
   retries: number,
+  delay: (retry: number) => number = retryDelay,
 ): Promise<R> {
   for (let n = 0; ; n++) {
     try {
@@ -45,6 +79,8 @@ export async function withRetries<R>(
     } catch (error) {
       if (!isRetryable(error) || n >= retries) throw error;
     }
+    const wait = delay(n);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   }
 }
 

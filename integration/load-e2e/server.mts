@@ -11,7 +11,8 @@ import { pg, type PgClient } from "../../packages/postgres/index.mts";
 import { CallRejected, createBackend, devAuth, type Loaders, type Loads, type LoadNext, type Mutations } from "./backend.ts";
 
 /** One page as a handler executed it. */
-export type Handled = { load: "ProjectItems" | "Catalog"; loadId: string; callId: string; key: string | null; continuation: LoadNext };
+/** One handler run; `xact` is its transaction's ID, so a run retried after a serialization failure is told apart from its committed run. */
+export type Handled = { load: "ProjectItems" | "Catalog"; loadId: string; callId: string; key: string | null; continuation: LoadNext; xact: string };
 
 /**
  * A single-use pause at a named point: the first arrival matching `match`
@@ -52,6 +53,7 @@ export async function createFixture() {
   const failing = new Set<string>();
   const handlerHolds = new Holds<Handled>();
   const loaderHolds = new Holds<string[]>();
+  const xact = async (tx: PgClient) => String((await tx.query("SELECT pg_current_xact_id()::text AS xact")).rows[0].xact);
   const itemIds = async (tx: PgClient, sql: string, parameters: unknown[]) =>
     (await tx.query(sql, parameters)).rows.map((row) => ({ id: String(row.id) }));
 
@@ -76,7 +78,7 @@ export async function createFixture() {
      * nested metadata that must round-trip exactly.
      */
     async projectItems({ ctx, args, continuation }) {
-      const page: Handled = { load: "ProjectItems", loadId: ctx.loadId, callId: ctx.callId, key: args.project, continuation };
+      const page: Handled = { load: "ProjectItems", loadId: ctx.loadId, callId: ctx.callId, key: args.project, continuation, xact: await xact(ctx.tx) };
       handled.push(page);
       await handlerHolds.pass(page);
       if (failing.has(args.project)) throw new CallRejected("project.closed");
@@ -96,7 +98,7 @@ export async function createFixture() {
      * is empty and completes.
      */
     async catalog({ ctx, args, continuation }) {
-      const page: Handled = { load: "Catalog", loadId: ctx.loadId, callId: ctx.callId, key: args.shelf, continuation };
+      const page: Handled = { load: "Catalog", loadId: ctx.loadId, callId: ctx.callId, key: args.shelf, continuation, xact: await xact(ctx.tx) };
       handled.push(page);
       await handlerHolds.pass(page);
       const shelf = `shelf:${args.shelf ?? "all"}`;

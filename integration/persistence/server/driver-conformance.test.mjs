@@ -10,7 +10,7 @@ import {createRequire} from 'node:module';
 import {Pool} from 'pg';
 import {drizzle as drizzleOrm} from 'drizzle-orm/node-postgres';
 import {createBackend} from '../../../packages/server/index.mts';
-import {pg,prisma,drizzle,answer,pgDriver} from '../../../packages/postgres/index.mts';
+import {pg,prisma,drizzle,answer,pgDriver,withRetries,retryDelay,RETRY_BACKOFF_BASE_MS,RETRY_BACKOFF_CAP_MS} from '../../../packages/postgres/index.mts';
 const require=createRequire(import.meta.url);
 const {PrismaClient}=require('../../bindings/node/generated/client');
 const url=process.env.DATABASE_URL;
@@ -327,9 +327,12 @@ for(const shim of shims){
   // Read let B commit on its stale view (the foreign key's KEY SHARE lock
   // only); at Serializable, the level every shim runs since #202, B's stale
   // membership read and A's key check of the row B writes form a cycle, so B
-  // restarts either way. The guard stays for transactions AXTON does not open:
-  // a caller-owned transaction around backend.publish may run at Repeatable Read.
-  const trial=async(name,guard)=>{
+  // restarts either way. The guard is what still makes B restart when A is a
+  // transaction AXTON does not open: a caller-owned transaction around
+  // backend.publish at Repeatable Read, which takes no predicate locks. The
+  // mixed-level trials below pin that; a guard weakened to SELECT … FOR UPDATE
+  // or removed lets B commit on its stale view there.
+  const trial=async(name,guard,writerA=inTx)=>{
    const rec={model:'Task',identityKey:key(p(name))};const channel=p(`${name}-ch`);
    await inTx((tx,_,x)=>x({op:'ensureStamp',...rec}));
    const seen=[];let entered,release;const inside=new Promise(r=>{entered=r;});const gate=new Promise(r=>{release=r;});
@@ -339,7 +342,7 @@ for(const shim of shims){
     return x({op:'advanceStamp',...rec});
    });
    await Promise.race([inside,writerB.then(()=>{throw new Error('B finished before its snapshot was held');})]);
-   await inTx(async(tx,_,x)=>{if(guard)assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'setMembership',channel,...rec,present:true});});
+   await writerA(async(tx,_,x)=>{if(guard)assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'setMembership',channel,...rec,present:true});});
    release();
    const stamp=await writerB;
    return {seen,stamp,channel,rec};
@@ -351,6 +354,23 @@ for(const shim of shims){
   const unguarded=await trial('rr-unguarded',false);
   assert.deepEqual(unguarded.seen,[[],[unguarded.channel]],'at Serializable the stale writer restarts even without the no-op UPDATE');
   assert.equal(unguarded.stamp,2);
+  // Mixed levels: A at Repeatable Read on a raw pg client (a caller-owned
+  // transaction), B the shim's Serializable writer.
+  const pool=new Pool({connectionString:url});const persistence=pgDriver(pool);
+  const repeatableRead=async body=>{
+   const client=await pool.connect();
+   try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');const result=await body(client,(sql,params=[])=>persistence.query(client,sql,params),r=>answer(persistence,client,r));await client.query('COMMIT');return result;}
+   catch(error){await client.query('ROLLBACK');throw error;}
+   finally{client.release();}
+  };
+  try{
+   const mixedGuarded=await trial('rr-mixed-guarded',true,repeatableRead);
+   assert.deepEqual(mixedGuarded.seen,[[],[mixedGuarded.channel]],'the guard\'s row write makes the Serializable writer fail serialization and retry');
+   assert.equal(mixedGuarded.stamp,2);
+   const mixedUnguarded=await trial('rr-mixed-unguarded',false,repeatableRead);
+   assert.deepEqual(mixedUnguarded.seen,[[]],'control: without the guard a Repeatable Read enrolment leaves the Serializable writer committing on its stale view');
+   assert.equal(mixedUnguarded.stamp,2);
+  }finally{await pool.end();}
   // The same conflict when B's write reaches the row while A still holds it:
   // B waits on A's row lock, and A's commit makes B restart rather than proceed.
   const rec={model:'Task',identityKey:key(p('rr-blocked'))};const channel=p('rr-blocked-ch');
@@ -411,6 +431,25 @@ test('control: at Repeatable Read both lock-then-recheck races commit on a stale
   assert.deepEqual(star.runs,{first:1,second:1});
   assert.deepEqual([star.posts,star.stars],[[],[{id:'rr-star-star'}]],'an orphan Star the cleanup missed');
  }finally{await pool.end();}
+});
+
+test('a retry waits a jittered, doubling, capped delay first; the last failure and a non-retryable one are thrown at once',async()=>{
+ assert.deepEqual([RETRY_BACKOFF_BASE_MS,RETRY_BACKOFF_CAP_MS],[20,400]);
+ assert.deepEqual([0,1,2,3,4,5,9].map(n=>retryDelay(n,()=>0.999999)),[19,39,79,159,319,399,399],'just below min(cap, base * 2^n)');
+ assert.deepEqual([0,1,2].map(n=>retryDelay(n,()=>0)),[0,0,0],'full jitter reaches zero');
+ for(let n=0;n<200;n++){const d=retryDelay(n%6);assert.ok(Number.isInteger(d)&&d>=0&&d<Math.min(400,20*2**(n%6)));}
+ const events=[];const conflict=Object.assign(new Error('conflict'),{code:'40001'});
+ const failing=failures=>async()=>{events.push('attempt');if(failures-->0)throw conflict;return 'done';};
+ const delay=n=>{events.push(`wait ${n}`);return 1;};
+ const retryable=error=>error?.code==='40001';
+ assert.equal(await withRetries(failing(2),retryable,3,delay),'done');
+ assert.deepEqual(events,['attempt','wait 0','attempt','wait 1','attempt']);
+ events.length=0;
+ await assert.rejects(()=>withRetries(failing(9),retryable,2,delay),error=>error===conflict);
+ assert.deepEqual(events,['attempt','wait 0','attempt','wait 1','attempt'],'no wait after the last attempt');
+ events.length=0;
+ await assert.rejects(()=>withRetries(async()=>{events.push('attempt');throw new Error('other');},retryable,3,delay),/other/);
+ assert.deepEqual(events,['attempt'],'a non-retryable failure is thrown without waiting');
 });
 
 test('the pg driver retries only serialization failures, a bounded number of times',async()=>{

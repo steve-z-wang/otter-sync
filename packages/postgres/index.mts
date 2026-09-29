@@ -5,7 +5,13 @@
  * shims; `persistence(driver)` builds the `database` option from any other.
  */
 export type { PostgresDriver, DriverOptions } from "./src/driver.mts";
-export { RETRYABLE_SQLSTATES, withRetries } from "./src/driver.mts";
+export {
+  RETRYABLE_SQLSTATES,
+  RETRY_BACKOFF_BASE_MS,
+  RETRY_BACKOFF_CAP_MS,
+  retryDelay,
+  withRetries,
+} from "./src/driver.mts";
 export { persistence, answer } from "./src/persistence.mts";
 export { pg, pgDriver, type PgClient, type PgPool } from "./src/pg.mts";
 export {

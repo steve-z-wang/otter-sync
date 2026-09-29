@@ -1,6 +1,6 @@
 # Serializable backend transactions (#202)
 
-Status: decided 2026-09-28 by the maintainer. Not yet implemented.
+Status: decided 2026-09-28 by the maintainer. Implemented in [#206](https://github.com/zanminwang/axton/pull/206).
 
 ## Problem
 

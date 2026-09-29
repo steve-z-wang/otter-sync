@@ -490,7 +490,10 @@ export interface BackendOptions<T> {
    * to the client only as that mutation's rejection code), and every
    * server-side failure clients see only as `{ code: "server" }` -
    * authenticate throws, persistence faults, loader defects, live drain
-   * failures.
+   * failures. A handler or loader failure is reported from inside the
+   * application transaction, before it commits: when that transaction is
+   * then retried after a serialization failure, the same failure can be
+   * reported again, once per attempt.
    */
   onError?: (error: unknown) => void;
 }

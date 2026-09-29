@@ -262,7 +262,7 @@ It runs on every listener route and the WebSocket upgrade, after `authenticate` 
 | --- | --- |
 | `new CallRejected(code)` | Reject one Mutation or Query call with a stable machine-readable code |
 | `translateRejection(error)` | Return a stable rejection code for a known application error; return null/undefined for other errors |
-| `onError(error)` | Log server failures that are returned to the client as a generic server error |
+| `onError(error)` | Log server failures that are returned to the client as a generic server error. A handler or Loader failure is reported inside the transaction, so a transaction retried after a serialization failure can report the same failure once per attempt |
 | `EngineError` | A failure from the native engine: `code` (stable), `message` (readable, may change), `details` (fields the code promises) |
 
 Codes must match `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`, such as `todo.title_empty`. A recognized business rejection rolls back that call's business writes, stamps, memberships and deliveries. For a queued call, `wait()` returns a `CallError` outcome and any optimistic Model change rolls back; the durable rejection remains inspectable until dismissed. For a direct call, the promise rejects with `CallError`. An unknown transport outcome can be retried with the same call identity; it is not evidence that the handler did nothing.

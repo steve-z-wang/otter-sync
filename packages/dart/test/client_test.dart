@@ -55,8 +55,7 @@ Future<String?> text(Client client) async =>
     (await client.read('Entry', {'id': 'e'}))?['text'] as String?;
 
 void main() {
-  test('default native loader is reserved for iOS process symbols', () async {
-    if (Platform.isIOS) return;
+  test('a checkout bundles no library: open needs libraryPath', () async {
     await expectLater(
       Client.open(path: 'unused', schema: const {}),
       throwsA(

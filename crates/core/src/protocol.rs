@@ -37,6 +37,13 @@ pub mod limits {
     pub const LOAD_STATE_DEPTH: usize = 64;
     /// UTF-8 bytes of one Load item error message.
     pub const LOAD_ERROR_MESSAGE_BYTES: usize = 1024;
+    /// Distinct Channel/record pairs one Load page may enroll. Repeated
+    /// declarations of a pair count once, like the page's identities.
+    pub const LOAD_ENROLLMENT_PAIRS: usize = 1000;
+    /// The encoded bytes of one Load page's distinct enrollment: the sum of
+    /// the UTF-8 lengths of each pair's canonical JSON intent
+    /// `{channel, identity, model, present}` at its canonical identity.
+    pub const LOAD_ENROLLMENT_BYTES: usize = 1024 * 1024;
 }
 
 pub fn counter(value: u64) -> Result<u64> {

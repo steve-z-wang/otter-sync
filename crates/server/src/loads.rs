@@ -5,6 +5,12 @@
 //! transaction. A repeated call ID answers the saved outcome without running
 //! the handler or any Loader.
 //!
+//! A fresh page may also enroll records it loaded into Channels, as the
+//! add-only handles of its handler declared. The enrollment is judged against
+//! the validated page before any read and settled by shared settlement once
+//! the page is final, inside the page's savepoint: it commits or rolls back
+//! with the page, and a replay never repeats it.
+//!
 //! An HTTP batch is transport grouping only: the host validates the envelope
 //! once with [`validate_load_batch`] and runs [`process_load`] for each item
 //! in its own transaction, so no two items share a transaction, a savepoint
@@ -12,7 +18,10 @@
 //! that escaped its transaction, to [`encode_load_batch`], which classifies
 //! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
-use crate::host::{Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, Stamps};
+use crate::host::{
+    Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, MembershipIntent, Stamps,
+};
+use crate::settlement::{Changes, settle_changes};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -22,7 +31,7 @@ use axton_core::{
     normalize_load_args, validate_load_data,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 /// The one savepoint of a page's own transaction.
 const ORDINAL: u64 = 1;
@@ -188,24 +197,14 @@ async fn execute_fresh(
             load_id: intent.load_id.clone(),
         })
         .await?;
-    let (data, next) = match handled {
+    let (data, next, memberships) = match handled {
         HandledLoad::Rejected { rejection } => return Err(Error::code(rejection)),
         HandledLoad::Failed { .. } => return Err(Error::code(code::HANDLER_FAILED)),
         HandledLoad::Settled {
             data,
             next,
             memberships,
-        } => {
-            // Settled by the next checkpoint; until then an enrollment is
-            // refused rather than silently dropped.
-            if !memberships.is_empty() {
-                return Err(Error::new(
-                    code::HANDLER_INVALID,
-                    "Load enrollment is not supported yet",
-                ));
-            }
-            (data, next)
-        }
+        } => (data, next, memberships),
     };
     // Judged here whatever the host bridge already did, before the data: a
     // missing or malformed `next` wrapper and a state past the portable
@@ -233,8 +232,10 @@ async fn execute_fresh(
     }
     let data = validate_load_data(&config.schema, load, &data)
         .map_err(|error| Error::new(code::HANDLER_INVALID, error.to_string()))?;
-    // Distinct identities per Model, whichever outputs repeat them.
+    // Distinct identities per Model, whichever outputs repeat them, and the
+    // canonical keys of every record the page names.
     let mut groups: BTreeMap<String, BTreeMap<String, RecordKey>> = BTreeMap::new();
+    let mut data_keys = BTreeSet::new();
     for output in &load.outputs {
         let model = output
             .model
@@ -245,12 +246,16 @@ async fn execute_fresh(
                 .schema
                 .record_key(model, identity)
                 .map_err(|error| Error::new(code::HANDLER_INVALID, error.to_string()))?;
+            data_keys.insert(key.encoded().map_err(internal)?);
             groups
                 .entry(model.into())
                 .or_default()
                 .insert(key.encoded_identity().map_err(internal)?, key);
         }
     }
+    // Judged before any read: an enrollment the page may not declare costs
+    // no stamp or Loader work.
+    let memberships = validate_enrollment(config, &data_keys, memberships)?;
     let mut records = vec![];
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
@@ -283,7 +288,81 @@ async fn execute_fresh(
                 error.message
             )),
         })?;
+    // The page is final. Its enrollment settles as an external transaction's
+    // unchanged records do: a new member keeps the stamp `resolve` read (and
+    // initialized) for this page and gains one position at it; an existing
+    // one publishes nothing. No loaded record is touched. A host fault here
+    // escapes the page transaction like any other.
+    settle_changes(config, &Changes::new(), &memberships, host).await?;
     Ok(page)
+}
+
+/// The page's enrollment as canonical, distinct Channel/record additions.
+/// Each intent must add (`present`) to a named Channel a record of a loaded
+/// Model, under a valid identity, that the page's validated outputs name:
+/// `data_keys` holds their canonical keys. Repeated pairs count once toward
+/// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
+/// and validation stops at the first pair past either bound.
+fn validate_enrollment(
+    config: &Config,
+    data_keys: &BTreeSet<String>,
+    memberships: Vec<MembershipIntent>,
+) -> Result<Vec<MembershipIntent>> {
+    let invalid = |message: String| Error::new(code::HANDLER_INVALID, message);
+    let too_large = |message: String| Error::new(code::LOAD_PAGE_TOO_LARGE, message);
+    let mut pairs: BTreeMap<(String, String), MembershipIntent> = BTreeMap::new();
+    let mut bytes = 0;
+    for intent in memberships {
+        if !intent.present {
+            return Err(invalid(format!(
+                "a Load only adds records to Channels; it removes {} from {}",
+                intent.model, intent.channel
+            )));
+        }
+        if axton_core::check_channel(&intent.channel).is_err() {
+            return Err(invalid("Load enrollment names a blank Channel".into()));
+        }
+        let key = config
+            .schema
+            .record_key(&intent.model, &intent.identity)
+            .map_err(|error| invalid(error.to_string()))?;
+        if !config.loaders.contains(&key.model) {
+            return Err(crate::settlement::unregistered(&key.model));
+        }
+        let encoded = key.encoded().map_err(internal)?;
+        if !data_keys.contains(&encoded) {
+            return Err(invalid(format!(
+                "Load enrolls {} {} that its page does not return",
+                key.model, key.identity
+            )));
+        }
+        let Entry::Vacant(pair) = pairs.entry((intent.channel.clone(), encoded)) else {
+            continue;
+        };
+        let canonical = MembershipIntent {
+            channel: intent.channel,
+            model: key.model,
+            identity: key.identity,
+            present: true,
+        };
+        bytes += canonical_json(&serde_json::to_value(&canonical).map_err(internal)?)
+            .map_err(internal)?
+            .len();
+        pair.insert(canonical);
+        if pairs.len() > limits::LOAD_ENROLLMENT_PAIRS {
+            return Err(too_large(format!(
+                "Load page enrolls more than {} Channel/record pairs",
+                limits::LOAD_ENROLLMENT_PAIRS
+            )));
+        }
+        if bytes > limits::LOAD_ENROLLMENT_BYTES {
+            return Err(too_large(format!(
+                "Load page enrollment encodes to more than {} bytes",
+                limits::LOAD_ENROLLMENT_BYTES
+            )));
+        }
+    }
+    Ok(pairs.into_values().collect())
 }
 
 /// The handler's `next` member as a continuation: `null` or exactly

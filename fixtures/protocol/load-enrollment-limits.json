@@ -1,0 +1,60 @@
+{
+  "description": "Bounds on the Channel enrollment one Load page declares, after deduplicating repeated Channel/record pairs. A pair's bytes are the UTF-8 length of the canonical JSON of its intent {channel, identity, model, present} with its canonical identity.",
+  "pairs": 1000,
+  "bytes": 1048576,
+  "intents": [
+    {
+      "name": "an ASCII pair",
+      "intent": {
+        "channel": "project:p1",
+        "model": "Todo",
+        "identity": {
+          "id": "t1"
+        },
+        "present": true
+      },
+      "encoded": "{\"channel\":\"project:p1\",\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\",\"present\":true}",
+      "bytes": 77
+    },
+    {
+      "name": "multibyte UTF-8 counts bytes, not characters",
+      "intent": {
+        "channel": "équipe",
+        "model": "Todo",
+        "identity": {
+          "id": "日本"
+        },
+        "present": true
+      },
+      "encoded": "{\"channel\":\"équipe\",\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\",\"present\":true}",
+      "bytes": 78
+    },
+    {
+      "name": "escapes and an astral character",
+      "intent": {
+        "channel": "a\"b\n😀",
+        "model": "Todo",
+        "identity": {
+          "id": "t\\1"
+        },
+        "present": true
+      },
+      "encoded": "{\"channel\":\"a\\\"b\\n😀\",\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\",\"present\":true}",
+      "bytes": 79
+    },
+    {
+      "name": "identity members in canonical order",
+      "intent": {
+        "channel": "org",
+        "model": "Member",
+        "identity": {
+          "userId": "u1",
+          "orgId": "o1"
+        },
+        "present": true
+      },
+      "encoded": "{\"channel\":\"org\",\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\",\"present\":true}",
+      "bytes": 89
+    }
+  ]
+}

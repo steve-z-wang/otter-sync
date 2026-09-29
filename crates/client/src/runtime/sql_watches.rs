@@ -16,6 +16,9 @@
 //! result that differs from the last one. A commit that writes none of its
 //! tables does not re-run it. A re-run that fails is reported and the watch
 //! stays; `unwatch` ends it with no snapshot, and close with a terminal one.
+//! Both also remove its engine watcher. A statement that reads no table a
+//! commit writes (`SELECT 1`, SQLite's own `sqlite_*` tables) registers
+//! none: no commit signals it.
 use super::*;
 use std::sync::mpsc::Receiver;
 
@@ -28,21 +31,23 @@ pub(super) struct SqlWatches {
 struct SqlWatch {
     sql: String,
     parameters: Vec<Value>,
-    /// Signalled by every commit that wrote a table the statement reads.
-    changes: Receiver<()>,
+    /// The engine watcher, by its id, signalled by every commit that wrote a
+    /// table the statement reads; none when it reads no table.
+    changes: Option<(u64, Receiver<()>)>,
     rows: Value,
     /// `rows` were published.
     published: bool,
 }
 
-impl SqlWatches {
-    /// Forget a watch; whether it was one of these.
-    pub(super) fn remove(&mut self, id: u64) -> bool {
-        self.watches.remove(&id).is_some()
-    }
-}
-
 impl<S: ClientStore + 'static> ClientRuntime<S> {
+    /// `unwatch` of one of these: forget it and its engine watcher.
+    pub(super) fn unwatch_sql(&mut self, id: u64) {
+        if let Some(watch) = self.observers.sql.watches.remove(&id)
+            && let Some((watcher, _)) = watch.changes
+        {
+            self.client.unwatch(watcher);
+        }
+    }
     /// `watchSql {sql, parameters}`: find the tables, run the statement now
     /// and publish its rows after the task's completion.
     pub(super) fn watch_sql(
@@ -56,7 +61,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .read_sql(sql, parameters)
             .map_err(|e| e.to_string())?;
         let id = self.issue()?;
-        let changes = self.client.watch(tables);
+        // SQLite's own tables (`sqlite_schema`, `dbstat`'s source) are in no
+        // commit's written set: only the others can signal the watch.
+        let tables: BTreeSet<String> = tables
+            .into_iter()
+            .filter(|table| !table.to_ascii_lowercase().starts_with("sqlite_"))
+            .collect();
+        let changes = (!tables.is_empty()).then(|| self.client.watch_keyed(tables));
         self.observers.sql.watches.insert(
             id,
             SqlWatch {
@@ -82,7 +93,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             let Some(watch) = self.observers.sql.watches.get(&id) else {
                 continue;
             };
-            if watch.changes.try_iter().count() == 0 {
+            let signalled = watch
+                .changes
+                .as_ref()
+                .is_some_and(|(_, changes)| changes.try_iter().count() > 0);
+            if !signalled {
                 continue;
             }
             let (sql, parameters) = (watch.sql.clone(), watch.parameters.clone());
@@ -120,6 +135,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// rows.
     pub(super) fn close_sql_watches(&mut self) {
         for (id, watch) in std::mem::take(&mut self.observers.sql.watches) {
+            if let Some((watcher, _)) = watch.changes {
+                self.client.unwatch(watcher);
+            }
             self.events.push(Event::ObserverChanged {
                 observer_id: id.to_string(),
                 snapshot: json!({"kind": "watch", "rows": watch.rows, "closed": true}),

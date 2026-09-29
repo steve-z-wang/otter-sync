@@ -240,7 +240,10 @@ pub struct Client<S: ClientStore> {
     generation: u64,
     /// The replica generation Load fences carry: a rebuild replaces it.
     replica: u64,
-    watchers: Vec<(BTreeSet<String>, Sender<()>)>,
+    /// Table watchers by the id [`Client::watch_keyed`] answered.
+    watchers: Vec<(u64, BTreeSet<String>, Sender<()>)>,
+    /// The last watcher id issued.
+    watcher_ids: u64,
     session: Option<Session>,
     /// Physical rollback failure after the logical session has been taken.
     /// The runtime consumes this separately from the original owner error.
@@ -471,6 +474,7 @@ impl<S: ClientStore> Client<S> {
             generation,
             replica: 1,
             watchers: vec![],
+            watcher_ids: 0,
             session: None,
             physical_rollback_failure: None,
             last_changed: BTreeSet::new(),
@@ -675,6 +679,7 @@ impl<S: ClientStore> Client<S> {
             .clone()
             .ok_or_else(|| invalid("rebuild produced no report"))?;
         fresh.watchers = std::mem::take(&mut self.watchers);
+        fresh.watcher_ids = self.watcher_ids;
         fresh.replica = self.replica + 1;
         *self = fresh;
         let tables: BTreeSet<String> = self.schema.models.iter().map(|m| m.name.clone()).collect();
@@ -700,14 +705,29 @@ impl<S: ClientStore> Client<S> {
         self.session.is_some()
     }
     pub fn watch(&mut self, tables: BTreeSet<String>) -> Receiver<()> {
+        self.watch_keyed(tables).1
+    }
+    /// [`Client::watch`], with the id [`Client::unwatch`] removes it by. A
+    /// watcher whose receiver is dropped is otherwise kept until a commit
+    /// to one of its tables finds it gone.
+    pub fn watch_keyed(&mut self, tables: BTreeSet<String>) -> (u64, Receiver<()>) {
         let (tx, rx) = mpsc::channel();
-        self.watchers.push((tables, tx));
-        rx
+        self.watcher_ids += 1;
+        self.watchers.push((self.watcher_ids, tables, tx));
+        (self.watcher_ids, rx)
+    }
+    /// Forget the watcher `id`; an unknown id changes nothing.
+    pub fn unwatch(&mut self, id: u64) {
+        self.watchers.retain(|(watcher, _, _)| *watcher != id);
+    }
+    /// The table watchers registered.
+    pub fn watcher_count(&self) -> usize {
+        self.watchers.len()
     }
     fn notify(&mut self, mut changed: BTreeSet<String>) {
         self.last_bootstrap = strip_marks(&mut changed, BOOTSTRAP_MARK);
         self.pulls.absorb(&mut changed);
-        self.watchers.retain(|(tables, sender)| {
+        self.watchers.retain(|(_, tables, sender)| {
             if tables.iter().any(|t| changed.contains(t)) {
                 sender.send(()).is_ok()
             } else {

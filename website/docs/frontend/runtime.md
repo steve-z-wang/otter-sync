@@ -129,7 +129,7 @@ A commit to a table the statement reads runs it again even when none of its rows
 
 The layout SQL sees is a stable contract, so product SQL keeps working across AXTON upgrades:
 
-- A Model's table is named exactly the Model name (`"Entry"`, `"MomentPlacement"`), and each column exactly its field name. Quote names that are not lower case.
+- A Model's table is named exactly the Model name (`"Entry"`, `"MomentPlacement"`), and each column exactly its field name. SQLite compares names without case; quote a name only when it is a reserved word or contains unusual characters.
 - Every table AXTON owns is named `axton_*`. Do not read those tables; their layout can change in any release, and `watchSql` refuses them.
 - Changing either rule is a breaking change.
 

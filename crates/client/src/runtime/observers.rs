@@ -551,7 +551,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if let Ok(id) = observer_id.parse::<u64>()
             && self.observers.watches.remove(&id).is_none()
         {
-            self.observers.sql.remove(id);
+            self.unwatch_sql(id);
         }
         Ok(Value::Null)
     }

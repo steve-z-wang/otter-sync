@@ -5411,3 +5411,43 @@ fn a_rebuild_keeps_a_watched_statement_and_re_runs_it() {
     );
     assert_eq!(rows(&events, &entries), [json!([{"id":"f"}])]);
 }
+
+/// A watched statement's engine watcher lives exactly as long as the watch:
+/// `unwatch` and close remove it, and a statement that reads no table
+/// registers none, so mounting and unmounting a view leaves nothing behind.
+#[test]
+fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registers_none() {
+    let mut h = host_with(journal_schema());
+    let before = h.client().watcher_count();
+    let (none, events) = h.watch_sql("constant", "SELECT 1 AS one", json!([]));
+    assert_eq!(rows(&events, &none), [json!([{"one":1}])]);
+    let (schema, _) = h.watch_sql(
+        "schema",
+        "SELECT count(*) AS n FROM sqlite_master",
+        json!([]),
+    );
+    assert_eq!(
+        h.client().watcher_count(),
+        before,
+        "no table a commit writes, no watcher"
+    );
+    // Mount and unmount a view over rarely written data many times.
+    for round in 0..5 {
+        let (notes, _) = h.watch_sql(&format!("notes{round}"), "SELECT id FROM Note", json!([]));
+        assert_eq!(h.client().watcher_count(), before + 1);
+        h.commit(
+            &format!("stop{round}"),
+            json!({"kind":"unwatch","observerId":notes}),
+        );
+        assert_eq!(h.client().watcher_count(), before, "round {round}");
+    }
+    let (kept, _) = h.watch_sql("kept", JOURNAL, json!([]));
+    assert_eq!(h.client().watcher_count(), before + 1);
+    let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
+    assert!(rows(&events, &none).is_empty() && rows(&events, &schema).is_empty());
+    h.submit(json!({"type":"close"}));
+    let events = h.run();
+    assert_eq!(snapshots(&events, &kept)[0]["closed"], true);
+    assert_eq!(snapshots(&events, &none)[0]["closed"], true);
+    assert_eq!(h.client().watcher_count(), before, "close removes it");
+}

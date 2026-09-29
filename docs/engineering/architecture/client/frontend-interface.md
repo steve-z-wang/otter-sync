@@ -19,7 +19,7 @@ The surface, grouped by purpose:
 | Reads on the last commit | `read`, `query`, `query_spec`, `related`, `referencing`, `read_sql`; `sql_tables` names the tables a read-only statement reads |
 | Sync | `freeze`, `acknowledge` (returns authority reports and transient call completions; [Settlement](engine/settlement.md)), `prepare_action` and `apply_action_response` for direct calls, `prepare_fetch`, `decode_fetch` and `apply_fetch_response` for Model Fetch, `downlink_request`, `apply_page` and `receive_downlink`, plus the `SyncCycle` and `ConnectionDriver` state machines |
 | State and control | `pending_count`, `cursor`, `subscriptions`, `subscription_generation` (how many subscribes and unsubscribes committed since open; the [downlink](connection/controller/downlink-worker.md) session restarts when it changes), `rejections`, `record_status` (pending entries carry `diverged` when their replay failed over new authority), `pending_tasks`, `outcome`, `set_readiness`, `drop_mutation`, `dismiss_rejection`, `schema_state` (`rebuilt`, `pending`, `last_rebuild`) |
-| Notification | `watch(tables)` → a receiver signalled when a commit touched one of the tables |
+| Notification | `watch(tables)` → a receiver signalled when a commit touched one of the tables; `watch_keyed(tables)` also answers an id that `unwatch(id)` removes it by (a watcher whose receiver is dropped is otherwise kept until a commit to one of its tables) |
 
 ## 5. Building Block View
 

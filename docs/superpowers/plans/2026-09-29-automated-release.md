@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use superpowers:executing-plans to implement this plan task by task. Checkboxes track execution; none are marked complete by documentation work.
 
-**Decision status:** The user selected the standard release-PR flow on 2026-09-29. The same day the maintainer scoped the first release to alpha distribution, two host targets and minimal recovery, and moved the Dart native-asset spike first.
+**Decision status:** The user selected the standard release-PR flow on 2026-09-29. The same day the maintainer scoped the first release to alpha distribution, two host targets and minimal recovery, and moved the Dart native-asset spike first. The v0.1.0 bootstrap published npm only; the Dart package's generated manifest moved from `hook/` to `lib/src/` for pub.dev, and its first version is 0.1.1 (see the spec's self-review record, #213).
 
 **Goal:** Publish AXTON as one versioned set of installable packages, automate releases after main merges, and remove Oasis's vendored copy.
 

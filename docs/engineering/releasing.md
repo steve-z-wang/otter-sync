@@ -52,15 +52,15 @@ npm and pub.dev accept trusted publishing only for packages that exist, so the m
 3. Publish to npm in dependency order after `npm login`:
 
    ```sh
-   npm publish axtonjs-native-darwin-arm64-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-cli-darwin-arm64-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-native-linux-x64-gnu-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-cli-linux-x64-gnu-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-native-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-cli-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-server-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-client-0.1.0.tgz --tag alpha --access public
-   npm publish axtonjs-postgres-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-native-darwin-arm64-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-cli-darwin-arm64-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-native-linux-x64-gnu-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-cli-linux-x64-gnu-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-native-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-cli-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-server-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-client-0.1.0.tgz --tag alpha --access public
+   npm publish ./axtonjs-postgres-0.1.0.tgz --tag alpha --access public
    ```
 
    A package's first version may also become `latest`; record `npm dist-tag ls @axtonjs/server` and leave it.
@@ -75,3 +75,5 @@ npm and pub.dev accept trusted publishing only for packages that exist, so the m
 5. Configure trusted publishing. On npmjs.com, for each of the nine packages, add a GitHub Actions trusted publisher: organization or user `zanminwang`, repository `axton`, workflow filename `release-publish.yml`, environment `release`, allowing `npm publish`; then set publishing access to require two-factor authentication and disallow tokens. On pub.dev, under `axton`'s admin page, enable automated publishing from GitHub Actions: repository `zanminwang/axton`, tag pattern `v{{version}}`, required environment `release`.
 6. Re-run the failed jobs of the `v0.1.0` run. The publish jobs find the matching versions and skip them, `verify-published` installs them from the registries, and `complete` finishes the release.
 7. Set up the release App last, so Release Please starts from the `v0.1.0` release. The next release PR merge proves the unattended flow.
+
+v0.1.0 published npm only: pub.dev rejected its Dart package, which carried `hook/native_manifest.dart` where pub.dev accepts only `hook/build.dart` and `hook/link.dart` ([#213](https://github.com/zanminwang/axton/issues/213)). The Dart package's first version is therefore 0.1.1. An interrupted bootstrap is completed by the next version: its run stops at the registry still missing, and steps 2 to 6 finish it from that version's release.

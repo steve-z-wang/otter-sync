@@ -76,5 +76,8 @@ if compgen -G "$artifacts/libaxton_dart-*" >/dev/null; then
 else
   echo "no libaxton_dart artifacts in $artifacts: the staged Dart package lists no native libraries" >&2
 fi
+# pub.dev accepts no hook/**/*.dart other than hook/build.dart and hook/link.dart.
+stray="$(cd "$dart_package" && find hook -name '*.dart' ! -path hook/build.dart ! -path hook/link.dart)"
+[[ -z "$stray" ]] || { echo "pub.dev rejects hook Dart files other than hook/build.dart and hook/link.dart: $stray" >&2; exit 1; }
 COPYFILE_DISABLE=1 tar -czf "$out/axton-dart-$version.tar.gz" -C "$dart_package" .
 node -e 'for (const p of require(process.argv[1])) console.log(`${p.filename} (${p.files.length} files)`)' "$out/packed.json"

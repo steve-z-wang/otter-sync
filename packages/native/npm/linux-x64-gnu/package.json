@@ -1,0 +1,33 @@
+{
+  "name": "@axtonjs/native-linux-x64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "axton-node.linux-x64-gnu.node",
+  "files": [
+    "axton-node.linux-x64-gnu.node"
+  ],
+  "description": "AXTON's prebuilt Node addon, selected for this platform.",
+  "author": "Zanmin Wang (https://zanminwang.com)",
+  "homepage": "https://github.com/zanminwang/axton#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanminwang/axton.git",
+    "directory": "packages/native"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

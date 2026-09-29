@@ -1,7 +1,7 @@
 import type { DriverOptions, PostgresDriver } from "./driver.mts";
 import { withRetries } from "./driver.mts";
 import { persistence } from "./persistence.mts";
-import { isRetryableTransactionError } from "../../server/retryable.mts";
+import { isRetryableTransactionError } from "@axtonjs/server";
 
 /** The part of a Prisma interactive transaction AXTON uses; `Prisma.TransactionClient` satisfies it. */
 export interface PrismaTransaction {

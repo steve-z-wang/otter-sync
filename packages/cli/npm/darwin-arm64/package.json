@@ -1,0 +1,26 @@
+{
+  "name": "@axtonjs/cli-darwin-arm64",
+  "version": "0.1.0",
+  "description": "The axton compiler for macOS arm64.",
+  "license": "MIT",
+  "author": "Zanmin Wang (https://zanminwang.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanminwang/axton.git",
+    "directory": "packages/cli/npm/darwin-arm64"
+  },
+  "homepage": "https://github.com/zanminwang/axton#readme",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/axton"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

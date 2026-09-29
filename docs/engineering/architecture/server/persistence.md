@@ -6,7 +6,7 @@ Persistence stores the framework's tables in the application's own database, thr
 
 ## 3. Context and Scope
 
-`@axton/postgres` ([packages/postgres](../../../../packages/postgres)) owns every SQL statement AXTON runs, the migration, and the driver interface a PostgreSQL access tool binds. `packages/server` knows no SQL: `createBackend({database})` takes a `Database<T>`, a `transaction(body)` runner plus a `persistence(tx)` factory whose `call(request)` answers the host operations below, and `@axton/postgres` builds that object from a driver.
+`@axtonjs/postgres` ([packages/postgres](../../../../packages/postgres)) owns every SQL statement AXTON runs, the migration, and the driver interface a PostgreSQL access tool binds. `packages/server` knows no SQL: `createBackend({database})` takes a `Database<T>`, a `transaction(body)` runner plus a `persistence(tx)` factory whose `call(request)` answers the host operations below, and `@axtonjs/postgres` builds that object from a driver.
 
 ```ts
 interface PostgresDriver<Tx> {

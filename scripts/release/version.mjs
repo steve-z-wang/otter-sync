@@ -4,13 +4,17 @@
 // release-please owns V: `.release-please-manifest.json` records it and its
 // built-in updaters rewrite the files listed in `release-please-config.json`
 // (the root package.json and package-lock.json through the node strategy, the
-// rest through `extra-files`). This script covers only what those updaters
-// cannot: the local packages recorded in Cargo.lock files and the path entries
-// for the Dart SDK in pubspec.lock files.
+// rest through `extra-files`). Lockfiles that record V for local packages are
+// refreshed by their own tools, which no release-please updater can replace:
+//
+//   cargo update --workspace --offline [--manifest-path bindings/node/Cargo.toml]
+//   dart pub get --offline            (in each Dart project with a pubspec.lock)
+//
+// This script only checks that every one of those places agrees with V, that
+// internal dependencies pin V exactly and that release-please covers them:
 //
 //   node scripts/release/version.mjs check   exits 1 on any disagreement
-//   node scripts/release/version.mjs sync    rewrites the lockfile entries to V
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -120,49 +124,22 @@ function walk(root, name, found = [], directory = root) {
   return found.sort();
 }
 
-/** Every Cargo.lock and pubspec.lock whose AXTON entries this script owns. */
+/** Every Cargo.lock and pubspec.lock, which record V for AXTON's own packages. */
 export function lockfiles(root) {
   return { cargo: walk(root, "Cargo.lock"), dart: walk(root, "pubspec.lock") };
 }
 
 // Cargo.lock: a local package has no `source`; all of them are AXTON crates.
-function cargoLock(text, version) {
-  const found = [];
-  const updated = text.replace(
-    /\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]+)"\n(?!source = )/g,
-    (block, name, current) => {
-      found.push({ name, version: current });
-      return `[[package]]\nname = "${name}"\nversion = "${version}"\n`;
-    },
+function cargoLock(text) {
+  return [...text.matchAll(/\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]+)"\n(?!source = )/g)].map(
+    ([, name, version]) => ({ name, version }),
   );
-  return { found, updated };
 }
 
 // pubspec.lock: the `axton` package resolved from a path is the Dart SDK.
-function pubspecLock(text, version) {
-  const found = [];
-  const updated = text.replace(
-    /^( {2}axton:\n(?: {4}.*\n| {6}.*\n)*? {4}source: path\n {4}version: )"([^"]+)"$/m,
-    (_, prefix, current) => {
-      found.push({ name: "axton", version: current });
-      return `${prefix}"${version}"`;
-    },
-  );
-  return { found, updated };
-}
-
-function internalPins(document, label, version, problems, covered) {
-  for (const field of DEPENDENCY_FIELDS) {
-    for (const [name, spec] of Object.entries(document[field] ?? {})) {
-      if (!name.startsWith(INTERNAL_SCOPE)) continue;
-      if (spec !== version) {
-        problems.push(`${label}: ${field} ${name} is ${spec}, expected exactly ${version}`);
-      }
-      if (covered && !covered.has(`${field}['${name}']`)) {
-        problems.push(`${label}: ${field} ${name} is not updated by release-please-config.json`);
-      }
-    }
-  }
+function pubspecLock(text) {
+  const match = text.match(/^ {2}axton:\n(?: {4}.*\n| {6}.*\n)*? {4}source: path\n {4}version: "([^"]+)"$/m);
+  return match ? [{ name: "axton", version: match[1] }] : [];
 }
 
 /** Returns every disagreement with V; an empty list means consistent. */
@@ -188,7 +165,12 @@ export function check(root) {
   }
 
   // Everything else release-please rewrites is listed in extra-files.
-  const coveredPins = new Map();
+  const covered = new Map();
+  const cover = (file, segments) => {
+    if (!covered.has(file)) covered.set(file, new Set());
+    covered.get(file).add(JSON.stringify(segments));
+  };
+  const isCovered = (file, segments) => covered.get(file)?.has(JSON.stringify(segments)) ?? false;
   for (const extra of config["extra-files"] ?? []) {
     const file = typeof extra === "string" ? extra : extra.path;
     if (!existsSync(join(root, file))) {
@@ -199,11 +181,7 @@ export function check(root) {
     let value;
     if (extra.type === "json") {
       value = jsonPathValue(JSON.parse(text), extra.jsonpath);
-      const segments = jsonPathSegments(extra.jsonpath);
-      if (segments.length === 2 && DEPENDENCY_FIELDS.includes(segments[0])) {
-        if (!coveredPins.has(file)) coveredPins.set(file, new Set());
-        coveredPins.get(file).add(`${segments[0]}['${segments[1]}']`);
-      }
+      cover(file, jsonPathSegments(extra.jsonpath));
     } else if (extra.type === "toml") {
       value = tomlValue(text, extra.jsonpath);
     } else if (extra.type === "generic") {
@@ -218,61 +196,70 @@ export function check(root) {
     else if (value !== version) problems.push(`${where}: ${value}, expected ${version}`);
   }
 
-  // Internal pins are exact, and each one is kept current by release-please.
-  for (const extra of config["extra-files"] ?? []) {
-    if (extra.type !== "json" || extra.jsonpath !== "$.version") continue;
-    if (!extra.path.endsWith("package.json")) continue;
-    const document = readJson(root, extra.path);
-    internalPins(document, extra.path, version, problems, coveredPins.get(extra.path) ?? new Set());
-  }
-  for (const [path, entry] of Object.entries(rootLock.packages ?? {})) {
-    if (path === "" || path.includes("node_modules/")) continue;
-    if (!entry.name?.startsWith(INTERNAL_SCOPE)) continue;
-    if (entry.version !== version) {
-      problems.push(`package-lock.json: ${path} is ${entry.version}, expected ${version}`);
+  // Every workspace package carries V, and every internal pin is exact; each
+  // of those values, in the manifests and the lockfile, is kept current by
+  // release-please.
+  const internal = (label, document, file, prefix) => {
+    for (const field of DEPENDENCY_FIELDS) {
+      for (const [name, spec] of Object.entries(document[field] ?? {})) {
+        if (!name.startsWith(INTERNAL_SCOPE)) continue;
+        if (spec !== version) {
+          problems.push(`${label}: ${field} ${name} is ${spec}, expected exactly ${version}`);
+        }
+        if (!isCovered(file, [...prefix, field, name])) {
+          problems.push(`${label}: ${field} ${name} is not updated by release-please-config.json`);
+        }
+      }
     }
-    internalPins(entry, `package-lock.json ${path}`, version, problems);
+  };
+  for (const workspace of rootPackage.workspaces ?? []) {
+    const file = `${workspace}/package.json`;
+    const manifest = readJson(root, file);
+    if (!isCovered(file, ["version"])) {
+      problems.push(`${file}: version is not updated by release-please-config.json`);
+    }
+    internal(file, manifest, file, []);
+    const entry = rootLock.packages?.[workspace];
+    if (!entry) {
+      problems.push(`package-lock.json: no entry for workspace ${workspace}`);
+      continue;
+    }
+    if (entry.version !== version) {
+      problems.push(`package-lock.json: ${workspace} is ${entry.version}, expected ${version}`);
+    }
+    if (!isCovered("package-lock.json", ["packages", workspace, "version"])) {
+      problems.push(`package-lock.json: ${workspace} version is not updated by release-please-config.json`);
+    }
+    internal(`package-lock.json ${workspace}`, entry, "package-lock.json", ["packages", workspace]);
+    // Its per-platform packages (`<workspace>/npm/<target>`) are published beside it.
+    const platforms = join(root, workspace, "npm");
+    if (!existsSync(platforms)) continue;
+    for (const target of readdirSync(platforms)) {
+      const platformFile = `${workspace}/npm/${target}/package.json`;
+      if (!existsSync(join(root, platformFile))) continue;
+      if (!isCovered(platformFile, ["version"])) {
+        problems.push(`${platformFile}: version is not updated by release-please-config.json`);
+      }
+    }
   }
 
-  // Lockfiles owned by this script.
+  // Lockfiles, refreshed by cargo and pub.
   const locks = lockfiles(root);
   for (const file of locks.cargo) {
-    for (const entry of cargoLock(readFileSync(join(root, file), "utf8"), version).found) {
+    for (const entry of cargoLock(readFileSync(join(root, file), "utf8"))) {
       if (entry.version !== version) {
         problems.push(`${file}: ${entry.name} is ${entry.version}, expected ${version}`);
       }
     }
   }
   for (const file of locks.dart) {
-    for (const entry of pubspecLock(readFileSync(join(root, file), "utf8"), version).found) {
+    for (const entry of pubspecLock(readFileSync(join(root, file), "utf8"))) {
       if (entry.version !== version) {
         problems.push(`${file}: axton is ${entry.version}, expected ${version}`);
       }
     }
   }
   return problems;
-}
-
-/** Rewrites the lockfile entries owned by this script to V; returns changed files. */
-export function sync(root) {
-  const version = releaseVersion(root);
-  if (!isSemver(version)) throw new Error(`"${version}" is not a valid SemVer version`);
-  const changed = [];
-  const locks = lockfiles(root);
-  for (const [files, update] of [
-    [locks.cargo, cargoLock],
-    [locks.dart, pubspecLock],
-  ]) {
-    for (const file of files) {
-      const text = readFileSync(join(root, file), "utf8");
-      const { updated } = update(text, version);
-      if (updated !== text) {
-        writeFileSync(join(root, file), updated);
-        changed.push(file);
-      }
-    }
-  }
-  return changed;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -285,10 +272,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const problem of problems) console.error(problem);
     if (problems.length > 0) process.exit(1);
     console.log(`version ${releaseVersion(root)} is consistent`);
-  } else if (command === "sync") {
-    for (const file of sync(root)) console.log(`updated ${file}`);
   } else {
-    console.error("usage: node scripts/release/version.mjs check|sync [--root DIR]");
+    console.error("usage: node scripts/release/version.mjs check [--root DIR]");
     process.exit(2);
   }
 }

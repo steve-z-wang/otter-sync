@@ -1,1 +1,64 @@
-{"name":"@axtonjs/postgres","version":"0.1.0","private":true,"type":"module","exports":"./index.mts","files":["index.mts","src","migration.sql"],"engines":{"node":">=22.18.0"},"peerDependencies":{"pg":">=8 <9","@prisma/client":">=6 <7","drizzle-orm":">=0.40"},"peerDependenciesMeta":{"pg":{"optional":true},"@prisma/client":{"optional":true},"drizzle-orm":{"optional":true}}}
+{
+  "name": "@axtonjs/postgres",
+  "version": "0.1.0",
+  "description": "AXTON's PostgreSQL persistence: the framework tables, its SQL and the pg, Prisma and Drizzle shims.",
+  "license": "MIT",
+  "author": "Zanmin Wang (https://zanminwang.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanminwang/axton.git",
+    "directory": "packages/postgres"
+  },
+  "homepage": "https://github.com/zanminwang/axton#readme",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./pg": {
+      "types": "./dist/src/pg.d.mts",
+      "default": "./dist/src/pg.mjs"
+    },
+    "./prisma": {
+      "types": "./dist/src/prisma.d.mts",
+      "default": "./dist/src/prisma.mjs"
+    },
+    "./drizzle": {
+      "types": "./dist/src/drizzle.d.mts",
+      "default": "./dist/src/drizzle.mjs"
+    },
+    "./migration.sql": "./migration.sql"
+  },
+  "files": [
+    "dist/**/*.mjs",
+    "dist/**/*.d.mts",
+    "migration.sql"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "dependencies": {
+    "@axtonjs/server": "0.1.0"
+  },
+  "peerDependencies": {
+    "pg": ">=8 <9",
+    "@prisma/client": ">=6 <8",
+    "drizzle-orm": ">=0.40"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "@prisma/client": {
+      "optional": true
+    },
+    "drizzle-orm": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

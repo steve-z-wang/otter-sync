@@ -7,18 +7,23 @@
     {
       "name": "darwin-arm64",
       "rust": "aarch64-apple-darwin",
-      "npm": { "os": "darwin", "cpu": "arm64" },
-      "addon": "axton-node.node",
-      "addonBuild": "libaxton_node.dylib",
+      "npm": {
+        "os": "darwin",
+        "cpu": "arm64"
+      },
+      "addon": "axton-node.darwin-arm64.node",
       "cli": "axton",
       "dartLibrary": "libaxton_dart.dylib"
     },
     {
       "name": "linux-x64-gnu",
       "rust": "x86_64-unknown-linux-gnu",
-      "npm": { "os": "linux", "cpu": "x64", "libc": "glibc" },
-      "addon": "axton-node.node",
-      "addonBuild": "libaxton_node.so",
+      "npm": {
+        "os": "linux",
+        "cpu": "x64",
+        "libc": "glibc"
+      },
+      "addon": "axton-node.linux-x64-gnu.node",
       "cli": "axton",
       "dartLibrary": "libaxton_dart.so",
       "baseline": "Debian 12 bookworm (glibc 2.36)"

@@ -5,6 +5,7 @@ source "$root/scripts/env.sh"
 cd "$root"
 cargo build --workspace --locked
 node bindings/node/build.mjs
-(cd packages/server && npm ci)
-
-(cd packages/client-js && npm ci)
+# @axtonjs/native: the addon and its generated napi-rs loader; then the compiled
+# JavaScript SDKs, which workspace packages import by name.
+node_modules/.bin/napi build --platform --cwd packages/native --manifest-path ../../bindings/node/Cargo.toml --output-dir . --js index.js --dts index.d.ts
+node_modules/.bin/tsc -b scripts/release/tsconfig.json

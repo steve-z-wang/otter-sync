@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -9,7 +9,6 @@ import {
   isSemver,
   jsonPathSegments,
   lockfiles,
-  sync,
 } from "../../scripts/release/version.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -101,6 +100,22 @@ test("an internal dependency must pin the release version exactly", (t) => {
   );
 });
 
+test("a workspace package release-please does not version is reported", (t) => {
+  const root = copyVersionFiles(t);
+  const version = JSON.parse(readFileSync(join(root, ".release-please-manifest.json"), "utf8"))["."];
+  mkdirSync(join(root, "packages/extra"), { recursive: true });
+  writeFileSync(join(root, "packages/extra/package.json"), JSON.stringify({ name: "@axtonjs/extra", version }));
+  editJson(root, "package.json", (manifest) => {
+    manifest.workspaces.push("packages/extra");
+  });
+  editJson(root, "package-lock.json", (lock) => {
+    lock.packages["packages/extra"] = { name: "@axtonjs/extra", version };
+  });
+  const problems = check(root);
+  assert.ok(problems.includes("packages/extra/package.json: version is not updated by release-please-config.json"), problems.join("\n"));
+  assert.ok(problems.includes("package-lock.json: packages/extra version is not updated by release-please-config.json"), problems.join("\n"));
+});
+
 test("an invalid SemVer release version is refused", (t) => {
   for (const invalid of ["0.1", "v0.1.0", "01.0.0", "0.1.0-", "latest"]) {
     assert.equal(isSemver(invalid), false, invalid);
@@ -111,26 +126,21 @@ test("an invalid SemVer release version is refused", (t) => {
   const root = copyVersionFiles(t);
   writeFileSync(join(root, ".release-please-manifest.json"), '{".": "0.1"}\n');
   assert.deepEqual(check(root), ['.release-please-manifest.json: "0.1" is not a valid SemVer version']);
-  assert.throws(() => sync(root), /not a valid SemVer version/);
 });
 
-test("sync brings Cargo and Dart lockfiles to the release version", (t) => {
+test("a Cargo or Dart lockfile at another version is reported", (t) => {
   const root = copyVersionFiles(t);
   const locks = lockfiles(root);
   assert.ok(locks.cargo.includes("Cargo.lock") && locks.cargo.includes("bindings/node/Cargo.lock"), locks.cargo.join(" "));
   assert.ok(locks.dart.length > 0);
-  editText(root, "Cargo.lock", (text) => text.replace(/(name = "axton-core"\nversion = )"[^"]+"/, '$1"0.0.9"'));
+  editText(root, "bindings/node/Cargo.lock", (text) => text.replace(/(name = "axton-node"\nversion = )"[^"]+"/, '$1"0.0.9"'));
   editText(root, locks.dart[0], (text) =>
     text.replace(/( {4}source: path\n {4}version: )"[^"]+"/, '$1"0.0.9"'),
   );
-  const problems = check(root);
-  assert.ok(problems.some((p) => p.startsWith("Cargo.lock: axton-core is 0.0.9")), problems.join("\n"));
-  assert.ok(problems.some((p) => p.startsWith(`${locks.dart[0]}: axton is 0.0.9`)), problems.join("\n"));
-  assert.deepEqual(sync(root).sort(), ["Cargo.lock", locks.dart[0]].sort());
-  assert.deepEqual(check(root), []);
-  // Registry packages are untouched: only local packages carry the release version.
-  const lock = readFileSync(join(root, "Cargo.lock"), "utf8");
-  assert.equal(lock, readFileSync(join(repository, "Cargo.lock"), "utf8"));
+  assert.deepEqual(
+    check(root).filter((p) => p.includes("0.0.9")).map((p) => p.split(",")[0]),
+    ["bindings/node/Cargo.lock: axton-node is 0.0.9", `${locks.dart[0]}: axton is 0.0.9`],
+  );
 });
 
 test("JSONPath outside the supported subset is refused", () => {

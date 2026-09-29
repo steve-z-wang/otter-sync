@@ -5,7 +5,7 @@ The alpha rename changes both the product identity and developer-facing names. T
 ## Integration names
 
 - Rust crates use `axton-*`, Rust imports use `axton_*`, and the compiler command is `axton`.
-- JavaScript packages use `@axton/*`; report types use `AxtonReport`.
+- JavaScript packages use `@axtonjs/*` (the unpublished React Native packages keep `@axton/*`); report types use `AxtonReport`.
 - Dart imports use `package:axton/axton.dart`.
 - Native libraries and C symbols use `axton`; the Expo module is `AxtonNative`.
 - Environment variables use `AXTON_*`. Example app identifiers use `dev.axton`.

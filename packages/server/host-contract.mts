@@ -80,8 +80,9 @@ export type JsonValue =
 /** `null` on a first page (or at the end of a traversal); `{state}` otherwise, even when `state` is `null`. */
 export type LoadNext = null | { state: JsonValue };
 /**
- * Run one Load handler for one page. Its context is read-only: the answer
- * names identities and the next continuation, never changes or memberships.
+ * Run one Load handler for one page. Its context declares no changes: the
+ * answer names identities, the next continuation and the Channel additions
+ * its add-only handles declared.
  */
 export type HandleLoadRequest = {
   op: "handleLoad";
@@ -284,11 +285,20 @@ export type HandledAction =
   | { rejection: string }
   | { error: string };
 /**
- * The answer to `handleLoad`: the page's identity lists and next
- * continuation, a rejection code, or a failure carrying a thrown handler error.
+ * The answer to `handleLoad`: the page's identity lists, next continuation
+ * and the membership additions the handler declared through its add-only
+ * Channel handles, a rejection code, or a failure carrying a thrown handler
+ * error. `memberships` is omitted when there are none (an older host never
+ * sends it); `null`, `changes`, or memberships beside a rejection or failure
+ * are refused. The engine, not this type, refuses a removal or a record the
+ * page did not return.
  */
 export type HandledLoad =
-  | { data: Record<string, unknown>; next: LoadNext }
+  | {
+      data: Record<string, unknown>;
+      next: LoadNext;
+      memberships?: MembershipIntent[];
+    }
   | { rejection: string }
   | { error: string };
 /**

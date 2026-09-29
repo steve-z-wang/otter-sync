@@ -166,8 +166,8 @@ pub enum HostRequest {
     },
     /// Execute one generated Load handler for one page: the normalized flat
     /// arguments and the page's continuation (`null` on the first page). Its
-    /// context is read-only: the answer carries identities and the next
-    /// continuation, never changes or memberships.
+    /// context declares no changes: the answer carries identities, the next
+    /// continuation and the Channel additions its add-only handles declared.
     HandleLoad {
         name: String,
         version: u64,
@@ -564,15 +564,20 @@ impl TryFrom<HandledActionWire> for HandledAction {
     }
 }
 
-/// The answer to `handleLoad`: the page's identity lists and the next
-/// continuation, a rejection code, or a failure carrying a thrown handler
-/// error. A Load context has no declaration handles, so an answer carrying
-/// `changes`, `memberships` or anything else is refused.
+/// The answer to `handleLoad`: the page's identity lists, the next
+/// continuation and the membership intents its add-only Channel handles
+/// declared, a rejection code, or a failure carrying a thrown handler error.
+/// A Load context declares no changes, so an answer carrying `changes`, or
+/// memberships beside a rejection or failure, or anything else is refused.
 ///
 /// `data` and `next` are carried as answered (`next` is `None` when the
 /// member is absent): the engine judges them, so a missing or malformed
 /// continuation is the page's `load.invalid_continuation` and malformed data
-/// its `handler.invalid`, whichever host bridge produced them.
+/// its `handler.invalid`, whichever host bridge produced them. An absent
+/// `memberships` (an older host) is an empty list and is encoded absent;
+/// `null` or a malformed intent is refused. A structurally valid intent
+/// decodes even when a Load may not declare it (a removal, a record outside
+/// the page): the engine judges those so every host fails the page alike.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, try_from = "HandledLoadWire")]
 pub enum HandledLoad {
@@ -580,6 +585,8 @@ pub enum HandledLoad {
         data: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         next: Option<Value>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        memberships: Vec<MembershipIntent>,
     },
     Rejected {
         rejection: String,
@@ -597,6 +604,8 @@ struct HandledLoadWire {
     #[serde(default, deserialize_with = "present")]
     next: Option<Value>,
     #[serde(default, deserialize_with = "present")]
+    memberships: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
     rejection: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     error: Option<Value>,
@@ -605,6 +614,9 @@ struct HandledLoadWire {
 impl TryFrom<HandledLoadWire> for HandledLoad {
     type Error = String;
     fn try_from(wire: HandledLoadWire) -> std::result::Result<Self, String> {
+        if wire.memberships.is_some() && wire.data.is_none() {
+            return Err("a Load answer carries memberships only beside its data".into());
+        }
         match (wire.data, wire.next, wire.rejection, wire.error) {
             (None, None, Some(rejection), None) => rejection
                 .as_str()
@@ -619,7 +631,17 @@ impl TryFrom<HandledLoadWire> for HandledLoad {
                     error: error.into(),
                 })
                 .ok_or_else(|| "invalid handler error".into()),
-            (Some(data), next, None, None) => Ok(Self::Settled { data, next }),
+            (Some(data), next, None, None) => {
+                let memberships = match wire.memberships {
+                    None => vec![],
+                    Some(memberships) => effects(Value::Array(vec![]), memberships)?.1,
+                };
+                Ok(Self::Settled {
+                    data,
+                    next,
+                    memberships,
+                })
+            }
             _ => Err("invalid Load handler settlement".into()),
         }
     }

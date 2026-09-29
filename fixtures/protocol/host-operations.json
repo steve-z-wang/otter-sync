@@ -84,6 +84,7 @@
       "responses": [
         {"variant": "settled", "value": {"data": {"tasks": [{"id": "t-1"}, {"id": "t-2"}]}, "next": {"state": {"after": "t-2"}}}},
         {"variant": "completed", "value": {"data": {"tasks": []}, "next": null}},
+        {"variant": "enrolled", "value": {"data": {"tasks": [{"id": "t-1"}, {"id": "t-2"}]}, "next": null, "memberships": [{"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": true}, {"channel": "other", "model": "Task", "identity": {"id": "t-1"}, "present": true}]}},
         {"variant": "rejected", "value": {"rejection": "tasks.refused"}},
         {"variant": "failed", "value": {"error": "handler failure"}}
       ]

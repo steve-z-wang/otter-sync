@@ -191,7 +191,21 @@ async fn execute_fresh(
     let (data, next) = match handled {
         HandledLoad::Rejected { rejection } => return Err(Error::code(rejection)),
         HandledLoad::Failed { .. } => return Err(Error::code(code::HANDLER_FAILED)),
-        HandledLoad::Settled { data, next } => (data, next),
+        HandledLoad::Settled {
+            data,
+            next,
+            memberships,
+        } => {
+            // Settled by the next checkpoint; until then an enrollment is
+            // refused rather than silently dropped.
+            if !memberships.is_empty() {
+                return Err(Error::new(
+                    code::HANDLER_INVALID,
+                    "Load enrollment is not supported yet",
+                ));
+            }
+            (data, next)
+        }
     };
     // Judged here whatever the host bridge already did, before the data: a
     // missing or malformed `next` wrapper and a state past the portable

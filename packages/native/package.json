@@ -1,6 +1,6 @@
 {
   "name": "@axtonjs/native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AXTON's prebuilt Node addon, selected for this platform.",
   "license": "MIT",
   "author": "Zanmin Wang (https://zanminwang.com)",

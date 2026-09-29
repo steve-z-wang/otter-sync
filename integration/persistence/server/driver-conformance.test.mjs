@@ -11,6 +11,7 @@ import {Pool} from 'pg';
 import {drizzle as drizzleOrm} from 'drizzle-orm/node-postgres';
 import {createBackend} from '../../../packages/server/index.mts';
 import {pg,prisma,drizzle,answer,pgDriver,withRetries,retryDelay,RETRY_BACKOFF_BASE_MS,RETRY_BACKOFF_CAP_MS} from '../../../packages/postgres/index.mts';
+import * as SQL from '../../../packages/postgres/src/sql.mts';
 const require=createRequire(import.meta.url);
 const {PrismaClient}=require('../../bindings/node/generated/client');
 const url=process.env.DATABASE_URL;
@@ -20,7 +21,8 @@ const schema={enums:[],models:[{name:'Task',identity:['id'],fields:[{name:'id',t
 const config={schema,mutations:[{name:'edit',version:1,slots:[{name:'task',model:'Task',operation:'update',cardinality:'single',allowedPatchFields:['title']}]}]};
 const authenticate=async req=>req.headers.authorization==='Bearer alice'?'alice':null;
 const key=id=>JSON.stringify({id});
-before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await q(sql);await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');
+let migration;
+before(async()=>{migration=(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean);for(const sql of migration)await q(sql);await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');
  // The lock-then-recheck races (#202). No foreign keys: a key check would make
  // even the old level fail serialization, hiding the stale re-check.
  for(const sql of ['CREATE TABLE IF NOT EXISTS race_book(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_author(id text PRIMARY KEY,book_id text NOT NULL)','CREATE TABLE IF NOT EXISTS race_archive(author_id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_post(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_star(id text PRIMARY KEY,post_id text NOT NULL)'])await q(sql);
@@ -102,6 +104,13 @@ const starRace=async(transaction,query,name)=>{
  });
  return {runs,posts:await q('SELECT id FROM race_post WHERE id=$1',[post]),stars:await q('SELECT id FROM race_star WHERE post_id=$1',[post])};
 };
+
+// Read footprint (#210). At Serializable only reads take SIREAD (predicate)
+// locks, and on a near-empty table a primary key has one leaf page, so one
+// point read covers every other key's insert. These are the SIREAD locks the
+// transaction on backend `pid` holds on the named relations, as `locktype relname`.
+const pidOf=async query=>Number((await query('SELECT pg_backend_pid() AS pid'))[0].pid);
+const sireadOn=async(pid,relations)=>(await q("SELECT l.locktype,c.relname FROM pg_locks l JOIN pg_class c ON c.oid=l.relation WHERE l.mode='SIReadLock' AND l.pid=$1 AND c.relname=ANY($2) ORDER BY 1,2",[pid,relations])).map(r=>`${r.locktype} ${r.relname}`);
 
 const shims=[];
 {const pool=new Pool({connectionString:url});shims.push({name:'pg',database:pg(pool),close:()=>pool.end()});}
@@ -185,6 +194,31 @@ for(const shim of shims){
    await a({op:'saveCall',owner:'alice',callId:id,response:'{"ok":true}'});
   });
   assert.deepEqual(await q('SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2',['alice',id]),[{response:'{"ok":true}'}]);
+ });
+ test(`[${shim.name}] a fresh call claim reads nothing from axton_call; a duplicate reads and locks the stored call`,async()=>{
+  const id=p('claim-footprint'),call=['axton_call','axton_call_pkey'];
+  const fresh=await inTx(async(tx,query,a)=>{
+   const pid=await pidOf(query);
+   const claimed=await a({op:'claimCall',owner:'alice',callId:id,request:'{"n":1}'});
+   const locks=await sireadOn(pid,call);
+   await a({op:'saveCall',owner:'alice',callId:id,response:'{"ok":1}'});
+   return {claimed,locks};
+  });
+  assert.deepEqual(fresh,{claimed:{fresh:true,request:'{"n":1}',response:null},locks:[]},'the inserted row answers the claim; no SIREAD lock on the table or its key');
+  const duplicate=await inTx(async(tx,query,a)=>{
+   const pid=await pidOf(query);
+   return {claimed:await a({op:'claimCall',owner:'alice',callId:id,request:'{"n":2}'}),locks:await sireadOn(pid,call)};
+  });
+  assert.deepEqual(duplicate.claimed,{fresh:false,request:'{"n":1}',response:'{"ok":1}'});
+  assert.ok(duplicate.locks.length>0,'a duplicate reads the stored call');
+ });
+ test(`[${shim.name}] readStamps of new keys reads nothing from axton_record`,async()=>{
+  const keys=[key(p('stamp-new-a')),key(p('stamp-new-b'))];
+  const read=await inTx(async(tx,query,a)=>{
+   const pid=await pidOf(query);
+   return {stamps:await a({op:'readStamps',model:'Task',identityKeys:keys}),locks:await sireadOn(pid,['axton_record','axton_record_pkey'])};
+  });
+  assert.deepEqual(read,{stamps:[1,1],locks:[]});
  });
  test(`[${shim.name}] a push writes business rows and AXTON metadata in one transaction and a pull reads them back`,async()=>{
   const backend=createBackend({config,database,authenticate,handlers:{async edit({input,tx,channel}){await driver.query(tx,'INSERT INTO conformance_task(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[input.task.identity.id,input.task.patch.title]);channel(p('shared')).task.add(input.task.identity);}},loaders:{async task({ids,tx}){const rows=await driver.query(tx,'SELECT id,title FROM conformance_task WHERE id = ANY($1)',[ids.map(i=>i.id)]);return ids.map(i=>{const r=rows.find(r=>r.id===i.id);return r?{title:r.title}:null;});}}});
@@ -411,6 +445,75 @@ for(const shim of shims){
  });
  test(`[${shim.name}] close`,async()=>{await shim.close();});
 }
+
+// Near-empty framework tables that were never analyzed, in a schema of their
+// own, so the suite's other rows and autovacuum's statistics stay out.
+const nearEmpty=async schema=>{
+ await q(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);await q(`CREATE SCHEMA ${schema}`);
+ const pool=new Pool({connectionString:url,options:`-c search_path=${schema}`});
+ for(const sql of migration)await pool.query(sql);
+ return {pool,driver:pgDriver(pool),q:async(sql,params=[])=>(await pool.query(sql,params)).rows,close:async()=>{await pool.end();await q(`DROP SCHEMA ${schema} CASCADE`);}};
+};
+
+test('[pg] on near-empty tables readStamps reads an existing stamp by its primary key, never the whole model or a heap page',async()=>{
+ const t=await nearEmpty('axton_near_empty_stamps');
+ try{
+  await t.q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Task',$1,3),('Task',$2,1),('Task',$3,1)",[key('e1'),key('e2'),key('other')]);
+  const xmins=()=>t.q("SELECT identity_key,xmin::text FROM axton_record WHERE model='Task' ORDER BY identity_key");
+  const before=await xmins();
+  const read=await t.driver.transaction(async tx=>{
+   const pid=await pidOf(async sql=>(await tx.query(sql)).rows);
+   return {stamps:await answer(t.driver,tx,{op:'readStamps',model:'Task',identityKeys:[key('n1'),key('e1'),key('e2')]}),locks:await sireadOn(pid,['axton_record','axton_record_pkey'])};
+  });
+  assert.deepEqual(read.stamps,[1,3,1],'request order; the missing key inserted at 1');
+  assert.deepEqual(read.locks.filter(lock=>lock==='relation axton_record'||lock==='page axton_record'),[],`only tuples and key pages are read: ${read.locks}`);
+  assert.ok(read.locks.includes('tuple axton_record'),'the existing rows are read');
+  assert.deepEqual((await xmins()).filter(row=>row.identity_key!==key('n1')),before,'existing rows are not rewritten');
+ }finally{await t.close();}
+});
+
+test('[pg] readStamps still fails serialization for a key inserted or re-stamped after its snapshot',async()=>{
+ const pool=new Pool({connectionString:url});const driver=pgDriver(pool);
+ const existing=key('late-existing');
+ await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Task',$1,1)",[existing]);
+ const late=async(write,identityKey)=>{
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');await client.query('SELECT 1');
+   await write();
+   await assert.rejects(()=>answer(driver,client,{op:'readStamps',model:'Task',identityKeys:[identityKey]}),error=>error.code==='40001');
+  }finally{await client.query('ROLLBACK');client.release();}
+ };
+ try{
+  await late(()=>q(SQL.ENSURE_STAMP,['Task',key('late-new')]),key('late-new'));
+  await late(()=>q(SQL.ADVANCE_STAMP,['Task',existing]),existing);
+ }finally{await pool.end();}
+});
+
+test('[pg] two disjoint deliveries on near-empty tables both commit on their first attempt, in several interleavings of their steps',async()=>{
+ const t=await nearEmpty('axton_near_empty_deliveries');
+ const steps=(client,id)=>[
+  ()=>answer(t.driver,client,{op:'claimCall',owner:'alice',callId:id,request:'{}'}),
+  ()=>answer(t.driver,client,{op:'readStamps',model:'Task',identityKeys:[key(`${id}-a`),key(`${id}-b`)]}),
+  ()=>answer(t.driver,client,{op:'saveCall',owner:'alice',callId:id,response:'{}'}),
+  ()=>client.query('COMMIT'),
+ ];
+ try{
+  // Each of these orders aborted one side with 40001 while claimCall re-read its fresh row and READ_STAMPS joined the whole model.
+  for(const order of ['ABABABAB','AABBAABB','AABBBBAA','ABBBBAAA','BAABBAAB']){
+   const clients={A:await t.pool.connect(),B:await t.pool.connect()};
+   try{
+    for(const client of Object.values(clients))await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+    const run={A:steps(clients.A,`${order}-A`),B:steps(clients.B,`${order}-B`)},next={A:0,B:0};
+    for(const side of order){
+     const step=next[side]++;
+     await run[side][step]().catch(error=>{throw new Error(`${order}: ${side} step ${step} failed: ${error.code} ${error.message}`);});
+    }
+   }finally{for(const client of Object.values(clients)){await client.query('ROLLBACK').catch(()=>{});client.release();}}
+  }
+  assert.equal((await t.q("SELECT count(*)::int AS n FROM axton_call WHERE response='{}'"))[0].n,10,'every delivery saved its call');
+ }finally{await t.close();}
+});
 
 // Control: the same races at Repeatable Read, the level every shim used before
 // #202, commit the stale decision. This is what the tests above rule out.

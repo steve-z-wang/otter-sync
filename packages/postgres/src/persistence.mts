@@ -115,15 +115,28 @@ export async function answer<Tx>(
         r.callId,
         r.request,
       );
+      // A fresh claim is the row this statement just inserted: its request is
+      // `r.request` and it has no response. Reading it back would take a
+      // predicate lock at Serializable that, on a near-empty table, covers
+      // every other call's claim, so only a duplicate or a concurrent claim
+      // (the insert returned nothing) reads and locks the stored row.
+      if (inserted.length === 1) {
+        const claimed: ClaimedCall = {
+          fresh: true,
+          request: r.request,
+          response: null,
+        };
+        return claimed;
+      }
       const rows = await q(SQL.CLAIM_CALL_LOCK, r.owner, r.callId);
       if (rows.length !== 1) throw new Error("Failed to lock call");
       const row = rows[0]!;
-      if (inserted.length === 0 && row.response === null)
+      if (row.response === null)
         throw new Error("Call has incomplete stored response");
       const claimed: ClaimedCall = {
-        fresh: inserted.length === 1,
+        fresh: false,
         request: String(row.request),
-        response: row.response === null ? null : String(row.response),
+        response: String(row.response),
       };
       return claimed;
     }

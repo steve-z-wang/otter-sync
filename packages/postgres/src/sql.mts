@@ -5,9 +5,13 @@ export const CLAIM_LOCK =
   "SELECT client_id, owner_id, sequence, receipt FROM axton_client WHERE client_id=$1 FOR UPDATE";
 export const SAVE_RECEIPT =
   "UPDATE axton_client SET sequence=$3, receipt=$4 WHERE client_id=$1 AND owner_id=$2 RETURNING client_id";
-/** The inserted row is the only fresh claim. A concurrent duplicate waits for commit. */
+/**
+ * The inserted row is the only fresh claim, answered without reading it back.
+ * A concurrent duplicate waits here for the first transaction to commit.
+ */
 export const CLAIM_CALL_INSERT =
   "INSERT INTO axton_call(owner_id,call_id,request) VALUES($1,$2,$3) ON CONFLICT(owner_id,call_id) DO NOTHING RETURNING call_id";
+/** Only when the insert returned nothing: read and lock the stored call. */
 export const CLAIM_CALL_LOCK =
   "SELECT request,response FROM axton_call WHERE owner_id=$1 AND call_id=$2 FOR UPDATE";
 export const SAVE_CALL =
@@ -53,13 +57,18 @@ export const ENSURE_STAMP =
  * inserted or re-stamped after the snapshot fails the INSERT with a
  * serialization error the runner retries, and a Load page over records under
  * heavy write churn can retry repeatedly before it succeeds.
+ *
+ * COALESCE evaluates the correlated lookup only for a key the INSERT did not
+ * return, one primary-key probe per existing record, so a page of new records
+ * reads nothing back. At Serializable every read leaves a predicate lock; a
+ * join over the model would lock every row of it, and on a near-empty table
+ * that conflicts with every other transaction's new stamp.
  */
 export const READ_STAMPS =
   "WITH keys AS (SELECT k.identity_key, k.position FROM jsonb_array_elements_text($2::jsonb) WITH ORDINALITY AS k(identity_key, position)), " +
   "inserted AS (INSERT INTO axton_record(model,identity_key,stamp) SELECT $1, identity_key, 1 FROM keys ON CONFLICT(model,identity_key) DO NOTHING RETURNING identity_key, stamp) " +
-  "SELECT keys.identity_key, COALESCE(inserted.stamp, r.stamp) AS stamp FROM keys " +
+  "SELECT keys.identity_key, COALESCE(inserted.stamp, (SELECT r.stamp FROM axton_record r WHERE r.model=$1 AND r.identity_key=keys.identity_key)) AS stamp FROM keys " +
   "LEFT JOIN inserted ON inserted.identity_key=keys.identity_key " +
-  "LEFT JOIN axton_record r ON r.model=$1 AND r.identity_key=keys.identity_key " +
   "ORDER BY keys.position";
 /**
  * Write-lock an existing record row without changing its stamp. A no-op UPDATE

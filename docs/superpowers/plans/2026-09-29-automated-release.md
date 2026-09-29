@@ -56,7 +56,8 @@ The riskiest step runs first, as throwaway evidence outside the repository. It d
 - [ ] Prove on Flutter 3.44.1 / Dart 3.12: `dart test` through a path-dependent consumer on the host; `flutter build ios --release --no-codesign` with every `axton_*` symbol the bridge resolves exported from the embedded binary; `flutter build ios --simulator`; `flutter build apk --release` containing all three ABIs. Show a warm build does not refetch and a wrong hash fails before linking.
 - [ ] If hooks cannot package correctly on that toolchain, including iOS release, Task 4 uses the fallback: a standard Flutter FFI plugin whose podspec and Gradle build ship or download the same prebuilt, hash-checked libraries. The Dart SDK floor stays >=3.12.0 either way.
 
-**Chosen path:** recorded here when the spike completes.
+**Chosen path:** Dart build hooks (`hooks` ^2.0.0 resolving to 2.0.2 on Flutter 3.44.1, `code_assets` ^1.2.1).
+Evidence: the spike, then `packages/dart/hook/build.dart` with hash-checked, cached `local_artifacts` builds of a staged package on 2026-09-29 — cold and warm offline host tests, iOS release (6 `axton_*` symbols retained), iOS simulator arm64/x64 and all three APK ABIs; wrong hash, missing file and unsupported target fail before linking (#213).
 
 ## Task 2 — Establish owned names, exact version and target inventory
 

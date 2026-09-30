@@ -740,7 +740,10 @@ test("the native engine refuses a full Model value that type-checks as an identi
   const response = JSON.parse(
     await backend.loads(
       "alice",
-      JSON.stringify({ loads: [item(1, null), item(2, { state: "ids" })] }),
+      JSON.stringify({
+        capabilities: ["channel-membership-v1"],
+        loads: [item(1, null), item(2, { state: "ids" })],
+      }),
     ),
   );
   const [full, identities] = [1, 2].map((index) =>

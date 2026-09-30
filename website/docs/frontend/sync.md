@@ -135,7 +135,11 @@ Authenticate requests on the backend and check business permissions in handlers 
 
 Use a separate local database per signed-in user. On an account change, stop and close the old client before opening the other user's database. Changing only the transport token leaves the old user's cached records and client identity in place.
 
-When permissions change, touch the affected records on the backend so every channel they belong to delivers them again. A loader can then return null to withdraw a record; removing a record from a channel only stops later deliveries and withdraws nothing already delivered. Unsubscribing removes nothing: it stops that channel's delivery and keeps the records, their stamps and any pending edits in place. It is not a cache wipe or an authorization mechanism.
+Backend membership removal sends a synchronized release. The client folds all Channel evidence before applying content: removing one hold keeps a record held elsewhere, while removing the last evicts its replicated base without cascading to children, running `onStore` as a deletion, or sending a domain write. Pending operations and device-local work survive. An equal-stamp re-add can restore an evicted base.
+
+A Loader's stamped `null` is authoritative absence and still follows Model deletion/cascade rules. A Loader error is a diagnostic, never release or deletion. Unsubscribing stops delivery and removes its registration and progress; it retains content and recorded holds.
+
+A stored one-shot Fetch or Query does not enroll membership. Its untracked cache has no promise of automatic cleanup; an explicit removal for that identity can evict it, but AXTON cannot infer a hold never recorded. A fresh authorized read after release may cache the record again. Delayed positive bodies from requests begun before release cannot restore it; request epoch admission is separate from content stamps. Load enrollment and explicit Add claims record holds without advancing the ordinary delivery cursor. See [cutover](../backend/deployment.md#channel-membership-cutover).
 
 ## Diagnose pending work
 

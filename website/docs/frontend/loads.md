@@ -74,7 +74,7 @@ export const loads: Loads<Tx> = {
 };
 ```
 
-`ctx.channel(name)` returns a `LoadChannel`: `channel.todo.add(identity)` per Model, or `channel.add([Todo({ id }), Project({ id })])` for several Models with the generated reference functions. It has no `remove`, and the context has no `touch`. Each call is synchronous, returns nothing and copies the identity at the call; the handle refuses every call once the handler returns or throws. The handler still returns only `{ data, next }`.
+`ctx.channel(name)` returns a `LoadChannel`: `channel.todo.add(identity, { tags: ["X"] })` per Model, or `channel.add([Todo({ id }), Project({ id })], { tags: ["X"] })` for several Models with the generated reference functions. It has no `remove`, and the context has no `touch`. Each call is synchronous, returns nothing and copies the identity at the call; the handle refuses every call once the handler returns or throws. The handler still returns only `{ data, next }`.
 
 - **Only records this page returns.** Each added record must be in one of the page's returned identity lists; returning a record does not add it, so add only the ones you want. Adding a record the page does not return fails the page with `handler.invalid`, and an empty page cannot add anything. A call with an invalid identity, a blank Channel name or a Model without a Loader throws at once and fails the page with `handler.failed`, even if your handler catches the error, so a page never adds part of what it declared.
 - **Bounded.** One page may add at most 1,000 distinct Channel/record pairs and 1 MiB of encoded additions; repeating a pair counts once. More fails the page with `load.page_too_large`: add fewer records or Channels per page.
@@ -119,7 +119,7 @@ Awaiting the start means the job is stored locally; it works offline and promise
 | Meaning | Where your enumeration continues | Which Channel changes a subscription has received |
 | Ends | When your handler returns `next: null` | Never; delivery continues |
 
-A Load creates no subscription or cursor, and the records it returns join no Channel unless the handler [adds them](#add-loaded-records-to-a-channel). Completing it is not a snapshot: it means your handler finished its traversal and every page was stored. Records missing from a page are never deleted locally.
+A Load creates no subscription or delivery cursor, and the records it returns join no Channel unless the handler [adds them](#add-loaded-records-to-a-channel). Completing it is not a snapshot: it means your handler finished its traversal and every page was stored. Records missing from a page are never deleted locally.
 
 ## Fresh start, once and reattach
 
@@ -272,3 +272,5 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | `client_closed` | The client closed while waiting |
 
 `server.unavailable` and `transaction.conflict` are backend faults the client retries on its own; they never fail a Load.
+
+An enrolling page saves membership claims with its immutable response. Replaying that page neither enrolls again nor refreshes the claim cursor, so a later Channel removal wins over an old saved claim. A page without enrollment is untracked cache, with no automatic cleanup guarantee. Delayed positive bodies are subject to request epoch admission, including legacy saved pages without claims; continuation and call settlement still complete.

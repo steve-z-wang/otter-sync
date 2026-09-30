@@ -64,3 +64,20 @@ Not validated by the repository's tests, and therefore not claimed:
 - TLS termination and any specific proxy product (nginx, Caddy, cloud load balancers). The configuration above follows their documented WebSocket support; verify it in your environment.
 - Browsers. The client SDKs run on Node and Flutter; browser support is a separate decision.
 - More than one backend process behind the proxy. Live wakeups are process-local, so a client connected to one process does not learn about commits made through another until it pulls.
+
+
+## Channel membership cutover
+
+AXTON 0.2 coordinates the backend, PostgreSQL adapter, generated tooling, and JS/Dart runtimes. Tags stay on the server; clients receive per-record `upsert` or `remove` events and enrollment claims. `channel-membership-v1` is mandatory on every new request and live subscribe. A valid request without it receives `426 protocol.unsupported` before handler work or progress; malformed capabilities receive `400 request.invalid`. Live negotiation refuses unsupported subscriptions before acknowledgement. Application platform/build admission remains a separate gate.
+
+| Component | Compatibility requirement |
+| --- | --- |
+| Backend and PostgreSQL adapter | Eight-table schema and new Channel host operations; older writers stopped before migration |
+| Generated tooling | Tag options and selector overloads; regenerate contracts against the coordinated release |
+| JS and Dart runtimes | Capability advertisement, Channel holds, request epoch admission and additive local upgrade |
+| Custom persistence host | Ordered locking, final membership/tags, compacted log, same-Channel associations and checked cursor answers |
+| Legacy saved calls | Explicit compatibility decoding, frozen original claims when present, no invented enrollment, and stale-response admission |
+
+Prepare compatible application clients first. Stop old server writers, apply the whole forward migration, then start only the coordinated backend and enforce capability and application build gates before enabling synchronized removal. Reopening a client's existing database upgrades it additively: preserve pending work, client identity, subscription positions and local data. The runtime durably reconciles retained subscribed Channel history before ordinary delivery resumes, rather than wiping the database. Legacy untracked cache has no recoverable provenance; records absent from both retained members and logs cannot be inferred.
+
+Retain saved responses, old server tables, compacted removal logs and client absence evidence. This release has no TTL, pruning floor or snapshot replacement. Removing N members writes and delivers N identities in bounded batches; it supplies no universal latency guarantee.

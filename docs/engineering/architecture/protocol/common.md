@@ -46,3 +46,11 @@ Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests a
 ## 11. Risks and Technical Debt
 
 **Accepted limitation.** Client-direction errors cross the bindings as message text, with a machine-readable `details.code` only where the client runtime provides one; nothing branches on the wording. Owned by [SDKs / Bindings](../sdks/bindings.md).
+
+## Channel membership capability and claims
+
+New requests advertise `capabilities: ["channel-membership-v1"]`. This envelope metadata is excluded from saved-call logical equality, so adding capability does not change a frozen call's identity. Valid unsupported requests are refused before handler execution or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md#channel-membership-cutover) upgrades all runtimes together.
+
+Load pages, accepted receipts and direct Mutation responses may carry `memberships: [{channel, cursor, model, identity}]` for explicit Add pairs whose normalized identity the response returns. Claims preserve the original saved cursor on replay and never re-enroll. Failed items, ordinary Fetches, Queries and extra outputs fabricate no claims. A claim updates the same local holding ledger as a Channel upsert; it never advances delivery progress. Tags are server-only.
+
+Positive content is admitted before stamp comparison only when currently held or when its logical request's frozen store epoch is at least the record's eviction epoch. Retries and restarts preserve the original token. This prevents delayed saved Load, Fetch, Query or receipt bodies from restoring released replication while preserving result/continuation and queue settlement. Fresh authorized reads may cache again; authoritative null and Loader diagnostics retain their own meanings.

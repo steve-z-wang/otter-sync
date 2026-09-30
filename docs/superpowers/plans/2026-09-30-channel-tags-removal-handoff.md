@@ -14,7 +14,7 @@ Read [AGENTS.md](../../../AGENTS.md) first, then the spec, then the plan.
 | Worktree (work here only) | `/Users/stevewang/Github/axton/.worktrees/channel-tags-removal-design` |
 | Branch | `codex/channel-tags-removal-design`, rebased onto `main` at `ba14ee59` (release 0.1.2; PR #214 merged as `f90e10f7`) |
 | HEAD | `8261c703`, working tree clean |
-| Target release | AXTON `0.2.0` via release-please (`bump-minor-pre-major: true`); do not hand-edit versions, open a `feat:` PR |
+| Target release | AXTON `0.2.0` via release-please; both `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: true` are configured, so an ordinary `feat:` yields a patch. Use `feat!:` or `BREAKING CHANGE` for the intentional 0.2 boundary; do not hand-edit versions |
 | Done | Tasks 1–4 of 10 implemented, reviewed and fixed; Task 4's last fix round is not re-reviewed |
 | Not started | Tasks 5–10 |
 
@@ -85,7 +85,7 @@ Verified green at `8261c703`: `cargo test --workspace --locked` (server/client/s
 
 - R1 Task 1 owns capability types/constants/core validation and saved-call exclusion; Task 8 owns runtime enforcement on every transport (HTTP 426 + `protocol.unsupported`, live subscribe refused before ack).
 - R2 Load add-only handles accept `{tags}`.
-- R3 No manual version bumps; release-please turns a `feat:` PR into `0.2.0`.
+- R3 No manual version bumps. Both pre-major bump flags are enabled; plain `feat:` yields a patch. The coordinated `0.2.0` release needs `feat!:` or a `BREAKING CHANGE` footer, with produced versions/dependency references verified before release.
 - R4 Implementation targets `main` at `ba14ee59` with PR #214 merged.
 - R5/R6 Interim refusals and a red persistence runner were allowed between Tasks 2–4; both are resolved now.
 - R7 `lockChannels` creates no rows; `applyChannelMembers` serializes new-channel head reservation on the channel row.

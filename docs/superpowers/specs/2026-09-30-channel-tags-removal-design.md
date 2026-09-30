@@ -3,6 +3,7 @@
 Status: proposed implementation contract; no runtime changes accompany this document.
 Date: 2026-09-30.
 Baseline inspected: `08e20cca` on AXTON `main`.
+Target release: AXTON `0.2.0`.
 Implementation: [plan](../plans/2026-09-30-channel-tags-removal.md).
 
 ## 1. Goal and scope
@@ -270,6 +271,18 @@ This is not a permanent client authorization ban. An explicitly fresh request af
 Unsubscribe keeps its existing meaning of stopping delivery; it does not synthesize removal or clear all data. Retained membership evidence is reconciled before a resumed subscription is considered caught up. A stopped channel cannot promise timely revocation.
 
 ## 9. Upgrade and deployment
+
+### Release version and compatibility
+
+Ship this capability as **AXTON `0.2.0`**, not a `0.1.x` patch. This is the release decision for this design: channel `remove` changes observable behavior, delivery gains membership/removal semantics, and both server and client storage require migration. It is not a claim that every pre-1.0 change requires a particular SemVer increment.
+
+The package version identifies the release; `channel-membership-v1` determines protocol compatibility. A version bump alone neither negotiates the wire contract nor protects older clients. The `0.2.0` release must include matching backend, PostgreSQL adapter, generated API/tooling and client runtimes, with the migrations and compatibility gate verified together. Model/Mutation schema versions remain independent; do not bump application models merely because the engine version changes.
+
+Oasis's inspected pin is `0.1.1` in `ops/axton/version`. Its later adoption must coordinate backend and mobile dependencies at exactly `0.2.0`, regenerate the contract with matching tooling, and update manifests/locks through its existing pin checks. Prepare the compatible mobile release before the backend cutover; at cutover, enforce the appropriate per-platform minimum builds and the protocol capability gate before enabling synchronized removal. Stop old writers and run the server migration as described below. Older installed clients must receive the update-required response rather than consume removal events they cannot understand.
+
+These documents set the release target only. They do not publish packages, change the Oasis pin, choose mobile build numbers, or authorize deployment. Release and application adoption follow successful implementation and migration verification.
+
+### Migration and cutover
 
 Use forward migrations and a coordinated protocol gate. Never reset a client's database to introduce this feature; pending writes and saved calls survive.
 

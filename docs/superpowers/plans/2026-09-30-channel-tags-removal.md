@@ -12,7 +12,9 @@
 
 ## Global Constraints
 
+- Target release: AXTON `0.2.0`; do not ship this behavior/protocol/storage change as a `0.1.x` patch.
 - Capability: `channel-membership-v1`; refuse incompatible requests before handler execution or cursor progress.
+- Package release versions and protocol capability checks are separate; application Model/Mutation versions remain independent.
 - Tags are backend selection labels, not access grants or reference counts.
 - `remove({tag: X})` removes the whole matching membership, including members carrying other tags.
 - First release retention: do not prune removal log rows or local removal evidence by TTL.
@@ -292,8 +294,10 @@ server removes Y; device receives one identity-only removal and evicts A
 
 **Interfaces:** User-facing documentation must describe the implemented capability and migration, with exact API examples from generated tests. The spec remains the decision record; living docs own shipped behavior.
 
+- [ ] Prepare the `0.2.0` release notes and compatibility matrix: backend, PostgreSQL adapter, generated tooling, JS/Dart runtimes, server migration and client migration must form one verified release. Check the actual release packaging/version mechanism on the implementation branch; validate produced package versions and dependency references rather than assuming private workspace manifest versions are published versions. Do not publish in this task.
 - [ ] Replace the old channel-removal guarantee with the distinction between synchronized release, authoritative null and unsubscribe. Show the exact three API forms and make X/Y whole-member selection explicit. Document the absence of automatic cleanup for un-enrolled one-shot reads.
 - [ ] Document protocol gating, server cutover order, retained old tables, local reconciliation, legacy saved-response handling and no TTL pruning. State that custom persistence hosts must implement the new operations and channel/tag constraints before opting in.
+- [ ] Include an Oasis adoption handoff, without editing Oasis: its inspected pin is `0.1.1`; the target is exactly `0.2.0` for backend/mobile dependencies and contract tooling. Sequence it as verified AXTON release → prepare compatible mobile release and matching dependency/lock updates → coordinate backend migration/cutover with per-platform minimum-build and capability gates → enable synchronized removal. The adoption task chooses actual build floors and runs Oasis's pin/contract checks; a package version bump is not a substitute for those gates.
 - [ ] Measure PostgreSQL removal of 1, 1,000 and 10,000 members: transaction duration, statement count, rows/WAL if available, response identity bytes and Loader count. Record the machine, PostgreSQL version and fixture size; report measurements, not universal latency guarantees. Run `cargo run -p axton-sim --example capacity --release` separately as a diagnostic, not a correctness gate.
 - [ ] Run `cargo test --workspace --locked`, `bash integration/generated-api/verify.sh`, then `bash scripts/test.sh` once after focused suites pass. Expected: Rust, bindings, persistence, generated APIs, end-to-end and documentation examples all pass. Use CI's macOS and Linux jobs for the platform gate; do not claim both from one local run.
 - [ ] Inspect `git diff --check`, generated fixtures and the affected documentation links. Verify no domain tables, tag wire messages or automatic log-pruning jobs slipped into the patch. Commit documentation and prepare a review describing intentional wire/host compatibility changes and measured limits.
@@ -322,6 +326,6 @@ The persistence/end-to-end runners create their own temporary PostgreSQL cluster
 | Pending/direct local work and delayed response safety | Tasks 6–7 |
 | Capability gate, saved calls, forward server/client upgrade | Tasks 4, 8 |
 | Offline/reordered cross-language convergence | Task 9 |
-| Retention limits, performance evidence, living documentation | Task 10 |
+| `0.2.0` release boundary, Oasis adoption handoff, retention limits and performance evidence | Task 10 |
 
 At handoff, report the implementation commit, exact commands run/results, protocol/cutover status and any failure that remains. A feature is not complete if tags work in SQL but stale responses or old clients can undo removal. No code has been implemented by this planning document.

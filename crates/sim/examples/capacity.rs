@@ -68,9 +68,10 @@ fn main() {
             client.read(&key).unwrap().unwrap()["text"],
             format!("local-{}", count - 1)
         );
+        // Count enqueue and authority-page commits only; subscription setup is excluded.
         println!(
             "{}",
-            json!({"queue":count,"enqueue_p50_ms":samples[(count-1)/2],"enqueue_p95_ms":samples[(count*95/100).min(count-1)],"page_replay_ms":replay_ms,"sqlite_commits":count+2})
+            json!({"queue":count,"enqueue_p50_ms":samples[(count-1)/2],"enqueue_p95_ms":samples[(count*95/100).min(count-1)],"page_replay_ms":replay_ms,"enqueue_and_page_commits":count+2})
         );
     }
 }

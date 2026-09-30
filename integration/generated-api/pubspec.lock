@@ -39,7 +39,7 @@ packages:
       path: "../../packages/dart"
       relative: true
     source: path
-    version: "0.1.2"
+    version: "0.2.0"
   boolean_selector:
     dependency: transitive
     description:

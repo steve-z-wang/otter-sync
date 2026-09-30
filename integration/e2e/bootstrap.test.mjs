@@ -695,7 +695,7 @@ test('a failed historical page rejects the run, keeps its other records, and ret
   app.failLoads('page-3');
   const rejected = await subscription.bootstrap().then(() => null, error => error);
   assert.equal(rejected?.code, 'bootstrap.records_failed', 'the background caller was rejected');
-  assert.match(rejected.message, /could not be applied/);
+  assert.equal(rejected.message, 'channel bootstrap records failed');
   assert.deepEqual(
    { ...subscription.status.bootstrap },
    { phase: 'failed', error: { code: 'bootstrap.records_failed', message: rejected.message } },

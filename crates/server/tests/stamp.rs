@@ -2,6 +2,7 @@
 //! channel of one request and isolates a record its loader cannot read; an
 //! external notification allocates one stamp per record and publishes it at
 //! that stamp.
+mod capability;
 use axton_server::{Config, Host, host::HostRequest};
 use serde_json::{Value, json};
 use std::{
@@ -30,22 +31,23 @@ fn config() -> Config {
     }))
     .unwrap()
 }
-/// `scan` returns the given rows; `publish` returns the given value. Both stay
-/// raw `Value`s: these tests feed the engine answers the contract refuses.
-/// Records start in no Channel and every membership write is acknowledged.
+/// `scan` returns the given rows; `applyChannelMembers` returns the given
+/// value, or with `null` one position per delta from cursor 3. Both stay raw
+/// `Value`s: these tests feed the engine answers the contract refuses.
+/// Records start in no Channel and every lock is granted.
 struct Fixed {
     scan: Value,
-    publish: Value,
+    apply: Value,
     published: Mutex<Vec<HostRequest>>,
     loaded: Mutex<Vec<u64>>,
     advanced: Mutex<Vec<String>>,
     ensured: Mutex<Vec<String>>,
 }
 impl Fixed {
-    fn new(scan: Value, publish: Value) -> Self {
+    fn new(scan: Value, apply: Value) -> Self {
         Self {
             scan,
-            publish,
+            apply,
             published: Mutex::new(vec![]),
             loaded: Mutex::new(vec![]),
             advanced: Mutex::new(vec![]),
@@ -76,13 +78,28 @@ impl Host for Fixed {
                     self.ensured.lock().unwrap().push(identity_key.clone());
                     json!(9)
                 }
-                HostRequest::Publish { .. } => {
+                HostRequest::ApplyChannelMembers { deltas } => {
                     self.published.lock().unwrap().push(request.clone());
-                    self.publish.clone()
+                    if self.apply.is_null() {
+                        let positions: Vec<Value> = deltas
+                            .iter()
+                            .zip(3..)
+                            .map(|(delta, cursor)| {
+                                json!({"channel":delta.channel,"model":delta.key.model,
+                                    "identityKey":delta.key.encoded_identity().unwrap(),
+                                    "cursor":cursor,"kind":"upsert"})
+                            })
+                            .collect();
+                        json!(positions)
+                    } else {
+                        self.apply.clone()
+                    }
                 }
                 HostRequest::LockRecord { .. } => json!(9),
-                HostRequest::Memberships { .. } => json!([]),
-                HostRequest::SetMembership { .. } => Value::Null,
+                HostRequest::Memberships { .. } | HostRequest::ReadChannelMembers { .. } => {
+                    json!([])
+                }
+                HostRequest::LockChannels { .. } => Value::Null,
                 other => return Err(format!("unsupported {}", other.label())),
             })
         })
@@ -117,11 +134,11 @@ fn pull_copies_the_row_stamp_into_the_change() {
     let text = run(axton_server::process_pull(
         &config(),
         "u",
-        &pull_body(),
+        &crate::capability::request(&pull_body()),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].stamp, 7);
     assert_eq!(
         *host.loaded.lock().unwrap(),
@@ -154,21 +171,21 @@ fn pull_normalizes_loader_rows_with_the_retained_contract_of_the_served_version(
     let text = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Entry", 1)]),
+        &crate::capability::request(&pull_body_declaring(&[("Entry", 1)])),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].state, json!({"text":"t"}));
     // A new client declares v2 for the same data: the v2 loader and contract.
     let text = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Entry", 2)]),
+        &crate::capability::request(&pull_body_declaring(&[("Entry", 2)])),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].state, json!({"text":"t","note":null}));
     assert_eq!(
         *host.loaded.lock().unwrap(),
@@ -187,7 +204,7 @@ fn pull_normalizes_loader_rows_with_the_retained_contract_of_the_served_version(
         let err = run(axton_server::process_pull(
             &config,
             "u",
-            &pull_body_declaring(models),
+            &crate::capability::request(&pull_body_declaring(models)),
             &host,
         ))
         .unwrap_err();
@@ -224,7 +241,7 @@ fn a_page_holding_a_model_the_client_did_not_declare_is_refused_whole() {
     let err = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Note", 1)]),
+        &crate::capability::request(&pull_body_declaring(&[("Note", 1)])),
         &host,
     ))
     .unwrap_err();
@@ -244,7 +261,7 @@ fn pull_rejects_rows_without_a_positive_stamp() {
         let err = run(axton_server::process_pull(
             &config(),
             "u",
-            &pull_body(),
+            &crate::capability::request(&pull_body()),
             &host,
         ))
         .unwrap_err();
@@ -255,30 +272,36 @@ fn pull_rejects_rows_without_a_positive_stamp() {
 
 #[test]
 fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_that_stamp() {
-    let enroll = |channel: &str| json!({"channel":channel,"model":"Entry","identity":{"id":"e"},"present":true});
+    let enroll = |channel: &str| json!({"kind":"add","channel":channel,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]});
     let settlement = json!({
         "changes":[{"model":"Entry","identity":{"id":"e"}}],
         "memberships":[enroll("a"),enroll("b")]
     });
-    let ok = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
+    // One Channel per position, so every answered range is consecutive.
+    let ok = Fixed::new(json!([]), Value::Null);
     let answer = run(axton_server::settle_external(&config(), &settlement, &ok)).unwrap();
     assert_eq!(
         answer,
         json!([{"model":"Entry","identity":{"id":"e"},"stamp":9}]),
         "the changed records come back with their stamps"
     );
+    assert_eq!(*ok.advanced.lock().unwrap(), [r#"{"id":"e"}"#], "one stamp");
     let published = ok.published.lock().unwrap();
-    assert_eq!(published.len(), 2, "one invalidation per channel");
-    for request in published.iter() {
-        let HostRequest::Publish { stamp, .. } = request else {
-            panic!("not a publish");
-        };
-        assert_eq!(*stamp, 9, "both channels carry the one allocated stamp");
-    }
+    let [HostRequest::ApplyChannelMembers { deltas }] = &published[..] else {
+        panic!("one write: {published:?}");
+    };
+    assert_eq!(
+        deltas
+            .iter()
+            .map(|delta| (delta.channel.as_str(), delta.present, delta.publish))
+            .collect::<Vec<_>>(),
+        [("a", true, true), ("b", true, true)],
+        "one position per Channel"
+    );
     drop(published);
     // An enrolled but unchanged record keeps its stamp; `ensureStamp`
     // initializes it.
-    let ensure = Fixed::new(json!([]), json!({"cursor":4,"stamp":9}));
+    let ensure = Fixed::new(json!([]), Value::Null);
     let membership_only = json!({"changes":[],"memberships":[enroll("a")]});
     run(axton_server::settle_external(
         &config(),
@@ -292,12 +315,14 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         "an unchanged member is initialized, not advanced"
     );
     assert!(ensure.advanced.lock().unwrap().is_empty());
-    // The host must echo the stamp the engine named; anything else is unusable.
+    // The host must answer one position per delta; anything else is unusable.
+    let position = |channel: &str, cursor: u64| json!({"channel":channel,"model":"Entry","identityKey":"{\"id\":\"e\"}","cursor":cursor,"kind":"upsert"});
     for bad in [
         json!(3),
-        json!({"cursor":3}),
-        json!({"cursor":3,"stamp":0}),
-        json!({"cursor":3,"stamp":8}),
+        json!({"cursor":3,"stamp":9}),
+        json!([position("a", 3)]),
+        json!([position("a", 3), position("b", 0)]),
+        json!([position("a", 3), position("a", 4)]),
     ] {
         let host = Fixed::new(json!([]), bad.clone());
         let err = run(axton_server::settle_external(&config(), &settlement, &host)).unwrap_err();
@@ -306,11 +331,11 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
     // A membership naming no channel is refused: a blank name is no more a
     // channel than an empty one, and nothing is published for it.
     for blank in ["", " ", "\t\n"] {
-        let host = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
+        let host = Fixed::new(json!([]), Value::Null);
         let err = run(axton_server::settle_external(
             &config(),
             &json!({"changes":[{"model":"Entry","identity":{"id":"e"}}],
-                    "memberships":[{"channel":blank,"model":"Entry","identity":{"id":"e"},"present":true}]}),
+                    "memberships":[{"kind":"add","channel":blank,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]}]}),
             &host,
         ))
         .unwrap_err();
@@ -326,9 +351,10 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         json!({"changes":[],"publications":[{"channel":"a"}]}),
         json!({"changes":[],"memberships":[],"publications":[]}),
         json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"}}]}),
-        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":"yes"}]}),
+        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":true}]}),
+        json!({"changes":[],"memberships":[{"kind":"add","channel":"a","record":{"model":"Entry","identity":{"id":"e"}},"tags":"yes"}]}),
     ] {
-        let host = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
+        let host = Fixed::new(json!([]), Value::Null);
         let err = run(axton_server::settle_external(&config(), &bad, &host)).unwrap_err();
         assert_eq!(
             err.code,
@@ -345,7 +371,9 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
     let result = run(axton_server::live::negotiate(
         &config(),
         "u",
-        br#"{"type":"subscribe","channels":["a"],"models":{"Entry":1}}"#,
+        &crate::capability::request(
+            br#"{"type":"subscribe","channels":["a"],"models":{"Entry":1}}"#,
+        ),
         &host,
     ))
     .unwrap();
@@ -373,7 +401,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
         let err = run(axton_server::live::negotiate(
             &config(),
             "u",
-            frame.as_bytes(),
+            &crate::capability::request(frame.as_bytes()),
             &host,
         ))
         .unwrap_err();
@@ -398,7 +426,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
             run(axton_server::live::negotiate(
                 &config(),
                 "u",
-                request.to_string().as_bytes(),
+                &crate::capability::request(request.to_string().as_bytes()),
                 &host
             ))
             .is_err(),
@@ -429,9 +457,21 @@ impl Host for Multi {
                 HostRequest::Head { channel } => {
                     json!(self.heads.get(channel).copied().unwrap_or(0))
                 }
-                HostRequest::Scan { channel, .. } => {
-                    self.scans.get(channel).cloned().unwrap_or(json!([]))
-                }
+                HostRequest::Scan {
+                    channel,
+                    after,
+                    limit,
+                } => Value::Array(
+                    self.scans
+                        .get(channel)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|row| row["cursor"].as_u64().unwrap() > *after)
+                        .take(*limit as usize)
+                        .cloned()
+                        .collect(),
+                ),
                 HostRequest::Load { identities, .. } => {
                     let scripted = self.loads.lock().unwrap();
                     if scripted.is_empty() {
@@ -475,8 +515,13 @@ fn pull_all(host: &Multi, cursors: &[(&str, u64)]) -> axton_server::Result<axton
     }
     .encode()
     .unwrap();
-    run(axton_server::process_pull(&config(), "u", &request, host))
-        .map(|text| axton_core::PullPage::decode(text.as_bytes()).unwrap())
+    run(axton_server::process_pull(
+        &config(),
+        "u",
+        &crate::capability::request(&request),
+        host,
+    ))
+    .map(|text| capability::pull(text.as_bytes()).unwrap())
 }
 
 /// One pull covers every channel: each channel scans after its own cursor and
@@ -530,7 +575,7 @@ fn one_pull_covers_every_channel_and_delivers_a_shared_record_once() {
 /// and continues; the other channel reaches its head.
 #[test]
 fn a_full_channel_continues_independently_of_the_others() {
-    let rows: Vec<Value> = (1..=50)
+    let rows: Vec<Value> = (1..=51)
         .map(|c| scan_row("a", c, &format!("r{c}"), 1))
         .collect();
     let host = multi(&[("a", rows, 80), ("b", vec![], 3)], vec![]);
@@ -701,7 +746,7 @@ fn a_thrown_host_error_still_fails_the_pull() {
     let err = run(axton_server::process_pull(
         &config(),
         "u",
-        &request,
+        &crate::capability::request(&request),
         &Throws,
     ))
     .unwrap_err();
@@ -714,5 +759,118 @@ fn a_cursor_ahead_of_its_channel_head_is_refused() {
     let host = multi(&[("a", vec![], 2), ("b", vec![], 9)], vec![]);
     let err = pull_all(&host, &[("a", 3), ("b", 0)]).unwrap_err();
     assert_eq!(err.code, axton_server::code::REQUEST_INVALID);
-    assert!(err.message.contains("on a"), "{err}");
+    assert!(err.message.contains("ahead of head"), "{err}");
+}
+
+#[test]
+fn channel_removal_is_identity_only_and_never_loads_content() {
+    let host = Fixed::new(
+        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"}]),
+        Value::Null,
+    );
+    let page = run(axton_server::process_channel_pull(
+        &config(),
+        "alice",
+        &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"c":0}}"#),
+        &host,
+    ))
+    .unwrap();
+    let page: Value = serde_json::from_str(&page).unwrap();
+    assert_eq!(
+        page["changes"],
+        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"}}])
+    );
+    assert_eq!(page["cursors"]["c"]["to"], 5);
+    assert!(host.loaded.lock().unwrap().is_empty());
+}
+
+#[test]
+fn channel_loader_null_and_error_remain_stamped_upserts() {
+    for (answer, error) in [
+        (json!([null]), None),
+        (json!({"error":"boom"}), Some("loader.failed")),
+    ] {
+        let host = multi(&[("a", vec![scan_row("a", 1, "e", 2)], 1)], vec![answer]);
+        let text = run(axton_server::process_channel_pull(
+            &config(),
+            "alice",
+            &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"a":0}}"#),
+            &host,
+        ))
+        .unwrap();
+        let page = axton_core::ChannelPullPage::decode(text.as_bytes()).unwrap();
+        let axton_core::ChannelChange::Upsert { record, .. } = &page.changes[0] else {
+            panic!("a Loader result is never a channel removal")
+        };
+        assert_eq!(record.stamp, 2);
+        assert_eq!(record.error.as_deref(), error);
+        assert!(record.state.is_null());
+    }
+}
+
+fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
+    let lower = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut schema = serde_json::to_value(config().schema).unwrap();
+    schema["models"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    let cfg = Config::decode(json!({"schema":schema,"loaders":["Entry"],"mutations":[]})).unwrap();
+    let host = Fixed::new(
+        json!([{
+            "channel":"c","cursor":4,"kind":kind,"model":"Entry",
+            "identity":{"id":lower.to_uppercase()},"identityKey":format!("{{\"id\":\"{lower}\"}}"),"stamp":2
+        }]),
+        Value::Null,
+    );
+    let request = if bootstrap {
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"c","after":0,"until":5})
+    } else {
+        json!({"models":{"Entry":1},"cursors":{"c":0}})
+    };
+    // The accepted scan representation is already supported by legacy pull.
+    run(axton_server::process_pull(
+        &cfg,
+        "alice",
+        &crate::capability::request(request.to_string().as_bytes()),
+        &host,
+    ))
+    .unwrap();
+    host.loaded.lock().unwrap().clear();
+    let page = run(axton_server::process_channel_pull(
+        &cfg,
+        "alice",
+        &crate::capability::request(request.to_string().as_bytes()),
+        &host,
+    ))
+    .unwrap();
+    (
+        serde_json::from_str(&page).unwrap(),
+        host.loaded.lock().unwrap().clone(),
+    )
+}
+
+#[test]
+fn channel_uuid_scan_upsert_uses_canonical_identity_in_delta_and_bootstrap() {
+    for bootstrap in [false, true] {
+        let (page, loads) = uuid_channel_scan("upsert", bootstrap);
+        assert_eq!(
+            page["changes"][0]["identity"]["id"],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(page["changes"][0]["kind"], "upsert");
+        assert_eq!(page["changes"][0]["stamp"], 2);
+        assert_eq!(page["changes"][0]["state"], json!({"text":"t"}));
+        assert!(page["changes"][0].get("error").is_none());
+        assert_eq!(loads, vec![1]);
+    }
+}
+
+#[test]
+fn channel_uuid_scan_removal_uses_canonical_identity_in_delta_and_bootstrap() {
+    for bootstrap in [false, true] {
+        let (page, loads) = uuid_channel_scan("remove", bootstrap);
+        assert_eq!(
+            page["changes"],
+            json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}])
+        );
+        assert!(loads.is_empty());
+    }
 }

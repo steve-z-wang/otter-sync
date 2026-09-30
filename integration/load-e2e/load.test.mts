@@ -75,7 +75,7 @@ const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
 const post = async (body: unknown) => {
-  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["channel-membership-v1"] }) });
   assert.equal(response.status, 200);
   return (await response.json()) as { loads: LoadResponseItem[] };
 };
@@ -637,6 +637,66 @@ test("a Load enrolls the records it returns; a later touch or Mutation reaches t
   }
 });
 
+test("native Load enrollment releases live content durably and a second Channel hold prevents eviction", async () => {
+  const directory = await scratch("load-release");
+  await fixture.seed("release", 2);
+  fixture.enrolling.add("release");
+  let client = await GeneratedClient.open({ path: directory.path, server: server() });
+  try {
+    const first = await client.scopes.subscribe("items:release");
+    const second = await client.scopes.subscribe("items:release-other");
+    await wait(() => first.status.initialization === "ready" && second.status.initialization === "ready", "both Channels initialized");
+    await (await client.loads.projectItems({ project: "release" })).wait();
+    await fixture.membership("release-2", "items:release-other", true);
+    await wait(async () => (await client.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
+    await fixture.membership("release-1", "items:release", false);
+    await fixture.membership("release-2", "items:release", false);
+    await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
+    await wait(async () => (await client.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Channel removals persisted before checking the second hold");
+    assert.ok(await client.models.item.get({ id: "release-2" }), "second Channel keeps content");
+    await client.close();
+    client = await GeneratedClient.open({ path: directory.path });
+    assert.equal(await client.models.item.get({ id: "release-1" }), null, "release persists across offline reopen");
+    assert.ok(await client.models.item.get({ id: "release-2" }), "second hold persists offline");
+  } finally {
+    fixture.enrolling.delete("release");
+    await client.close();
+    await directory.cleanup();
+  }
+});
+
+test("a delayed enrolled Load response and its durable replay cannot restore or re-enroll a released member", async () => {
+  await fixture.seed("released-page", 2);
+  fixture.enrolling.add("released-page");
+  const reader = await subscribed("released-page", "items:released-page");
+  const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "released-page" && item.continuation === null));
+  try {
+    const { client } = reader;
+    const load = await client.loads.projectItems({ project: "released-page" });
+    const exchange = await held.arrived;
+    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Channel enrollment delivered while the Load response was held");
+    await fixture.membership("released-page-1", "items:released-page", false);
+    await wait(async () => (await client.models.item.get({ id: "released-page-1" })) === null, "newer live removal committed before the old claim");
+    const runs = fixture.handled.length;
+    const head = await fixture.head("items:released-page");
+    held.release();
+    await load.wait();
+    assert.equal(await client.models.item.get({ id: "released-page-1" }), null, "older enrolled page cannot resurrect released content");
+    // Replay the same committed first-page HTTP request through production admission.
+    const replay = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer alice" }, body: exchange.body });
+    assert.equal(replay.status, 200);
+    await replay.json();
+    assert.equal(fixture.handled.length, runs + 1, "only the traversal's final empty page ran; durable replay ran no handler");
+    assert.equal(await fixture.head("items:released-page"), head, "replayed page did not re-enroll or publish");
+    const members = await fixture.pool.query("SELECT 1 FROM axton_channel_member AS m JOIN axton_record AS r ON r.id=m.record_id WHERE m.channel=$1 AND r.model='Item' AND r.identity_key=$2", ["items:released-page", JSON.stringify({ id: "released-page-1" })]);
+    assert.equal(members.rowCount, 0, "server membership remains released");
+  } finally {
+    held.release();
+    fixture.enrolling.delete("released-page");
+    await reader.cleanup();
+  }
+});
+
 test("a newer Channel update of an enrolled record arrives before its held Load page: no regression, duplicates are harmless and a pending edit stays", async () => {
   const ids = await fixture.seed("gate", 2);
   fixture.enrolling.add("gate");
@@ -800,4 +860,66 @@ test("the generated Dart client receives a later change to a record its Load enr
     fixture.enrolling.delete("dart-enr");
     await cleanup();
   }
+});
+
+
+test("the generated Dart client releases Load enrollment and reopens offline with a second hold retained", async () => {
+  const { path, cleanup } = await scratch("dart-release");
+  await fixture.seed("dart-release", 2);
+  fixture.enrolling.add("dart-release");
+  const root = join(here, "../..");
+  const child = spawn("dart", ["run", "client.dart", proxy.url, path,
+    join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "remove"], { cwd: here });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exited = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
+  try {
+    await wait(() => stdout.includes("Dart release: loaded"), "Dart Load stored its enrolled rows");
+    await fixture.membership("dart-release-2", "items:dart-release-other", true);
+    await wait(() => stdout.includes("Dart release: second held"), "Dart persisted the second hold");
+    await fixture.membership("dart-release-1", "items:dart-release", false);
+    await fixture.membership("dart-release-2", "items:dart-release", false);
+    await wait(() => stdout.includes("Dart Load removal: passed"), `Dart offline removal: ${stderr}`);
+    assert.equal(await exited, 0, stderr);
+  } finally {
+    child.kill();
+    fixture.enrolling.delete("dart-release");
+    await cleanup();
+  }
+});
+
+
+test("native Load validates each tagged add separately, unions 65 labels once, and replays its saved page", async () => {
+  const tags = Array.from({ length: 65 }, (_, i) => `t${String(i).padStart(2, "0")}`);
+  await fixture.seed("tag-union", 1);
+  fixture.enrollmentTags.set("tag-union", [tags.slice(0, 64), [tags[0]!, tags[64]!]]);
+  const request: LoadRequestItem = { loadId: "01890f47-1234-7123-8123-00000000f001", callId: "01890f47-1234-7123-8123-00000000f002", name: "ProjectItems", version: 1, args: { project: "tag-union" }, continuation: null, models: { Item: 1, Tag: 1 } };
+  const result = (await post({ loads: [request] })).loads;
+  assert.equal(result[0]!.outcome.status, "succeeded", JSON.stringify(result));
+  const members = await fixture.taggedMembers("items:tag-union");
+  assert.equal(members.length, 1);
+  assert.deepEqual(members[0]!.tags, tags);
+  assert.equal(await fixture.head("items:tag-union"), 1, "one pair takes one position");
+  const runs = fixture.handled.length;
+  assert.deepEqual((await post({ loads: [request] })).loads, result);
+  assert.equal(fixture.handled.length, runs);
+  assert.deepEqual(await fixture.taggedMembers("items:tag-union"), members);
+  assert.equal(await fixture.head("items:tag-union"), 1);
+
+  await fixture.seed("tag-overflow", 1);
+  fixture.enrollmentTags.set("tag-overflow", [tags]);
+  const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004", args: { project: "tag-overflow" } };
+  const refused = (await post({ loads: [invalid] })).loads;
+  assert.equal(refused[0]!.outcome.status, "failed");
+  if (refused[0]!.outcome.status === "failed") {
+    assert.equal(refused[0]!.outcome.error.code, "handler.failed", "the collector refuses inside the handler");
+    assert.equal(refused[0]!.outcome.error.message, "handler.failed");
+  }
+  assert.deepEqual(await fixture.taggedMembers("items:tag-overflow"), []);
+  assert.equal(await fixture.head("items:tag-overflow"), 0);
+  assert.deepEqual((await post({ loads: [invalid] })).loads, refused);
+  fixture.enrollmentTags.delete("tag-union");
+  fixture.enrollmentTags.delete("tag-overflow");
 });

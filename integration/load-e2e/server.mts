@@ -52,6 +52,7 @@ export async function createFixture() {
   const pings: string[] = [];
   const failing = new Set<string>();
   const enrolling = new Set<string>();
+  const enrollmentTags = new Map<string, string[][]>();
   const handlerHolds = new Holds<Handled>();
   const loaderHolds = new Holds<string[]>();
   const xact = async (tx: PgClient) => String((await tx.query("SELECT pg_current_xact_id()::text AS xact")).rows[0].xact);
@@ -95,6 +96,8 @@ export async function createFixture() {
         for (const item of items) channel.item.add(item);
         channel.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
       }
+      for (const tags of enrollmentTags.get(args.project) ?? [])
+        for (const item of items) ctx.channel(`items:${args.project}`).item.add(item, { tags });
       return {
         data: { items, tags: pageTags },
         next: { state: { after: items.at(-1)!.id, page: pageNumber, trail: [...(state?.trail ?? []), ...items.map((item) => item.id)], meta: { size: PAGE, nested: { flags: [true, false, null], label: `p${pageNumber}` } } } },
@@ -146,6 +149,10 @@ export async function createFixture() {
     failing,
     /** Projects whose ProjectItems pages add what they return to Channel `items:${project}`. */
     enrolling,
+    enrollmentTags,
+    async taggedMembers(channel: string) {
+      return (await pool.query("SELECT m.id::text, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_channel_member m LEFT JOIN axton_channel_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_channel_tag t ON t.id=mt.tag_id WHERE m.channel=$1 GROUP BY m.id", [channel])).rows;
+    },
     /** Pause a handler at its first matching page, before it reads. */
     holdHandler: (match: (page: Handled) => boolean) => handlerHolds.arm(match),
     /** Pause the Item Loader after it read the rows, at its first matching identity list. */
@@ -153,7 +160,7 @@ export async function createFixture() {
     get proxy() { return proxy!; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
-      for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
+      await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
       await pool.query("CREATE TABLE load_e2e_item(id text PRIMARY KEY, project text NOT NULL, title text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_tag(id text PRIMARY KEY, project text NOT NULL, label text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_ping(id bigserial PRIMARY KEY, note text NOT NULL)");
@@ -190,6 +197,12 @@ export async function createFixture() {
         await tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [id, project, `${id} title`]);
         touch.item({ id });
         if (channel !== undefined) join(channel).item.add({ id });
+      });
+    },
+    async membership(id: string, channelName: string, present: boolean) {
+      await backend.transaction(async ({ channel }) => {
+        const member = channel(channelName).item;
+        if (present) member.add({ id }); else member.remove({ id });
       });
     },
     /** A Channel's head: it moves only when something is published to it. */

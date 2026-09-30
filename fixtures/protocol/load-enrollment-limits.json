@@ -1,60 +1,91 @@
 {
-  "description": "Bounds on the Channel enrollment one Load page declares, after deduplicating repeated Channel/record pairs. A pair's bytes are the UTF-8 length of the canonical JSON of its intent {channel, identity, model, present} with its canonical identity.",
+  "description": "Bounds on the Channel enrollment one Load page declares, after deduplicating repeated Channel/record pairs (a repeated pair unions its tags into the first). A pair's bytes are the UTF-8 length of the canonical JSON of its add intent {channel, kind, record: {identity, model}, tags} with its canonical identity.",
   "pairs": 1000,
   "bytes": 1048576,
   "intents": [
     {
       "name": "an ASCII pair",
       "intent": {
+        "kind": "add",
         "channel": "project:p1",
-        "model": "Todo",
-        "identity": {
-          "id": "t1"
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t1"
+          }
         },
-        "present": true
+        "tags": []
       },
-      "encoded": "{\"channel\":\"project:p1\",\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\",\"present\":true}",
-      "bytes": 77
+      "encoded": "{\"channel\":\"project:p1\",\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"tags\":[]}",
+      "bytes": 96
     },
     {
       "name": "multibyte UTF-8 counts bytes, not characters",
       "intent": {
+        "kind": "add",
         "channel": "équipe",
-        "model": "Todo",
-        "identity": {
-          "id": "日本"
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "日本"
+          }
         },
-        "present": true
+        "tags": []
       },
-      "encoded": "{\"channel\":\"équipe\",\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\",\"present\":true}",
-      "bytes": 78
+      "encoded": "{\"channel\":\"équipe\",\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\"},\"tags\":[]}",
+      "bytes": 97
     },
     {
       "name": "escapes and an astral character",
       "intent": {
+        "kind": "add",
         "channel": "a\"b\n😀",
-        "model": "Todo",
-        "identity": {
-          "id": "t\\1"
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t\\1"
+          }
         },
-        "present": true
+        "tags": []
       },
-      "encoded": "{\"channel\":\"a\\\"b\\n😀\",\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\",\"present\":true}",
-      "bytes": 79
+      "encoded": "{\"channel\":\"a\\\"b\\n😀\",\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\"},\"tags\":[]}",
+      "bytes": 98
     },
     {
       "name": "identity members in canonical order",
       "intent": {
+        "kind": "add",
         "channel": "org",
-        "model": "Member",
-        "identity": {
-          "userId": "u1",
-          "orgId": "o1"
+        "record": {
+          "model": "Member",
+          "identity": {
+            "userId": "u1",
+            "orgId": "o1"
+          }
         },
-        "present": true
+        "tags": []
       },
-      "encoded": "{\"channel\":\"org\",\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\",\"present\":true}",
-      "bytes": 89
+      "encoded": "{\"channel\":\"org\",\"kind\":\"add\",\"record\":{\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\"},\"tags\":[]}",
+      "bytes": 108
+    },
+    {
+      "name": "tags count as spelled, in declaration order",
+      "intent": {
+        "kind": "add",
+        "channel": "project:p1",
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t1"
+          }
+        },
+        "tags": [
+          "Journal:1",
+          "équipe"
+        ]
+      },
+      "encoded": "{\"channel\":\"project:p1\",\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"tags\":[\"Journal:1\",\"équipe\"]}",
+      "bytes": 117
     }
   ]
 }

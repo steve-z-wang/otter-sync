@@ -43,7 +43,11 @@ impl<S: ClientStore> Client<S> {
             identity: self.schema.record_key(model, identity)?.identity,
             store,
         };
-        FetchRequest::decode(&request.encode()?, &self.schema)
+        let request = FetchRequest::decode(&request.encode()?, &self.schema)?;
+        if request.store {
+            self.freeze_request(&request.call_id);
+        }
+        Ok(request)
     }
     /// Validate a response against the frozen request bytes it answers.
     pub fn decode_fetch(
@@ -64,9 +68,13 @@ impl<S: ClientStore> Client<S> {
         if response.records.is_empty() {
             let mut report = ApplyReport::default();
             report.completions.push(response.completion.clone());
+            self.retire_request(&response.completion.call_id);
             return Ok(report);
         }
-        self.write(|engine| engine.apply_fetch_body(response))
+        let token = self.request_token(&response.completion.call_id);
+        let report = self.write(|engine| engine.apply_fetch_body(response, token))?;
+        self.retire_request(&response.completion.call_id);
+        Ok(report)
     }
 }
 
@@ -75,8 +83,12 @@ impl<S: ClientStore> Engine<'_, S> {
     /// stamps are valid no-ops; a pending optimistic write keeps its visible
     /// row and replays over the new base. Any record the client cannot store
     /// refuses the delivery, which the caller's transaction then rolls back.
-    pub(crate) fn apply_fetch_body(&mut self, response: &FetchResponse) -> Result<ApplyReport> {
-        let mut report = self.apply_records(&response.records)?;
+    pub(crate) fn apply_fetch_body(
+        &mut self,
+        response: &FetchResponse,
+        token: crate::StoreToken,
+    ) -> Result<ApplyReport> {
+        let mut report = self.apply_enrolled_records_at(&response.records, &[], token)?;
         if let Some(refused) = report
             .reports
             .iter()

@@ -44,7 +44,7 @@ impl<S: ClientStore> Client<S> {
     ) -> Result<DirectActionRequest> {
         let action = self.schema.action(name, version)?;
         let (args, store) = fresh_args(&self.schema, action, args, options)?;
-        Ok(DirectActionRequest {
+        let request = DirectActionRequest {
             call: ActionIntent {
                 call_id: uuid::Uuid::new_v4().to_string(),
                 name: name.into(),
@@ -53,7 +53,9 @@ impl<S: ClientStore> Client<S> {
                 store,
             },
             models: self.declared_models(),
-        })
+        };
+        self.freeze_request(&request.call.call_id);
+        Ok(request)
     }
 
     /// Apply authoritative direct results in one short local transaction.
@@ -82,9 +84,14 @@ impl<S: ClientStore> Client<S> {
         if response.records.is_empty() && result.is_none() {
             let mut report = ApplyReport::default();
             report.completions.push(response.completion.clone());
+            self.retire_request(&response.completion.call_id);
             return Ok(report);
         }
-        self.write(|engine| engine.apply_direct_response_body(&response, snapshot))
+        let token = self.request_token(&response.completion.call_id);
+        let report =
+            self.write(|engine| engine.apply_direct_response_body(&response, snapshot, token))?;
+        self.retire_request(&response.completion.call_id);
+        Ok(report)
     }
     pub fn apply_action_response_bytes(
         &mut self,
@@ -177,12 +184,10 @@ impl<S: ClientStore> Engine<'_, S> {
         &mut self,
         response: &DirectActionResponse,
         snapshot: Option<(&QueryCacheKey, Option<&str>)>,
+        token: crate::StoreToken,
     ) -> Result<ApplyReport> {
-        let mut report = if response.records.is_empty() {
-            ApplyReport::default()
-        } else {
-            self.apply_records(&response.records)?
-        };
+        let mut report =
+            self.apply_enrolled_records_at(&response.records, &response.memberships, token)?;
         if let (ActionOutcome::Succeeded { result }, Some((key, generation))) =
             (&response.completion.outcome, snapshot)
         {

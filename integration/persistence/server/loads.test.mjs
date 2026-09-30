@@ -37,7 +37,7 @@ let next = 0x10000;
 /** One page of `ProjectTodos(projectId)` with fresh IDs unless given. */
 const page = (projectId, { continuation = null, loadId = uuid(next++), callId = uuid(next++) } = {}) =>
   ({ loadId, callId, name: 'ProjectTodos', version: 1, args: { projectId }, continuation, models: { Todo: 1 } });
-const batch = (...items) => JSON.stringify({ loads: items });
+const batch = (...items) => JSON.stringify({ capabilities:['channel-membership-v1'],loads: items });
 
 /**
  * The page handler over `load_todo`: two identities per page in id order
@@ -68,7 +68,7 @@ const backend = (database, seen = { handled: [], loaded: [] }, extra = {}) =>
 
 const shims = [];
 before(async () => {
-  for (const sql of (await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')).split(';').map(s => s.trim()).filter(Boolean)) await q(sql);
+  await q(await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8'));
   await q('CREATE TABLE load_todo(id text PRIMARY KEY, project text NOT NULL, owner_id text NOT NULL, title text NOT NULL)');
   await q('CREATE TABLE load_audit(id serial PRIMARY KEY, note text NOT NULL)');
   const poolPg = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -300,7 +300,7 @@ test('POST /sync/loads authenticates once, refuses a malformed envelope whole an
     assert.equal((await send(batch(page('http')), null)).status, 401);
     const nine = Array.from({ length: 9 }, () => page('http'));
     const duplicate = page('http');
-    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ loads: [page('http')], extra: 1 })]) {
+    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ capabilities:['channel-membership-v1'],loads: [page('http')], extra: 1 })]) {
       const refused = await send(body);
       assert.equal(refused.status, 400, body.slice(0, 60));
       assert.deepEqual(await refused.json(), { code: 'request.invalid' });
@@ -331,7 +331,7 @@ test('Load registration names every retained version and keeps wrong-kind diagno
 });
 
 /** Every Channel a Todo belongs to, sorted. */
-const channelsOf = async id => (await q("SELECT channel FROM axton_membership WHERE model='Todo' AND identity_key=$1 ORDER BY channel", [JSON.stringify({ id })])).map(row => row.channel);
+const channelsOf = async id => (await q("SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model='Todo' AND r.identity_key=$1 ORDER BY m.channel", [JSON.stringify({ id })])).map(row => row.channel);
 /** Records which of `channels` wake, until `stop`. */
 const listen = (app, channels) => { const woken = []; const stops = channels.map(channel => app.onCommitted(channel, () => woken.push(channel))); return { woken, stop: () => stops.forEach(stop => stop()) }; };
 /** One page over `enroll-*` rows whose handler is `body({ ctx, rows })`. */
@@ -359,6 +359,7 @@ test('a Load enrolls the records it declares on every shim, waking the Channel a
     const [done] = outcomes(await app.loads('alice', batch(item)));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(done.outcome.status, 'succeeded', name);
+    assert.deepEqual(done.memberships, [1, 2].map((cursor) => ({channel, cursor, model: 'Todo', identity: {id: `${project}-${cursor}`}})), name);
     assert.deepEqual(await channelsOf(`${project}-1`), [channel], name);
     assert.deepEqual(await channelsOf(`${project}-2`), [channel], name);
     assert.deepEqual(await channelsOf(`${project}-3`), [], `${name}: returning a record does not enroll it`);
@@ -425,15 +426,16 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 const tables = async (ids, channels) => ({
   rows: await q('SELECT id, title FROM load_todo WHERE id = ANY($1) ORDER BY id', [ids]),
   stamps: await q("SELECT identity_key, stamp::int FROM axton_record WHERE model='Todo' AND identity_key = ANY($1) ORDER BY identity_key", [ids.map(key)]),
-  members: await q("SELECT channel, identity_key FROM axton_membership WHERE model='Todo' AND identity_key = ANY($1) ORDER BY channel, identity_key", [ids.map(key)]),
+  members: await q("SELECT m.channel, r.identity_key FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model='Todo' AND r.identity_key = ANY($1) ORDER BY m.channel, r.identity_key", [ids.map(key)]),
   heads: await q('SELECT channel, head::int FROM axton_channel WHERE channel = ANY($1) ORDER BY channel', [channels]),
-  positions: await q('SELECT channel, identity_key, cursor::int, stamp::int FROM axton_invalidation WHERE channel = ANY($1) ORDER BY channel, identity_key', [channels]),
+  // Each pair's position with its record's current stamp.
+  positions: await q('SELECT l.channel, r.identity_key, l.cursor::int, r.stamp::int FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel = ANY($1) ORDER BY l.channel, r.identity_key', [channels]),
 });
 /** The claimed call: the transaction that claimed it and its saved outcome, if one committed. */
 const claimed = async callId => (await q('SELECT claim_tx::text AS tx, response FROM axton_call WHERE call_id=$1', [callId])).map(row => ({ tx: row.tx, response: row.response && JSON.parse(row.response) }));
 /** What a Channel delivers from `from`: identity, stamp and title of each change. */
 const delivered = async (app, channel, from = 0) =>
-  JSON.parse(await app.pull('alice', JSON.stringify({ cursors: { [channel]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
+  JSON.parse(await app.pull('alice', JSON.stringify({ capabilities:['channel-membership-v1'],cursors: { [channel]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
 
 test('on every shim a page commits its enrollment with its saved outcome; a re-add and an existing membership publish nothing', async () => {
   for (const { name, database } of shims) {
@@ -608,7 +610,7 @@ test('an initialized live subscription hears a Load enrollment and a later touch
   try {
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
     socket.addEventListener('message', event => frames.push(JSON.parse(String(event.data))));
-    socket.send(JSON.stringify({ type: 'subscribe', channels: [channel], models: { Todo: 1 } }));
+    socket.send(JSON.stringify({ capabilities:['channel-membership-v1'],type: 'subscribe', channels: [channel], models: { Todo: 1 } }));
     await until(() => frames.length >= 1, 'the acknowledgement');
     assert.equal(frames[0].type, 'subscribed');
     assert.equal(frames[0].cursors[channel], 0, 'initialized at an empty Channel');
@@ -658,7 +660,7 @@ test('a touch and an enrolling page serialize in either order: the committed pag
     } } });
   const touching = trial => app.transaction(async ({ tx, touch }) => {
     const [{ txid }] = await driver.query(tx, 'SELECT txid_current()::text AS txid', []);
-    const members = (await driver.query(tx, "SELECT channel FROM axton_membership WHERE model='Todo' AND identity_key=$1 ORDER BY channel", [key(trial.id)])).map(row => row.channel);
+    const members = (await driver.query(tx, "SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model='Todo' AND r.identity_key=$1 ORDER BY m.channel", [key(trial.id)])).map(row => row.channel);
     trial.attempts.touch.push({ txid, members });
     if (trial.attempts.touch.length === 1) { trial.fixed.touch.resolve(); await trial.gates.touch.promise; }
     await driver.query(tx, "UPDATE load_todo SET title='touched' WHERE id=$1", [trial.id]);
@@ -788,8 +790,14 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
     ['an enrollment outside the page', () => { returned = [member]; declare = both; }, 'handler.invalid'],
     ['a forged remove beside a valid add', () => {
       declare = channel => channel(A).todo.add({ id: member });
-      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { channel: B, model: 'Todo', identity: { id: member }, present: false }] });
+      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { kind: 'remove', channel: B, record: { model: 'Todo', identity: { id: member } } }] });
     }, 'handler.invalid'],
+    ['a forged tag selector beside a valid add', () => {
+      declare = channel => channel(A).todo.add({ id: member });
+      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { kind: 'removeTag', channel: A, tag: 'X' }] });
+    }, 'handler.invalid'],
+    // JavaScript's trim keeps U+0085; the engine calls the tag blank and refuses it.
+    ['a tag only the engine calls blank', () => { declare = channel => channel(A).todo.add({ id: member }, { tags: ['\u0085'] }); }, 'handler.invalid'],
     ['a forged change beside a valid add', () => {
       declare = channel => channel(A).todo.add({ id: member });
       tamper = answered => ({ ...answered, changes: [{ model: 'Todo', identity: { id: member } }] });
@@ -810,5 +818,60 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
     assert.deepEqual(await tables(ids, [A, B]), before, `${label}: no business row, stamp, membership, head or position changed`);
     assert.deepEqual(await q('SELECT note FROM load_audit WHERE note=$1', [`deny:${item.callId}`]), [], `${label}: the handler's own write rolled back`);
     assert.deepEqual(wakes.woken, [], `${label}: no wake`);
+  }
+  // A valid tagged add enrolls the member with its tag.
+  returned = ids; tamper = answered => answered;
+  declare = channel => channel(A).todo.add({ id: member }, { tags: ['X'] });
+  const [done] = outcomes(await app.loads('alice', batch(page('deny'))));
+  assert.equal(done.outcome.status, 'succeeded');
+  assert.deepEqual(await q("SELECT t.name FROM axton_channel_tag t JOIN axton_channel_member_tag mt ON mt.tag_id=t.id JOIN axton_channel_member m ON m.id=mt.member_id WHERE m.channel=$1", [A]), [{ name: 'X' }]);
+});
+
+
+test('a saved enrolled page keeps its old claim after a later removal on every shim', async () => {
+  for (const {name,database} of shims) {
+    const project = `claim-retry-${name}`;
+    const channel = `claim:${project}`;
+    await seed(project, project, 'alice', 1);
+    const app = enrolling(database, ({ctx,rows}) => ctx.channel(channel).todo.add({id:rows[0].id}));
+    await q('INSERT INTO axton_channel(channel,head) VALUES($1,9)', [channel]);
+    const item = page(project);
+    const [original] = outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(original.memberships,[{channel,cursor:10,model:'Todo',identity:{id:`${project}-1`}}]);
+    await app.transaction(async ({channel:scope}) => scope(channel).todo.remove({id:`${project}-1`}));
+    const before = await q('SELECT l.channel,l.cursor,l.kind,r.model,r.identity FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1',[channel]);
+    assert.equal(Number(before[0].cursor),11);
+    assert.equal(before[0].kind,'remove');
+    const heads = await q('SELECT * FROM axton_channel WHERE channel=$1',[channel]);
+    const [replayed] = outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(replayed,original);
+    assert.deepEqual(await channelsOf(`${project}-1`),[]);
+    assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[channel]),heads);
+    assert.deepEqual(await q('SELECT l.channel,l.cursor,l.kind,r.model,r.identity FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1',[channel]),before);
+  }
+});
+
+test('a capable retry across cutover replays a saved legacy Load without claims or enrollment on every shim', async () => {
+  for (const {name,database} of shims) {
+    const project=`legacy-cutover-${name}`,channel=`${project}:room`,record=`${project}-1`;
+    await seed(project,project,'alice',1);
+    let runs=0;
+    const app=enrolling(database,({ctx,rows})=>{runs++;ctx.channel(channel).todo.add({id:rows[0].id});});
+    const item=page(project);
+    const [first]=outcomes(await app.loads('alice',batch(item)));
+    assert.equal(first.memberships.length,1,name);
+    await app.transaction(({channel:scope})=>scope(channel).todo.remove({id:record}));
+    // The durable pre-capability fixture has no claims. Negotiation in a
+    // stored request is nonsemantic, regardless of which writer saved it.
+    const [row]=await q('SELECT request,response FROM axton_call WHERE call_id=$1',[item.callId]);
+    const request=JSON.parse(row.request);request.capabilities=['channel-membership-v1'];
+    const response=JSON.parse(row.response);delete response.memberships;
+    await q('UPDATE axton_call SET request=$2,response=$3 WHERE call_id=$1',[item.callId,JSON.stringify(request),JSON.stringify(response)]);
+    const before=await tables([record],[channel]);
+    const [retry]=outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(retry,response,name);
+    assert.equal(runs,1,`${name}: the saved page never reenrolls`);
+    assert.equal(retry.memberships,undefined,`${name}: legacy response fabricates no claim`);
+    assert.deepEqual(await tables([record],[channel]),before,`${name}: heads, members and removal positions stay unchanged`);
   }
 });

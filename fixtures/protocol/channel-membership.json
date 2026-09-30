@@ -1,0 +1,1372 @@
+{
+ "comment": "Channel membership pages (capability channel-membership-v1). A page keeps the pull envelope and one cursor per channel; each change names its channel and log cursor, with from < cursor <= to in that channel's range. An upsert carries the channel, cursor and kind beside the existing authority record fields (model, identity, stamp, state or error); a removal carries only channel, cursor, kind, model and identity. A channel holds at most 50 changes and a channel/record pair appears at most once, as does a channel position. Enrollment responses carry memberships claims {channel, cursor, model, identity}, each for a record the response returns, unique per channel/record pair and channel position. Requests advertise capabilities as envelope metadata that saved-call identity ignores.",
+ "capability": "channel-membership-v1",
+ "canonical": {
+  "wire": "{\"changes\":[{\"channel\":\"U\",\"cursor\":2,\"identity\":{\"id\":\"a\"},\"kind\":\"upsert\",\"model\":\"Entry\",\"stamp\":1,\"state\":{\"text\":\"A\"}},{\"channel\":\"U\",\"cursor\":3,\"identity\":{\"id\":\"b\"},\"kind\":\"remove\",\"model\":\"Entry\"}],\"cursors\":{\"U\":{\"from\":1,\"head\":3,\"to\":3}}}",
+  "channels": [
+   "U"
+  ],
+  "kinds": [
+   "upsert",
+   "remove"
+  ]
+ },
+ "page": [
+  {
+   "name": "the canonical example: an upsert and a removal",
+   "wire": "{\"cursors\":{\"U\":{\"from\":1,\"to\":3,\"head\":3}},\"changes\":[{\"channel\":\"U\",\"cursor\":2,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1,\"state\":{\"text\":\"A\"}},{\"channel\":\"U\",\"cursor\":3,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"b\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "two channels share one identity, each with its own membership event",
+   "wire": "{\"cursors\":{\"book:demo\":{\"from\":0,\"to\":2,\"head\":2},\"inbox:alice\":{\"from\":5,\"to\":6,\"head\":6}},\"changes\":[{\"channel\":\"book:demo\",\"cursor\":2,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":4,\"state\":{\"text\":\"Hello\"}},{\"channel\":\"inbox:alice\",\"cursor\":6,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":4,\"state\":{\"text\":\"Hello\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "one identity removed in one channel and held in another",
+   "wire": "{\"cursors\":{\"book:demo\":{\"from\":0,\"to\":2,\"head\":2},\"inbox:alice\":{\"from\":5,\"to\":6,\"head\":6}},\"changes\":[{\"channel\":\"book:demo\",\"cursor\":2,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}},{\"channel\":\"inbox:alice\",\"cursor\":6,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":4,\"state\":{\"text\":\"Hello\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "a stamped null upsert is authoritative absence, not a removal",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":3,\"state\":null}]}",
+   "valid": true
+  },
+  {
+   "name": "a Loader error upsert carries its code and no state",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":5,\"error\":\"loader.failed\"}]}",
+   "valid": true
+  },
+  {
+   "name": "a Loader error upsert with an explicit null state",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":5,\"state\":null,\"error\":\"loader.failed\"}]}",
+   "valid": true
+  },
+  {
+   "name": "a removal carries only its channel, cursor and record identity",
+   "wire": "{\"cursors\":{\"U\":{\"from\":100,\"to\":106,\"head\":106}},\"changes\":[{\"channel\":\"U\",\"cursor\":105,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"A\"}},{\"channel\":\"U\",\"cursor\":106,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"B\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "a composite identity",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Member\",\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "a compacted gap: changes need not fill the range",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":50,\"head\":80}},\"changes\":[{\"channel\":\"U\",\"cursor\":7,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":2,\"state\":{\"text\":\"A\"}},{\"channel\":\"U\",\"cursor\":40,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"b\"}}]}",
+   "valid": true
+  },
+  {
+   "name": "nothing changed",
+   "wire": "{\"cursors\":{\"U\":{\"from\":3,\"to\":3,\"head\":3}},\"changes\":[]}",
+   "valid": true
+  },
+  {
+   "name": "safe maximum counters",
+   "wire": "{\"cursors\":{\"U\":{\"from\":9007199254740990,\"to\":9007199254740991,\"head\":9007199254740991}},\"changes\":[{\"channel\":\"U\",\"cursor\":9007199254740991,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":9007199254740991,\"state\":null}]}",
+   "valid": true
+  },
+  {
+   "name": "unknown page fields are ignored so a newer server can extend the page",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}],\"future\":true}",
+   "valid": true
+  },
+  {
+   "name": "an unknown kind",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"tag\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a kind that is not a string",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":1,\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "kind missing: a record-only change is not a channel change",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1,\"state\":null}]}",
+   "valid": false
+  },
+  {
+   "name": "channel missing",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a channel the page does not cover",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"V\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a blank channel",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\" \",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a channel that is not a string",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":1,\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a duplicate channel/record pair",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":2,\"head\":2}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1,\"state\":null},{\"channel\":\"U\",\"cursor\":2,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a duplicate pair whose identity members are reordered",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":2,\"head\":2}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Member\",\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"}},{\"channel\":\"U\",\"cursor\":2,\"kind\":\"remove\",\"model\":\"Member\",\"identity\":{\"userId\":\"u1\",\"orgId\":\"o1\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "two records at one channel position",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":2,\"head\":2}},\"changes\":[{\"channel\":\"U\",\"cursor\":2,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}},{\"channel\":\"U\",\"cursor\":2,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"b\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a cursor at the range start is outside the page",
+   "wire": "{\"cursors\":{\"U\":{\"from\":1,\"to\":3,\"head\":3}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a cursor past the range end",
+   "wire": "{\"cursors\":{\"U\":{\"from\":1,\"to\":3,\"head\":5}},\"changes\":[{\"channel\":\"U\",\"cursor\":4,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a cursor in an unchanged channel",
+   "wire": "{\"cursors\":{\"U\":{\"from\":3,\"to\":3,\"head\":3}},\"changes\":[{\"channel\":\"U\",\"cursor\":3,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "cursor missing",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "cursor zero",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":0,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "cursor fractional",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":2,\"head\":2}},\"changes\":[{\"channel\":\"U\",\"cursor\":1.5,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "cursor overflows the safe integer range",
+   "wire": "{\"cursors\":{\"U\":{\"from\":9007199254740990,\"to\":9007199254740991,\"head\":9007199254740991}},\"changes\":[{\"channel\":\"U\",\"cursor\":9007199254740992,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "stamp overflows the safe integer range",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":9007199254740992,\"state\":null}]}",
+   "valid": false
+  },
+  {
+   "name": "head overflows the safe integer range",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":9007199254740992}},\"changes\":[]}",
+   "valid": false
+  },
+  {
+   "name": "a removal with a stamp",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":3}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal with a state",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"state\":null}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal with an error",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"error\":\"loader.failed\"}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal with tags",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"tags\":[\"X\"]}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal without a model",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal identity must be an object",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":\"a\"}]}",
+   "valid": false
+  },
+  {
+   "name": "an upsert without a stamp",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"state\":null}]}",
+   "valid": false
+  },
+  {
+   "name": "an upsert with neither state nor error",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1}]}",
+   "valid": false
+  },
+  {
+   "name": "an upsert with state and error",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1,\"state\":{\"text\":\"x\"},\"error\":\"loader.failed\"}]}",
+   "valid": false
+  },
+  {
+   "name": "a change must be an object",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[[]]}",
+   "valid": false
+  },
+  {
+   "name": "the page moves backwards",
+   "wire": "{\"cursors\":{\"U\":{\"from\":4,\"to\":3,\"head\":3}},\"changes\":[]}",
+   "valid": false
+  },
+  {
+   "name": "to past head",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":5,\"head\":4}},\"changes\":[]}",
+   "valid": false
+  },
+  {
+   "name": "no channels",
+   "wire": "{\"cursors\":{},\"changes\":[]}",
+   "valid": false
+  },
+  {
+   "name": "changes missing",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}}}",
+   "valid": false
+  }
+ ],
+ "claims": [
+  {
+   "name": "a claim for a returned record",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": true
+  },
+  {
+   "name": "one record claimed in two channels",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     },
+     {
+      "channel": "user:bob",
+      "cursor": 4,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": true
+  },
+  {
+   "name": "a claim ties to its record whatever the identity member order",
+   "response": {
+    "records": [
+     {
+      "model": "Member",
+      "identity": {
+       "orgId": "o1",
+       "userId": "u1"
+      },
+      "stamp": 2,
+      "state": {
+       "role": "admin"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "org",
+      "cursor": 3,
+      "model": "Member",
+      "identity": {
+       "userId": "u1",
+       "orgId": "o1"
+      }
+     }
+    ]
+   },
+   "valid": true
+  },
+  {
+   "name": "a response that enrolls nothing omits memberships",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ]
+   },
+   "valid": true
+  },
+  {
+   "name": "an empty memberships list",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": []
+   },
+   "valid": true
+  },
+  {
+   "name": "memberships must be an array",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": {
+     "project:p1": 10
+    }
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim for a record the response does not return",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "b"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim for another Model's record with the same identity",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Note",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a duplicate claim pair",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     },
+     {
+      "channel": "project:p1",
+      "cursor": 11,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "two claims at one channel position",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     },
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "b"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "B"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     },
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "b"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim without a channel",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim with a blank channel",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim cursor must be positive",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 0,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim cursor overflows the safe integer range",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 9007199254740992,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      }
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim identity must be an object",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": "a"
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim carries no presence flag",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "present": true
+     }
+    ]
+   },
+   "valid": false
+  },
+  {
+   "name": "a claim carries no stamp",
+   "response": {
+    "records": [
+     {
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2,
+      "state": {
+       "text": "A"
+      }
+     }
+    ],
+    "memberships": [
+     {
+      "channel": "project:p1",
+      "cursor": 10,
+      "model": "Entry",
+      "identity": {
+       "id": "a"
+      },
+      "stamp": 2
+     }
+    ]
+   },
+   "valid": false
+  }
+ ],
+ "negotiation": [
+  {
+   "name": "a pull advertising the capability",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"channel-membership-v1\"]}",
+   "outcome": "supported"
+  },
+  {
+   "name": "a subscribe frame advertising the capability",
+   "wire": "{\"type\":\"subscribe\",\"channels\":[\"U\"],\"models\":{\"Entry\":1},\"capabilities\":[\"channel-membership-v1\"]}",
+   "outcome": "supported"
+  },
+  {
+   "name": "a bootstrap request advertising the capability",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"U\",\"models\":{\"Entry\":1},\"after\":0,\"until\":3,\"capabilities\":[\"channel-membership-v1\"]}",
+   "outcome": "supported"
+  },
+  {
+   "name": "unknown capabilities beside the required one",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"future-v9\",\"channel-membership-v1\"]}",
+   "outcome": "supported"
+  },
+  {
+   "name": "capabilities absent",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0}}",
+   "outcome": "protocol.unsupported"
+  },
+  {
+   "name": "a subscribe frame without capabilities",
+   "wire": "{\"type\":\"subscribe\",\"channels\":[\"U\"],\"models\":{\"Entry\":1}}",
+   "outcome": "protocol.unsupported"
+  },
+  {
+   "name": "no capabilities",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[]}",
+   "outcome": "protocol.unsupported"
+  },
+  {
+   "name": "only an unsupported capability",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"channel-membership-v0\"]}",
+   "outcome": "protocol.unsupported"
+  },
+  {
+   "name": "capabilities must be an array",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":\"channel-membership-v1\"}",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "capabilities must not be null",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":null}",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "a capability must be a string",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[1]}",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "a capability must not be blank",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\" \"]}",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "a capability is listed once",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"channel-membership-v1\",\"channel-membership-v1\"]}",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "the envelope must be an object",
+   "wire": "[]",
+   "outcome": "request.invalid"
+  },
+  {
+   "name": "the envelope must be JSON",
+   "wire": "{",
+   "outcome": "request.invalid"
+  }
+ ],
+ "envelopes": {
+  "comment": "memberships sits at the top level of each enrollment-capable response, beside records, and is omitted when the call enrolled nothing. Every claim names a record that envelope returns; an unsuccessful Load page or failed direct Action carries none, like its records. The direct Action cases answer the request `directActionRequest`.",
+  "loadPage": [
+   {
+    "name": "a succeeded page claims its returned record",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      },
+      {
+       "channel": "user:bob",
+       "cursor": 4,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a page that enrolled nothing omits memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the page does not return",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a duplicate claim pair",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      },
+      {
+       "channel": "project:p1",
+       "cursor": 11,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed page carries no memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "failed",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a retryable page carries no memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "retryable",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed page with an empty memberships list",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "failed",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": []
+    },
+    "valid": true
+   }
+  ],
+  "pushReceipt": [
+   {
+    "name": "a receipt claims a record it returns",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a receipt that enrolled nothing omits memberships",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the receipt does not return",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a rejected mutation enrolls nothing",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [
+      {
+       "ordinal": 1,
+       "code": "todo.missing"
+      }
+     ],
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   }
+  ],
+  "directActionRequest": {
+   "call": {
+    "callId": "01890f47-1234-7123-8123-123456789abc",
+    "name": "Send",
+    "version": 1,
+    "args": {
+     "to": "a"
+    }
+   },
+   "models": {}
+  },
+  "directAction": [
+   {
+    "name": "a succeeded call claims a record it returns",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a call that enrolled nothing omits memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the response does not return",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call without memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": []
+    },
+    "valid": true
+   },
+   {
+    "name": "a failed call carries no memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call carries no memberships, even for a record it returns",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call with an empty memberships list",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [],
+     "memberships": []
+    },
+    "valid": true
+   }
+  ]
+ }
+}

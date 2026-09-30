@@ -121,6 +121,15 @@ impl<S: ClientStore> Engine<'_, S> {
             &format!("INSERT INTO axton_subscription ({COLUMNS}) VALUES (?,?,NULL,NULL)"),
             &[json!(channel), json!(subscription_id)],
         )?;
+        if self
+            .scalar(
+                "SELECT 1 FROM axton_channel_member WHERE channel=? LIMIT 1",
+                &[json!(channel)],
+            )?
+            .is_some()
+        {
+            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE channel=? AND subscription_id=?", &[json!(channel), json!(subscription_id)])?;
+        }
         Ok((state, true))
     }
     /// Commit the first delivery boundary of an uninitialized subscription:
@@ -195,6 +204,11 @@ impl<S: ClientStore> Engine<'_, S> {
                         outcome.catch_up.push(scope.clone());
                     }
                 }
+            }
+        }
+        for (scope, head) in heads {
+            if let Some(id) = expected.get(scope) {
+                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE channel=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(scope),json!(id)])?;
             }
         }
         for (scope, subscription_id, head) in boundaries {

@@ -456,7 +456,7 @@ fn receipt(client_id: &str, body: &str) -> String {
         .to_string()
 }
 fn pull(from: u64, to: u64, id: &str, text: &str) -> String {
-    json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]}).to_string()
+    channel_fixture(json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]})).to_string()
 }
 
 #[test]

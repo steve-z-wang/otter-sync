@@ -40,9 +40,8 @@ export type SaveCallRequest = {
 /** The channel's current head cursor. */
 export type HeadRequest = { op: "head"; channel: string };
 /**
- * Invalidation rows after `after` whose record is still a member of the
- * channel, at most `limit` of them, in cursor order. Membership filters before
- * the limit; a removed record's row stays but is not answered.
+ * Retained log rows after `after`, including removals, at most `limit`
+ * in cursor order. Legacy projection happens only in the engine.
  */
 export type ScanRequest = {
   op: "scan";
@@ -129,18 +128,6 @@ export type ReadStampsRequest = {
   identityKeys: string[];
 };
 /**
- * Invalidate one record on one channel at this stamp, allocating only the
- * channel cursor. `stamp` must be the record's current stamp.
- */
-export type PublishRequest = {
-  op: "publish";
-  channel: string;
-  model: string;
-  identity: Record<string, unknown>;
-  identityKey: string;
-  stamp: number;
-};
-/**
  * Write-lock one existing record row without changing its stamp, so a
  * concurrent writer of the row whose snapshot predates this commit restarts
  * instead of acting on it, whether the transaction is serializable or a
@@ -152,23 +139,57 @@ export type LockRecordRequest = {
   model: string;
   identityKey: string;
 };
-/** The Channels this record is a persistent member of. */
+/** The Channels this record is a persistent member of: a touch's recipients. */
 export type MembershipsRequest = {
   op: "memberships";
   model: string;
   identityKey: string;
 };
 /**
- * Make the record a member of `channel` (`present: true`, creating the Channel
- * at head zero if needed) or not (`false`). Idempotent both ways; never
- * allocates a cursor. The record's metadata must exist to add it.
+ * Serialize membership changes on these Channels: lock each existing Channel
+ * row, in exactly this order (distinct, canonical byte order), until the
+ * transaction ends. Creates no Channel. Every settlement takes its Channels
+ * this way before any record guard.
  */
-export type SetMembershipRequest = {
-  op: "setMembership";
+export type LockChannelsRequest = { op: "lockChannels"; channels: string[] };
+/** A record as the Channel operations name it: its Model and canonical identity key. */
+export type MemberKey = { model: string; identityKey: string };
+/**
+ * The live members of the locked `channel` that `explicitKeys` names or that
+ * carry one of `tags` (distinct, canonical byte order), each once, with its
+ * complete current tags. Reads only.
+ */
+export type ReadChannelMembersRequest = {
+  op: "readChannelMembers";
+  channel: string;
+  explicitKeys: MemberKey[];
+  tags: string[];
+};
+/**
+ * One pair's final state. Present with exactly `tags`, or absent with none.
+ * `publish` takes the Channel's next position (`upsert` when present,
+ * `remove` when not; a removal always publishes); without it the member keeps
+ * its existing position and only its tags may change.
+ */
+export type MemberDelta = {
   channel: string;
   model: string;
+  identity: Record<string, unknown>;
   identityKey: string;
   present: boolean;
+  tags: string[];
+  publish: boolean;
+};
+/**
+ * Persist final member states in the caller's transaction, without
+ * re-evaluating any selector or opening a transaction. A present delta needs
+ * the record's metadata row; a missing Channel starts at head zero. Published
+ * deltas take consecutive positions per Channel in delta order. Answers one
+ * position per delta, in delta order.
+ */
+export type ApplyChannelMembersRequest = {
+  op: "applyChannelMembers";
+  deltas: MemberDelta[];
 };
 
 export type HostRequest =
@@ -188,10 +209,11 @@ export type HostRequest =
   | AdvanceStampRequest
   | EnsureStampRequest
   | ReadStampsRequest
-  | PublishRequest
   | LockRecordRequest
   | MembershipsRequest
-  | SetMembershipRequest;
+  | LockChannelsRequest
+  | ReadChannelMembersRequest
+  | ApplyChannelMembersRequest;
 
 export type HostOperation = HostRequest["op"];
 
@@ -219,52 +241,66 @@ export type ClaimedCall = {
 /** The answer to `head`: a bare counter. */
 export type Head = number;
 /**
- * One row of the answer to `scan`: the invalidation's own cursor with the
- * record's *current* stamp, read from the record metadata in the same snapshot
- * the loader will read.
+ * One retained channel position and centralized identity. Only an upsert
+ * carries the current content stamp from the same snapshot as its Loader.
  */
 export type Invalidation = {
+  /** Omitted only by legacy hosts; new scans include retained removals. */
+  kind?: "upsert" | "remove";
   channel: string;
   cursor: number;
   model: string;
   identity: Record<string, unknown>;
   identityKey: string;
-  stamp: number;
+  /** Required on upserts; removals carry identity only. */
+  stamp?: number;
 };
 /** The answer to `advanceStamp` and `ensureStamp`: the record's stamp. */
 export type Stamped = number;
 /** The answer to `readStamps`: one stamp per requested key, in request order. */
 export type Stamps = number[];
-/** The answer to `publish`: the allocated cursor and the stamp the request named. */
-export type Published = { cursor: number; stamp: number };
 /** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
 export type Locked = number | null;
 /** The answer to `memberships`: unique Channel names, sorted by the database. */
 export type Memberships = string[];
+/** One member `readChannelMembers` answers: its complete current tags, each once, in any order. */
+export type MemberState = MemberKey & { tags: string[] };
+/** The latest position of one pair: new for a published delta, the existing one otherwise. */
+export type MemberPosition = MemberKey & {
+  channel: string;
+  cursor: number;
+  kind: "upsert" | "remove";
+};
 /** A record a handler names: an additional changed record. */
 export type HostRecordRef = {
   model: string;
   identity: Record<string, unknown>;
 };
 /**
- * One persistent Channel membership declaration: the record should
- * (`present`) or should not be a member of `channel`. Intents are ordered; the
- * last one per Channel/record pair is the desired state.
+ * One persistent Channel membership declaration, in declaration order: `add`
+ * makes the record a member of `channel` and unions `tags` (distinct, as
+ * spelled; `[]` adds none) with its labels; `remove` releases the record's
+ * whole membership; `removeTag` releases every member of `channel` carrying
+ * `tag`, as the preceding declarations left it. The engine reduces the list
+ * in order to its final state.
  */
-export type MembershipIntent = {
-  channel: string;
-  model: string;
-  identity: Record<string, unknown>;
-  present: boolean;
-};
+export type ChannelIntent =
+  | {
+      kind: "add";
+      channel: string;
+      record: HostRecordRef;
+      tags: readonly string[];
+    }
+  | { kind: "remove"; channel: string; record: HostRecordRef }
+  | { kind: "removeTag"; channel: string; tag: string };
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input
- * targets and ordered membership intents. There is no implicit publication.
+ * targets and ordered Channel intents. There is no implicit publication.
  */
 export type SettlementEffects = {
   changes: HostRecordRef[];
-  memberships: MembershipIntent[];
+  memberships: ChannelIntent[];
 };
 /**
  * The answer to `handle`: the records the handler changed beyond the uploaded
@@ -290,14 +326,14 @@ export type HandledAction =
  * Channel handles, a rejection code, or a failure carrying a thrown handler
  * error. `memberships` is omitted when there are none (an older host never
  * sends it); `null`, `changes`, or memberships beside a rejection or failure
- * are refused. The engine, not this type, refuses a removal or a record the
- * page did not return.
+ * are refused. The engine, not this type, refuses a removal, a tag selector
+ * or a record the page did not return.
  */
 export type HandledLoad =
   | {
       data: Record<string, unknown>;
       next: LoadNext;
-      memberships?: MembershipIntent[];
+      memberships?: ChannelIntent[];
     }
   | { rejection: string }
   | { error: string };
@@ -330,10 +366,11 @@ export type HostResponse = {
   advanceStamp: Stamped;
   ensureStamp: Stamped;
   readStamps: Stamps;
-  publish: Published;
   lockRecord: Locked;
   memberships: Memberships;
-  setMembership: Acknowledged;
+  lockChannels: Acknowledged;
+  readChannelMembers: MemberState[];
+  applyChannelMembers: MemberPosition[];
 };
 
 /**
@@ -357,10 +394,11 @@ const OPERATIONS: Record<HostOperation, true> = {
   advanceStamp: true,
   ensureStamp: true,
   readStamps: true,
-  publish: true,
   lockRecord: true,
   memberships: true,
-  setMembership: true,
+  lockChannels: true,
+  readChannelMembers: true,
+  applyChannelMembers: true,
 };
 
 export const HOST_OPERATIONS: readonly HostOperation[] = Object.keys(

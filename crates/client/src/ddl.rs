@@ -10,6 +10,8 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_schema",
     "axton_client",
     "axton_record",
+    "axton_channel_member",
+    "axton_local_replica_layer",
     "axton_subscription",
     "axton_mutation",
     "axton_mutation_operation",
@@ -40,6 +42,42 @@ const CLIENT_COLUMNS: &[&str] = &["last_completed_push", "push_models", "next_su
 /// ([#151](https://github.com/zanminwang/axton/issues/151)), whose defaults are
 /// a load that was never requested.
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "axton_client",
+        "channel_membership_version",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_state",
+        "TEXT NOT NULL DEFAULT 'not_requested'",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_run",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_cursor",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("axton_subscription", "reconcile_bound", "INTEGER"),
+    ("axton_subscription", "reconcile_barrier", "INTEGER"),
+    ("axton_subscription", "reconcile_error", "TEXT"),
+    ("axton_client", "store_epoch", "INTEGER NOT NULL DEFAULT 0"),
+    (
+        "axton_mutation",
+        "store_epoch",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("axton_load", "store_epoch", "INTEGER NOT NULL DEFAULT 0"),
+    (
+        "axton_record",
+        "base_state",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    ),
+    ("axton_record", "evicted_at", "INTEGER NOT NULL DEFAULT 0"),
     ("axton_mutation", "diverged", "INTEGER NOT NULL DEFAULT 0"),
     ("axton_mutation", "call_id", "TEXT"),
     ("axton_mutation", "args", "TEXT"),
@@ -66,18 +104,39 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 
 /// Add every framework column in [`ADDED_COLUMNS`] a table still lacks.
 pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
-    for (table, column, definition) in ADDED_COLUMNS {
-        let columns = store.query_committed(&format!("PRAGMA table_info({table})"), &[])?;
-        if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
-            store.execute_batch(&format!(
-                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-            ))?;
+    store.begin()?;
+    let result = (|| {
+        for (table, column, definition) in ADDED_COLUMNS {
+            let columns = store.query_committed(&format!("PRAGMA table_info({table})"), &[])?;
+            if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
+                store.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                ))?;
+            }
+        }
+        store.execute_batch(
+            "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=reconcile_run+1
+             WHERE EXISTS (SELECT 1 FROM axton_client WHERE channel_membership_version=0);
+             UPDATE axton_client SET channel_membership_version=1;"
+        )?;
+        store.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
+        )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => match store.commit() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = store.rollback();
+                Err(error)
+            }
+        },
+        Err(error) => {
+            store.rollback()?;
+            Err(error)
         }
     }
-    store.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
-    )?;
-    Ok(())
 }
 
 pub const FRAMEWORK_DDL: &str = "
@@ -92,11 +151,25 @@ CREATE TABLE IF NOT EXISTS axton_client (
   last_completed_push INTEGER NOT NULL DEFAULT 0,
   push_models  TEXT,
   push_results TEXT,
+  channel_membership_version INTEGER NOT NULL DEFAULT 1,
+  store_epoch INTEGER NOT NULL DEFAULT 0,
   next_subscription INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS axton_record (
   model TEXT NOT NULL, identity TEXT NOT NULL, stamp INTEGER NOT NULL,
+  base_state TEXT NOT NULL DEFAULT 'materialized',
+  evicted_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (model, identity)
+);
+CREATE TABLE IF NOT EXISTS axton_channel_member (
+  channel TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
+  cursor INTEGER NOT NULL CHECK(cursor > 0), present INTEGER NOT NULL CHECK(present IN (0,1)),
+  PRIMARY KEY(channel, model, identity)
+);
+CREATE INDEX IF NOT EXISTS axton_channel_member_record ON axton_channel_member(model, identity, present);
+CREATE TABLE IF NOT EXISTS axton_local_replica_layer (
+  model TEXT NOT NULL, identity TEXT NOT NULL, operations TEXT NOT NULL,
+  PRIMARY KEY(model, identity)
 );
 CREATE TABLE IF NOT EXISTS axton_subscription (
   channel          TEXT PRIMARY KEY,
@@ -108,12 +181,19 @@ CREATE TABLE IF NOT EXISTS axton_subscription (
   bootstrap_cursor  INTEGER NOT NULL DEFAULT 0,
   bootstrap_barrier INTEGER,
   bootstrap_error   TEXT,
+  reconcile_state TEXT NOT NULL DEFAULT 'not_requested',
+  reconcile_run INTEGER NOT NULL DEFAULT 0,
+  reconcile_cursor INTEGER NOT NULL DEFAULT 0,
+  reconcile_bound INTEGER,
+  reconcile_barrier INTEGER,
+  reconcile_error TEXT,
   CHECK ((starting_cursor IS NULL AND cursor IS NULL) OR
          (starting_cursor IS NOT NULL AND cursor IS NOT NULL AND
           starting_cursor >= 0 AND cursor >= starting_cursor))
 );
 CREATE TABLE IF NOT EXISTS axton_mutation (
   ordinal INTEGER PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL, push INTEGER,
+  store_epoch INTEGER NOT NULL DEFAULT 0,
   diverged INTEGER NOT NULL DEFAULT 0, call_id TEXT UNIQUE, args TEXT, store TEXT,
   CHECK ((call_id IS NULL AND args IS NULL) OR (call_id IS NOT NULL AND args IS NOT NULL))
 );
@@ -160,6 +240,7 @@ CREATE TABLE IF NOT EXISTS axton_query_cache (
 );
 CREATE INDEX IF NOT EXISTS axton_query_cache_arguments ON axton_query_cache (contract, name, version, args);
 CREATE TABLE IF NOT EXISTS axton_load (
+  store_epoch INTEGER NOT NULL DEFAULT 0,
   load_id TEXT PRIMARY KEY, seq INTEGER NOT NULL UNIQUE, ready INTEGER NOT NULL,
   name TEXT NOT NULL, version INTEGER NOT NULL, args TEXT NOT NULL, models TEXT NOT NULL,
   continuation TEXT, run INTEGER NOT NULL,

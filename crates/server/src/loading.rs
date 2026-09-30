@@ -13,96 +13,10 @@ use crate::{
     host::{HostExt, HostRequest, Invalidation, Loaded},
     internal, request_invalid, storage_invalid,
 };
-use axton_core::{AuthorityRecord, BootstrapPage, BootstrapRequest, RecordKey, limits};
+use axton_core::{AuthorityRecord, BootstrapRequest, RecordKey, limits};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, btree_map::Entry};
 
-/// Serve one bounded page of a Scope's historical interval. The head is read
-/// once, in this transaction: it bounds the scan, is echoed as the client's
-/// completion barrier, and an origin above it is a fault rather than a bound
-/// to chase. An exhausted interval scans nothing.
-pub(crate) async fn process_bootstrap(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    let request = BootstrapRequest::decode(bytes).map_err(request_invalid)?;
-    config.check_declared(&request.models)?;
-    let channel = request.channel.as_str();
-    let maximum = head(host, channel).await?;
-    // The client only ever sends an origin the server acknowledged, so a head
-    // below it is a server-state fault, not a bound to wait for.
-    if request.until > maximum {
-        return Err(request_invalid(format!(
-            "bootstrap origin ahead of head on {channel}"
-        )));
-    }
-    // Every historical record once, keyed canonically, at its current stamp.
-    let mut historical: BTreeMap<String, (RecordKey, u64)> = BTreeMap::new();
-    let mut to = request.until;
-    if !request.exhausted() {
-        let rows: Vec<Invalidation> = host
-            .call_typed(HostRequest::Scan {
-                channel: channel.into(),
-                after: request.after,
-                limit: limits::PULL_CHANGES as u64,
-            })
-            .await?;
-        if rows.len() > limits::PULL_CHANGES {
-            return Err(storage_invalid("invalid scan size"));
-        }
-        let mut previous = request.after;
-        let mut last_historical = request.after;
-        for row in &rows {
-            let key = validate_row(config, channel, maximum, previous, row)?;
-            previous = row.cursor;
-            // Only a position at or below the origin is historical; a record
-            // published above it is the subscription's to deliver.
-            if row.cursor > request.until {
-                continue;
-            }
-            last_historical = row.cursor;
-            insert(&mut historical, key, row.stamp)?;
-        }
-        // The interval is finished when the scan ran out of rows or reached
-        // the origin; otherwise the page stops at its last historical cursor.
-        // The scan answers only rows whose record is still a member, filtered
-        // before the limit, so removed positions are holes: a short scan has
-        // covered every eligible row up to the head, and a full one advances
-        // to a cursor it actually returned.
-        to = if rows.len() < limits::PULL_CHANGES || previous >= request.until {
-            request.until
-        } else {
-            last_historical
-        };
-        // Defensive, and unreachable while the scan honours its contract: with
-        // strictly increasing cursors a full scan that reached no historical row
-        // has already crossed the origin and is therefore terminal. Reported
-        // rather than assumed, because an empty nonterminal page would make the
-        // client ask for the same interval forever.
-        if to != request.until && to <= request.after {
-            return Err(storage_invalid("bootstrap page makes no progress"));
-        }
-    }
-    let records = resolve_records(
-        config,
-        owner,
-        &request.models,
-        historical.into_values().collect(),
-        host,
-    )
-    .await?;
-    let page = BootstrapPage {
-        channel: request.channel,
-        from: request.after,
-        to,
-        until: request.until,
-        head: maximum,
-        records,
-    };
-    String::from_utf8(page.encode().map_err(internal)?).map_err(internal)
-}
 /// Validate one scan row against the rules both pull modes apply, and answer
 /// its canonical record key: the row belongs to the scanned channel, its cursor
 /// advances past `previous` without passing the channel head, its model has a
@@ -118,6 +32,9 @@ pub(crate) fn validate_row(
 ) -> Result<RecordKey> {
     if row.channel != channel || row.cursor <= previous || row.cursor > maximum {
         return Err(storage_invalid("invalid invalidation order"));
+    }
+    if row.kind == crate::channel_members::PositionKind::Upsert && row.stamp == 0 {
+        return Err(storage_invalid("upsert stamp missing"));
     }
     if !config.loaders.contains(&row.model) {
         return Err(crate::settlement::unregistered(&row.model));
@@ -283,4 +200,188 @@ fn refusal_code(loaded: Loaded) -> String {
         Loaded::Refused { rejection } => rejection,
         Loaded::Failed { .. } | Loaded::Rows(_) => code::LOADER_FAILED.into(),
     }
+}
+
+/// Scan a bounded interval, including tombstones. A one-row probe identifies
+/// a terminal full page even when compaction leaves a gap before the bound.
+async fn channel_rows(
+    config: &Config,
+    channel: &str,
+    after: u64,
+    bound: u64,
+    maximum: u64,
+    host: &impl Host,
+) -> Result<(Vec<Invalidation>, u64)> {
+    if after == bound {
+        return Ok((vec![], bound));
+    }
+    let rows: Vec<Invalidation> = host
+        .call_typed(HostRequest::Scan {
+            channel: channel.into(),
+            after,
+            limit: limits::PULL_CHANGES as u64,
+        })
+        .await?;
+    if rows.len() > limits::PULL_CHANGES {
+        return Err(storage_invalid("invalid scan size"));
+    }
+    let mut previous = after;
+    for row in &rows {
+        validate_row(config, channel, maximum, previous, row)?;
+        previous = row.cursor;
+    }
+    let full = rows.len() == limits::PULL_CHANGES;
+    let rows: Vec<_> = rows.into_iter().filter(|row| row.cursor <= bound).collect();
+    let mut to = bound;
+    if full && previous < bound {
+        let later: Vec<Invalidation> = host
+            .call_typed(HostRequest::Scan {
+                channel: channel.into(),
+                after: previous,
+                limit: 1,
+            })
+            .await?;
+        if later.len() > 1 {
+            return Err(storage_invalid("invalid continuation scan size"));
+        }
+        if let Some(row) = later.first() {
+            validate_row(config, channel, maximum, previous, row)?;
+            if row.cursor <= bound {
+                to = previous;
+            }
+        }
+    }
+    Ok((rows, to))
+}
+
+/// Resolve content once per identity, retaining every channel pair's evidence.
+async fn channel_changes(
+    config: &Config,
+    owner: &str,
+    models: &BTreeMap<String, u64>,
+    rows: Vec<Invalidation>,
+    host: &impl Host,
+) -> Result<Vec<axton_core::ChannelChange>> {
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let key = config
+                .schema
+                .record_key(&row.model, &row.identity)
+                .map_err(storage_invalid)?;
+            Ok((row, key))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let keys = rows
+        .iter()
+        .filter(|(row, _)| row.kind == crate::channel_members::PositionKind::Upsert)
+        .map(|(row, key)| (key.clone(), row.stamp))
+        .collect();
+    let authority = resolve_records(config, owner, models, keys, host).await?;
+    let records: BTreeMap<_, _> = authority
+        .into_iter()
+        .map(|r| {
+            let key = RecordKey {
+                model: r.model.clone(),
+                identity: r.identity.clone(),
+            }
+            .encoded()
+            .map_err(internal)?;
+            Ok((key, r))
+        })
+        .collect::<Result<_>>()?;
+    rows.into_iter()
+        .map(|(row, key)| {
+            Ok(match row.kind {
+                crate::channel_members::PositionKind::Remove => axton_core::ChannelChange::Remove {
+                    channel: row.channel,
+                    cursor: row.cursor,
+                    key,
+                },
+                crate::channel_members::PositionKind::Upsert => {
+                    let encoded = key.encoded().map_err(internal)?;
+                    axton_core::ChannelChange::Upsert {
+                        channel: row.channel,
+                        cursor: row.cursor,
+                        record: records
+                            .get(&encoded)
+                            .ok_or_else(|| internal("missing resolved authority"))?
+                            .clone(),
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn process_channel_delta(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    let request = axton_core::PullRequest::decode(bytes).map_err(request_invalid)?;
+    config.check_declared(&request.models)?;
+    let mut cursors = BTreeMap::new();
+    let mut rows = vec![];
+    for (channel, from) in request.cursors {
+        let maximum = head(host, &channel).await?;
+        if from > maximum {
+            return Err(request_invalid("cursor ahead of head"));
+        }
+        let (page, to) = channel_rows(config, &channel, from, maximum, maximum, host).await?;
+        rows.extend(page);
+        cursors.insert(
+            channel,
+            axton_core::CursorRange {
+                from,
+                to,
+                head: maximum,
+            },
+        );
+    }
+    let changes = channel_changes(config, owner, &request.models, rows, host).await?;
+    String::from_utf8(
+        axton_core::ChannelPullPage { cursors, changes }
+            .encode()
+            .map_err(internal)?,
+    )
+    .map_err(internal)
+}
+
+pub(crate) async fn process_channel_bootstrap(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    let request = BootstrapRequest::decode(bytes).map_err(request_invalid)?;
+    config.check_declared(&request.models)?;
+    let maximum = head(host, &request.channel).await?;
+    if request.until > maximum {
+        return Err(request_invalid("bootstrap origin ahead of head"));
+    }
+    let (rows, to) = channel_rows(
+        config,
+        &request.channel,
+        request.after,
+        request.until,
+        maximum,
+        host,
+    )
+    .await?;
+    let changes = channel_changes(config, owner, &request.models, rows, host).await?;
+    String::from_utf8(
+        axton_core::ChannelBootstrapPage {
+            channel: request.channel,
+            from: request.after,
+            to,
+            until: request.until,
+            head: maximum,
+            changes,
+        }
+        .encode()
+        .map_err(internal)?,
+    )
+    .map_err(internal)
 }

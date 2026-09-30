@@ -2,6 +2,7 @@ import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
+import {Pool} from 'pg';
 import * as serverSdk from '../../../packages/server/index.mts';
 import {createBackend,MutationRejected,EngineError} from '../../../packages/server/index.mts';
 import {prisma,prismaDriver} from '../../../packages/postgres/index.mts';
@@ -42,17 +43,20 @@ const backend=createBackend({config,database:database(),authenticate,handlers:{
  loaderHooks:{task:{async prepareForViewer(){prepared++}}},
 });
 const mutation=(ordinal,title,id='a')=>({ordinal,name:'edit',operations:[{model:'Task',op:'update',identity:{id},values:{title}}]});
-const push=(clientId,batchSequence,mutations)=>JSON.stringify({clientId,batchSequence,mutations,models:{Task:1}});
+const push=(clientId,batchSequence,mutations)=>JSON.stringify({capabilities:['channel-membership-v1'],clientId,batchSequence,mutations,models:{Task:1}});
 const authority=(id,stamp,state)=>({identity:{id},model:'Task',stamp,state});
-const pullBody=(cursors,models={Task:1})=>JSON.stringify({cursors,models});
+const pullBody=(cursors,models={Task:1})=>JSON.stringify({capabilities:['channel-membership-v1'],cursors,models});
 const pull=(scope='shared',fromCursor=0)=>backend.pull('alice',pullBody({[scope]:fromCursor})).then(JSON.parse);
 const to=(page,scope='shared')=>page.cursors[scope].to;
 const count=async table=>Number((await db.$queryRawUnsafe(`SELECT count(*) AS count FROM ${table}`))[0].count);
 const key=id=>`{"id":"${id}"}`;
 const recordStamp=async id=>{const rows=await db.$queryRawUnsafe('SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2','Task',key(id));return rows.length?Number(rows[0].stamp):null;};
-const invalidations=async id=>(await db.$queryRawUnsafe('SELECT channel, cursor, stamp FROM axton_invalidation WHERE identity_key=$1 ORDER BY channel',key(id))).map(r=>[r.channel,Number(r.cursor),Number(r.stamp)]);
+/** The record's upsert positions: [Channel, cursor, the record's current stamp]. */
+const positions=async id=>(await db.$queryRawUnsafe("SELECT l.channel, l.cursor, r.stamp FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1 AND l.kind='upsert' ORDER BY l.channel",key(id))).map(r=>[r.channel,Number(r.cursor),Number(r.stamp)]);
 const head=async channel=>{const rows=await db.$queryRawUnsafe('SELECT head FROM axton_channel WHERE channel=$1',channel);return rows.length?Number(rows[0].head):0;};
-before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await db.$executeRawUnsafe(sql);await db.$executeRawUnsafe('CREATE TABLE business_task(id text PRIMARY KEY,title text NOT NULL)');});
+// Prisma prepares every statement, so the dollar-quoted migration goes through pg in one call.
+const migrate=async()=>{const pool=new Pool({connectionString:process.env.DATABASE_URL});try{await pool.query(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8'));}finally{await pool.end();}};
+before(async()=>{await migrate();await db.$executeRawUnsafe('CREATE TABLE business_task(id text PRIMARY KEY,title text NOT NULL)');});
 after(()=>db.$disconnect());
 test('native exports production runtime',()=>{assert.equal(typeof native.processPush,'function');assert.equal(typeof native.processPull,'function');assert.equal(typeof native.settleExternal,'function');assert.equal(native.publish,undefined);assert.equal(typeof native.validateConfig,'function');
  assert.equal(typeof native.negotiateLive,'function');assert.equal(typeof native.pullLive,'function');
@@ -107,16 +111,16 @@ test('handler registration names every retained version and a function means v1 
 });
 test('push commits business + compacted publication + exact durable receipt together',async()=>{
  const request=push('dedup',1,[mutation(1,'first')]);const receipt=await backend.push('alice',request);const calls=called;
- assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
+ assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"channel":"shared","cursor":1,"identity":{"id":"a"},"model":"Task"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
  // Replay is keyed by (clientId, batchSequence): the same frozen bytes and a changed body both return the stored receipt without a handler call, a business write, a publication or a subscriber wake.
- let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_invalidation');
+ let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_channel_log');
  assert.equal(await backend.push('alice',request),receipt);assert.equal(called,calls);
  assert.equal(await backend.push('alice',push('dedup',1,[mutation(1,'changed')])),receipt);assert.equal(called,calls);
  await new Promise(resolve=>setImmediate(resolve));unsubscribe();assert.equal(wakes,0,'replayed receipts must not wake subscribers');
- assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_invalidation'),rows);
+ assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_channel_log'),rows);
  await assert.rejects(()=>backend.push('bob',request),/owner_mismatch/);
  await assert.rejects(()=>backend.push('alice',push('dedup',3,[mutation(1,'gap')])),/gap/);
- const page=await pull();assert.deepEqual(page,{cursors:{shared:{from:0,to:1,head:1}},changes:[{model:'Task',identity:{id:'a'},stamp:1,state:{title:'first'}}]});assert.equal(prepared,2,'the push readback and the pull each prepared the loader once; the replays did not');
+ const page=await pull();assert.deepEqual(page,{cursors:{shared:{from:0,to:1,head:1}},changes:[{channel:'shared',cursor:1,kind:'upsert',model:'Task',identity:{id:'a'},stamp:1,state:{title:'first'}}]});assert.equal(prepared,2,'the push readback and the pull each prepared the loader once; the replays did not');
 });
 test('explicit rejection rolls back only mutation and its publication',async()=>{
  const result=JSON.parse(await backend.push('alice',push('refusal',1,[mutation(1,'good','b'),mutation(2,'refuse','c'),mutation(3,'last','d')])));
@@ -219,7 +223,7 @@ test('a pull reaches the loader of the declared model version and normalizes row
  assert.deepEqual(reached.at(-1),1);
  // A missing declaration is a malformed request; an unretained version or an
  // unknown model is refused with the model named.
- await assert.rejects(()=>versioned.pull('alice',JSON.stringify({cursors:{shared:0}})),error=>error instanceof EngineError&&error.code==='request.invalid');
+ await assert.rejects(()=>versioned.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{shared:0}})),error=>error instanceof EngineError&&error.code==='request.invalid');
  await assert.rejects(()=>versioned.pull('alice',pullBody({shared:0},{Task:3})),error=>error instanceof EngineError&&error.code==='model_version_unsupported'&&error.details.model==='Task'&&error.details.version===3);
  await assert.rejects(()=>versioned.pull('alice',pullBody({shared:0},{Task:2,Ghost:1})),error=>error instanceof EngineError&&error.code==='model_version_unsupported'&&error.details.model==='Ghost');
  // A row outside the served contract is a loader defect, never silently trimmed:
@@ -350,7 +354,7 @@ const nextMessage=socket=>new Promise((resolve,reject)=>{
 test('live transport negotiates, wakes only after commit, reconnects, and cleans up',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({type:'subscribe',channels:['shared','bob','shared'],models:{Task:1}}));
+ socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared','bob','shared'],models:{Task:1}}));
  while(frames.length<1)await delay(5);
  assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['bob','shared']);assert.equal(frames[0].cursors.bob,0,'a fresh channel is at head 0');assert.ok(frames[0].cursors.shared>0,'the acknowledgement carries the current head');
 
@@ -361,7 +365,7 @@ test('live transport negotiates, wakes only after commit, reconnects, and cleans
  });
  await started;await delay(80);assert.equal(frames.length,1,'uncommitted publication must stay silent');release();await committing;
  while(frames.length<2)await delay(5);
- assert.deepEqual(frames[1].changes.at(-1),{model:'Task',identity:{id:'live-external'},stamp:1,state:{title:'committed'}});assert.deepEqual(Object.keys(frames[1].cursors),['shared'],'a frame names only the channels that moved');assert.equal(frames[1].cursors.shared.from,frames[0].cursors.shared);
+ assert.deepEqual(frames[1].changes.at(-1),{channel:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-external'},stamp:1,state:{title:'committed'}});assert.deepEqual(Object.keys(frames[1].cursors),['shared'],'a frame names only the channels that moved');assert.equal(frames[1].cursors.shared.from,frames[0].cursors.shared);
 
  const pageStart=frames.length;
  await backend.transaction(async({tx,channel,touch})=>{const shared=channel('shared');for(let i=0;i<51;i++){const id=`live-page-${i}`;await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id,'paged');touch.task({id});shared.task.add({id});}});
@@ -372,12 +376,12 @@ test('live transport negotiates, wakes only after commit, reconnects, and cleans
  await delay(80);assert.equal(frames.length,beforeRollback);
 
  socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));
- const reconnected=await openSocket(port);reconnected.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}}));await nextMessage(reconnected);
+ const reconnected=await openSocket(port);reconnected.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));await nextMessage(reconnected);
  const pagePromise=nextMessage(reconnected);await backend.push('alice',push('live-push',1,[mutation(1,'from push','live-push')]));
  const page=await pagePromise;assert.deepEqual(page.changes.at(-1).state,{title:'from push'});
  const afterPush=[];reconnected.addEventListener('message',event=>afterPush.push(event));await backend.push('alice',push('live-push',1,[mutation(1,'from push','live-push')]));
  await delay(80);assert.equal(afterPush.length,0,'duplicate receipt must not wake live subscribers');
- const protocol=await openSocket(port);protocol.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}}));await nextMessage(protocol);protocol.send('{}');
+ const protocol=await openSocket(port);protocol.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));await nextMessage(protocol);protocol.send('{}');
  const closeCode=await new Promise(resolve=>protocol.addEventListener('close',event=>resolve(event.code),{once:true}));assert.equal(closeCode,1002);
  reconnected.close();await new Promise(resolve=>reconnected.addEventListener('close',resolve,{once:true}));
  await server.close();
@@ -393,14 +397,14 @@ test('a publication committed between negotiation and the acknowledgement is del
  try{
   const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
   let release;hold=new Promise(resolve=>{release=resolve;});
-  socket.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}}));
+  socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));
   await delay(100);assert.equal(frames.length,0,'the acknowledgement is held on the gate');
   await gatedBackend.push('alice',push('between',1,[mutation(1,'between negotiation and ack','live-between')]));
   await delay(50);assert.equal(frames.length,0,'no listener exists yet, so the commit wakes nobody');
   release();
   while(frames.length<2)await delay(5);
   assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['shared']);
-  assert.deepEqual(frames[1].changes.at(-1),{model:'Task',identity:{id:'live-between'},stamp:1,state:{title:'between negotiation and ack'}});
+  assert.deepEqual(frames[1].changes.at(-1),{channel:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-between'},stamp:1,state:{title:'between negotiation and ack'}});
   socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));
  }finally{await server.close();}
 });
@@ -502,30 +506,30 @@ test('slot arguments are plain data; a handler declares with their identity, and
  await backend.push('alice',push('plain',1,[mutation(1,'hello','plain-a')]));
  assert.deepEqual(Object.keys(lastInput.task),['identity','patch']);
  assert.deepEqual(Object.getOwnPropertySymbols(lastInput.task),[],'no hidden record tag');
- assert.deepEqual((await invalidations('plain-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
+ assert.deepEqual((await positions('plain-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
  assert.throws(()=>lastHandles.channel('shared'),/closed/);assert.throws(()=>lastHandles.touch.task({id:'plain-a'}),/closed/);
 });
 test('a handler that declares no membership still returns readback records and touches no channel',async()=>{
  const channels=await count('axton_channel');
  const receipt=JSON.parse(await backend.push('alice',push('quiet',1,[mutation(1,'quiet','quiet-a')])));
  assert.deepEqual(receipt,{batchSequence:1,clientId:'quiet',records:[authority('quiet-a',1,{title:'quiet'})],rejections:[]});
- assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await invalidations('quiet-a'),[]);assert.equal(await count('axton_channel'),channels);
+ assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await positions('quiet-a'),[]);assert.equal(await count('axton_channel'),channels);
  const again=JSON.parse(await backend.push('alice',push('quiet',2,[mutation(2,'quiet','quiet-a')])));assert.deepEqual(again.records,[authority('quiet-a',2,{title:'quiet'})],'every successful change advances the stamp, published or not');
 });
 test('a touched extra record added to a Channel is settled and delivered there, but is not caller authority',async()=>{
  const receipt=JSON.parse(await backend.push('alice',push('extra',1,[mutation(1,'extra','extra-a')])));
  assert.deepEqual(receipt.records,[authority('extra-a',1,{title:'extra'})],'only the uploaded target is read back');assert.equal(await recordStamp('extra-a-extra'),1,'the touched record is still settled');
- assert.deepEqual((await invalidations('extra-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);assert.deepEqual((await invalidations('extra-a-extra')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
+ assert.deepEqual((await positions('extra-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);assert.deepEqual((await positions('extra-a-extra')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
 });
 test('an added record is not a changed one: it is initialised at stamp 1 once, and re-adding a member publishes nothing',async()=>{
  assert.equal(await recordStamp('pub-only'),null,'no metadata before the first enrolment');
  const first=JSON.parse(await backend.push('alice',push('pub-only',1,[mutation(1,'publish-only','pub-only-a')])));
  assert.deepEqual(first.records,[authority('pub-only-a',1,{title:'publish-only'})],'an added record is not a changed one');
- const other=await head('other');assert.deepEqual(await invalidations('pub-only'),[['other',other,1]]);assert.equal(await recordStamp('pub-only'),1,'first enrolment initialises the stamp');
+ const other=await head('other');assert.deepEqual(await positions('pub-only'),[['other',other,1]]);assert.equal(await recordStamp('pub-only'),1,'first enrolment initialises the stamp');
  const second=JSON.parse(await backend.push('alice',push('pub-only',2,[mutation(2,'publish-only','pub-only-b')])));
  assert.deepEqual(second.records,[authority('pub-only-b',1,{title:'publish-only'})]);
- assert.equal(await head('other'),other,'an existing unchanged member is not published again');assert.deepEqual(await invalidations('pub-only'),[['other',other,1]],'the invalidation keeps its cursor');assert.equal(await recordStamp('pub-only'),1,'enrolling an unchanged record never advances it');
- const page=await pull('other',0);assert.deepEqual(page.changes.find(c=>c.identity.id==='pub-only'),{model:'Task',identity:{id:'pub-only'},stamp:1,state:null});
+ assert.equal(await head('other'),other,'an existing unchanged member is not published again');assert.deepEqual(await positions('pub-only'),[['other',other,1]],'the invalidation keeps its cursor');assert.equal(await recordStamp('pub-only'),1,'enrolling an unchanged record never advances it');
+ const page=await pull('other',0);assert.deepEqual(page.changes.find(c=>c.identity.id==='pub-only'),{channel:'other',cursor:other,kind:'upsert',model:'Task',identity:{id:'pub-only'},stamp:1,state:null});
  assert.equal(page.changes.some(c=>c.identity.id.startsWith('pub-only-')),false,'the changed records went to shared only');
 });
 test('a loader refusal during push rejects only that mutation; so does a thrown loader error',async()=>{
@@ -533,7 +537,7 @@ test('a loader refusal during push rejects only that mutation; so does a thrown 
  const refusing=make(async call=>{if(call.ids.some(id=>id.id==='ld-forbidden'))throw new MutationRejected('task.forbidden');return readTasks(call);});
  const receipt=JSON.parse(await refusing.push('alice',push('loader-refuse',1,[mutation(1,'ok','ld-ok'),mutation(2,'hidden','ld-forbidden'),mutation(3,'ok','ld-last')])));
  assert.deepEqual(receipt.rejections,[{ordinal:2,code:'task.forbidden'}]);assert.deepEqual(receipt.records,[authority('ld-last',1,{title:'ok'}),authority('ld-ok',1,{title:'ok'})]);
- assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-forbidden'")).length,0,'the refused mutation rolled back its write');assert.equal(await recordStamp('ld-forbidden'),null,'and its stamp');assert.deepEqual(await invalidations('ld-forbidden'),[],'and its publication');
+ assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-forbidden'")).length,0,'the refused mutation rolled back its write');assert.equal(await recordStamp('ld-forbidden'),null,'and its stamp');assert.deepEqual(await positions('ld-forbidden'),[],'and its publication');
  const translated=createBackend({config,database:database(),authenticate,translateRejection:()=>'task.translated',handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{async task(){throw new Error('product read refusal');}}});
  assert.deepEqual(JSON.parse(await translated.push('alice',push('loader-translated',1,[mutation(1,'x','ld-translated')]))).rejections,[{ordinal:1,code:'task.translated'}]);
  const crashing=JSON.parse(await make(async()=>{throw new Error('loader crash');}).push('alice',push('loader-crash',1,[mutation(1,'x','ld-crash')])));
@@ -554,9 +558,9 @@ test('a handler may keep using the transaction after a declaration; the membersh
   await tx.$queryRawUnsafe('SELECT 1');
  }},loaders:{task:readTasks}});
  const receipt=JSON.parse(await deferredBackend.push('alice',push('deferred',1,[mutation(1,'deferred','deferred-a')])));
- assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
+ assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',memberships:[{channel:'deferred',cursor:1,model:'Task',identity:{id:'deferred-a'}}],records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
  const page=JSON.parse(await deferredBackend.pull('alice',pullBody({deferred:0})));
- assert.deepEqual(page.changes.at(-1),{model:'Task',identity:{id:'deferred-a'},stamp:1,state:{title:'deferred'}});
+ assert.deepEqual(page.changes.at(-1),{channel:'deferred',cursor:1,kind:'upsert',model:'Task',identity:{id:'deferred-a'},stamp:1,state:{title:'deferred'}});
 });
 test('an all-rejected batch settles with no records',async()=>{
  const receipt=JSON.parse(await backend.push('alice',push('allrej',1,[mutation(1,'refuse','rej-a')])));
@@ -564,22 +568,22 @@ test('an all-rejected batch settles with no records',async()=>{
 });
 test('advanceStamp increments without a channel: no invalidation, no channel head',async()=>{
  const stamps=await db.$transaction(async tx=>{const storage=store(tx);const ref={model:'Task',identityKey:key('stamped')};return [await storage.call({op:'advanceStamp',...ref}),await storage.call({op:'advanceStamp',...ref})];});
- assert.deepEqual(stamps,[1,2]);assert.equal(await recordStamp('stamped'),2);assert.deepEqual(await invalidations('stamped'),[]);
+ assert.deepEqual(stamps,[1,2]);assert.equal(await recordStamp('stamped'),2);assert.deepEqual(await positions('stamped'),[]);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_channel WHERE channel LIKE 'stamp%'")).length,0);
 });
 test('one push enrolled in two channels carries the same stamp to both and advances each head once',async()=>{
  const before=[await head('shared'),await head('other')];
  const receipt=JSON.parse(await backend.push('alice',push('two-channels',1,[mutation(1,'two','two-a')])));
  assert.deepEqual(receipt.records,[authority('two-a',1,{title:'two'})]);
- assert.deepEqual(await invalidations('two-a'),[['other',before[1]+1,1],['shared',before[0]+1,1]]);
+ assert.deepEqual(await positions('two-a'),[['other',before[1]+1,1],['shared',before[0]+1,1]]);
  assert.deepEqual([await head('shared'),await head('other')],[before[0]+1,before[1]+1]);
 });
 test('an external write advances the stamp on every call; a push re-enrolling an unchanged member neither advances nor publishes it',async()=>{
  const change=()=>external(backend,'other',[{model:'Task',identity:{id:'pub-only'}}]);
  const start=await recordStamp('pub-only');await change();await change();assert.equal(await recordStamp('pub-only'),start+2,'an external notification reports a business change');
- const [[,cursor,stamp]]=await invalidations('pub-only');assert.equal(stamp,start+2);
+ const [[,cursor,stamp]]=await positions('pub-only');assert.equal(stamp,start+2);
  await backend.push('alice',push('pub-only',3,[mutation(3,'publish-only','pub-only-c')]));
- assert.equal(await recordStamp('pub-only'),start+2,'membership alone is distribution');assert.deepEqual(await invalidations('pub-only'),[['other',cursor,start+2]]);
+ assert.equal(await recordStamp('pub-only'),start+2,'membership alone is distribution');assert.deepEqual(await positions('pub-only'),[['other',cursor,start+2]]);
 });
 test('concurrent first publications initialise one stamp of 1 and never overwrite an established one',async()=>{
  const ensure=tx=>store(tx).call({op:'ensureStamp',model:'Task',identityKey:key('ensure-race')});
@@ -592,26 +596,27 @@ test('concurrent first publications initialise one stamp of 1 and never overwrit
  assert.equal(await db.$transaction(ensure),2,'ensureStamp keeps an advanced stamp');
 });
 test('a rolled-back transaction removes a first initialisation together with its publication',async()=>{
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});await storage.call({op:'publish',channel:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),stamp});throw new Error('cancel');}),/cancel/);
- assert.equal(await recordStamp('undone'),null);assert.deepEqual(await invalidations('undone'),[]);assert.equal(await head('undone'),0);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});assert.equal(stamp,1);await storage.call({op:'applyChannelMembers',deltas:[{channel:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),present:true,tags:['t'],publish:true}]});throw new Error('cancel');}),/cancel/);
+ assert.equal(await recordStamp('undone'),null);assert.deepEqual(await positions('undone'),[]);assert.equal(await head('undone'),0);
 });
-test('publish refuses a record without metadata or with a stamp that is not its current one',async()=>{
- await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'publish',channel:'stale',model:'Task',identity:{id:'unstamped'},identityKey:key('unstamped'),stamp:1})),/Record metadata missing/);
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'publish',channel:'stale',model:'Task',identity:{id:'stale'},identityKey:key('stale'),stamp:2});}),/names stamp 2 .* is at stamp 1/);
- assert.equal(await head('stale'),0);assert.deepEqual(await invalidations('stale'),[]);
+test('applyChannelMembers refuses a record without metadata and a kept member without a position',async()=>{
+ const member=(id,publish)=>({channel:'stale',model:'Task',identity:{id},identityKey:key(id),present:true,tags:[],publish});
+ await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'applyChannelMembers',deltas:[member('unstamped',true)]})),/Record metadata missing/);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'applyChannelMembers',deltas:[member('stale',false)]});}),/keeps no upsert position in Channel stale/);
+ assert.equal(await head('stale'),0);assert.deepEqual(await positions('stale'),[]);
 });
 test('scan pairs the invalidation cursor with the current record stamp; a missing record row is a storage defect',async()=>{
  await backend.push('alice',push('join',1,[mutation(1,'published','join-a')]));
- const [[,cursor,stored]]=await invalidations('join-a');assert.equal(stored,1);
+ const [[,cursor,stored]]=await positions('join-a');assert.equal(stored,1);
  // A change that reaches no Channel: the business write and its stamp alone
- // (a member's change through settlement would move the invalidation).
+ // (a member's change through settlement would move its position).
  await db.$transaction(async tx=>{await write(tx,'join-a','quiet');await store(tx).call({op:'advanceStamp',model:'Task',identityKey:key('join-a')});});
- assert.equal(await recordStamp('join-a'),2);assert.deepEqual(await invalidations('join-a'),[['shared',cursor,1]],'no publication: the invalidation row is untouched');
+ assert.equal(await recordStamp('join-a'),2);assert.deepEqual(await positions('join-a'),[['shared',cursor,2]],'no publication: the position is untouched and pairs with the current stamp');
  const page=await pull('shared',cursor-1);
- assert.deepEqual(page.changes[0],{model:'Task',identity:{id:'join-a'},stamp:2,state:{title:'quiet'}},'the original cursor with the current stamp and content');
+ assert.deepEqual(page.changes[0],{channel:'shared',cursor:cursor,kind:'upsert',model:'Task',identity:{id:'join-a'},stamp:2,state:{title:'quiet'}},'the original cursor with the current stamp and content');
  const rows=await db.$transaction(tx=>store(tx).call({op:'scan',channel:'shared',after:cursor-1,limit:1}));assert.deepEqual(rows.map(r=>[r.cursor,r.stamp]),[[cursor,2]]);
  // Enrolled first: a scan answers members only.
- await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});await storage.call({op:'setMembership',channel:'orphan',model:'Task',identityKey:key('orphan'),present:true});await storage.call({op:'publish',channel:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),stamp});});
+ await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});assert.equal(stamp,1);await storage.call({op:'applyChannelMembers',deltas:[{channel:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),present:true,tags:[],publish:true}]});});
  // The membership foreign key forbids dropping a member's record row; forge the defect with triggers off.
  await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');await tx.$executeRawUnsafe('DELETE FROM axton_record WHERE identity_key=$1',key('orphan'));});
  await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'scan',channel:'orphan',after:0,limit:50})),/Record metadata missing/);
@@ -655,7 +660,7 @@ test('a reverse proxy forwarding HTTP and the WebSocket upgrade with headers ser
   const socket=new serverSdk.WebSocket(`${proxy.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
   await new Promise((resolve,reject)=>{socket.on('open',resolve);socket.on('error',reject);});
   const frames=[];socket.on('message',data=>frames.push(JSON.parse(String(data))));
-  socket.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
+  socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
   assert.equal(frames[0].type,'subscribed');
   await backend.push('alice',push('proxied',2,[mutation(2,'live through proxy','proxy-a')]));
   while(frames.length<2)await delay(5);assert.equal(frames.at(-1).changes.at(-1).state.title,'live through proxy');
@@ -685,13 +690,13 @@ test('HTTP maps engine codes to statuses: 403, 409 gap/overlap/version fields, 4
   const version=await post('/sync/mutations',push('map',3,[{...mutation(3,'x','map-a'),version:7}]));assert.equal(version.status,200,'an unsupported mutation version rejects only that mutation; the batch still settles');
   assert.deepEqual((await version.json()).rejections,[{ordinal:3,code:'mutation_version_unsupported'}]);
   const ahead=await post('/sync/pull',pullBody({shared:1e9}));assert.equal(ahead.status,400);assert.deepEqual(await ahead.json(),{code:'request.invalid'});
-  const undeclared=await post('/sync/pull',JSON.stringify({cursors:{shared:0}}));assert.equal(undeclared.status,400);assert.deepEqual(await undeclared.json(),{code:'request.invalid'});
+  const undeclared=await post('/sync/pull',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{shared:0}}));assert.equal(undeclared.status,400);assert.deepEqual(await undeclared.json(),{code:'request.invalid'});
   const unretained=await post('/sync/pull',pullBody({shared:0},{Task:9}));assert.equal(unretained.status,409);
   assert.deepEqual(await unretained.json(),{code:'model_version_unsupported',model:'Task',version:9});
   const array=await post('/sync/pull','[]');assert.equal(array.status,400);assert.deepEqual(await array.json(),{code:'request.invalid'});
   const missing=await post('/sync/nowhere','{}');assert.equal(missing.status,404);assert.deepEqual(await missing.json(),{code:'not_found'});
   const get=await fetch(`${url}/sync/pull`,{headers:{authorization:'Bearer alice'}});assert.equal(get.status,405);assert.equal(get.headers.get('allow'),'POST');assert.deepEqual(await get.json(),{code:'method_not_allowed'});
-  const large=await post('/sync/pull',JSON.stringify({cursors:{shared:0},padding:'x'.repeat(1_048_577)}));assert.equal(large.status,413);assert.deepEqual(await large.json(),{code:'request_too_large'});
+  const large=await post('/sync/pull',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{shared:0},padding:'x'.repeat(1_048_577)}));assert.equal(large.status,413);assert.deepEqual(await large.json(),{code:'request_too_large'});
  }finally{await server.close();}
 });
 test('HTTP classifies native failures by code, not message wording; unknown codes fall back to 500',async()=>{
@@ -707,11 +712,11 @@ test('HTTP classifies native failures by code, not message wording; unknown code
   const version=await fetch(`${server.url}/sync/pull`,{method:'POST',headers:{authorization:'Bearer alice'},body:'{}'});assert.equal(version.status,409);assert.deepEqual(await version.json(),{code:'mutation_version_unsupported',ordinal:2,name:'edit',version:9});
   assert.equal(errors.length,0,'classified refusals are not server errors');
   const socket=new serverSdk.WebSocket(`${server.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
-  const closed=await new Promise(resolve=>{socket.on('open',()=>socket.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}})));socket.on('close',(code,reasonText)=>resolve({code,reason:String(reasonText)}));socket.on('error',()=>{});});
+  const closed=await new Promise(resolve=>{socket.on('open',()=>socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}})));socket.on('close',(code,reasonText)=>resolve({code,reason:String(reasonText)}));socket.on('error',()=>{});});
   assert.equal(closed.code,1002);assert.equal(errors.length,0);
   fake.negotiateLive=async()=>JSON.stringify({handle:1,actions:[{type:'listen',scope:'shared'},{type:'send',frame:JSON.stringify({type:'subscribed',cursors:{shared:0}})},{type:'pull',cursors:{shared:0},models:{Task:1}}]});
   const drained=new serverSdk.WebSocket(`${server.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
-  const drainClose=await new Promise(resolve=>{drained.on('open',()=>drained.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}})));drained.on('close',code=>resolve(code));drained.on('error',()=>{});});
+  const drainClose=await new Promise(resolve=>{drained.on('open',()=>drained.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}})));drained.on('close',code=>resolve(code));drained.on('error',()=>{});});
   assert.equal(drainClose,1011);assert.equal(errors.length,1);assert.ok(errors[0] instanceof EngineError);assert.equal(errors[0].code,'loader.unregistered');
   fake.processPush=async()=>{throw reason('storage.invalid','receipt missing');};
   const unknown=await fetch(`${server.url}/sync/mutations`,{method:'POST',headers:{authorization:'Bearer alice'},body:'{}'});assert.equal(unknown.status,500);assert.deepEqual(await unknown.json(),{code:'server'});
@@ -782,7 +787,7 @@ test('a version dispatches only to its own handler and a function registers v1',
  assert.deepEqual(seen,[['function','same'],['v1 key','same']],'both registrations reach the same v1 handler');
  assert.deepEqual(shorthand.rejections,[]);assert.deepEqual(explicit.rejections,[]);
  assert.deepEqual(shorthand.records,[authority('reg-a',1,null)]);assert.deepEqual(explicit.records,[authority('reg-a',2,null)],'only the stamp differs');
- assert.deepEqual((await invalidations('reg-a')).map(([channel,,stamp])=>[channel,stamp]),[['registration',2]]);
+ assert.deepEqual((await positions('reg-a')).map(([channel,,stamp])=>[channel,stamp]),[['registration',2]]);
  const two=make({edit:{v1:record('v1'),v2:record('v2')}},[config.mutations[0],{...config.mutations[0],version:2}]);
  await two.push('alice',push('register-dispatch',1,[mutation(1,'from v1','reg-b')]));
  await two.push('alice',push('register-dispatch',2,[{...mutation(1,'from v2','reg-c'),version:2}]));
@@ -799,11 +804,10 @@ test('concurrent same-client delivery with different bodies commits at most one 
 test('fresh framework tables omit request_hash; a table that still carries the column keeps replaying receipts',async()=>{
  const columns=async()=>(await db.$queryRawUnsafe("SELECT column_name FROM information_schema.columns WHERE table_name='axton_client'")).map(row=>row.column_name).sort();
  assert.deepEqual(await columns(),['client_id','owner_id','receipt','sequence']);
- const migration=(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean);
  const before=called;const request=push('legacy-column',1,[mutation(1,'legacy','legacy-column')]);let receipt;
  await db.$executeRawUnsafe('ALTER TABLE axton_client ADD COLUMN request_hash text');
  try{
-  for(const sql of migration)await db.$executeRawUnsafe(sql);
+  await migrate();
   assert.deepEqual(await columns(),['client_id','owner_id','receipt','request_hash','sequence'],'re-applying migration.sql leaves an existing table untouched');
   receipt=await backend.push('alice',request);assert.equal(await backend.push('alice',push('legacy-column',1,[mutation(1,'changed','legacy-column')])),receipt);assert.equal(called,before+1);
   const [row]=await db.$queryRawUnsafe("SELECT request_hash, sequence FROM axton_client WHERE client_id='legacy-column'");assert.equal(row.request_hash,null);assert.equal(Number(row.sequence),1);
@@ -830,7 +834,7 @@ test('the live stream serves the declared model version and refuses an unretaine
   const shapes=[];
   for(const [version,expected] of [[1,{title:'old'}],[2,{title:'new',note:'n'}]]){
    const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
-   socket.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:version}}));
+   socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:version}}));
    while(frames.length<1)await delay(5);
    assert.equal(frames[0].type,'subscribed');
    // Streaming starts at the head: publish after the handshake; the commit
@@ -843,11 +847,11 @@ test('the live stream serves the declared model version and refuses an unretaine
   }
   const refused=await openSocket(port);
   const closed=new Promise(resolve=>refused.addEventListener('close',event=>resolve({code:event.code,reason:String(event.reason)}),{once:true}));
-  refused.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:3}}));
+  refused.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:3}}));
   assert.deepEqual(await closed,{code:1002,reason:'model_version_unsupported'});
   const undeclared=await openSocket(port);
   const closedToo=new Promise(resolve=>undeclared.addEventListener('close',event=>resolve(event.code),{once:true}));
-  undeclared.send(JSON.stringify({type:'subscribe',channels:['shared']}));
+  undeclared.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared']}));
   assert.equal(await closedToo,1002);
  }finally{await server.close();}
 });
@@ -871,7 +875,7 @@ test('backend.transaction rolls back a failing body and wakes nobody',async()=>{
 test('backend.transaction wakes a connected live subscriber without reconnect',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({type:'subscribe',channels:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
+ socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-live','live via transaction');touch.task({id:'tx-live'});channel('shared').task.add({id:'tx-live'});});
  while(frames.length<2)await delay(5);
  assert.deepEqual(frames[1].changes.at(-1).identity,{id:'tx-live'});assert.deepEqual(frames[1].changes.at(-1).state,{title:'live via transaction'});
@@ -886,11 +890,11 @@ test('notify and bindTransaction are gone; backend.transaction is the only exter
 // #180: a transaction the application opened and owns. `owned` is the caller's
 // own runner (Prisma, Repeatable Read, its own retry loop): AXTON never opens it.
 const owned=async body=>{for(let attempt=1;;attempt++){try{return await db.$transaction(body,{isolationLevel:'RepeatableRead'});}catch(error){if(attempt<4&&isRetryableTransactionError(error))continue;throw error;}}};
-const members=async id=>(await db.$queryRawUnsafe('SELECT channel FROM axton_membership WHERE model=$1 AND identity_key=$2 ORDER BY channel','Task',key(id))).map(r=>r.channel);
+const members=async id=>(await db.$queryRawUnsafe('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel','Task',key(id))).map(r=>r.channel);
 test('backend.publish settles in a caller-owned transaction; its wake, called after commit, reaches a live subscriber once',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({type:'subscribe',channels:['owned'],models:{Task:1}}));while(frames.length<1)await delay(5);
+ socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['owned'],models:{Task:1}}));while(frames.length<1)await delay(5);
  let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
  const from=await head('owned');
  const wake=await owned(async tx=>{
@@ -901,13 +905,13 @@ test('backend.publish settles in a caller-owned transaction; its wake, called af
   return wake;
  });
  assert.equal(await recordStamp('owned-1'),1,'the stamp committed with the caller transaction');
- assert.deepEqual(await invalidations('owned-1'),[['owned',from+1,1]],'one position at that stamp');
+ assert.deepEqual(await positions('owned-1'),[['owned',from+1,1]],'one position at that stamp');
  assert.deepEqual(await members('owned-1'),['owned']);
  await delay(80);assert.equal(woke,0,'the framework does not guess at the caller commit');assert.equal(frames.length,1);
  wake();
  while(frames.length<2)await delay(5);
  assert.equal(woke,1);
- assert.deepEqual(frames[1].changes,[{model:'Task',identity:{id:'owned-1'},stamp:1,state:{title:'owned write'}}]);
+ assert.deepEqual(frames[1].changes,[{channel:'owned',cursor:from+1,kind:'upsert',model:'Task',identity:{id:'owned-1'},stamp:1,state:{title:'owned write'}}]);
  assert.deepEqual(frames[1].cursors.owned,{from,to:from+1,head:from+1});
  unsubscribe();socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));await server.close();
 });
@@ -921,7 +925,7 @@ test('a throw after backend.publish rolls back the business row with every AXTON
  }),/after publication/);
  await delay(20);assert.equal(woke,0);
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-rollback'"))[0].count,0n);
- assert.equal(await recordStamp('owned-rollback'),null);assert.deepEqual(await invalidations('owned-rollback'),[]);assert.deepEqual(await members('owned-rollback'),[]);
+ assert.equal(await recordStamp('owned-rollback'),null);assert.deepEqual(await positions('owned-rollback'),[]);assert.deepEqual(await members('owned-rollback'),[]);
  assert.equal(await head('owned'),before);
  unsubscribe();
 });
@@ -938,7 +942,7 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  });
  for(const wake of wakes)wake();
  assert.equal(await recordStamp('owned-savepoint'),null);assert.deepEqual(await members('owned-savepoint'),[]);
- assert.deepEqual(await invalidations('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
+ assert.deepEqual(await positions('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
 });
 test('a conflicted caller transaction retries and its publication commits once',async()=>{
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});channel('owned').task.add({id:'owned-race'});});
@@ -962,7 +966,7 @@ test('a conflicted caller transaction retries and its publication commits once',
  assert.equal(bodies,2,'the stale attempt failed inside the publication and the caller ran its body again');
  assert.equal(failures.length,1);assert.ok(isRetryableTransactionError(failures[0]),'the database conflict reaches the caller unwrapped');
  assert.equal(await recordStamp('owned-race'),3,'the concurrent touch and the one committed publication');
- assert.deepEqual(await invalidations('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
+ assert.deepEqual(await positions('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
  await delay(20);assert.equal(woke,0,'no attempt wakes by itself');wake();await delay(0);assert.equal(woke,1);
  unsubscribe();
 });
@@ -976,7 +980,7 @@ test('backend.publish settles the same way in a caller-owned Serializable transa
  },{isolationLevel:'Serializable'});
  wake();
  assert.equal(await recordStamp('owned-serializable'),1);
- assert.deepEqual(await invalidations('owned-serializable'),[['owned',from+1,1]]);
+ assert.deepEqual(await positions('owned-serializable'),[['owned',from+1,1]]);
  assert.deepEqual(await members('owned-serializable'),['owned']);
 });
 test('backend.publish refuses a transaction the framework already owns',async()=>{
@@ -995,7 +999,7 @@ test('a throw inside the backend.publish body settles nothing and releases the c
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-body-throw'"))[0].count,1n,'the caller write commits');
  assert.equal(await recordStamp('owned-body-throw'),1,'only the later publication stamps the record');
  assert.deepEqual(await members('owned-body-throw'),[],'the failed body enrolled nothing');
- assert.deepEqual(await invalidations('owned-body-throw'),[]);assert.equal(await head('owned'),before);
+ assert.deepEqual(await positions('owned-body-throw'),[]);assert.equal(await head('owned'),before);
 });
 test('re-adding an unchanged member keeps its stamp and publishes nothing; a later touch reaches its Channel without another add',async()=>{
  await external(backend,'shared',[{model:'Task',identity:{id:'stamp-probe'}}]);
@@ -1007,13 +1011,13 @@ test('re-adding an unchanged member keeps its stamp and publishes nothing; a lat
  await backend.transaction(async({touch})=>{touch.task({id:'stamp-probe'});});
  assert.equal(await stampOf(),first+1,'a touch advances the stamp without a membership declaration');assert.equal(await head('shared'),headBefore+1,'and reach the Channel the record is a member of');
 });
-test('a pull covers every channel in one request and delivers a record shared by two channels once',async()=>{
+test('a pull covers every channel in one request and preserves both memberships of a shared record',async()=>{
  await db.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('multi-a','A'),('multi-b','B') ON CONFLICT(id) DO NOTHING");
  await backend.transaction(async({channel,touch})=>{touch.task({id:'multi-a'});touch.task({id:'multi-b'});channel('multi-x').task.add({id:'multi-a'});channel('multi-x').task.add({id:'multi-b'});channel('multi-y').task.add({id:'multi-a'});});
  const page=JSON.parse(await backend.pull('alice',pullBody({'multi-x':0,'multi-y':0})));
  assert.deepEqual(Object.keys(page.cursors),['multi-x','multi-y']);
  assert.deepEqual(page.cursors['multi-x'],{from:0,to:2,head:2});assert.deepEqual(page.cursors['multi-y'],{from:0,to:1,head:1});
- assert.deepEqual(page.changes.map(c=>c.identity.id),['multi-a','multi-b'],'multi-a is delivered once although both channels changed it');
+ assert.deepEqual(page.changes.map(c=>c.identity.id),['multi-a','multi-b','multi-a'],'each channel retains its own membership event');
  assert.equal(page.changes[0].stamp,await recordStamp('multi-a'));
  const nothing=JSON.parse(await backend.pull('alice',pullBody({'multi-x':2,'multi-y':1})));
  assert.deepEqual(nothing,{cursors:{'multi-x':{from:2,to:2,head:2},'multi-y':{from:1,to:1,head:1}},changes:[]});
@@ -1045,7 +1049,7 @@ test('onError defaults to console.error so nothing is dropped silently',async()=
 });
 // A bounded bootstrap request on the same `/sync/pull` route: one channel, the
 // committed historical progress B and the fixed subscription origin S (#151).
-const bootstrapBody=(channel,after,until,models={Task:1})=>JSON.stringify({mode:'bootstrap',channel,models,after,until});
+const bootstrapBody=(channel,after,until,models={Task:1})=>JSON.stringify({capabilities:['channel-membership-v1'],mode:'bootstrap',channel,models,after,until});
 const bootstrap=(channel,after,until)=>backend.pull('alice',bootstrapBody(channel,after,until)).then(JSON.parse);
 /** Publish `count` fresh records to one channel, one cursor each. */
 const fill=(name,prefix,count)=>backend.transaction(async({tx,channel,touch})=>{
@@ -1062,37 +1066,37 @@ test('a bounded bootstrap request pages the historical interval and stops at the
  assert.equal(first.mode,'bootstrap');assert.equal(first.channel,'boot');
  assert.equal(first.from,0);assert.equal(first.to,50);assert.equal(first.until,origin);assert.equal(first.head,later);
  assert.notEqual(first.to,first.until,'a full scan below the origin continues');
- assert.equal(first.records.length,50);
- assert.deepEqual(first.records[0].state,{title:'title 0'});
- assert.equal(first.records[0].stamp,await recordStamp('boot-0'));
+ assert.equal(first.changes.length,50);
+ assert.deepEqual(first.changes[0].state,{title:'title 0'});
+ assert.equal(first.changes[0].stamp,await recordStamp('boot-0'));
  const second=await bootstrap('boot',first.to,origin);
  assert.equal(second.from,50);assert.equal(second.to,origin);assert.equal(second.until,origin);
  assert.equal(second.to,second.until,'the interval is complete');
- assert.equal(second.records.length,10);
- assert.ok(second.records.every(r=>r.error===undefined&&r.state!==null));
- assert.deepEqual([...new Set([...first.records,...second.records].map(r=>r.identity.id))].length,60,'every historical record once');
- assert.ok(second.records.every(r=>!r.identity.id.startsWith('boot-late')),'nothing above the origin is loaded');
+ assert.equal(second.changes.length,10);
+ assert.ok(second.changes.every(r=>r.error===undefined&&r.state!==null));
+ assert.deepEqual([...new Set([...first.changes,...second.changes].map(r=>r.identity.id))].length,60,'every historical record once');
+ assert.ok(second.changes.every(r=>!r.identity.id.startsWith('boot-late')),'nothing above the origin is loaded');
  // An exhausted interval is an empty terminal page carrying the current head.
  const done=await bootstrap('boot',origin,origin);
- assert.deepEqual(done,{mode:'bootstrap',channel:'boot',from:origin,to:origin,until:origin,head:await head('boot'),records:[]});
+ assert.deepEqual(done,{mode:'bootstrap',channel:'boot',from:origin,to:origin,until:origin,head:await head('boot'),changes:[]});
  // An empty Scope completes at zero, and an origin above the head is refused.
- assert.deepEqual(await bootstrap('boot-empty',0,0),{mode:'bootstrap',channel:'boot-empty',from:0,to:0,until:0,head:0,records:[]});
+ assert.deepEqual(await bootstrap('boot-empty',0,0),{mode:'bootstrap',channel:'boot-empty',from:0,to:0,until:0,head:0,changes:[]});
  await assert.rejects(()=>bootstrap('boot',0,later+1),/ahead of head/);
 });
 test('a record republished above the origin leaves the historical interval between pages',async()=>{
  await fill('moved','moved',60);
  const origin=await head('moved');
  const first=await bootstrap('moved',0,origin);
- assert.equal(first.to,50);assert.equal(first.records.length,50);
+ assert.equal(first.to,50);assert.equal(first.changes.length,50);
  // `moved-55` sits in (50, origin]; republishing it moves its only row above
  // the origin, where the subscription's own delivery covers it.
  await external(backend,'moved',[{model:'Task',identity:{id:'moved-55'}}]);
- assert.ok((await invalidations('moved-55')).some(([channel,cursor])=>channel==='moved'&&cursor>origin));
+ assert.ok((await positions('moved-55')).some(([channel,cursor])=>channel==='moved'&&cursor>origin));
  const second=await bootstrap('moved',first.to,origin);
  assert.equal(second.to,origin,'the interval still completes at the fixed origin');
  assert.equal(second.head,await head('moved'));
- assert.equal(second.records.length,9);
- assert.ok(!second.records.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
+ assert.equal(second.changes.length,9);
+ assert.ok(!second.changes.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
 });
 test('a bootstrap page reads content and stamps at its own transaction snapshot',async()=>{
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});channel('coherent').task.add({id:'coherent'});});
@@ -1109,7 +1113,7 @@ test('a bootstrap page reads content and stamps at its own transaction snapshot'
  assert.ok(changed,'the concurrent publication committed during the page');
  assert.equal(page.head,origin,'the head the page reports is its snapshot head');
  assert.equal(page.to,origin);
- assert.deepEqual(page.records,[{model:'Task',identity:{id:'coherent'},stamp:before,state:{title:'first'}}],'cursor, stamp and content come from one snapshot');
+ assert.deepEqual(page.changes,[{channel:'coherent',cursor:origin,kind:'upsert',model:'Task',identity:{id:'coherent'},stamp:before,state:{title:'first'}}],'cursor, stamp and content come from one snapshot');
  assert.equal(await recordStamp('coherent'),before+1,'the concurrent write did commit');
  assert.ok(await head('coherent')>origin);
 });
@@ -1121,18 +1125,18 @@ test('the pull route dispatches by mode over HTTP and refuses any other mode',as
   const post=body=>fetch(`${server.url}/sync/pull`,{method:'POST',headers:{authorization:'Bearer alice'},body});
   const page=await post(bootstrapBody('route',0,origin));assert.equal(page.status,200);
   const decoded=await page.json();
-  assert.equal(decoded.mode,'bootstrap');assert.equal(decoded.to,origin);assert.equal(decoded.records.length,2);
+  assert.equal(decoded.mode,'bootstrap');assert.equal(decoded.to,origin);assert.equal(decoded.changes.length,2);
   const ordinary=await post(pullBody({route:0}));assert.equal(ordinary.status,200);
   assert.equal((await ordinary.json()).mode,undefined,'an absent mode still answers an ordinary page');
   for(const mode of ['snapshot',null,1]){
-   const refused=await post(JSON.stringify({mode,channel:'route',models:{Task:1},after:0,until:origin}));
+   const refused=await post(JSON.stringify({capabilities:['channel-membership-v1'],mode,channel:'route',models:{Task:1},after:0,until:origin}));
    assert.equal(refused.status,400,`mode ${JSON.stringify(mode)}`);
    assert.deepEqual(await refused.json(),{code:'request.invalid'});
   }
   const malformed=await post(bootstrapBody('  ',0,origin));assert.equal(malformed.status,400);
  }finally{await server.close();}
  // The same dispatch through the direct backend call, with no HTTP in between.
- await assert.rejects(()=>backend.pull('alice',JSON.stringify({mode:'snapshot',channel:'route',models:{Task:1},after:0,until:origin})),/mode/);
+ await assert.rejects(()=>backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],mode:'snapshot',channel:'route',models:{Task:1},after:0,until:origin})),/mode/);
  await assert.rejects(()=>bootstrap('route',2,1),/request.invalid|origin/);
 });
 // #183: Prisma 7 driver adapters report a raw query's serialization conflict

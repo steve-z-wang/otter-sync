@@ -3,6 +3,7 @@ pub mod actions;
 pub mod authority;
 pub mod bootstrap;
 mod bootstrap_ledger;
+pub mod channel_members;
 pub mod connection;
 pub mod ddl;
 mod defaults;
@@ -26,6 +27,7 @@ pub mod runtime;
 pub mod schema_store;
 pub mod store;
 mod store_delivery;
+mod store_epoch;
 pub mod subscriptions;
 pub mod transport;
 pub mod unsent;
@@ -52,6 +54,7 @@ pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
 pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
+pub use store_epoch::StoreToken;
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
 pub use unsent::{FailedAct, FailedTask, RefusedAct, SubmittedAct};
@@ -237,6 +240,8 @@ struct SessionSavepoint {
 
 pub struct Client<S: ClientStore> {
     store: S,
+    store_epoch: StoreToken,
+    request_tokens: std::cell::RefCell<BTreeMap<String, StoreToken>>,
     schema: Schema,
     client_id: String,
     generation: u64,
@@ -469,8 +474,14 @@ impl<S: ClientStore> Client<S> {
                 &[],
             )?;
         }
+        let store_epoch = store.query_committed("SELECT store_epoch FROM axton_client", &[])?;
+        let store_epoch = StoreToken {
+            epoch: engine::as_u64(&store_epoch.rows[0][0])?,
+        };
         Ok(Self {
             store,
+            store_epoch,
+            request_tokens: Default::default(),
             schema,
             client_id,
             generation,
@@ -768,10 +779,22 @@ impl<S: ClientStore> Client<S> {
             Ok(value) => {
                 // A failed COMMIT leaves the transaction open; without this rollback
                 // every later `begin` would fail. The commit error is what we report.
+                let epoch = match self
+                    .store
+                    .query("SELECT store_epoch FROM axton_client", &[])
+                    .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+                {
+                    Ok(epoch) => epoch,
+                    Err(error) => {
+                        let _ = self.store.rollback();
+                        return Err(error);
+                    }
+                };
                 if let Err(e) = self.store.commit() {
                     let _ = self.store.rollback();
                     return Err(e);
                 }
+                self.store_epoch = StoreToken { epoch };
                 self.generation += 1;
                 changed.insert("axton_client".into());
                 self.notify(changed);
@@ -867,12 +890,24 @@ impl<S: ClientStore> Client<S> {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        let epoch = match self
+            .store
+            .query("SELECT store_epoch FROM axton_client", &[])
+            .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+        {
+            Ok(epoch) => epoch,
+            Err(error) => {
+                let _ = self.physical_rollback();
+                return Err(error);
+            }
+        };
         // The session is already taken; a failed COMMIT must also close the
         // transaction, or every later `begin` would fail. Report the commit error.
         if let Err(e) = self.store.commit() {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        self.store_epoch = StoreToken { epoch };
         self.generation += 1;
         for cursors in &session.pull_pages {
             self.pulls.stale(cursors);
@@ -1094,7 +1129,9 @@ impl<S: ClientStore> Client<S> {
         self.freeze_with_limit(limits::PUSH_BYTES)
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-        self.write(|e| e.freeze(max_bytes))
+        self.write(|e| e.freeze(max_bytes))?
+            .map(|bytes| with_capabilities(&bytes, &[CHANNEL_MEMBERSHIP_CAPABILITY]))
+            .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority
     /// lands, the completed operations leave the queue and what remains
@@ -1255,11 +1292,11 @@ fn count_direct<S: ClientStore>(store: &mut S, schema: &Schema) -> Result<usize>
             .iter()
             .map(|k| format!("'{}', m.{}", k.replace('\'', "''"), ddl::quote(k)))
             .collect();
-        // A row with no stamp and no pending operation reached this file only
+        // A row with no positive stamp and no pending operation reached this file only
         // through a direct write: nothing will ever send it.
         let identity = format!("json_object({})", pairs.join(", "));
         let sql = format!(
-            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity}) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
+            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity} AND r.stamp > 0) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
             ddl::quote(&model.name),
         );
         let rows = store.query_committed(&sql, &[json!(model.name), json!(model.name)])?;

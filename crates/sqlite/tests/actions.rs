@@ -225,6 +225,7 @@ fn receipt_completion_is_correlated_and_transient() {
             },
         }],
         records: vec![],
+        memberships: Vec::new(),
     };
     let wrong = "01890f47-1234-7123-8123-123456789abc".to_string();
     receipt.completions[0].call_id = wrong;
@@ -275,6 +276,7 @@ fn rejecting_parent_completes_unsent_lifecycle_dependent() {
             },
         }],
         records: vec![],
+        memberships: Vec::new(),
     };
     let report = client.acknowledge(1, receipt).unwrap();
     assert_eq!(report.completions.len(), 2);
@@ -506,6 +508,7 @@ fn additive_model_field_keeps_frozen_bytes_and_accepts_old_result_snapshot() {
             state: json!({"title":"B","note":null,"flag":true}),
             error: None,
         }],
+        memberships: Vec::new(),
     };
     let report = client.acknowledge(1, receipt).unwrap();
     assert_eq!(
@@ -567,6 +570,7 @@ fn same_schema_receipt_cannot_omit_a_declared_nullable_result_field() {
             state: json!({"title":"B","note":null}),
             error: None,
         }],
+        memberships: Vec::new(),
     };
     assert!(client.acknowledge(1, receipt.clone()).is_err());
     assert_eq!(client.pending_count().unwrap(), 1);
@@ -631,6 +635,7 @@ fn upgraded_server_may_return_new_fields_for_an_old_frozen_result_contract() {
             state: json!({"title":"B","note":"server"}),
             error: None,
         }],
+        memberships: Vec::new(),
     };
     if let ActionOutcome::Succeeded { result } = &mut receipt.completions[0].outcome {
         result["todo"]["unknown"] = json!(1);
@@ -1134,6 +1139,7 @@ fn settle(client: &mut Local, request: &PushRequest, outcomes: &[(&SubmittedCall
         rejections: vec![],
         completions: vec![],
         records: vec![],
+        memberships: Vec::new(),
     };
     for (call, accepted) in outcomes {
         if *accepted {

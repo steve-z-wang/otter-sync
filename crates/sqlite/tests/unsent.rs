@@ -104,6 +104,7 @@ fn a_refused_act_keeps_what_was_submitted_until_it_is_dismissed() {
             },
         }],
         records: vec![],
+        memberships: Vec::new(),
     };
     client.acknowledge(1, receipt).unwrap();
     assert_eq!(text(&mut client), "base", "the optimism is gone");
@@ -387,6 +388,7 @@ fn a_replacement_in_the_transaction_that_discards_the_original_is_planned_withou
             state: json!({"text":"fixed","blob":null}),
             error: None,
         }],
+        memberships: Vec::new(),
     };
     client.acknowledge(1, receipt).unwrap();
     assert_eq!(client.pending_count().unwrap(), 0);

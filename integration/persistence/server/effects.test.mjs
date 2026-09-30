@@ -10,8 +10,9 @@ const {schema}=JSON.parse(await readFile(new URL('../../action-runtime-ts/backen
 const models=schema.models;
 const fresh=()=>createEffects(models);
 const empty={changes:[],memberships:[]};
-const add=(channel,model,identity)=>({channel,model,identity,present:true});
-const remove=(channel,model,identity)=>({channel,model,identity,present:false});
+const add=(channel,model,identity,tags=[])=>({kind:'add',channel,record:{model,identity},tags});
+const remove=(channel,model,identity)=>({kind:'remove',channel,record:{model,identity}});
+const removeTag=(channel,tag)=>({kind:'removeTag',channel,tag});
 
 test('declarations snapshot identities at the call, in declaration order',()=>{
  const effects=fresh();
@@ -22,7 +23,7 @@ test('declarations snapshot identities at the call, in declaration order',()=>{
  effects.touch.todo({id:'A'});
  assert.deepEqual(effects.settlement(),{
   changes:[{model:'Todo',identity:{id:'A'}}],
-  memberships:[{channel:'project:1',model:'Todo',identity:{id:'A'},present:true}],
+  memberships:[add('project:1','Todo',{id:'A'})],
  });
 });
 
@@ -190,7 +191,7 @@ test('handles are null-prototype dictionaries; __proto__, constructor and functi
   changes:[{model:'Call',identity:{id:'k'}},{model:'ToString',identity:{id:'s'}},{model:'__proto__',identity:{id:'p'}}],
   memberships:[add('c','Name',{id:'n'}),remove('c','Length',{id:'l'}),add('c','__proto__',{id:'p'}),remove('c','Constructor',identity)],
  });
- assert.equal(Object.hasOwn(effects.settlement().memberships[3].identity,'__proto__'),true);
+ assert.equal(Object.hasOwn(effects.settlement().memberships[3].record.identity,'__proto__'),true);
  assert.equal({}.id,undefined,'Object.prototype is untouched');
  assert.equal(Object.getPrototypeOf(fresh().touch),null);
 });
@@ -220,13 +221,18 @@ test('closing refuses every later declaration, including through escaped handles
  assert.throws(()=>channel.remove([Todo({id:'B'})]),closed);
  assert.throws(()=>touch.todo({id:'B'}),closed);
  assert.throws(()=>effects.channel('c'),closed);
+ // Tagged adds and tag selectors are declarations too.
+ assert.throws(()=>todo.add({id:'B'},{tags:['X']}),closed);
+ assert.throws(()=>channel.add([Todo({id:'B'})],{tags:['X']}),closed);
+ assert.throws(()=>channel.remove({tag:'X'}),closed);
  const expected={changes:[{model:'Todo',identity:{id:'A'}}],memberships:[add('c','Todo',{id:'A'})]};
  const settled=effects.settlement();
  assert.deepEqual(settled,expected);
  // The answer is a copy of owned, frozen declarations.
  settled.changes.push({model:'Todo',identity:{id:'forged'}});
- assert.throws(()=>{settled.memberships[0].present=false;},TypeError);
- assert.throws(()=>{settled.memberships[0].identity.id='forged';},TypeError);
+ assert.throws(()=>{settled.memberships[0].kind='remove';},TypeError);
+ assert.throws(()=>{settled.memberships[0].record.identity.id='forged';},TypeError);
+ assert.throws(()=>{settled.memberships[0].tags.push('forged');},TypeError);
  assert.deepEqual(effects.settlement(),expected);
  effects.close();
  assert.deepEqual(effects.settlement(),expected,'closing twice is harmless');
@@ -247,6 +253,126 @@ test('a Model outside the loaded set is device-only: every declaration naming it
  assert.deepEqual(effects.settlement(),{changes:[{model:'Todo',identity:{id:'t'}}],memberships:[add('c','Todo',{id:'t'})]});
  // Without a loaded set every Model declares, as a collector always did.
  fresh().touch.moment({at});
+});
+
+// Tags label an add; `remove({tag})` selects by label. Both declare in order.
+const scalarModel=name=>({name,identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false}]});
+const entries=()=>createEffects([scalarModel('Entry')]);
+
+test('an add without tags, with {} or with an empty list adds no label',()=>{
+ const effects=fresh();
+ const c=effects.channel('c');
+ c.todo.add({id:'1'});
+ c.todo.add({id:'2'},undefined);
+ c.todo.add({id:'3'},{});
+ c.todo.add({id:'4'},{tags:[]});
+ c.todo.add({id:'5'},{tags:undefined});
+ c.add([Todo({id:'6'})]);
+ c.add([Todo({id:'7'})],{tags:[]});
+ assert.deepEqual(effects.settlement().memberships,['1','2','3','4','5','6','7'].map(id=>add('c','Todo',{id})));
+});
+
+test('tags are copied once per declaration, deduplicated in first-seen order and kept as spelled',()=>{
+ const effects=fresh();
+ const c=effects.channel('c');
+ c.todo.add({id:'A'},{tags:['X','Y','X','x',' X','Y']});
+ c.add([Todo({id:'B'}),Moment({at:new Date(0)})],{tags:['Journal:1','Journal:1']});
+ assert.deepEqual(effects.settlement().memberships,[
+  add('c','Todo',{id:'A'},['X','Y','x',' X']),
+  add('c','Todo',{id:'B'},['Journal:1']),
+  add('c','Moment',{at:'1970-01-01T00:00:00.000Z'},['Journal:1']),
+ ]);
+});
+
+test('a later change to the caller array or options cannot alter a collected intent',()=>{
+ const effects=entries();
+ const tags=['X'];
+ const options={tags};
+ const u=effects.channel('U');
+ u.entry.add({id:'a'},options);
+ u.remove({tag:'X'});
+ tags.push('Y');
+ tags[0]='Z';
+ options.tags=['W'];
+ const expected=JSON.parse('[{"kind":"add","channel":"U","record":{"model":"Entry","identity":{"id":"a"}},"tags":["X"]},{"kind":"removeTag","channel":"U","tag":"X"}]');
+ const settled=effects.settlement().memberships;
+ assert.deepEqual(settled,expected);
+ assert.ok(Object.isFrozen(settled[0].tags),'the collected tags are frozen');
+ assert.ok(Object.isFrozen(settled[0].record)&&Object.isFrozen(settled[1]),'each intent is frozen');
+ assert.throws(()=>{settled[0].tags.push('forged');},TypeError);
+ assert.throws(()=>{settled[1].tag='forged';},TypeError);
+ assert.deepEqual(effects.settlement().memberships,expected);
+});
+
+test('declarations keep their order across adds, removals and tag selectors',()=>{
+ const effects=fresh();
+ const u=effects.channel('U');
+ u.todo.add({id:'A'},{tags:['X']});
+ u.remove({tag:'X'});
+ u.todo.add({id:'B'},{tags:['X']});
+ effects.channel('V').remove([Todo({id:'A'})]);
+ u.remove({tag:'Y'});
+ u.todo.remove({id:'B'});
+ assert.deepEqual(effects.settlement(),{changes:[],memberships:[
+  add('U','Todo',{id:'A'},['X']),removeTag('U','X'),add('U','Todo',{id:'B'},['X']),
+  remove('V','Todo',{id:'A'}),removeTag('U','Y'),remove('U','Todo',{id:'B'}),
+ ]});
+});
+
+test('an invalid or oversized label refuses the whole declaration',()=>{
+ const effects=fresh();
+ const c=effects.channel('c');
+ // 256 UTF-8 bytes is the bound, however many characters spell it.
+ const longest='é'.repeat(128);
+ assert.equal(Buffer.byteLength(longest,'utf8'),256);
+ c.todo.add({id:'ok'},{tags:[longest,'x'.repeat(256),'😀'.repeat(64)]});
+ const refused=[
+  [[''],/tag must be a nonblank string/],
+  [['  '],/tag must be a nonblank string/],
+  [['\n\t'],/tag must be a nonblank string/],
+  [[1],/tag must be a nonblank string/],
+  [[null],/tag must be a nonblank string/],
+  [[undefined],/tag must be a nonblank string/],
+  [['X',{}],/tag must be a nonblank string/],
+  [[longest+'a'],/at most 256 UTF-8 bytes/],
+  [['x'.repeat(257)],/at most 256 UTF-8 bytes/],
+  [['a\ud800'],/Unicode text/],
+ ];
+ for(const [tags,pattern] of refused){
+  assert.throws(()=>c.todo.add({id:'A'},{tags}),pattern,JSON.stringify(tags));
+  assert.throws(()=>c.add([Todo({id:'A'})],{tags}),pattern,JSON.stringify(tags));
+ }
+ for(const options of [null,'X',['X'],{tags:'X'},{tags:null},{tags:{0:'X',length:1}},{tag:'X'},{tags:['X'],extra:true}])
+  assert.throws(()=>c.todo.add({id:'A'},options),/options/,JSON.stringify(options));
+ assert.throws(()=>c.add([Todo({id:'A'})],{tags:'X'}),/options/);
+ assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'ok'},[longest,'x'.repeat(256),'😀'.repeat(64)])],'no refused declaration appended an intent');
+});
+
+test('an add declares at most 64 distinct labels; repeats do not count',()=>{
+ const effects=fresh();
+ const c=effects.channel('c');
+ const tags=Array.from({length:64},(_,n)=>`t${n}`);
+ c.todo.add({id:'A'},{tags:[...tags,...tags]});
+ assert.throws(()=>c.todo.add({id:'B'},{tags:[...tags,'t64']}),/more than 64 distinct tags/);
+ assert.throws(()=>c.add([Todo({id:'B'})],{tags:[...tags,'t64']}),/more than 64 distinct tags/);
+ assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'A'},tags)]);
+});
+
+test('a mixed remove takes a record list or exactly one {tag} selector; any other shape is refused',()=>{
+ const effects=fresh();
+ const c=effects.channel('c');
+ for(const selector of [{},{tag:''},{tag:'  '},{tag:1},{tag:'X',extra:1},{tags:['X']},{tag:'a\ud800'},{tag:'x'.repeat(257)},null,undefined,'X',Todo({id:'A'})])
+  assert.throws(()=>c.remove(selector),/c"\)\.remove: /,JSON.stringify(selector));
+ // A Model's remove takes an identity, never a selector.
+ assert.throws(()=>c.todo.remove({tag:'X'}),/Todo identity field id is missing/);
+ // Nor does a mixed add take one.
+ assert.throws(()=>c.add({tag:'X'}),/array of record references/);
+ assert.deepEqual(effects.settlement().memberships,[]);
+ // An inherited or non-enumerable member is not an exact {tag} selector.
+ assert.throws(()=>c.remove(Object.create({tag:'X'})),/selector/);
+ c.remove({tag:'X'});
+ c.remove({tag:' spaced '});
+ assert.deepEqual(effects.settlement().memberships,[removeTag('c','X'),removeTag('c',' spaced ')]);
 });
 
 // The add-only collector a Load handler declares through: `ctx.channel(name)`.
@@ -298,7 +424,7 @@ test('Load declarations snapshot typed identities at the call, in first-declarat
  // Owned, frozen copies.
  const listed=effects.memberships();
  listed.push(add('forged','Todo',{id:'x'}));
- assert.throws(()=>{listed[0].identity.id='forged';},TypeError);
+ assert.throws(()=>{listed[0].record.identity.id='forged';},TypeError);
  assert.equal(effects.memberships().length,4);
 });
 
@@ -467,4 +593,67 @@ test('a mixed list that crosses the bound appends none of its pairs; overflow ou
  fits.channel('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'})]);
  assert.equal(fits.memberships().length,LOAD_ENROLLMENT_PAIRS);
  assert.equal(fits.failure(),undefined);
+});
+
+test('a Load add takes the same tags: copied, deduplicated, with validated add boundaries preserved',()=>{
+ const effects=freshLoad();
+ const tags=['X','X','Y'];
+ const c=effects.channel('c');
+ c.todo.add({id:'1'},{tags});
+ c.add([Todo({id:'2'})]);
+ c.add([Todo({id:'1'}),Todo({id:'2'})],{tags:['Z','X']});
+ c.todo.add({id:'1'},{tags:[]});
+ tags.push('W');
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},['X','Y']),add('c','Todo',{id:'2'}),add('c','Todo',{id:'1'},['Z']),add('c','Todo',{id:'2'},['Z','X'])]);
+ assert.equal(effects.failure(),undefined);
+ assert.ok(Object.isFrozen(effects.memberships()[0].tags));
+});
+
+test('an invalid Load label or options leave the collector failed and append nothing',()=>{
+ for(const [label,declare,pattern] of [
+  ['blank tag',e=>e.channel('c').todo.add({id:'A'},{tags:[' ']}),/tag must be a nonblank string/],
+  ['oversized tag',e=>e.channel('c').add([Todo({id:'A'})],{tags:['x'.repeat(257)]}),/at most 256 UTF-8 bytes/],
+  ['65 tags',e=>e.channel('c').todo.add({id:'A'},{tags:Array.from({length:65},(_,n)=>`t${n}`)}),/more than 64 distinct tags/],
+  ['bad options',e=>e.channel('c').todo.add({id:'A'},{tags:'X'}),/options/],
+ ]){
+  const effects=freshLoad();
+  let thrown;
+  try{declare(effects);}catch(error){thrown=error;}
+  assert.match(thrown?.message??'',pattern,label);
+  assert.deepEqual(effects.failure(),{kind:'invalid',error:thrown},label);
+  assert.deepEqual(effects.memberships(),[],label);
+ }
+});
+
+test('an escaped Load handle refuses tagged adds after close',()=>{
+ const effects=freshLoad();
+ const channel=effects.channel('c');
+ effects.close();
+ assert.throws(()=>channel.todo.add({id:'A'},{tags:['X']}),/closed/);
+ assert.throws(()=>channel.add([Todo({id:'A'})],{tags:['X']}),/closed/);
+ assert.equal('remove' in channel,false,'a Load handle has no selector either');
+});
+
+test('Load enrollment bytes count tags, including tags merged into a repeated pair',()=>{
+ assert.equal(enrollmentBytes(add('c','Todo',{id:'t1'},['X'])),enrollmentBytes(add('c','Todo',{id:'t1'}))+3);
+ const count=256,each=LOAD_ENROLLMENT_BYTES/count;
+ const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
+ const effects=freshLoad();
+ for(const name of channels)effects.channel(name).todo.add({id:'t1'});
+ assert.equal(effects.failure(),undefined,'exactly the bound');
+ // A repeated pair adds no pair, but its new label adds bytes past the bound.
+ assert.throws(()=>effects.channel(channels[0]).todo.add({id:'t1'},{tags:['X']}),/more than 1048576 bytes/);
+ assert.equal(effects.failure().kind,'overflow');
+ assert.deepEqual(effects.memberships()[0],add(channels[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
+});
+
+
+test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-tag declaration',()=>{
+ const effects=freshLoad();
+ const tags=Array.from({length:65},(_,i)=>`t${i}`);
+ const c=effects.channel('c');
+ c.todo.add({id:'1'},{tags:tags.slice(0,64)});
+ c.todo.add({id:'1'},{tags:[tags[0],tags[64]]});
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},tags.slice(0,64)),add('c','Todo',{id:'1'},[tags[64]])]);
+ assert.equal(effects.failure(),undefined);
 });

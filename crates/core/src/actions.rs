@@ -158,10 +158,11 @@ impl DirectActionRequest {
     /// Structural server ingress. Semantic Action name/version/args failures
     /// remain per-call outcomes after the call identity has been claimed.
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > crate::limits::PUSH_BYTES {
-            return Err(invalid("direct Action request exceeds byte limit"));
-        }
+        crate::check_request_size(bytes, crate::limits::PUSH_BYTES)
+            .map_err(|_| invalid("direct Action request exceeds byte limit"))?;
         let raw: Value = serde_json::from_slice(bytes)?;
+        // Negotiation metadata is checked here and kept out of the request.
+        crate::read_capabilities(&raw)?;
         let models = crate::protocol::read_action_models(&raw["models"])?;
         let call: ActionIntent = serde_json::from_value(
             raw.get("call")
@@ -195,6 +196,10 @@ impl DirectActionRequest {
 pub struct DirectActionResponse {
     pub completion: CallCompletion,
     pub records: Vec<AuthorityRecord>,
+    /// Enrollment claims for returned records ([`MembershipClaim`]); omitted
+    /// from the wire when the call enrolled nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memberships: Vec<crate::MembershipClaim>,
 }
 impl DirectActionResponse {
     pub fn decode(bytes: &[u8], request: &DirectActionRequest, schema: &Schema) -> Result<Self> {
@@ -207,15 +212,23 @@ impl DirectActionResponse {
         } else {
             vec![]
         };
-        let wrapper = serde_json::json!({"clientId":"direct","batchSequence":1,"rejections":rejection,"completions":[raw["completion"]],"records":raw["records"]});
+        let mut wrapper = serde_json::json!({"clientId":"direct","batchSequence":1,"rejections":rejection,"completions":[raw["completion"]],"records":raw["records"]});
+        if let Some(memberships) = raw.get("memberships") {
+            wrapper["memberships"] = memberships.clone();
+        }
         let mut mutation = serde_json::to_value(&request.call)?;
         mutation["ordinal"] = serde_json::json!(1);
         let frozen = crate::PushRequest::decode_actions(serde_json::json!({"clientId":"direct","batchSequence":1,"models":request.models,"mutations":[mutation]}).to_string().as_bytes(), schema)?;
         let receipt =
             crate::PushReceipt::decode_actions(wrapper.to_string().as_bytes(), &frozen, schema)?;
+        // A failed call enrolled nothing, as it carries no records.
+        if !rejection.is_empty() && !receipt.memberships.is_empty() {
+            return Err(invalid("a failed direct Action carries no memberships"));
+        }
         Ok(Self {
             completion: receipt.completions.into_iter().next().unwrap(),
             records: receipt.records,
+            memberships: receipt.memberships,
         })
     }
     pub fn encode(&self) -> Result<Vec<u8>> {

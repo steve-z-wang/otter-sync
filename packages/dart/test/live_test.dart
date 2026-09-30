@@ -458,6 +458,9 @@ void main() {
         'cursors': {'scope': range(cursor, cursor + 1)},
         'changes': [
           {
+            'kind': 'upsert',
+            'channel': 'scope',
+            'cursor': cursor + 1,
             'model': 'Entry',
             'identity': {'id': 'live'},
             'stamp': stampBase + cursor + 1,
@@ -469,8 +472,23 @@ void main() {
       Map<String, dynamic> Function(int from)? recovery;
       server.listen((r) async {
         if (r.uri.path == '/sync/pull') {
-          pulls++;
           final pull = jsonDecode(await utf8.decoder.bind(r).join()) as Map;
+          if (pull['mode'] == 'bootstrap') {
+            r.response.write(
+              jsonEncode({
+                'mode': 'bootstrap',
+                'channel': pull['channel'],
+                'from': pull['after'],
+                'to': pull['until'],
+                'until': pull['until'],
+                'head': pull['until'],
+                'changes': [],
+              }),
+            );
+            await r.response.close();
+            return;
+          }
+          pulls++;
           r.response.write(
             jsonEncode(
               recovery?.call((pull['cursors'] as Map)['scope'] as int) ??
@@ -577,6 +595,26 @@ void main() {
               'recovered',
         );
         expect(pulls, greaterThan(before));
+        // Identity-only membership removal crosses the real socket and native
+        // store path; no fabricated null authority or stamp is supplied.
+        sockets.last.add(
+          jsonEncode({
+            'cursors': {'scope': range(11, 12)},
+            'changes': [
+              {
+                'kind': 'remove',
+                'channel': 'scope',
+                'cursor': 12,
+                'model': 'Entry',
+                'identity': {'id': 'live'},
+              },
+            ],
+          }),
+        );
+        await until(
+          () async => (await client.syncState())['cursors']['scope'] == 12,
+        );
+        expect(await client.read('Entry', {'id': 'live'}), isNull);
         expect(errors, isEmpty);
         await connection.close();
       } finally {
@@ -627,6 +665,9 @@ void main() {
         'changes': [
           for (var cursor = from + 1; cursor <= to; cursor++)
             {
+              'kind': 'upsert',
+              'channel': 'scope',
+              'cursor': cursor,
               'model': 'Entry',
               'identity': {'id': 'e$cursor'},
               'stamp': stampBase + cursor,
@@ -648,6 +689,24 @@ void main() {
           expect(acknowledged, isTrue, reason: 'listeners must precede HTTP');
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+          if (body['mode'] == 'bootstrap') {
+            final from = body['after'] as int;
+            final bound = body['until'] as int;
+            final to = from + 50 < bound ? from + 50 : bound;
+            request.response.write(
+              jsonEncode({
+                'mode': 'bootstrap',
+                'channel': body['channel'],
+                'from': from,
+                'to': to,
+                'until': bound,
+                'head': serverHead,
+                'changes': page(from, to, version)['changes'],
+              }),
+            );
+            await request.response.close();
+            return;
+          }
           final from = (body['cursors'] as Map)['scope'] as int;
           requests.add(from);
           final result = page(
@@ -725,8 +784,8 @@ void main() {
         stampBase = 100;
         await client.subscribe('scope');
         hold.complete();
-        // The recreated subscription starts over at the head its own handshake
-        // acknowledges and loads no history; the stream is the truth from there.
+        // Retained holds require a fixed-bound reconciliation. Its fresh
+        // authority replaces earlier content; the obsolete HTTP page stays inert.
         await until(() async => sockets.length >= 4);
         await until(
           () async => (await client.syncState())['cursors']['scope'] == 57,
@@ -738,21 +797,21 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 30));
         expect(
-          await client.read('Entry', {'id': 'e57'}),
-          isNull,
-          reason: 'the obsolete HTTP completion applied nothing',
+          (await client.read('Entry', {'id': 'e57'}))?['text'],
+          'fresh',
+          reason: 'fresh reconciliation wins over the obsolete HTTP completion',
         );
         expect(
           (await client.read('Entry', {'id': 'e1'}))?['text'],
-          'initial',
-          reason: 'unsubscribing retains what was delivered',
+          'fresh',
+          reason: 'retained membership is reconciled before catching up',
         );
         expect(
           (await client.read('Entry', {'id': 'e56'}))?['text'],
-          'live',
-          reason: 'the page the old session streamed is retained too',
+          'fresh',
+          reason: 'reconciliation refreshes the old live delivery too',
         );
-        expect((await client.query('Entry')).length, 57);
+        expect((await client.query('Entry')).length, 58);
         expect((await client.syncState())['cursors']['scope'], 58);
         expect(errors, isEmpty);
         await connection.close();
@@ -932,6 +991,9 @@ void moreTests() {
               'cursors': {'scope': range(from, from + 1)},
               'changes': [
                 {
+                  'kind': 'upsert',
+                  'channel': 'scope',
+                  'cursor': from + 1,
                   'model': 'Entry',
                   'identity': {'id': 'live'},
                   'stamp': stamps.next + 1,
@@ -1062,6 +1124,9 @@ void moreTests() {
         'cursors': {'scope': range(cursor, to)},
         'changes': [
           {
+            'kind': 'upsert',
+            'channel': 'scope',
+            'cursor': to,
             'model': 'Entry',
             'identity': {'id': 'live'},
             'stamp': to,
@@ -1407,12 +1472,16 @@ void moreTests() {
           'type': 'subscribe',
           'channels': ['scope'],
           'models': {'Entry': 1},
+          'capabilities': ['channel-membership-v1'],
         });
         sockets[1].add(
           jsonEncode({
             'cursors': {'scope': range(0, 1)},
             'changes': [
               {
+                'kind': 'upsert',
+                'channel': 'scope',
+                'cursor': 1,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
                 'stamp': 1,
@@ -1644,7 +1713,11 @@ void moreTests() {
         String id,
         int stamp,
         Map<String, dynamic>? state,
+        int cursor,
       ) => {
+        'kind': 'upsert',
+        'channel': 'scope',
+        'cursor': cursor,
         'model': 'Entry',
         'identity': {'id': id},
         'stamp': stamp,
@@ -1666,7 +1739,7 @@ void moreTests() {
           jsonEncode({
             'cursors': {'scope': range(0, 1)},
             'changes': [
-              record('live', 1, {'text': 'first', 'note': null}),
+              record('live', 1, {'text': 'first', 'note': null}, 1),
             ],
           }),
         );
@@ -1681,12 +1754,15 @@ void moreTests() {
             'cursors': {'scope': range(1, 3)},
             'changes': [
               {
+                'kind': 'upsert',
+                'channel': 'scope',
+                'cursor': 2,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
                 'stamp': 9,
                 'error': 'loader.failed',
               },
-              record('bad', 2, {'text': 5, 'note': null}),
+              record('bad', 2, {'text': 5, 'note': null}, 3),
             ],
           }),
         );
@@ -1722,7 +1798,7 @@ void moreTests() {
         sockets.first.add(
           jsonEncode({
             'cursors': {'scope': range(3, 4)},
-            'changes': [record('live', 2, null)],
+            'changes': [record('live', 2, null, 4)],
           }),
         );
         await until(() => errors.whereType<AxtonReport>().isNotEmpty);

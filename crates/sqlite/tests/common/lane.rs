@@ -9,7 +9,32 @@ use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
 
 pub fn text(page: &PullPage) -> String {
-    String::from_utf8(page.encode().unwrap()).unwrap()
+    let changes = page
+        .cursors
+        .iter()
+        .filter(|(_, range)| range.to > range.from)
+        .flat_map(|(channel, range)| {
+            page.changes
+                .iter()
+                .enumerate()
+                .map(move |(i, record)| ChannelChange::Upsert {
+                    channel: channel.clone(),
+                    cursor: range
+                        .to
+                        .saturating_sub(page.changes.len().saturating_sub(i + 1) as u64),
+                    record: record.clone(),
+                })
+        })
+        .collect();
+    String::from_utf8(
+        ChannelPullPage {
+            cursors: page.cursors.clone(),
+            changes,
+        }
+        .encode()
+        .unwrap(),
+    )
+    .unwrap()
 }
 /// The acknowledgement: every channel at its current head.
 pub fn ack(heads: &[(&str, u64)]) -> String {

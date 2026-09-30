@@ -295,22 +295,27 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         flight: Option<String>,
         fetch: Option<FetchKey>,
     ) -> std::result::Result<(), String> {
-        let timeout = self
+        let Some(timeout) = self
             .connection
             .as_ref()
             .map(|connection| connection.timeout)
-            .ok_or(UNAVAILABLE)?;
-        let http = self
-            .issue_effect(
-                EffectKind::DirectHttp {
-                    request_id: request_id.to_string(),
-                },
-                Operation::Http {
-                    route: route(&fetch),
-                    body: body.clone(),
-                },
-            )
-            .ok_or(EXECUTION_UNKNOWN)?;
+        else {
+            self.client.retire_request(&call_id);
+            return Err(UNAVAILABLE.into());
+        };
+        let http = self.issue_effect(
+            EffectKind::DirectHttp {
+                request_id: request_id.to_string(),
+            },
+            Operation::Http {
+                route: route(&fetch),
+                body: body.clone(),
+            },
+        );
+        let Some(http) = http else {
+            self.client.retire_request(&call_id);
+            return Err(EXECUTION_UNKNOWN.into());
+        };
         let timer = self.issue_effect(
             EffectKind::DirectTimer {
                 request_id: request_id.to_string(),
@@ -414,6 +419,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let Some(call) = self.directs.calls.remove(request_id) else {
             return;
         };
+        self.client.retire_request(&call.call_id);
         for effect_id in [call.http, call.timer].into_iter().flatten() {
             self.cancel_effect(&effect_id);
         }
@@ -554,6 +560,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 .client
                 .apply_action_response_bytes(call.body.as_bytes(), response.as_bytes()),
         };
+        self.client.retire_request(&call.call_id);
         self.committed_since(generation);
         let outcome = match applied {
             Ok(report) => {
@@ -592,6 +599,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let Some(call) = self.directs.calls.remove(&request_id) else {
             return;
         };
+        self.client.retire_request(&call.call_id);
         let joined = call
             .flight
             .as_ref()
@@ -656,6 +664,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 store,
             };
             if let Some(owner) = self.directs.fetches.get(&key).cloned() {
+                // The join uses the owning flight's original token.
+                self.client.retire_request(&request.call_id);
                 self.directs
                     .fetch_joined
                     .entry(owner)
@@ -664,6 +674,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 return Ok(());
             }
             if self.connection.is_none() {
+                self.client.retire_request(&request.call_id);
                 return Err((FETCH_UNAVAILABLE.into(), code(FETCH_UNAVAILABLE)));
             }
             let body = request
@@ -747,6 +758,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let Some(call) = self.directs.calls.remove(&request_id) else {
             return;
         };
+        self.client.retire_request(&call.call_id);
         let joined = match &call.fetch {
             Some(key) => self.release_fetch(key, &request_id),
             None => vec![],

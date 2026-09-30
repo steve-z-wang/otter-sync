@@ -1,7 +1,7 @@
 //! Transition tests for the per-socket live controller
 //! ([Server / Connection / Controller](../../../docs/engineering/architecture/server/connection/controller.md)).
 //! Pure state: no host, no socket, no database.
-use axton_core::{AuthorityRecord, CursorRange, PullPage, limits};
+use axton_core::{AuthorityRecord, ChannelPullPage, CursorRange, limits};
 use axton_server::live::{LiveAction, LiveEvent, Negotiation, Subscriptions};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -25,16 +25,20 @@ fn page(ranges: &[(&str, u64, u64, u64)]) -> String {
     let mut changes = vec![];
     for (channel, from, to, _) in ranges {
         for cursor in (*from + 1..=*to).take(limits::PULL_CHANGES) {
-            changes.push(AuthorityRecord {
-                model: "Task".into(),
-                identity: json!({"id": format!("{channel}-{cursor}")}),
-                stamp: cursor,
-                state: json!(null),
-                error: None,
+            changes.push(axton_core::ChannelChange::Upsert {
+                channel: (*channel).into(),
+                cursor,
+                record: AuthorityRecord {
+                    model: "Task".into(),
+                    identity: json!({"id": format!("{channel}-{cursor}")}),
+                    stamp: cursor,
+                    state: json!(null),
+                    error: None,
+                },
             });
         }
     }
-    let page = PullPage {
+    let page = ChannelPullPage {
         cursors: ranges
             .iter()
             .map(|(c, from, to, head)| {
@@ -240,7 +244,7 @@ fn after_closed_no_event_produces_an_action_and_a_late_page_is_not_sent() {
 fn a_page_that_advances_over_removed_positions_without_changes_is_progress() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
     let holes = String::from_utf8(
-        PullPage {
+        ChannelPullPage {
             cursors: BTreeMap::from([(
                 "a".to_string(),
                 CursorRange {
@@ -308,4 +312,15 @@ fn events_and_actions_cross_the_boundary_as_tagged_json() {
         serde_json::to_value(LiveAction::Listen { scope: "a".into() }).unwrap(),
         json!({"type":"listen","scope":"a"})
     );
+}
+
+#[test]
+fn a_channel_live_removal_advances_and_preserves_its_identity_only_frame() {
+    let (mut session, _) = Subscriptions::open(negotiation(&[("a", 0)]));
+    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","channel":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
+    let actions = session
+        .handle_channel(LiveEvent::Pulled { page: page.clone() })
+        .unwrap();
+    assert_eq!(actions, vec![LiveAction::Send { frame: page }]);
+    assert_eq!(session.scopes()[0].cursor, 8);
 }

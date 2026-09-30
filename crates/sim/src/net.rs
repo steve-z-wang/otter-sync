@@ -2,7 +2,7 @@
 //! duplicate and drop are queue operations. Every message names its client.
 use std::collections::VecDeque;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Message {
     Push {
         client: usize,
@@ -27,19 +27,13 @@ pub enum Message {
     /// ([#151](https://github.com/zanminwang/axton/issues/151)).
     Load {
         client: usize,
-        scope: String,
-        subscription_id: u64,
-        run: u64,
-        after: u64,
+        task: axton_client::BootstrapTask,
         bytes: Vec<u8>,
     },
     /// The page that request was answered with, still carrying its correlation.
     LoadPage {
         client: usize,
-        scope: String,
-        subscription_id: u64,
-        run: u64,
-        after: u64,
+        task: axton_client::BootstrapTask,
         bytes: Vec<u8>,
     },
     PushFailed {

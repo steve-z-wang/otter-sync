@@ -6,7 +6,7 @@ mod common;
 use axton_client::runtime::{BridgeError, ClientRuntime, Event, Input};
 use axton_client::*;
 use axton_sqlite::SqliteStore;
-use common::{key, schema};
+use common::{channel_fixture, key, schema};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -175,7 +175,7 @@ fn authority_hooks_rotate_capabilities_and_commit_after_all_models() {
             {"model":"Alpha","identity":{"id":"e"},"stamp":2,"state":{"text":"alpha","note":null}}
         ]
     });
-    h.task("2", json!({"kind":"pull","page":page}));
+    h.task("2", json!({"kind":"pull","page":channel_fixture(page)}));
     let first = h.run();
     assert_eq!(first.len(), 1, "{first:?}");
     assert_eq!(first[0]["operation"]["kind"], "storeCallback", "{first:?}");
@@ -236,8 +236,8 @@ fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
         );
         h.run();
         common::acknowledge(h.runtime.client(), &[("feed", 0)]);
-        let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
-        h.task("2", json!({"kind":"pull","page":page}));
+        let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+        h.task("2", json!({"kind":"pull","page":channel_fixture(page)}));
         let first = h.run();
         let hook = Open {
             effect: first[0]["effectId"].as_str().unwrap().into(),
@@ -718,7 +718,7 @@ fn authority_rollback_failure_reports_cleanup_and_closes_before_next_write() {
                 &std::collections::BTreeMap::from([("feed".into(), 0)]),
             )
             .unwrap();
-        h.task("owner", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+        h.task("owner", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]}}));
         let first = h.run();
         assert_eq!(first[0]["operation"]["kind"], "storeCallback", "{first:?}");
         let hook = Open {
@@ -1229,7 +1229,7 @@ fn pending_rebuild_drains_old_authority_then_activates_target_hooks() {
         json!({"kind":"channel","channel":"feed","subscribed":true}),
     );
     common::acknowledge(h.runtime.client(), &[("feed", 0)]);
-    h.task("pull", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"model":"Alpha","identity":{"id":"a"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+    h.task("pull", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"feed","cursor":1,"model":"Alpha","identity":{"id":"a"},"stamp":1,"state":{"text":"server","note":null}}]}}));
     let events = h.run();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["operation"]["kind"], "storeCallback");
@@ -2121,7 +2121,7 @@ fn a_store_hook_cannot_submit_a_mutation_or_run_a_local_callback() {
     common::acknowledge(h.runtime.client(), &[("feed", 0)]);
     let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[
         {"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
-    h.task("pull", json!({"kind":"pull","page":page}));
+    h.task("pull", json!({"kind":"pull","page":channel_fixture(page)}));
     let events = h.run();
     assert_eq!(
         events[0]["operation"]["kind"], "storeCallback",

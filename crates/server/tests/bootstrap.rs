@@ -2,7 +2,8 @@
 //! interval `(after, until]` of one channel with the ordinary scan and the
 //! ordinary Loader resolution, and stops at the subscription origin while the
 //! channel head keeps moving ([#151](https://github.com/zanminwang/axton/issues/151)).
-use axton_core::{BootstrapPage, PullPage, limits};
+mod capability;
+use axton_core::{BootstrapPage, limits};
 use axton_server::{Config, Host, HostResult, code, host::HostRequest};
 use serde_json::{Value, json};
 use std::{
@@ -172,11 +173,11 @@ fn bootstrap(host: &Scoped, after: u64, until: u64) -> BootstrapPage {
     let text = run(axton_server::process_pull(
         &config(),
         "u",
-        &body(after, until),
+        &crate::capability::request(&body(after, until)),
         host,
     ))
     .unwrap();
-    BootstrapPage::decode(text.as_bytes()).unwrap()
+    capability::bootstrap(text.as_bytes()).unwrap()
 }
 fn ids(page: &BootstrapPage) -> Vec<String> {
     page.records
@@ -209,7 +210,7 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 
 #[test]
 fn a_full_scan_below_the_origin_is_nonterminal_and_stops_at_its_last_cursor() {
-    let rows: Vec<Value> = (1..=limits::PULL_CHANGES as u64)
+    let rows: Vec<Value> = (1..=limits::PULL_CHANGES as u64 + 1)
         .map(|i| entry(i, &format!("e{i}"), i))
         .collect();
     let host = Scoped::new(400, rows);
@@ -219,14 +220,17 @@ fn a_full_scan_below_the_origin_is_nonterminal_and_stops_at_its_last_cursor() {
     assert_eq!(page.records.len(), limits::PULL_CHANGES);
     assert_eq!(
         *host.scans.lock().unwrap(),
-        [("a".to_string(), 0, limits::PULL_CHANGES as u64)],
+        [
+            ("a".to_string(), 0, limits::PULL_CHANGES as u64),
+            ("a".to_string(), 50, 1)
+        ],
         "one bounded scan per page"
     );
     // The next page starts where this one stopped and finishes the interval.
     let next = bootstrap(&host, page.to, 100);
     assert_eq!((next.from, next.to), (limits::PULL_CHANGES as u64, 100));
     assert!(next.terminal());
-    assert!(next.records.is_empty());
+    assert_eq!(next.records.len(), 1);
 }
 
 #[test]
@@ -288,7 +292,7 @@ fn an_origin_above_the_head_is_refused() {
     let err = run(axton_server::process_pull(
         &config(),
         "u",
-        &body(0, 100),
+        &crate::capability::request(&body(0, 100)),
         &host,
     ))
     .unwrap_err();
@@ -304,7 +308,7 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
         run(axton_server::process_pull(
             &config(),
             "u",
-            raw.to_string().as_bytes(),
+            &crate::capability::request(raw.to_string().as_bytes()),
             &host,
         ))
     };
@@ -344,7 +348,7 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
     let err = run(axton_server::process_pull(
         &config(),
         " ",
-        &body(0, 1),
+        &crate::capability::request(&body(0, 1)),
         &host,
     ))
     .unwrap_err();
@@ -359,7 +363,7 @@ fn a_page_holding_a_model_the_client_did_not_declare_is_refused() {
     let err = run(axton_server::process_pull(
         &config(),
         "u",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap_err();
@@ -395,8 +399,14 @@ fn both_pull_modes_resolve_records_through_the_same_grouped_loader_helper() {
     .encode()
     .unwrap();
     let host = Scoped::new(140, rows.clone());
-    let text = run(axton_server::process_pull(&config(), "u", &ordinary, &host)).unwrap();
-    let delta = PullPage::decode(text.as_bytes()).unwrap();
+    let text = run(axton_server::process_pull(
+        &config(),
+        "u",
+        &crate::capability::request(&ordinary),
+        &host,
+    ))
+    .unwrap();
+    let delta = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(delta.changes, page.records, "one resolution for both modes");
     // A refusal isolates the record in either mode, with the refusal code.
     let mut refusing = Scoped::new(140, rows);
@@ -433,7 +443,7 @@ fn a_malformed_scan_row_fails_the_request() {
         let err = run(axton_server::process_pull(
             &config(),
             "u",
-            &body(0, 100),
+            &crate::capability::request(&body(0, 100)),
             &host,
         ))
         .unwrap_err();
@@ -444,7 +454,7 @@ fn a_malformed_scan_row_fails_the_request() {
     let err = run(axton_server::process_pull(
         &config(),
         "u",
-        &body(0, 100),
+        &crate::capability::request(&body(0, 100)),
         &host,
     ))
     .unwrap_err();
@@ -483,12 +493,24 @@ fn the_ordinary_pull_page_is_unchanged() {
                     HostRequest::Head { channel } => {
                         json!(if channel == "a" { 80 } else { 9 })
                     }
-                    HostRequest::Scan { channel, .. } if channel == "a" => Value::Array(
-                        (1..=limits::PULL_CHANGES as u64)
+                    HostRequest::Scan {
+                        channel,
+                        after,
+                        limit,
+                    } if channel == "a" => Value::Array(
+                        (1..=limits::PULL_CHANGES as u64 + 1)
+                            .filter(|i| i > after)
+                            .take(*limit as usize)
                             .map(|i| entry(i, &format!("e{i}"), i))
                             .collect(),
                     ),
-                    HostRequest::Scan { .. } => json!([row("b", 9, "Note", "n", 4)]),
+                    HostRequest::Scan { after, .. } => {
+                        if *after < 9 {
+                            json!([row("b", 9, "Note", "n", 4)])
+                        } else {
+                            json!([])
+                        }
+                    }
                     HostRequest::Load {
                         model, identities, ..
                     } => Value::Array(
@@ -513,30 +535,109 @@ fn the_ordinary_pull_page_is_unchanged() {
     }
     .encode()
     .unwrap();
-    let text = run(axton_server::process_pull(&config(), "u", &request, &Fixed)).unwrap();
-    let page = PullPage::decode(text.as_bytes()).unwrap();
+    let text = run(axton_server::process_pull(
+        &config(),
+        "u",
+        &crate::capability::request(&request),
+        &Fixed,
+    ))
+    .unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.cursors["a"].to, limits::PULL_CHANGES as u64);
     assert_eq!(page.cursors["a"].head, 80);
     assert!(page.cursors["a"].continues());
     assert_eq!(page.cursors["b"].to, 9);
     assert_eq!(page.changes.len(), limits::PULL_CHANGES + 1);
     assert!(page.changes[0].state.is_null(), "a tombstone is a deletion");
-    assert_eq!(
-        text,
-        String::from_utf8(page.encode().unwrap()).unwrap(),
-        "the page the engine emits is canonical"
-    );
-    // Byte-for-byte: the pinned prefix and suffix of the ordinary page.
+    let channel = axton_core::ChannelPullPage::decode(text.as_bytes()).unwrap();
+    assert_eq!(text, String::from_utf8(channel.encode().unwrap()).unwrap());
     assert!(
-        text.starts_with(
-            r#"{"changes":[{"identity":{"id":"e1"},"model":"Entry","stamp":1,"state":null},"#
-        ),
-        "{text}"
+        channel
+            .changes
+            .iter()
+            .all(|c| matches!(c, axton_core::ChannelChange::Upsert { .. }))
     );
-    assert!(
-        text.ends_with(
-            r#"{"identity":{"id":"n"},"model":"Note","stamp":4,"state":{"body":"b"}}],"cursors":{"a":{"from":0,"head":80,"to":50},"b":{"from":0,"head":9,"to":9}}}"#
-        ),
-        "{text}"
+}
+
+fn channel_page(host: &Scoped, request: Value) -> Value {
+    serde_json::from_str(
+        &run(axton_server::process_channel_pull(
+            &config(),
+            "alice",
+            &crate::capability::request(&serde_json::to_vec(&request).unwrap()),
+            host,
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+fn removed(cursor: u64, id: &str) -> Value {
+    let mut row = entry(cursor, id, 1);
+    row["kind"] = json!("remove");
+    row
+}
+#[test]
+fn channel_pages_keep_mixed_changes_and_each_channels_provenance_with_one_loader_read() {
+    let host = Scoped::new(
+        9,
+        vec![
+            entry(2, "e", 3),
+            removed(7, "gone"),
+            row("b", 8, "Entry", "e", 3),
+        ],
     );
+    let page = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
+    assert_eq!(page["changes"].as_array().unwrap().len(), 3);
+    assert_eq!(page["changes"][1]["kind"], "remove");
+    assert_eq!(page["changes"][2]["channel"], "b");
+    assert_eq!(host.loaded(), vec![("Entry".into(), vec!["e".into()])]);
+}
+#[test]
+fn channel_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
+    for bootstrap in [false, true] {
+        let host = Scoped::new(
+            100,
+            (1..=50).map(|i| removed(i, &format!("e{i}"))).collect(),
+        );
+        let request = if bootstrap {
+            json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90})
+        } else {
+            json!({"models":{"Entry":1},"cursors":{"a":0}})
+        };
+        let page = channel_page(&host, request);
+        assert_eq!(page["changes"].as_array().unwrap().len(), 50);
+        assert_eq!(
+            if bootstrap {
+                &page["to"]
+            } else {
+                &page["cursors"]["a"]["to"]
+            },
+            &json!(if bootstrap { 90 } else { 100 })
+        );
+        assert!(host.loaded().is_empty());
+    }
+}
+#[test]
+fn channel_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
+    let host = Scoped::new(
+        100,
+        (1..=51)
+            .map(|i| removed(i, &format!("e{i}")))
+            .chain([entry(100, "moved", 4)])
+            .collect(),
+    );
+    let first = channel_page(
+        &host,
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90}),
+    );
+    assert_eq!(first["to"], 50);
+    let second = channel_page(
+        &host,
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":50,"until":90}),
+    );
+    assert_eq!(second["to"], 90);
+    assert_eq!(second["changes"].as_array().unwrap().len(), 1);
+    assert!(host.loaded().is_empty());
+    let delta = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
+    assert_eq!(delta["changes"][0]["identity"]["id"], "moved");
 }

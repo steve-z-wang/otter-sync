@@ -18,10 +18,12 @@
 //! that escaped its transaction, to [`encode_load_batch`], which classifies
 //! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
+use crate::channel_members::declared_tags;
 use crate::host::{
-    Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, MembershipIntent, Stamps,
+    Acknowledged, ChannelIntent, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef,
+    Stamps,
 };
-use crate::settlement::{Changes, settle_changes};
+use crate::settlement::{Changes, invalid_tags, lock_channels, settle_locked};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -42,12 +44,19 @@ const ORDINAL: u64 = 1;
 /// [`process_load`]. Unknown operations and invalid arguments or continuation
 /// state are not refused here; they fail only their own item.
 pub fn validate_load_batch(bytes: &[u8]) -> Result<Vec<String>> {
+    crate::admit_protocol(bytes)?;
     LoadBatchRequest::decode_envelope(bytes)
         .map_err(request_invalid)?
         .loads
         .iter()
         .map(|item| {
-            canonical_json(&serde_json::to_value(item).map_err(internal)?).map_err(internal)
+            let encoded = serde_json::to_vec(item).map_err(internal)?;
+            let capable = axton_core::with_capabilities(
+                &encoded,
+                &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
+            )
+            .map_err(internal)?;
+            String::from_utf8(capable).map_err(internal)
         })
         .collect()
 }
@@ -64,6 +73,7 @@ pub async fn process_load(
     item: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(item)?;
     principal(owner)?;
     let intent = decode_item(item)?;
     let request = fingerprint(&intent)?;
@@ -74,14 +84,14 @@ pub async fn process_load(
             request: request.clone(),
         })
         .await?;
-    if claimed.request != request {
+    if !crate::calls::same_logical_request(&claimed.request, &request)? {
         return encode(&failed(&intent, &Error::code(code::CALL_IDENTITY_CONFLICT)));
     }
     if !claimed.fresh {
         let saved = claimed
             .response
             .ok_or_else(|| storage_invalid("committed call has no response"))?;
-        let page: LoadPageResponse = serde_json::from_str(&saved).map_err(storage_invalid)?;
+        let page = decode_saved_page(&saved)?;
         if !page.answers(&intent) {
             return Err(storage_invalid("saved Load page answers another request"));
         }
@@ -126,6 +136,7 @@ pub async fn process_load(
 /// One item under the batch's own structural rules.
 fn decode_item(item: &[u8]) -> Result<LoadIntent> {
     let item: Value = serde_json::from_slice(item).map_err(request_invalid)?;
+    let item = axton_core::logical_request(&item).map_err(request_invalid)?;
     let envelope = serde_json::to_vec(&json!({ "loads": [item] })).map_err(internal)?;
     let mut request = LoadBatchRequest::decode_envelope(&envelope).map_err(request_invalid)?;
     Ok(request.loads.remove(0))
@@ -256,15 +267,23 @@ async fn execute_fresh(
     // Judged before any read: an enrollment the page may not declare costs
     // no stamp or Loader work.
     let memberships = validate_enrollment(config, &data_keys, memberships)?;
+    // Every membership writer locks its Channels before any record row:
+    // `readStamps` below may insert a record's metadata row.
+    let channels: BTreeSet<String> = memberships
+        .iter()
+        .map(|intent| intent.channel().to_string())
+        .collect();
+    lock_channels(&channels, host).await?;
     let mut records = vec![];
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
     }
-    let page = LoadPageResponse {
+    let mut page = LoadPageResponse {
         load_id: intent.load_id.clone(),
         call_id: intent.call_id.clone(),
         outcome: LoadOutcome::Succeeded { data, next },
         records,
+        memberships: Vec::new(),
     };
     let bytes = encode(&page)?.len();
     if bytes > limits::LOAD_PAGE_BYTES {
@@ -291,40 +310,63 @@ async fn execute_fresh(
     // The page is final. Its enrollment settles as an external transaction's
     // unchanged records do: a new member keeps the stamp `resolve` read (and
     // initialized) for this page and gains one position at it; an existing
-    // one publishes nothing. No loaded record is touched. A host fault here
-    // escapes the page transaction like any other.
-    settle_changes(config, &Changes::new(), &memberships, host).await?;
+    // one publishes nothing. No loaded record is touched. Its Channels are
+    // already locked, before the page's reads. A host fault here escapes the
+    // page transaction like any other.
+    let settled = settle_locked(config, &Changes::new(), &memberships, &channels, host).await?;
+    page.memberships = settled.claims(config, &memberships, &page.records)?;
+    page.clone()
+        .normalize(&config.schema, intent)
+        .map_err(|e| Error::new(code::LOAD_PAGE_TOO_LARGE, e.message))?;
     Ok(page)
 }
 
-/// The page's enrollment as canonical, distinct Channel/record additions.
-/// Each intent must add (`present`) to a named Channel a record of a loaded
-/// Model, under a valid identity, that the page's validated outputs name:
+/// The page's enrollment as canonical additions, preserving each declaration.
+/// Each intent must `add` to a named Channel a record of a loaded Model,
+/// under a valid identity, that the page's validated outputs name:
 /// `data_keys` holds their canonical keys. Repeated pairs count once toward
 /// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
-/// and validation stops at the first pair past either bound.
+/// a pair measuring its canonical add intent with its tags, and validation
+/// stops at the first pair past either bound. A repeated pair unions its tags
+/// for accounting, in declaration order, and is measured again. Settlement
+/// receives the validated declarations so that an accumulated union is never
+/// mistaken for one add. Tags follow
+/// the add rules ([`declared_tags`]). A removal or tag selector is refused.
 fn validate_enrollment(
     config: &Config,
     data_keys: &BTreeSet<String>,
-    memberships: Vec<MembershipIntent>,
-) -> Result<Vec<MembershipIntent>> {
+    memberships: Vec<ChannelIntent>,
+) -> Result<Vec<ChannelIntent>> {
     let invalid = |message: String| Error::new(code::HANDLER_INVALID, message);
     let too_large = |message: String| Error::new(code::LOAD_PAGE_TOO_LARGE, message);
-    let mut pairs: BTreeMap<(String, String), MembershipIntent> = BTreeMap::new();
+    let mut pairs: BTreeMap<(String, String), ChannelIntent> = BTreeMap::new();
     let mut bytes = 0;
+    let mut declarations = vec![];
     for intent in memberships {
-        if !intent.present {
-            return Err(invalid(format!(
-                "a Load only adds records to Channels; it removes {} from {}",
-                intent.model, intent.channel
-            )));
-        }
-        if axton_core::check_channel(&intent.channel).is_err() {
+        let (channel, record, tags) = match intent {
+            ChannelIntent::Add {
+                channel,
+                record,
+                tags,
+            } => (channel, record, tags),
+            ChannelIntent::Remove { channel, record } => {
+                return Err(invalid(format!(
+                    "a Load only adds records to Channels; it removes {} from {channel}",
+                    record.model
+                )));
+            }
+            ChannelIntent::RemoveTag { channel, tag } => {
+                return Err(invalid(format!(
+                    "a Load only adds records to Channels; it removes tag {tag} from {channel}"
+                )));
+            }
+        };
+        if axton_core::check_channel(&channel).is_err() {
             return Err(invalid("Load enrollment names a blank Channel".into()));
         }
         let key = config
             .schema
-            .record_key(&intent.model, &intent.identity)
+            .record_key(&record.model, &record.identity)
             .map_err(|error| invalid(error.to_string()))?;
         if !config.loaders.contains(&key.model) {
             return Err(crate::settlement::unregistered(&key.model));
@@ -336,19 +378,55 @@ fn validate_enrollment(
                 key.model, key.identity
             )));
         }
-        let Entry::Vacant(pair) = pairs.entry((intent.channel.clone(), encoded)) else {
-            continue;
+        declared_tags(&tags).map_err(|reason| invalid_tags(&channel, reason))?;
+        // Distinct, in first-declaration order, as the collector measures them.
+        let mut distinct: Vec<String> = vec![];
+        for tag in tags {
+            if !distinct.contains(&tag) {
+                distinct.push(tag);
+            }
+        }
+        // Settlement must see validated declarations, never their larger union.
+        declarations.push(ChannelIntent::Add {
+            channel: channel.clone(),
+            record: RecordRef {
+                model: key.model.clone(),
+                identity: key.identity.clone(),
+            },
+            tags: distinct.clone(),
+        });
+        let measure = |intent: &ChannelIntent| -> Result<usize> {
+            Ok(
+                canonical_json(&serde_json::to_value(intent).map_err(internal)?)
+                    .map_err(internal)?
+                    .len(),
+            )
         };
-        let canonical = MembershipIntent {
-            channel: intent.channel,
-            model: key.model,
-            identity: key.identity,
-            present: true,
-        };
-        bytes += canonical_json(&serde_json::to_value(&canonical).map_err(internal)?)
-            .map_err(internal)?
-            .len();
-        pair.insert(canonical);
+        match pairs.entry((channel.clone(), encoded)) {
+            Entry::Vacant(pair) => {
+                let canonical = ChannelIntent::Add {
+                    channel,
+                    record: RecordRef {
+                        model: key.model,
+                        identity: key.identity,
+                    },
+                    tags: distinct,
+                };
+                bytes += measure(&canonical)?;
+                pair.insert(canonical);
+            }
+            Entry::Occupied(mut pair) => {
+                let before = measure(pair.get())?;
+                if let ChannelIntent::Add { tags: held, .. } = pair.get_mut() {
+                    for tag in distinct {
+                        if !held.contains(&tag) {
+                            held.push(tag);
+                        }
+                    }
+                }
+                bytes = bytes - before + measure(pair.get())?;
+            }
+        }
         if pairs.len() > limits::LOAD_ENROLLMENT_PAIRS {
             return Err(too_large(format!(
                 "Load page enrolls more than {} Channel/record pairs",
@@ -362,7 +440,7 @@ fn validate_enrollment(
             )));
         }
     }
-    Ok(pairs.into_values().collect())
+    Ok(declarations)
 }
 
 /// The handler's `next` member as a continuation: `null` or exactly
@@ -459,6 +537,7 @@ fn failed(intent: &LoadIntent, error: &Error) -> LoadPageResponse {
             error: LoadError::bounded(error.code.clone(), error.message.clone()),
         },
         records: vec![],
+        memberships: Vec::new(),
     }
 }
 
@@ -471,6 +550,7 @@ fn current(
     page: LoadPageResponse,
 ) -> Result<LoadPageResponse> {
     Ok(LoadPageResponse {
+        memberships: crate::settlement::current_claims(config, page.memberships)?,
         records: page
             .records
             .into_iter()
@@ -545,6 +625,12 @@ pub fn load_fault_outcome(fault: &LoadFault) -> LoadOutcome {
             code::SERVER_UNAVAILABLE,
             "the page transaction did not complete; resend the same call ID",
         ),
+        // Settlement found its Channel locks outdated and the carrier's
+        // retries ran out: a conflict like any other.
+        LoadFault::Engine { code, .. } if code == code::TRANSACTION_CONFLICT => retryable(
+            code::TRANSACTION_CONFLICT,
+            "the page transaction kept conflicting; resend it",
+        ),
         LoadFault::Engine { code, message } => LoadOutcome::Failed {
             error: LoadError::bounded(code.clone(), message.clone()),
         },
@@ -584,6 +670,7 @@ pub fn encode_load_batch(items: &[String], answers: Vec<LoadItemAnswer>) -> Resu
             call_id: intent.call_id.clone(),
             outcome,
             records: vec![],
+            memberships: Vec::new(),
         };
         loads.push(match answer {
             LoadItemAnswer::Fault(fault) => unsaved(load_fault_outcome(&fault)),
@@ -622,4 +709,29 @@ fn answered_page(intent: &LoadIntent, page: &str) -> Result<LoadPageResponse> {
         }
     }
     Ok(page)
+}
+
+/// Only the durable ledger can contain a pre-capability response. Its absent
+/// claims remain absent; replay never executes enrollment to fill them in.
+fn decode_saved_page(saved: &str) -> Result<LoadPageResponse> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LegacyPage {
+        load_id: String,
+        call_id: String,
+        outcome: LoadOutcome,
+        records: Vec<AuthorityRecord>,
+    }
+    let raw: Value = serde_json::from_str(saved).map_err(storage_invalid)?;
+    if raw.get("memberships").is_some() {
+        return serde_json::from_value(raw).map_err(storage_invalid);
+    }
+    let legacy: LegacyPage = serde_json::from_value(raw).map_err(storage_invalid)?;
+    Ok(LoadPageResponse {
+        load_id: legacy.load_id,
+        call_id: legacy.call_id,
+        outcome: legacy.outcome,
+        records: legacy.records,
+        memberships: vec![],
+    })
 }

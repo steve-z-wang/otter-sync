@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 pub struct ActionResponse {
     pub completion: CallCompletion,
     pub records: Vec<AuthorityRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memberships: Vec<axton_core::MembershipClaim>,
 }
 
 fn rejected(call_id: &str, code: &str) -> ActionResponse {
@@ -32,12 +34,14 @@ fn rejected(call_id: &str, code: &str) -> ActionResponse {
             },
         },
         records: vec![],
+        memberships: vec![],
     }
 }
 
 /// Whether an execution error is the call's own terminal rejection, saved as
-/// its outcome, rather than a host, storage or request failure that aborts the
-/// application transaction. Direct Actions and Fetch share this classification.
+/// its outcome, rather than a host, storage or request failure or a
+/// transaction conflict that aborts the application transaction. Direct
+/// Actions and Fetch share this classification.
 pub(crate) fn call_error(error: &Error) -> bool {
     !matches!(
         error.code.as_str(),
@@ -46,6 +50,7 @@ pub(crate) fn call_error(error: &Error) -> bool {
             | code::STORAGE_INVALID
             | code::INTERNAL
             | code::REQUEST_INVALID
+            | code::TRANSACTION_CONFLICT
     )
 }
 
@@ -75,6 +80,11 @@ pub(crate) fn current_authority(
     let contract = config
         .contract(&record.model, version)
         .ok_or_else(|| storage_invalid("authority read contract not retained"))?;
+    record.identity = config
+        .schema
+        .record_key(&record.model, &record.identity)
+        .map_err(storage_invalid)?
+        .identity;
     if !record.state.is_null() {
         let mut state = record
             .state
@@ -111,7 +121,7 @@ pub async fn execute_action(
     let request = canonical_intent(call, models)?;
     match calls::claim(owner, &call.call_id, &request, host).await? {
         Claim::Conflict => return Ok(rejected(&call.call_id, "call.identity_conflict")),
-        Claim::Replay(saved) => return serde_json::from_str(&saved).map_err(storage_invalid),
+        Claim::Replay(saved) => return decode_saved_action(&saved),
         Claim::Fresh => {}
     }
     let (response, _) = calls::complete(
@@ -137,6 +147,7 @@ pub async fn process_action(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = DirectActionRequest::decode_envelope(bytes).map_err(request_invalid)?;
     let response = execute_action(config, owner, &request.call, &request.models, 1, host).await?;
@@ -147,6 +158,7 @@ pub async fn process_action(
             .into_iter()
             .map(|record| current_authority(config, &request.models, record))
             .collect::<Result<Vec<_>>>()?,
+        memberships: settlement::current_claims(config, response.memberships)?,
     };
     String::from_utf8(response.encode().map_err(internal)?).map_err(internal)
 }
@@ -252,6 +264,7 @@ async fn execute_fresh(
             call_id: call.call_id.clone(),
             outcome: ActionOutcome::Succeeded { result },
         },
+        memberships: stamps.claims(config, &memberships, &records)?,
         records,
     })
 }
@@ -310,6 +323,7 @@ pub async fn process_action_push(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = PushRequest::decode_action_envelope(bytes).map_err(request_invalid)?;
     let locked: Claimed = host
@@ -337,6 +351,7 @@ pub async fn process_action_push(
     }
     let mut rejections = vec![];
     let mut completions = vec![];
+    let mut claims = BTreeMap::new();
     let mut authority: BTreeMap<String, AuthorityRecord> = BTreeMap::new();
     for mutation in &request.mutations {
         let mut call: ActionIntent =
@@ -356,6 +371,18 @@ pub async fn process_action_push(
                 ordinal: mutation.ordinal,
                 code: code.clone(),
             });
+        }
+        for claim in settlement::current_claims(config, response.memberships)? {
+            let key = (
+                claim.channel.clone(),
+                claim.key().encoded().map_err(internal)?,
+            );
+            if claims
+                .get(&key)
+                .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
+            {
+                claims.insert(key, claim);
+            }
         }
         completions.push(response.completion);
         for record in response.records {
@@ -383,6 +410,7 @@ pub async fn process_action_push(
         rejections,
         completions,
         records: authority.into_values().collect(),
+        memberships: claims.into_values().collect(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host
@@ -394,4 +422,25 @@ pub async fn process_action_push(
         })
         .await?;
     Ok(text)
+}
+
+/// Explicit compatibility is confined to saved outcomes, never fresh channel
+/// frames. Historical outcomes carry no enrollment evidence.
+fn decode_saved_action(saved: &str) -> Result<ActionResponse> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyAction {
+        completion: CallCompletion,
+        records: Vec<AuthorityRecord>,
+    }
+    let raw: Value = serde_json::from_str(saved).map_err(storage_invalid)?;
+    if raw.get("memberships").is_some() {
+        return serde_json::from_value(raw).map_err(storage_invalid);
+    }
+    let legacy: LegacyAction = serde_json::from_value(raw).map_err(storage_invalid)?;
+    Ok(ActionResponse {
+        completion: legacy.completion,
+        records: legacy.records,
+        memberships: vec![],
+    })
 }

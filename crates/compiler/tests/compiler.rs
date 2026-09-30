@@ -511,8 +511,16 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
     assert!(ts.contains("export type RecordRef = { readonly model: \"Todo\"; readonly identity: TodoIdentity } | { readonly model: \"Pin\"; readonly identity: PinIdentity };\n"), "{ts}");
     assert!(ts.contains("export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: \"Todo\" }> { return { model: \"Todo\", identity }; }"), "{ts}");
     assert!(ts.contains("export function Pin(identity: PinIdentity): Extract<RecordRef, { model: \"Pin\" }> { return { model: \"Pin\", identity }; }"), "{ts}");
-    assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{ts}");
+    assert!(
+        ts.contains("export type MembershipOptions = { readonly tags?: readonly string[] };\n"),
+        "{ts}"
+    );
+    assert!(
+        ts.contains("export type TagSelector = { readonly tag: string };\n"),
+        "{ts}"
+    );
+    assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
     assert!(ts.contains("export interface Touch {\n todo(identity: TodoIdentity): void;\n pin(identity: PinIdentity): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
@@ -550,7 +558,7 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{empty}");
+    assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{empty}");
     assert!(empty.contains("export interface Touch {\n}\n"), "{empty}");
 }
 
@@ -984,6 +992,8 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "Channel",
         "Touch",
         "ModelMembership",
+        "MembershipOptions",
+        "TagSelector",
         "RecordRef",
         "HandlerCall",
         "TransactionCall",

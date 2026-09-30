@@ -21,8 +21,12 @@ export type Placement = PlacementRecord;
 export type { PlacementIdentity, PlacementPatch };
 export function Placement(identity: PlacementIdentity): Extract<RecordRef, { model: "Placement" }> { return { model: "Placement", identity }; }
 export type RecordRef = { readonly model: "Todo"; readonly identity: TodoIdentity } | { readonly model: "Note"; readonly identity: NoteIdentity } | { readonly model: "Composition"; readonly identity: CompositionIdentity } | { readonly model: "Entry"; readonly identity: EntryIdentity } | { readonly model: "Media"; readonly identity: MediaIdentity } | { readonly model: "Placement"; readonly identity: PlacementIdentity };
+/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */
+export type MembershipOptions = { readonly tags?: readonly string[] };
+/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */
+export type TagSelector = { readonly tag: string };
 export interface ModelMembership<Identity> {
- add(identity: Identity): void;
+ add(identity: Identity, options?: MembershipOptions): void;
  remove(identity: Identity): void;
 }
 export interface Channel {
@@ -32,8 +36,9 @@ export interface Channel {
  entry: ModelMembership<EntryIdentity>;
  media: ModelMembership<MediaIdentity>;
  placement: ModelMembership<PlacementIdentity>;
- add(records: readonly RecordRef[]): void;
+ add(records: readonly RecordRef[], options?: MembershipOptions): void;
  remove(records: readonly RecordRef[]): void;
+ remove(selector: TagSelector): void;
 }
 export interface Touch {
  todo(identity: TodoIdentity): void;

@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { prisma } from "../../packages/postgres/index.mts";
+import { sqlStatements } from "../../packages/postgres/src/statements.mts";
 import {
   createBackend,
   CallRejected,
@@ -128,8 +129,8 @@ export async function createExample() {
         new URL("../../packages/postgres/migration.sql", import.meta.url),
         "utf8",
       );
-      for (const sql of migration.split(";").map((s) => s.trim()).filter(Boolean))
-        await db.$executeRawUnsafe(sql);
+      // Prisma runs one statement per call.
+      for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "User" (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
       );

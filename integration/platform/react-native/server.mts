@@ -6,6 +6,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
 import { prisma } from "../../../packages/postgres/index.mts";
+import { sqlStatements } from "../../../packages/postgres/src/statements.mts";
 import {
   createBackend,
   devAuth,
@@ -53,11 +54,8 @@ const migration = await readFile(
   ),
   "utf8",
 );
-for (const sql of migration
-  .split(";")
-  .map((x) => x.trim())
-  .filter(Boolean))
-  await db.$executeRawUnsafe(sql);
+// Prisma runs one statement per call.
+for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
 await db.$executeRawUnsafe(
   'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
 );

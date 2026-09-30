@@ -208,9 +208,11 @@ import { Todo, type MutationContext } from './generated/backend.ts';
 
 function organize(ctx: MutationContext<unknown>) {
   const board = ctx.channel('board:1');
-  board.todo.add({ id: 'todo-1' });
+  board.todo.add({ id: 'todo-1' }, { tags: ['X', 'Y'] });
   board.todo.remove({ id: 'todo-2' });
-  board.add([Todo({ id: 'todo-3' }), Todo({ id: 'todo-4' })]);
+  board.add([Todo({ id: 'todo-3' }), Todo({ id: 'todo-4' })], { tags: ['X'] });
+  board.remove([Todo({ id: 'todo-2' })]);
+  board.remove({ tag: 'X' });
   ctx.touch.todo({ id: 'todo-5' });
 }
 ```
@@ -218,19 +220,23 @@ function organize(ctx: MutationContext<unknown>) {
 | Interface | Shape |
 | --- | --- |
 | `ctx.channel(name)` | `Channel`: a handle for the Channel named `name`; it creates nothing, sends nothing and checks no subscriber |
-| `channel.todo.add(identity)`, `channel.todo.remove(identity)` | `ModelMembership<TodoIdentity>`, one per Model |
-| `channel.add(records)`, `channel.remove(records)` | `(records: readonly RecordRef[]) => void`, for several Models at once |
+| `channel.todo.add(identity, options?)`, `channel.todo.remove(identity)` | `ModelMembership<TodoIdentity>`, one per Model |
+| `channel.add(records, options?)`, `channel.remove(records)` | Mixed `readonly RecordRef[]` forms |
+| `channel.remove({ tag })` | Remove every whole membership matching this Channel-scoped label |
+| `MembershipOptions` | `{ readonly tags?: readonly string[] }` |
 | `ctx.touch.todo(identity)` | `Touch`: declare a changed record, one method per Model |
 | `RecordRef` | The generated union `{ model: 'Todo', identity: TodoIdentity } \| …` |
 | Generated reference function | `Todo(identity: TodoIdentity)`, the only way to put a record in a mixed list |
 
 Every call is synchronous and returns nothing. It validates at the call and copies only the identity fields, so `channel.todo.add(args.todo)` works and later edits to the passed object change nothing. A mixed list is checked whole before anything is declared; an untagged `{ id }` cannot name its Model and fails. The channel name must be nonblank. The handles work only while the handler runs: a handle kept after it returns, or after it throws, refuses every call. Returning from the handler commits nothing yet; if the call is later rejected, its declarations roll back with it.
 
-- **Adding** a record that is not a member delivers its current state to the Channel, even when nothing changed. Adding a member does nothing.
-- **Removing** a member stops later deliveries there. Clients keep the rows they have, and no removal event is sent; a response already on its way may still arrive. Removing a non-member does nothing.
-- **The last declaration wins** for each Channel and record in one call: removing then re-adding a member, or adding then removing a non-member, changes nothing.
+- **Adding** ensures membership and unions the supplied tags. A new member publishes its current state; adding tags to an existing member publishes nothing. Omitting tags or passing `[]` creates no extra retention reason.
+- **Removing** a member publishes an identity-only release. Clients keep a replicated base while another current Channel holds it; releasing the last hold evicts that base while preserving pending and device-local work. Removing an absent member or unmatched tag allocates no cursor. Tags never travel to clients.
+- **Selecting a tag** removes the whole membership, including every other tag on it: removing X releases both A/X/Y and B/X, while C/Y remains. Tags are selection labels, never grants or reference counts. The application must decide overlapping-source retention before removing. Removing and later adding a membership starts its tags afresh.
+- **Tag names** are case-sensitive opaque strings: nonblank, at most 256 UTF-8 bytes, with at most 64 distinct tags per add. Accepted spelling is preserved; declarations copy and deduplicate caller arrays.
+- **Declaration order matters.** A tag selector sees earlier additions in the same callback. Settlement emits at most one final event per Channel/record: existing member → remove → add publishes one upsert; initially absent → add → remove publishes nothing. A tag-only change publishes nothing.
 - **Touching** gives the record a new stamp once per call, however often it is declared, and delivers it to every Channel it is a member of. A record with no membership is still stamped but reaches no Channel.
-- **Deletion** is a change: touch the deleted record (or delete it through a Model input) and leave it enrolled, so its Loader answers `null` in each Channel and subscribers delete it. A record deleted and removed from a Channel in the same call sends that Channel nothing. Membership belongs to the identity, so a record later created again with the same identity is delivered to the same Channels; use a new identity, or remove the old memberships, for a fresh lifecycle.
+- **Deletion** is a change: touch the deleted record (or delete it through a Model input) and leave it enrolled, so its Loader answers `null` in each Channel and subscribers delete it. A record deleted and removed from a Channel in the same call sends that Channel a release, rather than authoritative null. Membership belongs to the identity, so a record later created again with the same identity is delivered to the same Channels; use a new identity, or remove the old memberships, for a fresh lifecycle.
 
 Which code can declare what:
 

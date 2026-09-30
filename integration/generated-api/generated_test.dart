@@ -303,7 +303,7 @@ void main(){
     // Only a bootstrap page is expected here, and the test transport holds it.
     loads.add(body);
     await held.future;
-    request.response.write(jsonEncode({'mode':'bootstrap','channel':body['channel'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'records':<Object>[]}));
+    request.response.write(jsonEncode({'mode':'bootstrap','channel':body['channel'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'changes':<Object>[]}));
     await request.response.close();
     return;
    }

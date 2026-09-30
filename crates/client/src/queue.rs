@@ -46,6 +46,7 @@ pub struct LocalWrite {
 }
 #[derive(Clone, Debug)]
 pub struct Queued {
+    pub store_token: crate::StoreToken,
     pub ordinal: u64,
     pub push: Option<u64>,
     /// A replay of one of its operations failed over newer authority; the
@@ -208,9 +209,10 @@ impl<S: ClientStore> Engine<'_, S> {
             .as_ref()
             .map(canonical_json)
             .transpose()?;
+        let token = self.store_token()?;
         self.exec(
             "axton_mutation",
-            "INSERT INTO axton_mutation (ordinal, name, version, push, call_id, args, store) VALUES (?,?,?,NULL,?,?,?)",
+            "INSERT INTO axton_mutation (ordinal, name, version, push, call_id, args, store, store_epoch) VALUES (?,?,?,NULL,?,?,?,?)",
             &[
                 json!(ordinal),
                 json!(mutation.name),
@@ -218,6 +220,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 mutation.call_id.as_ref().map_or(Value::Null, |v| json!(v)),
                 args.map_or(Value::Null, Value::String),
                 store.map_or(Value::Null, Value::String),
+                json!(token.epoch),
             ],
         )?;
         for (position, (kind, op)) in (0u64..).zip(ordered) {
@@ -351,7 +354,7 @@ impl<S: ClientStore> Engine<'_, S> {
     pub(crate) fn queued_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<Queued>> {
         let mutations = self.rows(
             &format!(
-                "SELECT ordinal, name, version, push, diverged, call_id, args, store FROM axton_mutation {filter} ORDER BY ordinal"
+                "SELECT ordinal, name, version, push, diverged, call_id, args, store, store_epoch FROM axton_mutation {filter} ORDER BY ordinal"
             ),
             params,
         )?;
@@ -409,6 +412,9 @@ impl<S: ClientStore> Engine<'_, S> {
                 mutation.prerequisites.push(text(&p[1]));
             }
             result.push(Queued {
+                store_token: crate::StoreToken {
+                    epoch: as_u64(&row[8])?,
+                },
                 ordinal,
                 push: row[3].as_u64(),
                 diverged: row[4].as_u64().unwrap_or(0) != 0,

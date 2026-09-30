@@ -334,13 +334,13 @@ fn a_rebuild_drops_an_undelivered_status_from_the_old_replica() {
             _ => None,
         })
         .unwrap();
-    let terminal = BootstrapPage {
+    let terminal = ChannelBootstrapPage {
         channel: "a".into(),
         from: 0,
         to: 100,
         until: 100,
         head: 100,
-        records: vec![],
+        changes: vec![],
     };
     worker
         .handle(
@@ -419,13 +419,13 @@ fn a_failed_historical_apply_keeps_its_answer_and_request_slot() {
             _ => None,
         })
         .unwrap();
-    let terminal = BootstrapPage {
+    let terminal = ChannelBootstrapPage {
         channel: "a".into(),
         from: 0,
         to: 100,
         until: 100,
         head: 100,
-        records: vec![],
+        changes: vec![],
     };
     worker
         .handle(
@@ -471,18 +471,18 @@ fn a_catch_up_commit_reaches_a_barrier_even_when_the_next_pull_fails() {
         .subscription_id;
     let run = setup.request_bootstrap("a", id).unwrap().run;
     setup
-        .apply_bootstrap_page(
+        .apply_channel_bootstrap_page(
             "a",
             id,
             run,
             0,
-            &BootstrapPage {
+            &ChannelBootstrapPage {
                 channel: "a".into(),
                 from: 0,
                 to: 100,
                 until: 100,
                 head: 101,
-                records: vec![],
+                changes: vec![],
             },
         )
         .unwrap();
@@ -723,16 +723,16 @@ fn a_barrier_scan_failure_after_delivery_commit_is_retried_without_another_event
         .unwrap()
         .subscription_id;
     let run = setup.request_bootstrap("a", id).unwrap().run;
-    let terminal = BootstrapPage {
+    let terminal = ChannelBootstrapPage {
         channel: "a".into(),
         from: 0,
         to: 100,
         until: 100,
         head: 101,
-        records: vec![],
+        changes: vec![],
     };
     setup
-        .apply_bootstrap_page("a", id, run, 0, &terminal)
+        .apply_channel_bootstrap_page("a", id, run, 0, &terminal)
         .unwrap();
     assert_eq!(
         setup.bootstrap_state("a", id).unwrap().state,

@@ -15,6 +15,7 @@ import {
   type Touch,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
+import type { ChannelIntent } from "../../packages/server/host-contract.mts";
 
 test("generated backend decodes Date values and declares canonical identities through its handles", async () => {
   const first = "2026-01-01T00:00:00.000Z";
@@ -168,12 +169,7 @@ test("generated backend decodes Date values and declares canonical identities th
   for (const handled of seen.slice(0, 2) as {
     outputs: { todo: { id: string }; echoed: string; status: string };
     changes: { model: string; identity: Record<string, unknown> }[];
-    memberships: {
-      channel: string;
-      model: string;
-      identity: Record<string, unknown>;
-      present: boolean;
-    }[];
+    memberships: ChannelIntent[];
   }[]) {
     assert.deepEqual(handled.outputs.todo, { id: "one" });
     assert.equal(handled.outputs.echoed, first);
@@ -184,17 +180,21 @@ test("generated backend decodes Date values and declares canonical identities th
       { model: "Moment", identity: { at: second } },
     ]);
     // Only identity fields, in declaration order; the engine reduces them.
-    const intent = (model: string, identity: object, present: boolean) => ({
+    const add = (model: string, identity: object) => ({
+      kind: "add",
       channel: "todos",
-      model,
-      identity,
-      present,
+      record: { model, identity },
+      tags: [],
     });
     assert.deepEqual(handled.memberships, [
-      intent("Todo", { id: "one" }, true),
-      intent("Moment", { at: "2026-01-03T00:00:00.000Z" }, true),
-      intent("Pin", { todo: "one", at: first }, true),
-      intent("Pin", { todo: "one", at: first }, false),
+      add("Todo", { id: "one" }),
+      add("Moment", { at: "2026-01-03T00:00:00.000Z" }),
+      add("Pin", { todo: "one", at: first }),
+      {
+        kind: "remove",
+        channel: "todos",
+        record: { model: "Pin", identity: { todo: "one", at: first } },
+      },
     ]);
   }
   assert.ok(CallRejected.prototype instanceof Error);
@@ -499,7 +499,12 @@ test("declaration handles close when the handler or external body settles, even 
       outputs: { todo: null },
       changes: [],
       memberships: [
-        { channel: "found", model: "Todo", identity: { id: "one" }, present: true },
+        {
+          kind: "add",
+          channel: "found",
+          record: { model: "Todo", identity: { id: "one" } },
+          tags: [],
+        },
       ],
     },
     { error: "after declaring" },
@@ -515,7 +520,11 @@ test("declaration handles close when the handler or external body settles, even 
   assert.deepEqual(JSON.parse(settled[0]!), {
     changes: [{ model: "Pin", identity: { todo: "one", at } }],
     memberships: [
-      { channel: "found", model: "Todo", identity: { id: "one" }, present: false },
+      {
+        kind: "remove",
+        channel: "found",
+        record: { model: "Todo", identity: { id: "one" } },
+      },
     ],
   });
   await assert.rejects(
@@ -731,7 +740,10 @@ test("the native engine refuses a full Model value that type-checks as an identi
   const response = JSON.parse(
     await backend.loads(
       "alice",
-      JSON.stringify({ loads: [item(1, null), item(2, { state: "ids" })] }),
+      JSON.stringify({
+        capabilities: ["channel-membership-v1"],
+        loads: [item(1, null), item(2, { state: "ids" })],
+      }),
     ),
   );
   const [full, identities] = [1, 2].map((index) =>

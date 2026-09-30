@@ -19,13 +19,23 @@ fn historical(
     head: u64,
     records: Vec<AuthorityRecord>,
 ) -> String {
-    let page = BootstrapPage {
-        channel: scope.to_string(),
+    let count = records.len();
+    let changes = records
+        .into_iter()
+        .enumerate()
+        .map(|(i, record)| ChannelChange::Upsert {
+            channel: scope.into(),
+            cursor: to.saturating_sub(count.saturating_sub(i + 1) as u64),
+            record,
+        })
+        .collect();
+    let page = ChannelBootstrapPage {
+        channel: scope.into(),
         from,
         to,
         until,
         head,
-        records,
+        changes,
     };
     String::from_utf8(page.encode().unwrap()).unwrap()
 }
@@ -1076,9 +1086,10 @@ fn tamper(raw: &mut SqliteStore, channel: &str, set: &str) {
 fn finished(lane: &mut Lane, channel: &str) {
     let state = lane.load(channel);
     let page =
-        BootstrapPage::decode(historical(channel, 0, 100, 100, 130, vec![]).as_bytes()).unwrap();
+        ChannelBootstrapPage::decode(historical(channel, 0, 100, 100, 130, vec![]).as_bytes())
+            .unwrap();
     lane.client
-        .apply_bootstrap_page(channel, state.subscription_id, state.run, 0, &page)
+        .apply_channel_bootstrap_page(channel, state.subscription_id, state.run, 0, &page)
         .unwrap();
     assert_eq!(lane.load(channel).state, BootstrapPhase::CatchingUp);
 }

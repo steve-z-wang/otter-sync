@@ -190,3 +190,36 @@ fn a_divergence_is_reported_and_cleared_by_completion() {
     assert!(status["pending"].as_array().unwrap().is_empty());
     sim.check().unwrap();
 }
+
+/// Seed 206's minimized regression: a channel frame keeps both occurrences;
+/// skipping malformed authority on one does not prevent the other from applying.
+#[test]
+fn skipped_occurrence_does_not_hide_successful_sibling_channel_authority() {
+    let mut sim = Sim::new(206, 1);
+    for channel in ["a", "b"] {
+        sim.apply(Action::Subscribe {
+            client: 0,
+            channel: channel.into(),
+        })
+        .unwrap();
+    }
+    sim.apply(Action::ServerChange {
+        key: "Entry:e1".into(),
+        text: Some("valid sibling".into()),
+        channels: vec!["a".into(), "b".into()],
+    })
+    .unwrap();
+    sim.apply(Action::CorruptNextPage).unwrap();
+    sim.apply(Action::Pull { client: 0 }).unwrap();
+    sim.drain();
+    assert_eq!(
+        sim.read_text(0, &entry_key("e1")).as_deref(),
+        Some("valid sibling")
+    );
+    assert!(
+        sim.reports
+            .iter()
+            .any(|report| report.kind == ReportKind::Skipped)
+    );
+    sim.check().unwrap();
+}

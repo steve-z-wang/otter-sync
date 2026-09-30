@@ -230,6 +230,8 @@ pub struct LoadStatus {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadJob {
+    #[serde(skip)]
+    pub store_token: crate::StoreToken,
     pub id: String,
     pub name: String,
     pub version: u64,
@@ -1079,7 +1081,8 @@ impl<S: ClientStore> crate::engine::Engine<'_, S> {
         if page.load_id != fence.load_id || page.call_id != fence.call_id {
             return Err(invalid("Load page does not answer its fenced request"));
         }
-        let report = self.apply_records(&page.records)?;
+        let report =
+            self.apply_enrolled_records_at(&page.records, &page.memberships, job.store_token)?;
         let (diagnostics, reports): (Vec<LoadDiagnostic>, Vec<Report>) = report
             .reports
             .iter()

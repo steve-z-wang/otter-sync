@@ -1,6 +1,7 @@
 //! Model Fetch on the server: one authorized Loader read of one identity at
 //! a retained read version, claimed and saved in the call ledger, with no
 //! Handler, touch, membership or publication.
+mod capability;
 use axton_core::{FetchRequest, FetchResponse};
 use axton_server::{Config, Host, HostResult, process_action, process_fetch};
 use serde_json::{Value, json};
@@ -27,14 +28,15 @@ const CALL2: &str = "01890f47-1234-7123-8123-123456789ab2";
 
 /// Operations a Fetch must never issue: it runs no Handler and changes no
 /// stamp, membership, Channel or publication.
-const FORBIDDEN: [&str; 9] = [
+const FORBIDDEN: [&str; 10] = [
     "handle",
     "handleAction",
     "advanceStamp",
     "lockRecord",
     "memberships",
-    "setMembership",
-    "publish",
+    "lockChannels",
+    "readChannelMembers",
+    "applyChannelMembers",
     "head",
     "scan",
 ];
@@ -202,7 +204,13 @@ fn todo(call_id: &str, id: &str, store: Option<bool>) -> Vec<u8> {
 
 /// Fetch, then check the produced bytes with the client's own decoder.
 fn fetch(config: &Config, owner: &str, bytes: &[u8], host: &FetchHost) -> Value {
-    let text = run(process_fetch(config, owner, bytes, host)).unwrap();
+    let text = run(process_fetch(
+        config,
+        owner,
+        &crate::capability::request(bytes),
+        host,
+    ))
+    .unwrap();
     let request = FetchRequest::decode(bytes, &config.schema).unwrap();
     FetchResponse::decode(text.as_bytes(), &request, &config.schema)
         .unwrap_or_else(|error| panic!("{error}: {text}"));
@@ -354,7 +362,7 @@ fn a_composite_identity_is_normalized_before_it_joins_the_call_identity() {
     let again = run(process_fetch(
         &config,
         "alice",
-        br#"{"identity":{"seat":3.0,"team":"red"},"version":1,"model":"Member","callId":"01890f47-1234-7123-8123-123456789ab1"}"#,
+        &crate::capability::request(br#"{"identity":{"seat":3.0,"team":"red"},"version":1,"model":"Member","callId":"01890f47-1234-7123-8123-123456789ab1"}"#),
         &host,
     ))
     .unwrap();
@@ -367,10 +375,22 @@ fn a_repeated_call_id_replays_the_saved_snapshot_after_the_row_changes() {
     let config = config();
     let host = FetchHost::new();
     let bytes = todo(CALL, "t1", None);
-    let first = run(process_fetch(&config, "alice", &bytes, &host)).unwrap();
+    let first = run(process_fetch(
+        &config,
+        "alice",
+        &crate::capability::request(&bytes),
+        &host,
+    ))
+    .unwrap();
     host.row("t1", json!({"id":"t1","title":"changed"}));
     host.clear();
-    let replay = run(process_fetch(&config, "alice", &bytes, &host)).unwrap();
+    let replay = run(process_fetch(
+        &config,
+        "alice",
+        &crate::capability::request(&bytes),
+        &host,
+    ))
+    .unwrap();
     assert_eq!(replay, first, "the saved bytes answer the retry");
     assert_eq!(
         host.names(),
@@ -380,7 +400,13 @@ fn a_repeated_call_id_replays_the_saved_snapshot_after_the_row_changes() {
     // An uppercase spelling of the same call ID is the same call.
     let upper = todo(&CALL.to_uppercase(), "t1", None);
     assert_eq!(
-        run(process_fetch(&config, "alice", &upper, &host)).unwrap(),
+        run(process_fetch(
+            &config,
+            "alice",
+            &crate::capability::request(&upper),
+            &host
+        ))
+        .unwrap(),
         first
     );
     assert_eq!(host.count("load"), 0);
@@ -448,7 +474,7 @@ fn actions_and_fetches_never_replay_each_others_saved_responses() {
         &run(process_action(
             &config,
             "alice",
-            action.to_string().as_bytes(),
+            &crate::capability::request(action.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -471,7 +497,7 @@ fn actions_and_fetches_never_replay_each_others_saved_responses() {
         &run(process_action(
             &config,
             "alice",
-            action.to_string().as_bytes(),
+            &crate::capability::request(action.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -545,7 +571,13 @@ fn an_unserved_read_contract_or_missing_loader_is_a_saved_terminal_rejection() {
         let host = FetchHost::new();
         let call = format!("01890f47-1234-7123-8123-1234567892{index}0");
         let bytes = request(&call, model, version, json!({"id":"t1"}), None);
-        let text = run(process_fetch(&config, "alice", &bytes, &host)).unwrap();
+        let text = run(process_fetch(
+            &config,
+            "alice",
+            &crate::capability::request(&bytes),
+            &host,
+        ))
+        .unwrap();
         let response: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             response,
@@ -580,12 +612,19 @@ fn malformed_requests_and_identities_fail_before_the_call_is_claimed() {
         request(CALL, "Member", 1, json!({"team":"red","seat":1.5}), None),
     ] {
         let host = FetchHost::new();
-        let error = run(process_fetch(&config, "alice", &bytes, &host)).unwrap_err();
+        let error = run(process_fetch(&config, "alice",
+        &crate::capability::request(&bytes), &host)).unwrap_err();
         assert_eq!(error.code, "request.invalid", "{}", String::from_utf8_lossy(&bytes));
         assert!(host.ops().is_empty());
     }
     let host = FetchHost::new();
-    let error = run(process_fetch(&config, " ", &todo(CALL, "t1", None), &host)).unwrap_err();
+    let error = run(process_fetch(
+        &config,
+        " ",
+        &crate::capability::request(&todo(CALL, "t1", None)),
+        &host,
+    ))
+    .unwrap_err();
     assert_eq!(error.code, "principal.invalid");
     assert!(host.ops().is_empty());
 }
@@ -613,7 +652,7 @@ fn storage_faults_propagate_without_saving_an_outcome() {
         let error = run(process_fetch(
             &config,
             "alice",
-            &todo(CALL, "t1", store),
+            &crate::capability::request(&todo(CALL, "t1", store)),
             &host,
         ))
         .unwrap_err();
@@ -650,7 +689,7 @@ fn storage_faults_propagate_without_saving_an_outcome() {
         let error = run(process_fetch(
             &config,
             "alice",
-            &todo(CALL, "t1", None),
+            &crate::capability::request(&todo(CALL, "t1", None)),
             &host,
         ))
         .unwrap_err();
@@ -664,12 +703,24 @@ fn a_replayed_response_must_answer_its_own_call() {
     let config = config();
     let host = FetchHost::new();
     let bytes = todo(CALL, "t1", None);
-    run(process_fetch(&config, "alice", &bytes, &host)).unwrap();
+    run(process_fetch(
+        &config,
+        "alice",
+        &crate::capability::request(&bytes),
+        &host,
+    ))
+    .unwrap();
     let key = ("alice".to_string(), CALL.to_string());
     let mut state = host.0.lock().unwrap();
     let saved = state.calls[&key].1.clone().unwrap();
     state.calls.get_mut(&key).unwrap().1 = Some(saved.replace(CALL, CALL2));
     drop(state);
-    let error = run(process_fetch(&config, "alice", &bytes, &host)).unwrap_err();
+    let error = run(process_fetch(
+        &config,
+        "alice",
+        &crate::capability::request(&bytes),
+        &host,
+    ))
+    .unwrap_err();
     assert_eq!(error.code, "storage.invalid");
 }

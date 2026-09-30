@@ -34,7 +34,7 @@ const loader = async ({ tx, ids }) => {
   return Promise.all(ids.map(async ({ id }) => (await tx.$queryRawUnsafe('SELECT id,title FROM action_todo WHERE id=$1', id))[0] ?? null));
 };
 const backend = database => createBackend({ config, native, database, authenticate: () => 'alice', mutations: { add: handler }, loaders: { todo: loader } });
-const request = (clientId, callId, id, title) => JSON.stringify({ clientId, batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId, name: 'Add', version: 1, args: { todo: { id, title } } }] });
+const request = (clientId, callId, id, title) => JSON.stringify({ capabilities:['channel-membership-v1'],clientId, batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId, name: 'Add', version: 1, args: { todo: { id, title } } }] });
 const openShims = () => {
   const poolPg = new Pool({ connectionString: process.env.DATABASE_URL });
   const poolDrizzle = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -44,7 +44,9 @@ const openShims = () => {
   };
 };
 before(async () => {
-  for (const sql of (await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')).split(';').map(s => s.trim()).filter(Boolean)) await db.$executeRawUnsafe(sql);
+  // Prisma prepares every statement, so the dollar-quoted file goes through pg in one call.
+  const migrate = new Pool({ connectionString: process.env.DATABASE_URL });
+  try { await migrate.query(await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')); } finally { await migrate.end(); }
   await db.$executeRawUnsafe('CREATE TABLE action_todo(id text PRIMARY KEY,title text NOT NULL)');
   await db.$executeRawUnsafe('CREATE TABLE action_counter(id integer PRIMARY KEY,n integer NOT NULL)');
   await db.$executeRawUnsafe('INSERT INTO action_counter(id,n) VALUES(1,0)');
@@ -63,7 +65,7 @@ test("direct HTTP Action authenticates, commits, and replays the same call ID ac
   const listening = await app.listen({ port: 0 });
   const callId = "01890f47-1234-7123-8123-123456789aee";
   const body = JSON.stringify({
-    call: {
+    capabilities:['channel-membership-v1'],call: {
       callId: callId.toUpperCase(),
       name: "Add",
       version: 1,
@@ -92,7 +94,7 @@ test("direct HTTP Action authenticates, commits, and replays the same call ID ac
     const priorHandlers = handlers;
     const replay = await send(
       JSON.stringify({
-        call: {
+        capabilities:['channel-membership-v1'],call: {
           callId,
           name: "Add",
           version: 1,
@@ -107,7 +109,7 @@ test("direct HTTP Action authenticates, commits, and replays the same call ID ac
     const durable = JSON.parse(await app.push('alice', request('direct-replay-batch', callId.toUpperCase(), 'direct-http', 'D')));
     assert.equal(durable.completions[0].callId, callId);
     assert.equal(handlers, priorHandlers, 'durable replay shares the canonical direct claim');
-    const invalid = await send(JSON.stringify({ call: { callId: '01890f47-1234-7123-8123-123456789aef', name: 'Add', version: 1, args: { todo: { id: 'missing-title' } } }, models: { Todo: 1 } }));
+    const invalid = await send(JSON.stringify({ capabilities:['channel-membership-v1'],call: { callId: '01890f47-1234-7123-8123-123456789aef', name: 'Add', version: 1, args: { todo: { id: 'missing-title' } } }, models: { Todo: 1 } }));
     assert.equal(invalid.status, 200, 'semantic validation is a per-call outcome');
     assert.equal((await invalid.json()).completion.outcome.code, 'action.invalid');
     assert.equal(
@@ -170,7 +172,7 @@ test('saveCall persistence fault rolls back business row and call claim', async 
 
 test('two distinct calls racing on one row retry without saving a transient rejection', async () => {
   const bumpConfig = { schema: { enums: [], models: [], actions: [{ name: 'Bump', version: 1, inputs: [], outputs: [{ name: 'n', kind: 'value', type: { kind: 'scalar', name: 'int' }, cardinality: 'single', source: 'handlerValue' }] }] }, mutations: [], loaders: [] };
-  const body = (clientId, callId) => JSON.stringify({ clientId, batchSequence: 1, models: {}, mutations: [{ ordinal: 1, callId, name: 'Bump', version: 1, args: {} }] });
+  const body = (clientId, callId) => JSON.stringify({ capabilities:['channel-membership-v1'],clientId, batchSequence: 1, models: {}, mutations: [{ ordinal: 1, callId, name: 'Bump', version: 1, args: {} }] });
   const { shims, close } = openShims();
   try {
     for (const [index, { name, database }] of shims.entries()) {
@@ -215,7 +217,7 @@ test('retryable handler and Loader errors cross native bridge unchanged on every
   const { shims, close } = openShims();
   const bumpConfig = { schema: { enums: [], models: [], actions: [{ name: 'Bump', version: 1, inputs: [], outputs: [{ name: 'n', kind: 'value', type: { kind: 'scalar', name: 'int' }, cardinality: 'single', source: 'handlerValue' }] }] }, mutations: [], loaders: [] };
   const findConfig = { schema: { enums: [], models: config.schema.models, resultModels: config.schema.resultModels, actions: [{ name: 'Find', version: 1, inputs: [], outputs: [{ name: 'todo', kind: 'model', model: 'Todo', modelReadVersion: 1, cardinality: 'single', source: 'handlerIdentity', handlerType: { kind: 'identity', model: 'Todo', fields: [{ name: 'id', type: { kind: 'scalar', name: 'string' } }] } }] }] }, mutations: [], loaders: ['Todo'] };
-  const body = (clientId, callId, name, models) => JSON.stringify({ clientId, batchSequence: 1, models, mutations: [{ ordinal: 1, callId, name, version: 1, args: {} }] });
+  const body = (clientId, callId, name, models) => JSON.stringify({ capabilities:['channel-membership-v1'],clientId, batchSequence: 1, models, mutations: [{ ordinal: 1, callId, name, version: 1, args: {} }] });
   try {
     // `prisma-adapter`: Prisma 7 with a driver adapter reports a raw query's
     // conflict as P2010 with the adapter's error under meta.driverAdapterError (#183).
@@ -277,7 +279,7 @@ test('read-only identity holds its stamp lock through Loader read and commit', a
     await database.driver.query(ctx.tx, 'UPDATE action_todo SET title=$1 WHERE id=$2', ['new', 'lock']);
     return { todo: { id: 'lock' } };
   } }, loaders: { async todo({ tx }) { return database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', ['lock']); } } });
-  const body = (clientId, callId, name, args) => JSON.stringify({ clientId, batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId, name, version: 1, args }] });
+  const body = (clientId, callId, name, args) => JSON.stringify({ capabilities:['channel-membership-v1'],clientId, batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId, name, version: 1, args }] });
   try {
     const reader = read.push('alice', body('locked-read', '01890f47-1234-7123-8123-123456789ac8', 'Find', {}));
     await loading;
@@ -314,7 +316,7 @@ test('store policy is part of the saved call identity and replays without Loader
   const app = createBackend({ config: { schema, mutations: [], loaders: ['Todo'] }, native, database, authenticate: () => 'alice',
     mutations: { async find() { found++; return { todo: { id: 'store-a' } }; } },
     loaders: { async todo({ tx, ids }) { read++; return Promise.all(ids.map(async ({ id }) => (await database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', [id]))[0] ?? null)); } } });
-  const batch = (clientId, calls) => JSON.stringify({ clientId, batchSequence: 1, models: { Todo: 1 }, mutations: calls.map((call, index) => ({ ordinal: index + 1, name: 'Find', version: 1, args: {}, ...call })) });
+  const batch = (clientId, calls) => JSON.stringify({ capabilities:['channel-membership-v1'],clientId, batchSequence: 1, models: { Todo: 1 }, mutations: calls.map((call, index) => ({ ordinal: index + 1, name: 'Find', version: 1, args: {}, ...call })) });
   const stamps = async () => (await db.$queryRawUnsafe("SELECT stamp FROM axton_record WHERE model='Todo' AND identity_key=$1", '{"id":"store-a"}')).length;
   const callId = '01890f47-1234-7123-8123-1234567890f0';
   try {
@@ -364,7 +366,7 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
     if (request.op !== 'handleAction' || request.name !== 'Leak') return answer;
     const settled = JSON.parse(answer);
     const leaked = { model: 'Todo', identity: { id: `leak-${request.callId}` } };
-    return JSON.stringify({ ...settled, changes: [leaked], memberships: [{ channel: 'todos', ...leaked, present: true }] });
+    return JSON.stringify({ ...settled, changes: [leaked], memberships: [{ kind: 'add', channel: 'todos', record: leaked, tags: [] }] });
   };
   const leakConfig = { schema: { ...config.schema, actions: [
     ...config.schema.actions,
@@ -382,20 +384,20 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
       const todo = async ({ tx, ids }) => Promise.all(ids.map(async ({ id }) => (await database.driver.query(tx, 'SELECT id,title FROM action_todo WHERE id=$1', [id]))[0] ?? null));
       const app = createBackend({ config: leakConfig, native: forging, database, authenticate: () => 'alice', mutations: { add }, queries: { leak }, loaders: { todo } });
       const ids = [0, 1, 2].map(n => `01890f47-1234-7123-8123-1234567891${index}${n}`);
-      const receipt = JSON.parse(await app.push('alice', JSON.stringify({ clientId: `forged-${name}`, batchSequence: 1, models: { Todo: 1 }, mutations: [
+      const receipt = JSON.parse(await app.push('alice', JSON.stringify({ capabilities:['channel-membership-v1'],clientId: `forged-${name}`, batchSequence: 1, models: { Todo: 1 }, mutations: [
         { ordinal: 1, callId: ids[0], name: 'Leak', version: 1, args: {} },
         { ordinal: 2, callId: ids[1], name: 'Add', version: 1, args: { todo: { id: `kept-${name}`, title: 'K' } } },
       ] })));
       assert.deepEqual(receipt.rejections, [{ ordinal: 1, code: 'query.effects_forbidden' }], name);
       assert.equal(receipt.completions[1].outcome.status, 'succeeded', name);
       assert.deepEqual(receipt.records.map(record => record.identity.id), [`kept-${name}`], name);
-      const direct = JSON.parse(await app.action('alice', JSON.stringify({ call: { callId: ids[2], name: 'Leak', version: 1, args: {} }, models: { Todo: 1 } })));
+      const direct = JSON.parse(await app.action('alice', JSON.stringify({ capabilities:['channel-membership-v1'],call: { callId: ids[2], name: 'Leak', version: 1, args: {} }, models: { Todo: 1 } })));
       assert.equal(direct.completion.outcome.code, 'query.effects_forbidden', name);
       assert.deepEqual(await db.$queryRawUnsafe("SELECT id FROM action_todo WHERE id LIKE 'leak-%'"), [], `${name}: forbidden Query writes rolled back`);
       assert.deepEqual(await db.$queryRawUnsafe('SELECT title FROM action_todo WHERE id=$1', `kept-${name}`), [{ title: 'K' }], name);
       assert.deepEqual(await db.$queryRawUnsafe("SELECT count(*)::int AS n FROM axton_record WHERE identity_key LIKE '%leak-%'"), [{ n: 0 }], `${name}: no stamp for a forged change`);
       // The rejection is the saved outcome: a retry replays it without running the handler.
-      const retried = JSON.parse(await app.action('alice', JSON.stringify({ call: { callId: ids[2], name: 'Leak', version: 1, args: {} }, models: { Todo: 1 } })));
+      const retried = JSON.parse(await app.action('alice', JSON.stringify({ capabilities:['channel-membership-v1'],call: { callId: ids[2], name: 'Leak', version: 1, args: {} }, models: { Todo: 1 } })));
       assert.deepEqual(retried, direct, name);
     }
   } finally {

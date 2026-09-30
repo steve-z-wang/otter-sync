@@ -7,8 +7,10 @@ use crate::{
     schema,
 };
 use axton_client::{BootstrapPhase, Client, Operation, OperationKind, Report, ReportKind};
-use axton_core::{BootstrapPage, PullPage, PushReceipt, PushRequest, RecordKey};
-use axton_server::host::{MembershipIntent, RecordRef};
+use axton_core::{
+    ChannelBootstrapPage, ChannelChange, ChannelPullPage, PushReceipt, PushRequest, RecordKey,
+};
+use axton_server::host::{ChannelIntent, RecordRef};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
 use std::{
@@ -138,9 +140,8 @@ pub enum Action {
     },
     /// A record's real membership legitimately moves to `channels`: every new member
     /// is told about the record at its current stamp (a republication, which never
-    /// advances a version). The channels it leaves hear nothing: loads are
-    /// channel-blind, so a client that only follows a vacated channel keeps its last
-    /// content as legitimately retained data.
+    /// advances a version). Departed Channels deliver identity-only releases;
+    /// another current hold or device-local work may retain the row.
     MoveMembership {
         key: String,
         channels: Vec<String>,
@@ -157,6 +158,10 @@ pub enum Action {
         key: String,
         touch: Option<Option<String>>,
         memberships: Vec<(String, bool)>,
+    },
+    /// Ordered tag declarations reduced by the production server.
+    ChannelTags {
+        intents: Vec<ChannelIntent>,
     },
     RejectNext {
         code: String,
@@ -298,11 +303,14 @@ pub fn parse_key(s: &str) -> RecordKey {
 
 impl Sim {
     pub fn new(seed: u64, clients: usize) -> Sim {
+        Self::new_with_schema(seed, clients, schema::schema())
+    }
+    pub fn new_with_schema(seed: u64, clients: usize, client_schema: axton_core::Schema) -> Sim {
         let dir = tempfile::tempdir().unwrap();
         let clients = (0..clients)
             .map(|i| {
                 let path = dir.path().join(format!("client-{i}.sqlite"));
-                let schema = schema::schema();
+                let schema = client_schema.clone();
                 Slot {
                     client: Some(open(&path, &schema, false)),
                     path,
@@ -449,11 +457,21 @@ impl Sim {
     ) -> Result<(), String> {
         let memberships = intents
             .iter()
-            .map(|(channel, present)| MembershipIntent {
-                channel: channel.clone(),
-                model: key.model.clone(),
-                identity: key.identity.clone(),
-                present: *present,
+            .map(|(channel, present)| {
+                let channel = channel.clone();
+                let record = RecordRef {
+                    model: key.model.clone(),
+                    identity: key.identity.clone(),
+                };
+                if *present {
+                    ChannelIntent::Add {
+                        channel,
+                        record,
+                        tags: vec![],
+                    }
+                } else {
+                    ChannelIntent::Remove { channel, record }
+                }
             })
             .collect();
         let changes = changes
@@ -580,15 +598,11 @@ impl Sim {
                     return Ok(());
                 };
                 let models = self.client(client).declared_models();
-                let request = task.request(models);
-                let bytes = request.encode().map_err(|e| e.to_string())?;
+                let bytes = task.encode_request(models).map_err(|e| e.to_string())?;
                 self.clients[client].bootstrap_rotation = Some(task.state.scope.clone());
                 self.net.send(Message::Load {
                     client,
-                    scope: task.state.scope.clone(),
-                    subscription_id: task.state.subscription_id,
-                    run: task.state.run,
-                    after: task.state.cursor,
+                    task,
                     bytes,
                 });
             }
@@ -769,6 +783,16 @@ impl Sim {
                 }
                 self.declare(&k, &writes, changes, &memberships)?;
             }
+            Action::ChannelTags { intents } => {
+                self.host.transact(&[], vec![], intents)?;
+                for key in self.host.stamped_keys() {
+                    let channels = self.host.stored_memberships(&key);
+                    self.host.set_membership(
+                        &key,
+                        &channels.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                }
+            }
             Action::RejectNext { code } => self.host.reject_next(&code),
             Action::FailNext => self.host.fail_next(),
             Action::BreakNext => self.host.break_next(),
@@ -835,47 +859,27 @@ impl Sim {
             // Both pull modes go through the same public entry point, so the
             // simulated backend dispatches a bootstrap request exactly as the
             // HTTP adapter does ([#151](https://github.com/zanminwang/axton/issues/151)).
-            Message::Load {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::Load { task, bytes, .. } => {
                 let page = self.host.pull(OWNER, &bytes)?;
                 self.net.send(Message::LoadPage {
                     client,
-                    scope,
-                    subscription_id,
-                    run,
-                    after,
+                    task,
                     bytes: page.into_bytes(),
                 });
             }
-            Message::LoadPage {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::LoadPage { task, bytes, .. } => {
                 if !self.is_up(client) {
                     self.net.send(Message::LoadPage {
                         client,
-                        scope,
-                        subscription_id,
-                        run,
-                        after,
+                        task,
                         bytes,
                     });
                     return Ok(());
                 }
-                let page = BootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let page = ChannelBootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
                 let applied = self
                     .client(client)
-                    .apply_bootstrap_page(&scope, subscription_id, run, after, &page)
+                    .apply_channel_bootstrap_task(task, &page)
                     .map_err(|e| e.to_string())?;
                 let reports = applied
                     .report()
@@ -904,9 +908,14 @@ impl Sim {
                     self.net.send(Message::Page { client, bytes });
                     return Ok(());
                 }
-                let mut page = PullPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let mut page = ChannelPullPage::decode(&bytes).map_err(|e| e.to_string())?;
                 if self.corrupt_next_page
-                    && let Some(first) = page.changes.iter_mut().find(|c| c.error.is_none())
+                    && let Some(first) = page.changes.iter_mut().find_map(|change| match change {
+                        ChannelChange::Upsert { record, .. } if record.error.is_none() => {
+                            Some(record)
+                        }
+                        _ => None,
+                    })
                 {
                     // A change without its required `text`: the schema refuses it.
                     self.corrupt_next_page = false;
@@ -916,6 +925,16 @@ impl Sim {
                         first.state = json!({});
                     }
                 }
+                let content_changes: Vec<_> = page
+                    .changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        ChannelChange::Upsert {
+                            channel, record, ..
+                        } => Some((channel.clone(), record.clone())),
+                        ChannelChange::Remove { .. } => None,
+                    })
+                    .collect();
                 // A key this page carries a newer authoritative change for is no
                 // longer shadowed by an earlier direct write on this client. Newer
                 // is the client's own rule (D2): the change's stamp beats the
@@ -928,7 +947,7 @@ impl Sim {
                 // applied without a report, the client holds the server's content.
                 let mut confirmed = vec![];
                 let mut before = BTreeMap::new();
-                for change in &page.changes {
+                for (_, change) in &content_changes {
                     let Ok(key) = schema::schema().record_key(&change.model, &change.identity)
                     else {
                         continue;
@@ -955,15 +974,14 @@ impl Sim {
                 let ranges = page.cursors.clone();
                 // Entries this page deletes: their comments cascade locally, so a
                 // comment's row may go even when its own change was not applied.
-                let deleted_entries: BTreeSet<String> = page
-                    .changes
+                let deleted_entries: BTreeSet<String> = content_changes
                     .iter()
-                    .filter(|c| c.model == "Entry" && c.error.is_none() && c.state.is_null())
-                    .filter_map(|c| c.identity["id"].as_str().map(str::to_string))
+                    .filter(|(_, c)| c.model == "Entry" && c.error.is_none() && c.state.is_null())
+                    .filter_map(|(_, c)| c.identity["id"].as_str().map(str::to_string))
                     .collect();
                 let report = self
                     .client(client)
-                    .apply_page(page)
+                    .apply_channel_page(page)
                     .map_err(|e| e.to_string())?;
                 self.conflicts += report.conflicts();
                 // A page moves a channel to its `to` or not at all.
@@ -998,11 +1016,48 @@ impl Sim {
                                 .as_ref()
                                 .and_then(|row| row["entryId"].as_str())
                                 .is_some_and(|parent| deleted_entries.contains(parent));
-                        if now_stamp != then_stamp || (now != then && !cascaded) {
+                        // Channel frames preserve occurrences: another Channel in
+                        // this same page may successfully deliver the same identity
+                        // even when this occurrence was skipped or failed.
+                        let sibling_applied = content_changes.iter().any(|(channel, candidate)| {
+                            report.cursors.contains_key(channel)
+                                && candidate.model == key.model
+                                && candidate.identity == key.identity
+                                && candidate.error.is_none()
+                                && candidate.stamp == now_stamp
+                                && (candidate.stamp > then_stamp || now != then)
+                                && if candidate.state.is_null() {
+                                    now.is_none()
+                                } else {
+                                    schema::schema()
+                                        .validate_state(&candidate.model, &candidate.state)
+                                        .ok()
+                                        .map(|mut state| {
+                                            state.as_object_mut().unwrap().extend(
+                                                candidate
+                                                    .identity
+                                                    .as_object()
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            );
+                                            state
+                                        })
+                                        .as_ref()
+                                        == now.as_ref()
+                                }
+                        });
+                        if !sibling_applied
+                            && (now_stamp != then_stamp || (now != then && !cascaded))
+                        {
                             return Err(format!(
-                                "client {client} {encoded}: a {:?} change changed local content or stamp",
+                                "client {client} {encoded}: a {:?} change changed local content or stamp: before=({then_stamp},{then:?}) after=({now_stamp},{now:?}) candidates={content_changes:?}",
                                 entry.kind
                             ));
+                        }
+                        if sibling_applied {
+                            // The failed occurrence remains reported, but the
+                            // successful sibling already refreshed this pair.
+                            continue;
                         }
                         touched.retain(|k| k != &encoded);
                         confirmed.retain(|k| k != &encoded);

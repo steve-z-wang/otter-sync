@@ -99,6 +99,7 @@ void main() {
       final request =
           jsonDecode(await utf8.decoder.bind(http).join())
               as Map<String, dynamic>;
+      expect(request['capabilities'], contains('channel-membership-v1'));
       requests.add(request);
       final n = requests.length;
       await gates[n]?.future;

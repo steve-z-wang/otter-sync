@@ -20,12 +20,14 @@ import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
 export type {
+  MembershipOptions,
   RecordRef,
   RuntimeChannel,
   RuntimeLoadChannel,
   RuntimeLoadModelMembership,
   RuntimeModelMembership,
   RuntimeTouch,
+  TagSelector,
 } from "./effects.mts";
 export type {
   Acknowledged,
@@ -37,8 +39,11 @@ export type {
   JsonValue,
   LoadNext,
   Locked,
+  MemberDelta,
+  MemberKey,
+  MemberPosition,
+  MemberState,
   Memberships,
-  Published,
   Stamped,
   Stamps,
 } from "./host-contract.mts";
@@ -288,6 +293,7 @@ function typedNative(native: Native): Native {
  */
 const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
   "request.invalid": 400,
+  "protocol.unsupported": 426,
   "client.owner_mismatch": 403,
   gap: 409,
   overlap: 409,
@@ -1295,10 +1301,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             case "advanceStamp":
             case "ensureStamp":
             case "readStamps":
-            case "publish":
             case "lockRecord":
             case "memberships":
-            case "setMembership":
+            case "lockChannels":
+            case "readChannelMembers":
+            case "applyChannelMembers":
               break;
             default: {
               const unreachable: never = req;
@@ -1306,9 +1313,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             }
           }
           result = await storage.call(req);
-          // Every publication that survives its savepoint wakes the channel's
+          // Every position that survives its savepoint wakes the channel's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "publish") session.touched.add(req.channel);
+          if (req.op === "applyChannelMembers")
+            for (const delta of req.deltas)
+              if (delta.publish) session.touched.add(delta.channel);
         }
         return callbackJson(result);
       });
@@ -1962,7 +1971,8 @@ async function serveLive(
     // client's fault: closed as a protocol violation, not reported as a failure.
     const refused =
       error instanceof EngineError &&
-      (error.code === "request.invalid" ||
+      (error.code === "protocol.unsupported" ||
+        error.code === "request.invalid" ||
         error.code === "model_version_unsupported");
     if (open())
       connection.close(

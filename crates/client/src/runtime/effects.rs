@@ -154,8 +154,21 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     pub(super) fn issue_effect(
         &mut self,
         kind: EffectKind,
-        operation: Operation,
+        mut operation: Operation,
     ) -> Option<String> {
+        // Negotiation belongs to the final transport envelope, never to a
+        // durable call's identity or frozen local admission token.
+        if let Operation::Http { body, .. } = &mut operation {
+            match crate::with_capabilities(body.as_bytes(), &[crate::CHANNEL_MEMBERSHIP_CAPABILITY])
+                .and_then(|bytes| String::from_utf8(bytes).map_err(|_| crate::invalid("utf8")))
+            {
+                Ok(capable) => *body = capable,
+                Err(error) => {
+                    self.error(error.to_string());
+                    return None;
+                }
+            }
+        }
         match self.issue() {
             Ok(id) => {
                 let effect_id = id.to_string();

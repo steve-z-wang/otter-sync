@@ -639,3 +639,134 @@ fn native_load_dispatch_advertises_channel_membership() {
             .contains(CHANNEL_MEMBERSHIP_CAPABILITY)
     );
 }
+
+#[test]
+fn a_saved_exact_limit_page_reopens_with_its_identity_and_negotiation_headroom() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    let empty = c
+        .start_load("Tagged", 1, &json!({"tags":[""]}), LoadOptions::default())
+        .unwrap()
+        .job;
+    let ready = c
+        .load_ready_pages(1, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .remove(0);
+    let overhead = LoadBatchRequest {
+        loads: vec![ready.intent],
+    }
+    .encode()
+    .unwrap()
+    .len();
+    c.cancel_load(&empty.id).unwrap();
+    let args = json!({"tags":["x".repeat(limits::LOAD_REQUEST_BYTES - overhead)]});
+    let saved = c
+        .start_load("Tagged", 1, &args, LoadOptions::default())
+        .unwrap()
+        .job;
+    let ready = c
+        .load_ready_pages(1, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .remove(0);
+    let logical = LoadBatchRequest {
+        loads: vec![ready.intent.clone()],
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(logical.len(), limits::LOAD_REQUEST_BYTES);
+    // A pre-upgrade frozen page carries no negotiation and retains its epoch.
+    let before = c
+        .read_sql(
+            "SELECT call_id, intent, store_epoch FROM axton_load WHERE load_id=?",
+            &[json!(saved.id)],
+        )
+        .unwrap();
+    drop(c);
+    let mut raw = SqliteStore::open(&path).unwrap();
+    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN channel_membership_version; ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch").unwrap();
+    drop(raw);
+    let mut c = open_db(&path);
+    let mut w = LoadWorker::default();
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).expect("a valid saved page must remain sendable");
+    assert_eq!(loads(&sent), std::slice::from_ref(&saved.id));
+    assert_eq!(sent.pages[0].fence, ready.fence);
+    assert_eq!(sent.body.len(), limits::LOAD_REQUEST_BYTES + 41);
+    assert_eq!(
+        LoadBatchRequest::decode_envelope(sent.body.as_bytes())
+            .unwrap()
+            .loads[0],
+        ready.intent
+    );
+    assert_eq!(
+        c.read_sql(
+            "SELECT call_id, intent, store_epoch FROM axton_load WHERE load_id=?",
+            &[json!(saved.id)]
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(c.get_load(&saved.id).unwrap().unwrap().phase, saved.phase);
+    assert!(w.next_outcome().is_none());
+}
+
+#[test]
+fn multiple_pages_partition_at_the_final_wire_bound_without_single_page_headroom() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let probes: Vec<_> = (0..2)
+        .map(|_| {
+            c.start_load("Tagged", 1, &json!({"tags":[""]}), LoadOptions::default())
+                .unwrap()
+                .job
+        })
+        .collect();
+    let intents = c
+        .load_ready_pages(2, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .into_iter()
+        .map(|p| p.intent)
+        .collect();
+    let overhead = LoadBatchRequest { loads: intents }.encode().unwrap().len();
+    for job in probes {
+        c.cancel_load(&job.id).unwrap();
+    }
+    let remaining = limits::LOAD_REQUEST_BYTES - overhead;
+    let ids: Vec<_> = [remaining / 2, remaining - remaining / 2]
+        .into_iter()
+        .map(|size| {
+            c.start_load(
+                "Tagged",
+                1,
+                &json!({"tags":["x".repeat(size)]}),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .job
+            .id
+        })
+        .collect();
+    let intents = c
+        .load_ready_pages(2, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .into_iter()
+        .map(|p| p.intent)
+        .collect();
+    assert_eq!(
+        LoadBatchRequest { loads: intents }.encode().unwrap().len(),
+        limits::LOAD_REQUEST_BYTES
+    );
+    let mut w = LoadWorker::default();
+    w.wake();
+    let first = dispatch(&mut w, &mut c, 0).unwrap();
+    let second = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&first), ids[..1]);
+    assert_eq!(loads(&second), ids[1..]);
+    assert!(first.body.len() <= limits::LOAD_REQUEST_BYTES);
+    assert!(second.body.len() <= limits::LOAD_REQUEST_BYTES);
+}

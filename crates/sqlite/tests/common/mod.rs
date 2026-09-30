@@ -360,24 +360,24 @@ pub fn channel_fixture(mut value: Value) -> Value {
             }
             value["changes"] = json!(changes);
         }
-    } else if value["mode"] == "bootstrap" {
-        if let Some(records) = value["records"].as_array().cloned() {
-            let to = value["to"].as_u64().unwrap();
-            let changes: Vec<Value> = records
-                .iter()
-                .enumerate()
-                .map(|(i, record)| {
-                    let mut record = record.clone();
-                    record["kind"] = json!("upsert");
-                    record["channel"] = value["channel"].clone();
-                    record["cursor"] =
-                        json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
-                    record
-                })
-                .collect();
-            value.as_object_mut().unwrap().remove("records");
-            value["changes"] = json!(changes);
-        }
+    } else if value["mode"] == "bootstrap"
+        && let Some(records) = value["records"].as_array().cloned()
+    {
+        let to = value["to"].as_u64().unwrap();
+        let changes: Vec<Value> = records
+            .iter()
+            .enumerate()
+            .map(|(i, record)| {
+                let mut record = record.clone();
+                record["kind"] = json!("upsert");
+                record["channel"] = value["channel"].clone();
+                record["cursor"] =
+                    json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
+                record
+            })
+            .collect();
+        value.as_object_mut().unwrap().remove("records");
+        value["changes"] = json!(changes);
     }
     value
 }

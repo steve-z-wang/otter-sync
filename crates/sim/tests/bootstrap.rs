@@ -328,3 +328,33 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
     assert_eq!(sim.conflicts, 0);
     assert!(sim.reports.is_empty(), "{:?}", sim.reports);
 }
+
+#[test]
+fn resumed_channel_reconciles_removed_history_through_the_public_scheduler() {
+    let mut sim = Sim::new(91, 1);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        channel: "a".into(),
+    })
+    .unwrap();
+    declare(&mut sim, "Entry:e", Some(Some("held")), &[("a", true)]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("e")), Some("held".into()));
+    sim.apply(Action::Unsubscribe {
+        client: 0,
+        channel: "a".into(),
+    })
+    .unwrap();
+    declare(&mut sim, "Entry:e", None, &[("a", false)]);
+    sim.apply(Action::SubscribeAtHead {
+        client: 0,
+        channel: "a".into(),
+    })
+    .unwrap();
+    let origin = sim.client(0).cursor("a").unwrap();
+    load(&mut sim, 0);
+    assert_eq!(sim.read_text(0, &entry_key("e")), None);
+    assert_eq!(sim.client(0).cursor("a").unwrap(), origin);
+    assert_eq!(sim.bootstrap_phase(0, "a"), BootstrapPhase::NotRequested);
+    assert!(sim.client(0).bootstrap_schedule(None).unwrap().is_none());
+}

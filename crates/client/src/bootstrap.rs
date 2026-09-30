@@ -806,7 +806,26 @@ fn validate(page: &BootstrapPage, expected_after: u64) -> Result<()> {
 }
 
 impl<S: ClientStore> Client<S> {
-    /// Historical membership evidence uses the same durable run fence as bootstrap.
+    /// Apply the response to a scheduled task, preserving its opaque history lane.
+    /// The task's registration, run and cursor fence stale or duplicate responses.
+    pub fn apply_channel_bootstrap_task(
+        &mut self,
+        task: BootstrapTask,
+        page: &axton_core::ChannelBootstrapPage,
+    ) -> Result<BootstrapApply> {
+        page.validate()?;
+        self.apply_channel_history_page(
+            task.reconciliation,
+            &task.state.scope,
+            task.state.subscription_id,
+            task.state.run,
+            task.state.cursor,
+            page,
+        )
+    }
+
+    /// Apply explicitly requested ordinary bootstrap history.
+    /// Responses to [`Client::bootstrap_schedule`] use [`Client::apply_channel_bootstrap_task`].
     pub fn apply_channel_bootstrap_page(
         &mut self,
         scope: &str,

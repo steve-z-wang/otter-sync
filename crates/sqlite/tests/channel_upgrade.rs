@@ -137,6 +137,21 @@ fn resumed_holding_evidence_schedules_own_fixed_history_bound() {
         "reopen must retain observed bound"
     );
     assert_eq!(c.cursor("a").unwrap(), Some(20));
+    let task = c.bootstrap_schedule(None).unwrap().unwrap();
+    let response = ChannelBootstrapPage::decode(json!({"mode":"bootstrap","channel":"a","from":0,"to":20,"until":20,"head":20,"changes":[{"kind":"remove","channel":"a","cursor":2,"model":"Entry","identity":{"id":"e"}}]}).to_string().as_bytes()).unwrap();
+    let applied = c.apply_channel_bootstrap_task(task, &response).unwrap();
+    assert!(matches!(applied, BootstrapApply::Applied { .. }));
+    assert!(c.read(&key()).unwrap().is_none());
+    assert!(c.bootstrap_schedule(None).unwrap().is_none());
+    let row = &c
+        .read_sql(
+            "SELECT reconcile_state, bootstrap_state, cursor FROM axton_subscription",
+            &[],
+        )
+        .unwrap()[0];
+    assert_eq!(row["reconcile_state"], "complete");
+    assert_eq!(row["bootstrap_state"], "not_requested");
+    assert_eq!(row["cursor"], 20);
 }
 
 #[test]

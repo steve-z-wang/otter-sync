@@ -284,7 +284,10 @@ impl LoadWorker {
                         &bytes,
                         &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
                     )?;
-                    if capable.len() > limits::LOAD_REQUEST_BYTES {
+                    if request.loads.len() == 1 {
+                        // Frozen single pages retain the logical limit across negotiation upgrades.
+                        axton_core::check_request_size(&capable, limits::LOAD_REQUEST_BYTES)?;
+                    } else if capable.len() > limits::LOAD_REQUEST_BYTES {
                         return Err(axton_core::invalid("Load request exceeds byte limit"));
                     }
                     Ok(capable)

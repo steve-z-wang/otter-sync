@@ -602,10 +602,7 @@ impl Sim {
                 self.clients[client].bootstrap_rotation = Some(task.state.scope.clone());
                 self.net.send(Message::Load {
                     client,
-                    scope: task.state.scope.clone(),
-                    subscription_id: task.state.subscription_id,
-                    run: task.state.run,
-                    after: task.state.cursor,
+                    task,
                     bytes,
                 });
             }
@@ -862,39 +859,19 @@ impl Sim {
             // Both pull modes go through the same public entry point, so the
             // simulated backend dispatches a bootstrap request exactly as the
             // HTTP adapter does ([#151](https://github.com/zanminwang/axton/issues/151)).
-            Message::Load {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::Load { task, bytes, .. } => {
                 let page = self.host.pull(OWNER, &bytes)?;
                 self.net.send(Message::LoadPage {
                     client,
-                    scope,
-                    subscription_id,
-                    run,
-                    after,
+                    task,
                     bytes: page.into_bytes(),
                 });
             }
-            Message::LoadPage {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::LoadPage { task, bytes, .. } => {
                 if !self.is_up(client) {
                     self.net.send(Message::LoadPage {
                         client,
-                        scope,
-                        subscription_id,
-                        run,
-                        after,
+                        task,
                         bytes,
                     });
                     return Ok(());
@@ -902,7 +879,7 @@ impl Sim {
                 let page = ChannelBootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
                 let applied = self
                     .client(client)
-                    .apply_channel_bootstrap_page(&scope, subscription_id, run, after, &page)
+                    .apply_channel_bootstrap_task(task, &page)
                     .map_err(|e| e.to_string())?;
                 let reports = applied
                     .report()

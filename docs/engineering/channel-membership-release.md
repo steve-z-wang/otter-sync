@@ -1,6 +1,6 @@
 # Channel membership: 0.2 release boundary
 
-Prepared release notes; publication and final acceptance are pending. [Deployment cutover](../../website/docs/backend/deployment.md#channel-membership-cutover) owns the compatibility matrix and operator sequence. The [design](../superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
+Prepared release notes; coordinated release acceptance and publication are pending. [Deployment cutover](../../website/docs/backend/deployment.md#channel-membership-cutover) owns the compatibility matrix and operator sequence. The [design](../superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
 
 ## Release notes
 
@@ -45,4 +45,12 @@ These are observations, not latency guarantees. SQL calls include BEGIN/COMMIT a
 
 The repaired production-page capacity diagnostic completed locally: queue 10 observed enqueue p50/p95 0.294/0.417 ms, replay 0.601 ms and 12 SQLite commits; queue 1,000 observed 1.026/2.025 ms, replay 2.866 ms and 1,002 commits. This is a diagnostic, not a correctness gate or throughput guarantee.
 
-Focused evidence includes 615 client/SQLite Rust tests (one intentionally ignored), 84 SDK tests, and independently reviewed Task 9 runs of 89 simulator, 20 Load and 28 Action tests. Native iOS/Release builds passed. These scoped results do not establish coordinated release acceptance. Final package/version-reference validation, `scripts/test.sh`, React Native simulator smoke, whole-branch review and macOS/Linux CI remain pending.
+Local validation includes 1,205 workspace Rust tests (one intentionally ignored), strict Clippy, formatting, native builds, generated API checks (12 Dart tests and typed negative cases), and 269 binding tests. Release-version checks verified the current 0.1.2 metadata across 20 release units; this is not evidence that 0.2.0 was produced or published.
+
+The native iOS Release smoke passed all seven online/offline/restart/convergence phases on two iPhone 16 simulators running iOS 18.5. The iOS 26.5/iPhone 17 attempt failed after OS boot/launch delays and is not counted as passing. Physical devices, Android and CI platforms remain unverified here.
+
+Review found that repeated valid Load adds could incorrectly validate their combined tags as one declaration. The corrected collector and Rust boundary preserve per-add validation while measuring the canonical union against existing page bounds: 64 tags plus one new tag succeeds, while one 65-tag add is still refused. Focused verification passed 82 Rust tests, 37 collector tests and 21 real-native Load tests.
+
+The unchanged `scripts/test.sh` completed successfully on the final implementation after the obsolete raw protocol fixtures were updated. It covers PostgreSQL persistence, 204 Dart SDK tests, assembled e2e (16), Action e2e (28), Load e2e (21), Todo, documentation snippets and seven installed-package tests verifying all seven npm artifacts. The generated files remained unchanged. Combined implementation review passed after the Load correction.
+
+Local acceptance does not establish coordinated release acceptance. macOS/Linux CI remains a PR gate; physical devices and Android remain unverified here. The eventual 0.2 release PR must verify produced versions and dependency references before publication.

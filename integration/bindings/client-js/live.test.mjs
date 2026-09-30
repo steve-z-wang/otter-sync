@@ -65,7 +65,7 @@ async function openClient() {
 }
 // `stamp` defaults to the cursor; a page for a record the client already holds at that
 // stamp must carry a newer one, because retained content is compared by stamp alone.
-const page = (text, cursor=0, stamp=cursor+1, head=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head}},changes:[{model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
+const page = (text, cursor=0, stamp=cursor+1, head=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head}},changes:[{channel:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
 // An HTTP answer that moves every requested channel to `head` with no changes.
 const emptyPage=(b,head)=>({cursors:Object.fromEntries(Object.entries(b.cursors).map(([c,n])=>[c,{from:n,to:Math.max(n,head?.[c]??n),head:Math.max(n,head?.[c]??n)}])),changes:[]});
 // A fake push receipt in the wire shape the client accepts: it answers the batch it
@@ -94,8 +94,10 @@ async function until(predicate) {
 test('client replaces subscriptions from saved cursors and guards queued obsolete pages', async()=>{
  const fixture=await openClient(); const {client}=fixture; const errors=[];
  const pulls=[];let answer='empty';const heads={scope:0};
- const http=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));pulls.push(body);
-  if(answer==='published')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:3,head:3}},changes:[{model:'Entry',identity:{id:'live'},stamp:4,state:{text:'published while offline',note:null}}]}));
+ const http=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));
+  if(body.mode==='bootstrap'){res.end(JSON.stringify({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head:heads.scope,changes:body.until>body.after?[page('first').changes[0]]:[]}));return;}
+  pulls.push(body);
+  if(answer==='published')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:3,head:3}},changes:[{channel:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:4,state:{text:'published while offline',note:null}}]}));
   else if(answer==='recovered')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:11,head:11}},changes:[page('recovered',10).changes[0]]}));
   else res.end(JSON.stringify(emptyPage(body,heads)));});
  await new Promise(r=>http.listen(0,'127.0.0.1',r));
@@ -445,7 +447,7 @@ test('a socket the server closes is reconnected after the backoff, resubscribed,
   assert.ok(waited>=180,`the reconnect waited ${waited} ms; the first retry is due 250 ms later, minus 20% jitter`);
   assert.ok(errors.some(e=>/live disconnected: 1001/.test(String(e.message))),`the close reaches onError: ${errors.map(e=>e.message)}`);
   await until(()=>subscribes.length===2);
-  assert.deepEqual(subscribes[1],{type:'subscribe',channels:['scope'],models:{Entry:1}},'the new socket subscribes again without an application event, declaring its read contracts');
+  assert.deepEqual(subscribes[1],{type:'subscribe',channels:['scope'],models:{Entry:1},capabilities:['channel-membership-v1']},'the new socket subscribes again without an application event, declaring its read contracts');
   sockets[1].send(JSON.stringify(page('after reconnect',0)));
   await until(async()=>(await client.read('Entry',{id:'live'}))?.text==='after reconnect');
   assert.equal(upgrades.length,2,'one reconnect; no busy loop');
@@ -479,8 +481,8 @@ test('what a page cannot apply reaches onError as an AxtonReport: read failures,
   network.sockets[0].send(JSON.stringify(page('first')));
   await until(async()=>(await client.read('Entry',{id:'live'}))?.text==='first');
   network.sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:3,head:3}},changes:[
-   {model:'Entry',identity:{id:'live'},stamp:9,error:'loader.failed'},
-   {model:'Entry',identity:{id:'bad'},stamp:2,state:{text:5,note:null}},
+   {channel:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:9,error:'loader.failed'},
+   {channel:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'bad'},stamp:2,state:{text:5,note:null}},
   ]}));
   await until(()=>errors.length===2);
   assert.ok(errors.every(e=>e instanceof runtime.AxtonReport));
@@ -507,7 +509,7 @@ test('a queued edit whose replay fails over new authority is reported as diverge
   await client.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'live'},values:{text:'edited offline'}}]});
   assert.equal((await client.read('Entry',{id:'live'})).text,'edited offline');
   // The server deleted the record: the update cannot replay over nothing.
-  sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:2,head:2}},changes:[{model:'Entry',identity:{id:'live'},stamp:2,state:null}]}));
+  sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:2,head:2}},changes:[{channel:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:2,state:null}]}));
   await until(()=>errors.some(e=>e instanceof runtime.AxtonReport));
   const diverged=errors.find(e=>e instanceof runtime.AxtonReport);
   assert.equal(diverged.kind,'diverged');assert.equal(typeof diverged.ordinal,'number');assert.deepEqual(diverged.identity,{id:'live'});

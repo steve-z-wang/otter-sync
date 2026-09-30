@@ -25,7 +25,7 @@ async function until(predicate,what='condition') {
  throw Error(`${what} timed out`);
 }
 const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.channels.map(c=>[c,heads[c]??0]))});
-const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
+const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{channel:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
 /** The `bootstrap` part of a status snapshot before anything asked for a load. */
 const notRequested={phase:'not-requested',error:null};
 /**
@@ -33,7 +33,7 @@ const notRequested={phase:'not-requested',error:null};
  * channel head it observed - the barrier completion then waits for
  * ([#151](https://github.com/zanminwang/axton/issues/151)).
  */
-const loaded=(body,head=body.until)=>({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head,records:[]});
+const loaded=(body,head=body.until)=>({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head,changes:[]});
 /**
  * A fake server whose handshake acknowledges `heads` and whose pull answers when
  * `hold` resolves. A bootstrap request is answered by `load` behind its own
@@ -313,7 +313,7 @@ test('bootstrap is submitted eagerly, concurrent calls share one run, and the ba
   assert.equal(settled,false,'a barrier delivery has not reached does not complete the run');
   assert.equal(network.loads.length,1,'two concurrent calls registered one task');
   assert.deepEqual(network.loads[0].after,0,'the page asked for the interval from committed progress');
-  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
+  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{channel:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
   await both;
   assert.deepEqual({...subscription.status.bootstrap},{phase:'complete',error:null});
   assert.ok(Object.isFrozen(subscription.status.bootstrap),'the load status is immutable too');

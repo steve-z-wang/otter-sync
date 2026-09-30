@@ -265,7 +265,7 @@ const http=createServer(async(request,response)=>{
  // Only a bootstrap page is expected here, and the test transport holds it.
  loads.push({after:body.after,until:body.until});
  await held;
- response.end(JSON.stringify({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head:body.until,records:[]}));
+ response.end(JSON.stringify({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head:body.until,changes:[]}));
 });
 await new Promise<void>(resolve=>http.listen(0,'127.0.0.1',()=>resolve()));
 const sockets=new WebSocketServer({server:http});

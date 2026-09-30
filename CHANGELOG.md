@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0](https://github.com/zanminwang/axton/compare/v0.1.2...v0.2.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* add tagged Channel membership and synchronized removal
+
+### Features
+
+* add tagged Channel membership and synchronized removal ([bcd5741](https://github.com/zanminwang/axton/commit/bcd5741000b564e092be3c6541a23f3d28d7f95f))
+
+
+### Bug Fixes
+
+* stabilize the Load COMMIT failure fixture ([#224](https://github.com/zanminwang/axton/issues/224)) ([91942b3](https://github.com/zanminwang/axton/commit/91942b362555539a886accb43328d8ffe6b433d9))
+
 ## [0.1.2](https://github.com/zanminwang/axton/compare/v0.1.1...v0.1.2) (2026-09-30)
 
 

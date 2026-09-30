@@ -5451,3 +5451,81 @@ fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registe
     assert_eq!(snapshots(&events, &none)[0]["closed"], true);
     assert_eq!(h.client().watcher_count(), before, "close removes it");
 }
+
+#[test]
+fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks() {
+    for hooked in [false, true] {
+        let mut h = if hooked { hooked_host() } else { host() };
+        h.connect(false);
+        common::subscribe(h.client(), "a");
+        h.client()
+            .apply_channel_page(ChannelPullPage {
+                cursors: [(
+                    "a".into(),
+                    CursorRange {
+                        from: 0,
+                        to: 1,
+                        head: 1,
+                    },
+                )]
+                .into(),
+                changes: vec![ChannelChange::Upsert {
+                    channel: "a".into(),
+                    cursor: 1,
+                    record: common::authority(Some("base"), 7),
+                }],
+            })
+            .unwrap();
+        h.task("owner", fetch("e"));
+        h.run();
+        let (http, body) = h.http("fetch");
+        h.client()
+            .apply_channel_page(ChannelPullPage {
+                cursors: [(
+                    "a".into(),
+                    CursorRange {
+                        from: 1,
+                        to: 2,
+                        head: 2,
+                    },
+                )]
+                .into(),
+                changes: vec![ChannelChange::Remove {
+                    channel: "a".into(),
+                    cursor: 2,
+                    key: common::key(),
+                }],
+            })
+            .unwrap();
+        // A caller joining after release still joins the older logical request.
+        h.task("joined", fetch("e"));
+        h.run();
+        h.ok(&http, &fetched(&body, Some("late"), 99));
+        let events = h.run();
+        assert!(
+            store_callbacks(&events).is_empty(),
+            "suppressed bodies produce no hook"
+        );
+        for id in ["owner", "joined"] {
+            assert_eq!(
+                h.completion(&events, id),
+                &done(id, snapshot("e", Some("late")))
+            );
+        }
+        assert_eq!(h.text("e"), None);
+        assert_eq!(h.stamp("e"), 7);
+        h.task("fresh", fetch("e"));
+        h.run();
+        h.answer_fetch(Some("fresh"), 7);
+        let mut events = h.run();
+        if hooked {
+            let callback = store_callbacks(&events)[0].clone();
+            events = h.finish_hook(&callback, true);
+        }
+        assert_eq!(
+            h.completion(&events, "fresh"),
+            &done("fresh", snapshot("e", Some("fresh")))
+        );
+        assert_eq!(h.text("e"), Some(json!("fresh")));
+    }
+}

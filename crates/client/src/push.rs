@@ -106,6 +106,7 @@ impl<S: ClientStore> Engine<'_, S> {
         for q in queue.iter().filter(|q| q.push.is_none()) {
             if selected.first().is_some_and(|first| {
                 first.mutation.call_id.is_some() != q.mutation.call_id.is_some()
+                    || first.store_token != q.store_token
             }) {
                 continue;
             }
@@ -358,9 +359,27 @@ impl<S: ClientStore> Engine<'_, S> {
         // back.
         axton_core::validate_memberships(&receipt.memberships, &receipt.records)?;
         self.merge_memberships(&receipt.memberships)?;
+        // A receipt has no per-record call provenance. Freeze homogeneous
+        // epochs so every body has the exact original call token.
+        let token = mutations.first().map(|q| q.store_token).unwrap_or_default();
+        if mutations.iter().any(|q| q.store_token != token) {
+            return Err(invalid("push contains mixed store epochs"));
+        }
+        let enrolled: BTreeSet<_> = receipt
+            .memberships
+            .iter()
+            .map(|claim| {
+                self.schema
+                    .record_key(&claim.model, &claim.identity)?
+                    .encoded()
+            })
+            .collect::<Result<_>>()?;
         for record in &receipt.records {
             let key = self.schema.record_key(&record.model, &record.identity)?;
-            if !record.state.is_null() && self.unheld_release(&key)? {
+            if !record.state.is_null()
+                && ((enrolled.contains(&key.encoded()?) && !self.held(&key)?)
+                    || !self.admit_positive_body(&key, token)?)
+            {
                 self.skip_authority_occurrence()?;
                 continue;
             }

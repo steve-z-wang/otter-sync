@@ -27,6 +27,7 @@ pub mod runtime;
 pub mod schema_store;
 pub mod store;
 mod store_delivery;
+mod store_epoch;
 pub mod subscriptions;
 pub mod transport;
 pub mod unsent;
@@ -53,6 +54,7 @@ pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
 pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
+pub use store_epoch::StoreToken;
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
 pub use unsent::{FailedAct, FailedTask, RefusedAct, SubmittedAct};
@@ -238,6 +240,8 @@ struct SessionSavepoint {
 
 pub struct Client<S: ClientStore> {
     store: S,
+    store_epoch: StoreToken,
+    request_tokens: std::cell::RefCell<BTreeMap<String, StoreToken>>,
     schema: Schema,
     client_id: String,
     generation: u64,
@@ -470,8 +474,14 @@ impl<S: ClientStore> Client<S> {
                 &[],
             )?;
         }
+        let store_epoch = store.query_committed("SELECT store_epoch FROM axton_client", &[])?;
+        let store_epoch = StoreToken {
+            epoch: engine::as_u64(&store_epoch.rows[0][0])?,
+        };
         Ok(Self {
             store,
+            store_epoch,
+            request_tokens: Default::default(),
             schema,
             client_id,
             generation,
@@ -769,10 +779,22 @@ impl<S: ClientStore> Client<S> {
             Ok(value) => {
                 // A failed COMMIT leaves the transaction open; without this rollback
                 // every later `begin` would fail. The commit error is what we report.
+                let epoch = match self
+                    .store
+                    .query("SELECT store_epoch FROM axton_client", &[])
+                    .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+                {
+                    Ok(epoch) => epoch,
+                    Err(error) => {
+                        let _ = self.store.rollback();
+                        return Err(error);
+                    }
+                };
                 if let Err(e) = self.store.commit() {
                     let _ = self.store.rollback();
                     return Err(e);
                 }
+                self.store_epoch = StoreToken { epoch };
                 self.generation += 1;
                 changed.insert("axton_client".into());
                 self.notify(changed);
@@ -868,12 +890,24 @@ impl<S: ClientStore> Client<S> {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        let epoch = match self
+            .store
+            .query("SELECT store_epoch FROM axton_client", &[])
+            .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+        {
+            Ok(epoch) => epoch,
+            Err(error) => {
+                let _ = self.physical_rollback();
+                return Err(error);
+            }
+        };
         // The session is already taken; a failed COMMIT must also close the
         // transaction, or every later `begin` would fail. Report the commit error.
         if let Err(e) = self.store.commit() {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        self.store_epoch = StoreToken { epoch };
         self.generation += 1;
         for cursors in &session.pull_pages {
             self.pulls.stale(cursors);

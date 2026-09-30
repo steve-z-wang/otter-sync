@@ -67,15 +67,6 @@ impl<S: ClientStore> Engine<'_, S> {
     pub fn held(&mut self, key: &RecordKey) -> Result<bool> {
         Ok(self.scalar("SELECT 1 FROM axton_channel_member WHERE model=? AND identity=? AND present=1 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
     }
-    /// Conservative receipt admission until request epochs select explicitly
-    /// fresh reads. Authoritative absence may have been released too, so the
-    /// membership tombstone (not only base_state) supplies that evidence.
-    pub(crate) fn unheld_release(&mut self, key: &RecordKey) -> Result<bool> {
-        if self.held(key)? {
-            return Ok(false);
-        }
-        Ok(self.replica_evicted(key)? || self.scalar("SELECT 1 FROM axton_channel_member WHERE model=? AND identity=? AND present=0 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
-    }
     pub fn replica_evicted(&mut self, key: &RecordKey) -> Result<bool> {
         Ok(self
             .scalar(
@@ -237,6 +228,14 @@ impl<S: ClientStore> Engine<'_, S> {
         records: &[axton_core::AuthorityRecord],
         claims: &[MembershipClaim],
     ) -> Result<ApplyReport> {
+        self.apply_enrolled_records_at(records, claims, crate::StoreToken::default())
+    }
+    pub fn apply_enrolled_records_at(
+        &mut self,
+        records: &[axton_core::AuthorityRecord],
+        claims: &[MembershipClaim],
+        token: crate::StoreToken,
+    ) -> Result<ApplyReport> {
         axton_core::validate_memberships(claims, records)?;
         let enrolled: BTreeSet<_> = claims
             .iter()
@@ -251,7 +250,10 @@ impl<S: ClientStore> Engine<'_, S> {
         let mut pending = Held::new();
         for record in records {
             let key = self.schema.record_key(&record.model, &record.identity)?;
-            if enrolled.contains(&key.encoded()?) && !record.state.is_null() && !self.held(&key)? {
+            if !record.state.is_null()
+                && ((enrolled.contains(&key.encoded()?) && !self.held(&key)?)
+                    || !self.admit_positive_body(&key, token)?)
+            {
                 self.skip_authority_occurrence()?;
                 continue;
             }
@@ -318,7 +320,7 @@ impl<S: ClientStore> Engine<'_, S> {
         report.reports.extend(self.rebuild_held(&held)?);
         for key in releases.values() {
             if !self.held(key)? {
-                self.release_replica(key)?;
+                self.evict_at_next_epoch(key)?;
             }
         }
         Ok(report)

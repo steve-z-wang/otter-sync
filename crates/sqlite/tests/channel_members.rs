@@ -897,3 +897,331 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
         assert_eq!(holds(&mut c), 0);
     }
 }
+
+fn fetched(call_id: &str, text: Option<&str>, stamp: u64) -> FetchResponse {
+    FetchResponse {
+        completion: CallCompletion {
+            call_id: call_id.into(),
+            outcome: ActionOutcome::Succeeded {
+                result: json!(text),
+            },
+        },
+        records: vec![authority(text, stamp)],
+    }
+}
+
+#[test]
+fn frozen_fetch_body_is_suppressed_but_fresh_fetch_and_null_are_admitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    let old = c.prepare_fetch("Entry", 1, &key().identity, true).unwrap();
+    deliver(&mut c, "a", 2, remove("a", 2));
+    let report = c
+        .apply_fetch_response(&fetched(&old.call_id, Some("old"), 99))
+        .unwrap();
+    assert_eq!(report.completions.len(), 1);
+    assert_eq!(report.applied, 0, "old positive Fetch must be fenced");
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+    let fresh = c.prepare_fetch("Entry", 1, &key().identity, true).unwrap();
+    assert_eq!(
+        c.apply_fetch_response(&fetched(&fresh.call_id, Some("fresh"), 7))
+            .unwrap()
+            .applied,
+        1
+    );
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+    assert_eq!(
+        c.apply_fetch_response(&fetched(&old.call_id, None, 100))
+            .unwrap()
+            .applied,
+        1
+    );
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.record_stamp(&key()).unwrap(), 100);
+}
+
+#[test]
+fn fresh_queued_receipt_after_release_is_admitted_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    deliver(&mut c, "a", 2, remove("a", 2));
+    c.transaction(|tx| {
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![Operation {
+                model: "Entry".into(),
+                identity: key().identity,
+                op: OperationKind::Create,
+                values: Some(json!({"text":"fresh","note":null})),
+            }],
+        ))
+    })
+    .unwrap();
+    c.freeze().unwrap();
+    drop(c);
+    let mut c = open(&path);
+    let r = receipt(&mut c, 1, vec![authority(Some("fresh"), 8)]);
+    let report = c.acknowledge(1, r).unwrap();
+    assert_eq!(
+        report.applied, 1,
+        "fresh receipt token must survive restart"
+    );
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+    assert_eq!(c.pending_count().unwrap(), 0);
+}
+
+#[test]
+fn mixed_epoch_queue_freezes_separate_receipts_and_keeps_tokens_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    c.transaction(|tx| {
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![Operation {
+                model: "Entry".into(),
+                identity: json!({"id":"other"}),
+                op: OperationKind::Create,
+                values: Some(json!({"text":"other","note":null})),
+            }],
+        ))
+    })
+    .unwrap();
+    deliver(&mut c, "a", 2, remove("a", 2));
+    c.transaction(|tx| {
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![Operation {
+                model: "Entry".into(),
+                identity: key().identity,
+                op: OperationKind::Create,
+                values: Some(json!({"text":"fresh","note":null})),
+            }],
+        ))
+    })
+    .unwrap();
+    drop(c);
+    let mut c = open(&path);
+    let first: serde_json::Value = serde_json::from_slice(&c.freeze().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        first["mutations"].as_array().unwrap().len(),
+        1,
+        "receipt must have one unambiguous epoch"
+    );
+    let r = receipt(&mut c, 1, vec![authority_of("other", Some("other"), 1)]);
+    c.acknowledge(1, r).unwrap();
+    c.freeze().unwrap();
+    let r = receipt(&mut c, 2, vec![authority(Some("fresh"), 8)]);
+    assert_eq!(c.acknowledge(2, r).unwrap().applied, 1);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+}
+
+#[test]
+fn fresh_receipt_with_stale_enrollment_claim_still_cannot_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    deliver(&mut c, "a", 2, remove("a", 2));
+    c.transaction(|tx| {
+        tx.enqueue(Mutation::new(
+            "Create",
+            vec![Operation {
+                model: "Entry".into(),
+                identity: json!({"id":"other"}),
+                op: OperationKind::Create,
+                values: Some(json!({"text":"other","note":null})),
+            }],
+        ))
+    })
+    .unwrap();
+    c.freeze().unwrap();
+    let mut r = receipt(
+        &mut c,
+        1,
+        vec![
+            authority(Some("old saved enrollment"), 99),
+            authority_of("other", Some("other"), 1),
+        ],
+    );
+    r.memberships = vec![MembershipClaim {
+        channel: "a".into(),
+        cursor: 1,
+        model: "Entry".into(),
+        identity: key().identity,
+    }];
+    let report = c.acknowledge(1, r).unwrap();
+    assert_eq!(
+        report.applied, 1,
+        "only the unrelated record may be admitted"
+    );
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.pending_count().unwrap(), 0);
+}
+
+#[test]
+fn prepared_fetch_owns_frozen_token_even_when_request_owner_retires() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    deliver(&mut c, "a", 2, remove("a", 2));
+    let fresh = c.prepare_fetch("Entry", 1, &key().identity, true).unwrap();
+    c.begin_session().unwrap();
+    let prepared = c
+        .prepare_store(StoreDelivery::Fetch {
+            response: fetched(&fresh.call_id, Some("fresh"), 7),
+        })
+        .unwrap();
+    assert_eq!(prepared.accepted().len(), 1);
+    c.retire_request(&fresh.call_id);
+    c.apply_prepared_store(prepared).unwrap();
+    c.commit_session().unwrap();
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+    // Retired identity is historical work; it is never assigned current epoch.
+    let report = c
+        .apply_fetch_response(&fetched(&fresh.call_id, Some("late duplicate"), 99))
+        .unwrap();
+    assert_eq!(report.applied, 0);
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+}
+
+#[test]
+fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    subscribe(&mut c, "b");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    deliver(&mut c, "b", 1, up("b", 1, 7, Some("base")));
+    let epoch = |c: &mut Client<axton_sqlite::SqliteStore>| {
+        c.read_sql("SELECT store_epoch FROM axton_client", &[])
+            .unwrap()[0]["store_epoch"]
+            .as_u64()
+            .unwrap()
+    };
+    deliver(&mut c, "a", 2, remove("a", 2));
+    assert_eq!(epoch(&mut c), 0);
+    c.begin_session().unwrap();
+    let prepared = c
+        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+            cursors: [(
+                "b".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            )]
+            .into(),
+            changes: vec![remove("b", 2)],
+        }))
+        .unwrap();
+    assert_eq!(
+        c.session_sql("SELECT store_epoch FROM axton_client", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    c.apply_prepared_store(prepared).unwrap();
+    c.commit_session().unwrap();
+    assert_eq!(epoch(&mut c), 1);
+    assert_eq!(
+        c.read_sql("SELECT evicted_at FROM axton_record", &[])
+            .unwrap()[0]["evicted_at"],
+        1
+    );
+    // Identical and stale channel evidence cannot mint another eviction.
+    c.apply_channel_page(ChannelPullPage {
+        cursors: [(
+            "b".into(),
+            CursorRange {
+                from: 1,
+                to: 2,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![remove("b", 2)],
+    })
+    .unwrap();
+    assert_eq!(epoch(&mut c), 1);
+    c.apply_channel_page(ChannelPullPage {
+        cursors: [(
+            "b".into(),
+            CursorRange {
+                from: 0,
+                to: 1,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![remove("b", 1)],
+    })
+    .unwrap();
+    assert_eq!(epoch(&mut c), 1);
+    // New untracked cache identity is still fenced by its removal.
+    let other = RecordKey {
+        model: "Entry".into(),
+        identity: json!({"id":"other"}),
+    };
+    c.apply_channel_page(ChannelPullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 2,
+                to: 3,
+                head: 3,
+            },
+        )]
+        .into(),
+        changes: vec![ChannelChange::Remove {
+            channel: "a".into(),
+            cursor: 3,
+            key: other.clone(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(epoch(&mut c), 2);
+    assert_eq!(
+        c.read_sql(
+            "SELECT evicted_at FROM axton_record WHERE identity=?",
+            &[json!(other.encoded_identity().unwrap())]
+        )
+        .unwrap()[0]["evicted_at"],
+        2
+    );
+}
+
+#[test]
+fn old_queued_write_keeps_epoch_and_frozen_bytes_across_release_and_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    subscribe(&mut c, "a");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    c.transaction(|tx| tx.enqueue(mutation("pending"))).unwrap();
+    let frozen = c.freeze().unwrap().unwrap();
+    deliver(&mut c, "a", 2, remove("a", 2));
+    drop(c);
+    let mut c = open(&path);
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_mutation", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    let r = receipt(&mut c, 1, vec![authority(Some("late"), 99)]);
+    let report = c.acknowledge(1, r).unwrap();
+    assert_eq!(report.applied, 0);
+    assert_eq!(c.pending_count().unwrap(), 0);
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+}

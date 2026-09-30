@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 const TABLE: &str = "axton_load";
 const ONCE: &str = "axton_load_once";
 const COLUMNS: &str = "load_id, name, version, args, models, continuation, run, phase, \
-     pages, call_id, intent, retry, attempts, error";
+     pages, call_id, intent, retry, attempts, error, store_epoch";
 
 /// A decode error is cut to this many UTF-8 bytes before it enters a
 /// [`LoadLedgerIssue`]: it is a reason, never a copy of what the row stores.
@@ -69,6 +69,9 @@ fn decode(row: &[Value]) -> Result<LoadJob> {
         .map(serde_json::from_str::<Continuation>)
         .transpose()?;
     let job = LoadJob {
+        store_token: crate::StoreToken {
+            epoch: as_u64(&row[14])?,
+        },
         id,
         name: text(&row[1], "name")?.to_string(),
         version: as_u64(&row[2])?,
@@ -181,12 +184,13 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     /// Insert a fresh job at the first page with its frozen first request.
     pub(crate) fn insert_load(&mut self, intent: &LoadIntent) -> Result<()> {
+        let token = self.store_token()?;
         let seq = self.load_counter("seq")?;
         let ready = self.load_counter("ready")?;
         self.exec(
             TABLE,
-            "INSERT INTO axton_load (load_id, seq, ready, name, version, args, models, continuation, run, phase, pages, call_id, intent, attempts) \
-             VALUES (?,?,?,?,?,?,?,NULL,1,'pending',0,?,?,0)",
+            "INSERT INTO axton_load (load_id, seq, ready, name, version, args, models, continuation, run, phase, pages, call_id, intent, attempts, store_epoch) \
+             VALUES (?,?,?,?,?,?,?,NULL,1,'pending',0,?,?,0,?)",
             &[
                 json!(intent.load_id),
                 json!(seq),
@@ -197,6 +201,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 json!(canonical_json(&serde_json::to_value(&intent.models)?)?),
                 json!(intent.call_id),
                 intent_text(intent)?,
+                json!(token.epoch),
             ],
         )?;
         Ok(())
@@ -211,6 +216,7 @@ impl<S: ClientStore> Engine<'_, S> {
             .as_deref()
             .ok_or_else(|| invalid("an active Load has no frozen page"))?;
         let fence = [json!(job.id), json!(job.run), json!(call_id)];
+        let token = self.store_token()?;
         let affected = match next {
             None => self.exec(
                 TABLE,
@@ -238,13 +244,14 @@ impl<S: ClientStore> Engine<'_, S> {
                 self.exec(
                     TABLE,
                     "UPDATE axton_load SET pages = pages + 1, continuation = ?, call_id = ?, \
-                     intent = ?, retry = NULL, attempts = 0, ready = ? \
+                     intent = ?, retry = NULL, attempts = 0, ready = ?, store_epoch = ? \
                      WHERE load_id = ? AND run = ? AND call_id = ? AND phase = 'pending'",
                     &[
                         next_text(next)?,
                         json!(call),
                         intent_text(&intent)?,
                         json!(ready),
+                        json!(token.epoch),
                         fence[0].clone(),
                         fence[1].clone(),
                         fence[2].clone(),
@@ -289,6 +296,7 @@ impl<S: ClientStore> Engine<'_, S> {
     /// Begin run `job.run + 1` of a failed job from its committed continuation
     /// under a fresh call ID.
     pub(crate) fn rerun_load(&mut self, job: &LoadJob) -> Result<()> {
+        let token = self.store_token()?;
         let ready = self.load_counter("ready")?;
         let call = uuid::Uuid::new_v4().to_string();
         let intent = frozen_intent(
@@ -303,12 +311,13 @@ impl<S: ClientStore> Engine<'_, S> {
         written(self.exec(
             TABLE,
             "UPDATE axton_load SET run = run + 1, phase = 'pending', call_id = ?, intent = ?, \
-             error = NULL, retry = NULL, attempts = 0, ready = ? \
+             error = NULL, retry = NULL, attempts = 0, ready = ?, store_epoch = ? \
              WHERE load_id = ? AND run = ? AND phase = 'failed'",
             &[
                 json!(call),
                 intent_text(&intent)?,
                 json!(ready),
+                json!(token.epoch),
                 json!(job.id),
                 json!(job.run),
             ],

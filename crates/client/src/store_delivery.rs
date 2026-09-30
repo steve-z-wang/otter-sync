@@ -90,6 +90,7 @@ impl StoreResult {
 #[doc(hidden)]
 pub struct PreparedStore {
     delivery: StoreDelivery,
+    request_token: crate::StoreToken,
     entries: Vec<StageEntry>,
     accepted: Vec<usize>,
     changes: BTreeMap<String, Vec<StoreChange>>,
@@ -133,12 +134,25 @@ impl<S: ClientStore> Client<S> {
         })
     }
 
+    fn delivery_token(&self, delivery: &StoreDelivery) -> crate::StoreToken {
+        match delivery {
+            StoreDelivery::Direct { response, .. } => {
+                self.request_token(&response.completion.call_id)
+            }
+            StoreDelivery::Fetch { response } => self.request_token(&response.completion.call_id),
+            _ => crate::StoreToken::default(),
+        }
+    }
+
     fn run_store(
         &mut self,
         delivery: &StoreDelivery,
         mode: StageMode,
         prepared: Option<&PreparedStore>,
     ) -> Result<(StoreResult, StageMode)> {
+        let token = prepared
+            .map(|p| p.request_token)
+            .unwrap_or_else(|| self.delivery_token(delivery));
         match delivery {
             StoreDelivery::ChannelPage(page) => {
                 page.validate()?;
@@ -236,6 +250,7 @@ impl<S: ClientStore> Client<S> {
                     snapshot
                         .as_ref()
                         .map(|(key, generation)| (key, generation.as_deref())),
+                    token,
                 )
                 .map(StoreResult::Direct)
             }),
@@ -250,7 +265,7 @@ impl<S: ClientStore> Client<S> {
                 })
             }
             StoreDelivery::Fetch { response } => self.staged(mode, |e| {
-                e.apply_fetch_body(response).map(StoreResult::Fetch)
+                e.apply_fetch_body(response, token).map(StoreResult::Fetch)
             }),
         }
     }
@@ -322,8 +337,10 @@ impl<S: ClientStore> Client<S> {
         } else {
             None
         };
+        let request_token = self.delivery_token(&delivery);
         Ok(PreparedStore {
             delivery,
+            request_token,
             entries,
             accepted,
             changes,

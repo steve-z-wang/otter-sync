@@ -482,3 +482,140 @@ fn unsendable_failures_count_against_the_slots_like_answers() {
         assert_eq!(c.get_load(id).unwrap().unwrap().phase, LoadPhase::Failed);
     }
 }
+
+#[test]
+fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    subscribe(&mut c, "a");
+    c.apply_channel_page(ChannelPullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 0,
+                to: 1,
+                head: 1,
+            },
+        )]
+        .into(),
+        changes: vec![ChannelChange::Upsert {
+            channel: "a".into(),
+            cursor: 1,
+            record: authority(Some("base"), 7),
+        }],
+    })
+    .unwrap();
+    let id = start(&mut c);
+    let job = c.get_load(&id).unwrap().unwrap();
+    let fence = LoadFence {
+        replica: c.replica_generation(),
+        load_id: id.clone(),
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    c.apply_channel_page(ChannelPullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 1,
+                to: 2,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![ChannelChange::Remove {
+            channel: "a".into(),
+            cursor: 2,
+            key: key(),
+        }],
+    })
+    .unwrap();
+    let retry = c
+        .record_load_failure(
+            &fence,
+            &LoadFailure::Retryable {
+                class: LoadRetryClass::Transport,
+                message: "lost response".into(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.store_token.epoch, 0);
+    assert_eq!(retry.call_id.as_deref(), Some(fence.call_id.as_str()));
+    assert_eq!(retry.attempts, 1);
+    drop(c);
+    let mut c = open_db(&path);
+    let retry = c.get_load(&id).unwrap().unwrap();
+    assert_eq!(retry.store_token.epoch, 0);
+    assert_eq!(retry.call_id.as_deref(), Some(fence.call_id.as_str()));
+    let stored = c
+        .store_load_page(
+            &fence,
+            reply(load_page(&fence, &[("e", "late", 99)], Some(json!("next")))),
+        )
+        .unwrap();
+    let LoadStored::Applied { job, report } = stored else {
+        panic!("page should settle")
+    };
+    assert_eq!(report.applied, 0, "old Load positive must be fenced");
+    assert_eq!(job.pages, 1);
+    assert_eq!(job.continuation.unwrap().state, json!("next"));
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+    // The continuation is a new logical page, captured after the release.
+    let next = LoadFence {
+        replica: c.replica_generation(),
+        load_id: id,
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    c.store_load_page(&next, reply(load_page(&next, &[("e", "fresh", 7)], None)))
+        .unwrap();
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+}
+
+#[test]
+fn legacy_load_and_queue_receive_epoch_zero_without_rewriting_saved_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    c.transaction(|tx| {
+        tx.direct(Operation {
+            model: "Entry".into(),
+            identity: key().identity,
+            op: OperationKind::Create,
+            values: Some(json!({"text":"local","note":null})),
+        })
+    })
+    .unwrap();
+    c.transaction(|tx| tx.enqueue(mutation("pending"))).unwrap();
+    let frozen = c.freeze().unwrap().unwrap();
+    let id = start(&mut c);
+    let saved = c.get_load(&id).unwrap().unwrap();
+    drop(c);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_mutation DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch;").unwrap();
+    drop(conn);
+    let mut c = open_db(&path);
+    let job = c.get_load(&id).unwrap().unwrap();
+    assert_eq!(job, saved);
+    assert_eq!(job.store_token.epoch, 0);
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+    assert_eq!(c.pending_count().unwrap(), 1);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "pending");
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_client", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_mutation", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    drop(c);
+    let mut c = open_db(&path);
+    assert_eq!(c.get_load(&id).unwrap().unwrap(), saved);
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+}

@@ -468,8 +468,15 @@ impl<S: ClientStore> Client<S> {
             .query_flights
             .take(flight_id)
             .ok_or_else(|| invalid("unknown query once flight"))?;
-        let response = DirectActionResponse::decode(response, &flight.request, &self.schema)?;
-        self.apply_direct_response(response, Some((&flight.key, flight.generation.as_deref())))
+        let report = DirectActionResponse::decode(response, &flight.request, &self.schema)
+            .and_then(|response| {
+                self.apply_direct_response(
+                    response,
+                    Some((&flight.key, flight.generation.as_deref())),
+                )
+            });
+        self.retire_request(&flight.request.call.call_id);
+        report
     }
     /// Decode a flight's received response without retiring it. A store hook
     /// may still roll back, so the flight remains owned until local commit.
@@ -493,6 +500,11 @@ impl<S: ClientStore> Client<S> {
     /// (transport failure, close, cancellation). Returns whether it was
     /// active; an older flight never releases a newer one.
     pub fn fail_query_once(&mut self, flight_id: &str) -> bool {
-        self.query_flights.take(flight_id).is_some()
+        if let Some(flight) = self.query_flights.take(flight_id) {
+            self.retire_request(&flight.request.call.call_id);
+            true
+        } else {
+            false
+        }
     }
 }

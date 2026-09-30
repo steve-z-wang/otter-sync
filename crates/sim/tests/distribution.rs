@@ -174,7 +174,7 @@ fn d4_move_between_channels_and_back() {
     change(&mut sim, "Entry:e1", Some("in a"), &["a"]); // stamp 1
     sim.settle();
     assert_eq!(sim.client(0).cursor("a").unwrap(), Some(1));
-    // Move to b: b is told at stamp 1, a is told nothing.
+    // Move to b: b is told at stamp 1, a receives an identity-only release.
     move_to(&mut sim, "Entry:e1", &["b"]);
     assert_eq!(
         sim.host.stamp(&entry_key("e1")),

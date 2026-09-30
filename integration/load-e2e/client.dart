@@ -80,6 +80,12 @@ Future<void> removal(sdk.SyncServer server, String path, String libraryPath) asy
     await reader.models.item.watch(where: const app.ItemFilter(project: app.Present('dart-release')))
       .firstWhere((items) => items.length == 1 && items.single.id == 'dart-release-2')
       .timeout(const Duration(seconds: 20));
+    final releaseDeadline = DateTime.now().add(const Duration(seconds: 20));
+    while ((await reader.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=0", parameters: ['items:dart-release'])).length != 2) {
+      check(DateTime.now().isBefore(releaseDeadline), 'both first-Channel removals persisted before checking the second hold');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Channel keeps content after first hold release');
     await reader.close();
     reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath);
     check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-1')) == null, 'released content stays absent offline');

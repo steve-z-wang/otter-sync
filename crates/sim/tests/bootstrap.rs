@@ -242,8 +242,9 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 }
 
 /// Bootstrap covers membership in each page's snapshot. Sixty removed records
-/// (more than a page) sit below sixty-five members: the walk skips them, pages
-/// the members in two bounded pages, and terminates at its origin. A crash
+/// (more than a page) sit below sixty-five members: the walk delivers their
+/// identity-only releases and the members in three bounded pages, then terminates
+/// at its origin. A crash
 /// and restart between pages resumes from committed progress, and a
 /// duplicated page request and page change nothing. A record removed and
 /// re-added before its page runs moves above the origin and arrives through

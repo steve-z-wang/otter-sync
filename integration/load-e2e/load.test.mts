@@ -652,6 +652,7 @@ test("native Load enrollment releases live content durably and a second Channel 
     await fixture.membership("release-1", "items:release", false);
     await fixture.membership("release-2", "items:release", false);
     await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
+    await wait(async () => (await client.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Channel removals persisted before checking the second hold");
     assert.ok(await client.models.item.get({ id: "release-2" }), "second Channel keeps content");
     await client.close();
     client = await GeneratedClient.open({ path: directory.path });

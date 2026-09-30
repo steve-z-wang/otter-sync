@@ -392,10 +392,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     assert_eq!(action.kind, "pull");
     resubscribe(&mut c, "a");
     cycle
-        .complete(
-            &mut c,
-            text(&stamped("a", 0, 1, 5, Some("old"))).as_bytes(),
-        )
+        .complete(&mut c, text(&stamped("a", 0, 1, 5, Some("old"))).as_bytes())
         .unwrap();
     assert_eq!(
         c.cursor("a").unwrap(),

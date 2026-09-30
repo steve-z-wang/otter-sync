@@ -321,14 +321,16 @@ async fn execute_fresh(
     Ok(page)
 }
 
-/// The page's enrollment as canonical, distinct Channel/record additions.
+/// The page's enrollment as canonical additions, preserving each declaration.
 /// Each intent must `add` to a named Channel a record of a loaded Model,
 /// under a valid identity, that the page's validated outputs name:
 /// `data_keys` holds their canonical keys. Repeated pairs count once toward
 /// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
 /// a pair measuring its canonical add intent with its tags, and validation
 /// stops at the first pair past either bound. A repeated pair unions its tags
-/// into the first, in declaration order, and is measured again. Tags follow
+/// for accounting, in declaration order, and is measured again. Settlement
+/// receives the validated declarations so that an accumulated union is never
+/// mistaken for one add. Tags follow
 /// the add rules ([`declared_tags`]). A removal or tag selector is refused.
 fn validate_enrollment(
     config: &Config,
@@ -339,6 +341,7 @@ fn validate_enrollment(
     let too_large = |message: String| Error::new(code::LOAD_PAGE_TOO_LARGE, message);
     let mut pairs: BTreeMap<(String, String), ChannelIntent> = BTreeMap::new();
     let mut bytes = 0;
+    let mut declarations = vec![];
     for intent in memberships {
         let (channel, record, tags) = match intent {
             ChannelIntent::Add {
@@ -383,6 +386,15 @@ fn validate_enrollment(
                 distinct.push(tag);
             }
         }
+        // Settlement must see validated declarations, never their larger union.
+        declarations.push(ChannelIntent::Add {
+            channel: channel.clone(),
+            record: RecordRef {
+                model: key.model.clone(),
+                identity: key.identity.clone(),
+            },
+            tags: distinct.clone(),
+        });
         let measure = |intent: &ChannelIntent| -> Result<usize> {
             Ok(
                 canonical_json(&serde_json::to_value(intent).map_err(internal)?)
@@ -428,7 +440,7 @@ fn validate_enrollment(
             )));
         }
     }
-    Ok(pairs.into_values().collect())
+    Ok(declarations)
 }
 
 /// The handler's `next` member as a continuation: `null` or exactly

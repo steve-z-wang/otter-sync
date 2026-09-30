@@ -1208,6 +1208,33 @@ fn a_page_enrolls_with_tags_and_a_repeated_pair_unions_them() {
 }
 
 #[test]
+fn valid_load_declarations_can_union_more_than_64_tags_and_replay() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let tags: Vec<String> = (0..64).map(|i| format!("t{i:02}")).collect();
+    let refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![
+                support::add_tagged("c", "Todo", "t1", &refs),
+                support::add_tagged("c", "Todo", "t1", &["t00", "t64"]),
+            ],
+        ),
+    );
+    let request = item(1, Value::Null);
+    let result = page(&backend, &request);
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    let expected: Vec<String> = (0..65).map(|i| format!("t{i:02}")).collect();
+    assert_eq!(backend.tagged_members("c"), [("t1".to_string(), expected)]);
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
+    assert_eq!(page(&backend, &request), result);
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
+}
+
+#[test]
 fn one_record_joins_several_channels_without_republishing_to_its_existing_ones() {
     let backend = Backend::new();
     backend.seed("Todo", "t1", json!({"id":"t1","title":"T1"}), Some(3));
@@ -1312,6 +1339,12 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
             vec![add("c", "Project", "t1")],
         ),
         ("a Model outside the schema", vec![add("c", "Ghost", "t1")]),
+        (
+            "65 tags in one declaration",
+            vec![
+                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags": (0..65).map(|i| format!("t{i}")).collect::<Vec<_>>()}),
+            ],
+        ),
         ("a blank Channel", vec![add("  ", "Todo", "t1")]),
         (
             "a mistyped identity",

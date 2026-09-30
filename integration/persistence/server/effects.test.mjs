@@ -595,7 +595,7 @@ test('a mixed list that crosses the bound appends none of its pairs; overflow ou
  assert.equal(fits.failure(),undefined);
 });
 
-test('a Load add takes the same tags: copied, deduplicated, and merged into a repeated pair in place',()=>{
+test('a Load add takes the same tags: copied, deduplicated, with validated add boundaries preserved',()=>{
  const effects=freshLoad();
  const tags=['X','X','Y'];
  const c=effects.channel('c');
@@ -604,7 +604,7 @@ test('a Load add takes the same tags: copied, deduplicated, and merged into a re
  c.add([Todo({id:'1'}),Todo({id:'2'})],{tags:['Z','X']});
  c.todo.add({id:'1'},{tags:[]});
  tags.push('W');
- assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},['X','Y','Z']),add('c','Todo',{id:'2'},['Z','X'])]);
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},['X','Y']),add('c','Todo',{id:'2'}),add('c','Todo',{id:'1'},['Z']),add('c','Todo',{id:'2'},['Z','X'])]);
  assert.equal(effects.failure(),undefined);
  assert.ok(Object.isFrozen(effects.memberships()[0].tags));
 });
@@ -645,4 +645,15 @@ test('Load enrollment bytes count tags, including tags merged into a repeated pa
  assert.throws(()=>effects.channel(channels[0]).todo.add({id:'t1'},{tags:['X']}),/more than 1048576 bytes/);
  assert.equal(effects.failure().kind,'overflow');
  assert.deepEqual(effects.memberships()[0],add(channels[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
+});
+
+
+test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-tag declaration',()=>{
+ const effects=freshLoad();
+ const tags=Array.from({length:65},(_,i)=>`t${i}`);
+ const c=effects.channel('c');
+ c.todo.add({id:'1'},{tags:tags.slice(0,64)});
+ c.todo.add({id:'1'},{tags:[tags[0],tags[64]]});
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},tags.slice(0,64)),add('c','Todo',{id:'1'},[tags[64]])]);
+ assert.equal(effects.failure(),undefined);
 });

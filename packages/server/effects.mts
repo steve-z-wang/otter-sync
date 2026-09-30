@@ -682,6 +682,7 @@ export function loadEffectsFor(
     /** Distinct additions by their canonical pair, in first-declaration order, with their bytes. */
     const pairs = new Map<string, { intent: AddIntent; bytes: number }>();
     let bytes = 0;
+    const declarations: AddIntent[] = [];
     /** Runs one declaration, keeping its refusal even if the handler catches it. */
     const declare = <R,>(body: () => R): R => {
       try {
@@ -720,15 +721,18 @@ export function loadEffectsFor(
       const fresh = new Map<string, { intent: AddIntent; bytes: number }>();
       let added = 0;
       let more = 0;
+      const additions: AddIntent[] = [];
       for (const { entry, identity } of declared) {
         const canonical = entry.canonical(identity);
         const key = canonicalJson([channel, entry.name, canonical]);
         const prior = fresh.get(key) ?? pairs.get(key);
         let merged = tags;
+        let contribution = tags;
         if (prior) {
           const held = prior.intent.tags;
           const extra = tags.filter((tag) => !held.includes(tag));
           if (extra.length === 0) continue;
+          contribution = extra;
           merged = Object.freeze([...held, ...extra]);
         } else added++;
         // A repeated pair keeps the record as first declared.
@@ -740,6 +744,7 @@ export function loadEffectsFor(
         );
         more += size - (prior?.bytes ?? 0);
         fresh.set(key, { intent, bytes: size });
+        additions.push(addIntent(channel, entry.name, identity, contribution));
         if (pairs.size + added > LOAD_ENROLLMENT_PAIRS)
           throw new EnrollmentOverflow(
             `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Channel/record pairs`,
@@ -751,6 +756,8 @@ export function loadEffectsFor(
       }
       for (const [key, pair] of fresh) pairs.set(key, pair);
       bytes += more;
+      // Keep each validated add boundary: the union may exceed 64 tags.
+      declarations.push(...additions);
     };
     const channel = (name: string): RuntimeLoadChannel =>
       declare(() => {
@@ -796,7 +803,7 @@ export function loadEffectsFor(
     return Object.freeze({
       channel,
       memberships: (): readonly ChannelIntent[] =>
-        [...pairs.values()].map(({ intent }) => intent),
+        [...declarations],
       failure: () => failed,
       close() {
         open = false;

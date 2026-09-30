@@ -889,3 +889,34 @@ test("the generated Dart client releases Load enrollment and reopens offline wit
     await cleanup();
   }
 });
+
+
+test("native Load validates each tagged add separately, unions 65 labels once, and replays its saved page", async () => {
+  const tags = Array.from({ length: 65 }, (_, i) => `t${String(i).padStart(2, "0")}`);
+  await fixture.seed("tag-union", 1);
+  fixture.enrollmentTags.set("tag-union", [tags.slice(0, 64), [tags[0]!, tags[64]!]]);
+  const request: LoadRequestItem = { loadId: "01890f47-1234-7123-8123-00000000f001", callId: "01890f47-1234-7123-8123-00000000f002", name: "ProjectItems", version: 1, args: { project: "tag-union" }, continuation: null, models: { Item: 1, Tag: 1 } };
+  const result = (await post({ loads: [request] })).loads;
+  assert.equal(result[0]!.outcome.status, "succeeded", JSON.stringify(result));
+  const members = await fixture.taggedMembers("items:tag-union");
+  assert.equal(members.length, 1);
+  assert.deepEqual(members[0]!.tags, tags);
+  assert.equal(await fixture.head("items:tag-union"), 1, "one pair takes one position");
+  const runs = fixture.handled.length;
+  assert.deepEqual((await post({ loads: [request] })).loads, result);
+  assert.equal(fixture.handled.length, runs);
+  assert.deepEqual(await fixture.taggedMembers("items:tag-union"), members);
+  assert.equal(await fixture.head("items:tag-union"), 1);
+
+  await fixture.seed("tag-overflow", 1);
+  fixture.enrollmentTags.set("tag-overflow", [tags]);
+  const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004", args: { project: "tag-overflow" } };
+  const refused = (await post({ loads: [invalid] })).loads;
+  assert.equal(refused[0]!.outcome.status, "failed");
+  if (refused[0]!.outcome.status === "failed") assert.equal(refused[0]!.outcome.error.code, "handler.invalid");
+  assert.deepEqual(await fixture.taggedMembers("items:tag-overflow"), []);
+  assert.equal(await fixture.head("items:tag-overflow"), 0);
+  assert.deepEqual((await post({ loads: [invalid] })).loads, refused);
+  fixture.enrollmentTags.delete("tag-union");
+  fixture.enrollmentTags.delete("tag-overflow");
+});

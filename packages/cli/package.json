@@ -1,6 +1,6 @@
 {
   "name": "@axtonjs/cli",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "The axton schema compiler, as a prebuilt executable for this platform.",
   "license": "MIT",
   "author": "Zanmin Wang (https://zanminwang.com)",

@@ -541,7 +541,16 @@ test('a failed unit keeps no enrollment: a saveCall fault, a COMMIT failure and 
   for (const unit of units) await seed(`unit-${unit}`, `unit-${unit}`, 'alice', 1);
   const ids = units.map(unit => `unit-${unit}-1`), channels = units.map(unit => `unit:${unit}`);
   const items = Object.fromEntries(units.map(unit => [unit, page(`unit-${unit}`)]));
-  const faulty = { ...database, persistence: tx => {
+  // Reach the injected faults instead of exhausting Serializable retries on
+  // shared index-page predicate locks. Queue before opening each transaction;
+  // the batch still owns independent transactions and outcomes. Concurrent
+  // batch isolation is covered by the first test above on every shim.
+  let previous = Promise.resolve();
+  const faulty = { ...database, transaction: body => {
+    const current = previous.then(() => database.transaction(body));
+    previous = current.catch(() => {});
+    return current;
+  }, persistence: tx => {
     const storage = database.persistence(tx);
     return { call: async request => {
       if (request.op === 'saveCall' && request.callId === items.save.callId) throw new Error('forced saveCall fault');

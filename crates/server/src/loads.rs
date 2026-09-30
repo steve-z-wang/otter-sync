@@ -23,7 +23,7 @@ use crate::host::{
     Acknowledged, ChannelIntent, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef,
     Stamps,
 };
-use crate::settlement::{Changes, invalid_tags, settle_changes};
+use crate::settlement::{Changes, invalid_tags, lock_channels, settle_locked};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -258,6 +258,13 @@ async fn execute_fresh(
     // Judged before any read: an enrollment the page may not declare costs
     // no stamp or Loader work.
     let memberships = validate_enrollment(config, &data_keys, memberships)?;
+    // Every membership writer locks its Channels before any record row:
+    // `readStamps` below may insert a record's metadata row.
+    let channels: BTreeSet<String> = memberships
+        .iter()
+        .map(|intent| intent.channel().to_string())
+        .collect();
+    lock_channels(&channels, host).await?;
     let mut records = vec![];
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
@@ -294,9 +301,10 @@ async fn execute_fresh(
     // The page is final. Its enrollment settles as an external transaction's
     // unchanged records do: a new member keeps the stamp `resolve` read (and
     // initialized) for this page and gains one position at it; an existing
-    // one publishes nothing. No loaded record is touched. A host fault here
-    // escapes the page transaction like any other.
-    settle_changes(config, &Changes::new(), &memberships, host).await?;
+    // one publishes nothing. No loaded record is touched. Its Channels are
+    // already locked, before the page's reads. A host fault here escapes the
+    // page transaction like any other.
+    settle_locked(config, &Changes::new(), &memberships, &channels, host).await?;
     Ok(page)
 }
 

@@ -1101,16 +1101,16 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
                 "claimCall",
                 "savepoint",
                 "handleLoad",
+                "lockChannels",
                 "readStamps",
-                "load",
-                "lockChannels"
+                "load"
             ]),
             repeated("ensureStamp", 2),
             strings(&["readChannelMembers", "applyChannelMembers"]),
             strings(&["release", "saveCall"]),
         ]
         .concat(),
-        "settlement runs after the page's reads and before its release; nothing advances a stamp"
+        "the Channels lock before the page's reads; settlement runs after them and before its release; nothing advances a stamp"
     );
 
     // A fresh page re-adding existing members publishes nothing more: each
@@ -1130,6 +1130,38 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
         .concat()
     );
     assert!(backend.deltas().iter().all(|delta| !delta.publish));
+}
+
+/// An enrolling page locks exactly its Channels, once and in byte order,
+/// before `readStamps` may insert a record row; a page that enrolls nothing
+/// locks none.
+#[test]
+fn an_enrolling_page_locks_its_channels_before_any_record_row() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("d", "Todo", "t1"), add("c", "Todo", "t1")],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    let ops = backend.ops();
+    let at = |op: &str| ops.iter().position(|name| name == op).unwrap();
+    assert!(at("lockChannels") < at("readStamps"), "{ops:?}");
+    assert_eq!(backend.count("lockChannels"), 1, "{ops:?}");
+    assert!(backend.log().contains(&HostRequest::LockChannels {
+        channels: vec!["c".into(), "d".into()]
+    }));
+
+    backend.clear_log();
+    backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
+    let quiet = page(&backend, &item(2, Value::Null));
+    assert_eq!(quiet["outcome"]["status"], "succeeded", "{quiet}");
+    assert_eq!(backend.count("lockChannels"), 0);
 }
 
 /// A Load's add carries tags like a Mutation's: a repeated pair unions its
@@ -1564,7 +1596,12 @@ fn a_page_that_fails_after_validation_keeps_no_enrollment_or_initialized_stamp()
             before,
             "{case}: no membership, position or stamp"
         );
-        assert_eq!(settlement_ops(&backend), Vec::<String>::new(), "{case}");
+        // Only the Channel locks taken before the reads; no settlement ran.
+        assert_eq!(
+            settlement_ops(&backend),
+            strings(&["lockChannels"]),
+            "{case}"
+        );
     }
 }
 
@@ -1726,9 +1763,9 @@ fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_t
                 "claimCall",
                 "savepoint",
                 "handleLoad",
+                "lockChannels",
                 "readStamps",
                 "load",
-                "lockChannels",
             ]),
             settlement,
             strings(&["release", "saveCall"]),

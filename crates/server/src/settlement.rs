@@ -91,6 +91,33 @@ pub(crate) async fn settle_changes(
     memberships: &[ChannelIntent],
     host: &impl Host,
 ) -> Result<BTreeMap<String, u64>> {
+    settle_locked(config, changed, memberships, &BTreeSet::new(), host).await
+}
+
+/// Lock `channels` in canonical byte order; nothing when there are none.
+pub(crate) async fn lock_channels(channels: &BTreeSet<String>, host: &impl Host) -> Result<()> {
+    if !channels.is_empty() {
+        let Acknowledged = host
+            .call_typed(HostRequest::LockChannels {
+                channels: channels.iter().cloned().collect(),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+/// [`settle_changes`] in a transaction that already holds the locks of
+/// `held` ([`lock_channels`]), taken before an earlier record write such as
+/// a Load page's `readStamps`. Settlement locks again only when it needs a
+/// Channel outside them, which the caller must rule out when its own record
+/// writes preceded settlement.
+pub(crate) async fn settle_locked(
+    config: &Config,
+    changed: &Changes,
+    memberships: &[ChannelIntent],
+    held: &BTreeSet<String>,
+    host: &impl Host,
+) -> Result<BTreeMap<String, u64>> {
     for key in changed.values() {
         if !config.loaders.contains(&key.model) {
             return Err(unregistered(&key.model));
@@ -141,12 +168,8 @@ pub(crate) async fn settle_changes(
         let Memberships(recipients) = host.call_typed(memberships_of(key)?).await?;
         locked.extend(recipients);
     }
-    if !locked.is_empty() {
-        let Acknowledged = host
-            .call_typed(HostRequest::LockChannels {
-                channels: locked.iter().cloned().collect(),
-            })
-            .await?;
+    if !locked.is_subset(held) {
+        lock_channels(&locked, host).await?;
     }
 
     // 3. One guard per record, in canonical key order.

@@ -160,16 +160,42 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     sim.apply(Action::Deliver).unwrap();
     sim.apply(Action::Deliver).unwrap();
     assert_eq!(
-        sim.read_text(0, &entry_key("a")).as_deref(),
-        Some("pending")
+        sim.read_text(0, &entry_key("a")),
+        None,
+        "pending update cannot render against an absent base"
     );
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
     assert_eq!(
-        sim.read_text(0, &entry_key("a")).as_deref(),
-        Some("pending")
+        sim.read_text(0, &entry_key("a")),
+        None,
+        "pending update cannot render against an absent base"
     );
     assert_eq!(sim.client(0).pending_count().unwrap(), 1);
+    let submitted = sim
+        .client(0)
+        .read_sql(
+            "SELECT \"values\" FROM axton_mutation_operation WHERE model='Entry'",
+            &[],
+        )
+        .unwrap();
+    assert!(
+        submitted.iter().any(|row| row["values"]
+            .as_str()
+            .is_some_and(|v| v.contains("pending"))),
+        "submitted words survived reopen"
+    );
+    sim.settle();
+    assert_eq!(
+        sim.client(0).pending_count().unwrap(),
+        0,
+        "receipt still settles released pending work"
+    );
+    assert_eq!(
+        sim.read_text(0, &entry_key("a")),
+        None,
+        "receipt does not repopulate the released base"
+    );
 
     let mut local = seeded(9105, &["u"]);
     local
@@ -182,8 +208,22 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     tags(&mut local, vec![add("u", &["x"]), remove_tag("u", "x")]);
     local.settle();
     assert_eq!(
-        local.read_text(0, &entry_key("a")).as_deref(),
-        Some("device")
+        local.read_text(0, &entry_key("a")),
+        None,
+        "direct patch does not retain unrelated replica fields"
+    );
+    let layers = local
+        .client(0)
+        .read_sql(
+            "SELECT operations FROM axton_local_replica_layer WHERE model='Entry'",
+            &[],
+        )
+        .unwrap();
+    assert!(
+        layers.iter().any(|row| row["operations"]
+            .as_str()
+            .is_some_and(|v| v.contains("device"))),
+        "direct patch retained as device-local work"
     );
 }
 
@@ -228,6 +268,11 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         .native_load(&config, "owner", dispatch.body.as_bytes())
         .unwrap();
     assert_eq!(sim.host.native_load_calls(), 1);
+    let answer: serde_json::Value = serde_json::from_str(&held).unwrap();
+    assert_eq!(
+        answer["loads"][0]["outcome"]["status"], "succeeded",
+        "{answer}"
+    );
     sim.settle(); // The enrolled Channel delivers first.
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
     sim.apply(Action::Declare {
@@ -260,4 +305,32 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
+}
+
+#[test]
+fn device_local_create_is_not_deleted_by_matching_replica_release() {
+    use axton_client::{Operation, OperationKind};
+    let mut sim = Sim::new(9107, 1);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        channel: "u".into(),
+    })
+    .unwrap();
+    sim.client(0)
+        .transaction(|tx| {
+            tx.direct(Operation {
+                model: "Entry".into(),
+                op: OperationKind::Create,
+                identity: serde_json::json!({"id":"a"}),
+                values: Some(serde_json::json!({"text":"local","note":null})),
+            })
+        })
+        .unwrap();
+    tags(&mut sim, vec![add("u", &["x"])]);
+    tags(&mut sim, vec![remove_tag("u", "x")]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("local"));
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    sim.apply(Action::Restart { client: 0 }).unwrap();
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("local"));
 }

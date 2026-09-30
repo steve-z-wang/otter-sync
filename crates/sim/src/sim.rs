@@ -7,7 +7,9 @@ use crate::{
     schema,
 };
 use axton_client::{BootstrapPhase, Client, Operation, OperationKind, Report, ReportKind};
-use axton_core::{BootstrapPage, PullPage, PushReceipt, PushRequest, RecordKey};
+use axton_core::{
+    ChannelBootstrapPage, ChannelChange, ChannelPullPage, PushReceipt, PushRequest, RecordKey,
+};
 use axton_server::host::{ChannelIntent, RecordRef};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
@@ -597,8 +599,7 @@ impl Sim {
                     return Ok(());
                 };
                 let models = self.client(client).declared_models();
-                let request = task.request(models);
-                let bytes = request.encode().map_err(|e| e.to_string())?;
+                let bytes = task.encode_request(models).map_err(|e| e.to_string())?;
                 self.clients[client].bootstrap_rotation = Some(task.state.scope.clone());
                 self.net.send(Message::Load {
                     client,
@@ -899,10 +900,10 @@ impl Sim {
                     });
                     return Ok(());
                 }
-                let page = BootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let page = ChannelBootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
                 let applied = self
                     .client(client)
-                    .apply_bootstrap_page(&scope, subscription_id, run, after, &page)
+                    .apply_channel_bootstrap_page(&scope, subscription_id, run, after, &page)
                     .map_err(|e| e.to_string())?;
                 let reports = applied
                     .report()
@@ -931,9 +932,14 @@ impl Sim {
                     self.net.send(Message::Page { client, bytes });
                     return Ok(());
                 }
-                let mut page = PullPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let mut page = ChannelPullPage::decode(&bytes).map_err(|e| e.to_string())?;
                 if self.corrupt_next_page
-                    && let Some(first) = page.changes.iter_mut().find(|c| c.error.is_none())
+                    && let Some(first) = page.changes.iter_mut().find_map(|change| match change {
+                        ChannelChange::Upsert { record, .. } if record.error.is_none() => {
+                            Some(record)
+                        }
+                        _ => None,
+                    })
                 {
                     // A change without its required `text`: the schema refuses it.
                     self.corrupt_next_page = false;
@@ -943,6 +949,14 @@ impl Sim {
                         first.state = json!({});
                     }
                 }
+                let content_changes: Vec<_> = page
+                    .changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        ChannelChange::Upsert { record, .. } => Some(record.clone()),
+                        ChannelChange::Remove { .. } => None,
+                    })
+                    .collect();
                 // A key this page carries a newer authoritative change for is no
                 // longer shadowed by an earlier direct write on this client. Newer
                 // is the client's own rule (D2): the change's stamp beats the
@@ -955,7 +969,7 @@ impl Sim {
                 // applied without a report, the client holds the server's content.
                 let mut confirmed = vec![];
                 let mut before = BTreeMap::new();
-                for change in &page.changes {
+                for change in &content_changes {
                     let Ok(key) = schema::schema().record_key(&change.model, &change.identity)
                     else {
                         continue;
@@ -982,15 +996,14 @@ impl Sim {
                 let ranges = page.cursors.clone();
                 // Entries this page deletes: their comments cascade locally, so a
                 // comment's row may go even when its own change was not applied.
-                let deleted_entries: BTreeSet<String> = page
-                    .changes
+                let deleted_entries: BTreeSet<String> = content_changes
                     .iter()
                     .filter(|c| c.model == "Entry" && c.error.is_none() && c.state.is_null())
                     .filter_map(|c| c.identity["id"].as_str().map(str::to_string))
                     .collect();
                 let report = self
                     .client(client)
-                    .apply_page(page)
+                    .apply_channel_page(page)
                     .map_err(|e| e.to_string())?;
                 self.conflicts += report.conflicts();
                 // A page moves a channel to its `to` or not at all.

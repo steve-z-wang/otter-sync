@@ -935,7 +935,7 @@ impl Host for MemHost {
                         .collect();
                     response!(HandledLoad::Settled {
                         data: json!({"entries":records.iter().map(|r|r.identity.clone()).collect::<Vec<_>>()}),
-                        next: None,
+                        next: Some(Value::Null),
                         memberships: records
                             .into_iter()
                             .map(|record| ChannelIntent::Add {

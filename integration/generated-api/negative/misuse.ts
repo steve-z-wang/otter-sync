@@ -15,6 +15,8 @@ const badHooks:StoreHooks={
   void tx.mutations;
   // @ts-expect-error Fetch is unavailable within the onStore transaction
   void tx.fetch;
+  // @ts-expect-error onStore subscribes locally; it has no server Channel enrollment
+  tx.channel('c').entry.add({id:'e'});
  },
  // @ts-expect-error unknown Models cannot register hooks
  unknown:async()=>{},

@@ -190,10 +190,29 @@ void [missing, recordOutput, editResult, identityResult];
 
 // Loads (#173): typed backend handlers.
 declare const loadContext: LoadContext<{}>;
-// @ts-expect-error A Load context has no membership writer.
-loadContext.channel('todos');
+// A Load Channel only adds: there is no remove on either handle form.
+// @ts-expect-error A Load Channel's Model accessor has no remove.
+loadContext.channel('todos').todo.remove({ id: 'x' });
+// @ts-expect-error A Load Channel has no remove for mixed record lists.
+loadContext.channel('todos').remove([actionBackend.Todo({ id: 'x' })]);
+// @ts-expect-error A Load Channel is not a Mutation's full Channel.
+const fullLoadChannel: actionBackend.Channel = loadContext.channel('todos');
+// @ts-expect-error A composite identity names every component.
+loadContext.channel('tenant:t').project.add({ id: 'p' });
+// @ts-expect-error A Todo identity is a string id, not a Project identity.
+loadContext.channel('todos').todo.add({ tenantId: 't', id: 'x' });
+// @ts-expect-error A Todo id is a string.
+loadContext.channel('todos').todo.add({ id: 1 });
+// @ts-expect-error A mixed list takes references, not raw identities.
+loadContext.channel('todos').add([{ id: 'x' }]);
+// @ts-expect-error Only schema Models have an accessor.
+loadContext.channel('todos').tsak.add({ id: 'x' });
 // @ts-expect-error A Load context has no change declaration.
 loadContext.touch.todo({ id: 'x' });
+// @ts-expect-error A Load handler cannot remove memberships.
+const removingLoad: Loads<{}>['recentTodos'] = async ({ ctx }) => { ctx.channel('todos').todo.remove({ id: 'x' }); return { data: { todos: [] }, next: null }; };
+// @ts-expect-error A Loader has no Channel: materializing a record enrolls nothing.
+const channelLoader: Loaders<{}>['project'] = async ({ ids, channel }) => { channel('tenant:t').project.add(ids[0]!); return []; };
 // @ts-expect-error A Load handler cannot use Mutation declarations.
 const effectfulLoad: Loads<{}>['projectTodos'] = async ({ ctx }) => { ctx.touch.todo({ id: 'x' }); return { data: { todos: [], projects: [] }, next: null }; };
 // @ts-expect-error Load args keep their declared types.
@@ -252,7 +271,7 @@ const partialLoader: Loaders<{}> = { todo: { async v1() { return []; } } };
 const unknownLoader: Loaders<{}> = { tsak: async () => [] };
 // @ts-expect-error A schema that retains Loads requires the loads map.
 const withoutLoads = () => actionBackend.createBackend({ database, authenticate: () => 'alice', mutations: everyMutation, queries: everyQuery, loaders: everyLoader });
-void [partialLoader, unknownLoader, effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
+void [fullLoadChannel, removingLoad, channelLoader, partialLoader, unknownLoader, effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
 
 // Client Loads (#173): typed business args, call-site options apart from them.
 declare const job: Load<'ProjectTodos'>;

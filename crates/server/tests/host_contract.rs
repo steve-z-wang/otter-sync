@@ -610,13 +610,14 @@ fn memberships_are_unique_valid_channels_held_in_canonical_order() {
 }
 
 #[test]
-fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
+fn a_load_handler_answers_identity_data_and_a_continuation_and_never_changes() {
     let decode = |value: Value| serde_json::from_value::<HandledLoad>(value);
     assert_eq!(
         decode(json!({"data": {"tasks": []}, "next": {"state": null}})).unwrap(),
         HandledLoad::Settled {
             data: json!({"tasks": []}),
             next: Some(json!({"state": null})),
+            memberships: vec![],
         },
         "a null state is a continuation, not the end"
     );
@@ -634,13 +635,14 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
             decoded,
             HandledLoad::Settled {
                 data: answer["data"].clone(),
-                next
+                next,
+                memberships: vec![],
             }
         );
     }
     for refused in [
         json!({"data": {}, "next": null, "changes": []}),
-        json!({"data": {}, "next": null, "memberships": []}),
+        json!({"data": {}, "next": null, "changes": [], "memberships": []}),
         json!({"data": {}, "next": null, "outputs": {}}),
         json!({"next": null}),
         json!({"data": {}, "next": null, "rejection": "tasks.refused"}),
@@ -673,4 +675,95 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
         stamps.invalid_response("x").code,
         axton_server::code::HOST_INVALID
     );
+}
+
+#[test]
+fn a_load_handler_answer_may_carry_membership_intents_and_nothing_else() {
+    let decode = |value: Value| serde_json::from_value::<HandledLoad>(value);
+    let intent =
+        json!({"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": true});
+    assert_eq!(
+        decode(json!({"data": {"tasks": [{"id": "t-1"}]}, "next": null, "memberships": [intent]}))
+            .unwrap(),
+        HandledLoad::Settled {
+            data: json!({"tasks": [{"id": "t-1"}]}),
+            next: Some(Value::Null),
+            memberships: vec![MembershipIntent {
+                channel: "shared".into(),
+                model: "Task".into(),
+                identity: json!({"id": "t-1"}),
+                present: true,
+            }],
+        }
+    );
+    // An older host answers no member at all; an explicit empty list is the
+    // same answer. Both encode without the member, as older hosts wrote it.
+    for answer in [
+        json!({"data": {}, "next": null}),
+        json!({"data": {}, "next": null, "memberships": []}),
+    ] {
+        let decoded = decode(answer.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            HandledLoad::Settled {
+                data: json!({}),
+                next: Some(Value::Null),
+                memberships: vec![],
+            },
+            "{answer}"
+        );
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            json!({"data": {}, "next": null})
+        );
+    }
+    // A removal decodes: the engine, not the wire, refuses it for a Load, so
+    // every host's answer fails its page the same way.
+    let removal =
+        json!({"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": false});
+    assert!(decode(json!({"data": {}, "next": null, "memberships": [removal]})).is_ok());
+    // Nor does the wire check coverage (`t-1` is not in this page's data), and
+    // memberships leave the continuation as answered: a missing or malformed
+    // `next` is still the engine's `load.invalid_continuation` to judge.
+    for (answer, next) in [
+        (json!({"data": {}, "memberships": [intent]}), None),
+        (
+            json!({"data": {}, "next": 1, "memberships": [intent]}),
+            Some(json!(1)),
+        ),
+    ] {
+        match decode(answer.clone()).unwrap() {
+            HandledLoad::Settled {
+                next: decoded,
+                memberships,
+                ..
+            } => {
+                assert_eq!(decoded, next, "{answer}");
+                assert_eq!(memberships.len(), 1, "{answer}");
+            }
+            other => panic!("{answer} decoded as {other:?}"),
+        }
+    }
+    for refused in [
+        json!({"data": {}, "next": null, "memberships": null}),
+        json!({"data": {}, "next": null, "memberships": {}}),
+        json!({"data": {}, "next": null, "memberships": "shared"}),
+        json!({"data": {}, "next": null, "memberships": [1]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "shared", "model": "Task", "identity": {"id": "t-1"}}]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": "true"}]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": true, "extra": 1}]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "", "model": "Task", "identity": {"id": "t-1"}, "present": true}]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "shared", "model": "", "identity": {"id": "t-1"}, "present": true}]}),
+        json!({"data": {}, "next": null, "memberships": [{"channel": "shared", "model": "Task", "identity": "t-1", "present": true}]}),
+        json!({"data": {}, "next": null, "memberships": [intent], "changes": []}),
+        json!({"data": {}, "next": null, "memberships": [intent], "surprise": 1}),
+        json!({"memberships": [intent], "rejection": "tasks.refused"}),
+        json!({"memberships": [intent], "error": "boom"}),
+        json!({"memberships": [], "rejection": "tasks.refused"}),
+        json!({"memberships": [], "error": "boom"}),
+        json!({"data": {}, "next": null, "memberships": [intent], "rejection": "tasks.refused"}),
+        json!({"memberships": [intent]}),
+    ] {
+        assert!(decode(refused.clone()).is_err(), "accepted {refused}");
+    }
 }

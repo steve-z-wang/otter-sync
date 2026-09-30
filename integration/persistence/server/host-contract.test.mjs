@@ -56,7 +56,7 @@ const fakePersistence=seen=>({
  * Drives the host callback with the fixture requests instead of a real push.
  * Returns [op, response] for every replayed request, plus what the persistence saw.
  */
-async function replay(requests,{reject=false,fail=false,onError,page}={}){
+async function replay(requests,{reject=false,fail=false,onError,page,options={},sent=[]}={}){
  const seen=[],answers=[],handled=[],loaded=[],paged=[];
  const backend=createBackend({
   config,
@@ -77,12 +77,12 @@ async function replay(requests,{reject=false,fail=false,onError,page}={}){
   // Two touches (the update slot's t-1, which the engine also targets on its
   // own, and t-2), both added to one Channel and the target to another: the
   // fixture's settlement.
-  mutations:{async send(){return {message:'sent'};}},
+  mutations:{async send({ctx}){sent.push(ctx);return {message:'sent'};}},
   loads:{async tasks(call){
    paged.push(call);
    if(reject)throw new MutationRejected('tasks.refused');
    if(fail)throw new Error('boom');
-   return page?page():response('handleLoad','settled');
+   return page?page(call):response('handleLoad','settled');
   }},
   handlers:{async edit({input,channel,touch}){
    handled.push(input);
@@ -94,6 +94,7 @@ async function replay(requests,{reject=false,fail=false,onError,page}={}){
    if(fail)throw new Error('boom');
   }},
   loaders:{async task(call){loaded.push(call);if(fail)throw new Error('boom');return response('load','rows');}},
+  ...options,
  });
  await backend.push('alice','{}');
  return {answers,seen,handled,loaded,paged};
@@ -106,7 +107,8 @@ test('the fixture and the TypeScript union cover the same operations',()=>{
 
 test('every fixture request replays through the TypeScript host to the fixture answer',async()=>{
  const requests=fixture.operations.map(o=>o.request);
- const {answers,seen,handled,loaded,paged}=await replay(requests);
+ const sent=[];
+ const {answers,seen,handled,loaded,paged}=await replay(requests,{sent});
  assert.deepEqual(answers.map(([op])=>op),HOST_OPERATIONS);
  const expected={
   claim:response('claim','claimed'),saveReceipt:null,claimCall:response('claimCall','fresh'),saveCall:null,head:response('head','cursor'),
@@ -124,11 +126,17 @@ test('every fixture request replays through the TypeScript host to the fixture a
  assert.deepEqual(handled[0].task.patch,entry('handle').request.arguments.task.patch);
  assert.equal(loaded.length,1);assert.deepEqual(loaded[0].ids,entry('load').request.identities);assert.equal(loaded[0].userId,entry('load').request.owner);
  assert.equal('channel' in loaded[0],false,'loads name no channel');
+ assert.equal('touch' in loaded[0],false,'a Loader declares no change');
  const loadRequest=entry('handleLoad').request;
  assert.equal(paged.length,1);
  assert.deepEqual(paged[0].continuation,loadRequest.continuation);
  assert.deepEqual(paged[0].args,loadRequest.arguments);
- assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','loadId','tx','userId'],'a Load context is read-only: no touch or channel');
+ assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','channel','loadId','tx','userId'],'a Load context adds to Channels and declares no change: no touch');
+ assert.equal(typeof paged[0].ctx.channel,'function');
+ // A Mutation keeps its full declaration handles.
+ assert.equal(sent.length,1);
+ assert.deepEqual(Object.keys(sent[0]).sort(),['callId','channel','touch','tx','userId']);
+ assert.equal(typeof sent[0].touch.task,'function');
  assert.deepEqual([paged[0].ctx.userId,paged[0].ctx.callId,paged[0].ctx.loadId],[loadRequest.owner,loadRequest.callId,loadRequest.loadId]);
 });
 
@@ -278,4 +286,126 @@ test('the PostgreSQL persistence validates membership requests and the rows it a
   await assert.rejects(()=>answer(driver,'tx',request),pattern);
   assert.deepEqual(seen,[],'a malformed request runs no statement');
  }
+});
+
+/** The page the `enrolled` fixture answer carries, without its framework metadata. */
+const enrolledPage=()=>{const {memberships,...page}=response('handleLoad','enrolled');return page;};
+
+test('a Load declares its enrollment through ctx.channel and the host attaches it to the fixture answer',async()=>{
+ const request=entry('handleLoad').request;
+ const {answers}=await replay([request],{page:({ctx})=>{
+  const shared=ctx.channel('shared');
+  shared.task.add({id:'t-1'});
+  ctx.channel('other').add([{model:'Task',identity:{id:'t-1'}}]);
+  // Repeats are one pair: the answer lists each pair once, in first-declaration order.
+  shared.task.add({id:'t-1',title:'not identity'});
+  shared.add([{model:'Task',identity:{id:'t-1'}}]);
+  return enrolledPage();
+ }});
+ assert.equal(answers.length,1);
+ assert.equal(JSON.stringify(answers[0][1]),JSON.stringify(response('handleLoad','enrolled')),'exactly the fixture answer, member order included');
+});
+
+test('the Load Channel handle adds only and closes when the handler settles',async()=>{
+ const request=entry('handleLoad').request;
+ let escaped,handle;
+ const {answers}=await replay([request],{page:({ctx})=>{
+  handle=ctx.channel('shared');
+  escaped=handle.task;
+  escaped.add({id:'t-1'});
+  return enrolledPage();
+ }});
+ assert.deepEqual(answers[0][1].memberships,[{channel:'shared',model:'Task',identity:{id:'t-1'},present:true}]);
+ assert.deepEqual(Object.keys(handle),['task','add']);
+ assert.deepEqual(Object.keys(escaped),['add']);
+ for(const absent of ['remove','touch'])assert.equal(absent in handle,false,absent);
+ assert.equal('remove' in escaped,false);
+ assert.ok(Object.isFrozen(handle)&&Object.isFrozen(escaped));
+ assert.throws(()=>escaped.add({id:'t-2'}),/closed/);
+ assert.throws(()=>handle.add([{model:'Task',identity:{id:'t-2'}}]),/closed/);
+ // Reading the answer happens after the handles closed: a getter cannot declare.
+ const errors=[];
+ const getter=await replay([request],{onError:e=>errors.push(e),page:({ctx})=>{
+  const late=ctx.channel('late');
+  return {get data(){late.task.add({id:'t-1'});return {tasks:[{id:'t-1'}]};},next:null};
+ }});
+ assert.equal(getter.answers[0][1].memberships,undefined);
+ assert.match(getter.answers[0][1].error,/closed/);
+});
+
+test('only declarations feed the enrollment: a returned memberships property is ignored and none is sent when empty',async()=>{
+ const request=entry('handleLoad').request;
+ const forged=[{channel:'forged',model:'Task',identity:{id:'t-1'},present:true}];
+ const {answers}=await replay([request],{page:()=>({...response('handleLoad','settled'),memberships:forged})});
+ assert.deepEqual(answers[0][1],response('handleLoad','settled'));
+ assert.equal('memberships' in answers[0][1],false);
+ const selected=await replay([request],{page:({ctx})=>{ctx.channel('selected');return response('handleLoad','settled');}});
+ assert.equal('memberships' in selected.answers[0][1],false,'selecting a Channel enrolls nothing');
+});
+
+test('an enrollment past its bound fails the page as load.page_too_large, even when the handler caught it',async()=>{
+ const request=entry('handleLoad').request;
+ const overflow=ctx=>{for(let n=0;n<=1000;n++)ctx.channel(`c${n}`).task.add({id:'t-1'});};
+ const outcomes=[
+  ['caught, then a normal answer',({ctx})=>{try{overflow(ctx);}catch{}return enrolledPage();}],
+  ['thrown out of the handler',({ctx})=>{overflow(ctx);return enrolledPage();}],
+  ['caught, then a rejection',({ctx})=>{try{overflow(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
+  ['caught, then an invalid continuation',({ctx})=>{try{overflow(ctx);}catch{}return {data:{tasks:[]},next:{state:NaN}};}],
+  ['after a caught invalid declaration',({ctx})=>{try{ctx.channel('c').task.add({});}catch{}try{overflow(ctx);}catch{}return enrolledPage();}],
+ ];
+ for(const [label,page] of outcomes){
+  const errors=[];
+  const {answers}=await replay([request],{onError:e=>errors.push(e),page});
+  assert.deepEqual(answers,[['handleLoad',{rejection:'load.page_too_large'}]],label);
+  assert.equal(errors.length,1,`${label}: reported once`);
+  assert.match(errors[0].message,/more than 1000 Channel\/record pairs/,label);
+ }
+});
+
+test('a refused declaration fails the page with its message, even when the handler caught it',async()=>{
+ const request=entry('handleLoad').request;
+ const invalid=[
+  ['blank Channel',ctx=>ctx.channel(' '),/Channel name/],
+  ['missing identity',ctx=>ctx.channel('c').task.add({}),/Task identity field id is missing/],
+  // Not a host fault: an identity the bridge could not send fails the page as the handler's.
+  ['lone surrogate identity',ctx=>ctx.channel('c').task.add({id:'t-\ud800'}),/Task identity field id must be Unicode text/],
+  ['lone surrogate identity in a list',ctx=>ctx.channel('c').add([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/Task identity field id must be Unicode text/],
+  ['raw identity in a list',ctx=>ctx.channel('c').add([{id:'t-1'}]),/record reference/],
+  ['unknown Model',ctx=>ctx.channel('c').add([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
+ ];
+ for(const [label,declare,pattern] of invalid)
+  for(const [how,page] of [
+   ['caught, then a normal answer',({ctx})=>{ctx.channel('shared').task.add({id:'t-1'});try{declare(ctx);}catch{}return enrolledPage();}],
+   ['caught, then a rejection',({ctx})=>{try{declare(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
+   ['thrown out of the handler',({ctx})=>{declare(ctx);return enrolledPage();}],
+  ]){
+   const errors=[];
+   const {answers}=await replay([request],{onError:e=>errors.push(e),options:{translateRejection:()=>'translated'},page});
+   assert.equal(answers.length,1);
+   const answer=answers[0][1];
+   assert.deepEqual(Object.keys(answer),['error'],`${label} ${how}: a failure, never a partial enrollment`);
+   assert.match(answer.error,pattern,`${label} ${how}`);
+   assert.equal(errors.length,1,`${label} ${how}: reported`);
+   assert.equal(errors[0].message,answer.error);
+  }
+});
+
+test('a Query context and a Loader call carry no channel or touch; an external transaction keeps both',async()=>{
+ const queryConfig=structuredClone(config);
+ queryConfig.schema.actions.push({name:'Ask',version:1,kind:'query',inputs:[],outputs:[{name:'message',kind:'value',type:{kind:'scalar',name:'string'},cardinality:'single',source:'handlerValue'}]});
+ const asked=[];
+ const {answers,loaded}=await replay([{...entry('handleAction').request,name:'Ask'},entry('load').request],{options:{config:queryConfig,queries:{async ask({ctx}){asked.push(ctx);return {message:'asked'};}}}});
+ assert.deepEqual(answers[0],['handleAction',{outputs:{message:'asked'},changes:[],memberships:[]}]);
+ assert.deepEqual(Object.keys(asked[0]).sort(),['callId','tx','userId']);
+ assert.deepEqual(Object.keys(loaded[0]).sort(),['ids','tx','userId']);
+ const backend=createBackend({config,native:{validateConfig:c=>native.validateConfig(c),settleExternal:async()=>'[]'},
+  database:{transaction:body=>body({}),persistence:()=>fakePersistence([])},authenticate:()=>'alice',
+  handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
+  loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
+ await backend.transaction(async call=>{
+  assert.deepEqual(Object.keys(call).sort(),['channel','touch','tx']);
+  assert.equal(typeof call.channel('c').remove,'function');
+  assert.equal(typeof call.channel('c').task.remove,'function');
+  assert.equal(typeof call.touch.task,'function');
+ });
 });

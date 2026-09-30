@@ -253,6 +253,7 @@ fn load_only_generated_names_are_reserved_only_beside_a_load() {
         "LoadNext",
         "JsonValue",
         "LoadContext",
+        "LoadChannel",
         "LoadHandlerCall",
         "LoadInvalidations",
     ] {
@@ -334,7 +335,10 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         "import type { Todo as TodoRecord, TodoIdentity, TodoPatch, Note as NoteRecord, NoteIdentity, NotePatch, Status } from \"./generated.ts\";\n",
         "export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n",
         "export type LoadNext = null | { state: JsonValue };\n",
-        "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n}\n",
+        // An add-only Channel handle: the same lower-first accessors and
+        // mixed RecordRef list as a Mutation's Channel, without remove.
+        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity): void };\n note: { add(identity: NoteIdentity): void };\n add(records: readonly RecordRef[]): void;\n}\n",
+        "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n channel(name: string): LoadChannel;\n}\n",
         "export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n",
         "export interface ProjectTodosInput {\n projectId: string;\n status: Status | null;\n tags: string[];\n at: Date;\n}\n",
         "export interface ProjectTodosHandlerOutput {\n data: {\n  todos: TodoIdentity[];\n  notes: NoteIdentity[];\n };\n next: LoadNext;\n}\n",
@@ -346,10 +350,21 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
     ] {
         assert!(ts.contains(expected), "{expected}\n---\n{ts}");
     }
-    // A Load context has no effect handles.
-    let context = &ts[ts.find("export interface LoadContext<Tx>").unwrap()..];
-    let context = &context[..context.find('}').unwrap()];
-    assert!(!context.contains("channel") && !context.contains("touch"));
+    // A Load context adds to Channels only: no remove and no touch.
+    for declaration in [
+        "export interface LoadChannel {",
+        "export interface LoadContext<Tx> {",
+    ] {
+        let body = &ts[ts.find(declaration).unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(
+            !body.contains("remove") && !body.contains("touch"),
+            "{body}"
+        );
+    }
+    // The Mutation Channel keeps both verbs.
+    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n note: ModelMembership<NoteIdentity>;\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
     // Handler types belong to the backend artifact only.
     assert!(!axton_compiler::typescript(&config).contains("LoadHandlerCall"));
 }
@@ -380,6 +395,10 @@ fn retained_load_versions_register_together_with_their_own_contracts() {
         // No bare-function shorthand beyond a v1-only Load.
         " todos: { v1(call: LoadHandlerCall<Tx, TodosV1Input>): Promise<TodosV1HandlerOutput>; v2(call: LoadHandlerCall<Tx, TodosInput>): Promise<TodosHandlerOutput> };\n",
         "export interface TodoV1Identity {\n id: string;\n}\n",
+        // Every retained version shares the one context: it enrolls by the
+        // current identity, like a Mutation's Channel.
+        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity): void };\n add(records: readonly RecordRef[]): void;\n}\n",
+        " channel(name: string): LoadChannel;\n",
     ] {
         assert!(ts.contains(expected), "{expected}\n---\n{ts}");
     }
@@ -406,6 +425,7 @@ fn backends_without_loads_declare_no_load_types() {
             "JsonValue",
             "LoadNext",
             "LoadContext",
+            "LoadChannel",
             "LoadHandlerCall",
             "Loads<Tx>",
             "\"loads\"",

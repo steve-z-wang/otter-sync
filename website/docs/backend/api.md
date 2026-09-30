@@ -137,7 +137,7 @@ An error that is neither `CallRejected` nor translated to a business code reject
 
 ## Load handlers
 
-A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId` and `loadId`, and no `touch` or `channel`. Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
+A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId`, `loadId` and `channel(name)`, and no `touch`. That `channel(name)` is a `LoadChannel`: it only adds, and only records this page returns, which commit with the page ([Add loaded records to a Channel](../frontend/loads.md#add-loaded-records-to-a-channel)). Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again or adding anything. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
 
 ## Loaders
 
@@ -231,6 +231,17 @@ Every call is synchronous and returns nothing. It validates at the call and copi
 - **The last declaration wins** for each Channel and record in one call: removing then re-adding a member, or adding then removing a non-member, changes nothing.
 - **Touching** gives the record a new stamp once per call, however often it is declared, and delivers it to every Channel it is a member of. A record with no membership is still stamped but reaches no Channel.
 - **Deletion** is a change: touch the deleted record (or delete it through a Model input) and leave it enrolled, so its Loader answers `null` in each Channel and subscribers delete it. A record deleted and removed from a Channel in the same call sends that Channel nothing. Membership belongs to the identity, so a record later created again with the same identity is delivered to the same Channels; use a new identity, or remove the old memberships, for a fresh lifecycle.
+
+Which code can declare what:
+
+| Context | `channel(name)` | `touch` |
+| --- | --- | --- |
+| Mutation handler, legacy slot handler | Add and remove | Yes |
+| [`backend.transaction`](#background-writes), [`backend.publish`](#in-a-transaction-you-own) | Add and remove | Yes |
+| [Load handler](#load-handlers) | Add only, and only records the page returns | No |
+| Query handler | None | No |
+| Loader, for every read (Channel delivery, Bootstrap, Fetch, Load pages) | None: reading a record never adds it | No |
+| Client `transaction` and `onStore` | `tx.channels.subscribe/unsubscribe` changes this client's subscriptions, not server membership | No |
 
 Membership decides where a record is delivered, not who may see it: the Loader still runs for each subscriber and answers `null` for a record that user must not see. Channel names are not access control ([#22](https://github.com/zanminwang/axton/issues/22)).
 

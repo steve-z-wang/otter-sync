@@ -582,6 +582,192 @@ test("a failed refresh stays failed for once callers, never the earlier completi
   }
 });
 
+// ---- Channel enrollment from a Load ----
+// Items seeded here bypass every Mutation, so they belong to no Channel until
+// a Load that `fixture.enrolling` names adds the records it returns to
+// `items:${project}`. Each reader subscribes first and waits for the
+// subscription's persisted initialization before loading: `subscribe()` alone
+// is local intent, and the first handshake is the gap-free boundary.
+
+/** A client subscribed to `channel`, once its first handshake is persisted. */
+const subscribed = async (name: string, channel: string) => {
+  const directory = await scratch(name);
+  const client = await GeneratedClient.open({ path: directory.path, server: server(), onStore: hooks });
+  const subscription = await client.scopes.subscribe(channel);
+  await wait(() => subscription.status.initialization === "ready", `${channel} initialized`);
+  return { client, cleanup: async () => { await client.close(); await directory.cleanup(); } };
+};
+const titleOf = async (client: GeneratedClient, id: string) => (await client.models.item.get({ id }))?.title;
+/** Exchanges that could carry records other than a Channel's: Loads and Fetches. */
+const reads = () => proxy.exchanges.filter((exchange) => exchange.path === "/sync/loads" || exchange.path === "/sync/fetch").length;
+
+test("a Load enrolls the records it returns; a later touch or Mutation reaches the subscribed client through its Channel with no second add", async () => {
+  const ids = await fixture.seed("enr", 3);
+  const [tag] = await fixture.seedTags("enr", ["red"]);
+  fixture.enrolling.add("enr");
+  const reader = await subscribed("enroll", "items:enr");
+  const writerPath = await scratch("enroll-writer");
+  let writer: GeneratedClient | undefined;
+  const snapshots: string[][] = [];
+  let stop = () => {};
+  try {
+    const { client } = reader;
+    stop = client.models.item.watch({ where: { project: "enr" } }, (rows) => snapshots.push(rows.map((row) => `${row.id}:${row.title}`).sort()));
+    const load = await client.loads.projectItems({ project: "enr" });
+    await load.wait();
+    assert.deepEqual(await titles(client, "enr"), ids.map((id) => `${id}:${id} title`));
+    const before = reads();
+
+    await fixture.retitle("enr-2", "touched");
+    await wait(() => snapshots.at(-1)?.includes("enr-2:touched") === true, "the touch through the Channel and the Model watch");
+    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
+    await writer.mutations.call.renameItem({ item: { id: "enr-3", title: "renamed" } });
+    await wait(() => snapshots.at(-1)?.includes("enr-3:renamed") === true, "the Mutation's inferred change through the Channel");
+    await fixture.relabel(tag!, "blue");
+    await wait(async () => (await client.models.tag.get({ id: tag! }))?.label === "blue", "the Tag the mixed-list add enrolled");
+    assert.equal(reads(), before, "no Load or Fetch carried them: only the Channel");
+    assert.deepEqual(snapshots.at(-1), ["enr-1:enr-1 title", "enr-2:touched", "enr-3:renamed"]);
+    assert.deepEqual(await seen(client), { "enr-1": 1, "enr-2": 2, "enr-3": 2 }, "a record the page and its enrollment both delivered was stored once; each later change once more");
+  } finally {
+    fixture.enrolling.delete("enr");
+    stop();
+    await writer?.close();
+    await reader.cleanup();
+    await writerPath.cleanup();
+  }
+});
+
+test("a newer Channel update of an enrolled record arrives before its held Load page: no regression, duplicates are harmless and a pending edit stays", async () => {
+  const ids = await fixture.seed("gate", 2);
+  fixture.enrolling.add("gate");
+  const reader = await subscribed("gate", "items:gate");
+  const writerPath = await scratch("gate-writer");
+  let writer: GeneratedClient | undefined;
+  try {
+    const { client } = reader;
+    // The backend commits page 1 and its enrollment; the client does not get it yet.
+    const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "gate" && item.continuation === null));
+    const load = await client.loads.projectItems({ project: "gate" });
+    const exchange = await held.arrived;
+    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
+    await writer.mutations.call.renameItem({ item: { id: "gate-1", title: "v2" } });
+    await wait(async () => (await titleOf(client, "gate-1")) === "v2", "the newer update through the Channel, before the page");
+    assert.equal((await statusOf(client, load.id))?.pages, 0, "the page is still held");
+
+    // A pending edit of the other record, its Mutation request held before the backend sees it.
+    const pushed = proxy.holdRequest((candidate) => candidate.path === "/sync/mutations" && candidate.body.includes('"mine"'));
+    const mine = await client.mutations.renameItem({ item: { id: "gate-2", title: "mine" } });
+    await pushed.arrived;
+    await wait(async () => (await titleOf(client, "gate-2")) === "mine", "the optimistic edit");
+
+    held.release();
+    await load.wait();
+    const answer = (JSON.parse(exchange.response!).loads as LoadResponseItem[]).find((item) => item.loadId === load.id)!;
+    const older = answer.records.find((record) => record.identity.id === "gate-1")!;
+    assert.equal(older.state.title, "gate-1 title", "the page carried the older row");
+    const [current] = await stampsOf(["gate-1"]);
+    assert.ok(older.stamp < Number(current.stamp), `the page stamp ${older.stamp} is older than ${current.stamp}`);
+    assert.equal(await titleOf(client, "gate-1"), "v2", "the older page did not regress the Channel's newer row");
+    assert.equal(await titleOf(client, "gate-2"), "mine", "the pending edit is still replayed over the page and the Channel");
+    assert.equal((await seen(client))["gate-2"], 1, "the page and the Channel delivered gate-2 at one stamp: stored once");
+
+    pushed.release();
+    assert.equal((await mine.wait()).error, null);
+    assert.equal(await titleOf(client, "gate-2"), "mine", "and the backend accepted it");
+
+    // A fresh traversal adds the same members again: no stamp moves and nothing is published.
+    const stamps = await stampsOf(ids);
+    const head = await fixture.head("items:gate");
+    const again = await client.loads.projectItems({ project: "gate" });
+    await again.wait();
+    assert.notEqual(again.id, load.id);
+    assert.ok(handledCalls(again.id).length > 0, "its pages ran the handler, which added both records again");
+    assert.deepEqual(await stampsOf(ids), stamps, "re-adding existing members advanced no stamp");
+    assert.equal(await fixture.head("items:gate"), head, "and published nothing");
+    assert.deepEqual(await titles(client, "gate"), ["gate-1:v2", "gate-2:mine"]);
+  } finally {
+    fixture.enrolling.delete("gate");
+    await writer?.close();
+    await reader.cleanup();
+    await writerPath.cleanup();
+  }
+});
+
+test("a reused once Load enrolls nothing; a fresh traversal establishes the membership it missed", async () => {
+  await fixture.seed("old", 2);
+  const reader = await subscribed("once-enroll", "items:old");
+  try {
+    const { client } = reader;
+    // Completed by a handler that did not enroll yet.
+    const first = await client.loads.projectItems({ project: "old" }, { once: true });
+    await first.wait();
+    fixture.enrolling.add("old");
+    const requests = proxy.exchanges.length;
+    const runs = fixture.handled.length;
+    const hit = await client.loads.projectItems({ project: "old" }, { once: true });
+    assert.equal(hit.id, first.id, "the completed job");
+    await hit.wait();
+    assert.equal(proxy.exchanges.length, requests, "no request");
+    assert.equal(fixture.handled.length, runs, "no handler ran, so nothing was enrolled");
+
+    // A change to old-1, then a new Channel member: once the member arrives,
+    // old-1's change would have too had old-1 been a member.
+    await fixture.retitle("old-1", "unseen");
+    await fixture.create("old-marker", "old", "items:old");
+    await wait(async () => (await titleOf(client, "old-marker")) === "old-marker title", "the later Channel member");
+    assert.equal(await titleOf(client, "old-1"), "old-1 title", "the change of a record no Load enrolled did not reach the Channel");
+
+    const refreshed = await client.loads.projectItems({ project: "old" }, { once: true, refresh: true });
+    assert.notEqual(refreshed.id, first.id, "refresh is a fresh traversal");
+    await refreshed.wait();
+    assert.equal(await titleOf(client, "old-1"), "unseen", "its page carried the current row");
+    await fixture.retitle("old-1", "followed");
+    await wait(async () => (await titleOf(client, "old-1")) === "followed", "a change after the fresh traversal enrolled old-1");
+  } finally {
+    fixture.enrolling.delete("old");
+    await reader.cleanup();
+  }
+});
+
+test("cancelling and forgetting a Load keep its committed page's membership; records it never returned need their own enrollment", async () => {
+  await fixture.seed("cx", 3);
+  fixture.enrolling.add("cx");
+  const reader = await subscribed("cancel-enroll", "items:cx");
+  try {
+    const { client } = reader;
+    const second = fixture.holdHandler((page) => page.key === "cx" && page.continuation !== null);
+    const load = await client.loads.projectItems({ project: "cx" });
+    await second.arrived;
+    await wait(async () => (await statusOf(client, load.id))?.pages === 1, "page 1 committed on both sides");
+    const cancelling = load.cancel();
+    // The page 2 request in flight fails, so it enrolls nothing.
+    fixture.failing.add("cx");
+    second.release();
+    await cancelling;
+    assert.equal((await statusOf(client, load.id))?.phase, "cancelled");
+    await load.forget();
+    assert.equal(await client.loads.get(load.id), null);
+
+    await fixture.retitle("cx-3", "unseen");
+    await fixture.create("cx-4", "cx");
+    await fixture.retitle("cx-1", "after cancel");
+    await wait(async () => (await titleOf(client, "cx-1")) === "after cancel", "a member the cancelled Load's committed page enrolled");
+    assert.equal(await client.models.item.get({ id: "cx-3" }), null, "no committed page returned cx-3, so it was never enrolled");
+    assert.equal(await client.models.item.get({ id: "cx-4" }), null, "a record created later with no add is not enrolled");
+
+    fixture.failing.delete("cx");
+    const fresh = await client.loads.projectItems({ project: "cx" });
+    await fresh.wait();
+    await fixture.retitle("cx-3", "followed");
+    await fixture.retitle("cx-4", "followed");
+    await wait(async () => (await titleOf(client, "cx-3")) === "followed" && (await titleOf(client, "cx-4")) === "followed", "changes after a fresh Load returned them");
+  } finally {
+    fixture.failing.delete("cx");
+    fixture.enrolling.delete("cx");
+    await reader.cleanup();
+  }
+});
+
 // ---- Generated Dart client ----
 
 test("the generated Dart client pages, reuses a once Load offline and invalidates it", async () => {
@@ -596,4 +782,22 @@ test("the generated Dart client pages, reuses a once Load offline and invalidate
     assert.match(stdout, /Dart generated Loads: passed/);
     assert.ok(fixture.handled.some((page) => page.key === "dart"), "the Dart client reached the backend");
   } finally { await cleanup(); }
+});
+
+test("the generated Dart client receives a later change to a record its Load enrolled, through the Channel", async () => {
+  const { path, cleanup } = await scratch("dart-enroll");
+  try {
+    await fixture.seed("dart-enr", 3);
+    fixture.enrolling.add("dart-enr");
+    const root = join(here, "../..");
+    const { stdout } = await execFileAsync("dart", [
+      "run", "client.dart", proxy.url, path,
+      join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "enroll",
+    ], { cwd: here, timeout: 60_000 });
+    assert.match(stdout, /Dart Load enrollment: passed/);
+    assert.ok(fixture.handled.some((page) => page.key === "dart-enr"), "the Dart client's Load reached the backend");
+  } finally {
+    fixture.enrolling.delete("dart-enr");
+    await cleanup();
+  }
 });

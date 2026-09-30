@@ -1079,7 +1079,7 @@ impl<S: ClientStore> crate::engine::Engine<'_, S> {
         if page.load_id != fence.load_id || page.call_id != fence.call_id {
             return Err(invalid("Load page does not answer its fenced request"));
         }
-        let report = self.apply_records(&page.records)?;
+        let report = self.apply_enrolled_records(&page.records, &page.memberships)?;
         let (diagnostics, reports): (Vec<LoadDiagnostic>, Vec<Report>) = report
             .reports
             .iter()

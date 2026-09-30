@@ -633,3 +633,82 @@ fn validate(page: &BootstrapPage, expected_after: u64) -> Result<()> {
     }
     Ok(())
 }
+
+impl<S: ClientStore> Client<S> {
+    /// Historical membership evidence uses the same durable run fence as bootstrap.
+    pub fn apply_channel_bootstrap_page(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &axton_core::ChannelBootstrapPage,
+    ) -> Result<BootstrapApply> {
+        page.validate()?;
+        self.write(|e| {
+            e.apply_channel_bootstrap_body(scope, subscription_id, run, expected_after, page)
+        })
+    }
+}
+impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn apply_channel_bootstrap_body(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &axton_core::ChannelBootstrapPage,
+    ) -> Result<BootstrapApply> {
+        page.validate()?;
+        let legacy = BootstrapPage {
+            channel: page.channel.clone(),
+            from: page.from,
+            to: page.to,
+            until: page.until,
+            head: page.head,
+            records: vec![],
+        };
+        let Some(row) = self
+            .bootstrap_row(scope)?
+            .filter(|row| answers(row, subscription_id, run, expected_after, &legacy))
+        else {
+            return Ok(BootstrapApply::Stale);
+        };
+        validate(&legacy, expected_after)?;
+        let report = self.apply_channel_changes(&page.changes)?;
+        let failures: Vec<_> = report
+            .reports
+            .iter()
+            .filter_map(BootstrapRecordFailure::of)
+            .collect();
+        let mut state = row.state;
+        if !failures.is_empty() {
+            state.state = BootstrapPhase::Failed;
+            state.error = Some(BootstrapError::new(
+                RECORDS_FAILED,
+                "channel bootstrap records failed",
+                failures,
+            ));
+            written(self.set_bootstrap(&state, run)?)?;
+            self.mark_bootstrap(scope);
+            return Ok(BootstrapApply::Failed { state, report });
+        }
+        state.cursor = page.to;
+        state.state = BootstrapPhase::Loading;
+        if page.terminal() {
+            state.barrier = Some(page.head);
+            state.state = if row
+                .subscription
+                .cursor
+                .is_some_and(|cursor| cursor >= page.head)
+            {
+                BootstrapPhase::Complete
+            } else {
+                BootstrapPhase::CatchingUp
+            };
+        }
+        written(self.set_bootstrap(&state, run)?)?;
+        self.mark_bootstrap(scope);
+        Ok(BootstrapApply::Applied { state, report })
+    }
+}

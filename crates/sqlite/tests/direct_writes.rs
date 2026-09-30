@@ -465,3 +465,25 @@ fn an_equal_stamp_redelivery_is_not_newer_canonical_data() {
         d.assert_nothing_queued(&format!("{source:?}"));
     }
 }
+
+#[test]
+fn repeated_clean_direct_updates_retain_one_patch_and_authority_clears_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    c.apply_page(page("a", 0, 1, Some("replica"))).unwrap();
+    for n in 0..20 {
+        c.transaction(|tx| tx.direct(update(&format!("local {n}"))))
+            .unwrap();
+    }
+    let operations = c
+        .read_sql("SELECT operations FROM axton_local_replica_layer", &[])
+        .unwrap();
+    let operations: serde_json::Value =
+        serde_json::from_str(operations[0]["operations"].as_str().unwrap()).unwrap();
+    assert_eq!(operations.as_array().unwrap().len(), 1);
+    assert_eq!(operations[0]["values"]["text"], "local 19");
+    c.apply_page(page("a", 1, 2, Some("server"))).unwrap();
+    assert_eq!(table_count(&mut c, "axton_local_replica_layer"), 0);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "server");
+}

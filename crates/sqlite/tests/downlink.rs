@@ -652,3 +652,44 @@ fn a_record_that_violates_a_local_constraint_is_skipped_alone() {
     assert_eq!(c.query("Comment", &json!({})).unwrap().len(), 2);
     assert_eq!(c.cursor("lib").unwrap(), Some(3));
 }
+
+#[test]
+fn channel_membership_page_ignores_unsubscribed_changes_without_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    subscribe(&mut c, "b");
+    c.apply_page(page("a", 0, 1, Some("cached"))).unwrap();
+    c.transaction(|tx| tx.set_channel("a".into(), false))
+        .unwrap();
+    c.apply_channel_page(ChannelPullPage {
+        cursors: BTreeMap::from([
+            (
+                "a".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            ),
+            (
+                "b".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            ),
+        ]),
+        changes: vec![ChannelChange::Remove {
+            channel: "a".into(),
+            cursor: 2,
+            key: key(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(c.cursor("a").unwrap(), None);
+    assert_eq!(c.cursor("b").unwrap(), Some(1));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "cached");
+    assert_eq!(table_count(&mut c, "axton_channel_member"), 0);
+}

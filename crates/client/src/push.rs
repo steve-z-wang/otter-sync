@@ -356,7 +356,14 @@ impl<S: ClientStore> Engine<'_, S> {
         // Each record fails alone, as on a page: one this client cannot
         // apply is reported and never holds the receipt, and so the queue,
         // back.
+        axton_core::validate_memberships(&receipt.memberships, &receipt.records)?;
+        self.merge_memberships(&receipt.memberships)?;
         for record in &receipt.records {
+            let key = self.schema.record_key(&record.model, &record.identity)?;
+            if !record.state.is_null() && self.unheld_release(&key)? {
+                self.skip_authority_occurrence()?;
+                continue;
+            }
             let (applied, entry) = self.stage_isolated(record, &mut affected)?;
             report.applied += usize::from(applied);
             report.reports.extend(entry.map(|mut entry| {

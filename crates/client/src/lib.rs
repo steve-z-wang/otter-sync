@@ -3,6 +3,7 @@ pub mod actions;
 pub mod authority;
 pub mod bootstrap;
 mod bootstrap_ledger;
+pub mod channel_members;
 pub mod connection;
 pub mod ddl;
 mod defaults;
@@ -1255,11 +1256,11 @@ fn count_direct<S: ClientStore>(store: &mut S, schema: &Schema) -> Result<usize>
             .iter()
             .map(|k| format!("'{}', m.{}", k.replace('\'', "''"), ddl::quote(k)))
             .collect();
-        // A row with no stamp and no pending operation reached this file only
+        // A row with no positive stamp and no pending operation reached this file only
         // through a direct write: nothing will ever send it.
         let identity = format!("json_object({})", pairs.join(", "));
         let sql = format!(
-            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity}) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
+            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity} AND r.stamp > 0) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
             ddl::quote(&model.name),
         );
         let rows = store.query_committed(&sql, &[json!(model.name), json!(model.name)])?;

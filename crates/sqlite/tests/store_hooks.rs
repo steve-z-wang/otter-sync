@@ -797,3 +797,56 @@ fn a_store_session_submits_no_mutation_and_records_no_companion() {
     assert_eq!(client.read(&local).unwrap().unwrap()["text"], "hook");
     assert_eq!(client.cursor("a").unwrap(), Some(1));
 }
+
+#[test]
+fn channel_release_notifies_local_observers_only_after_commit() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = open(&dir.path().join("db"));
+    subscribe(&mut client, "a");
+    client
+        .apply_channel_page(ChannelPullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![ChannelChange::Upsert {
+                channel: "a".into(),
+                cursor: 1,
+                record: authority(Some("base"), 7),
+            }],
+        })
+        .unwrap();
+    let observer = client.watch(BTreeSet::from(["Entry".into()]));
+    client.begin_session().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            )]),
+            changes: vec![ChannelChange::Remove {
+                channel: "a".into(),
+                cursor: 2,
+                key: key(),
+            }],
+        }))
+        .unwrap();
+    assert!(prepared.accepted().is_empty());
+    assert!(prepared.changes().is_empty());
+    assert!(observer.try_recv().is_err());
+    client.apply_prepared_store(prepared).unwrap();
+    assert!(observer.try_recv().is_err());
+    assert!(client.read(&key()).unwrap().is_some());
+    client.commit_session().unwrap();
+    assert!(observer.try_recv().is_ok());
+    assert!(client.read(&key()).unwrap().is_none());
+}

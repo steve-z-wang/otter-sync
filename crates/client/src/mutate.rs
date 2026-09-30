@@ -39,7 +39,7 @@ impl Step {
 /// keeps its newer content), an update of a row that no longer exists
 /// changes nothing (it cannot preserve a record whose creation went), and a
 /// delete removes the row.
-fn apply_settled(row: &mut Option<Value>, op: &Operation) {
+pub(crate) fn apply_settled(row: &mut Option<Value>, op: &Operation) {
     match op.op {
         OperationKind::Create => {
             if let Some(values) = &op.values {
@@ -220,6 +220,7 @@ impl<S: ClientStore> Engine<'_, S> {
         for step in steps.drain(..settled) {
             if let Step::Settled(write) = step {
                 apply_settled(&mut base, &write.op);
+                self.retain_local_operation(key, &write.op)?;
                 self.delete_local_write(write.sequence)?;
             }
         }
@@ -562,7 +563,7 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     /// On a dirty record the write is retained after everything already
     /// written, so settling earlier work neither undoes nor reorders it; on a
-    /// clean record the visible row is all there is.
+    /// clean record its operation is retained separately for replica release.
     fn direct_one(&mut self, operation: Operation) -> Result<()> {
         let key = self
             .schema
@@ -572,6 +573,8 @@ impl<S: ClientStore> Engine<'_, S> {
         if is_dirty {
             let after = self.last_ordinal()?;
             self.insert_local_write(after, None, LocalWriteKind::Independent, &operation)?;
+        } else {
+            self.retain_local_operation(&key, &operation)?;
         }
         Ok(())
     }

@@ -10,6 +10,8 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_schema",
     "axton_client",
     "axton_record",
+    "axton_channel_member",
+    "axton_local_replica_layer",
     "axton_subscription",
     "axton_mutation",
     "axton_mutation_operation",
@@ -40,6 +42,12 @@ const CLIENT_COLUMNS: &[&str] = &["last_completed_push", "push_models", "next_su
 /// ([#151](https://github.com/zanminwang/axton/issues/151)), whose defaults are
 /// a load that was never requested.
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "axton_record",
+        "base_state",
+        "TEXT NOT NULL DEFAULT 'legacy'",
+    ),
+    ("axton_record", "evicted_at", "INTEGER NOT NULL DEFAULT 0"),
     ("axton_mutation", "diverged", "INTEGER NOT NULL DEFAULT 0"),
     ("axton_mutation", "call_id", "TEXT"),
     ("axton_mutation", "args", "TEXT"),
@@ -96,7 +104,19 @@ CREATE TABLE IF NOT EXISTS axton_client (
 );
 CREATE TABLE IF NOT EXISTS axton_record (
   model TEXT NOT NULL, identity TEXT NOT NULL, stamp INTEGER NOT NULL,
+  base_state TEXT NOT NULL DEFAULT 'materialized',
+  evicted_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (model, identity)
+);
+CREATE TABLE IF NOT EXISTS axton_channel_member (
+  channel TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
+  cursor INTEGER NOT NULL CHECK(cursor > 0), present INTEGER NOT NULL CHECK(present IN (0,1)),
+  PRIMARY KEY(channel, model, identity)
+);
+CREATE INDEX IF NOT EXISTS axton_channel_member_record ON axton_channel_member(model, identity, present);
+CREATE TABLE IF NOT EXISTS axton_local_replica_layer (
+  model TEXT NOT NULL, identity TEXT NOT NULL, operations TEXT NOT NULL,
+  PRIMARY KEY(model, identity)
 );
 CREATE TABLE IF NOT EXISTS axton_subscription (
   channel          TEXT PRIMARY KEY,

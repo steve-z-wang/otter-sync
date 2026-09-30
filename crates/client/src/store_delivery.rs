@@ -29,6 +29,14 @@ pub enum StoreChange {
 #[derive(Clone)]
 pub enum StoreDelivery {
     Page(PullPage),
+    ChannelPage(axton_core::ChannelPullPage),
+    ChannelBootstrap {
+        scope: String,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: axton_core::ChannelBootstrapPage,
+    },
     Bootstrap {
         scope: String,
         subscription_id: u64,
@@ -132,6 +140,36 @@ impl<S: ClientStore> Client<S> {
         prepared: Option<&PreparedStore>,
     ) -> Result<(StoreResult, StageMode)> {
         match delivery {
+            StoreDelivery::ChannelPage(page) => {
+                page.validate()?;
+                let legacy = PullPage {
+                    cursors: page.cursors.clone(),
+                    changes: vec![],
+                };
+                if prepared.is_none() && self.stale_subscription_page(&legacy) {
+                    return Ok((
+                        StoreResult::Page(ApplyReport {
+                            stale: true,
+                            ..Default::default()
+                        }),
+                        mode,
+                    ));
+                }
+                self.staged(mode, |e| {
+                    e.apply_channel_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
+                        .map(StoreResult::Page)
+                })
+            }
+            StoreDelivery::ChannelBootstrap {
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
+            } => self.staged(mode, |e| {
+                e.apply_channel_bootstrap_body(scope, *subscription_id, *run, *expected_after, page)
+                    .map(StoreResult::Bootstrap)
+            }),
             StoreDelivery::Page(page) => {
                 page.validate()?;
                 if prepared.is_none() && self.stale_subscription_page(page) {
@@ -316,9 +354,14 @@ impl<S: ClientStore> Client<S> {
             let _ = self.rollback_session();
             return Err(invalid("prepared delivery did not replay all occurrences"));
         }
-        if let StoreDelivery::Page(page) = &prepared.delivery {
+        let cursors = match &prepared.delivery {
+            StoreDelivery::Page(page) => Some(&page.cursors),
+            StoreDelivery::ChannelPage(page) => Some(&page.cursors),
+            _ => None,
+        };
+        if let Some(cursors) = cursors {
             self.session.as_mut().unwrap().pull_pages.push(
-                page.cursors
+                cursors
                     .iter()
                     .map(|(name, range)| (name.clone(), range.from))
                     .collect(),

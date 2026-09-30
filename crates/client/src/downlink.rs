@@ -143,3 +143,77 @@ impl<S: ClientStore> Engine<'_, S> {
         }
     }
 }
+
+impl<S: ClientStore> Client<S> {
+    /// Apply channel membership and authority atomically, retaining provenance.
+    pub fn apply_channel_page(&mut self, page: axton_core::ChannelPullPage) -> Result<ApplyReport> {
+        page.validate()?;
+        let legacy = PullPage {
+            cursors: page.cursors.clone(),
+            changes: vec![],
+        };
+        if self.stale_subscription_page(&legacy) {
+            return Ok(ApplyReport {
+                stale: true,
+                ..Default::default()
+            });
+        }
+        self.write(|engine| engine.apply_channel_page_body(&page, None))
+    }
+}
+impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn apply_channel_page_body(
+        &mut self,
+        page: &axton_core::ChannelPullPage,
+        guards: Option<&[(String, u64, u64)]>,
+    ) -> Result<ApplyReport> {
+        page.validate()?;
+        let mut advances = Vec::new();
+        for (channel, range) in &page.cursors {
+            let Some(state) = self.subscription(channel)? else {
+                continue;
+            };
+            let Some(current) = state.cursor else {
+                continue;
+            };
+            if let Some(guards) = guards
+                && !guards.iter().any(|(name, id, to)| {
+                    name == channel && *id == state.subscription_id && *to == range.to
+                })
+            {
+                continue;
+            }
+            if range.to <= current {
+                continue;
+            }
+            if range.from > current {
+                return Err(invalid("pull cursor gap"));
+            }
+            advances.push((channel.clone(), state.subscription_id, range.to));
+        }
+        if advances.is_empty() {
+            return Ok(ApplyReport {
+                stale: true,
+                ..Default::default()
+            });
+        }
+        let changes: Vec<_> = page
+            .changes
+            .iter()
+            .filter(|change| {
+                let channel = match change {
+                    axton_core::ChannelChange::Upsert { channel, .. }
+                    | axton_core::ChannelChange::Remove { channel, .. } => channel,
+                };
+                advances.iter().any(|(name, _, _)| name == channel)
+            })
+            .cloned()
+            .collect();
+        let mut report = self.apply_channel_changes(&changes)?;
+        for (channel, id, to) in advances {
+            self.advance_cursor(&channel, id, to)?;
+            report.cursors.insert(channel, to);
+        }
+        Ok(report)
+    }
+}

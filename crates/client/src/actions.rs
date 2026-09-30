@@ -178,11 +178,7 @@ impl<S: ClientStore> Engine<'_, S> {
         response: &DirectActionResponse,
         snapshot: Option<(&QueryCacheKey, Option<&str>)>,
     ) -> Result<ApplyReport> {
-        let mut report = if response.records.is_empty() {
-            ApplyReport::default()
-        } else {
-            self.apply_records(&response.records)?
-        };
+        let mut report = self.apply_enrolled_records(&response.records, &response.memberships)?;
         if let (ActionOutcome::Succeeded { result }, Some((key, generation))) =
             (&response.completion.outcome, snapshot)
         {

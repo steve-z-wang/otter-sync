@@ -2,8 +2,8 @@
 //! per-socket drain policy ([`Subscriptions`]). The host owns the socket, the
 //! commit hub and the database; it feeds [`LiveEvent`]s and executes the
 //! [`LiveAction`]s it gets back, keeping no sync decision of its own.
-use crate::{Error, Host, Result, code, head, principal, process_pull};
-use axton_core::{CursorRange, PullPage, PullRequest, SubscribeRequest, SubscriptionAck};
+use crate::{Error, Host, Result, code, head, principal};
+use axton_core::{CursorRange, PullRequest, SubscribeRequest, SubscriptionAck};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,6 +36,7 @@ pub async fn negotiate(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<Negotiation> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = decode_subscribe(bytes)?;
     config.check_declared(&request.models)?;
@@ -58,23 +59,7 @@ pub async fn negotiate(
 /// A page the host pulled must answer exactly the cursors that were asked:
 /// the same channels, each starting at its requested cursor.
 pub fn page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
-    let invalid = |m: String| Error::new(code::LIVE_INVALID_PAGE, m);
-    let decoded = PullPage::decode(page.as_bytes())
-        .map_err(|e| invalid(format!("invalid live page: {e}")))?;
-    if !decoded.cursors.keys().eq(expected.keys()) {
-        return Err(invalid("invalid live page channels".into()));
-    }
-    for (channel, range) in &decoded.cursors {
-        if range.from != expected[channel] {
-            return Err(invalid(format!(
-                "invalid live page progression on {channel}"
-            )));
-        }
-    }
-    Ok(PageProgress {
-        page: page.into(),
-        cursors: decoded.cursors,
-    })
+    channel_page_progress(page, expected)
 }
 
 pub async fn pull(
@@ -84,14 +69,7 @@ pub async fn pull(
     models: &BTreeMap<String, u64>,
     host: &impl Host,
 ) -> Result<PageProgress> {
-    let request = PullRequest {
-        models: models.clone(),
-        cursors: cursors.clone(),
-    }
-    .encode()
-    .map_err(|error| Error::new(code::REQUEST_INVALID, error.to_string()))?;
-    let page = process_pull(config, owner, &request, host).await?;
-    page_progress(&page, cursors)
+    channel_pull(config, owner, cursors, models, host).await
 }
 
 /// What the host reports to a socket's [`Subscriptions`].
@@ -200,15 +178,15 @@ impl Subscriptions {
     /// invalid page progression is `live.invalid_page`. The host reports either
     /// and closes the socket.
     pub fn handle(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
-        self.handle_page(event, false)
+        self.handle_page(event)
     }
 
     /// Apply a channel-aware live page without projecting away removals.
     pub fn handle_channel(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
-        self.handle_page(event, true)
+        self.handle_page(event)
     }
 
-    fn handle_page(&mut self, event: LiveEvent, channel: bool) -> Result<Vec<LiveAction>> {
+    fn handle_page(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
         match event {
             LiveEvent::Committed { scope } => {
                 self.scope_mut(&scope)?.pending = true;
@@ -227,11 +205,7 @@ impl Subscriptions {
                 if self.closed {
                     return Ok(vec![]);
                 }
-                let progress = if channel {
-                    channel_page_progress(&page, &asked)?
-                } else {
-                    page_progress(&page, &asked)?
-                };
+                let progress = channel_page_progress(&page, &asked)?;
                 let mut actions = vec![];
                 let advanced = progress.cursors.values().any(|range| range.to > range.from);
                 if advanced {
@@ -346,6 +320,9 @@ pub async fn channel_pull(
     }
     .encode()
     .map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))?;
+    let request =
+        axton_core::with_capabilities(&request, &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY])
+            .map_err(crate::internal)?;
     let page = crate::process_channel_pull(config, owner, &request, host).await?;
     channel_page_progress(&page, cursors)
 }

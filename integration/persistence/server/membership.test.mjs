@@ -42,9 +42,9 @@ const make=db=>createBackend({config,native,database:db,authenticate:()=>'alice'
  mutations:{async mark({ctx,args}){await write(ctx.tx,args.todo.id,args.todo.title);await plans.get(args.todo.title)?.(ctx);}},
  loaders:{todo:loader}});
 const backend=make(database);
-const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({cursors,models:{Todo:1}})));
-const load=async(channel,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({mode:'bootstrap',channel,models:{Todo:1},after,until})));
-const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({clientId,batchSequence:1,models:{Todo:1},
+const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({capabilities:['channel-membership-v1'],cursors,models:{Todo:1}})));
+const load=async(channel,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],mode:'bootstrap',channel,models:{Todo:1},after,until})));
+const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({capabilities:['channel-membership-v1'],clientId,batchSequence:1,models:{Todo:1},
  mutations:calls.map(([callId,id,title],i)=>({ordinal:i+1,callId,name:'Mark',version:1,args:{todo:{id,title}}}))})).then(JSON.parse);
 const seed=(id,title)=>q('INSERT INTO member_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
 const head=async channel=>Number((await q('SELECT head FROM axton_channel WHERE channel=$1',[channel]))[0]?.head??0);
@@ -52,7 +52,7 @@ const stamp=async id=>Number((await q('SELECT stamp FROM axton_record WHERE mode
 /** The pair's one log row: its latest cursor and kind. */
 const position=async(channel,id)=>{const [row]=await q('SELECT l.cursor,l.kind FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1 AND r.model=$2 AND r.identity_key=$3',[channel,'Todo',key(id)]);return row?[Number(row.cursor),row.kind]:null;};
 const members=async id=>(await q('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel',['Todo',key(id)])).map(r=>r.channel);
-const delivered=page=>(page.changes??page.records).map(c=>[c.identity.id,c.stamp,c.state]);
+const delivered=page=>page.changes.filter(c=>c.kind==='upsert').map(c=>[c.identity.id,c.stamp,c.state]);
 const range=(page,channel)=>page.cursors[channel];
 const add=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.channel(channel).todo.add({id});});
 const remove=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.channel(channel).todo.remove({id});});
@@ -74,11 +74,11 @@ test('removing every remaining row yields a terminal page that advances to the h
  assert.deepEqual(await position(channel,records[0]),[4,'remove'],'and replaces the pair\'s upsert row');
  for(const from of [0,1,2,5]){
   const page=await pull({[channel]:from});
-  assert.deepEqual(page.changes,[],`from ${from}`);
-  assert.deepEqual(range(page,channel),{from,to:6,head:6},'an empty page still advances to the head');
+  assert.deepEqual(page.changes.map(c=>[c.kind,c.identity.id]),records.slice(Math.max(0,from-3)).map(id=>['remove',id]),`from ${from}`);
+  assert.deepEqual(range(page,channel),{from,to:6,head:6},'the removal page advances to the head');
  }
  const page=await load(channel,0,6);
- assert.deepEqual(page.records,[]);
+ assert.ok(page.changes.every(c=>c.kind==='remove'));
  assert.deepEqual([page.from,page.to,page.until,page.head],[0,6,6,6],'the interval is finished');
 });
 
@@ -91,15 +91,16 @@ test('removed rows exceeding a page do not starve the active rows after them',as
  assert.deepEqual(first.changes.map(c=>c.identity.id),records.slice(60,110),'membership filters before the limit');
  assert.deepEqual(range(first,channel),{from:0,to:110,head:175});
  const second=await pull({[channel]:110});
- assert.deepEqual(second.changes.map(c=>c.identity.id),records.slice(110));
- assert.deepEqual(range(second,channel),{from:110,to:175,head:175},'the remove positions after them are holes up to the head');
+ assert.deepEqual(second.changes.filter(c=>c.kind==='upsert').map(c=>c.identity.id),records.slice(110));
+ assert.equal(second.changes.filter(c=>c.kind==='remove').length,45);
+ assert.deepEqual(range(second,channel),{from:110,to:160,head:175},'removals count toward the page limit');
  const history=await load(channel,0,115);
- assert.deepEqual(history.records.map(r=>r.identity.id),records.slice(60,110));
+ assert.deepEqual(history.changes.map(r=>r.identity.id),records.slice(60,110));
  assert.equal(history.to,110,'a full page of members is not terminal');
  const rest=await load(channel,110,115);
- assert.deepEqual([rest.records.map(r=>r.identity.id),rest.to],[records.slice(110),115]);
+ assert.deepEqual([rest.changes.map(r=>r.identity.id),rest.to],[records.slice(110),115]);
  const crossing=await load(channel,0,100);
- assert.deepEqual([crossing.records.map(r=>r.identity.id),crossing.to],[records.slice(60,100),100],'a scan crossing the origin is terminal');
+ assert.deepEqual([crossing.changes.map(r=>r.identity.id),crossing.to],[records.slice(60,100),100],'a scan crossing the origin is terminal');
 });
 
 test('a record removed and then touched elsewhere is not exposed through its old channel',async()=>{
@@ -112,10 +113,10 @@ test('a record removed and then touched elsewhere is not exposed through its old
  assert.deepEqual(await position('exposed-a',id),[2,'remove'],'the pair\'s row is its removal');
  for(const from of [0,1]){
   const page=await pull({'exposed-a':from});
-  assert.deepEqual(page.changes,[],`from ${from}: no upsert is answered for the removed pair`);
+  assert.deepEqual(page.changes.map(c=>[c.kind,c.identity.id]),[['remove',id]],`from ${from}`);
   assert.deepEqual(range(page,'exposed-a'),{from,to:2,head:2});
  }
- assert.deepEqual((await load('exposed-a',0,1)).records,[]);
+ assert.deepEqual((await load('exposed-a',0,1)).changes,[]);
  assert.deepEqual(delivered(await pull({'exposed-b':1})),[[id,2,{title:'after removal'}]]);
 });
 
@@ -134,7 +135,7 @@ test('re-adding a removed record publishes its current state at a fresh position
  assert.deepEqual(range(page,'readd'),{from:3,to:5,head:5});
 });
 
-test('a record removed and re-added above a Bootstrap origin is covered by delivery; one only removed by neither',async()=>{
+test('a record removed and re-added above a Bootstrap origin is covered by delivery; removal arrives as an identity event',async()=>{
  const channel='origin',records=['origin-e1','origin-e2','origin-m','origin-x'];
  for(const id of records)await seed(id,'history');
  await add(channel,records);
@@ -144,10 +145,11 @@ test('a record removed and re-added above a Bootstrap origin is covered by deliv
  await add(channel,['origin-m']);
  await remove(channel,['origin-x']);
  const page=await load(channel,0,origin);
- assert.deepEqual(page.records.map(r=>r.identity.id),['origin-e1','origin-e2']);
+ assert.deepEqual(page.changes.map(r=>r.identity.id),['origin-e1','origin-e2']);
  assert.deepEqual([page.to,page.head],[origin,7],'terminal, with a barrier that covers the re-added position');
  const live=await pull({[channel]:origin});
  assert.deepEqual(delivered(live),[['origin-m',1,{title:'history'}]]);
+ assert.ok(live.changes.some(c=>c.kind==='remove'&&c.identity.id==='origin-x'));
  assert.deepEqual(range(live,channel),{from:4,to:7,head:7});
 });
 
@@ -164,7 +166,7 @@ test('a deleted record stays enrolled and yields null; recreating the identity d
  assert.equal(await stamp(id),4);
  assert.deepEqual([await head('deleted'),await position('deleted',id)],[4,[4,'remove']],'the final relationship wins: a removal, not a deletion, is published');
  const page=await pull({deleted:0});
- assert.deepEqual(page.changes,[]);
+ assert.ok(page.changes.every(c=>c.kind==='remove'));
  assert.deepEqual(range(page,'deleted'),{from:0,to:4,head:4});
 });
 
@@ -178,7 +180,7 @@ test('explicit removal fabricates no deletion: it keeps business rows and stamps
  assert.deepEqual(await q('SELECT title FROM member_todo WHERE id=$1',[id]),[{title:'kept'}]);
  assert.deepEqual(await members(id),[]);
  const page=await pull({kept:0});
- assert.deepEqual(page.changes,[],'no null change stands in for the removal');
+ assert.deepEqual(page.changes,[{kind:'remove',channel:'kept',cursor:2,model:'Todo',identity:{id}}]);
  assert.deepEqual(range(page,'kept'),{from:0,to:2,head:2});
 });
 
@@ -269,7 +271,7 @@ test('touch and remove serialize in either order; the stale touch retries and pu
  const verify=async(id,order,label)=>{
   const C=`${id}-C`,got=await outcome(id,[C]);
   assert.deepEqual({stamp:got.stamp,members:got.members,C:got[C]},{stamp:2,members:[`${id}-B`],C:expected[order]},`${label}: ${order}`);
-  assert.deepEqual((await pull({[C]:0})).changes,[],`${label}: C never exposes the record after its removal`);
+  assert.ok((await pull({[C]:0})).changes.every(c=>c.kind==='remove'),`${label}: C returns removal without content`);
  };
  {
   const id='tr-stale-touch',C=await prepare(id);

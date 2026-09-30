@@ -44,12 +44,19 @@ const ORDINAL: u64 = 1;
 /// [`process_load`]. Unknown operations and invalid arguments or continuation
 /// state are not refused here; they fail only their own item.
 pub fn validate_load_batch(bytes: &[u8]) -> Result<Vec<String>> {
+    crate::admit_protocol(bytes)?;
     LoadBatchRequest::decode_envelope(bytes)
         .map_err(request_invalid)?
         .loads
         .iter()
         .map(|item| {
-            canonical_json(&serde_json::to_value(item).map_err(internal)?).map_err(internal)
+            let encoded = serde_json::to_vec(item).map_err(internal)?;
+            let capable = axton_core::with_capabilities(
+                &encoded,
+                &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
+            )
+            .map_err(internal)?;
+            String::from_utf8(capable).map_err(internal)
         })
         .collect()
 }
@@ -66,6 +73,7 @@ pub async fn process_load(
     item: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(item)?;
     principal(owner)?;
     let intent = decode_item(item)?;
     let request = fingerprint(&intent)?;
@@ -76,14 +84,14 @@ pub async fn process_load(
             request: request.clone(),
         })
         .await?;
-    if claimed.request != request {
+    if !crate::calls::same_logical_request(&claimed.request, &request)? {
         return encode(&failed(&intent, &Error::code(code::CALL_IDENTITY_CONFLICT)));
     }
     if !claimed.fresh {
         let saved = claimed
             .response
             .ok_or_else(|| storage_invalid("committed call has no response"))?;
-        let page: LoadPageResponse = serde_json::from_str(&saved).map_err(storage_invalid)?;
+        let page = decode_saved_page(&saved)?;
         if !page.answers(&intent) {
             return Err(storage_invalid("saved Load page answers another request"));
         }
@@ -128,6 +136,7 @@ pub async fn process_load(
 /// One item under the batch's own structural rules.
 fn decode_item(item: &[u8]) -> Result<LoadIntent> {
     let item: Value = serde_json::from_slice(item).map_err(request_invalid)?;
+    let item = axton_core::logical_request(&item).map_err(request_invalid)?;
     let envelope = serde_json::to_vec(&json!({ "loads": [item] })).map_err(internal)?;
     let mut request = LoadBatchRequest::decode_envelope(&envelope).map_err(request_invalid)?;
     Ok(request.loads.remove(0))
@@ -688,4 +697,29 @@ fn answered_page(intent: &LoadIntent, page: &str) -> Result<LoadPageResponse> {
         }
     }
     Ok(page)
+}
+
+/// Only the durable ledger can contain a pre-capability response. Its absent
+/// claims remain absent; replay never executes enrollment to fill them in.
+fn decode_saved_page(saved: &str) -> Result<LoadPageResponse> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LegacyPage {
+        load_id: String,
+        call_id: String,
+        outcome: LoadOutcome,
+        records: Vec<AuthorityRecord>,
+    }
+    let raw: Value = serde_json::from_str(saved).map_err(storage_invalid)?;
+    if raw.get("memberships").is_some() {
+        return serde_json::from_value(raw).map_err(storage_invalid);
+    }
+    let legacy: LegacyPage = serde_json::from_value(raw).map_err(storage_invalid)?;
+    Ok(LoadPageResponse {
+        load_id: legacy.load_id,
+        call_id: legacy.call_id,
+        outcome: legacy.outcome,
+        records: legacy.records,
+        memberships: vec![],
+    })
 }

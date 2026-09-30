@@ -121,7 +121,7 @@ pub async fn execute_action(
     let request = canonical_intent(call, models)?;
     match calls::claim(owner, &call.call_id, &request, host).await? {
         Claim::Conflict => return Ok(rejected(&call.call_id, "call.identity_conflict")),
-        Claim::Replay(saved) => return serde_json::from_str(&saved).map_err(storage_invalid),
+        Claim::Replay(saved) => return decode_saved_action(&saved),
         Claim::Fresh => {}
     }
     let (response, _) = calls::complete(
@@ -147,6 +147,7 @@ pub async fn process_action(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = DirectActionRequest::decode_envelope(bytes).map_err(request_invalid)?;
     let response = execute_action(config, owner, &request.call, &request.models, 1, host).await?;
@@ -322,6 +323,7 @@ pub async fn process_action_push(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = PushRequest::decode_action_envelope(bytes).map_err(request_invalid)?;
     let locked: Claimed = host
@@ -420,4 +422,25 @@ pub async fn process_action_push(
         })
         .await?;
     Ok(text)
+}
+
+/// Explicit compatibility is confined to saved outcomes, never fresh channel
+/// frames. Historical outcomes carry no enrollment evidence.
+fn decode_saved_action(saved: &str) -> Result<ActionResponse> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyAction {
+        completion: CallCompletion,
+        records: Vec<AuthorityRecord>,
+    }
+    let raw: Value = serde_json::from_str(saved).map_err(storage_invalid)?;
+    if raw.get("memberships").is_some() {
+        return serde_json::from_value(raw).map_err(storage_invalid);
+    }
+    let legacy: LegacyAction = serde_json::from_value(raw).map_err(storage_invalid)?;
+    Ok(ActionResponse {
+        completion: legacy.completion,
+        records: legacy.records,
+        memberships: vec![],
+    })
 }

@@ -3,6 +3,7 @@
 //! its uploaded targets back through the loaders at the declared version
 //! inside its own savepoint, and the receipt carries the last successful
 //! authority per target record. Extra handler changes are settled, not read.
+mod capability;
 use axton_core::{PushReceipt, RecordKey};
 use axton_server::{Config, Host, HostResult, code, host::HostRequest};
 use serde_json::{Value, json};
@@ -468,7 +469,12 @@ impl Host for Scripted {
 
 /// A push against `config` by owner `u`.
 fn process(config: &Config, body: &[u8], host: &Scripted) -> axton_server::Result<String> {
-    run(axton_server::process_push(config, "u", body, host))
+    run(axton_server::process_push(
+        config,
+        "u",
+        &crate::capability::request(body),
+        host,
+    ))
 }
 
 /// Every published upsert was positioned at the stamp the record still has:

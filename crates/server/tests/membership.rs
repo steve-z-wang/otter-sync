@@ -3,6 +3,7 @@
 //! most one position per affected Channel/record pair, on the Action, legacy
 //! and external paths
 //! ([spec §3-§5](../../../docs/superpowers/specs/2026-09-30-channel-tags-removal-design.md)).
+mod capability;
 mod support;
 use axton_core::RecordKey;
 use axton_server::channel_members::MemberDelta;
@@ -549,7 +550,7 @@ fn a_membership_moved_before_the_locks_fails_as_a_retryable_conflict() {
     let error = run(axton_server::process_action_push(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &backend,
     ))
     .unwrap_err();
@@ -908,7 +909,7 @@ fn removed_rows_exceeding_a_page_do_not_starve_later_active_rows() {
     );
     let second = pull(&backend, &[("A", 110)]);
     assert_eq!(delivered_ids(&second.changes), ids[110..]);
-    assert_eq!(range(&second, "A"), (110, 175, 175));
+    assert_eq!(range(&second, "A"), (110, 160, 175));
     // Bootstrap over the whole history pages the same eligible rows.
     let page = bootstrap(&backend, "A", 0, 115);
     assert_eq!(delivered_ids(&page.records), ids[60..110]);
@@ -1326,7 +1327,7 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
         let error = run(axton_server::process_action_push(
             &config(),
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &backend,
         ))
         .unwrap_err();

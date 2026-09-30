@@ -41,7 +41,7 @@ pub(crate) async fn claim(
             request: request.into(),
         })
         .await?;
-    if claimed.request != request {
+    if !same_logical_request(&claimed.request, request)? {
         return Ok(Claim::Conflict);
     }
     if !claimed.fresh {
@@ -96,4 +96,14 @@ pub(crate) async fn complete<T>(
         })
         .await?;
     Ok((response, text))
+}
+
+/// Negotiation is transport metadata, not durable call identity. Retain every
+/// other discriminator, including semantic extensions, in the comparison.
+pub(crate) fn same_logical_request(saved: &str, incoming: &str) -> Result<bool> {
+    let logical = |text: &str| {
+        let value = serde_json::from_str(text).map_err(storage_invalid)?;
+        axton_core::logical_request(&value).map_err(storage_invalid)
+    };
+    Ok(logical(saved)? == logical(incoming)?)
 }

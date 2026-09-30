@@ -479,8 +479,8 @@ test('a touch versus a tag removal: one serial outcome, never an upsert of an ab
    {K:{members:[],log:[[A,2,'remove']],head:2,tags:[]},L:[[A,2,'upsert']],stamp:2},
   ]);
   assert.deepEqual({K:await state(K),L:await log(L),stamp:(await stamps([A]))[0].stamp},expected,`trial ${trial}: ${order}`);
-  const page=JSON.parse(await backend.pull('alice',JSON.stringify({cursors:{[K]:0},models:{Todo:1}})));
-  assert.deepEqual(page.changes,[],'K never delivers the removed member');
+  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{[K]:0},models:{Todo:1}})));
+  assert.deepEqual(page.changes,[{channel:K,cursor:expected.K.head,kind:'remove',model:'Todo',identity:{id:A}}],'K delivers only identity removal');
  }
 });
 

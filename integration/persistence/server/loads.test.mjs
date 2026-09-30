@@ -37,7 +37,7 @@ let next = 0x10000;
 /** One page of `ProjectTodos(projectId)` with fresh IDs unless given. */
 const page = (projectId, { continuation = null, loadId = uuid(next++), callId = uuid(next++) } = {}) =>
   ({ loadId, callId, name: 'ProjectTodos', version: 1, args: { projectId }, continuation, models: { Todo: 1 } });
-const batch = (...items) => JSON.stringify({ loads: items });
+const batch = (...items) => JSON.stringify({ capabilities:['channel-membership-v1'],loads: items });
 
 /**
  * The page handler over `load_todo`: two identities per page in id order
@@ -300,7 +300,7 @@ test('POST /sync/loads authenticates once, refuses a malformed envelope whole an
     assert.equal((await send(batch(page('http')), null)).status, 401);
     const nine = Array.from({ length: 9 }, () => page('http'));
     const duplicate = page('http');
-    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ loads: [page('http')], extra: 1 })]) {
+    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ capabilities:['channel-membership-v1'],loads: [page('http')], extra: 1 })]) {
       const refused = await send(body);
       assert.equal(refused.status, 400, body.slice(0, 60));
       assert.deepEqual(await refused.json(), { code: 'request.invalid' });
@@ -435,7 +435,7 @@ const tables = async (ids, channels) => ({
 const claimed = async callId => (await q('SELECT claim_tx::text AS tx, response FROM axton_call WHERE call_id=$1', [callId])).map(row => ({ tx: row.tx, response: row.response && JSON.parse(row.response) }));
 /** What a Channel delivers from `from`: identity, stamp and title of each change. */
 const delivered = async (app, channel, from = 0) =>
-  JSON.parse(await app.pull('alice', JSON.stringify({ cursors: { [channel]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
+  JSON.parse(await app.pull('alice', JSON.stringify({ capabilities:['channel-membership-v1'],cursors: { [channel]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
 
 test('on every shim a page commits its enrollment with its saved outcome; a re-add and an existing membership publish nothing', async () => {
   for (const { name, database } of shims) {
@@ -610,7 +610,7 @@ test('an initialized live subscription hears a Load enrollment and a later touch
   try {
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
     socket.addEventListener('message', event => frames.push(JSON.parse(String(event.data))));
-    socket.send(JSON.stringify({ type: 'subscribe', channels: [channel], models: { Todo: 1 } }));
+    socket.send(JSON.stringify({ capabilities:['channel-membership-v1'],type: 'subscribe', channels: [channel], models: { Todo: 1 } }));
     await until(() => frames.length >= 1, 'the acknowledgement');
     assert.equal(frames[0].type, 'subscribed');
     assert.equal(frames[0].cursors[channel], 0, 'initialized at an empty Channel');
@@ -848,5 +848,30 @@ test('a saved enrolled page keeps its old claim after a later removal on every s
     assert.deepEqual(await channelsOf(`${project}-1`),[]);
     assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[channel]),heads);
     assert.deepEqual(await q('SELECT l.channel,l.cursor,l.kind,r.model,r.identity FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1',[channel]),before);
+  }
+});
+
+test('a capable retry across cutover replays a saved legacy Load without claims or enrollment on every shim', async () => {
+  for (const {name,database} of shims) {
+    const project=`legacy-cutover-${name}`,channel=`${project}:room`,record=`${project}-1`;
+    await seed(project,project,'alice',1);
+    let runs=0;
+    const app=enrolling(database,({ctx,rows})=>{runs++;ctx.channel(channel).todo.add({id:rows[0].id});});
+    const item=page(project);
+    const [first]=outcomes(await app.loads('alice',batch(item)));
+    assert.equal(first.memberships.length,1,name);
+    await app.transaction(({channel:scope})=>scope(channel).todo.remove({id:record}));
+    // The durable pre-capability fixture has no claims. Negotiation in a
+    // stored request is nonsemantic, regardless of which writer saved it.
+    const [row]=await q('SELECT request,response FROM axton_call WHERE call_id=$1',[item.callId]);
+    const request=JSON.parse(row.request);request.capabilities=['channel-membership-v1'];
+    const response=JSON.parse(row.response);delete response.memberships;
+    await q('UPDATE axton_call SET request=$2,response=$3 WHERE call_id=$1',[item.callId,JSON.stringify(request),JSON.stringify(response)]);
+    const before=await tables([record],[channel]);
+    const [retry]=outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(retry,response,name);
+    assert.equal(runs,1,`${name}: the saved page never reenrolls`);
+    assert.equal(retry.memberships,undefined,`${name}: legacy response fabricates no claim`);
+    assert.deepEqual(await tables([record],[channel]),before,`${name}: heads, members and removal positions stay unchanged`);
   }
 });

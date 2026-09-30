@@ -13,92 +13,10 @@ use crate::{
     host::{HostExt, HostRequest, Invalidation, Loaded},
     internal, request_invalid, storage_invalid,
 };
-use axton_core::{AuthorityRecord, BootstrapPage, BootstrapRequest, RecordKey, limits};
+use axton_core::{AuthorityRecord, BootstrapRequest, RecordKey, limits};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, btree_map::Entry};
 
-/// Serve one bounded page of a Scope's historical interval. The head is read
-/// once, in this transaction: it bounds the scan, is echoed as the client's
-/// completion barrier, and an origin above it is a fault rather than a bound
-/// to chase. An exhausted interval scans nothing.
-pub(crate) async fn process_bootstrap(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    let request = BootstrapRequest::decode(bytes).map_err(request_invalid)?;
-    config.check_declared(&request.models)?;
-    let channel = request.channel.as_str();
-    let maximum = head(host, channel).await?;
-    // The client only ever sends an origin the server acknowledged, so a head
-    // below it is a server-state fault, not a bound to wait for.
-    if request.until > maximum {
-        return Err(request_invalid(format!(
-            "bootstrap origin ahead of head on {channel}"
-        )));
-    }
-    // Every historical record once, keyed canonically, at its current stamp.
-    let mut historical: BTreeMap<String, (RecordKey, u64)> = BTreeMap::new();
-    let mut to = request.until;
-    if !request.exhausted() {
-        let rows = legacy_rows(config, channel, request.after, maximum, host).await?;
-        if rows.len() > limits::PULL_CHANGES {
-            return Err(storage_invalid("invalid scan size"));
-        }
-        let mut previous = request.after;
-        let mut last_historical = request.after;
-        for row in &rows {
-            let key = validate_row(config, channel, maximum, previous, row)?;
-            previous = row.cursor;
-            // Only a position at or below the origin is historical; a record
-            // published above it is the subscription's to deliver.
-            if row.cursor > request.until {
-                continue;
-            }
-            last_historical = row.cursor;
-            if row.kind == crate::channel_members::PositionKind::Upsert {
-                insert(&mut historical, key, row.stamp)?;
-            }
-        }
-        // The interval is finished when the scan ran out of rows or reached
-        // the origin; otherwise the page stops at its last historical cursor.
-        // The scan answers only rows whose record is still a member, filtered
-        // before the limit, so removed positions are holes: a short scan has
-        // covered every eligible row up to the head, and a full one advances
-        // to a cursor it actually returned.
-        to = if rows.len() < limits::PULL_CHANGES || previous >= request.until {
-            request.until
-        } else {
-            last_historical
-        };
-        // Defensive, and unreachable while the scan honours its contract: with
-        // strictly increasing cursors a full scan that reached no historical row
-        // has already crossed the origin and is therefore terminal. Reported
-        // rather than assumed, because an empty nonterminal page would make the
-        // client ask for the same interval forever.
-        if to != request.until && to <= request.after {
-            return Err(storage_invalid("bootstrap page makes no progress"));
-        }
-    }
-    let records = resolve_records(
-        config,
-        owner,
-        &request.models,
-        historical.into_values().collect(),
-        host,
-    )
-    .await?;
-    let page = BootstrapPage {
-        channel: request.channel,
-        from: request.after,
-        to,
-        until: request.until,
-        head: maximum,
-        records,
-    };
-    String::from_utf8(page.encode().map_err(internal)?).map_err(internal)
-}
 /// Validate one scan row against the rules both pull modes apply, and answer
 /// its canonical record key: the row belongs to the scanned channel, its cursor
 /// advances past `previous` without passing the channel head, its model has a
@@ -466,42 +384,4 @@ pub(crate) async fn process_channel_bootstrap(
         .map_err(internal)?,
     )
     .map_err(internal)
-}
-
-/// Staged record-only readers retain their old page limit after filtering.
-/// Only this compatibility path projects removals away; channel delivery
-/// consumes the unfiltered log directly.
-pub(crate) async fn legacy_rows(
-    config: &Config,
-    channel: &str,
-    after: u64,
-    maximum: u64,
-    host: &impl Host,
-) -> Result<Vec<Invalidation>> {
-    let mut result = vec![];
-    let mut cursor = after;
-    loop {
-        let limit = (limits::PULL_CHANGES - result.len()) as u64;
-        let rows: Vec<Invalidation> = host
-            .call_typed(HostRequest::Scan {
-                channel: channel.into(),
-                after: cursor,
-                limit,
-            })
-            .await?;
-        if rows.len() > limit as usize {
-            return Err(storage_invalid("invalid scan size"));
-        }
-        let exhausted = rows.len() < limit as usize;
-        for row in rows {
-            validate_row(config, channel, maximum, cursor, &row)?;
-            cursor = row.cursor;
-            if row.kind == crate::channel_members::PositionKind::Upsert {
-                result.push(row);
-            }
-        }
-        if exhausted || result.len() == limits::PULL_CHANGES || cursor == maximum {
-            return Ok(result);
-        }
-    }
 }

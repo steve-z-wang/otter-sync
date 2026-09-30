@@ -293,6 +293,7 @@ function typedNative(native: Native): Native {
  */
 const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
   "request.invalid": 400,
+  "protocol.unsupported": 426,
   "client.owner_mismatch": 403,
   gap: 409,
   overlap: 409,
@@ -1970,7 +1971,8 @@ async function serveLive(
     // client's fault: closed as a protocol violation, not reported as a failure.
     const refused =
       error instanceof EngineError &&
-      (error.code === "request.invalid" ||
+      (error.code === "protocol.unsupported" ||
+        error.code === "request.invalid" ||
         error.code === "model_version_unsupported");
     if (open())
       connection.close(

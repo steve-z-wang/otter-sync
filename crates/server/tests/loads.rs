@@ -1,6 +1,7 @@
 //! Native Load pages on the server: one page is one owner-scoped durable call
 //! executed in the caller's transaction, resolved through batched stamp and
 //! Loader reads, and replayed from its saved outcome.
+mod capability;
 mod support;
 
 use axton_core::{Continuation, LoadBatchRequest, LoadBatchResponse, canonical_json, limits};
@@ -61,7 +62,7 @@ fn page_as(host: &impl Host, config: &Config, owner: &str, item: &Value) -> Valu
     let text = run(process_load(
         config,
         owner,
-        item.to_string().as_bytes(),
+        &crate::capability::request(item.to_string().as_bytes()),
         host,
     ))
     .unwrap();
@@ -626,7 +627,7 @@ fn a_reused_call_id_with_another_request_or_kind_conflicts_without_saving() {
         let text = run(process_action(
             &config(),
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &backend,
         ))
         .unwrap();
@@ -672,7 +673,7 @@ fn the_claim_is_owner_scoped() {
     let error = run(process_load(
         &config(),
         " ",
-        item(2, Value::Null).to_string().as_bytes(),
+        &crate::capability::request(item(2, Value::Null).to_string().as_bytes()),
         &backend,
     ))
     .unwrap_err();
@@ -759,7 +760,7 @@ fn infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes() {
         let error = run(process_load(
             &config(),
             "alice",
-            item(1, Value::Null).to_string().as_bytes(),
+            &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
             &host,
         ))
         .unwrap_err();
@@ -775,7 +776,7 @@ fn infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes() {
     let error = run(process_load(
         &config(),
         "alice",
-        item(1, Value::Null).to_string().as_bytes(),
+        &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
         &backend,
     ))
     .unwrap_err();
@@ -793,8 +794,10 @@ fn the_batch_validator_is_structural_and_answers_canonical_items_in_order() {
     unknown["loadId"] = json!(id(0xbbb));
     unknown["name"] = json!("Unknown");
     unknown["args"] = json!({"anything":true});
-    let items =
-        validate_load_batch(json!({"loads":[first, unknown]}).to_string().as_bytes()).unwrap();
+    let items = validate_load_batch(&crate::capability::request(
+        json!({"loads":[first, unknown]}).to_string().as_bytes(),
+    ))
+    .unwrap();
     assert_eq!(items.len(), 2);
     let decoded: Vec<Value> = items
         .iter()
@@ -828,7 +831,9 @@ fn the_batch_validator_is_structural_and_answers_canonical_items_in_order() {
         json!({"loads":[item(1, Value::Null)],"extra":1}),
         json!({"loads":[{"loadId":"not-a-uuid"}]}),
     ] {
-        let error = validate_load_batch(refused.to_string().as_bytes()).unwrap_err();
+        let error =
+            validate_load_batch(&crate::capability::request(refused.to_string().as_bytes()))
+                .unwrap_err();
         assert_eq!(error.code, code::REQUEST_INVALID, "{refused}");
     }
 }
@@ -877,12 +882,18 @@ fn batch_items(count: u64) -> (Vec<String>, LoadBatchRequest) {
         .collect();
     let body = json!({ "loads": items }).to_string();
     (
-        validate_load_batch(body.as_bytes()).unwrap(),
+        validate_load_batch(&crate::capability::request(body.as_bytes())).unwrap(),
         LoadBatchRequest::decode_envelope(body.as_bytes()).unwrap(),
     )
 }
 fn process(backend: &Backend, item: &str) -> String {
-    run(process_load(&config(), "alice", item.as_bytes(), backend)).unwrap()
+    run(process_load(
+        &config(),
+        "alice",
+        &crate::capability::request(item.as_bytes()),
+        backend,
+    ))
+    .unwrap()
 }
 fn decoded(response: &str) -> Vec<Value> {
     serde_json::from_str::<Value>(response).unwrap()["loads"]
@@ -1664,7 +1675,7 @@ fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrol
         let error = run(process_load(
             &config(),
             "alice",
-            item(1, Value::Null).to_string().as_bytes(),
+            &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
             &host,
         ))
         .unwrap_err();
@@ -1877,4 +1888,31 @@ fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cu
     assert_eq!(replay["memberships"], first["memberships"]);
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(durable(&backend), removed);
+}
+
+#[test]
+fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_claims() {
+    let backend = Backend::new();
+    backend.seed("Todo", "t1", json!({"title":"first"}), None);
+    backend.script("ProjectTodos", json!({"data":{"todos":[{"id":"t1"}],"projects":[]},"next":null,"memberships":[add("room","Todo","t1")]}));
+    let first = page(&backend, &item(1, Value::Null));
+    assert!(!first["memberships"].as_array().unwrap().is_empty());
+    {
+        let mut state = backend.0.lock().unwrap();
+        let saved = state.tables.calls.get_mut(&id(1)).unwrap();
+        let mut request: Value = serde_json::from_str(&saved.0).unwrap();
+        request["capabilities"] = json!(["channel-membership-v1"]);
+        saved.0 = request.to_string();
+        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
+        response.as_object_mut().unwrap().remove("memberships");
+        saved.1 = Some(response.to_string());
+        state.tables.memberships.clear();
+        state.log.clear();
+    }
+    let before = backend.0.lock().unwrap().tables.clone();
+    let replay = page(&backend, &item(1, Value::Null));
+    assert_eq!(replay["outcome"], first["outcome"]);
+    assert!(replay.get("memberships").is_none());
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(backend.0.lock().unwrap().tables, before);
 }

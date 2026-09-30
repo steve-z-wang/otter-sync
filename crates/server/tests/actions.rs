@@ -1,3 +1,4 @@
+mod capability;
 use axton_server::{Config, Host, HostResult, process_action_push};
 use serde_json::{Value, json};
 use std::{
@@ -49,7 +50,7 @@ fn ordinary_action_returns_its_handler_result_and_saves_it() {
     let receipt = run(process_action_push(
         &config,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();
@@ -82,7 +83,7 @@ fn ordinary_list_nullable_void_and_missing_explicit_outputs_are_independent() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -126,7 +127,7 @@ fn void_action_rejects_undeclared_handler_output_without_rejecting_next_call() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -184,7 +185,7 @@ fn explicit_model_output_uses_old_result_loader_and_current_authority_loader() {
     let receipt = run(process_action_push(
         &config,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();
@@ -503,7 +504,7 @@ fn unequal_content_at_equal_stamp_is_a_storage_fault() {
     let error = run(process_action_push(
         &config,
         "alice",
-        body.to_string().as_bytes(),
+        &crate::capability::request(body.to_string().as_bytes()),
         &host,
     ))
     .unwrap_err();
@@ -527,7 +528,7 @@ fn stateful_push(config: &Config, host: &StatefulHost, sequence: u64, calls: Vec
         &run(process_action_push(
             config,
             "alice",
-            body.to_string().as_bytes(),
+            &crate::capability::request(body.to_string().as_bytes()),
             host,
         ))
         .unwrap(),
@@ -675,7 +676,7 @@ fn forged_query_effects_reject_only_that_call_before_framework_handling() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -737,7 +738,7 @@ fn forged_query_effects_are_rejected_on_the_direct_path_too() {
         &run(axton_server::process_action(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -1032,7 +1033,7 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
         &support::run(axton_server::process_action(
             &support::config(),
             "alice",
-            request.as_bytes(),
+            &crate::capability::request(request.as_bytes()),
             &backend,
         ))
         .unwrap(),
@@ -1048,7 +1049,7 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
         &support::run(axton_server::process_action(
             &support::config(),
             "alice",
-            request.as_bytes(),
+            &crate::capability::request(request.as_bytes()),
             &backend,
         ))
         .unwrap(),
@@ -1056,4 +1057,48 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
     .unwrap();
     assert_eq!(replay, first);
     assert_eq!(backend.tables(), state);
+}
+
+#[test]
+fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claims() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.script("EditAndRead", json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    let request = crate::capability::request(json!({"call":{"callId":support::call_id(91),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string().as_bytes());
+    let first: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &request,
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    backend.with(|state| {
+        let saved = state.tables.calls.get_mut(&support::call_id(91)).unwrap();
+        let mut logical: Value = serde_json::from_str(&saved.0).unwrap();
+        logical["capabilities"] = json!(["channel-membership-v1"]);
+        saved.0 = logical.to_string();
+        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
+        response.as_object_mut().unwrap().remove("memberships");
+        saved.1 = Some(response.to_string());
+    });
+    let before = backend.tables();
+    backend.clear_log();
+    let replay: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &request,
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay["completion"], first["completion"]);
+    assert!(replay.get("memberships").is_none());
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(backend.tables(), before);
 }

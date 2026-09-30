@@ -2,6 +2,7 @@
 //! channel of one request and isolates a record its loader cannot read; an
 //! external notification allocates one stamp per record and publishes it at
 //! that stamp.
+mod capability;
 use axton_server::{Config, Host, host::HostRequest};
 use serde_json::{Value, json};
 use std::{
@@ -133,11 +134,11 @@ fn pull_copies_the_row_stamp_into_the_change() {
     let text = run(axton_server::process_pull(
         &config(),
         "u",
-        &pull_body(),
+        &crate::capability::request(&pull_body()),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].stamp, 7);
     assert_eq!(
         *host.loaded.lock().unwrap(),
@@ -170,21 +171,21 @@ fn pull_normalizes_loader_rows_with_the_retained_contract_of_the_served_version(
     let text = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Entry", 1)]),
+        &crate::capability::request(&pull_body_declaring(&[("Entry", 1)])),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].state, json!({"text":"t"}));
     // A new client declares v2 for the same data: the v2 loader and contract.
     let text = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Entry", 2)]),
+        &crate::capability::request(&pull_body_declaring(&[("Entry", 2)])),
         &host,
     ))
     .unwrap();
-    let page = axton_core::PullPage::decode(text.as_bytes()).unwrap();
+    let page = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(page.changes[0].state, json!({"text":"t","note":null}));
     assert_eq!(
         *host.loaded.lock().unwrap(),
@@ -203,7 +204,7 @@ fn pull_normalizes_loader_rows_with_the_retained_contract_of_the_served_version(
         let err = run(axton_server::process_pull(
             &config,
             "u",
-            &pull_body_declaring(models),
+            &crate::capability::request(&pull_body_declaring(models)),
             &host,
         ))
         .unwrap_err();
@@ -240,7 +241,7 @@ fn a_page_holding_a_model_the_client_did_not_declare_is_refused_whole() {
     let err = run(axton_server::process_pull(
         &config,
         "u",
-        &pull_body_declaring(&[("Note", 1)]),
+        &crate::capability::request(&pull_body_declaring(&[("Note", 1)])),
         &host,
     ))
     .unwrap_err();
@@ -260,7 +261,7 @@ fn pull_rejects_rows_without_a_positive_stamp() {
         let err = run(axton_server::process_pull(
             &config(),
             "u",
-            &pull_body(),
+            &crate::capability::request(&pull_body()),
             &host,
         ))
         .unwrap_err();
@@ -370,7 +371,9 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
     let result = run(axton_server::live::negotiate(
         &config(),
         "u",
-        br#"{"type":"subscribe","channels":["a"],"models":{"Entry":1}}"#,
+        &crate::capability::request(
+            br#"{"type":"subscribe","channels":["a"],"models":{"Entry":1}}"#,
+        ),
         &host,
     ))
     .unwrap();
@@ -398,7 +401,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
         let err = run(axton_server::live::negotiate(
             &config(),
             "u",
-            frame.as_bytes(),
+            &crate::capability::request(frame.as_bytes()),
             &host,
         ))
         .unwrap_err();
@@ -423,7 +426,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
             run(axton_server::live::negotiate(
                 &config(),
                 "u",
-                request.to_string().as_bytes(),
+                &crate::capability::request(request.to_string().as_bytes()),
                 &host
             ))
             .is_err(),
@@ -454,9 +457,21 @@ impl Host for Multi {
                 HostRequest::Head { channel } => {
                     json!(self.heads.get(channel).copied().unwrap_or(0))
                 }
-                HostRequest::Scan { channel, .. } => {
-                    self.scans.get(channel).cloned().unwrap_or(json!([]))
-                }
+                HostRequest::Scan {
+                    channel,
+                    after,
+                    limit,
+                } => Value::Array(
+                    self.scans
+                        .get(channel)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|row| row["cursor"].as_u64().unwrap() > *after)
+                        .take(*limit as usize)
+                        .cloned()
+                        .collect(),
+                ),
                 HostRequest::Load { identities, .. } => {
                     let scripted = self.loads.lock().unwrap();
                     if scripted.is_empty() {
@@ -500,8 +515,13 @@ fn pull_all(host: &Multi, cursors: &[(&str, u64)]) -> axton_server::Result<axton
     }
     .encode()
     .unwrap();
-    run(axton_server::process_pull(&config(), "u", &request, host))
-        .map(|text| axton_core::PullPage::decode(text.as_bytes()).unwrap())
+    run(axton_server::process_pull(
+        &config(),
+        "u",
+        &crate::capability::request(&request),
+        host,
+    ))
+    .map(|text| capability::pull(text.as_bytes()).unwrap())
 }
 
 /// One pull covers every channel: each channel scans after its own cursor and
@@ -555,7 +575,7 @@ fn one_pull_covers_every_channel_and_delivers_a_shared_record_once() {
 /// and continues; the other channel reaches its head.
 #[test]
 fn a_full_channel_continues_independently_of_the_others() {
-    let rows: Vec<Value> = (1..=50)
+    let rows: Vec<Value> = (1..=51)
         .map(|c| scan_row("a", c, &format!("r{c}"), 1))
         .collect();
     let host = multi(&[("a", rows, 80), ("b", vec![], 3)], vec![]);
@@ -726,7 +746,7 @@ fn a_thrown_host_error_still_fails_the_pull() {
     let err = run(axton_server::process_pull(
         &config(),
         "u",
-        &request,
+        &crate::capability::request(&request),
         &Throws,
     ))
     .unwrap_err();
@@ -739,7 +759,7 @@ fn a_cursor_ahead_of_its_channel_head_is_refused() {
     let host = multi(&[("a", vec![], 2), ("b", vec![], 9)], vec![]);
     let err = pull_all(&host, &[("a", 3), ("b", 0)]).unwrap_err();
     assert_eq!(err.code, axton_server::code::REQUEST_INVALID);
-    assert!(err.message.contains("on a"), "{err}");
+    assert!(err.message.contains("ahead of head"), "{err}");
 }
 
 #[test]
@@ -751,7 +771,7 @@ fn channel_removal_is_identity_only_and_never_loads_content() {
     let page = run(axton_server::process_channel_pull(
         &config(),
         "alice",
-        br#"{"models":{"Entry":1},"cursors":{"c":0}}"#,
+        &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"c":0}}"#),
         &host,
     ))
     .unwrap();
@@ -774,7 +794,7 @@ fn channel_loader_null_and_error_remain_stamped_upserts() {
         let text = run(axton_server::process_channel_pull(
             &config(),
             "alice",
-            br#"{"models":{"Entry":1},"cursors":{"a":0}}"#,
+            &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"a":0}}"#),
             &host,
         ))
         .unwrap();
@@ -809,7 +829,7 @@ fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
     run(axton_server::process_pull(
         &cfg,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();
@@ -817,7 +837,7 @@ fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
     let page = run(axton_server::process_channel_pull(
         &cfg,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();

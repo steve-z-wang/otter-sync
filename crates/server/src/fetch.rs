@@ -63,6 +63,7 @@ pub async fn process_fetch(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    crate::admit_protocol(bytes)?;
     principal(owner)?;
     let mut request = FetchRequest::decode_envelope(bytes).map_err(request_invalid)?;
     // Normalized by the requested read contract when this backend serves it,

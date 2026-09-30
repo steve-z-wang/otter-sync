@@ -3,6 +3,7 @@
 //! calls and receipts, all restored together by a savepoint rollback.
 //! Handlers are scripted by name; every request is logged in order.
 #![allow(dead_code)]
+use crate::capability;
 use axton_core::RecordKey;
 use axton_server::{Config, Host, HostResult, host::HostRequest};
 use serde_json::{Map, Value, json};
@@ -705,7 +706,7 @@ pub fn push(backend: &Backend, sequence: u64, models: Value, calls: Vec<Value>) 
     let text = run(axton_server::process_action_push(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
@@ -726,7 +727,7 @@ pub fn legacy_push(
     let text = run(axton_server::process_push(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
@@ -759,11 +760,11 @@ pub fn pull(backend: &Backend, cursors: &[(&str, u64)]) -> axton_core::PullPage 
     let text = run(axton_server::process_pull(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
-    axton_core::PullPage::decode(text.as_bytes()).unwrap()
+    capability::pull(text.as_bytes()).unwrap()
 }
 
 /// One bounded Bootstrap page of `channel`'s interval `(after, until]`.
@@ -778,11 +779,11 @@ pub fn bootstrap(
     let text = run(axton_server::process_pull(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
-    axton_core::BootstrapPage::decode(text.as_bytes()).unwrap()
+    capability::bootstrap(text.as_bytes()).unwrap()
 }
 
 /// One external settlement (`backend.transaction`): the records it reports

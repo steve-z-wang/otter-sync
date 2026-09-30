@@ -12,7 +12,7 @@ initdb -D "$cluster/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$cluster/data" -l "$cluster/log" -o "-p $port -h 127.0.0.1 -k $cluster" start >/dev/null
 export DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres"
 # The declaration collector needs no database.
-node --test "$root/integration/persistence/server/effects.test.mjs"
+node --test "$root/integration/persistence/server/effects.test.mjs" "$root/integration/persistence/server/protocol-admission.test.mjs"
 # Test files run in parallel by default; both apply migration.sql to one cluster, so keep them sequential.
 # A test that waits on a transaction another one left open fails at the timeout, and the
 # runner exits rather than waiting on a pool that cannot drain.

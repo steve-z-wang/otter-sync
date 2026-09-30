@@ -850,3 +850,138 @@ fn channel_release_notifies_local_observers_only_after_commit() {
     assert!(observer.try_recv().is_ok());
     assert!(client.read(&key()).unwrap().is_none());
 }
+
+#[test]
+fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
+    for removal_only in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = open(&dir.path().join("db"));
+        c.transaction(|tx| tx.set_channel("a".into(), true))
+            .unwrap();
+        acknowledge(&mut c, &[("a", 1)]);
+        let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
+        let run = c.request_bootstrap("a", old).unwrap().run;
+        if removal_only {
+            c.apply_page(page("a", 1, 2, Some("cached"))).unwrap();
+        }
+        c.begin_session().unwrap();
+        let change = if removal_only {
+            ChannelChange::Remove {
+                channel: "a".into(),
+                cursor: 1,
+                key: key(),
+            }
+        } else {
+            ChannelChange::Upsert {
+                channel: "a".into(),
+                cursor: 1,
+                record: authority(Some("admitted"), 7),
+            }
+        };
+        let prepared = c
+            .prepare_store(StoreDelivery::ChannelBootstrap {
+                scope: "a".into(),
+                subscription_id: old,
+                run,
+                expected_after: 0,
+                page: ChannelBootstrapPage {
+                    channel: "a".into(),
+                    from: 0,
+                    to: 1,
+                    until: 1,
+                    head: 2,
+                    changes: vec![change],
+                },
+            })
+            .unwrap();
+        assert_eq!(prepared.accepted().len(), usize::from(!removal_only));
+        c.session(|tx| {
+            tx.set_channel("a".into(), false)?;
+            tx.set_channel("a".into(), true)?;
+            tx.direct(create(
+                "Entry",
+                "hook",
+                json!({"text":"hook committed","note":null}),
+            ))
+        })
+        .unwrap();
+        let result = c.apply_prepared_store(prepared).unwrap();
+        c.commit_session().unwrap();
+        assert!(matches!(
+            result,
+            StoreResult::Bootstrap(BootstrapApply::Detached { .. })
+        ));
+        let new = c.subscription_state("a").unwrap().unwrap();
+        assert_ne!(new.subscription_id, old);
+        assert_eq!(new.cursor, None);
+        assert_eq!(new.starting_cursor, None);
+        let state = c.bootstrap_state("a", new.subscription_id).unwrap();
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.barrier, None);
+        assert_eq!(state.state, BootstrapPhase::NotRequested);
+        assert!(c.bootstrap_state("a", old).is_err());
+        let member = c
+            .read_sql(
+                "SELECT cursor,present FROM axton_channel_member WHERE channel='a'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(member[0]["cursor"], 1);
+        assert_eq!(member[0]["present"], u8::from(!removal_only));
+        assert!(
+            c.read(&schema().record_key("Entry", &json!({"id":"hook"})).unwrap())
+                .unwrap()
+                .is_some()
+        );
+        if removal_only {
+            assert!(c.read(&key()).unwrap().is_none());
+        } else {
+            assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "admitted");
+        }
+    }
+}
+#[test]
+fn prepared_channel_page_keeps_admitted_authority_after_hook_replaces_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
+    c.begin_session().unwrap();
+    let prepared = c
+        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+            cursors: std::collections::BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![ChannelChange::Upsert {
+                channel: "a".into(),
+                cursor: 1,
+                record: authority(Some("admitted"), 7),
+            }],
+        }))
+        .unwrap();
+    c.session(|tx| {
+        tx.set_channel("a".into(), false)?;
+        tx.set_channel("a".into(), true)
+    })
+    .unwrap();
+    let result = c.apply_prepared_store(prepared).unwrap();
+    c.commit_session().unwrap();
+    assert!(result.as_page().unwrap().cursors.is_empty());
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "admitted");
+    let new = c.subscription_state("a").unwrap().unwrap();
+    assert_ne!(new.subscription_id, old);
+    assert_eq!(new.cursor, None);
+    let member = c
+        .read_sql(
+            "SELECT cursor,present FROM axton_channel_member WHERE channel='a'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(member[0]["cursor"], 1);
+    assert_eq!(member[0]["present"], 1);
+}

@@ -800,3 +800,100 @@ fn receipt_cannot_repopulate_released_authoritative_absence() {
     assert_eq!(c.record_stamp(&key()).unwrap(), 8);
     assert_eq!(c.pending_count().unwrap(), 0);
 }
+
+#[test]
+fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
+    for stamp in [7, 99] {
+        let dir = tempfile::tempdir().unwrap();
+        let schema=Schema::from_value(json!({"enums":[],"models":[{"name":"Entry","identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}]}]})).unwrap();
+        let mut c = Client::open(
+            axton_sqlite::SqliteStore::open(dir.path().join("db")).unwrap(),
+            schema,
+        )
+        .unwrap();
+        subscribe(&mut c, "a");
+        let lower = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+        let upper = lower.to_uppercase();
+        let key = RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":lower}),
+        };
+        c.apply_channel_page(ChannelPullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![ChannelChange::Upsert {
+                channel: "a".into(),
+                cursor: 1,
+                record: AuthorityRecord {
+                    model: "Entry".into(),
+                    identity: key.identity.clone(),
+                    stamp: 7,
+                    state: json!({"text":"base"}),
+                    error: None,
+                },
+            }],
+        })
+        .unwrap();
+        c.apply_channel_page(ChannelPullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            )]),
+            changes: vec![ChannelChange::Remove {
+                channel: "a".into(),
+                cursor: 2,
+                key: key.clone(),
+            }],
+        })
+        .unwrap();
+        c.begin_session().unwrap();
+        let prepared = c
+            .prepare_store(StoreDelivery::Direct {
+                response: DirectActionResponse {
+                    completion: CallCompletion {
+                        call_id: "old-enrolled-read".into(),
+                        outcome: ActionOutcome::Succeeded {
+                            result: json!({"done":true}),
+                        },
+                    },
+                    records: vec![AuthorityRecord {
+                        model: "Entry".into(),
+                        identity: json!({"id":upper}),
+                        stamp,
+                        state: json!({"text":"delayed"}),
+                        error: None,
+                    }],
+                    memberships: vec![MembershipClaim {
+                        channel: "a".into(),
+                        cursor: 1,
+                        model: "Entry".into(),
+                        identity: json!({"id":upper}),
+                    }],
+                },
+                snapshot: None,
+            })
+            .unwrap();
+        let result = c.apply_prepared_store(prepared).unwrap();
+        c.commit_session().unwrap();
+        let StoreResult::Direct(report) = result else {
+            panic!("expected direct completion")
+        };
+        assert_eq!(report.completions[0].call_id, "old-enrolled-read");
+        assert!(
+            c.read(&key).unwrap().is_none(),
+            "stale uppercase claim admitted stamp {stamp}"
+        );
+        assert_eq!(c.record_stamp(&key).unwrap(), 7);
+        assert_eq!(holds(&mut c), 0);
+    }
+}

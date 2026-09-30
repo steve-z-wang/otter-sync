@@ -167,8 +167,25 @@ impl<S: ClientStore> Client<S> {
                 expected_after,
                 page,
             } => self.staged(mode, |e| {
-                e.apply_channel_bootstrap_body(scope, *subscription_id, *run, *expected_after, page)
-                    .map(StoreResult::Bootstrap)
+                let outcome = if let Some(prepared) = prepared {
+                    e.apply_channel_bootstrap_prepared_body(
+                        scope,
+                        *subscription_id,
+                        *run,
+                        *expected_after,
+                        page,
+                        prepared.bootstrap_admitted.as_ref(),
+                    )?
+                } else {
+                    e.apply_channel_bootstrap_body(
+                        scope,
+                        *subscription_id,
+                        *run,
+                        *expected_after,
+                        page,
+                    )?
+                };
+                Ok(StoreResult::Bootstrap(outcome))
             }),
             StoreDelivery::Page(page) => {
                 page.validate()?;

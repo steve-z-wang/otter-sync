@@ -651,6 +651,46 @@ impl<S: ClientStore> Client<S> {
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn apply_channel_bootstrap_prepared_body(
+        &mut self,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &axton_core::ChannelBootstrapPage,
+        admitted: Option<&BootstrapState>,
+    ) -> Result<BootstrapApply> {
+        if admitted.is_none() {
+            return Ok(BootstrapApply::Stale);
+        }
+        let envelope = BootstrapPage {
+            channel: page.channel.clone(),
+            from: page.from,
+            to: page.to,
+            until: page.until,
+            head: page.head,
+            records: vec![],
+        };
+        if self
+            .bootstrap_row(scope)?
+            .as_ref()
+            .is_some_and(|row| answers(row, subscription_id, run, expected_after, &envelope))
+        {
+            return self.apply_channel_bootstrap_body(
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
+            );
+        }
+        // The hook changed the registration/run after preflight admitted this
+        // delivery. Keep admitted membership and authority, but never move the
+        // removed run or its replacement's progress.
+        page.validate()?;
+        let report = self.apply_channel_changes(&page.changes)?;
+        Ok(BootstrapApply::Detached { report })
+    }
     pub(crate) fn apply_channel_bootstrap_body(
         &mut self,
         scope: &str,

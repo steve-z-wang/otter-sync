@@ -6,7 +6,7 @@ use crate::store::ClientStore;
 use crate::{ApplyReport, Operation};
 use axton_core::{ChannelChange, MAX_SAFE_INTEGER, MembershipClaim, RecordKey, Result, invalid};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct MemberEvidence {
@@ -238,15 +238,20 @@ impl<S: ClientStore> Engine<'_, S> {
         claims: &[MembershipClaim],
     ) -> Result<ApplyReport> {
         axton_core::validate_memberships(claims, records)?;
+        let enrolled: BTreeSet<_> = claims
+            .iter()
+            .map(|claim| {
+                self.schema
+                    .record_key(&claim.model, &claim.identity)?
+                    .encoded()
+            })
+            .collect::<Result<_>>()?;
         self.merge_memberships(claims)?;
         let mut report = ApplyReport::default();
         let mut pending = Held::new();
         for record in records {
             let key = self.schema.record_key(&record.model, &record.identity)?;
-            let enrolled = claims
-                .iter()
-                .any(|claim| claim.model == key.model && claim.identity == key.identity);
-            if enrolled && !record.state.is_null() && !self.held(&key)? {
+            if enrolled.contains(&key.encoded()?) && !record.state.is_null() && !self.held(&key)? {
                 self.skip_authority_occurrence()?;
                 continue;
             }

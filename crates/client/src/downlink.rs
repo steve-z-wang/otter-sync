@@ -191,7 +191,7 @@ impl<S: ClientStore> Engine<'_, S> {
             }
             advances.push((channel.clone(), state.subscription_id, range.to));
         }
-        if advances.is_empty() {
+        if advances.is_empty() && guards.is_none_or(|guards| guards.is_empty()) {
             return Ok(ApplyReport {
                 stale: true,
                 ..Default::default()
@@ -205,7 +205,14 @@ impl<S: ClientStore> Engine<'_, S> {
                     axton_core::ChannelChange::Upsert { channel, .. }
                     | axton_core::ChannelChange::Remove { channel, .. } => channel,
                 };
-                advances.iter().any(|(name, _, _)| name == channel)
+                // Preflight already admitted these occurrences. A hook may
+                // replace the registration without retracting their authority;
+                // only progress remains tied to the old identity.
+                if let Some(guards) = guards {
+                    guards.iter().any(|(name, _, _)| name == channel)
+                } else {
+                    advances.iter().any(|(name, _, _)| name == channel)
+                }
             })
             .cloned()
             .collect();

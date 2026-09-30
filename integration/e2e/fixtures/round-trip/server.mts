@@ -11,6 +11,7 @@ import {
   type Loaders,
 } from "./generated/backend.ts";
 import { schema } from "./generated/generated.ts";
+import { sqlStatements } from "../../../../packages/postgres/src/statements.mts";
 
 type Tx = Prisma.TransactionClient;
 
@@ -63,9 +64,8 @@ export async function createExample() {
         new URL("../../../../packages/postgres/migration.sql", import.meta.url),
         "utf8",
       );
-      // Prisma runs one statement per call: split on semicolons outside dollar-quoted bodies.
-      for (const sql of migration.match(/(?:\$\$[\s\S]*?\$\$|[^;])+/g)!.map((s) => s.trim()).filter(Boolean))
-        await db.$executeRawUnsafe(sql);
+      // Prisma runs one statement per call.
+      for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );

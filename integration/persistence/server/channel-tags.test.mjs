@@ -11,6 +11,7 @@ import {Pool,Client} from 'pg';
 import {createBackend} from '../../../packages/server/index.mts';
 import {pg,answer,persistence} from '../../../packages/postgres/index.mts';
 import * as SQL from '../../../packages/postgres/src/sql.mts';
+import {sqlStatements} from '../../../packages/postgres/src/statements.mts';
 const require=createRequire(import.meta.url);
 const native=require('../../../bindings/node/axton-node.node');
 const url=process.env.DATABASE_URL;
@@ -368,6 +369,23 @@ test('the forward upgrade copies memberships, maps invalidations to current pres
   await upgrade(fresh);
   assert.deepEqual((await fresh.query('SELECT count(*)::int AS n FROM axton_channel_log')).rows,[{n:0}],'on a fresh install the upgrade is a verified no-op too');
  }finally{await fresh.end();await old.end();}
+});
+
+test('migration.sql split into single statements, as the Prisma consumers run it, installs the same schema; the splitter keeps quoted and dollar-quoted semicolons and drops comments',async()=>{
+ assert.deepEqual(sqlStatements("-- a; comment\nSELECT 'a;b' AS \"x;y\"; /* c; */ SELECT $$d;e$$;\nDO $f$ BEGIN PERFORM 1; END $f$;\n-- trailing; comment\n"),
+  ["SELECT 'a;b' AS \"x;y\"","SELECT $$d;e$$","DO $f$ BEGIN PERFORM 1; END $f$"]);
+ const {PrismaClient}=require('../../bindings/node/generated/client');
+ const whole=await scratch('axton_whole'),split=await scratch('axton_split');
+ const prisma=new PrismaClient({datasourceUrl:databaseUrl('axton_split')});
+ try{
+  const text=await source('migration.sql');
+  await whole.query(text);
+  const statements=sqlStatements(text);
+  assert.ok(statements.length>=13&&statements.every(sql=>/^(CREATE|DO)\s/.test(sql)),`every chunk is one DDL statement: ${statements.map(sql=>sql.slice(0,24)).join(' | ')}`);
+  // Prisma prepares each call, so a chunk holding two statements or a stray comment fragment fails here.
+  for(let round=0;round<2;round++)for(const sql of statements)await prisma.$executeRawUnsafe(sql);
+  assert.deepEqual(await catalog(split),await catalog(whole),'one statement at a time, twice, installs exactly the whole-file schema');
+ }finally{await prisma.$disconnect();await whole.end();await split.end();}
 });
 
 test('an upgrade whose data disagrees fails whole: a mismatched identity, a key that is not JSON, a position without metadata or above its head',async()=>{

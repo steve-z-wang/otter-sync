@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS axton_channel_member_tag (
 );
 CREATE INDEX IF NOT EXISTS axton_channel_member_tag_tag
  ON axton_channel_member_tag(tag_id, member_id);
--- The latest deliverable state of each pair; `(channel, cursor)` orders scans.
+-- The latest deliverable state of each pair, whose `(channel, cursor)` orders scans.
 CREATE TABLE IF NOT EXISTS axton_channel_log (
  channel text NOT NULL REFERENCES axton_channel(channel),
  record_id bigint NOT NULL REFERENCES axton_record(id),

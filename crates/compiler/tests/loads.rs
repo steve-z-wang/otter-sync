@@ -329,7 +329,7 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         "load ProjectTodos(projectId UUID, status Status?, tags String[], at DateTime) {\n  todos Todo[]\n  notes Note[]\n}\nload AllNotes() { notes Note[] }",
     ))
     .unwrap();
-    let ts = axton_compiler::backend_typescript(&config, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&config, "@axtonjs/server");
     for expected in [
         // Enum inputs name the generated enum type.
         "import type { Todo as TodoRecord, TodoIdentity, TodoPatch, Note as NoteRecord, NoteIdentity, NotePatch, Status } from \"./generated.ts\";\n",
@@ -386,7 +386,7 @@ fn retained_load_versions_register_together_with_their_own_contracts() {
     let todo_v1 = json!({"name":"Todo","version":1,"identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"status","nullable":false,"type":{"kind":"enum","name":"Status"}}],"enums":[{"name":"Status","values":["open","done"]}]});
     config["backendModels"] = json!([todo_v1, current]);
     assert!(axton_compiler::check_action_names(&config).is_ok());
-    let ts = axton_compiler::backend_typescript(&config, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&config, "@axtonjs/server");
     for expected in [
         "export interface TodosV1Input {\n status: \"open\" | \"done\";\n}\n",
         "export interface TodosV1HandlerOutput {\n data: {\n  todos: TodoV1Identity[];\n };\n next: LoadNext;\n}\n",
@@ -405,7 +405,7 @@ fn retained_load_versions_register_together_with_their_own_contracts() {
     let only_v2 =
         compile("model Todo { id UUID @@id(id) }\n@version(2) load Todos() { todos Todo[] }")
             .unwrap();
-    let ts = axton_compiler::backend_typescript(&only_v2, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&only_v2, "@axtonjs/server");
     assert!(
         ts.contains(
             " todos: { v2(call: LoadHandlerCall<Tx, TodosInput>): Promise<TodosHandlerOutput> };\n"
@@ -420,7 +420,7 @@ fn backends_without_loads_declare_no_load_types() {
         "model Todo { id UUID @@id(id) }",
         "enum Status { open done }\nmodel Todo { id UUID s Status @@id(id) }\nquery Count(s Status) { n Int }",
     ] {
-        let ts = axton_compiler::backend_typescript(&compile(source).unwrap(), "@axton/server");
+        let ts = axton_compiler::backend_typescript(&compile(source).unwrap(), "@axtonjs/server");
         for absent in [
             "JsonValue",
             "LoadNext",
@@ -444,7 +444,7 @@ fn clients_without_loads_generate_no_loads_facade() {
     ] {
         let config = compile(source).unwrap();
         let ts = axton_compiler::typescript(&config);
-        let client = axton_compiler::client_typescript(&config, "@axton/client");
+        let client = axton_compiler::client_typescript(&config, "@axtonjs/client");
         let dart = axton_compiler::dart(&config);
         for (output, text) in [
             ("generated.ts", &ts),
@@ -486,9 +486,9 @@ fn the_client_starts_invalidates_and_reattaches_typed_loads() {
     }
     // Options are a separate argument, so business inputs keep their names.
     assert!(ts.contains("export interface FlaggedInput {\n once: boolean;\n refresh: string;\n}"));
-    let client = axton_compiler::client_typescript(&config, "@axton/client");
+    let client = axton_compiler::client_typescript(&config, "@axtonjs/client");
     for expected in [
-        "export { LoadError, type Load, type LoadOptions, type LoadPhase, type LoadStatus } from \"@axton/client\";",
+        "export { LoadError, type Load, type LoadOptions, type LoadPhase, type LoadStatus } from \"@axtonjs/client\";",
         "import { makeLoads } from \"./generated.ts\";",
         " readonly loads: ReturnType<typeof makeLoads>;",
         "this.loads = makeLoads(client); ",

@@ -1,0 +1,4 @@
+name: axton_installed_fixture
+publish_to: none
+environment:
+  sdk: '>=3.12.0 <4.0.0'

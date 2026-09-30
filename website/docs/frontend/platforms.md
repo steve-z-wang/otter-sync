@@ -12,11 +12,11 @@ AXTON clients use the native Rust engine and SQLite. Building the application pa
 
 ## Desktop setup
 
-Build the native libraries with `bash scripts/build.sh`. TypeScript uses the Node addon. Dart takes an explicit `libraryPath`: `target/debug/libaxton_dart.dylib` on macOS or `target/debug/libaxton_dart.so` on Linux. See [client setup](setup.md) for language-specific examples.
+Build the native libraries with `bash scripts/build.sh`. TypeScript uses the Node addon. From a checkout, Dart takes an explicit `libraryPath`: `target/debug/libaxton_dart.dylib` on macOS or `target/debug/libaxton_dart.so` on Linux. See [client setup](setup.md) for language-specific examples.
 
 ## Flutter native integration
 
-On iOS, link the Rust static library into the application and retain the native symbols. Dart then uses `DynamicLibrary.process()` when `libraryPath` is omitted. A desktop dynamic library cannot be used as a mobile build artifact.
+A released `axton` package's build hook bundles the prebuilt native library for iOS devices (arm64), iOS simulators (arm64 and x64) and Android (arm64-v8a, armeabi-v7a and x86_64). It downloads the library of the package's version from the AXTON GitHub release, checks its SHA-256 and caches it; the application needs no linker settings and no `libraryPath`. See the [package README](https://github.com/zanminwang/axton/blob/main/packages/dart/README.md#native-library) to build from local library files instead.
 
 The repository includes a simulator integration harness. It requires Xcode and a usable installed iOS runtime:
 
@@ -24,7 +24,7 @@ The repository includes a simulator integration harness. It requires Xcode and a
 bash integration/platform/run_ios_simulator_smoke.sh
 ```
 
-The harness builds the native library and Flutter app, creates a disposable simulator, and checks local writes, queued calls, close/reopen and app restart. It removes only the simulator it creates. Passing the build alone does not establish that all runtime checks pass.
+The harness builds the simulator libraries, stages the `axton` package as a release does and builds a copy of the Flutter app against it, so the build hook bundles the library from local files. It creates a disposable simulator and checks local writes, queued calls, close/reopen and app restart. It removes only the simulator and files it creates. Passing the build alone does not establish that all runtime checks pass.
 
 ## React Native
 

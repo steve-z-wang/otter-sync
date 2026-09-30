@@ -2,7 +2,7 @@
 
 This TypeScript SDK embeds the shared Rust server runtime in your Node application. Business Handlers and Loaders are implemented in TypeScript, against the `Mutations`, `Queries` and `Loaders` interfaces the compiler generates from your `.model` file.
 
-`index.mts` runs on Node with TypeScript support (Node 22.18+), or can be compiled with TypeScript. Build the local native module with `node bindings/node/build.mjs`. Supply an injected `native` implementation when packaging the native artifact elsewhere.
+`index.mts` runs on Node with TypeScript support (Node 22.18+), or can be compiled with TypeScript. It loads the native engine from `@axtonjs/native`; in a source checkout, `npm ci` then `bash scripts/build.sh` builds that addon. Supply an injected `native` implementation to use another build of it.
 
 Given a schema with `Todo`, a Mutation `AddTodo`, a Query `FindTodos` and a Load `ProjectTodos`, the compiler emits `generated/backend.ts`, which already binds the schema. Your application implements the generated `Mutations<Tx>`, `Queries<Tx>`, `Loaders<Tx>` and `Loads<Tx>` contracts:
 
@@ -66,7 +66,7 @@ See [background writes](api.md#background-writes).
 
 ## Transaction ownership
 
-The outer transaction belongs to the application. Persistence, Handler, and Loader callbacks all receive that same transaction. The runner must provide serializable isolation, roll back on rejected promises, and retry serialization conflicts by running the whole body again. Every shim of [`@axton/postgres`](database.md) supplies this contract.
+The outer transaction belongs to the application. Persistence, Handler, and Loader callbacks all receive that same transaction. The runner must provide serializable isolation, roll back on rejected promises, and retry serialization conflicts by running the whole body again. Every shim of [`@axtonjs/postgres`](database.md) supplies this contract.
 
 ## Call results
 

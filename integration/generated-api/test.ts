@@ -229,7 +229,7 @@ try{
 // the generated module, and two concurrent calls register one task.
 type FakeSocket={on(event:string,listener:(data:unknown)=>void):void;send(data:string):void;terminate():void};
 type FakeServer={clients:Set<FakeSocket>;on(event:'connection',listener:(socket:FakeSocket)=>void):void;close(done:()=>void):void};
-const {WebSocketServer}=createRequire(import.meta.url)('../../packages/server/node_modules/ws') as
+const {WebSocketServer}=createRequire(import.meta.url)('ws') as
  {WebSocketServer:new(options:{server:unknown})=>FakeServer};
 const bootstrapDirectory=await mkdtemp(join(tmpdir(),'generated-bootstrap-'));
 const loads:{after:number;until:number}[]=[];

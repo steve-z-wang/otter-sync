@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import WebSocket, { WebSocketServer } from '../../../packages/client-js/node_modules/ws/wrapper.mjs';
+import WebSocket, { WebSocketServer } from 'ws';
 import { createClient } from '../../../packages/client-js/runtime.mts';
 import { Transaction } from '../../../packages/client-react-native/transaction.mts';
 import { createServerConnection } from '../../../packages/client-react-native/live.mts';

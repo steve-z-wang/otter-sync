@@ -1,2 +1,1 @@
 #include "Generated.xcconfig"
-OTHER_LDFLAGS = $(inherited) -force_load "$(PROJECT_DIR)/../../../../target/aarch64-apple-ios-sim/debug/libaxton_dart.a"

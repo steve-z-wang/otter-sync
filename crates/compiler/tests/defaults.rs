@@ -207,7 +207,7 @@ fn typescript_create_inputs_make_only_defaulted_fields_optional() {
         "{ts}"
     );
     // Handlers receive the expanded, complete values.
-    let backend = axton_compiler::backend_typescript(&config, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&config, "@axtonjs/server");
     let handler = section(&backend, "export interface AddTodoInput {");
     assert!(
         handler.contains(" todo: Todo;\n maybe?: Todo | null;\n many: Todo[];"),

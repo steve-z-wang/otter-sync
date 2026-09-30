@@ -9,8 +9,12 @@ fn read_json(path: &Path) -> Result<Value, String> {
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().collect();
+    if matches!(args.get(1).map(String::as_str), Some("--version" | "-V")) && args.len() == 2 {
+        println!("axton {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     if args.len() < 4 || args[1] != "compile" {
-        return Err("usage: axton compile INPUT_DIR OUTPUT_DIR [--mutation-history FILE] [--initialize-mutation-history] [--model-history FILE] [--initialize-model-history] [--action-history FILE] [--initialize-action-history] [--load-history FILE] [--initialize-load-history] [--schema-fence FILE] [--backend-runtime SPEC] [--client-runtime SPEC]".into());
+        return Err("usage: axton --version | axton compile INPUT_DIR OUTPUT_DIR [--mutation-history FILE] [--initialize-mutation-history] [--model-history FILE] [--initialize-model-history] [--action-history FILE] [--initialize-action-history] [--load-history FILE] [--initialize-load-history] [--schema-fence FILE] [--backend-runtime SPEC] [--client-runtime SPEC]".into());
     }
     let input = Path::new(&args[2]);
     let out = Path::new(&args[3]);
@@ -21,8 +25,8 @@ fn run() -> Result<(), String> {
     let mut load_history_path = input.join("history").join("loads.json");
     let superseded = out.join("mutation-history.json");
     let mut fence_path = out.join("schema.json");
-    let mut backend_runtime = String::from("@axton/server");
-    let mut client_runtime = String::from("@axton/client");
+    let mut backend_runtime = String::from("@axtonjs/server");
+    let mut client_runtime = String::from("@axtonjs/client");
     let mut initialize = false;
     let mut explicit_history = false;
     let mut initialize_models = false;

@@ -70,7 +70,7 @@ export type {
   TransactionRejections,
 } from "./runtime.mts";
 const native = createRequire(import.meta.url)(
-  "../../bindings/node/axton-node.node",
+  "@axtonjs/native",
 ) as NativeCarrier;
 export const Client = createClient(native, Transaction, createServerConnection);
 export type Client = Awaited<ReturnType<typeof Client.open>>;

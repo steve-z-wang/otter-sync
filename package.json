@@ -1,8 +1,15 @@
 {
   "name": "axton-workspace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "packages/native",
+    "packages/server",
+    "packages/client-js",
+    "packages/postgres",
+    "packages/cli"
+  ],
   "scripts": {
     "build": "bash scripts/build.sh",
     "test": "bash scripts/test.sh",
@@ -10,6 +17,7 @@
     "format": "prettier --write packages/client-js/*.mts packages/server/*.mts packages/postgres/*.mts packages/postgres/src/*.mts"
   },
   "devDependencies": {
+    "@napi-rs/cli": "3.10.5",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.5.0",

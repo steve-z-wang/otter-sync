@@ -3,6 +3,8 @@
  * every statement AXTON runs, and one driver interface a PostgreSQL access
  * tool binds with two methods. `pg`, `prisma` and `drizzle` are the shipped
  * shims; `persistence(driver)` builds the `database` option from any other.
+ * The `drizzle` shim imports `drizzle-orm`, so it is only exported from
+ * `@axtonjs/postgres/drizzle`; this entry point needs no optional peer.
  */
 export type { PostgresDriver, DriverOptions } from "./src/driver.mts";
 export {
@@ -20,10 +22,3 @@ export {
   type PrismaTransaction,
   type PrismaClientLike,
 } from "./src/prisma.mts";
-export {
-  drizzle,
-  drizzleDriver,
-  bindDrizzle,
-  type DrizzleTransaction,
-  type DrizzleDatabase,
-} from "./src/drizzle.mts";

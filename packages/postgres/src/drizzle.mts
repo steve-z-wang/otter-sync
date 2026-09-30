@@ -2,7 +2,7 @@ import { sql as drizzleSql, type SQL, type SQLChunk } from "drizzle-orm";
 import type { DriverOptions, PostgresDriver } from "./driver.mts";
 import { withRetries } from "./driver.mts";
 import { persistence } from "./persistence.mts";
-import { isRetryableTransactionError } from "../../server/retryable.mts";
+import { isRetryableTransactionError } from "@axtonjs/server";
 
 /** The part of a Drizzle node-postgres transaction AXTON uses. */
 export interface DrizzleTransaction {

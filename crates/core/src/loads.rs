@@ -222,9 +222,8 @@ impl LoadBatchRequest {
     /// and call IDs, names, versions and declared read contracts. Unknown
     /// operations and invalid args or state remain item rejections.
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > limits::LOAD_REQUEST_BYTES {
-            return Err(invalid("Load request exceeds byte limit"));
-        }
+        crate::check_request_size(bytes, limits::LOAD_REQUEST_BYTES)
+            .map_err(|_| invalid("Load request exceeds byte limit"))?;
         let mut raw: Value = serde_json::from_slice(bytes)?;
         // Negotiation metadata is not part of any page's call identity.
         crate::protocol::strip_capabilities(&mut raw)?;

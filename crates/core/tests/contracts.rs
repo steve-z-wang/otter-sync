@@ -2633,3 +2633,96 @@ fn enrollment_responses_carry_memberships_beside_their_records() {
         }
     }
 }
+
+fn at_request_limit(mut request: Value, pointer: &str, limit: usize) -> Vec<u8> {
+    *request.pointer_mut(pointer).unwrap() = json!("");
+    let base = canonical_json(&request).unwrap().len();
+    *request.pointer_mut(pointer).unwrap() = json!("x".repeat(limit - base));
+    let bytes = canonical_json(&request).unwrap().into_bytes();
+    assert_eq!(bytes.len(), limit);
+    bytes
+}
+
+#[test]
+fn frozen_requests_at_payload_limit_accept_required_negotiation() {
+    type RequestCase = (Value, &'static str, usize, fn(&[u8]) -> bool);
+    let cases: Vec<RequestCase> = vec![
+        (
+            json!({"clientId":"device","batchSequence":1,"models":{},"mutations":[{"callId":ID,"name":"Send","version":1,"args":{"to":""},"ordinal":1}]}),
+            "/mutations/0/args/to",
+            limits::PUSH_BYTES,
+            |b| PushRequest::decode_action_envelope(b).is_ok(),
+        ),
+        (
+            json!({"call":{"callId":ID,"name":"Send","version":1,"args":{"to":""}},"models":{}}),
+            "/call/args/to",
+            limits::PUSH_BYTES,
+            |b| DirectActionRequest::decode_envelope(b).is_ok(),
+        ),
+        (
+            json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":""}}),
+            "/identity/id",
+            limits::PUSH_BYTES,
+            |b| FetchRequest::decode_envelope(b).is_ok(),
+        ),
+        (
+            json!({"loads":[{"loadId":ID,"callId":FETCH_CALL,"name":"ProjectTodos","version":1,"args":{"to":""},"continuation":null,"models":{"Todo":1}}]}),
+            "/loads/0/args/to",
+            limits::LOAD_REQUEST_BYTES,
+            |b| LoadBatchRequest::decode_envelope(b).is_ok(),
+        ),
+    ];
+    for (request, pointer, limit, decode) in cases {
+        let frozen = at_request_limit(request, pointer, limit);
+        assert!(
+            decode(&frozen),
+            "legacy request decodes at its original limit"
+        );
+        let upgraded = with_capabilities(&frozen, &[CHANNEL_MEMBERSHIP_CAPABILITY]).unwrap();
+        assert!(
+            decode(&upgraded),
+            "required negotiation must not strand a frozen request"
+        );
+    }
+}
+
+#[test]
+fn negotiation_headroom_does_not_expand_logical_payload_or_accept_unbounded_metadata() {
+    let original = canonical_json(&json!({"body":"x".repeat(100)}))
+        .unwrap()
+        .into_bytes();
+    let limit = original.len();
+    let upgraded = with_capabilities(&original, &[CHANNEL_MEMBERSHIP_CAPABILITY]).unwrap();
+    assert_eq!(upgraded.len() - limit, 41);
+    assert!(check_request_size(&upgraded, limit).is_ok());
+    // Even one extra semantic byte cannot borrow the metadata allowance.
+    let mut oversized: Value = serde_json::from_slice(&upgraded).unwrap();
+    oversized["body"] = json!("x".repeat(101));
+    assert!(check_request_size(canonical_json(&oversized).unwrap().as_bytes(), limit).is_err());
+    assert!(check_request_size(&original, limit - 1).is_err());
+    // A shorter logical payload cannot grant arbitrary negotiation headroom.
+    let excessive = with_capabilities(
+        &original,
+        &[CHANNEL_MEMBERSHIP_CAPABILITY, &"z".repeat(1000)],
+    )
+    .unwrap();
+    assert!(check_request_size(&excessive, limit).is_err());
+    for capabilities in [
+        json!(null),
+        json!(CHANNEL_MEMBERSHIP_CAPABILITY),
+        json!([CHANNEL_MEMBERSHIP_CAPABILITY, CHANNEL_MEMBERSHIP_CAPABILITY]),
+        json!(["unrecognized"]),
+    ] {
+        let malformed = json!({"body":"x".repeat(100),"capabilities":capabilities});
+        assert!(check_request_size(canonical_json(&malformed).unwrap().as_bytes(), limit).is_err());
+    }
+    // Every semantic extension remains part of the logical body.
+    let extension =
+        json!({"body":"x".repeat(100),"extra":true,"capabilities":[CHANNEL_MEMBERSHIP_CAPABILITY]});
+    assert!(check_request_size(canonical_json(&extension).unwrap().as_bytes(), limit).is_err());
+    let mut whitespace = upgraded;
+    whitespace.push(b' ');
+    assert!(check_request_size(&whitespace, limit).is_err());
+    // This helper keeps the legacy raw-size path; ingress decoders validate shape.
+    assert!(check_request_size(b"legacy", 6).is_ok());
+}

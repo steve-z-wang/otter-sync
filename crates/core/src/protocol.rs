@@ -90,9 +90,8 @@ impl PushRequest {
     /// Structural Action batch validation. Unsupported names/versions and
     /// invalid argument values remain per-call failures for the server.
     pub fn decode_action_envelope(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > limits::PUSH_BYTES {
-            return Err(invalid("Action push exceeds byte limit"));
-        }
+        check_request_size(bytes, limits::PUSH_BYTES)
+            .map_err(|_| invalid("Action push exceeds byte limit"))?;
         let request = Self::decode_inner(bytes, true)?;
         let mut seen = BTreeSet::new();
         for mutation in &request.mutations {
@@ -1015,6 +1014,28 @@ pub fn logical_request(envelope: &Value) -> Result<Value> {
     strip_capabilities(&mut logical)?;
     Ok(logical)
 }
+/// Check a request's existing payload bound, allowing only the fixed wire
+/// overhead of advertising channel membership on an already frozen request.
+/// Requests within the original raw bound retain their legacy size behavior.
+/// Above it, both the raw wire and canonical logical payload are bounded;
+/// arbitrary capability names never increase the allowance.
+pub fn check_request_size(bytes: &[u8], limit: usize) -> Result<()> {
+    if bytes.len() <= limit {
+        return Ok(());
+    }
+    const HEADROOM: usize = br#","capabilities":["channel-membership-v1"]"#.len();
+    if bytes.len().saturating_sub(limit) > HEADROOM {
+        return Err(invalid("request exceeds byte limit"));
+    }
+    let envelope: Value = serde_json::from_slice(bytes)?;
+    if !read_capabilities(&envelope)?.contains(CHANNEL_MEMBERSHIP_CAPABILITY)
+        || canonical_json(&logical_request(&envelope)?)?.len() > limit
+    {
+        return Err(invalid("request exceeds byte limit"));
+    }
+    Ok(())
+}
+
 /// The canonical bytes of a request envelope advertising `capabilities`,
 /// replacing any it advertised before.
 pub fn with_capabilities(envelope: &[u8], capabilities: &[&str]) -> Result<Vec<u8>> {

@@ -32,9 +32,8 @@ impl FetchRequest {
     /// is not consulted, so an unsupported Model or version stays a per-call
     /// outcome for a server that has already claimed the call ID.
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > limits::PUSH_BYTES {
-            return Err(invalid("Fetch request exceeds byte limit"));
-        }
+        crate::check_request_size(bytes, limits::PUSH_BYTES)
+            .map_err(|_| invalid("Fetch request exceeds byte limit"))?;
         let mut raw: Value = serde_json::from_slice(bytes)?;
         // Negotiation metadata is not part of the call identity.
         crate::protocol::strip_capabilities(&mut raw)?;

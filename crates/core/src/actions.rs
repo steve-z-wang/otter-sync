@@ -158,9 +158,8 @@ impl DirectActionRequest {
     /// Structural server ingress. Semantic Action name/version/args failures
     /// remain per-call outcomes after the call identity has been claimed.
     pub fn decode_envelope(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() > crate::limits::PUSH_BYTES {
-            return Err(invalid("direct Action request exceeds byte limit"));
-        }
+        crate::check_request_size(bytes, crate::limits::PUSH_BYTES)
+            .map_err(|_| invalid("direct Action request exceeds byte limit"))?;
         let raw: Value = serde_json::from_slice(bytes)?;
         // Negotiation metadata is checked here and kept out of the request.
         crate::read_capabilities(&raw)?;

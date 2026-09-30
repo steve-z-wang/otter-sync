@@ -89,6 +89,7 @@ pub fn receipt(
         rejections: vec![],
         completions: vec![],
         records,
+        memberships: Vec::new(),
     }
 }
 /// A receipt rejecting `ordinals` with `code` and returning `records` for the rest.
@@ -232,6 +233,7 @@ pub fn load_page(
             .iter()
             .map(|(id, text, stamp)| authority_of(id, Some(text), *stamp))
             .collect(),
+        memberships: Vec::new(),
     }
 }
 /// The correlated reply a decoded response carries for a well-formed `page`.

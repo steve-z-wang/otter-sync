@@ -801,5 +801,572 @@
    "wire": "{",
    "outcome": "request.invalid"
   }
- ]
+ ],
+ "envelopes": {
+  "comment": "memberships sits at the top level of each enrollment-capable response, beside records, and is omitted when the call enrolled nothing. Every claim names a record that envelope returns; an unsuccessful Load page or failed direct Action carries none, like its records. The direct Action cases answer the request `directActionRequest`.",
+  "loadPage": [
+   {
+    "name": "a succeeded page claims its returned record",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      },
+      {
+       "channel": "user:bob",
+       "cursor": 4,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a page that enrolled nothing omits memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the page does not return",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a duplicate claim pair",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "succeeded",
+      "data": {
+       "todos": [
+        {
+         "id": "01890f47-1234-7123-8123-000000000001"
+        }
+       ],
+       "notes": []
+      },
+      "next": null
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      },
+      {
+       "channel": "project:p1",
+       "cursor": 11,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed page carries no memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "failed",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a retryable page carries no memberships",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "retryable",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed page with an empty memberships list",
+    "response": {
+     "loadId": "01890f47-1234-7123-8123-000000000011",
+     "callId": "01890f47-1234-7123-8123-000000000111",
+     "outcome": {
+      "status": "failed",
+      "error": {
+       "code": "load.invalid",
+       "message": "no"
+      }
+     },
+     "records": [],
+     "memberships": []
+    },
+    "valid": true
+   }
+  ],
+  "pushReceipt": [
+   {
+    "name": "a receipt claims a record it returns",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a receipt that enrolled nothing omits memberships",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the receipt does not return",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [],
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a rejected mutation enrolls nothing",
+    "response": {
+     "clientId": "device",
+     "batchSequence": 1,
+     "rejections": [
+      {
+       "ordinal": 1,
+       "code": "todo.missing"
+      }
+     ],
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   }
+  ],
+  "directActionRequest": {
+   "call": {
+    "callId": "01890f47-1234-7123-8123-123456789abc",
+    "name": "Send",
+    "version": 1,
+    "args": {
+     "to": "a"
+    }
+   },
+   "models": {}
+  },
+  "directAction": [
+   {
+    "name": "a succeeded call claims a record it returns",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a call that enrolled nothing omits memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ]
+    },
+    "valid": true
+   },
+   {
+    "name": "a claim for a record the response does not return",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "succeeded",
+       "result": {
+        "messageId": "m",
+        "note": null
+       }
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000002"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call without memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": []
+    },
+    "valid": true
+   },
+   {
+    "name": "a failed call carries no memberships",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call carries no memberships, even for a record it returns",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [
+      {
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       },
+       "stamp": 3,
+       "state": {
+        "title": "t"
+       }
+      }
+     ],
+     "memberships": [
+      {
+       "channel": "project:p1",
+       "cursor": 10,
+       "model": "Todo",
+       "identity": {
+        "id": "01890f47-1234-7123-8123-000000000001"
+       }
+      }
+     ]
+    },
+    "valid": false
+   },
+   {
+    "name": "a failed call with an empty memberships list",
+    "response": {
+     "completion": {
+      "callId": "01890f47-1234-7123-8123-123456789abc",
+      "outcome": {
+       "status": "failed",
+       "code": "handler.failed",
+       "execution": "rejected"
+      }
+     },
+     "records": [],
+     "memberships": []
+    },
+    "valid": true
+   }
+  ]
+ }
 }

@@ -66,6 +66,7 @@ fn repeated_identities_select_occurrences_and_preserve_known_failures() {
             authority_of("valid", Some("good"), 2),
             authority(None, 4),
         ],
+        memberships: Vec::new(),
     };
     client.begin_session().unwrap();
     let prepared = client
@@ -583,6 +584,7 @@ fn failed_record_savepoint_discards_held_key_before_later_record() {
             authority(Some("server"), 2),
             authority_of("valid", Some("good"), 3),
         ],
+        memberships: Vec::new(),
     };
     client.begin_session().unwrap();
     let prepared = client

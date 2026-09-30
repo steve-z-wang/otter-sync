@@ -373,6 +373,10 @@ pub struct LoadPageResponse {
     pub call_id: String,
     pub outcome: LoadOutcome,
     pub records: Vec<AuthorityRecord>,
+    /// Enrollment claims for returned records ([`MembershipClaim`]); omitted
+    /// from the wire when the call enrolled nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memberships: Vec<crate::MembershipClaim>,
 }
 impl LoadPageResponse {
     /// Decode one answer's shape: exactly `loadId`, `callId`, `outcome` and
@@ -418,9 +422,12 @@ impl LoadPageResponse {
                 if !self.records.is_empty() {
                     return Err(invalid("an unsuccessful Load page carries no records"));
                 }
+                if !self.memberships.is_empty() {
+                    return Err(invalid("an unsuccessful Load page carries no memberships"));
+                }
             }
         }
-        Ok(())
+        crate::validate_memberships(&self.memberships, &self.records)
     }
     /// Whether this page answers exactly this frozen page request.
     pub fn answers(&self, intent: &LoadIntent) -> bool {

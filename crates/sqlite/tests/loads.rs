@@ -127,6 +127,7 @@ fn backend_failure(fence: &LoadFence, code: &str) -> LoadPageResponse {
             },
         },
         records: vec![],
+        memberships: Vec::new(),
     }
 }
 
@@ -524,6 +525,7 @@ fn backend_terminal_and_retryable_outcomes_are_recorded_apart() {
             },
         },
         records: vec![],
+        memberships: Vec::new(),
     };
     let LoadStored::Retrying(waiting) = c.store_load_page(&frozen, reply(retryable)).unwrap()
     else {

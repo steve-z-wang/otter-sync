@@ -712,6 +712,7 @@ pub async fn process_push(
         rejections,
         completions: vec![],
         records: results.into_values().collect(),
+        memberships: Vec::new(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host

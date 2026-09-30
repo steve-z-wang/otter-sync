@@ -147,6 +147,7 @@ pub async fn process_action(
             .into_iter()
             .map(|record| current_authority(config, &request.models, record))
             .collect::<Result<Vec<_>>>()?,
+        memberships: Vec::new(),
     };
     String::from_utf8(response.encode().map_err(internal)?).map_err(internal)
 }
@@ -383,6 +384,7 @@ pub async fn process_action_push(
         rejections,
         completions,
         records: authority.into_values().collect(),
+        memberships: Vec::new(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host

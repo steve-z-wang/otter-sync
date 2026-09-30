@@ -265,6 +265,7 @@ async fn execute_fresh(
         call_id: intent.call_id.clone(),
         outcome: LoadOutcome::Succeeded { data, next },
         records,
+        memberships: Vec::new(),
     };
     let bytes = encode(&page)?.len();
     if bytes > limits::LOAD_PAGE_BYTES {
@@ -459,6 +460,7 @@ fn failed(intent: &LoadIntent, error: &Error) -> LoadPageResponse {
             error: LoadError::bounded(error.code.clone(), error.message.clone()),
         },
         records: vec![],
+        memberships: Vec::new(),
     }
 }
 
@@ -584,6 +586,7 @@ pub fn encode_load_batch(items: &[String], answers: Vec<LoadItemAnswer>) -> Resu
             call_id: intent.call_id.clone(),
             outcome,
             records: vec![],
+            memberships: Vec::new(),
         };
         loads.push(match answer {
             LoadItemAnswer::Fault(fault) => unsaved(load_fault_outcome(&fault)),

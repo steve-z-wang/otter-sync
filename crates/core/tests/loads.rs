@@ -745,6 +745,7 @@ fn server_encoding_bounds_item_errors_instead_of_refusing_the_batch() {
             },
         },
         records: vec![],
+        memberships: Vec::new(),
     };
     // A 1,023-byte prefix plus a 2-byte character: cut on the boundary.
     let message = format!("{}\u{e9}tail", "m".repeat(1023));

@@ -305,6 +305,10 @@ pub struct PushReceipt {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completions: Vec<CallCompletion>,
     pub records: Vec<AuthorityRecord>,
+    /// Enrollment claims for returned records ([`MembershipClaim`]); omitted
+    /// from the wire when the call enrolled nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memberships: Vec<MembershipClaim>,
 }
 impl PushReceipt {
     /// Decode an Action receipt against the frozen ordered calls. A legacy
@@ -438,6 +442,8 @@ impl PushReceipt {
             }
         }
         unique_records(&self.records)?;
+        // Claims tie to returned authority: an all-rejected receipt has none.
+        validate_memberships(&self.memberships, &self.records)?;
         let mut calls = BTreeSet::new();
         for completion in &self.completions {
             if !calls.insert(crate::normalize_call_id(&completion.call_id)?) {

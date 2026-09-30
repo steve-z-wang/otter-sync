@@ -2572,3 +2572,64 @@ fn negotiation_metadata_is_not_part_of_the_logical_request() {
     assert!(logical_request(&json!({"capabilities":7})).is_err());
     assert!(with_capabilities(b"[]", &caps).is_err());
 }
+
+#[test]
+fn enrollment_responses_carry_memberships_beside_their_records() {
+    let fixture = channel_fixture();
+    let envelopes = &fixture["envelopes"];
+    // The member sits at the envelope's top level and is omitted when empty.
+    let frozen = |name: &str, response: &Value, encoded: Value| {
+        assert_eq!(
+            encoded.get("memberships"),
+            response
+                .get("memberships")
+                .filter(|m| !m.as_array().unwrap().is_empty()),
+            "{name}"
+        );
+    };
+    for case in envelopes["loadPage"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded = LoadPageResponse::decode_item(response);
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(page) = decoded {
+            let expected = response
+                .get("memberships")
+                .map_or(0, |m| m.as_array().unwrap().len());
+            assert_eq!(page.memberships.len(), expected, "{name}");
+            frozen(name, response, serde_json::to_value(&page).unwrap());
+        }
+    }
+    for case in envelopes["pushReceipt"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded = PushReceipt::decode(response.to_string().as_bytes());
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(receipt) = decoded {
+            let encoded: Value = serde_json::from_slice(&receipt.encode().unwrap()).unwrap();
+            frozen(name, response, encoded);
+            assert_eq!(
+                PushReceipt::decode(&receipt.encode().unwrap()).unwrap(),
+                receipt
+            );
+        }
+    }
+    let schema = action_schema();
+    let request = DirectActionRequest::decode(
+        envelopes["directActionRequest"].to_string().as_bytes(),
+        &schema,
+    )
+    .unwrap();
+    for case in envelopes["directAction"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded =
+            DirectActionResponse::decode(response.to_string().as_bytes(), &request, &schema);
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(direct) = decoded {
+            let encoded: Value = serde_json::from_slice(&direct.encode().unwrap()).unwrap();
+            frozen(name, response, encoded);
+            assert!(
+                DirectActionResponse::decode(&direct.encode().unwrap(), &request, &schema).is_ok(),
+                "{name}"
+            );
+        }
+    }
+}

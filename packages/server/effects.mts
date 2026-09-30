@@ -802,8 +802,7 @@ export function loadEffectsFor(
       });
     return Object.freeze({
       channel,
-      memberships: (): readonly ChannelIntent[] =>
-        [...declarations],
+      memberships: (): readonly ChannelIntent[] => [...declarations],
       failure: () => failed,
       close() {
         open = false;

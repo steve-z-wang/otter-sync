@@ -148,3 +148,14 @@ mod tests {
         assert_eq!(edit("e1", "x").operations.len(), 1);
     }
 }
+
+/// A native Load contract used by enrolled-response delivery traces.
+pub fn enrollment_schema() -> Schema {
+    let mut value = serde_json::to_value(schema()).unwrap();
+    value["loads"] = json!([{"name":"EnrolledEntries","version":1,
+      "inputs":[{"kind":"value","name":"channel","type":{"kind":"scalar","name":"string"},"nullable":false,"list":false,"required":true,"cardinality":"single"}],
+      "outputs":[{"name":"entries","kind":"model","cardinality":"list","source":"handlerIdentity","model":"Entry","modelReadVersion":1,
+        "handlerType":{"kind":"identity","model":"Entry","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
+      "input":{"models":[],"enums":[]},"outputEnums":[]}]);
+    Schema::from_value(value).unwrap()
+}

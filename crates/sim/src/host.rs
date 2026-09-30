@@ -8,9 +8,9 @@ use axton_server::{
     Host,
     channel_members::{MemberPosition, MemberState, PositionKind},
     host::{
-        Acknowledged, ChannelIntent, ChannelMembers, Claimed, ClaimedCall, Handled, Head,
-        HostRequest, Invalidation as ContractInvalidation, Loaded, Locked, Memberships, Positions,
-        RecordRef, Scanned, Stamped, Stamps,
+        Acknowledged, ChannelIntent, ChannelMembers, Claimed, ClaimedCall, Handled, HandledLoad,
+        Head, HostRequest, Invalidation as ContractInvalidation, Loaded, Locked, Memberships,
+        Positions, RecordRef, Scanned, Stamped, Stamps,
     },
 };
 use serde_json::{Map, Value, json};
@@ -91,6 +91,7 @@ struct State {
     /// Records whose next single-identity `load` is refused with `sim.refused`.
     refuse_load: BTreeSet<String>,
     handler_calls: usize,
+    native_load_calls: usize,
     accepted: usize,
     rejected: usize,
     failed: usize,
@@ -420,6 +421,32 @@ impl MemHost {
             ))
             .map_err(|e| e.to_string())
         })
+    }
+    /// Serve a native Load batch through production admission, call replay and enrollment.
+    pub fn native_load(
+        &self,
+        config: &axton_server::Config,
+        owner: &str,
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        let items = axton_server::validate_load_batch(bytes).map_err(|e| e.to_string())?;
+        let mut answers = vec![];
+        for item in &items {
+            let page = self.transaction(|| {
+                block_on(axton_server::process_load(
+                    config,
+                    owner,
+                    item.as_bytes(),
+                    self,
+                ))
+                .map_err(|e| e.to_string())
+            })?;
+            answers.push(axton_server::LoadItemAnswer::Page(page));
+        }
+        axton_server::encode_load_batch(&items, answers).map_err(|e| e.to_string())
+    }
+    pub fn native_load_calls(&self) -> usize {
+        self.0.lock().unwrap().native_load_calls
     }
     pub fn savepoint_depth(&self) -> usize {
         self.0.lock().unwrap().savepoints.len()
@@ -885,8 +912,39 @@ impl Host for MemHost {
                 HostRequest::HandleAction { .. } => {
                     return Err("sim Action handlers are not configured".into());
                 }
-                HostRequest::HandleLoad { .. } => {
-                    return Err("sim Load handlers are not configured".into());
+                HostRequest::HandleLoad {
+                    name, arguments, ..
+                } => {
+                    if name != "EnrolledEntries" {
+                        return Err("sim Load handler is not configured".into());
+                    }
+                    s.native_load_calls += 1;
+                    let channel = arguments["channel"]
+                        .as_str()
+                        .ok_or("missing channel")?
+                        .to_string();
+                    let records: Vec<RecordRef> = s
+                        .tables
+                        .records
+                        .values()
+                        .filter(|row| row.get("entryId").is_none())
+                        .map(|row| RecordRef {
+                            model: "Entry".into(),
+                            identity: json!({"id":row["id"]}),
+                        })
+                        .collect();
+                    response!(HandledLoad::Settled {
+                        data: json!({"entries":records.iter().map(|r|r.identity.clone()).collect::<Vec<_>>()}),
+                        next: None,
+                        memberships: records
+                            .into_iter()
+                            .map(|record| ChannelIntent::Add {
+                                channel: channel.clone(),
+                                record,
+                                tags: vec![]
+                            })
+                            .collect(),
+                    })
                 }
                 HostRequest::AdvanceStamp {
                     model,

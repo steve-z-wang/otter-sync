@@ -186,3 +186,78 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
         Some("device")
     );
 }
+
+#[test]
+fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal() {
+    use axton_client::{LoadOptions, LoadWorker};
+    use axton_core::{LoadBatchRequest, LoadBatchResponse};
+    let schema = axton_sim::schema::enrollment_schema();
+    let mut config = axton_sim::schema::config();
+    config.schema = schema.clone();
+    let mut sim = Sim::new_with_schema(9106, 1, schema);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        channel: "u".into(),
+    })
+    .unwrap();
+    sim.apply(Action::Declare {
+        key: "Entry:a".into(),
+        touch: Some(Some("loaded".into())),
+        memberships: vec![],
+    })
+    .unwrap();
+    // Use the production worker's request bytes; capability gaps must stay visible.
+    sim.client(0)
+        .start_load(
+            "EnrolledEntries",
+            1,
+            &serde_json::json!({"channel":"u"}),
+            LoadOptions::default(),
+        )
+        .unwrap();
+    let mut worker = LoadWorker::default();
+    worker.wake();
+    let dispatch = worker
+        .dispatch(sim.client(0), 0, 9106)
+        .unwrap()
+        .dispatch
+        .unwrap();
+    let request = LoadBatchRequest::decode_envelope(dispatch.body.as_bytes()).unwrap();
+    let held = sim
+        .host
+        .native_load(&config, "owner", dispatch.body.as_bytes())
+        .unwrap();
+    assert_eq!(sim.host.native_load_calls(), 1);
+    sim.settle(); // The enrolled Channel delivers first.
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
+    sim.apply(Action::Declare {
+        key: "Entry:a".into(),
+        touch: None,
+        memberships: vec![("u".into(), false)],
+    })
+    .unwrap();
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+    let reply = LoadBatchResponse::decode(held.as_bytes(), &request)
+        .unwrap()
+        .remove(0);
+    sim.client(0)
+        .store_load_page(&dispatch.pages[0].fence, reply)
+        .unwrap();
+    assert_eq!(
+        sim.read_text(0, &entry_key("a")),
+        None,
+        "old enrolled claim cannot revive released content"
+    );
+    // Durable server call replay returns the original claim, without executing add again.
+    let replay = sim
+        .host
+        .native_load(&config, "owner", dispatch.body.as_bytes())
+        .unwrap();
+    assert_eq!(replay, held);
+    assert_eq!(sim.host.native_load_calls(), 1);
+    assert!(sim.host.stored_memberships(&entry_key("a")).is_empty());
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    sim.apply(Action::Restart { client: 0 }).unwrap();
+    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+}

@@ -302,11 +302,14 @@ pub fn parse_key(s: &str) -> RecordKey {
 
 impl Sim {
     pub fn new(seed: u64, clients: usize) -> Sim {
+        Self::new_with_schema(seed, clients, schema::schema())
+    }
+    pub fn new_with_schema(seed: u64, clients: usize, client_schema: axton_core::Schema) -> Sim {
         let dir = tempfile::tempdir().unwrap();
         let clients = (0..clients)
             .map(|i| {
                 let path = dir.path().join(format!("client-{i}.sqlite"));
-                let schema = schema::schema();
+                let schema = client_schema.clone();
                 Slot {
                     client: Some(open(&path, &schema, false)),
                     path,

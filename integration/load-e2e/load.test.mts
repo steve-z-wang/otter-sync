@@ -664,6 +664,38 @@ test("native Load enrollment releases live content durably and a second Channel 
   }
 });
 
+test("a delayed enrolled Load response and its durable replay cannot restore or re-enroll a released member", async () => {
+  await fixture.seed("released-page", 2);
+  fixture.enrolling.add("released-page");
+  const reader = await subscribed("released-page", "items:released-page");
+  const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "released-page" && item.continuation === null));
+  try {
+    const { client } = reader;
+    const load = await client.loads.projectItems({ project: "released-page" });
+    const exchange = await held.arrived;
+    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Channel enrollment delivered while the Load response was held");
+    await fixture.membership("released-page-1", "items:released-page", false);
+    await wait(async () => (await client.models.item.get({ id: "released-page-1" })) === null, "newer live removal committed before the old claim");
+    const runs = fixture.handled.length;
+    const head = await fixture.head("items:released-page");
+    held.release();
+    await load.wait();
+    assert.equal(await client.models.item.get({ id: "released-page-1" }), null, "older enrolled page cannot resurrect released content");
+    // Replay the same committed first-page HTTP request through production admission.
+    const replay = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer alice" }, body: exchange.body });
+    assert.equal(replay.status, 200);
+    await replay.json();
+    assert.equal(fixture.handled.length, runs + 1, "only the traversal's final empty page ran; durable replay ran no handler");
+    assert.equal(await fixture.head("items:released-page"), head, "replayed page did not re-enroll or publish");
+    const members = await fixture.pool.query("SELECT 1 FROM axton_channel_member AS m JOIN axton_record AS r ON r.id=m.record_id WHERE m.channel=$1 AND r.model='Item' AND r.identity_key=$2", ["items:released-page", JSON.stringify({ id: "released-page-1" })]);
+    assert.equal(members.rowCount, 0, "server membership remains released");
+  } finally {
+    held.release();
+    fixture.enrolling.delete("released-page");
+    await reader.cleanup();
+  }
+});
+
 test("a newer Channel update of an enrolled record arrives before its held Load page: no regression, duplicates are harmless and a pending edit stays", async () => {
   const ids = await fixture.seed("gate", 2);
   fixture.enrolling.add("gate");

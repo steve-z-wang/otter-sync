@@ -138,3 +138,18 @@ The 0.2 framework upgrade is additive and separate from incompatible application
 Clean device-local operations are retained in a bounded internal layer, separate from replication. Release replays pending and local operations over an absent base without sending a write. Legacy stamped cache cannot be promoted to local authorship; old unstamped local creates can survive conservatively. Lost direct-write provenance is not reconstructed.
 
 A durable subscribed-Channel reconciliation walk consumes retained history before ordinary delivery resumes, including removal evidence even when delivery progress was already beyond it. New logical requests freeze store epochs; retry/restart and saved legacy responses keep their original token. Migration cannot infer holdings for records absent from both retained membership and log, so unrelated one-shot cache is not wiped. Claims are never fabricated for legacy responses. Exact scheduling/storage fields must stay aligned with the runtime; [cutover](../../../../../website/docs/backend/deployment.md#channel-membership-cutover) owns deployment sequencing.
+
+### Frozen request ownership
+
+`StoreToken { epoch }` is client-local and never encoded into requests or Models. The shared predicate is `held || request_epoch >= evicted_at`, before stamp staging; null authority is not suppressed. Each newly accepted final unheld identity advances the durable epoch, including already absent/untracked cache. Duplicate/stale evidence or another current hold does not. Prepared preflight rolls metadata back, and committed replay advances it once.
+
+| Work | Token owner |
+| --- | --- |
+| Direct Query/Mutation | New prepared call ID; retry keeps it, completion/failure/cancellation retires it |
+| Query once | Miss/refresh owns a flight; joins use its token, cache hits apply no authority |
+| Stored Model Fetch | Owning prepared call; coalesced callers join it, unused candidate tokens retire |
+| Prepared store | Copies the transient token so later owner retirement cannot refresh it |
+| Native Load | Durable logical page; continuation or explicit retry captures anew, automatic retry/reopen keeps it |
+| Queued Mutation/Query | Durable enqueue row, before push freezing or network; receipt uses that original token |
+
+A receipt contains batch authority without per-call record provenance. Push selection therefore groups only calls with the same epoch (as well as the existing shape grouping), so unrelated old work cannot suppress fresh authority. Mixed-epoch receipts are refused rather than guessed. Legacy durable rows and unknown historical transient IDs use epoch zero. Additive columns on client, queue and Load rows preserve saved IDs, intent and frozen push bytes. Transient tokens are bounded by outstanding owners; manually abandoning a low-level request requires `Client::retire_request(call_id)`, while runtime lifecycle retires them automatically. The unrelated downlink delivery-ownership token is not repurposed.

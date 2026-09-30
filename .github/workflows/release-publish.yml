@@ -454,17 +454,18 @@ jobs:
         run: |
           # shellcheck disable=SC2016 # single-quoted JavaScript
           packages="$(node -p 'require("./scripts/release/targets.json").host.flatMap((t) => [`native-${t.name}`, `cli-${t.name}`]).concat(["native", "cli", "server", "client", "postgres"]).join(" ")')"
-          for _ in $(seq 30); do
+          # A new version can take npm well over ten minutes to serve.
+          for _ in $(seq 90); do
             missing=""
             for package in $packages; do
-              npm view "@axtonjs/$package@$VERSION" version >/dev/null 2>&1 || missing+=" @axtonjs/$package"
+              npm view --prefer-online "@axtonjs/$package@$VERSION" version >/dev/null 2>&1 || missing+=" @axtonjs/$package"
             done
             curl --fail --silent --output /dev/null "https://pub.dev/api/packages/axton/versions/$VERSION" || missing+=" axton (pub.dev)"
             [[ -z "$missing" ]] && exit 0
             echo "waiting for:$missing"
             sleep 20
           done
-          echo "::error::not served after 10 minutes:$missing"
+          echo "::error::not served after 30 minutes:$missing"
           exit 1
       - run: bash integration/release/verify-installed.sh --registry "$VERSION"
       - run: bash integration/release/verify-dart.sh --registry "$VERSION"

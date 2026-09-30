@@ -891,10 +891,12 @@ const GENERATED_NAMES: &[&str] = &[
 const GENERATED_BACKEND_NAMES: &[&str] = &[
     "Channel",
     "HandlerCall",
+    "MembershipOptions",
     "ModelMembership",
     "MutationContext",
     "QueryContext",
     "RecordRef",
+    "TagSelector",
     "Touch",
     "TransactionCall",
 ];

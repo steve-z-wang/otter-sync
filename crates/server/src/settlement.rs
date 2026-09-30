@@ -4,8 +4,8 @@
 //! ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
 //! Every step is a host operation; no application SQL lives here.
 use crate::host::{
-    Acknowledged, HostExt, HostRequest, Locked, MembershipIntent, Memberships, Published,
-    RecordRef, Stamped,
+    Acknowledged, ChannelIntent, HostExt, HostRequest, Locked, Memberships, Published, RecordRef,
+    Stamped,
 };
 use crate::{Config, Error, Host, Result, code, internal};
 use axton_core::RecordKey;
@@ -36,6 +36,16 @@ pub(crate) fn resolve(config: &Config, record: &RecordRef) -> Result<RecordKey> 
         .map_err(|e| Error::new(code::HANDLER_INVALID, e.to_string()))
 }
 
+/// A tag or tag selector reached settlement, which does not reduce them yet:
+/// refused, never dropped. The declaration rejects its call like any other
+/// invalid declaration.
+pub(crate) fn tags_unsupported(channel: &str, what: &str) -> Error {
+    Error::new(
+        code::HANDLER_INVALID,
+        format!("Channel {channel}: {what} cannot settle; Channel tags are not supported yet"),
+    )
+}
+
 pub(crate) fn insert(changes: &mut Changes, key: RecordKey) -> Result<()> {
     changes.insert(key.encoded().map_err(internal)?, key);
     Ok(())
@@ -53,8 +63,9 @@ enum Guard {
 
 /// Settle `changed` records and ordered membership intents.
 ///
-/// Membership intents reduce to the final desired state per Channel/record
-/// pair. The union of changed and membership records is then guarded in
+/// Channel intents reduce to the final desired state per Channel/record
+/// pair: an untagged `add` is present, a `remove` absent. A tagged `add` or a
+/// `removeTag` is refused ([`tags_unsupported`]). The union of changed and membership records is then guarded in
 /// canonical key order: a changed record advances its stamp once, an
 /// unchanged record with a final add ensures its stamp, and a remove-only
 /// record is only locked (a record without metadata is left alone). Only
@@ -67,7 +78,7 @@ enum Guard {
 pub(crate) async fn settle_changes(
     config: &Config,
     changed: &Changes,
-    memberships: &[MembershipIntent],
+    memberships: &[ChannelIntent],
     host: &impl Host,
 ) -> Result<BTreeMap<String, u64>> {
     for key in changed.values() {
@@ -81,21 +92,29 @@ pub(crate) async fn settle_changes(
     for intent in memberships {
         // The one Channel-name rule, as every frame and registration applies
         // it: a name that is nothing but whitespace names no Channel either.
-        if axton_core::check_channel(&intent.channel).is_err() {
+        if axton_core::check_channel(intent.channel()).is_err() {
             return Err(Error::new(
                 code::PUBLISH_INVALID,
                 "channel must not be blank",
             ));
         }
-        let key = resolve(
-            config,
-            &RecordRef {
-                model: intent.model.clone(),
-                identity: intent.identity.clone(),
-            },
-        )?;
+        let (channel, record, present): (&String, &RecordRef, bool) = match intent {
+            ChannelIntent::Add {
+                channel,
+                record,
+                tags,
+            } if tags.is_empty() => (channel, record, true),
+            ChannelIntent::Remove { channel, record } => (channel, record, false),
+            ChannelIntent::Add { channel, .. } => {
+                return Err(tags_unsupported(channel, "a tagged add"));
+            }
+            ChannelIntent::RemoveTag { channel, .. } => {
+                return Err(tags_unsupported(channel, "a tag selector"));
+            }
+        };
+        let key = resolve(config, record)?;
         let encoded = key.encoded().map_err(internal)?;
-        desired.insert((encoded.clone(), intent.channel.clone()), intent.present);
+        desired.insert((encoded.clone(), channel.clone()), present);
         records.entry(encoded).or_insert(key);
     }
     let intents = |encoded| intents_of(&desired, encoded);

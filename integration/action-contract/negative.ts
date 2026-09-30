@@ -195,6 +195,12 @@ declare const loadContext: LoadContext<{}>;
 loadContext.channel('todos').todo.remove({ id: 'x' });
 // @ts-expect-error A Load Channel has no remove for mixed record lists.
 loadContext.channel('todos').remove([actionBackend.Todo({ id: 'x' })]);
+// @ts-expect-error A Load Channel has no tag selector either.
+loadContext.channel('todos').remove({ tag: 'X' });
+// @ts-expect-error A tagged Load add still names the Model's identity.
+loadContext.channel('todos').todo.add({ id: 1 }, { tags: ['X'] });
+// @ts-expect-error Load tags are a list of strings.
+loadContext.channel('todos').todo.add({ id: 'x' }, { tags: 'X' });
 // @ts-expect-error A Load Channel is not a Mutation's full Channel.
 const fullLoadChannel: actionBackend.Channel = loadContext.channel('todos');
 // @ts-expect-error A composite identity names every component.

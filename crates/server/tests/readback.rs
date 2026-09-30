@@ -99,7 +99,7 @@ fn settled(changes: Value, memberships: Value) -> Value {
     json!({"changes":changes,"memberships":memberships})
 }
 fn add(channel: &str, model: &str, id: &str) -> Value {
-    json!({"channel":channel,"model":model,"identity":{"id":id},"present":true})
+    json!({"kind":"add","channel":channel,"record":{"model":model,"identity":{"id":id}},"tags":[]})
 }
 fn decode(text: &str) -> PushReceipt {
     PushReceipt::decode(text.as_bytes()).unwrap()

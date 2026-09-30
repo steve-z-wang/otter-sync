@@ -788,8 +788,14 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
     ['an enrollment outside the page', () => { returned = [member]; declare = both; }, 'handler.invalid'],
     ['a forged remove beside a valid add', () => {
       declare = channel => channel(A).todo.add({ id: member });
-      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { channel: B, model: 'Todo', identity: { id: member }, present: false }] });
+      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { kind: 'remove', channel: B, record: { model: 'Todo', identity: { id: member } } }] });
     }, 'handler.invalid'],
+    ['a forged tag selector beside a valid add', () => {
+      declare = channel => channel(A).todo.add({ id: member });
+      tamper = answered => ({ ...answered, memberships: [...answered.memberships, { kind: 'removeTag', channel: A, tag: 'X' }] });
+    }, 'handler.invalid'],
+    // Tags reach the engine, which refuses them until it settles them.
+    ['a tagged add', () => { declare = channel => channel(A).todo.add({ id: member }, { tags: ['X'] }); }, 'handler.invalid'],
     ['a forged change beside a valid add', () => {
       declare = channel => channel(A).todo.add({ id: member });
       tamper = answered => ({ ...answered, changes: [{ model: 'Todo', identity: { id: member } }] });

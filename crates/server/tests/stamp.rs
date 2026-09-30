@@ -255,7 +255,7 @@ fn pull_rejects_rows_without_a_positive_stamp() {
 
 #[test]
 fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_that_stamp() {
-    let enroll = |channel: &str| json!({"channel":channel,"model":"Entry","identity":{"id":"e"},"present":true});
+    let enroll = |channel: &str| json!({"kind":"add","channel":channel,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]});
     let settlement = json!({
         "changes":[{"model":"Entry","identity":{"id":"e"}}],
         "memberships":[enroll("a"),enroll("b")]
@@ -310,7 +310,7 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         let err = run(axton_server::settle_external(
             &config(),
             &json!({"changes":[{"model":"Entry","identity":{"id":"e"}}],
-                    "memberships":[{"channel":blank,"model":"Entry","identity":{"id":"e"},"present":true}]}),
+                    "memberships":[{"kind":"add","channel":blank,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]}]}),
             &host,
         ))
         .unwrap_err();
@@ -326,7 +326,8 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         json!({"changes":[],"publications":[{"channel":"a"}]}),
         json!({"changes":[],"memberships":[],"publications":[]}),
         json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"}}]}),
-        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":"yes"}]}),
+        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":true}]}),
+        json!({"changes":[],"memberships":[{"kind":"add","channel":"a","record":{"model":"Entry","identity":{"id":"e"}},"tags":"yes"}]}),
     ] {
         let host = Fixed::new(json!([]), json!({"cursor":3,"stamp":9}));
         let err = run(axton_server::settle_external(&config(), &bad, &host)).unwrap_err();

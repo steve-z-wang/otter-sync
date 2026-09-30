@@ -442,38 +442,68 @@ pub struct RecordRef {
     pub identity: Value,
 }
 
-/// One persistent Channel membership declaration: the record should
-/// (`present`) or should not be a member of `channel`. Intents form an ordered
-/// list; for each Channel/record pair the last one is the desired state
-/// ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
+/// One persistent Channel declaration, tagged by `kind` on the wire. Intents
+/// form an ordered list the engine reduces in order to each Channel's final
+/// state ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)):
+/// `add` makes the record a member and unions `tags` with its labels (`[]`
+/// adds none), `remove` releases the record's whole membership, and
+/// `removeTag` releases every member carrying `tag` as the preceding intents
+/// left the Channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MembershipIntent {
-    pub channel: String,
-    pub model: String,
-    pub identity: Value,
-    pub present: bool,
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ChannelIntent {
+    Add {
+        channel: String,
+        record: RecordRef,
+        tags: Vec<String>,
+    },
+    Remove {
+        channel: String,
+        record: RecordRef,
+    },
+    RemoveTag {
+        channel: String,
+        tag: String,
+    },
+}
+
+impl ChannelIntent {
+    /// The Channel every kind names.
+    pub fn channel(&self) -> &str {
+        match self {
+            Self::Add { channel, .. }
+            | Self::Remove { channel, .. }
+            | Self::RemoveTag { channel, .. } => channel,
+        }
+    }
+    /// The record an `add` or `remove` names; a `removeTag` names none.
+    pub fn record(&self) -> Option<&RecordRef> {
+        match self {
+            Self::Add { record, .. } | Self::Remove { record, .. } => Some(record),
+            Self::RemoveTag { .. } => None,
+        }
+    }
 }
 
 /// The effects of one settlement, shared by modern handlers, legacy handlers
 /// and external transactions: the changed records beyond any input targets,
-/// and the ordered membership intents. There is no implicit publication.
+/// and the ordered Channel intents. There is no implicit publication.
 fn effects(changes: Value, memberships: Value) -> std::result::Result<Effects, String> {
     let changes: Vec<RecordRef> = serde_json::from_value(changes)
         .map_err(|error| format!("invalid handler changes: {error}"))?;
-    let memberships: Vec<MembershipIntent> = serde_json::from_value(memberships)
+    let memberships: Vec<ChannelIntent> = serde_json::from_value(memberships)
         .map_err(|error| format!("invalid handler memberships: {error}"))?;
-    let malformed = |model: &str, identity: &Value| model.is_empty() || !identity.is_object();
-    if changes.iter().any(|r| malformed(&r.model, &r.identity))
+    let malformed = |r: &RecordRef| r.model.is_empty() || !r.identity.is_object();
+    if changes.iter().any(malformed)
         || memberships
             .iter()
-            .any(|m| m.channel.is_empty() || malformed(&m.model, &m.identity))
+            .any(|m| m.channel().is_empty() || m.record().is_some_and(malformed))
     {
         return Err("invalid handler settlement".into());
     }
     Ok((changes, memberships))
 }
-type Effects = (Vec<RecordRef>, Vec<MembershipIntent>);
+type Effects = (Vec<RecordRef>, Vec<ChannelIntent>);
 
 /// The answer to `handle`: the records the handler changed beyond the
 /// uploaded operations and its membership intents, a rejection code, or a
@@ -484,7 +514,7 @@ type Effects = (Vec<RecordRef>, Vec<MembershipIntent>);
 pub enum Handled {
     Settled {
         changes: Vec<RecordRef>,
-        memberships: Vec<MembershipIntent>,
+        memberships: Vec<ChannelIntent>,
     },
     Rejected {
         rejection: String,
@@ -501,7 +531,7 @@ pub enum HandledAction {
     Settled {
         outputs: Value,
         changes: Vec<RecordRef>,
-        memberships: Vec<MembershipIntent>,
+        memberships: Vec<ChannelIntent>,
     },
     Rejected {
         rejection: String,
@@ -576,8 +606,9 @@ impl TryFrom<HandledActionWire> for HandledAction {
 /// its `handler.invalid`, whichever host bridge produced them. An absent
 /// `memberships` (an older host) is an empty list and is encoded absent;
 /// `null` or a malformed intent is refused. A structurally valid intent
-/// decodes even when a Load may not declare it (a removal, a record outside
-/// the page): the engine judges those so every host fails the page alike.
+/// decodes even when a Load may not declare it (a removal, a tag selector, a
+/// record outside the page): the engine judges those so every host fails the
+/// page alike.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, try_from = "HandledLoadWire")]
 pub enum HandledLoad {
@@ -586,7 +617,7 @@ pub enum HandledLoad {
         #[serde(skip_serializing_if = "Option::is_none")]
         next: Option<Value>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
-        memberships: Vec<MembershipIntent>,
+        memberships: Vec<ChannelIntent>,
     },
     Rejected {
         rejection: String,

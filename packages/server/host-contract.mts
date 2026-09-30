@@ -247,24 +247,30 @@ export type HostRecordRef = {
   identity: Record<string, unknown>;
 };
 /**
- * One persistent Channel membership declaration: the record should
- * (`present`) or should not be a member of `channel`. Intents are ordered; the
- * last one per Channel/record pair is the desired state.
+ * One persistent Channel membership declaration, in declaration order: `add`
+ * makes the record a member of `channel` and unions `tags` (distinct, as
+ * spelled; `[]` adds none) with its labels; `remove` releases the record's
+ * whole membership; `removeTag` releases every member of `channel` carrying
+ * `tag`, as the preceding declarations left it. The engine reduces the list
+ * in order to its final state.
  */
-export type MembershipIntent = {
-  channel: string;
-  model: string;
-  identity: Record<string, unknown>;
-  present: boolean;
-};
+export type ChannelIntent =
+  | {
+      kind: "add";
+      channel: string;
+      record: HostRecordRef;
+      tags: readonly string[];
+    }
+  | { kind: "remove"; channel: string; record: HostRecordRef }
+  | { kind: "removeTag"; channel: string; tag: string };
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input
- * targets and ordered membership intents. There is no implicit publication.
+ * targets and ordered Channel intents. There is no implicit publication.
  */
 export type SettlementEffects = {
   changes: HostRecordRef[];
-  memberships: MembershipIntent[];
+  memberships: ChannelIntent[];
 };
 /**
  * The answer to `handle`: the records the handler changed beyond the uploaded
@@ -290,14 +296,14 @@ export type HandledAction =
  * Channel handles, a rejection code, or a failure carrying a thrown handler
  * error. `memberships` is omitted when there are none (an older host never
  * sends it); `null`, `changes`, or memberships beside a rejection or failure
- * are refused. The engine, not this type, refuses a removal or a record the
- * page did not return.
+ * are refused. The engine, not this type, refuses a removal, a tag selector
+ * or a record the page did not return.
  */
 export type HandledLoad =
   | {
       data: Record<string, unknown>;
       next: LoadNext;
-      memberships?: MembershipIntent[];
+      memberships?: ChannelIntent[];
     }
   | { rejection: string }
   | { error: string };

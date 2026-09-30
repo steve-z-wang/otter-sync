@@ -36,10 +36,10 @@ pub fn reference(model: &str, id: &str) -> Value {
     json!({"model":model,"identity":{"id":id}})
 }
 pub fn add(channel: &str, model: &str, id: &str) -> Value {
-    json!({"channel":channel,"model":model,"identity":{"id":id},"present":true})
+    json!({"kind":"add","channel":channel,"record":{"model":model,"identity":{"id":id}},"tags":[]})
 }
 pub fn remove(channel: &str, model: &str, id: &str) -> Value {
-    json!({"channel":channel,"model":model,"identity":{"id":id},"present":false})
+    json!({"kind":"remove","channel":channel,"record":{"model":model,"identity":{"id":id}}})
 }
 
 /// A business row to set (`Some`) or delete (`None`) by `(model, identity key)`.

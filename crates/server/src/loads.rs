@@ -19,9 +19,10 @@
 //! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
 use crate::host::{
-    Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, MembershipIntent, Stamps,
+    Acknowledged, ChannelIntent, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef,
+    Stamps,
 };
-use crate::settlement::{Changes, settle_changes};
+use crate::settlement::{Changes, settle_changes, tags_unsupported};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -299,33 +300,50 @@ async fn execute_fresh(
 }
 
 /// The page's enrollment as canonical, distinct Channel/record additions.
-/// Each intent must add (`present`) to a named Channel a record of a loaded
-/// Model, under a valid identity, that the page's validated outputs name:
+/// Each intent must `add` to a named Channel a record of a loaded Model,
+/// under a valid identity, that the page's validated outputs name:
 /// `data_keys` holds their canonical keys. Repeated pairs count once toward
 /// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
-/// and validation stops at the first pair past either bound.
+/// a pair measuring its canonical add intent, and validation stops at the
+/// first pair past either bound. A removal or tag selector is refused; so is
+/// a tagged add, until settlement supports tags ([`tags_unsupported`]).
 fn validate_enrollment(
     config: &Config,
     data_keys: &BTreeSet<String>,
-    memberships: Vec<MembershipIntent>,
-) -> Result<Vec<MembershipIntent>> {
+    memberships: Vec<ChannelIntent>,
+) -> Result<Vec<ChannelIntent>> {
     let invalid = |message: String| Error::new(code::HANDLER_INVALID, message);
     let too_large = |message: String| Error::new(code::LOAD_PAGE_TOO_LARGE, message);
-    let mut pairs: BTreeMap<(String, String), MembershipIntent> = BTreeMap::new();
+    let mut pairs: BTreeMap<(String, String), ChannelIntent> = BTreeMap::new();
     let mut bytes = 0;
     for intent in memberships {
-        if !intent.present {
-            return Err(invalid(format!(
-                "a Load only adds records to Channels; it removes {} from {}",
-                intent.model, intent.channel
-            )));
-        }
-        if axton_core::check_channel(&intent.channel).is_err() {
+        let (channel, record) = match intent {
+            ChannelIntent::Add {
+                channel,
+                record,
+                tags,
+            } if tags.is_empty() => (channel, record),
+            ChannelIntent::Add { channel, .. } => {
+                return Err(tags_unsupported(&channel, "a tagged add"));
+            }
+            ChannelIntent::Remove { channel, record } => {
+                return Err(invalid(format!(
+                    "a Load only adds records to Channels; it removes {} from {channel}",
+                    record.model
+                )));
+            }
+            ChannelIntent::RemoveTag { channel, tag } => {
+                return Err(invalid(format!(
+                    "a Load only adds records to Channels; it removes tag {tag} from {channel}"
+                )));
+            }
+        };
+        if axton_core::check_channel(&channel).is_err() {
             return Err(invalid("Load enrollment names a blank Channel".into()));
         }
         let key = config
             .schema
-            .record_key(&intent.model, &intent.identity)
+            .record_key(&record.model, &record.identity)
             .map_err(|error| invalid(error.to_string()))?;
         if !config.loaders.contains(&key.model) {
             return Err(crate::settlement::unregistered(&key.model));
@@ -337,14 +355,16 @@ fn validate_enrollment(
                 key.model, key.identity
             )));
         }
-        let Entry::Vacant(pair) = pairs.entry((intent.channel.clone(), encoded)) else {
+        let Entry::Vacant(pair) = pairs.entry((channel.clone(), encoded)) else {
             continue;
         };
-        let canonical = MembershipIntent {
-            channel: intent.channel,
-            model: key.model,
-            identity: key.identity,
-            present: true,
+        let canonical = ChannelIntent::Add {
+            channel,
+            record: RecordRef {
+                model: key.model,
+                identity: key.identity,
+            },
+            tags: vec![],
         };
         bytes += canonical_json(&serde_json::to_value(&canonical).map_err(internal)?)
             .map_err(internal)?

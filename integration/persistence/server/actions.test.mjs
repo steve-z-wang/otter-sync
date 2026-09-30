@@ -364,7 +364,7 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
     if (request.op !== 'handleAction' || request.name !== 'Leak') return answer;
     const settled = JSON.parse(answer);
     const leaked = { model: 'Todo', identity: { id: `leak-${request.callId}` } };
-    return JSON.stringify({ ...settled, changes: [leaked], memberships: [{ channel: 'todos', ...leaked, present: true }] });
+    return JSON.stringify({ ...settled, changes: [leaked], memberships: [{ kind: 'add', channel: 'todos', record: leaked, tags: [] }] });
   };
   const leakConfig = { schema: { ...config.schema, actions: [
     ...config.schema.actions,

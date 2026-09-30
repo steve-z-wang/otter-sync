@@ -1482,13 +1482,14 @@ fn ts_declarations(models: &[Value], o: &mut String) {
         }
     )
     .unwrap();
-    o.push_str("export interface ModelMembership<Identity> {\n add(identity: Identity): void;\n remove(identity: Identity): void;\n}\n");
+    o.push_str("/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */\nexport type MembershipOptions = { readonly tags?: readonly string[] };\n/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */\nexport type TagSelector = { readonly tag: string };\n");
+    o.push_str("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n");
     o.push_str("export interface Channel {\n");
     for m in models {
         let n = s(m, "name");
         writeln!(o, " {}: ModelMembership<{n}Identity>;", lower(n)).unwrap();
     }
-    o.push_str(" add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n");
+    o.push_str(" add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n");
     o.push_str("export interface Touch {\n");
     for m in models {
         let n = s(m, "name");

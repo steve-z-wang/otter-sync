@@ -522,6 +522,66 @@ fn legacy_and_external_paths_share_the_settlement() {
     );
 }
 
+/// Tags and tag selectors decode but do not settle yet: each is refused as
+/// `handler.invalid`, rejecting only its call, never dropped. An add with no
+/// tags settles as before.
+#[test]
+fn a_tag_or_tag_selector_is_refused_until_settlement_supports_it() {
+    let tagged = json!({"kind":"add","channel":"A","record":{"model":"Todo","identity":{"id":"t"}},"tags":["X"]});
+    let selector = json!({"kind":"removeTag","channel":"A","tag":"X"});
+    for (label, intents) in [
+        ("tagged add", vec![tagged.clone()]),
+        ("tag selector", vec![selector.clone()]),
+        (
+            "selector after an add",
+            vec![add("A", "Todo", "t"), selector],
+        ),
+    ] {
+        let backend = Backend::new();
+        backend.seed("Todo", "t", todo_row("t", "old"), Some(1));
+        backend.script("Settle", effects(vec![], intents));
+        let receipt = push(
+            &backend,
+            1,
+            json!({"Todo":1}),
+            vec![
+                call(1, 1, "Settle", json!({})),
+                edit(2, 2, "Edit", "t", "new"),
+            ],
+        );
+        assert_eq!(
+            receipt["rejections"],
+            json!([{"ordinal":1,"code":"handler.invalid"}]),
+            "{label}"
+        );
+        assert_eq!(backend.count("setMembership"), 0, "{label}");
+        assert_eq!(backend.stamp("Todo", "t"), Some(2), "{label}");
+    }
+    // The external settlement refuses it with the reason.
+    let backend = Backend::new();
+    backend.seed("Todo", "t", todo_row("t", "old"), Some(1));
+    let error = run(axton_server::settle_external(
+        &config(),
+        &json!({"changes": [], "memberships": [tagged]}),
+        &backend,
+    ))
+    .unwrap_err();
+    assert_eq!(error.code, "handler.invalid");
+    assert!(error.message.contains("tags"), "{}", error.message);
+    // An add without tags still settles.
+    let backend = Backend::new();
+    backend.seed("Todo", "t", todo_row("t", "old"), Some(1));
+    backend.script("Settle", effects(vec![], vec![add("A", "Todo", "t")]));
+    let receipt = push(
+        &backend,
+        1,
+        json!({"Todo":1}),
+        vec![call(1, 1, "Settle", json!({}))],
+    );
+    assert_eq!(receipt["rejections"], json!([]));
+    assert_eq!(backend.count("setMembership"), 1);
+}
+
 /// A membership naming a blank Channel or an unregistered Model rejects only
 /// its own call; the next call in the batch still settles.
 #[test]
@@ -529,12 +589,12 @@ fn an_invalid_membership_rejects_only_its_call() {
     for (label, intent, code) in [
         (
             "blank channel",
-            json!({"channel":" ","model":"Todo","identity":{"id":"t"},"present":true}),
+            json!({"kind":"add","channel":" ","record":{"model":"Todo","identity":{"id":"t"}},"tags":[]}),
             "publish.invalid",
         ),
         (
             "unknown model",
-            json!({"channel":"A","model":"Ghost","identity":{"id":"t"},"present":true}),
+            json!({"kind":"add","channel":"A","record":{"model":"Ghost","identity":{"id":"t"}},"tags":[]}),
             "loader.unregistered",
         ),
     ] {

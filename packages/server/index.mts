@@ -20,12 +20,14 @@ import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
 export type {
+  MembershipOptions,
   RecordRef,
   RuntimeChannel,
   RuntimeLoadChannel,
   RuntimeLoadModelMembership,
   RuntimeModelMembership,
   RuntimeTouch,
+  TagSelector,
 } from "./effects.mts";
 export type {
   Acknowledged,

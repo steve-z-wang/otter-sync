@@ -1,23 +1,24 @@
 /**
  * The declarations one handler, legacy handler or `backend.transaction` body
- * makes while it runs: changed records (`touch`) and Channel membership
- * intents (`channel(name).todo.add/remove`, `channel(name).add/remove`).
+ * makes while it runs: changed records (`touch`) and ordered Channel intents
+ * (`channel(name).todo.add/remove`, `channel(name).add/remove`, and
+ * `channel(name).remove({ tag })`).
  *
  * Declarations are synchronous and owned: each call validates its identity
- * against the Model's identity fields and copies those fields at once, so a
- * later change to the caller's object, Date or array cannot retarget it. A
- * collector closes when its callback settles; every later declaration,
- * through any escaped handle, is refused. The Rust engine owns what the
- * declarations mean: it infers input targets, reduces membership intents to
- * their final state and settles them.
+ * against the Model's identity fields, and its tags against the tag rules,
+ * and copies both at once, so a later change to the caller's object, Date or
+ * array cannot retarget it. A collector closes when its callback settles;
+ * every later declaration, through any escaped handle, is refused. The Rust
+ * engine owns what the declarations mean: it infers input targets, reduces
+ * the intents in order to their final state and settles them.
  *
  * A Load page declares through a narrower collector: add-only Channel
- * handles, with repeated pairs stored once and the page's enrollment bounded
- * like the engine bounds it.
+ * handles, with a repeated pair stored once (its tags unioned) and the page's
+ * enrollment bounded like the engine bounds it.
  */
 import type {
+  ChannelIntent,
   HostRecordRef,
-  MembershipIntent,
   SettlementEffects,
 } from "./host-contract.mts";
 
@@ -30,20 +31,30 @@ export interface RecordRef {
   readonly model: string;
   readonly identity: object;
 }
+/**
+ * The labels an add attaches to its memberships. Omitted tags and `[]` add
+ * none. Each tag is a nonblank string of at most 256 UTF-8 bytes, kept as
+ * spelled; an add declares at most 64 distinct tags.
+ */
+export type MembershipOptions = { readonly tags?: readonly string[] };
+/** Selects every member of one Channel that carries this tag: `remove({ tag })`. */
+export type TagSelector = { readonly tag: string };
 /** One Model's membership writer on a Channel: `channel(name).todo`. */
 export interface RuntimeModelMembership {
-  add(identity: object): void;
+  add(identity: object, options?: MembershipOptions): void;
   remove(identity: object): void;
 }
 /**
  * A Channel handle: one membership writer per Model under its lower-first
- * accessor, plus `add` and `remove` for mixed lists of record references.
+ * accessor, plus `add` and `remove` for mixed lists of record references, and
+ * `remove({ tag })` for every member carrying a tag.
  */
 export type RuntimeChannel = {
   readonly [model: string]: RuntimeModelMembership;
 } & {
-  add(records: readonly RecordRef[]): void;
+  add(records: readonly RecordRef[], options?: MembershipOptions): void;
   remove(records: readonly RecordRef[]): void;
+  remove(selector: TagSelector): void;
 };
 /** One change declaration per Model under its lower-first accessor: `touch.todo(identity)`. */
 export type RuntimeTouch = {
@@ -60,17 +71,17 @@ export interface EffectCollector {
 }
 /** One Model's add-only membership writer on a Load's Channel: `channel(name).todo`. */
 export interface RuntimeLoadModelMembership {
-  add(identity: object): void;
+  add(identity: object, options?: MembershipOptions): void;
 }
 /**
  * A Load's Channel handle: one add-only writer per Model under its
- * lower-first accessor, plus `add` for mixed lists of record references. No
- * `remove` exists on it at runtime.
+ * lower-first accessor, plus `add` for mixed lists of record references. Adds
+ * take the same tags as a Mutation's; no `remove` exists on it at runtime.
  */
 export type RuntimeLoadChannel = {
   readonly [model: string]: RuntimeLoadModelMembership;
 } & {
-  add(records: readonly RecordRef[]): void;
+  add(records: readonly RecordRef[], options?: MembershipOptions): void;
 };
 /**
  * Why a Load's declarations cannot settle: its enrollment passed a bound
@@ -86,7 +97,7 @@ export interface LoadEffectCollector {
   /** Selects a Channel by name. Creates nothing: the name is only validated. */
   channel(name: string): RuntimeLoadChannel;
   /** Owned copies of the distinct additions, in first-declaration order. */
-  memberships(): readonly MembershipIntent[];
+  memberships(): readonly ChannelIntent[];
   /** The first overflow, else the first refused declaration; `undefined` when neither happened. */
   failure(): LoadEffectFailure | undefined;
   /** Refuses every later declaration, through any handle. Idempotent. */
@@ -337,6 +348,93 @@ function entriesOf(
 
 /** A resolved declaration: the Model's entry and the owned identity. */
 type Declared = { entry: Entry; identity: Identity };
+
+/** The spec's tag bounds: UTF-8 bytes per tag, distinct tags per add. */
+const TAG_BYTES = 256;
+const TAGS_PER_ADD = 64;
+const NO_TAGS: readonly string[] = Object.freeze([]);
+/**
+ * A lone UTF-16 surrogate is not Unicode text: `JSON.stringify` escapes it,
+ * and the engine then refuses the whole answer.
+ */
+const LONE_SURROGATE = /\p{Surrogate}/u;
+
+/**
+ * Refuses a tag that is not a nonblank string (after JS `trim()`, as a
+ * Channel name), is not Unicode text, or passes `TAG_BYTES`. An accepted tag
+ * is kept as spelled: never trimmed or case-folded.
+ */
+function tagName(tag: unknown, caller: string): string {
+  if (typeof tag !== "string" || tag.trim() === "")
+    throw new Error(`${caller}: a tag must be a nonblank string`);
+  if (LONE_SURROGATE.test(tag))
+    throw new Error(
+      `${caller}: a tag must be Unicode text, without a lone surrogate`,
+    );
+  if (Buffer.byteLength(tag, "utf8") > TAG_BYTES)
+    throw new Error(
+      `${caller}: a tag must be at most ${TAG_BYTES} UTF-8 bytes`,
+    );
+  return tag;
+}
+
+/**
+ * An add's `MembershipOptions` as an owned, frozen list of distinct tags in
+ * first-seen order. The caller's object and array are each read once.
+ */
+function tagsOf(options: unknown, caller: string): readonly string[] {
+  if (options === undefined) return NO_TAGS;
+  if (options === null || typeof options !== "object" || Array.isArray(options))
+    throw new Error(
+      `${caller}: options must be an object such as { tags: ["label"] }`,
+    );
+  for (const key of Object.keys(options))
+    if (key !== "tags")
+      throw new Error(`${caller}: options accept only tags, not ${key}`);
+  const tags = (options as { tags?: unknown }).tags;
+  if (tags === undefined) return NO_TAGS;
+  if (!Array.isArray(tags))
+    throw new Error(`${caller}: options.tags must be an array of tags`);
+  const distinct = new Set<string>();
+  for (let index = 0; index < tags.length; index++) {
+    distinct.add(tagName(tags[index], caller));
+    if (distinct.size > TAGS_PER_ADD)
+      throw new Error(
+        `${caller}: an add declares more than ${TAGS_PER_ADD} distinct tags`,
+      );
+  }
+  return distinct.size === 0 ? NO_TAGS : Object.freeze([...distinct]);
+}
+
+/** The tag of an exact `{ tag }` selector: one own enumerable member, nothing else. */
+function selectorTag(selector: unknown, caller: string): string {
+  if (
+    selector === null ||
+    typeof selector !== "object" ||
+    Object.keys(selector).length !== 1 ||
+    !Object.hasOwn(selector, "tag")
+  )
+    throw new Error(
+      `${caller}: expected an array of record references or one { tag } selector`,
+    );
+  return tagName((selector as { tag: unknown }).tag, caller);
+}
+
+type AddIntent = Extract<ChannelIntent, { kind: "add" }>;
+/** An owned add intent: the record and tags frozen with it. */
+function addIntent(
+  channel: string,
+  model: string,
+  identity: Identity,
+  tags: readonly string[],
+): AddIntent {
+  return Object.freeze({
+    kind: "add",
+    channel,
+    record: Object.freeze({ model, identity }) as HostRecordRef,
+    tags,
+  });
+}
 /**
  * What every collector over one configuration shares: the validated Models
  * and the per-call checks that refuse a device-only Model, a malformed
@@ -430,7 +528,7 @@ export function effectsFor(
     let open = true;
     const changes: HostRecordRef[] = [];
     const changed = new Set<string>();
-    const memberships: MembershipIntent[] = [];
+    const memberships: ChannelIntent[] = [];
     const assertOpen = (caller: string) => {
       if (!open) throw closed(caller);
     };
@@ -440,19 +538,19 @@ export function effectsFor(
       changed.add(key);
       changes.push(Object.freeze({ model, identity }) as HostRecordRef);
     };
-    const intent = (
+    const add = (
       channel: string,
       model: string,
       identity: Identity,
-      present: boolean,
-    ) =>
+      tags: readonly string[],
+    ) => memberships.push(addIntent(channel, model, identity, tags));
+    const remove = (channel: string, model: string, identity: Identity) =>
       memberships.push(
         Object.freeze({
+          kind: "remove",
           channel,
-          model,
-          identity,
-          present,
-        }) as MembershipIntent,
+          record: Object.freeze({ model, identity }) as HostRecordRef,
+        }),
       );
     const touch = Object.create(null);
     for (const entry of entries)
@@ -470,28 +568,47 @@ export function effectsFor(
       const handle = Object.create(null);
       for (const entry of entries) {
         const membership = Object.create(null);
-        for (const [verb, present] of [
-          ["add", true],
-          ["remove", false],
-        ] as const)
-          define(membership, verb, (identity: object) => {
-            const caller = `${label}.${entry.key}.${verb}`;
-            assertOpen(caller);
-            publishable(entry.name, caller);
-            intent(name, entry.name, entry.snapshot(identity, caller), present);
-          });
+        define(membership, "add", (identity: object, options?: unknown) => {
+          const caller = `${label}.${entry.key}.add`;
+          assertOpen(caller);
+          publishable(entry.name, caller);
+          const owned = entry.snapshot(identity, caller);
+          add(name, entry.name, owned, tagsOf(options, caller));
+        });
+        define(membership, "remove", (identity: object) => {
+          const caller = `${label}.${entry.key}.remove`;
+          assertOpen(caller);
+          publishable(entry.name, caller);
+          remove(name, entry.name, entry.snapshot(identity, caller));
+        });
         define(handle, entry.key, Object.freeze(membership));
       }
-      for (const [verb, present] of [
-        ["add", true],
-        ["remove", false],
-      ] as const)
-        define(handle, verb, (records: readonly RecordRef[]) => {
-          const caller = `${label}.${verb}`;
+      define(
+        handle,
+        "add",
+        (records: readonly RecordRef[], options?: unknown) => {
+          const caller = `${label}.add`;
           assertOpen(caller);
-          for (const { entry, identity } of list(records, caller))
-            intent(name, entry.name, identity, present);
-        });
+          const declared = list(records, caller);
+          const tags = tagsOf(options, caller);
+          for (const { entry, identity } of declared)
+            add(name, entry.name, identity, tags);
+        },
+      );
+      // A list removes those records; an exact `{ tag }` object selects by tag.
+      define(handle, "remove", (argument: unknown) => {
+        const caller = `${label}.remove`;
+        assertOpen(caller);
+        if (Array.isArray(argument)) {
+          for (const { entry, identity } of list(argument, caller))
+            remove(name, entry.name, identity);
+          return;
+        }
+        const tag = selectorTag(argument, caller);
+        memberships.push(
+          Object.freeze({ kind: "removeTag", channel: name, tag }),
+        );
+      });
       return Object.freeze(handle) as RuntimeChannel;
     };
     return Object.freeze({
@@ -530,17 +647,12 @@ function canonicalJson(value: unknown): string {
 
 /**
  * What one distinct pair counts toward `LOAD_ENROLLMENT_BYTES`: the UTF-8
- * length of the intent's canonical JSON, its identity canonical.
+ * length of its add intent's canonical JSON, identity canonical and tags
+ * included.
  */
-export function enrollmentBytes(intent: MembershipIntent): number {
+export function enrollmentBytes(intent: ChannelIntent): number {
   return Buffer.byteLength(canonicalJson(intent), "utf8");
 }
-
-/**
- * A lone UTF-16 surrogate is not Unicode text: `JSON.stringify` escapes it,
- * and the engine then refuses the whole answer.
- */
-const LONE_SURROGATE = /\p{Surrogate}/u;
 /** A declaration past a bound: the page fails `load.page_too_large`. */
 class EnrollmentOverflow extends Error {}
 
@@ -548,10 +660,11 @@ class EnrollmentOverflow extends Error {}
  * The add-only counterpart of `effectsFor`, for Load pages: over the same
  * validated configuration, it answers a factory of collectors whose Channel
  * handles only add. A repeated Channel/record pair, as the engine
- * canonicalizes it, is stored once; the declaration that would pass
- * `LOAD_ENROLLMENT_PAIRS` or `LOAD_ENROLLMENT_BYTES` throws and stores
- * nothing. Every refused declaration is kept as the collector's `failure`,
- * so a handler that catches one still fails its page.
+ * canonicalizes it, is stored once, in its first place, with its tags
+ * unioned; the declaration that would pass `LOAD_ENROLLMENT_PAIRS` or
+ * `LOAD_ENROLLMENT_BYTES` throws and stores nothing. Every refused
+ * declaration is kept as the collector's `failure`, so a handler that
+ * catches one still fails its page.
  */
 export function loadEffectsFor(
   models: readonly EffectModel[],
@@ -566,8 +679,8 @@ export function loadEffectsFor(
   return () => {
     let open = true;
     let failed: LoadEffectFailure | undefined;
-    /** Distinct additions by their canonical encoding, in first-declaration order. */
-    const pairs = new Map<string, MembershipIntent>();
+    /** Distinct additions by their canonical pair, in first-declaration order, with their bytes. */
+    const pairs = new Map<string, { intent: AddIntent; bytes: number }>();
     let bytes = 0;
     /** Runs one declaration, keeping its refusal even if the handler catches it. */
     const declare = <R,>(body: () => R): R => {
@@ -588,37 +701,46 @@ export function loadEffectsFor(
       if (!open) throw closed(caller);
     };
     /**
-     * Adds every new pair of one declaration, or none when an identity string
-     * is not Unicode text or the pairs pass a bound.
+     * Adds every new pair of one declaration and unions its tags into every
+     * repeated one, or changes nothing when an identity string is not Unicode
+     * text or the result passes a bound.
      */
-    const enroll = (channel: string, declared: Declared[], caller: string) => {
+    const enroll = (
+      channel: string,
+      declared: Declared[],
+      tags: readonly string[],
+      caller: string,
+    ) => {
       for (const { entry, identity } of declared)
         for (const [field, value] of Object.entries(identity))
           if (typeof value === "string" && LONE_SURROGATE.test(value))
             throw new Error(
               `${caller}: ${entry.name} identity field ${field} must be Unicode text, without a lone surrogate`,
             );
-      const fresh = new Map<string, MembershipIntent>();
+      const fresh = new Map<string, { intent: AddIntent; bytes: number }>();
+      let added = 0;
       let more = 0;
       for (const { entry, identity } of declared) {
-        const key = canonicalJson({
-          channel,
-          model: entry.name,
-          identity: entry.canonical(identity),
-          present: true,
-        });
-        if (pairs.has(key) || fresh.has(key)) continue;
-        fresh.set(
-          key,
-          Object.freeze({
-            channel,
-            model: entry.name,
-            identity,
-            present: true,
-          }) as MembershipIntent,
+        const canonical = entry.canonical(identity);
+        const key = canonicalJson([channel, entry.name, canonical]);
+        const prior = fresh.get(key) ?? pairs.get(key);
+        let merged = tags;
+        if (prior) {
+          const held = prior.intent.tags;
+          const extra = tags.filter((tag) => !held.includes(tag));
+          if (extra.length === 0) continue;
+          merged = Object.freeze([...held, ...extra]);
+        } else added++;
+        // A repeated pair keeps the record as first declared.
+        const intent = prior
+          ? Object.freeze({ ...prior.intent, tags: merged })
+          : addIntent(channel, entry.name, identity, merged);
+        const size = enrollmentBytes(
+          addIntent(channel, entry.name, canonical, merged),
         );
-        more += Buffer.byteLength(key, "utf8");
-        if (pairs.size + fresh.size > LOAD_ENROLLMENT_PAIRS)
+        more += size - (prior?.bytes ?? 0);
+        fresh.set(key, { intent, bytes: size });
+        if (pairs.size + added > LOAD_ENROLLMENT_PAIRS)
           throw new EnrollmentOverflow(
             `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Channel/record pairs`,
           );
@@ -627,7 +749,7 @@ export function loadEffectsFor(
             `${caller}: the Load page's enrollment encodes to more than ${LOAD_ENROLLMENT_BYTES} bytes`,
           );
       }
-      for (const [key, intent] of fresh) pairs.set(key, intent);
+      for (const [key, pair] of fresh) pairs.set(key, pair);
       bytes += more;
     };
     const channel = (name: string): RuntimeLoadChannel =>
@@ -642,32 +764,39 @@ export function loadEffectsFor(
         const handle = Object.create(null);
         for (const entry of entries) {
           const membership = Object.create(null);
-          define(membership, "add", (identity: object) =>
+          define(membership, "add", (identity: object, options?: unknown) =>
             declare(() => {
               const caller = `${label}.${entry.key}.add`;
               assertOpen(caller);
               publishable(entry.name, caller);
+              const owned = entry.snapshot(identity, caller);
               enroll(
                 name,
-                [{ entry, identity: entry.snapshot(identity, caller) }],
+                [{ entry, identity: owned }],
+                tagsOf(options, caller),
                 caller,
               );
             }),
           );
           define(handle, entry.key, Object.freeze(membership));
         }
-        define(handle, "add", (records: readonly RecordRef[]) =>
-          declare(() => {
-            const caller = `${label}.add`;
-            assertOpen(caller);
-            enroll(name, list(records, caller), caller);
-          }),
+        define(
+          handle,
+          "add",
+          (records: readonly RecordRef[], options?: unknown) =>
+            declare(() => {
+              const caller = `${label}.add`;
+              assertOpen(caller);
+              const declared = list(records, caller);
+              enroll(name, declared, tagsOf(options, caller), caller);
+            }),
         );
         return Object.freeze(handle) as RuntimeLoadChannel;
       });
     return Object.freeze({
       channel,
-      memberships: (): readonly MembershipIntent[] => [...pairs.values()],
+      memberships: (): readonly ChannelIntent[] =>
+        [...pairs.values()].map(({ intent }) => intent),
       failure: () => failed,
       close() {
         open = false;

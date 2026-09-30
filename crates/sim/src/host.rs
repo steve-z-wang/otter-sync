@@ -7,9 +7,9 @@ use axton_core::{PushRequest, RecordKey};
 use axton_server::{
     Host,
     host::{
-        Acknowledged, Claimed, ClaimedCall, Handled, Head, HostRequest,
-        Invalidation as ContractInvalidation, Loaded, Locked, MembershipIntent, Memberships,
-        Published, RecordRef, Scanned, Stamped, Stamps,
+        Acknowledged, ChannelIntent, Claimed, ClaimedCall, Handled, Head, HostRequest,
+        Invalidation as ContractInvalidation, Loaded, Locked, Memberships, Published, RecordRef,
+        Scanned, Stamped, Stamps,
     },
 };
 use serde_json::{Map, Value, json};
@@ -229,7 +229,7 @@ impl MemHost {
         &self,
         writes: &[(RecordKey, Option<Value>)],
         changes: Vec<RecordRef>,
-        memberships: Vec<MembershipIntent>,
+        memberships: Vec<ChannelIntent>,
     ) -> Result<(), String> {
         self.transaction(|| {
             {
@@ -790,19 +790,22 @@ impl Host for MemHost {
                                     .collect();
                                 let stored = stored_memberships(&s.tables, key);
                                 for channel in stored.difference(&routed) {
-                                    memberships.push(MembershipIntent {
+                                    memberships.push(ChannelIntent::Remove {
                                         channel: channel.clone(),
-                                        model: key.model.clone(),
-                                        identity: key.identity.clone(),
-                                        present: false,
+                                        record: RecordRef {
+                                            model: key.model.clone(),
+                                            identity: key.identity.clone(),
+                                        },
                                     });
                                 }
                                 for channel in routed {
-                                    memberships.push(MembershipIntent {
+                                    memberships.push(ChannelIntent::Add {
                                         channel,
-                                        model: key.model.clone(),
-                                        identity: key.identity.clone(),
-                                        present: true,
+                                        record: RecordRef {
+                                            model: key.model.clone(),
+                                            identity: key.identity.clone(),
+                                        },
+                                        tags: vec![],
                                     });
                                 }
                             }

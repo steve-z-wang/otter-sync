@@ -209,7 +209,7 @@ const loaders: Loaders<Tx> = {
 // Loads (#173): a page answers every declared identity list and a portable continuation.
 const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
 // A Load enrolls records into a Channel, add only: by the lower-first Model accessor or a mixed reference list; a composite identity names every component.
-const loadChannel = (ctx: LoadContext<Tx>): void => { const channel: LoadChannel = ctx.channel('tenant:t'); channel.todo.add({ id: 't' }); channel.project.add({ tenantId: 't', id: 'p' }); channel.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); return channel.add([]); };
+const loadChannel = (ctx: LoadContext<Tx>): void => { const channel: LoadChannel = ctx.channel('tenant:t'); channel.todo.add({ id: 't' }); channel.project.add({ tenantId: 't', id: 'p' }); channel.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); channel.todo.add({ id: 't' }, { tags: ['X'] }); channel.add([Todo({ id: 't' })], { tags: ['X'] }); return channel.add([]); };
 const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
 const nullState: LoadNext = { state: null };
 const loads: Loads<Tx> = {

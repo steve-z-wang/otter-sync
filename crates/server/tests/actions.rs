@@ -619,8 +619,7 @@ impl Host for ForgedQueryHost {
         Box::pin(async move {
             self.0.lock().unwrap().push(request.clone());
             let todo = json!({"model":"Todo","identity":{"id":"t1"}});
-            let membership =
-                json!({"channel":"c","model":"Todo","identity":{"id":"t1"},"present":true});
+            let membership = json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]});
             Ok(match request["op"].as_str().unwrap() {
                 "claim" => json!({"clientId":"device","owner":"alice","sequence":0,"receipt":null}),
                 "claimCall" => json!({"fresh":true,"request":request["request"],"response":null}),

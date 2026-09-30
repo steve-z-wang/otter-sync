@@ -8,7 +8,7 @@ use crate::{
 };
 use axton_client::{BootstrapPhase, Client, Operation, OperationKind, Report, ReportKind};
 use axton_core::{BootstrapPage, PullPage, PushReceipt, PushRequest, RecordKey};
-use axton_server::host::{MembershipIntent, RecordRef};
+use axton_server::host::{ChannelIntent, RecordRef};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
 use std::{
@@ -449,11 +449,21 @@ impl Sim {
     ) -> Result<(), String> {
         let memberships = intents
             .iter()
-            .map(|(channel, present)| MembershipIntent {
-                channel: channel.clone(),
-                model: key.model.clone(),
-                identity: key.identity.clone(),
-                present: *present,
+            .map(|(channel, present)| {
+                let channel = channel.clone();
+                let record = RecordRef {
+                    model: key.model.clone(),
+                    identity: key.identity.clone(),
+                };
+                if *present {
+                    ChannelIntent::Add {
+                        channel,
+                        record,
+                        tags: vec![],
+                    }
+                } else {
+                    ChannelIntent::Remove { channel, record }
+                }
             })
             .collect();
         let changes = changes

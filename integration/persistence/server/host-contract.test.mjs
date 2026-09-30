@@ -315,7 +315,7 @@ test('the Load Channel handle adds only and closes when the handler settles',asy
   escaped.add({id:'t-1'});
   return enrolledPage();
  }});
- assert.deepEqual(answers[0][1].memberships,[{channel:'shared',model:'Task',identity:{id:'t-1'},present:true}]);
+ assert.deepEqual(answers[0][1].memberships,[{kind:'add',channel:'shared',record:{model:'Task',identity:{id:'t-1'}},tags:[]}]);
  assert.deepEqual(Object.keys(handle),['task','add']);
  assert.deepEqual(Object.keys(escaped),['add']);
  for(const absent of ['remove','touch'])assert.equal(absent in handle,false,absent);
@@ -335,7 +335,7 @@ test('the Load Channel handle adds only and closes when the handler settles',asy
 
 test('only declarations feed the enrollment: a returned memberships property is ignored and none is sent when empty',async()=>{
  const request=entry('handleLoad').request;
- const forged=[{channel:'forged',model:'Task',identity:{id:'t-1'},present:true}];
+ const forged=[{kind:'add',channel:'forged',record:{model:'Task',identity:{id:'t-1'}},tags:[]}];
  const {answers}=await replay([request],{page:()=>({...response('handleLoad','settled'),memberships:forged})});
  assert.deepEqual(answers[0][1],response('handleLoad','settled'));
  assert.equal('memberships' in answers[0][1],false);

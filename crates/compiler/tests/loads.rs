@@ -337,7 +337,7 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         "export type LoadNext = null | { state: JsonValue };\n",
         // An add-only Channel handle: the same lower-first accessors and
         // mixed RecordRef list as a Mutation's Channel, without remove.
-        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity): void };\n note: { add(identity: NoteIdentity): void };\n add(records: readonly RecordRef[]): void;\n}\n",
+        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity, options?: MembershipOptions): void };\n note: { add(identity: NoteIdentity, options?: MembershipOptions): void };\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n}\n",
         "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n channel(name: string): LoadChannel;\n}\n",
         "export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n",
         "export interface ProjectTodosInput {\n projectId: string;\n status: Status | null;\n tags: string[];\n at: Date;\n}\n",
@@ -363,7 +363,7 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         );
     }
     // The Mutation Channel keeps both verbs.
-    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n note: ModelMembership<NoteIdentity>;\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n note: ModelMembership<NoteIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
     assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
     // Handler types belong to the backend artifact only.
     assert!(!axton_compiler::typescript(&config).contains("LoadHandlerCall"));
@@ -397,7 +397,7 @@ fn retained_load_versions_register_together_with_their_own_contracts() {
         "export interface TodoV1Identity {\n id: string;\n}\n",
         // Every retained version shares the one context: it enrolls by the
         // current identity, like a Mutation's Channel.
-        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity): void };\n add(records: readonly RecordRef[]): void;\n}\n",
+        "export interface LoadChannel {\n todo: { add(identity: TodoIdentity, options?: MembershipOptions): void };\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n}\n",
         " channel(name: string): LoadChannel;\n",
     ] {
         assert!(ts.contains(expected), "{expected}\n---\n{ts}");

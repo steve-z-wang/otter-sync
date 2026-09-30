@@ -139,6 +139,30 @@ if(false){
   external.touch.entry({id:1});
   // @ts-expect-error the Channel's mixed verbs take references, not identities
   project.remove({id:'A'});
+  // Tags label an add, by Model or as a mixed list; `remove({tag})` selects every member carrying one.
+  ctx.channel('project:1').entry.add({id:row.id},{tags:['X']});
+  project.add([Book({id:'A'}),EntryRef({id:row.id})],{tags:['X','Y']});
+  project.book.add({id:'A'},{});
+  project.add([Comment({id:'c'})],{tags:[]});
+  project.remove({tag:'X'});
+  external.channel('project:1').remove({tag:'X'});
+  call.channel('project:1').add([Book({id:'A'})],{tags:['X']});
+  // @ts-expect-error a tagged add still names the Model's identity: a Book id is a string
+  project.book.add({id:1},{tags:['X']});
+  // @ts-expect-error an Entry identity is not a Book identity
+  project.entry.add({title:'t'},{tags:['X']});
+  // @ts-expect-error tags are a list of strings
+  project.book.add({id:'A'},{tags:'X'});
+  // @ts-expect-error the option is `tags`
+  project.book.add({id:'A'},{tag:'X'});
+  // @ts-expect-error a Model's remove takes an identity, not a tag selector
+  project.book.remove({tag:'X'});
+  // @ts-expect-error a remove carries no tags
+  project.remove([Book({id:'A'})],{tags:['X']});
+  // @ts-expect-error a tag selector names exactly one tag
+  project.remove({tag:'X',tags:['Y']});
+  // @ts-expect-error there is no Model-array overload
+  project.book.add([{id:'A'}]);
  };
  // @ts-expect-error a handler has no return value to select a channel with
  const returned:Handlers<Tx>['addBook']=async()=>({channel:'c'});

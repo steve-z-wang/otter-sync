@@ -432,8 +432,7 @@ fn the_load_context_is_read_only_and_a_forged_settlement_is_refused() {
     seed_todos(&backend, 1);
     let mut forged = answer(ids(&["t1"]), json!([]), Value::Null);
     forged["changes"] = json!([{"model":"Todo","identity":{"id":"t1"}}]);
-    forged["memberships"] =
-        json!([{"channel":"c","model":"Todo","identity":{"id":"t1"},"present":true}]);
+    forged["memberships"] = json!([{"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]}]);
     backend.script("ProjectTodos", forged);
     let refused = page(&backend, &item(1, Value::Null));
     assert_eq!(outcome_code(&refused), code::HANDLER_INVALID);
@@ -1208,7 +1207,7 @@ fn refused_before_resolution(backend: &Backend, config: &Config, expected: &str,
 
 #[test]
 fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothing() {
-    let intent = |channel: &str, model: &str, identity: Value| json!({"channel":channel,"model":model,"identity":identity,"present":true});
+    let intent = |channel: &str, model: &str, identity: Value| json!({"kind":"add","channel":channel,"record":{"model":model,"identity":identity},"tags":[]});
     let cases = [
         ("a removal", vec![remove("c", "Todo", "t1")]),
         (
@@ -1233,6 +1232,25 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
         (
             "an invalid declaration after a valid one",
             vec![add("c", "Todo", "t1"), add("c", "Todo", "t9")],
+        ),
+        // A Load has no tag selector, and tags do not settle yet: both are
+        // refused before any read, never dropped.
+        (
+            "a tag selector",
+            vec![json!({"kind":"removeTag","channel":"c","tag":"X"})],
+        ),
+        (
+            "a tagged addition",
+            vec![
+                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":["X"]}),
+            ],
+        ),
+        (
+            "a repeated pair that adds a tag",
+            vec![
+                add("c", "Todo", "t1"),
+                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":["X"]}),
+            ],
         ),
     ];
     for (case, memberships) in cases {
@@ -1408,7 +1426,7 @@ fn the_enrollment_bounds_are_the_shared_cross_language_fixture() {
         );
         assert_eq!(json!(encoded.len()), case["bytes"], "{}", case["name"]);
     }
-    assert_eq!(pair_bytes("project:p1"), 77, "the helper measures alike");
+    assert_eq!(pair_bytes("project:p1"), 96, "the helper measures alike");
 }
 
 #[test]

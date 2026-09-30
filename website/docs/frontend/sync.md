@@ -141,6 +141,8 @@ A Loader's stamped `null` is authoritative absence and still follows Model delet
 
 A stored one-shot Fetch or Query does not enroll membership. Its untracked cache has no promise of automatic cleanup; an explicit removal for that identity can evict it, but AXTON cannot infer a hold never recorded. A fresh authorized read after release may cache the record again. Delayed positive bodies from requests begun before release cannot restore it; request epoch admission is separate from content stamps. Load enrollment and explicit Add claims record holds without advancing the ordinary delivery cursor. See [cutover](../backend/deployment.md#channel-membership-cutover).
 
+An upgraded database reconciles retained subscribed Channel history automatically. This walk has its own fixed bound and progress, including removals below saved delivery progress; ordinary delivery then catches up to its terminal barrier. HTTP-only clients fix the bound from a valid current delta head, and reopening resumes the same walk. Background failures retry with bounded backoff. This does not request or complete your separate `bootstrap()` call, and a fresh subscription still starts from its first acknowledged position. See [local reconciliation](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/client/storage/reconciliation.md#channel-membership-upgrade).
+
 ## Diagnose pending work
 
 | Observation | Check |

@@ -274,3 +274,5 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 `server.unavailable` and `transaction.conflict` are backend faults the client retries on its own; they never fail a Load.
 
 An enrolling page saves membership claims with its immutable response. Replaying that page neither enrolls again nor refreshes the claim cursor, so a later Channel removal wins over an old saved claim. A page without enrollment is untracked cache, with no automatic cleanup guarantee. Delayed positive bodies are subject to request epoch admission, including legacy saved pages without claims; continuation and call settlement still complete.
+
+A retained single-page request at the original 1 MiB logical limit remains sendable after negotiation is added: only the fixed 41-byte capability metadata allowance applies. Multi-page batches stay within 1 MiB including negotiation. Reopening preserves the saved page and call identity.

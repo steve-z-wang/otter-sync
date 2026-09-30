@@ -35,7 +35,9 @@ impl FetchRequest {
         if bytes.len() > limits::PUSH_BYTES {
             return Err(invalid("Fetch request exceeds byte limit"));
         }
-        let raw: Value = serde_json::from_slice(bytes)?;
+        let mut raw: Value = serde_json::from_slice(bytes)?;
+        // Negotiation metadata is not part of the call identity.
+        crate::protocol::strip_capabilities(&mut raw)?;
         let object = raw
             .as_object()
             .ok_or_else(|| invalid("Fetch request must be an object"))?;

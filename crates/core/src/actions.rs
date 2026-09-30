@@ -162,6 +162,8 @@ impl DirectActionRequest {
             return Err(invalid("direct Action request exceeds byte limit"));
         }
         let raw: Value = serde_json::from_slice(bytes)?;
+        // Negotiation metadata is checked here and kept out of the request.
+        crate::read_capabilities(&raw)?;
         let models = crate::protocol::read_action_models(&raw["models"])?;
         let call: ActionIntent = serde_json::from_value(
             raw.get("call")

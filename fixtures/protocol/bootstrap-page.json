@@ -157,10 +157,106 @@
    "name": "the body must be an object",
    "wire": "[]",
    "valid": false
+  },
+  {
+   "name": "a legacy page refuses channel changes in its records",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a channel page is not a legacy page",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
   }
  ],
  "overLimit": {
   "comment": "A page may carry at most limits::PULL_CHANGES records; the test builds fifty-one and expects a refusal.",
   "records": 51
- }
+ },
+ "channelPage": [
+  {
+   "name": "a terminal page with an upsert, a stamped null, a Loader error and a removal",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\",\"note\":null}},{\"channel\":\"project:123\",\"cursor\":60,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"},\"stamp\":3,\"state\":null},{\"channel\":\"project:123\",\"cursor\":61,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"error\":\"loader.failed\"},{\"channel\":\"project:123\",\"cursor\":99,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"h\"}}]}",
+   "valid": true,
+   "terminal": true
+  },
+  {
+   "name": "a nonterminal page stops below the origin",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"changes\":[{\"channel\":\"a\",\"cursor\":50,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": true,
+   "terminal": false
+  },
+  {
+   "name": "an empty scope completes at zero",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":0,\"until\":0,\"head\":0,\"changes\":[]}",
+   "valid": true,
+   "terminal": true
+  },
+  {
+   "name": "unknown fields are ignored",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"changes\":[],\"future\":true}",
+   "valid": true,
+   "terminal": true
+  },
+  {
+   "name": "a change in another channel",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"b\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a change without a channel",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a change at the page start",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":40,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a change past the page end",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":120,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":101,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a duplicate pair",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null},{\"channel\":\"project:123\",\"cursor\":42,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "two records at one position",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}},{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "an unknown kind",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"tag\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a removal with a stamp",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1}]}",
+   "valid": false
+  },
+  {
+   "name": "a record-only change",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null}]}",
+   "valid": false
+  },
+  {
+   "name": "records instead of changes",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[]}",
+   "valid": false
+  },
+  {
+   "name": "the origin is past the head",
+   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":80,\"changes\":[]}",
+   "valid": false
+  },
+  {
+   "name": "mode missing",
+   "wire": "{\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[]}",
+   "valid": false
+  }
+ ]
 }

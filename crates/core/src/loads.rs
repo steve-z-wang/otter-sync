@@ -225,7 +225,9 @@ impl LoadBatchRequest {
         if bytes.len() > limits::LOAD_REQUEST_BYTES {
             return Err(invalid("Load request exceeds byte limit"));
         }
-        let raw: Value = serde_json::from_slice(bytes)?;
+        let mut raw: Value = serde_json::from_slice(bytes)?;
+        // Negotiation metadata is not part of any page's call identity.
+        crate::protocol::strip_capabilities(&mut raw)?;
         objects(&raw, "Load request")?;
         let mut request: Self = serde_json::from_value(raw)?;
         for item in &mut request.loads {

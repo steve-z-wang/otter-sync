@@ -113,6 +113,16 @@
    "name": "a continuing channel",
    "wire": "{\"cursors\":{\"a\":{\"from\":0,\"to\":50,\"head\":80}},\"changes\":[]}",
    "valid": true
+  },
+  {
+   "name": "a channel upsert is not a record-only change",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"},\"stamp\":1,\"state\":{\"text\":\"A\"}}]}",
+   "valid": false
+  },
+  {
+   "name": "a channel removal is not a record-only change",
+   "wire": "{\"cursors\":{\"U\":{\"from\":0,\"to\":1,\"head\":1}},\"changes\":[{\"channel\":\"U\",\"cursor\":1,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"a\"}}]}",
+   "valid": false
   }
  ],
  "request": [
@@ -149,6 +159,21 @@
   {
    "name": "legacy single-channel request",
    "wire": "{\"clientId\":\"c\",\"scope\":\"a\",\"fromCursor\":0,\"models\":{\"Entry\":1}}",
+   "valid": false
+  },
+  {
+   "name": "capabilities are negotiation metadata",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"channel-membership-v1\"]}",
+   "valid": true
+  },
+  {
+   "name": "capabilities must be an array",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":\"channel-membership-v1\"}",
+   "valid": false
+  },
+  {
+   "name": "a capability must be a nonblank string",
+   "wire": "{\"models\":{\"Entry\":1},\"cursors\":{\"U\":0},\"capabilities\":[\"\"]}",
    "valid": false
   }
  ]

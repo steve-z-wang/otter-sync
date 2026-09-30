@@ -1,6 +1,6 @@
 use crate::{
-    ActionIntent, ActionOutcome, CallCompletion, MAX_SAFE_INTEGER, Result, Schema, canonical_json,
-    invalid,
+    ActionIntent, ActionOutcome, CallCompletion, MAX_SAFE_INTEGER, RecordKey, Result, Schema,
+    canonical_json, invalid,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -129,7 +129,10 @@ impl PushRequest {
         Ok(request)
     }
     fn decode_inner(bytes: &[u8], allow_empty_models: bool) -> Result<Self> {
-        let raw: Value = serde_json::from_slice(bytes)?;
+        let mut raw: Value = serde_json::from_slice(bytes)?;
+        // Negotiation is not part of the frozen batch: a retry that now
+        // advertises a capability encodes to the bytes first frozen.
+        strip_capabilities(&mut raw)?;
         let client_id = nonblank(&raw["clientId"])?;
         let batch_sequence = read_counter(&raw["batchSequence"], true)?;
         let models = read_models_inner(&raw["models"], allow_empty_models)?;
@@ -199,12 +202,7 @@ pub struct AuthorityRecord {
 }
 impl AuthorityRecord {
     fn validate(&self) -> Result<()> {
-        if self.model.is_empty() {
-            return Err(invalid("record model must not be empty"));
-        }
-        if !self.identity.is_object() {
-            return Err(invalid("record identity must be an object"));
-        }
+        check_key(&self.model, &self.identity)?;
         if self.stamp == 0 || counter(self.stamp).is_err() {
             return Err(invalid("record stamp must be a positive counter"));
         }
@@ -238,9 +236,25 @@ impl AuthorityRecord {
         self.error.is_some()
     }
 }
+/// The members only a [`ChannelChange`] carries. A record names no channel, so
+/// a channel page can never pass as record-only authority.
+const CHANNEL_MEMBERS: [&str; 3] = ["channel", "cursor", "kind"];
+/// The model and identity rule every record, removal and claim shares.
+fn check_key(model: &str, identity: &Value) -> Result<()> {
+    if model.is_empty() {
+        return Err(invalid("record model must not be empty"));
+    }
+    if !identity.is_object() {
+        return Err(invalid("record identity must be an object"));
+    }
+    Ok(())
+}
 pub(crate) fn decode_record(value: &Value) -> Result<AuthorityRecord> {
     if !value.is_object() {
         return Err(invalid("record must be an object"));
+    }
+    if let Some(member) = CHANNEL_MEMBERS.iter().find(|m| value.get(**m).is_some()) {
+        return Err(invalid(format!("a record names no {member}")));
     }
     if value.get("error").is_none() && value.get("state").is_none() {
         return Err(invalid("record state missing"));
@@ -495,6 +509,7 @@ pub struct PullRequest {
 impl PullRequest {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let v: Value = serde_json::from_slice(bytes)?;
+        read_capabilities(&v)?;
         Ok(Self {
             models: read_models(&v["models"])?,
             cursors: read_cursors(&v["cursors"])?,
@@ -522,11 +537,44 @@ impl CursorRange {
         self.to < self.head
     }
 }
-/// One page for every channel it names: each channel's progress, and the
-/// records changed in any of them, once each at its current stamp. A change is
-/// the same [`AuthorityRecord`] a receipt carries; a channel never appears on
-/// a record. The server scans at most [`limits::PULL_CHANGES`] invalidations
-/// per channel; a channel whose `to` is below its head continues.
+fn read_ranges(value: &Value) -> Result<BTreeMap<String, CursorRange>> {
+    let ranges = value
+        .as_object()
+        .ok_or_else(|| invalid("page cursors must map channels to ranges"))?;
+    let mut cursors = BTreeMap::new();
+    for (channel, range) in ranges {
+        check_channel(channel)?;
+        let from = read_counter(&range["from"], false)?;
+        let to = read_counter(&range["to"], false)?;
+        let head = read_counter(&range["head"], false)?;
+        cursors.insert(channel.clone(), CursorRange { from, to, head });
+    }
+    Ok(cursors)
+}
+fn check_ranges(cursors: &BTreeMap<String, CursorRange>) -> Result<()> {
+    if cursors.is_empty() {
+        return Err(invalid("page must name at least one channel"));
+    }
+    for (channel, range) in cursors {
+        check_channel(channel)?;
+        counter(range.from)?;
+        counter(range.to)?;
+        counter(range.head)?;
+        if range.to < range.from {
+            return Err(invalid("page moves backwards"));
+        }
+        if range.head < range.to {
+            return Err(invalid("page reaches past the channel head"));
+        }
+    }
+    Ok(())
+}
+/// One record-only page for every channel it names: each channel's progress,
+/// and the records changed in any of them, once each at its current stamp. A
+/// change is the same [`AuthorityRecord`] a receipt carries; a channel never
+/// appears on a record. The server scans at most [`limits::PULL_CHANGES`]
+/// invalidations per channel; a channel whose `to` is below its head
+/// continues. [`ChannelPullPage`] is the same envelope with channel changes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PullPage {
     pub cursors: BTreeMap<String, CursorRange>,
@@ -543,17 +591,7 @@ impl PullPage {
                 return Err(invalid(format!("page {field} missing")));
             }
         }
-        let cursors_value = value["cursors"]
-            .as_object()
-            .ok_or_else(|| invalid("page cursors must map channels to ranges"))?;
-        let mut cursors = BTreeMap::new();
-        for (channel, range) in cursors_value {
-            check_channel(channel)?;
-            let from = read_counter(&range["from"], false)?;
-            let to = read_counter(&range["to"], false)?;
-            let head = read_counter(&range["head"], false)?;
-            cursors.insert(channel.clone(), CursorRange { from, to, head });
-        }
+        let cursors = read_ranges(&value["cursors"])?;
         let changes = value["changes"]
             .as_array()
             .ok_or_else(|| invalid("page changes must be an array"))?
@@ -565,21 +603,7 @@ impl PullPage {
         Ok(page)
     }
     pub fn validate(&self) -> Result<()> {
-        if self.cursors.is_empty() {
-            return Err(invalid("page must name at least one channel"));
-        }
-        for (channel, range) in &self.cursors {
-            check_channel(channel)?;
-            counter(range.from)?;
-            counter(range.to)?;
-            counter(range.head)?;
-            if range.to < range.from {
-                return Err(invalid("page moves backwards"));
-            }
-            if range.head < range.to {
-                return Err(invalid("page reaches past the channel head"));
-            }
-        }
+        check_ranges(&self.cursors)?;
         if self.changes.len() > limits::PULL_CHANGES * self.cursors.len() {
             return Err(invalid(format!(
                 "page exceeds {} changes per channel",
@@ -650,6 +674,7 @@ impl BootstrapRequest {
         if !value.is_object() {
             return Err(invalid("bootstrap request must be an object"));
         }
+        read_capabilities(&value)?;
         read_bootstrap_mode(&value["mode"])?;
         let request = Self {
             channel: read_channel(&value["channel"])?,
@@ -686,7 +711,8 @@ impl BootstrapRequest {
         self.after == self.until
     }
 }
-/// One bounded page of a Scope's historical interval: the echoed channel and
+/// One record-only bounded page of a Scope's historical interval
+/// ([`ChannelBootstrapPage`] carries channel changes): the echoed channel and
 /// origin, the interval `(from, to]` the page covers, the channel head its
 /// transaction observed, and the records published at or below `until` in that
 /// interval, at most [`limits::PULL_CHANGES`] of them, once each at their
@@ -731,19 +757,7 @@ impl BootstrapPage {
         Ok(page)
     }
     pub fn validate(&self) -> Result<()> {
-        check_channel(&self.channel)?;
-        for cursor in [self.from, self.to, self.until, self.head] {
-            counter(cursor)?;
-        }
-        if self.to < self.from {
-            return Err(invalid("bootstrap page moves backwards"));
-        }
-        if self.until < self.to {
-            return Err(invalid("bootstrap page reaches past its origin"));
-        }
-        if self.head < self.until {
-            return Err(invalid("bootstrap origin is past the channel head"));
-        }
+        check_interval(&self.channel, self.from, self.to, self.until, self.head)?;
         if self.records.len() > limits::PULL_CHANGES {
             return Err(invalid(format!(
                 "bootstrap page exceeds {} records",
@@ -774,12 +788,38 @@ impl BootstrapPage {
     /// the requested `from`, and progress that never moves backwards. A
     /// nonterminal page must advance, so a repeated `from` is refused.
     pub fn answers(&self, request: &BootstrapRequest) -> bool {
-        self.channel == request.channel
-            && self.from == request.after
-            && self.until == request.until
-            && self.to >= self.from
-            && (self.terminal() || self.to > self.from)
+        answers_interval(&self.channel, self.from, self.to, self.until, request)
     }
+}
+/// The bounds every bounded page keeps: `from <= to <= until <= head`.
+fn check_interval(channel: &str, from: u64, to: u64, until: u64, head: u64) -> Result<()> {
+    check_channel(channel)?;
+    for cursor in [from, to, until, head] {
+        counter(cursor)?;
+    }
+    if to < from {
+        return Err(invalid("bootstrap page moves backwards"));
+    }
+    if until < to {
+        return Err(invalid("bootstrap page reaches past its origin"));
+    }
+    if head < until {
+        return Err(invalid("bootstrap origin is past the channel head"));
+    }
+    Ok(())
+}
+fn answers_interval(
+    channel: &str,
+    from: u64,
+    to: u64,
+    until: u64,
+    request: &BootstrapRequest,
+) -> bool {
+    channel == request.channel
+        && from == request.after
+        && until == request.until
+        && to >= from
+        && (to == until || to > from)
 }
 
 /// The one client frame of a live session:
@@ -833,8 +873,12 @@ impl SubscribeRequest {
             models: read_models(&serde_json::to_value(&models)?)?,
         })
     }
+    /// Decode the frame. `capabilities` is negotiation metadata the server
+    /// checks with [`require_capability`]; it is not part of the subscription.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let wire: SubscribeWire = serde_json::from_slice(bytes)?;
+        let mut raw: Value = serde_json::from_slice(bytes)?;
+        strip_capabilities(&mut raw)?;
+        let wire: SubscribeWire = serde_json::from_value(raw)?;
         if wire.kind != "subscribe" {
             return Err(invalid("expected one subscribe frame with channels"));
         }
@@ -891,7 +935,8 @@ impl SubscriptionAck {
     }
 }
 
-/// A frame the server sends on a live socket: the acknowledgement carries a
+/// A record-only frame the server sends on a live socket
+/// ([`ChannelLiveMessage`] carries channel pages): the acknowledgement carries a
 /// `type`, a page never does ([Protocol / Subscriptions](../../../docs/engineering/architecture/protocol/subscriptions.md)).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LiveMessage {
@@ -911,4 +956,538 @@ impl LiveMessage {
             .map(Self::Page)
             .map_err(|e| invalid(format!("invalid live page: {e}")))
     }
+}
+
+/// The capability a request advertises when its client applies channel
+/// membership changes: [`ChannelChange`] pages, removals and enrollment
+/// [`MembershipClaim`]s. A package version never implies it; only the
+/// request's `capabilities` member does.
+pub const CHANNEL_MEMBERSHIP_CAPABILITY: &str = "channel-membership-v1";
+/// The stable refusal code of a request that does not advertise a capability
+/// the server requires. It is refused before any handler runs or cursor
+/// moves: HTTP 426, and a live subscribe before its acknowledgement.
+pub const PROTOCOL_UNSUPPORTED: &str = "protocol.unsupported";
+/// The request-envelope member carrying transport negotiation.
+const CAPABILITIES: &str = "capabilities";
+
+/// The capabilities a request envelope advertises: absent is none; present,
+/// it is an array of distinct nonblank names. Unknown names are kept, so a
+/// newer client can advertise more than a server requires.
+pub fn read_capabilities(envelope: &Value) -> Result<BTreeSet<String>> {
+    let Some(value) = envelope.get(CAPABILITIES) else {
+        return Ok(BTreeSet::new());
+    };
+    let names = value
+        .as_array()
+        .ok_or_else(|| invalid("capabilities must be an array of names"))?;
+    let mut capabilities = BTreeSet::new();
+    for name in names {
+        let name = name
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| invalid("a capability must be a nonblank string"))?;
+        if !capabilities.insert(name.to_string()) {
+            return Err(invalid("duplicate capability"));
+        }
+    }
+    Ok(capabilities)
+}
+/// Validate and remove the negotiation member, leaving the logical request.
+pub(crate) fn strip_capabilities(envelope: &mut Value) -> Result<()> {
+    read_capabilities(envelope)?;
+    if let Some(object) = envelope.as_object_mut() {
+        object.remove(CAPABILITIES);
+    }
+    Ok(())
+}
+/// The logical request of an envelope: everything but its negotiation
+/// metadata. Saved-call identity compares this form, so a retry that now
+/// advertises a capability is the same call, not a conflicting one. A
+/// malformed `capabilities` member is refused.
+pub fn logical_request(envelope: &Value) -> Result<Value> {
+    let mut logical = envelope.clone();
+    strip_capabilities(&mut logical)?;
+    Ok(logical)
+}
+/// The canonical bytes of a request envelope advertising `capabilities`,
+/// replacing any it advertised before.
+pub fn with_capabilities(envelope: &[u8], capabilities: &[&str]) -> Result<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(envelope)?;
+    let names: BTreeSet<&str> = capabilities.iter().copied().collect();
+    value
+        .as_object_mut()
+        .ok_or_else(|| invalid("a request envelope must be an object"))?
+        .insert(CAPABILITIES.into(), serde_json::json!(names));
+    read_capabilities(&value)?;
+    Ok(canonical_json(&value)?.into_bytes())
+}
+/// Why a request fails capability negotiation, before any business handler.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum NegotiationRefusal {
+    /// The request does not advertise the required capability.
+    #[error("request does not advertise capability {0}")]
+    Unsupported(String),
+    /// The envelope or its `capabilities` member is malformed.
+    #[error("{0}")]
+    Malformed(String),
+}
+impl NegotiationRefusal {
+    /// [`PROTOCOL_UNSUPPORTED`], or `request.invalid` for a malformed request.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unsupported(_) => PROTOCOL_UNSUPPORTED,
+            Self::Malformed(_) => "request.invalid",
+        }
+    }
+}
+/// The server's admission check: the request envelope must be a JSON object
+/// whose well-formed `capabilities` include `capability`.
+pub fn require_capability(
+    envelope: &[u8],
+    capability: &str,
+) -> std::result::Result<(), NegotiationRefusal> {
+    let malformed = |error: crate::Error| NegotiationRefusal::Malformed(error.to_string());
+    let value: Value = serde_json::from_slice(envelope).map_err(|e| malformed(e.into()))?;
+    if !value.is_object() {
+        return Err(malformed(invalid("a request envelope must be an object")));
+    }
+    if read_capabilities(&value)
+        .map_err(malformed)?
+        .contains(capability)
+    {
+        Ok(())
+    } else {
+        Err(NegotiationRefusal::Unsupported(capability.into()))
+    }
+}
+
+/// One membership event of a channel page: the channel it belongs to, its log
+/// cursor there, and whether the record is a member. An upsert carries the
+/// record's current [`AuthorityRecord`] beside those members; a Loader `null`
+/// is stamped absence and a Loader failure an `error`, never a removal. A
+/// removal carries only the record's identity: no stamp, state, error or
+/// tags. The wire is tagged by `kind` (`upsert` or `remove`); serde decoding
+/// validates like [`ChannelChange::decode`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChannelChange {
+    Upsert {
+        channel: String,
+        cursor: u64,
+        #[serde(flatten)]
+        record: AuthorityRecord,
+    },
+    Remove {
+        channel: String,
+        cursor: u64,
+        #[serde(flatten)]
+        key: RecordKey,
+    },
+}
+/// Everything a removal may carry.
+const REMOVAL_MEMBERS: [&str; 5] = ["channel", "cursor", "kind", "model", "identity"];
+impl ChannelChange {
+    /// Decode one change: a known `kind`, a named channel, a positive safe
+    /// cursor, then an upsert's authority record or a removal's identity and
+    /// nothing else.
+    pub fn decode(value: &Value) -> Result<Self> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("change must be an object"))?;
+        let kind = object
+            .get("kind")
+            .ok_or_else(|| invalid("change kind missing"))?;
+        let channel = read_channel(
+            object
+                .get("channel")
+                .ok_or_else(|| invalid("change channel missing"))?,
+        )?;
+        let cursor = read_counter(
+            object
+                .get("cursor")
+                .ok_or_else(|| invalid("change cursor missing"))?,
+            true,
+        )?;
+        let change = match kind.as_str() {
+            Some("upsert") => {
+                let mut record = object.clone();
+                for member in CHANNEL_MEMBERS {
+                    record.remove(member);
+                }
+                Self::Upsert {
+                    channel,
+                    cursor,
+                    record: decode_record(&Value::Object(record))?,
+                }
+            }
+            Some("remove") => {
+                if let Some(member) = object
+                    .keys()
+                    .find(|member| !REMOVAL_MEMBERS.contains(&member.as_str()))
+                {
+                    return Err(invalid(format!("a removal carries no {member}")));
+                }
+                let model = object
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid("removal model missing"))?;
+                Self::Remove {
+                    channel,
+                    cursor,
+                    key: RecordKey {
+                        model: model.to_string(),
+                        identity: object.get("identity").cloned().unwrap_or_default(),
+                    },
+                }
+            }
+            _ => return Err(invalid("unknown change kind")),
+        };
+        change.validate()?;
+        Ok(change)
+    }
+    pub fn validate(&self) -> Result<()> {
+        check_channel(self.channel())?;
+        if self.cursor() == 0 || counter(self.cursor()).is_err() {
+            return Err(invalid("change cursor must be a positive counter"));
+        }
+        match self {
+            Self::Upsert { record, .. } => record.validate(),
+            Self::Remove { key, .. } => check_key(&key.model, &key.identity),
+        }
+    }
+    pub fn channel(&self) -> &str {
+        match self {
+            Self::Upsert { channel, .. } | Self::Remove { channel, .. } => channel,
+        }
+    }
+    pub fn cursor(&self) -> u64 {
+        match self {
+            Self::Upsert { cursor, .. } | Self::Remove { cursor, .. } => *cursor,
+        }
+    }
+    /// The wire `kind`: `upsert` or `remove`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Upsert { .. } => "upsert",
+            Self::Remove { .. } => "remove",
+        }
+    }
+    /// The record whose membership the change states.
+    pub fn key(&self) -> RecordKey {
+        match self {
+            Self::Upsert { record, .. } => RecordKey {
+                model: record.model.clone(),
+                identity: record.identity.clone(),
+            },
+            Self::Remove { key, .. } => key.clone(),
+        }
+    }
+    /// An upsert's authority record; a removal has none.
+    pub fn record(&self) -> Option<&AuthorityRecord> {
+        match self {
+            Self::Upsert { record, .. } => Some(record),
+            Self::Remove { .. } => None,
+        }
+    }
+}
+impl<'de> Deserialize<'de> for ChannelChange {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Self::decode(&Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+/// Membership evidence is unique per channel/record pair and per channel
+/// position: the channel log holds one row for each.
+fn unique_positions<'a>(
+    evidence: impl IntoIterator<Item = (&'a str, u64, RecordKey)>,
+) -> Result<()> {
+    let (mut pairs, mut positions) = (BTreeSet::new(), BTreeSet::new());
+    for (channel, cursor, key) in evidence {
+        if !pairs.insert((channel, key.encoded()?)) {
+            return Err(invalid("duplicate channel/record pair"));
+        }
+        if !positions.insert((channel, cursor)) {
+            return Err(invalid("two records at one channel position"));
+        }
+    }
+    Ok(())
+}
+/// The event rules of a channel page: each change belongs to a channel the
+/// page covers with `from < cursor <= to` in its range, a channel carries at
+/// most [`limits::PULL_CHANGES`] changes, and a pair or position appears once.
+fn check_changes(
+    changes: &[ChannelChange],
+    range: impl Fn(&str) -> Option<(u64, u64)>,
+) -> Result<()> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for change in changes {
+        change.validate()?;
+        let (from, to) = range(change.channel())
+            .ok_or_else(|| invalid("change names a channel the page does not cover"))?;
+        if change.cursor() <= from || change.cursor() > to {
+            return Err(invalid("change cursor outside its channel's page range"));
+        }
+        let count = counts.entry(change.channel()).or_default();
+        *count += 1;
+        if *count > limits::PULL_CHANGES {
+            return Err(invalid(format!(
+                "page exceeds {} changes per channel",
+                limits::PULL_CHANGES
+            )));
+        }
+    }
+    unique_positions(changes.iter().map(|c| (c.channel(), c.cursor(), c.key())))
+}
+fn read_changes(value: &Value, label: &str) -> Result<Vec<ChannelChange>> {
+    value
+        .as_array()
+        .ok_or_else(|| invalid(format!("{label} changes must be an array")))?
+        .iter()
+        .map(ChannelChange::decode)
+        .collect()
+}
+
+/// The [`PullPage`] envelope with channel changes: each channel's progress
+/// and the membership events in each, at most [`limits::PULL_CHANGES`] per
+/// channel. A record in two channels appears once per channel, since each is
+/// separate membership evidence. A page with any change never decodes as a
+/// record-only page, nor a record-only change as a channel change.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ChannelPullPage {
+    pub cursors: BTreeMap<String, CursorRange>,
+    pub changes: Vec<ChannelChange>,
+}
+impl ChannelPullPage {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let value: Value = serde_json::from_slice(bytes)?;
+        if !value.is_object() {
+            return Err(invalid("page must be an object"));
+        }
+        for field in ["cursors", "changes"] {
+            if value.get(field).is_none() {
+                return Err(invalid(format!("page {field} missing")));
+            }
+        }
+        let page = Self {
+            cursors: read_ranges(&value["cursors"])?,
+            changes: read_changes(&value["changes"], "page")?,
+        };
+        page.validate()?;
+        Ok(page)
+    }
+    pub fn validate(&self) -> Result<()> {
+        check_ranges(&self.cursors)?;
+        check_changes(&self.changes, |channel| {
+            self.cursors
+                .get(channel)
+                .map(|range| (range.from, range.to))
+        })
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
+    }
+    /// The channels the page names, in canonical order.
+    pub fn channels(&self) -> impl Iterator<Item = &str> {
+        self.cursors.keys().map(String::as_str)
+    }
+}
+
+/// The [`BootstrapPage`] envelope with channel changes in place of records:
+/// the same interval, origin and completion rules, and at most
+/// [`limits::PULL_CHANGES`] changes, each in the page's channel with
+/// `from < cursor <= to`. A change beyond `until` belongs to the delta lane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelBootstrapPage {
+    pub channel: String,
+    pub from: u64,
+    pub to: u64,
+    pub until: u64,
+    pub head: u64,
+    pub changes: Vec<ChannelChange>,
+}
+impl ChannelBootstrapPage {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let value: Value = serde_json::from_slice(bytes)?;
+        if !value.is_object() {
+            return Err(invalid("bootstrap page must be an object"));
+        }
+        read_bootstrap_mode(&value["mode"])?;
+        for field in ["channel", "from", "to", "until", "head", "changes"] {
+            if value.get(field).is_none() {
+                return Err(invalid(format!("bootstrap page {field} missing")));
+            }
+        }
+        let page = Self {
+            channel: read_channel(&value["channel"])?,
+            from: read_counter(&value["from"], false)?,
+            to: read_counter(&value["to"], false)?,
+            until: read_counter(&value["until"], false)?,
+            head: read_counter(&value["head"], false)?,
+            changes: read_changes(&value["changes"], "bootstrap page")?,
+        };
+        page.validate()?;
+        Ok(page)
+    }
+    pub fn validate(&self) -> Result<()> {
+        check_interval(&self.channel, self.from, self.to, self.until, self.head)?;
+        check_changes(&self.changes, |channel| {
+            (channel == self.channel).then_some((self.from, self.to))
+        })
+    }
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        Ok(canonical_json(&serde_json::json!({
+            "mode": BOOTSTRAP_MODE,
+            "channel": self.channel,
+            "from": self.from,
+            "to": self.to,
+            "until": self.until,
+            "head": self.head,
+            "changes": self.changes,
+        }))?
+        .into_bytes())
+    }
+    /// Whether the page finished the historical interval, as
+    /// [`BootstrapPage::terminal`].
+    pub fn terminal(&self) -> bool {
+        self.to == self.until
+    }
+    /// Whether the page answers this request, as [`BootstrapPage::answers`].
+    pub fn answers(&self, request: &BootstrapRequest) -> bool {
+        answers_interval(&self.channel, self.from, self.to, self.until, request)
+    }
+}
+
+/// A live frame when the session applies channel changes: the same
+/// acknowledgement, or a [`ChannelPullPage`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChannelLiveMessage {
+    Acknowledged(SubscriptionAck),
+    Page(ChannelPullPage),
+}
+impl ChannelLiveMessage {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let value: Value = serde_json::from_slice(bytes)?;
+        if !value.is_object() {
+            return Err(invalid("invalid live frame"));
+        }
+        if value.get("type").is_some() {
+            return Ok(Self::Acknowledged(SubscriptionAck::decode(bytes)?));
+        }
+        ChannelPullPage::decode(bytes)
+            .map(Self::Page)
+            .map_err(|e| invalid(format!("invalid live page: {e}")))
+    }
+}
+
+/// One enrollment claim a response carries beside the authority records it
+/// returns: a channel the call enrolled a returned record in, and the pair's
+/// current upsert cursor from the same transaction. It is membership evidence
+/// in that channel's cursor order, not another cursor namespace and never a
+/// Model field. Serde decoding validates like [`MembershipClaim::decode`].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MembershipClaim {
+    pub channel: String,
+    pub cursor: u64,
+    pub model: String,
+    pub identity: Value,
+}
+impl MembershipClaim {
+    const MEMBERS: [&str; 4] = ["channel", "cursor", "model", "identity"];
+    /// Decode exactly `{channel, cursor, model, identity}`.
+    pub fn decode(value: &Value) -> Result<Self> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| invalid("membership claim must be an object"))?;
+        if let Some(member) = object
+            .keys()
+            .find(|member| !Self::MEMBERS.contains(&member.as_str()))
+        {
+            return Err(invalid(format!("a membership claim carries no {member}")));
+        }
+        let claim = Self {
+            channel: read_channel(&value["channel"])?,
+            cursor: read_counter(&value["cursor"], true)?,
+            model: value["model"]
+                .as_str()
+                .ok_or_else(|| invalid("membership claim model missing"))?
+                .to_string(),
+            identity: value["identity"].clone(),
+        };
+        claim.validate()?;
+        Ok(claim)
+    }
+    pub fn validate(&self) -> Result<()> {
+        check_channel(&self.channel)?;
+        if self.cursor == 0 || counter(self.cursor).is_err() {
+            return Err(invalid(
+                "membership claim cursor must be a positive counter",
+            ));
+        }
+        check_key(&self.model, &self.identity)
+    }
+    /// The claimed record.
+    pub fn key(&self) -> RecordKey {
+        RecordKey {
+            model: self.model.clone(),
+            identity: self.identity.clone(),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for MembershipClaim {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Self::decode(&Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+/// The response-envelope member carrying enrollment claims.
+const MEMBERSHIPS: &str = "memberships";
+/// Read the `memberships` metadata of an enrollment-capable response (a Load
+/// page, or Mutation or direct Action readback) against the authority records
+/// it returns. Absent means the call enrolled nothing.
+pub fn read_memberships(
+    response: &Value,
+    records: &[AuthorityRecord],
+) -> Result<Vec<MembershipClaim>> {
+    let Some(value) = response.get(MEMBERSHIPS) else {
+        return Ok(vec![]);
+    };
+    let claims = value
+        .as_array()
+        .ok_or_else(|| invalid("memberships must be an array"))?
+        .iter()
+        .map(MembershipClaim::decode)
+        .collect::<Result<Vec<_>>>()?;
+    validate_memberships(&claims, records)?;
+    Ok(claims)
+}
+/// Every claim is valid, names a record the response returns, and is unique
+/// per channel/record pair and per channel position.
+pub fn validate_memberships(claims: &[MembershipClaim], records: &[AuthorityRecord]) -> Result<()> {
+    let returned = records
+        .iter()
+        .map(|record| {
+            RecordKey {
+                model: record.model.clone(),
+                identity: record.identity.clone(),
+            }
+            .encoded()
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    for claim in claims {
+        claim.validate()?;
+        if !returned.contains(&claim.key().encoded()?) {
+            return Err(invalid(
+                "membership claim names a record the response does not return",
+            ));
+        }
+    }
+    unique_positions(
+        claims
+            .iter()
+            .map(|c| (c.channel.as_str(), c.cursor, c.key())),
+    )
 }

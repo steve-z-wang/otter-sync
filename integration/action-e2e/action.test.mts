@@ -156,7 +156,7 @@ test("direct result retains Loader snapshot while independent durable optimism r
     assert.equal((await client.models.todo.get({ id: "direct" }))?.title, "C");
     const beforePage = await client.syncState();
     assert.equal(typeof beforePage.cursors["todos:demo"], "number", "the subscription has a committed delivery position");
-    const page = await post("pull", JSON.stringify({ cursors: { "todos:demo": beforePage.cursors["todos:demo"] }, models: { Todo: 1 } }));
+    const page = await post("pull", JSON.stringify({ capabilities: ["channel-membership-v1"], cursors: { "todos:demo": beforePage.cursors["todos:demo"] }, models: { Todo: 1 } }));
     await client.client.applyPull(page);
     const afterPage = await client.syncState();
     assert.ok(afterPage.cursors["todos:demo"] > beforePage.cursors["todos:demo"], "page advances the cursor after the receipt");
@@ -256,7 +256,7 @@ test("committed response loss replays frozen intent and stored result after a ch
     const frozen = await client.client.freeze();
     assert.ok(frozen);
     const first = await post("mutations", frozen);
-    const page = await post("pull", JSON.stringify({ cursors: { "todos:demo": origin }, models: { Todo: 1 } }));
+    const page = await post("pull", JSON.stringify({ capabilities: ["channel-membership-v1"], cursors: { "todos:demo": origin }, models: { Todo: 1 } }));
     await client.client.applyPull(page);
     const handled = fixture.handlerCalls;
     const loaded = fixture.loaderCalls;
@@ -344,7 +344,7 @@ test("Queries read fresh on the direct route and at execution time when enqueued
 
 test("a direct Query retry with the same call ID replays its saved result", async () => {
   await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('replay-q','replayq one')");
-  const call = (args: object) => JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890aa", name: "SearchTodos", version: 2, args }, models: { Todo: 1 } });
+  const call = (args: object) => JSON.stringify({ capabilities: ["channel-membership-v1"], call: { callId: "01890f47-1234-7123-8123-1234567890aa", name: "SearchTodos", version: 2, args }, models: { Todo: 1 } });
   const first = await post("actions", call({ query: "replayq" }));
   assert.deepEqual(first.completion.outcome.result.labels, ["replay-q"]);
   const handled = fixture.handlerCalls;
@@ -357,7 +357,7 @@ test("a direct Query retry with the same call ID replays its saved result", asyn
   const conflict = await post("actions", call({ query: "other" }));
   assert.equal(conflict.completion.outcome.code, "call.identity_conflict");
   // The Query's retained kind comes from the backend: v1 is the Mutation contract.
-  const retained = await post("actions", JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890ab", name: "SearchTodos", version: 1, args: { query: "replayq" } }, models: { Todo: 1 } }));
+  const retained = await post("actions", JSON.stringify({ capabilities: ["channel-membership-v1"], call: { callId: "01890f47-1234-7123-8123-1234567890ab", name: "SearchTodos", version: 1, args: { query: "replayq" } }, models: { Todo: 1 } }));
   assert.equal(retained.completion.outcome.code, "search.v1_retired", "the retained Mutation v1 runs its own handler");
 });
 
@@ -557,7 +557,7 @@ test("a retried A-returns-B call replays its saved result without new stamps or 
   try {
     client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });
     for (const [id, title] of [["abr-a", "A"], ["abr-b", "B"]]) assert.equal((await (await client.mutations.addTodo({ todo: { id, title } })).wait()).error, null);
-    const direct = JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890c1", name: "EditAndShow", version: 1, args: { todo: { id: "abr-a", title: "A1" }, shown: "abr-b" } }, models: { Todo: 1, Note: 1 } });
+    const direct = JSON.stringify({ capabilities: ["channel-membership-v1"], call: { callId: "01890f47-1234-7123-8123-1234567890c1", name: "EditAndShow", version: 1, args: { todo: { id: "abr-a", title: "A1" }, shown: "abr-b" } }, models: { Todo: 1, Note: 1 } });
     const first = await post("actions", direct);
     assert.deepEqual(first.completion.outcome.result, { todo: { id: "abr-b", title: "B" } });
     assert.deepEqual(first.records.map((record: { identity: object }) => record.identity), [{ id: "abr-a" }, { id: "abr-b" }], "caller authority: input A, and output B under the default store policy");
@@ -627,13 +627,13 @@ test("a touch of a Model the caller never declared commits and reaches a differe
 
     // The initiating caller declares only Todo: its descriptor has no Note.
     const args = (body: string) => ({ todo: { id: "extra-a", title: ` ${body} ` }, note, body });
-    const direct = await post("actions", JSON.stringify({ call: { callId: "01890f47-1234-7123-8123-1234567890d1", name: "AnnotateTodo", version: 1, args: args("direct") }, models: { Todo: 1 } }));
+    const direct = await post("actions", JSON.stringify({ capabilities: ["channel-membership-v1"], call: { callId: "01890f47-1234-7123-8123-1234567890d1", name: "AnnotateTodo", version: 1, args: args("direct") }, models: { Todo: 1 } }));
     assert.equal(direct.completion.outcome.error ?? null, null, JSON.stringify(direct.completion));
     assert.deepEqual(direct.records.map((record: { model: string; identity: object; state: object }) => [record.model, record.identity, record.state]), [["Todo", { id: "extra-a" }, { title: "direct" }]], "only the input is caller authority");
     await wait(async () => (await reader!.models.note.get({ id: note }))?.body === "direct", "the touched Note on the reader's Channel");
     assert.equal(await serverStamp(note, "Note"), noteStamp + 1);
 
-    const push = JSON.stringify({ clientId: "extra-touch-client", batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId: "01890f47-1234-7123-8123-1234567890d2", name: "AnnotateTodo", version: 1, args: args("durable") }] });
+    const push = JSON.stringify({ capabilities: ["channel-membership-v1"], clientId: "extra-touch-client", batchSequence: 1, models: { Todo: 1 }, mutations: [{ ordinal: 1, callId: "01890f47-1234-7123-8123-1234567890d2", name: "AnnotateTodo", version: 1, args: args("durable") }] });
     const receipt = await post("mutations", push);
     assert.deepEqual(receipt.rejections ?? [], []);
     assert.deepEqual(receipt.records.map((record: { model: string }) => record.model), ["Todo"], "the receipt carries no Note");

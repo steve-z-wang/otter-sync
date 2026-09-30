@@ -247,10 +247,10 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 /// and restart between pages resumes from committed progress, and a
 /// duplicated page request and page change nothing. A record removed and
 /// re-added before its page runs moves above the origin and arrives through
-/// ordinary delivery; the removed records never reach the new client, and the
-/// client that already held them keeps them.
+/// ordinary delivery; retained identity-only removals count toward bounded
+/// pages and release both existing and historical holds.
 #[test]
-fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates() {
+fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicates() {
     let mut sim = Sim::new(9, 2);
     sim.apply(Action::Subscribe {
         client: 0,
@@ -300,6 +300,12 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
     sim.apply(Action::Restart { client: 1 }).unwrap();
     assert_eq!(progress(&mut sim, 1, "a"), first);
     load(&mut sim, 1);
+    assert_eq!(
+        progress(&mut sim, 1, "a"),
+        161,
+        "identity-only removals count toward the 50-event page bound"
+    );
+    load(&mut sim, 1);
     assert_eq!(progress(&mut sim, 1, "a"), origin);
     sim.settle();
     assert_eq!(sim.bootstrap_phase(1, "a"), BootstrapPhase::Complete);
@@ -308,13 +314,13 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
         let expected = (i >= 60).then(|| format!("text {i}"));
         assert_eq!(
             sim.read_text(1, &key),
-            expected,
+            expected.clone(),
             "e{i:03} on the new client"
         );
         assert_eq!(
             sim.read_text(0, &key),
-            Some(format!("text {i}")),
-            "e{i:03} kept by the client that already held it"
+            expected,
+            "e{i:03} on the existing client after channel releases"
         );
     }
     sim.check().unwrap();

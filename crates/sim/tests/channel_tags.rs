@@ -334,3 +334,131 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
     sim.apply(Action::Restart { client: 0 }).unwrap();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("local"));
 }
+
+#[test]
+fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_replay() {
+    use axton_client::{LoadOptions, LoadWorker};
+    use axton_core::{LoadBatchRequest, LoadBatchResponse};
+    for seed in 9300..9312 {
+        let schema = axton_sim::schema::enrollment_schema();
+        let mut config = axton_sim::schema::config();
+        config.schema = schema.clone();
+        let mut sim = Sim::new_with_schema(seed, 1, schema);
+        for channel in ["u", "v"] {
+            sim.apply(Action::Subscribe {
+                client: 0,
+                channel: channel.into(),
+            })
+            .unwrap();
+        }
+        let mut rng = axton_sim::Rng::new(seed);
+        for cycle in 0..8 {
+            sim.apply(Action::Declare {
+                key: "Entry:a".into(),
+                touch: Some(Some(format!("seed{seed}-cycle{cycle}"))),
+                memberships: vec![],
+            })
+            .unwrap();
+            sim.client(0)
+                .start_load(
+                    "EnrolledEntries",
+                    1,
+                    &serde_json::json!({"channel":"u"}),
+                    LoadOptions::default(),
+                )
+                .unwrap();
+            let mut worker = LoadWorker::default();
+            worker.wake();
+            let mut dispatched = worker
+                .dispatch(sim.client(0), 0, seed)
+                .unwrap()
+                .dispatch
+                .unwrap();
+            let held = sim
+                .host
+                .native_load(&config, "owner", dispatched.body.as_bytes())
+                .unwrap();
+            let handlers = sim.host.native_load_calls();
+            sim.settle();
+            for step in 0..6 {
+                let channel = if rng.chance(1, 2) { "u" } else { "v" };
+                match rng.below(5) {
+                    0 => tags(&mut sim, vec![add(channel, &["x", "y"])]),
+                    1 => tags(&mut sim, vec![remove_tag(channel, "x")]),
+                    2 => tags(
+                        &mut sim,
+                        vec![ChannelIntent::Remove {
+                            channel: channel.into(),
+                            record: RecordRef {
+                                model: "Entry".into(),
+                                identity: serde_json::json!({"id":"a"}),
+                            },
+                        }],
+                    ),
+                    _ => sim
+                        .apply(Action::Declare {
+                            key: "Entry:a".into(),
+                            touch: Some(if rng.chance(1, 4) {
+                                None
+                            } else {
+                                Some(format!("t{cycle}-{step}"))
+                            }),
+                            memberships: vec![],
+                        })
+                        .unwrap(),
+                }
+                sim.apply(Action::Pull { client: 0 }).unwrap();
+                if rng.chance(1, 2) {
+                    sim.apply(Action::Duplicate).unwrap();
+                }
+                if rng.chance(1, 3) {
+                    sim.apply(Action::Drop).unwrap();
+                }
+                sim.drain();
+            }
+            sim.settle();
+            if rng.chance(1, 2) {
+                sim.apply(Action::Crash { client: 0 }).unwrap();
+                sim.apply(Action::Restart { client: 0 }).unwrap();
+                let mut resumed = LoadWorker::default();
+                resumed.wake();
+                dispatched = resumed
+                    .dispatch(sim.client(0), 0, seed)
+                    .unwrap()
+                    .dispatch
+                    .unwrap();
+            }
+            let replay = sim
+                .host
+                .native_load(&config, "owner", dispatched.body.as_bytes())
+                .unwrap();
+            assert_eq!(replay, held, "seed{seed} cycle{cycle}: saved call replay");
+            assert_eq!(
+                sim.host.native_load_calls(),
+                handlers,
+                "seed{seed} cycle{cycle}: replay does not re-enroll"
+            );
+            let request = LoadBatchRequest::decode_envelope(dispatched.body.as_bytes()).unwrap();
+            let reply = LoadBatchResponse::decode(replay.as_bytes(), &request)
+                .unwrap()
+                .remove(0);
+            sim.client(0)
+                .store_load_page(&dispatched.pages[0].fence, reply)
+                .unwrap();
+            let expected = if sim.host.stored_memberships(&entry_key("a")).is_empty() {
+                None
+            } else {
+                sim.host
+                    .state(&entry_key("a"))
+                    .map(|s| s["text"].as_str().unwrap().to_string())
+            };
+            assert_eq!(
+                sim.read_text(0, &entry_key("a")),
+                expected,
+                "seed{seed} cycle{cycle}: older enrolled authority follows final memberships/current content"
+            );
+            sim.check()
+                .unwrap_or_else(|e| panic!("seed{seed} cycle{cycle}: {e}"));
+        }
+    }
+}

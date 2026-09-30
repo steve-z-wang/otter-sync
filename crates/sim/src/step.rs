@@ -198,7 +198,7 @@ impl Sim {
         } else {
             Some(*self.rng.pick(&running))
         };
-        Some(match self.rng.below(20) {
+        Some(match self.rng.below(25) {
             0..6 => {
                 let id = self.rng.pick(&self.known_entries).clone();
                 let touch = match self.rng.below(6) {
@@ -237,7 +237,7 @@ impl Sim {
             16 => Action::Drop,
             17 => Action::Duplicate,
             18 => Action::Crash { client: client? },
-            _ => {
+            19 => {
                 let crashed = self.crashed();
                 if crashed.is_empty() {
                     return Some(Action::Deliver);
@@ -245,6 +245,42 @@ impl Sim {
                 Action::Restart {
                     client: *self.rng.pick(&crashed),
                 }
+            }
+            roll => {
+                use axton_server::host::{ChannelIntent, RecordRef};
+                let id = self.rng.pick(&self.known_entries).clone();
+                let record = RecordRef {
+                    model: "Entry".into(),
+                    identity: serde_json::json!({"id":id}),
+                };
+                let channel = self.pick_channel();
+                let tag = if self.rng.chance(1, 2) { "x" } else { "y" }.to_string();
+                let intents = match roll {
+                    20 | 21 => vec![ChannelIntent::Add {
+                        channel,
+                        record,
+                        tags: vec![tag],
+                    }],
+                    22 => vec![ChannelIntent::RemoveTag { channel, tag }],
+                    23 => vec![ChannelIntent::Remove { channel, record }],
+                    _ => vec![
+                        ChannelIntent::Add {
+                            channel: channel.clone(),
+                            record: record.clone(),
+                            tags: vec![tag.clone()],
+                        },
+                        ChannelIntent::RemoveTag {
+                            channel: channel.clone(),
+                            tag,
+                        },
+                        ChannelIntent::Add {
+                            channel,
+                            record,
+                            tags: vec!["y".into()],
+                        },
+                    ],
+                };
+                Action::ChannelTags { intents }
             }
         })
     }

@@ -205,7 +205,7 @@ impl MemHost {
     }
     /// One business change to `key`, distributed to `channels` by low-level
     /// publication: the stamp advances once, the record is enrolled in every
-    /// channel it is not yet a member of (a scan answers members only), and
+    /// channel it is not yet a member of, and
     /// every channel is invalidated at that same stamp. Other memberships are
     /// left alone and not published to, so a change can reach a subset.
     pub fn notify(&self, key: &RecordKey, channels: &[&str]) {
@@ -1127,7 +1127,7 @@ impl Host for MemHost {
 mod tests {
     use super::*;
     use crate::schema::{self, entry_key};
-    use axton_core::{PullPage, PullRequest, PushReceipt};
+    use axton_core::{AuthorityRecord, ChannelChange, ChannelPullPage, PushReceipt};
 
     #[test]
     fn call_claims_belong_to_the_simulated_transaction_and_follow_savepoint_rollback() {
@@ -1173,21 +1173,26 @@ mod tests {
     fn push_bytes(client_id: &str, sequence: u64, mutation: &axton_client::Mutation) -> Vec<u8> {
         let m = serde_json::to_value(mutation).unwrap();
         let ops = &m["operations"];
-        let body = json!({"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
-        axton_core::PushRequest::decode(axton_core::canonical_json(&body).unwrap().as_bytes())
-            .unwrap()
-            .encode()
-            .unwrap()
+        let body = json!({"capabilities":["channel-membership-v1"],"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
+        let bytes = axton_core::canonical_json(&body).unwrap().into_bytes();
+        axton_core::PushRequest::decode(&bytes).unwrap();
+        bytes
     }
 
-    fn pull(host: &MemHost, channel: &str, from: u64) -> PullPage {
-        let req = PullRequest {
-            cursors: BTreeMap::from([(channel.to_string(), from)]),
-            models: schema::declared_models(),
+    fn pull(host: &MemHost, channel: &str, from: u64) -> ChannelPullPage {
+        let req = json!({"capabilities":["channel-membership-v1"],"cursors":BTreeMap::from([(channel.to_string(),from)]),"models":schema::declared_models()});
+        ChannelPullPage::decode(
+            host.pull("u", &serde_json::to_vec(&req).unwrap())
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap()
+    }
+    fn record(change: &ChannelChange) -> &AuthorityRecord {
+        match change {
+            ChannelChange::Upsert { record, .. } => record,
+            ChannelChange::Remove { .. } => panic!("expected content upsert"),
         }
-        .encode()
-        .unwrap();
-        PullPage::decode(host.pull("u", &req).unwrap().as_bytes()).unwrap()
     }
 
     #[test]
@@ -1229,8 +1234,8 @@ mod tests {
         // Pull on b sees the record at the same stamp the receipt carried.
         let page = pull(&host, "b", 0);
         assert_eq!(page.changes.len(), 1);
-        assert_eq!(page.changes[0].stamp, 1);
-        assert_eq!(page.changes[0].state["text"], "hi");
+        assert_eq!(record(&page.changes[0]).stamp, 1);
+        assert_eq!(record(&page.changes[0]).state["text"], "hi");
         assert_eq!(page.cursors["b"].to, 1);
     }
 
@@ -1267,10 +1272,11 @@ mod tests {
         assert_eq!(host.channel_stamp("a", &entry_key("e1")), Some(1));
         let page = pull(&host, "a", 0);
         assert_eq!(
-            page.changes[0].stamp, 2,
+            record(&page.changes[0]).stamp,
+            2,
             "the row's stamp is the record's now"
         );
-        assert_eq!(page.changes[0].state["text"], "v2");
+        assert_eq!(record(&page.changes[0]).state["text"], "v2");
         assert_eq!(page.cursors["a"].to, 1, "the cursor is the row's own");
         host.ensure_publish(&entry_key("e1"), "c");
         assert_eq!(
@@ -1401,8 +1407,8 @@ mod tests {
         assert_eq!(host.head("a"), 4);
         let page = pull(&host, "a", 2);
         assert_eq!(page.changes.len(), 2);
-        assert!(page.changes.iter().all(|c| c.state.is_null()));
-        assert!(page.changes.iter().all(|c| c.stamp == 2));
+        assert!(page.changes.iter().all(|c| record(c).state.is_null()));
+        assert!(page.changes.iter().all(|c| record(c).stamp == 2));
     }
 
     #[test]
@@ -1636,9 +1642,12 @@ mod tests {
         host.notify(&entry_key("e1"), &["a", "b"]);
         let page_a = pull(&host, "a", 0);
         assert_eq!(page_a.changes.len(), 1);
-        assert_eq!(page_a.changes[0].state["text"], "in b");
+        assert_eq!(record(&page_a.changes[0]).state["text"], "in b");
         let page_b = pull(&host, "b", 0);
-        assert_eq!(page_b.changes[0].state["text"], "in b");
-        assert_eq!(page_a.changes[0].stamp, page_b.changes[0].stamp);
+        assert_eq!(record(&page_b.changes[0]).state["text"], "in b");
+        assert_eq!(
+            record(&page_a.changes[0]).stamp,
+            record(&page_b.changes[0]).stamp
+        );
     }
 }

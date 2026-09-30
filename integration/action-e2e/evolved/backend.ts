@@ -6,14 +6,19 @@ export type Todo = TodoRecord;
 export type { TodoIdentity, TodoPatch };
 export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: "Todo" }> { return { model: "Todo", identity }; }
 export type RecordRef = { readonly model: "Todo"; readonly identity: TodoIdentity };
+/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */
+export type MembershipOptions = { readonly tags?: readonly string[] };
+/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */
+export type TagSelector = { readonly tag: string };
 export interface ModelMembership<Identity> {
- add(identity: Identity): void;
+ add(identity: Identity, options?: MembershipOptions): void;
  remove(identity: Identity): void;
 }
 export interface Channel {
  todo: ModelMembership<TodoIdentity>;
- add(records: readonly RecordRef[]): void;
+ add(records: readonly RecordRef[], options?: MembershipOptions): void;
  remove(records: readonly RecordRef[]): void;
+ remove(selector: TagSelector): void;
 }
 export interface Touch {
  todo(identity: TodoIdentity): void;

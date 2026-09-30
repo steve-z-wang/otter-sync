@@ -140,9 +140,8 @@ pub enum Action {
     },
     /// A record's real membership legitimately moves to `channels`: every new member
     /// is told about the record at its current stamp (a republication, which never
-    /// advances a version). The channels it leaves hear nothing: loads are
-    /// channel-blind, so a client that only follows a vacated channel keeps its last
-    /// content as legitimately retained data.
+    /// advances a version). Departed Channels deliver identity-only releases;
+    /// another current hold or device-local work may retain the row.
     MoveMembership {
         key: String,
         channels: Vec<String>,
@@ -953,7 +952,9 @@ impl Sim {
                     .changes
                     .iter()
                     .filter_map(|change| match change {
-                        ChannelChange::Upsert { record, .. } => Some(record.clone()),
+                        ChannelChange::Upsert {
+                            channel, record, ..
+                        } => Some((channel.clone(), record.clone())),
                         ChannelChange::Remove { .. } => None,
                     })
                     .collect();
@@ -969,7 +970,7 @@ impl Sim {
                 // applied without a report, the client holds the server's content.
                 let mut confirmed = vec![];
                 let mut before = BTreeMap::new();
-                for change in &content_changes {
+                for (_, change) in &content_changes {
                     let Ok(key) = schema::schema().record_key(&change.model, &change.identity)
                     else {
                         continue;
@@ -998,8 +999,8 @@ impl Sim {
                 // comment's row may go even when its own change was not applied.
                 let deleted_entries: BTreeSet<String> = content_changes
                     .iter()
-                    .filter(|c| c.model == "Entry" && c.error.is_none() && c.state.is_null())
-                    .filter_map(|c| c.identity["id"].as_str().map(str::to_string))
+                    .filter(|(_, c)| c.model == "Entry" && c.error.is_none() && c.state.is_null())
+                    .filter_map(|(_, c)| c.identity["id"].as_str().map(str::to_string))
                     .collect();
                 let report = self
                     .client(client)
@@ -1038,11 +1039,48 @@ impl Sim {
                                 .as_ref()
                                 .and_then(|row| row["entryId"].as_str())
                                 .is_some_and(|parent| deleted_entries.contains(parent));
-                        if now_stamp != then_stamp || (now != then && !cascaded) {
+                        // Channel frames preserve occurrences: another Channel in
+                        // this same page may successfully deliver the same identity
+                        // even when this occurrence was skipped or failed.
+                        let sibling_applied = content_changes.iter().any(|(channel, candidate)| {
+                            report.cursors.contains_key(channel)
+                                && candidate.model == key.model
+                                && candidate.identity == key.identity
+                                && candidate.error.is_none()
+                                && candidate.stamp == now_stamp
+                                && (candidate.stamp > then_stamp || now != then)
+                                && if candidate.state.is_null() {
+                                    now.is_none()
+                                } else {
+                                    schema::schema()
+                                        .validate_state(&candidate.model, &candidate.state)
+                                        .ok()
+                                        .map(|mut state| {
+                                            state.as_object_mut().unwrap().extend(
+                                                candidate
+                                                    .identity
+                                                    .as_object()
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            );
+                                            state
+                                        })
+                                        .as_ref()
+                                        == now.as_ref()
+                                }
+                        });
+                        if !sibling_applied
+                            && (now_stamp != then_stamp || (now != then && !cascaded))
+                        {
                             return Err(format!(
-                                "client {client} {encoded}: a {:?} change changed local content or stamp",
+                                "client {client} {encoded}: a {:?} change changed local content or stamp: before=({then_stamp},{then:?}) after=({now_stamp},{now:?}) candidates={content_changes:?}",
                                 entry.kind
                             ));
+                        }
+                        if sibling_applied {
+                            // The failed occurrence remains reported, but the
+                            // successful sibling already refreshed this pair.
+                            continue;
                         }
                         touched.retain(|k| k != &encoded);
                         confirmed.retain(|k| k != &encoded);

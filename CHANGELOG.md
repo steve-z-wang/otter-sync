@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/zanminwang/axton/compare/v0.1.1...v0.1.2) (2026-09-30)
+
+
+### Features
+
+* Load handlers enroll loaded records into Channels ([#214](https://github.com/zanminwang/axton/issues/214)) ([#219](https://github.com/zanminwang/axton/issues/219)) ([cf3ef7b](https://github.com/zanminwang/axton/commit/cf3ef7b9693b7dc2cf8a51c7e100df4064d992ae))
+
 ## [0.1.1](https://github.com/zanminwang/axton/compare/v0.1.0...v0.1.1) (2026-09-29)
 
 

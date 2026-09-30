@@ -1129,7 +1129,9 @@ impl<S: ClientStore> Client<S> {
         self.freeze_with_limit(limits::PUSH_BYTES)
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-        self.write(|e| e.freeze(max_bytes))
+        self.write(|e| e.freeze(max_bytes))?
+            .map(|bytes| with_capabilities(&bytes, &[CHANNEL_MEMBERSHIP_CAPABILITY]))
+            .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority
     /// lands, the completed operations leave the queue and what remains

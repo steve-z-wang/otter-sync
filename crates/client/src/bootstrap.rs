@@ -19,6 +19,8 @@ use axton_core::{BootstrapPage, BootstrapRequest, Result, invalid};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+type HistoryBarrierScan = (Vec<(BootstrapState, bool)>, Vec<LedgerIssue>);
+
 /// The stable code a page whose records could not all be applied fails with.
 pub const RECORDS_FAILED: &str = "bootstrap.records_failed";
 /// The stable code a response that is not a page of the requested interval
@@ -256,11 +258,22 @@ impl BootstrapApply {
 /// the row, so both halves are read in the one transaction that picked the task.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BootstrapTask {
+    pub(crate) reconciliation: bool,
     pub state: BootstrapState,
     /// S, the subscription origin every page of this run is bounded by.
     pub origin: u64,
 }
 impl BootstrapTask {
+    /// Final wire envelope, including the engine's channel protocol capability.
+    pub fn encode_request(
+        &self,
+        models: std::collections::BTreeMap<String, u64>,
+    ) -> Result<Vec<u8>> {
+        axton_core::with_capabilities(
+            &self.request(models).encode()?,
+            &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
+        )
+    }
     /// The page this run asks for next: `(B, S]` with the client's declared
     /// read contracts, as [`PullRequest`](axton_core::PullRequest) carries them.
     pub fn request(&self, models: std::collections::BTreeMap<String, u64>) -> BootstrapRequest {
@@ -287,6 +300,116 @@ impl<S: ClientStore> Client<S> {
     pub fn bootstrap_schedule(&mut self, rotation: Option<&str>) -> Result<Option<BootstrapTask>> {
         Ok(self.bootstrap_schedule_scan(rotation)?.0)
     }
+    pub(crate) fn retry_reconciliation_failures(&mut self) -> Result<()> {
+        let channels=self.view(|e| Ok(e.rows("SELECT channel FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
+        if channels.is_empty() {
+            return Ok(());
+        }
+        self.write(|e| {
+            e.reconciled(|e| {
+                for channel in channels {
+                    let Some(row) = e.bootstrap_row(&channel)? else {
+                        continue;
+                    };
+                    if row.state.state != BootstrapPhase::Failed {
+                        continue;
+                    }
+                    let mut state = row.state;
+                    let old_run = state.run;
+                    state.run = old_run
+                        .checked_add(1)
+                        .filter(|r| *r <= axton_core::MAX_SAFE_INTEGER)
+                        .ok_or_else(|| invalid("reconciliation run exhausted"))?;
+                    state.state = if state.barrier.is_some() {
+                        BootstrapPhase::CatchingUp
+                    } else {
+                        BootstrapPhase::Requested
+                    };
+                    state.error = None;
+                    written(e.set_bootstrap(&state, old_run)?)?;
+                    e.mark_bootstrap(&channel);
+                }
+                Ok(())
+            })
+        })
+    }
+    pub(crate) fn reconciliation_failed(&mut self) -> Result<bool> {
+        self.view(|e| {
+            Ok(e.scalar(
+                "SELECT 1 FROM axton_subscription WHERE reconcile_state='failed' LIMIT 1",
+                &[],
+            )?
+            .is_some())
+        })
+    }
+    pub(crate) fn reconciliation_schedule(&mut self) -> Result<Option<BootstrapTask>> {
+        self.view(|e| {
+            e.reconciled(|e| {
+                Ok(e.bootstrap_task_rows()?
+                    .into_iter()
+                    .find(|row| row.state.state.schedulable())
+                    .and_then(|row| {
+                        Some(BootstrapTask {
+                            reconciliation: true,
+                            origin: row.subscription.starting_cursor?,
+                            state: row.state,
+                        })
+                    }))
+            })
+        })
+    }
+    pub(crate) fn any_reconciliation_pending(&mut self) -> Result<bool> {
+        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state NOT IN ('not_requested','complete') LIMIT 1", &[])?.is_some()))
+    }
+    pub(crate) fn reconciliation_pending(&mut self, scope: &str) -> Result<bool> {
+        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE channel=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(scope)])?.is_some()))
+    }
+    pub(crate) fn apply_channel_history_page(
+        &mut self,
+        reconciliation: bool,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: &axton_core::ChannelBootstrapPage,
+    ) -> Result<BootstrapApply> {
+        self.write(|e| {
+            e.reconciliation = reconciliation;
+            e.apply_channel_bootstrap_body(scope, subscription_id, run, expected_after, page)
+        })
+    }
+    pub(crate) fn fail_history_state(
+        &mut self,
+        reconciliation: bool,
+        scope: &str,
+        subscription_id: u64,
+        run: u64,
+        error: BootstrapError,
+    ) -> Result<Option<BootstrapState>> {
+        if !reconciliation {
+            return self.fail_bootstrap_state(scope, subscription_id, run, error);
+        }
+        self.write(|e| {
+            e.reconciled(|e| {
+                let Some(row) = e
+                    .bootstrap_row(scope)?
+                    .filter(|r| r.subscription.subscription_id == subscription_id)
+                else {
+                    return Ok(None);
+                };
+                let mut state = row.state;
+                if state.run != run || !state.state.active() {
+                    return Ok(None);
+                }
+                state.state = BootstrapPhase::Failed;
+                state.error = Some(error);
+                written(e.set_bootstrap(&state, run)?)?;
+                e.mark_bootstrap(scope);
+                Ok(Some(state))
+            })
+        })
+    }
+
     /// [`Client::bootstrap_schedule`] with an issue for every active row the
     /// read skipped because it cannot be decoded.
     pub(crate) fn bootstrap_schedule_scan(
@@ -295,21 +418,44 @@ impl<S: ClientStore> Client<S> {
     ) -> Result<(Option<BootstrapTask>, Vec<LedgerIssue>)> {
         self.view(|e| {
             let scan = e.bootstrap_task_scan()?;
-            let tasks: Vec<BootstrapTask> = scan
+            let mut tasks: Vec<BootstrapTask> = scan
                 .rows
                 .into_iter()
                 .filter(|row| row.state.state.schedulable())
                 .filter_map(|row| {
                     Some(BootstrapTask {
+                        reconciliation: false,
                         origin: row.subscription.starting_cursor?,
                         state: row.state,
                     })
                 })
                 .collect();
+            let reconciliation = e.reconciled(|e| e.bootstrap_task_scan())?;
+            tasks.extend(
+                reconciliation
+                    .rows
+                    .into_iter()
+                    .filter(|row| row.state.state.schedulable())
+                    .filter_map(|row| {
+                        Some(BootstrapTask {
+                            reconciliation: true,
+                            origin: row.subscription.starting_cursor?,
+                            state: row.state,
+                        })
+                    }),
+            );
+            tasks.sort_by(|a, b| {
+                a.state
+                    .scope
+                    .cmp(&b.state.scope)
+                    .then(b.reconciliation.cmp(&a.reconciliation))
+            });
+            let mut issues = scan.issues;
+            issues.extend(reconciliation.issues);
             let after = rotation
                 .and_then(|last| tasks.iter().find(|t| t.state.scope.as_str() > last))
                 .or_else(|| tasks.first());
-            Ok((after.cloned(), scan.issues))
+            Ok((after.cloned(), issues))
         })
     }
     /// Every run waiting for its barrier, in Scope order: what a reopen
@@ -324,7 +470,10 @@ impl<S: ClientStore> Client<S> {
     /// read skipped because it cannot be decoded.
     pub(crate) fn bootstrap_barriers_scan(&mut self) -> Result<(Vec<String>, Vec<LedgerIssue>)> {
         self.view(|e| {
-            let scan = e.bootstrap_task_scan()?;
+            let mut scan = e.bootstrap_task_scan()?;
+            let reconcile = e.reconciled(|e| e.bootstrap_task_scan())?;
+            scan.rows.extend(reconcile.rows);
+            scan.issues.extend(reconcile.issues);
             let waiting = scan
                 .rows
                 .into_iter()
@@ -486,18 +635,40 @@ impl<S: ClientStore> Client<S> {
         &mut self,
         channels: &[String],
     ) -> Result<(Vec<BootstrapState>, Vec<LedgerIssue>)> {
+        let (states, issues) = self.settle_history_barriers_scan(channels)?;
+        Ok((
+            states
+                .into_iter()
+                .filter_map(|(state, reconciliation)| (!reconciliation).then_some(state))
+                .collect(),
+            issues,
+        ))
+    }
+    pub(crate) fn settle_history_barriers_scan(
+        &mut self,
+        channels: &[String],
+    ) -> Result<HistoryBarrierScan> {
         let scan = self.view(|e| e.settleable_scan(channels))?;
-        if scan.rows.is_empty() {
-            return Ok((vec![], scan.issues));
+        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(channels)))?;
+        let mut issues = scan.issues;
+        issues.extend(reconciliation.issues);
+        if scan.rows.is_empty() && reconciliation.rows.is_empty() {
+            return Ok((vec![], issues));
         }
         let settled = self.write(|e| {
             let mut settled = vec![];
             for scope in &scan.rows {
-                settled.extend(e.settle_barrier(scope)?);
+                settled.extend(e.settle_barrier(scope)?.map(|state| (state, false)));
             }
+            e.reconciled(|e| {
+                for scope in &reconciliation.rows {
+                    settled.extend(e.settle_barrier(scope)?.map(|state| (state, true)));
+                }
+                Ok(())
+            })?;
             Ok(settled)
         })?;
-        Ok((settled, scan.issues))
+        Ok((settled, issues))
     }
 }
 

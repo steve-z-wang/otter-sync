@@ -449,13 +449,13 @@ fn scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head() {
 
 /// The historical page answering a load of `scope` over `(0, until]`.
 fn loaded(scope: &str, until: u64, head: u64) -> String {
-    let page = BootstrapPage {
+    let page = ChannelBootstrapPage {
         channel: scope.into(),
         from: 0,
         to: until,
         until,
         head,
-        records: vec![],
+        changes: vec![],
     };
     String::from_utf8(page.encode().unwrap()).unwrap()
 }

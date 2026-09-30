@@ -43,7 +43,11 @@ impl LiveSession {
         generation: u64,
     ) -> Result<(u64, String)> {
         let subscribe = SubscribeRequest::new(channels, models)?;
-        let frame = String::from_utf8(subscribe.encode()?).map_err(|_| invalid("utf8"))?;
+        let frame = String::from_utf8(with_capabilities(
+            &subscribe.encode()?,
+            &[CHANNEL_MEMBERSHIP_CAPABILITY],
+        )?)
+        .map_err(|_| invalid("utf8"))?;
         self.epoch = allocate(self.epoch, "socket epoch")?;
         self.session = Some(Session {
             epoch: self.epoch,

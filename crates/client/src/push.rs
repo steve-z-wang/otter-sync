@@ -132,7 +132,11 @@ impl<S: ClientStore> Engine<'_, S> {
             if !selected.is_empty() {
                 let mut candidate = selected.clone();
                 candidate.push(q.clone());
-                if canonical_json(&self.request_json(next_push, &models, &candidate)?)?.len()
+                if axton_core::with_capabilities(
+                    canonical_json(&self.request_json(next_push, &models, &candidate)?)?.as_bytes(),
+                    &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
+                )?
+                .len()
                     > max_bytes
                 {
                     continue;

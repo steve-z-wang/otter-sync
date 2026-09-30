@@ -94,9 +94,13 @@ fn nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill() {
     w.wake();
     let eight = dispatch(&mut w, &mut c, 0).unwrap();
     assert_eq!(loads(&eight), started[..8]);
-    let request: LoadBatchRequest = serde_json::from_str(&eight.body).unwrap();
+    let request = LoadBatchRequest::decode_envelope(eight.body.as_bytes()).unwrap();
     assert_eq!(
-        String::from_utf8(request.encode().unwrap()).unwrap(),
+        String::from_utf8(
+            with_capabilities(&request.encode().unwrap(), &[CHANNEL_MEMBERSHIP_CAPABILITY])
+                .unwrap()
+        )
+        .unwrap(),
         eight.body,
         "the canonical request body"
     );
@@ -618,4 +622,20 @@ fn legacy_load_and_queue_receive_epoch_zero_without_rewriting_saved_work() {
     let mut c = open_db(&path);
     assert_eq!(c.get_load(&id).unwrap().unwrap(), saved);
     assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+}
+
+#[test]
+fn native_load_dispatch_advertises_channel_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    start(&mut c);
+    let mut w = LoadWorker::default();
+    w.wake();
+    let batch = dispatch(&mut w, &mut c, 0).unwrap();
+    let envelope: Value = serde_json::from_str(&batch.body).unwrap();
+    assert!(
+        read_capabilities(&envelope)
+            .unwrap()
+            .contains(CHANNEL_MEMBERSHIP_CAPABILITY)
+    );
 }

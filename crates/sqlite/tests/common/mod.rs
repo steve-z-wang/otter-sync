@@ -332,3 +332,52 @@ pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
     );
     job.id
 }
+
+/// Upgrade the old authority-only fixture vocabulary at the test host boundary.
+/// Production decoders stay strict; these fixtures now state channel provenance.
+pub fn channel_fixture(mut value: Value) -> Value {
+    let ranges = value.get("cursors").and_then(Value::as_object).cloned();
+    if let Some(ranges) = ranges {
+        if let Some(records) = value["changes"].as_array().cloned() {
+            if records.iter().any(|r| r.get("kind").is_some()) {
+                return value;
+            }
+            let mut changes = vec![];
+            for (channel, range) in ranges {
+                let from = range["from"].as_u64().unwrap_or(0);
+                let to = range["to"].as_u64().unwrap_or(0);
+                if to <= from {
+                    continue;
+                }
+                for (i, record) in records.iter().enumerate() {
+                    let mut record = record.clone();
+                    record["kind"] = json!("upsert");
+                    record["channel"] = json!(channel);
+                    record["cursor"] =
+                        json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
+                    changes.push(record);
+                }
+            }
+            value["changes"] = json!(changes);
+        }
+    } else if value["mode"] == "bootstrap" {
+        if let Some(records) = value["records"].as_array().cloned() {
+            let to = value["to"].as_u64().unwrap();
+            let changes: Vec<Value> = records
+                .iter()
+                .enumerate()
+                .map(|(i, record)| {
+                    let mut record = record.clone();
+                    record["kind"] = json!("upsert");
+                    record["channel"] = value["channel"].clone();
+                    record["cursor"] =
+                        json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
+                    record
+                })
+                .collect();
+            value.as_object_mut().unwrap().remove("records");
+            value["changes"] = json!(changes);
+        }
+    }
+    value
+}

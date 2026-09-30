@@ -42,6 +42,29 @@ const CLIENT_COLUMNS: &[&str] = &["last_completed_push", "push_models", "next_su
 /// ([#151](https://github.com/zanminwang/axton/issues/151)), whose defaults are
 /// a load that was never requested.
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
+    (
+        "axton_client",
+        "channel_membership_version",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_state",
+        "TEXT NOT NULL DEFAULT 'not_requested'",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_run",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "axton_subscription",
+        "reconcile_cursor",
+        "INTEGER NOT NULL DEFAULT 0",
+    ),
+    ("axton_subscription", "reconcile_bound", "INTEGER"),
+    ("axton_subscription", "reconcile_barrier", "INTEGER"),
+    ("axton_subscription", "reconcile_error", "TEXT"),
     ("axton_client", "store_epoch", "INTEGER NOT NULL DEFAULT 0"),
     (
         "axton_mutation",
@@ -92,6 +115,11 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
             }
         }
         store.execute_batch(
+            "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=reconcile_run+1
+             WHERE EXISTS (SELECT 1 FROM axton_client WHERE channel_membership_version=0);
+             UPDATE axton_client SET channel_membership_version=1;"
+        )?;
+        store.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
         )?;
         Ok(())
@@ -123,6 +151,7 @@ CREATE TABLE IF NOT EXISTS axton_client (
   last_completed_push INTEGER NOT NULL DEFAULT 0,
   push_models  TEXT,
   push_results TEXT,
+  channel_membership_version INTEGER NOT NULL DEFAULT 1,
   store_epoch INTEGER NOT NULL DEFAULT 0,
   next_subscription INTEGER NOT NULL DEFAULT 1
 );
@@ -152,6 +181,12 @@ CREATE TABLE IF NOT EXISTS axton_subscription (
   bootstrap_cursor  INTEGER NOT NULL DEFAULT 0,
   bootstrap_barrier INTEGER,
   bootstrap_error   TEXT,
+  reconcile_state TEXT NOT NULL DEFAULT 'not_requested',
+  reconcile_run INTEGER NOT NULL DEFAULT 0,
+  reconcile_cursor INTEGER NOT NULL DEFAULT 0,
+  reconcile_bound INTEGER,
+  reconcile_barrier INTEGER,
+  reconcile_error TEXT,
   CHECK ((starting_cursor IS NULL AND cursor IS NULL) OR
          (starting_cursor IS NOT NULL AND cursor IS NOT NULL AND
           starting_cursor >= 0 AND cursor >= starting_cursor))

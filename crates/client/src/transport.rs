@@ -5,12 +5,24 @@ pub struct TransportAction {
     pub kind: String,
     pub body: String,
 }
-#[derive(Default)]
 pub struct SyncCycle {
     push_only: bool,
     /// Every subscribed channel reached its head in this cycle.
     completed: bool,
     active: Option<TransportAction>,
+    history: Option<BootstrapTask>,
+    retry_reconciliation: bool,
+}
+impl Default for SyncCycle {
+    fn default() -> Self {
+        Self {
+            push_only: false,
+            completed: false,
+            active: None,
+            history: None,
+            retry_reconciliation: true,
+        }
+    }
 }
 impl SyncCycle {
     /// Validate a received push receipt against the still-frozen action and
@@ -56,6 +68,8 @@ impl SyncCycle {
     pub fn restart(&mut self) {
         self.completed = false;
         self.active = None;
+        self.history = None;
+        self.retry_reconciliation = true;
         self.push_only = false;
     }
     /// Use HTTP only for queued writes; authoritative pages arrive through the live stream.
@@ -73,12 +87,37 @@ impl SyncCycle {
         if let Some(bytes) = client.freeze()? {
             let action = TransportAction {
                 kind: "push".into(),
-                body: String::from_utf8(bytes).map_err(|_| invalid("utf8"))?,
+                body: String::from_utf8(with_capabilities(
+                    &bytes,
+                    &[CHANNEL_MEMBERSHIP_CAPABILITY],
+                )?)
+                .map_err(|_| invalid("utf8"))?,
             };
             self.active = Some(action.clone());
             return Ok(Some(action));
         }
-        if self.push_only || self.completed {
+        if self.push_only {
+            return Ok(None);
+        }
+        if std::mem::take(&mut self.retry_reconciliation) {
+            client.retry_reconciliation_failures()?;
+        }
+        if client.reconciliation_failed()? {
+            return Err(invalid(
+                "channel reconciliation failed; restart the cycle to retry",
+            ));
+        }
+        if let Some(task) = client.reconciliation_schedule()? {
+            let action = TransportAction {
+                kind: "pull".into(),
+                body: String::from_utf8(task.encode_request(client.declared_models())?)
+                    .map_err(|_| invalid("utf8"))?,
+            };
+            self.history = Some(task);
+            self.active = Some(action.clone());
+            return Ok(Some(action));
+        }
+        if self.completed && !client.any_reconciliation_pending()? {
             return Ok(None);
         }
         // One pull covers every subscribed channel; a pull on any other channel
@@ -110,20 +149,45 @@ impl SyncCycle {
             let report = client.acknowledge(sequence, receipt)?;
             self.completed = false;
             report
+        } else if let Some(task) = &self.history {
+            let page = ChannelBootstrapPage::decode(bytes)?;
+            let applied = client.apply_channel_history_page(
+                true,
+                &task.state.scope,
+                task.state.subscription_id,
+                task.state.run,
+                task.state.cursor,
+                &page,
+            )?;
+            self.completed = false;
+            match applied {
+                BootstrapApply::Failed { .. } => {
+                    self.active = None;
+                    self.history = None;
+                    return Err(invalid("channel reconciliation records failed"));
+                }
+                BootstrapApply::Applied { report, .. } | BootstrapApply::Detached { report } => {
+                    report
+                }
+                BootstrapApply::Stale => ApplyReport::default(),
+            }
         } else {
             let request = PullRequest::decode(action.body.as_bytes())?;
-            let page = PullPage::decode(bytes)?;
-            if !answers(&page, &request) {
+            let page = ChannelPullPage::decode(bytes)?;
+            if !answers_cursors(&page.cursors, &request) {
                 return Err(invalid("response does not match pull request"));
             }
             let end = !page.cursors.values().any(CursorRange::continues);
-            let report = client.apply_page(page)?;
+            let page_channels = page.cursors.keys().cloned().collect::<Vec<_>>();
+            let report = client.apply_channel_page(page)?;
+            client.settle_bootstrap_barriers(&page_channels)?;
             if end {
-                self.completed = true;
+                self.completed = !client.any_reconciliation_pending()?;
             }
             report
         };
         self.active = None;
+        self.history = None;
         Ok(report)
     }
 }
@@ -131,9 +195,11 @@ impl SyncCycle {
 /// Whether a page answers a request: the same channels, each from the cursor
 /// the request named.
 fn answers(page: &PullPage, request: &PullRequest) -> bool {
-    page.cursors.len() == request.cursors.len()
-        && page
-            .cursors
+    answers_cursors(&page.cursors, request)
+}
+fn answers_cursors(cursors: &BTreeMap<String, CursorRange>, request: &PullRequest) -> bool {
+    cursors.len() == request.cursors.len()
+        && cursors
             .iter()
             .all(|(c, r)| request.cursors.get(c) == Some(&r.from))
 }
@@ -154,7 +220,11 @@ impl<S: ClientStore> Client<S> {
         };
         self.pulls.issue(&cursors);
         Ok(Some(
-            String::from_utf8(request.encode()?).map_err(|_| invalid("utf8"))?,
+            String::from_utf8(with_capabilities(
+                &request.encode()?,
+                &[CHANNEL_MEMBERSHIP_CAPABILITY],
+            )?)
+            .map_err(|_| invalid("utf8"))?,
         ))
     }
 
@@ -168,6 +238,41 @@ impl<S: ClientStore> Client<S> {
             .map(|(c, r)| (c.clone(), r.from))
             .collect();
         self.pulls.stale(&cursors)
+    }
+
+    pub(crate) fn admit_channel_downlink(
+        &mut self,
+        page: &ChannelPullPage,
+        request: Option<&PullRequest>,
+    ) -> Result<DownlinkProgress> {
+        page.validate()?;
+        self.admit_downlink(
+            &PullPage {
+                cursors: page.cursors.clone(),
+                changes: vec![],
+            },
+            request,
+        )
+    }
+    pub(crate) fn receive_channel_downlink(
+        &mut self,
+        page: ChannelPullPage,
+        request: Option<PullRequest>,
+    ) -> Result<DownlinkProgress> {
+        page.validate()?;
+        let mut progress = self.classify_downlink(
+            &PullPage {
+                cursors: page.cursors.clone(),
+                changes: vec![],
+            },
+            request.as_ref(),
+        )?;
+        if progress.disposition == "applied" {
+            progress.report = self.apply_channel_page(page)?;
+        } else if !progress.report.stale && progress.disposition != "recover" && self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state='requested' AND reconcile_bound IS NULL LIMIT 1", &[])?.is_some()))? {
+            self.write(|e| e.observe_channel_heads(&page, None))?;
+        }
+        Ok(progress)
     }
 
     /// One incoming path for HTTP catch-up and WebSocket frames. Optional
@@ -223,6 +328,7 @@ impl<S: ClientStore> Client<S> {
             report: ApplyReport::default(),
         };
         if self.stale_subscription_page(page) {
+            progress.report.stale = true;
             return Ok(progress);
         }
         let subscribed = self.desired_channels()?;

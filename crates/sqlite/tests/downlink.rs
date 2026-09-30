@@ -394,7 +394,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     cycle
         .complete(
             &mut c,
-            &stamped("a", 0, 1, 5, Some("old")).encode().unwrap(),
+            text(&stamped("a", 0, 1, 5, Some("old"))).as_bytes(),
         )
         .unwrap();
     assert_eq!(
@@ -413,7 +413,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     cycle
         .complete(
             &mut c,
-            &stamped("a", 0, 1, 6, Some("kept")).encode().unwrap(),
+            text(&stamped("a", 0, 1, 6, Some("kept"))).as_bytes(),
         )
         .unwrap();
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "kept");

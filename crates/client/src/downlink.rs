@@ -162,12 +162,39 @@ impl<S: ClientStore> Client<S> {
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn observe_channel_heads(
+        &mut self,
+        page: &axton_core::ChannelPullPage,
+        guards: Option<&[(String, u64, u64)]>,
+    ) -> Result<()> {
+        for (channel, range) in &page.cursors {
+            let Some(state) = self.subscription(channel)? else {
+                continue;
+            };
+            let Some(current) = state.cursor else {
+                continue;
+            };
+            if range.head < current || range.from > current {
+                continue;
+            }
+            if guards.is_some_and(|guards| {
+                !guards
+                    .iter()
+                    .any(|(name, id, _)| name == channel && *id == state.subscription_id)
+            }) {
+                continue;
+            }
+            if self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE channel=? AND subscription_id=? AND reconcile_state='requested' AND reconcile_bound IS NULL", &[serde_json::json!(range.head),serde_json::json!(channel),serde_json::json!(state.subscription_id)])? > 0 { self.mark_bootstrap(channel); }
+        }
+        Ok(())
+    }
     pub(crate) fn apply_channel_page_body(
         &mut self,
         page: &axton_core::ChannelPullPage,
         guards: Option<&[(String, u64, u64)]>,
     ) -> Result<ApplyReport> {
         page.validate()?;
+        self.observe_channel_heads(page, guards)?;
         let mut advances = Vec::new();
         for (channel, range) in &page.cursors {
             let Some(state) = self.subscription(channel)? else {

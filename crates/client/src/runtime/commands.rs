@@ -105,8 +105,8 @@ pub(super) fn execute<S: ClientStore + 'static>(
             serde_json::to_value(client.acknowledge(*sequence, receipt)?)?
         }
         Command::Pull { page } => {
-            let page = PullPage::decode(serde_json::to_string(page)?.as_bytes())?;
-            serde_json::to_value(client.apply_page(page)?)?
+            let page = ChannelPullPage::decode(serde_json::to_string(page)?.as_bytes())?;
+            serde_json::to_value(client.apply_channel_page(page)?)?
         }
         Command::Readiness { key, state } => {
             client.set_readiness(key, *state)?;

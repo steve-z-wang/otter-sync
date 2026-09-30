@@ -37,6 +37,13 @@ pub enum StoreDelivery {
         expected_after: u64,
         page: axton_core::ChannelBootstrapPage,
     },
+    ChannelReconciliation {
+        scope: String,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: axton_core::ChannelBootstrapPage,
+    },
     Bootstrap {
         scope: String,
         subscription_id: u64,
@@ -180,7 +187,15 @@ impl<S: ClientStore> Client<S> {
                 run,
                 expected_after,
                 page,
+            }
+            | StoreDelivery::ChannelReconciliation {
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
             } => self.staged(mode, |e| {
+                e.reconciliation = matches!(delivery, StoreDelivery::ChannelReconciliation { .. });
                 let outcome = if let Some(prepared) = prepared {
                     e.apply_channel_bootstrap_prepared_body(
                         scope,

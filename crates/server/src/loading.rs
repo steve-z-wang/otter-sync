@@ -344,18 +344,21 @@ async fn channel_changes(
     rows: Vec<Invalidation>,
     host: &impl Host,
 ) -> Result<Vec<axton_core::ChannelChange>> {
-    let mut keys = Vec::new();
-    for row in &rows {
-        if row.kind == crate::channel_members::PositionKind::Upsert {
-            keys.push((
-                config
-                    .schema
-                    .record_key(&row.model, &row.identity)
-                    .map_err(storage_invalid)?,
-                row.stamp,
-            ));
-        }
-    }
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let key = config
+                .schema
+                .record_key(&row.model, &row.identity)
+                .map_err(storage_invalid)?;
+            Ok((row, key))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let keys = rows
+        .iter()
+        .filter(|(row, _)| row.kind == crate::channel_members::PositionKind::Upsert)
+        .map(|(row, key)| (key.clone(), row.stamp))
+        .collect();
     let authority = resolve_records(config, owner, models, keys, host).await?;
     let records: BTreeMap<_, _> = authority
         .into_iter()
@@ -370,28 +373,20 @@ async fn channel_changes(
         })
         .collect::<Result<_>>()?;
     rows.into_iter()
-        .map(|row| {
+        .map(|(row, key)| {
             Ok(match row.kind {
                 crate::channel_members::PositionKind::Remove => axton_core::ChannelChange::Remove {
                     channel: row.channel,
                     cursor: row.cursor,
-                    key: RecordKey {
-                        model: row.model,
-                        identity: row.identity,
-                    },
+                    key,
                 },
                 crate::channel_members::PositionKind::Upsert => {
-                    let key = RecordKey {
-                        model: row.model,
-                        identity: row.identity,
-                    }
-                    .encoded()
-                    .map_err(internal)?;
+                    let encoded = key.encoded().map_err(internal)?;
                     axton_core::ChannelChange::Upsert {
                         channel: row.channel,
                         cursor: row.cursor,
                         record: records
-                            .get(&key)
+                            .get(&encoded)
                             .ok_or_else(|| internal("missing resolved authority"))?
                             .clone(),
                     }

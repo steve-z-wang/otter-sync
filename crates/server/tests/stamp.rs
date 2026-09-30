@@ -787,3 +787,70 @@ fn channel_loader_null_and_error_remain_stamped_upserts() {
         assert!(record.state.is_null());
     }
 }
+
+fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
+    let lower = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut schema = serde_json::to_value(config().schema).unwrap();
+    schema["models"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    let cfg = Config::decode(json!({"schema":schema,"loaders":["Entry"],"mutations":[]})).unwrap();
+    let host = Fixed::new(
+        json!([{
+            "channel":"c","cursor":4,"kind":kind,"model":"Entry",
+            "identity":{"id":lower.to_uppercase()},"identityKey":format!("{{\"id\":\"{lower}\"}}"),"stamp":2
+        }]),
+        Value::Null,
+    );
+    let request = if bootstrap {
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"c","after":0,"until":5})
+    } else {
+        json!({"models":{"Entry":1},"cursors":{"c":0}})
+    };
+    // The accepted scan representation is already supported by legacy pull.
+    run(axton_server::process_pull(
+        &cfg,
+        "alice",
+        request.to_string().as_bytes(),
+        &host,
+    ))
+    .unwrap();
+    host.loaded.lock().unwrap().clear();
+    let page = run(axton_server::process_channel_pull(
+        &cfg,
+        "alice",
+        request.to_string().as_bytes(),
+        &host,
+    ))
+    .unwrap();
+    (
+        serde_json::from_str(&page).unwrap(),
+        host.loaded.lock().unwrap().clone(),
+    )
+}
+
+#[test]
+fn channel_uuid_scan_upsert_uses_canonical_identity_in_delta_and_bootstrap() {
+    for bootstrap in [false, true] {
+        let (page, loads) = uuid_channel_scan("upsert", bootstrap);
+        assert_eq!(
+            page["changes"][0]["identity"]["id"],
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
+        assert_eq!(page["changes"][0]["kind"], "upsert");
+        assert_eq!(page["changes"][0]["stamp"], 2);
+        assert_eq!(page["changes"][0]["state"], json!({"text":"t"}));
+        assert!(page["changes"][0].get("error").is_none());
+        assert_eq!(loads, vec![1]);
+    }
+}
+
+#[test]
+fn channel_uuid_scan_removal_uses_canonical_identity_in_delta_and_bootstrap() {
+    for bootstrap in [false, true] {
+        let (page, loads) = uuid_channel_scan("remove", bootstrap);
+        assert_eq!(
+            page["changes"],
+            json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}])
+        );
+        assert!(loads.is_empty());
+    }
+}

@@ -37,12 +37,12 @@ const body = (callId, id, extra = {}) => JSON.stringify({ callId, model: 'Todo',
 const stamps = async id => (await q("SELECT stamp FROM axton_record WHERE model='Todo' AND identity_key=$1", [JSON.stringify({ id })])).map(row => Number(row.stamp));
 const channelState = async () => ({
   channels: await q('SELECT channel, head FROM axton_channel ORDER BY channel'),
-  invalidations: (await q('SELECT count(*)::int AS n FROM axton_invalidation'))[0].n,
-  memberships: (await q('SELECT count(*)::int AS n FROM axton_membership'))[0].n,
+  positions: (await q('SELECT count(*)::int AS n FROM axton_channel_log'))[0].n,
+  memberships: (await q('SELECT count(*)::int AS n FROM axton_channel_member'))[0].n,
 });
 
 before(async () => {
-  for (const sql of (await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')).split(';').map(s => s.trim()).filter(Boolean)) await q(sql);
+  await q(await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8'));
   await q('CREATE TABLE fetch_todo(id text PRIMARY KEY, title text NOT NULL)');
   await q("INSERT INTO fetch_todo(id,title) VALUES('f1','A'),('f2','P'),('f3','R'),('secret','S')");
 });

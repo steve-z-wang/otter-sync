@@ -2,6 +2,7 @@ import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
+import {Pool} from 'pg';
 import * as serverSdk from '../../../packages/server/index.mts';
 import {createBackend,MutationRejected,EngineError} from '../../../packages/server/index.mts';
 import {prisma,prismaDriver} from '../../../packages/postgres/index.mts';
@@ -50,9 +51,12 @@ const to=(page,scope='shared')=>page.cursors[scope].to;
 const count=async table=>Number((await db.$queryRawUnsafe(`SELECT count(*) AS count FROM ${table}`))[0].count);
 const key=id=>`{"id":"${id}"}`;
 const recordStamp=async id=>{const rows=await db.$queryRawUnsafe('SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2','Task',key(id));return rows.length?Number(rows[0].stamp):null;};
-const invalidations=async id=>(await db.$queryRawUnsafe('SELECT channel, cursor, stamp FROM axton_invalidation WHERE identity_key=$1 ORDER BY channel',key(id))).map(r=>[r.channel,Number(r.cursor),Number(r.stamp)]);
+/** The record's upsert positions: [Channel, cursor, the record's current stamp]. */
+const positions=async id=>(await db.$queryRawUnsafe("SELECT l.channel, l.cursor, r.stamp FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1 AND l.kind='upsert' ORDER BY l.channel",key(id))).map(r=>[r.channel,Number(r.cursor),Number(r.stamp)]);
 const head=async channel=>{const rows=await db.$queryRawUnsafe('SELECT head FROM axton_channel WHERE channel=$1',channel);return rows.length?Number(rows[0].head):0;};
-before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await db.$executeRawUnsafe(sql);await db.$executeRawUnsafe('CREATE TABLE business_task(id text PRIMARY KEY,title text NOT NULL)');});
+// Prisma prepares every statement, so the dollar-quoted migration goes through pg in one call.
+const migrate=async()=>{const pool=new Pool({connectionString:process.env.DATABASE_URL});try{await pool.query(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8'));}finally{await pool.end();}};
+before(async()=>{await migrate();await db.$executeRawUnsafe('CREATE TABLE business_task(id text PRIMARY KEY,title text NOT NULL)');});
 after(()=>db.$disconnect());
 test('native exports production runtime',()=>{assert.equal(typeof native.processPush,'function');assert.equal(typeof native.processPull,'function');assert.equal(typeof native.settleExternal,'function');assert.equal(native.publish,undefined);assert.equal(typeof native.validateConfig,'function');
  assert.equal(typeof native.negotiateLive,'function');assert.equal(typeof native.pullLive,'function');
@@ -109,11 +113,11 @@ test('push commits business + compacted publication + exact durable receipt toge
  const request=push('dedup',1,[mutation(1,'first')]);const receipt=await backend.push('alice',request);const calls=called;
  assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
  // Replay is keyed by (clientId, batchSequence): the same frozen bytes and a changed body both return the stored receipt without a handler call, a business write, a publication or a subscriber wake.
- let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_invalidation');
+ let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_channel_log');
  assert.equal(await backend.push('alice',request),receipt);assert.equal(called,calls);
  assert.equal(await backend.push('alice',push('dedup',1,[mutation(1,'changed')])),receipt);assert.equal(called,calls);
  await new Promise(resolve=>setImmediate(resolve));unsubscribe();assert.equal(wakes,0,'replayed receipts must not wake subscribers');
- assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_invalidation'),rows);
+ assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_channel_log'),rows);
  await assert.rejects(()=>backend.push('bob',request),/owner_mismatch/);
  await assert.rejects(()=>backend.push('alice',push('dedup',3,[mutation(1,'gap')])),/gap/);
  const page=await pull();assert.deepEqual(page,{cursors:{shared:{from:0,to:1,head:1}},changes:[{model:'Task',identity:{id:'a'},stamp:1,state:{title:'first'}}]});assert.equal(prepared,2,'the push readback and the pull each prepared the loader once; the replays did not');
@@ -502,29 +506,29 @@ test('slot arguments are plain data; a handler declares with their identity, and
  await backend.push('alice',push('plain',1,[mutation(1,'hello','plain-a')]));
  assert.deepEqual(Object.keys(lastInput.task),['identity','patch']);
  assert.deepEqual(Object.getOwnPropertySymbols(lastInput.task),[],'no hidden record tag');
- assert.deepEqual((await invalidations('plain-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
+ assert.deepEqual((await positions('plain-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
  assert.throws(()=>lastHandles.channel('shared'),/closed/);assert.throws(()=>lastHandles.touch.task({id:'plain-a'}),/closed/);
 });
 test('a handler that declares no membership still returns readback records and touches no channel',async()=>{
  const channels=await count('axton_channel');
  const receipt=JSON.parse(await backend.push('alice',push('quiet',1,[mutation(1,'quiet','quiet-a')])));
  assert.deepEqual(receipt,{batchSequence:1,clientId:'quiet',records:[authority('quiet-a',1,{title:'quiet'})],rejections:[]});
- assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await invalidations('quiet-a'),[]);assert.equal(await count('axton_channel'),channels);
+ assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await positions('quiet-a'),[]);assert.equal(await count('axton_channel'),channels);
  const again=JSON.parse(await backend.push('alice',push('quiet',2,[mutation(2,'quiet','quiet-a')])));assert.deepEqual(again.records,[authority('quiet-a',2,{title:'quiet'})],'every successful change advances the stamp, published or not');
 });
 test('a touched extra record added to a Channel is settled and delivered there, but is not caller authority',async()=>{
  const receipt=JSON.parse(await backend.push('alice',push('extra',1,[mutation(1,'extra','extra-a')])));
  assert.deepEqual(receipt.records,[authority('extra-a',1,{title:'extra'})],'only the uploaded target is read back');assert.equal(await recordStamp('extra-a-extra'),1,'the touched record is still settled');
- assert.deepEqual((await invalidations('extra-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);assert.deepEqual((await invalidations('extra-a-extra')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
+ assert.deepEqual((await positions('extra-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);assert.deepEqual((await positions('extra-a-extra')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
 });
 test('an added record is not a changed one: it is initialised at stamp 1 once, and re-adding a member publishes nothing',async()=>{
  assert.equal(await recordStamp('pub-only'),null,'no metadata before the first enrolment');
  const first=JSON.parse(await backend.push('alice',push('pub-only',1,[mutation(1,'publish-only','pub-only-a')])));
  assert.deepEqual(first.records,[authority('pub-only-a',1,{title:'publish-only'})],'an added record is not a changed one');
- const other=await head('other');assert.deepEqual(await invalidations('pub-only'),[['other',other,1]]);assert.equal(await recordStamp('pub-only'),1,'first enrolment initialises the stamp');
+ const other=await head('other');assert.deepEqual(await positions('pub-only'),[['other',other,1]]);assert.equal(await recordStamp('pub-only'),1,'first enrolment initialises the stamp');
  const second=JSON.parse(await backend.push('alice',push('pub-only',2,[mutation(2,'publish-only','pub-only-b')])));
  assert.deepEqual(second.records,[authority('pub-only-b',1,{title:'publish-only'})]);
- assert.equal(await head('other'),other,'an existing unchanged member is not published again');assert.deepEqual(await invalidations('pub-only'),[['other',other,1]],'the invalidation keeps its cursor');assert.equal(await recordStamp('pub-only'),1,'enrolling an unchanged record never advances it');
+ assert.equal(await head('other'),other,'an existing unchanged member is not published again');assert.deepEqual(await positions('pub-only'),[['other',other,1]],'the invalidation keeps its cursor');assert.equal(await recordStamp('pub-only'),1,'enrolling an unchanged record never advances it');
  const page=await pull('other',0);assert.deepEqual(page.changes.find(c=>c.identity.id==='pub-only'),{model:'Task',identity:{id:'pub-only'},stamp:1,state:null});
  assert.equal(page.changes.some(c=>c.identity.id.startsWith('pub-only-')),false,'the changed records went to shared only');
 });
@@ -533,7 +537,7 @@ test('a loader refusal during push rejects only that mutation; so does a thrown 
  const refusing=make(async call=>{if(call.ids.some(id=>id.id==='ld-forbidden'))throw new MutationRejected('task.forbidden');return readTasks(call);});
  const receipt=JSON.parse(await refusing.push('alice',push('loader-refuse',1,[mutation(1,'ok','ld-ok'),mutation(2,'hidden','ld-forbidden'),mutation(3,'ok','ld-last')])));
  assert.deepEqual(receipt.rejections,[{ordinal:2,code:'task.forbidden'}]);assert.deepEqual(receipt.records,[authority('ld-last',1,{title:'ok'}),authority('ld-ok',1,{title:'ok'})]);
- assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-forbidden'")).length,0,'the refused mutation rolled back its write');assert.equal(await recordStamp('ld-forbidden'),null,'and its stamp');assert.deepEqual(await invalidations('ld-forbidden'),[],'and its publication');
+ assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-forbidden'")).length,0,'the refused mutation rolled back its write');assert.equal(await recordStamp('ld-forbidden'),null,'and its stamp');assert.deepEqual(await positions('ld-forbidden'),[],'and its publication');
  const translated=createBackend({config,database:database(),authenticate,translateRejection:()=>'task.translated',handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{async task(){throw new Error('product read refusal');}}});
  assert.deepEqual(JSON.parse(await translated.push('alice',push('loader-translated',1,[mutation(1,'x','ld-translated')]))).rejections,[{ordinal:1,code:'task.translated'}]);
  const crashing=JSON.parse(await make(async()=>{throw new Error('loader crash');}).push('alice',push('loader-crash',1,[mutation(1,'x','ld-crash')])));
@@ -564,22 +568,22 @@ test('an all-rejected batch settles with no records',async()=>{
 });
 test('advanceStamp increments without a channel: no invalidation, no channel head',async()=>{
  const stamps=await db.$transaction(async tx=>{const storage=store(tx);const ref={model:'Task',identityKey:key('stamped')};return [await storage.call({op:'advanceStamp',...ref}),await storage.call({op:'advanceStamp',...ref})];});
- assert.deepEqual(stamps,[1,2]);assert.equal(await recordStamp('stamped'),2);assert.deepEqual(await invalidations('stamped'),[]);
+ assert.deepEqual(stamps,[1,2]);assert.equal(await recordStamp('stamped'),2);assert.deepEqual(await positions('stamped'),[]);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_channel WHERE channel LIKE 'stamp%'")).length,0);
 });
 test('one push enrolled in two channels carries the same stamp to both and advances each head once',async()=>{
  const before=[await head('shared'),await head('other')];
  const receipt=JSON.parse(await backend.push('alice',push('two-channels',1,[mutation(1,'two','two-a')])));
  assert.deepEqual(receipt.records,[authority('two-a',1,{title:'two'})]);
- assert.deepEqual(await invalidations('two-a'),[['other',before[1]+1,1],['shared',before[0]+1,1]]);
+ assert.deepEqual(await positions('two-a'),[['other',before[1]+1,1],['shared',before[0]+1,1]]);
  assert.deepEqual([await head('shared'),await head('other')],[before[0]+1,before[1]+1]);
 });
 test('an external write advances the stamp on every call; a push re-enrolling an unchanged member neither advances nor publishes it',async()=>{
  const change=()=>external(backend,'other',[{model:'Task',identity:{id:'pub-only'}}]);
  const start=await recordStamp('pub-only');await change();await change();assert.equal(await recordStamp('pub-only'),start+2,'an external notification reports a business change');
- const [[,cursor,stamp]]=await invalidations('pub-only');assert.equal(stamp,start+2);
+ const [[,cursor,stamp]]=await positions('pub-only');assert.equal(stamp,start+2);
  await backend.push('alice',push('pub-only',3,[mutation(3,'publish-only','pub-only-c')]));
- assert.equal(await recordStamp('pub-only'),start+2,'membership alone is distribution');assert.deepEqual(await invalidations('pub-only'),[['other',cursor,start+2]]);
+ assert.equal(await recordStamp('pub-only'),start+2,'membership alone is distribution');assert.deepEqual(await positions('pub-only'),[['other',cursor,start+2]]);
 });
 test('concurrent first publications initialise one stamp of 1 and never overwrite an established one',async()=>{
  const ensure=tx=>store(tx).call({op:'ensureStamp',model:'Task',identityKey:key('ensure-race')});
@@ -592,26 +596,27 @@ test('concurrent first publications initialise one stamp of 1 and never overwrit
  assert.equal(await db.$transaction(ensure),2,'ensureStamp keeps an advanced stamp');
 });
 test('a rolled-back transaction removes a first initialisation together with its publication',async()=>{
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});await storage.call({op:'publish',channel:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),stamp});throw new Error('cancel');}),/cancel/);
- assert.equal(await recordStamp('undone'),null);assert.deepEqual(await invalidations('undone'),[]);assert.equal(await head('undone'),0);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});assert.equal(stamp,1);await storage.call({op:'applyChannelMembers',deltas:[{channel:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),present:true,tags:['t'],publish:true}]});throw new Error('cancel');}),/cancel/);
+ assert.equal(await recordStamp('undone'),null);assert.deepEqual(await positions('undone'),[]);assert.equal(await head('undone'),0);
 });
-test('publish refuses a record without metadata or with a stamp that is not its current one',async()=>{
- await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'publish',channel:'stale',model:'Task',identity:{id:'unstamped'},identityKey:key('unstamped'),stamp:1})),/Record metadata missing/);
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'publish',channel:'stale',model:'Task',identity:{id:'stale'},identityKey:key('stale'),stamp:2});}),/names stamp 2 .* is at stamp 1/);
- assert.equal(await head('stale'),0);assert.deepEqual(await invalidations('stale'),[]);
+test('applyChannelMembers refuses a record without metadata and a kept member without a position',async()=>{
+ const member=(id,publish)=>({channel:'stale',model:'Task',identity:{id},identityKey:key(id),present:true,tags:[],publish});
+ await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'applyChannelMembers',deltas:[member('unstamped',true)]})),/Record metadata missing/);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'applyChannelMembers',deltas:[member('stale',false)]});}),/keeps no upsert position in Channel stale/);
+ assert.equal(await head('stale'),0);assert.deepEqual(await positions('stale'),[]);
 });
 test('scan pairs the invalidation cursor with the current record stamp; a missing record row is a storage defect',async()=>{
  await backend.push('alice',push('join',1,[mutation(1,'published','join-a')]));
- const [[,cursor,stored]]=await invalidations('join-a');assert.equal(stored,1);
+ const [[,cursor,stored]]=await positions('join-a');assert.equal(stored,1);
  // A change that reaches no Channel: the business write and its stamp alone
- // (a member's change through settlement would move the invalidation).
+ // (a member's change through settlement would move its position).
  await db.$transaction(async tx=>{await write(tx,'join-a','quiet');await store(tx).call({op:'advanceStamp',model:'Task',identityKey:key('join-a')});});
- assert.equal(await recordStamp('join-a'),2);assert.deepEqual(await invalidations('join-a'),[['shared',cursor,1]],'no publication: the invalidation row is untouched');
+ assert.equal(await recordStamp('join-a'),2);assert.deepEqual(await positions('join-a'),[['shared',cursor,2]],'no publication: the position is untouched and pairs with the current stamp');
  const page=await pull('shared',cursor-1);
  assert.deepEqual(page.changes[0],{model:'Task',identity:{id:'join-a'},stamp:2,state:{title:'quiet'}},'the original cursor with the current stamp and content');
  const rows=await db.$transaction(tx=>store(tx).call({op:'scan',channel:'shared',after:cursor-1,limit:1}));assert.deepEqual(rows.map(r=>[r.cursor,r.stamp]),[[cursor,2]]);
  // Enrolled first: a scan answers members only.
- await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});await storage.call({op:'setMembership',channel:'orphan',model:'Task',identityKey:key('orphan'),present:true});await storage.call({op:'publish',channel:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),stamp});});
+ await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});assert.equal(stamp,1);await storage.call({op:'applyChannelMembers',deltas:[{channel:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),present:true,tags:[],publish:true}]});});
  // The membership foreign key forbids dropping a member's record row; forge the defect with triggers off.
  await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');await tx.$executeRawUnsafe('DELETE FROM axton_record WHERE identity_key=$1',key('orphan'));});
  await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'scan',channel:'orphan',after:0,limit:50})),/Record metadata missing/);
@@ -782,7 +787,7 @@ test('a version dispatches only to its own handler and a function registers v1',
  assert.deepEqual(seen,[['function','same'],['v1 key','same']],'both registrations reach the same v1 handler');
  assert.deepEqual(shorthand.rejections,[]);assert.deepEqual(explicit.rejections,[]);
  assert.deepEqual(shorthand.records,[authority('reg-a',1,null)]);assert.deepEqual(explicit.records,[authority('reg-a',2,null)],'only the stamp differs');
- assert.deepEqual((await invalidations('reg-a')).map(([channel,,stamp])=>[channel,stamp]),[['registration',2]]);
+ assert.deepEqual((await positions('reg-a')).map(([channel,,stamp])=>[channel,stamp]),[['registration',2]]);
  const two=make({edit:{v1:record('v1'),v2:record('v2')}},[config.mutations[0],{...config.mutations[0],version:2}]);
  await two.push('alice',push('register-dispatch',1,[mutation(1,'from v1','reg-b')]));
  await two.push('alice',push('register-dispatch',2,[{...mutation(1,'from v2','reg-c'),version:2}]));
@@ -799,11 +804,10 @@ test('concurrent same-client delivery with different bodies commits at most one 
 test('fresh framework tables omit request_hash; a table that still carries the column keeps replaying receipts',async()=>{
  const columns=async()=>(await db.$queryRawUnsafe("SELECT column_name FROM information_schema.columns WHERE table_name='axton_client'")).map(row=>row.column_name).sort();
  assert.deepEqual(await columns(),['client_id','owner_id','receipt','sequence']);
- const migration=(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean);
  const before=called;const request=push('legacy-column',1,[mutation(1,'legacy','legacy-column')]);let receipt;
  await db.$executeRawUnsafe('ALTER TABLE axton_client ADD COLUMN request_hash text');
  try{
-  for(const sql of migration)await db.$executeRawUnsafe(sql);
+  await migrate();
   assert.deepEqual(await columns(),['client_id','owner_id','receipt','request_hash','sequence'],'re-applying migration.sql leaves an existing table untouched');
   receipt=await backend.push('alice',request);assert.equal(await backend.push('alice',push('legacy-column',1,[mutation(1,'changed','legacy-column')])),receipt);assert.equal(called,before+1);
   const [row]=await db.$queryRawUnsafe("SELECT request_hash, sequence FROM axton_client WHERE client_id='legacy-column'");assert.equal(row.request_hash,null);assert.equal(Number(row.sequence),1);
@@ -886,7 +890,7 @@ test('notify and bindTransaction are gone; backend.transaction is the only exter
 // #180: a transaction the application opened and owns. `owned` is the caller's
 // own runner (Prisma, Repeatable Read, its own retry loop): AXTON never opens it.
 const owned=async body=>{for(let attempt=1;;attempt++){try{return await db.$transaction(body,{isolationLevel:'RepeatableRead'});}catch(error){if(attempt<4&&isRetryableTransactionError(error))continue;throw error;}}};
-const members=async id=>(await db.$queryRawUnsafe('SELECT channel FROM axton_membership WHERE model=$1 AND identity_key=$2 ORDER BY channel','Task',key(id))).map(r=>r.channel);
+const members=async id=>(await db.$queryRawUnsafe('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel','Task',key(id))).map(r=>r.channel);
 test('backend.publish settles in a caller-owned transaction; its wake, called after commit, reaches a live subscriber once',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
@@ -901,7 +905,7 @@ test('backend.publish settles in a caller-owned transaction; its wake, called af
   return wake;
  });
  assert.equal(await recordStamp('owned-1'),1,'the stamp committed with the caller transaction');
- assert.deepEqual(await invalidations('owned-1'),[['owned',from+1,1]],'one position at that stamp');
+ assert.deepEqual(await positions('owned-1'),[['owned',from+1,1]],'one position at that stamp');
  assert.deepEqual(await members('owned-1'),['owned']);
  await delay(80);assert.equal(woke,0,'the framework does not guess at the caller commit');assert.equal(frames.length,1);
  wake();
@@ -921,7 +925,7 @@ test('a throw after backend.publish rolls back the business row with every AXTON
  }),/after publication/);
  await delay(20);assert.equal(woke,0);
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-rollback'"))[0].count,0n);
- assert.equal(await recordStamp('owned-rollback'),null);assert.deepEqual(await invalidations('owned-rollback'),[]);assert.deepEqual(await members('owned-rollback'),[]);
+ assert.equal(await recordStamp('owned-rollback'),null);assert.deepEqual(await positions('owned-rollback'),[]);assert.deepEqual(await members('owned-rollback'),[]);
  assert.equal(await head('owned'),before);
  unsubscribe();
 });
@@ -938,7 +942,7 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  });
  for(const wake of wakes)wake();
  assert.equal(await recordStamp('owned-savepoint'),null);assert.deepEqual(await members('owned-savepoint'),[]);
- assert.deepEqual(await invalidations('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
+ assert.deepEqual(await positions('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
 });
 test('a conflicted caller transaction retries and its publication commits once',async()=>{
  await backend.transaction(async({tx,channel,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});channel('owned').task.add({id:'owned-race'});});
@@ -962,7 +966,7 @@ test('a conflicted caller transaction retries and its publication commits once',
  assert.equal(bodies,2,'the stale attempt failed inside the publication and the caller ran its body again');
  assert.equal(failures.length,1);assert.ok(isRetryableTransactionError(failures[0]),'the database conflict reaches the caller unwrapped');
  assert.equal(await recordStamp('owned-race'),3,'the concurrent touch and the one committed publication');
- assert.deepEqual(await invalidations('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
+ assert.deepEqual(await positions('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
  await delay(20);assert.equal(woke,0,'no attempt wakes by itself');wake();await delay(0);assert.equal(woke,1);
  unsubscribe();
 });
@@ -976,7 +980,7 @@ test('backend.publish settles the same way in a caller-owned Serializable transa
  },{isolationLevel:'Serializable'});
  wake();
  assert.equal(await recordStamp('owned-serializable'),1);
- assert.deepEqual(await invalidations('owned-serializable'),[['owned',from+1,1]]);
+ assert.deepEqual(await positions('owned-serializable'),[['owned',from+1,1]]);
  assert.deepEqual(await members('owned-serializable'),['owned']);
 });
 test('backend.publish refuses a transaction the framework already owns',async()=>{
@@ -995,7 +999,7 @@ test('a throw inside the backend.publish body settles nothing and releases the c
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-body-throw'"))[0].count,1n,'the caller write commits');
  assert.equal(await recordStamp('owned-body-throw'),1,'only the later publication stamps the record');
  assert.deepEqual(await members('owned-body-throw'),[],'the failed body enrolled nothing');
- assert.deepEqual(await invalidations('owned-body-throw'),[]);assert.equal(await head('owned'),before);
+ assert.deepEqual(await positions('owned-body-throw'),[]);assert.equal(await head('owned'),before);
 });
 test('re-adding an unchanged member keeps its stamp and publishes nothing; a later touch reaches its Channel without another add',async()=>{
  await external(backend,'shared',[{model:'Task',identity:{id:'stamp-probe'}}]);
@@ -1087,7 +1091,7 @@ test('a record republished above the origin leaves the historical interval betwe
  // `moved-55` sits in (50, origin]; republishing it moves its only row above
  // the origin, where the subscription's own delivery covers it.
  await external(backend,'moved',[{model:'Task',identity:{id:'moved-55'}}]);
- assert.ok((await invalidations('moved-55')).some(([channel,cursor])=>channel==='moved'&&cursor>origin));
+ assert.ok((await positions('moved-55')).some(([channel,cursor])=>channel==='moved'&&cursor>origin));
  const second=await bootstrap('moved',first.to,origin);
  assert.equal(second.to,origin,'the interval still completes at the fixed origin');
  assert.equal(second.head,await head('moved'));

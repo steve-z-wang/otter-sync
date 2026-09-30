@@ -53,8 +53,9 @@ const migration = await readFile(
   ),
   "utf8",
 );
+// Prisma runs one statement per call: split on semicolons outside dollar-quoted bodies.
 for (const sql of migration
-  .split(";")
+  .match(/(?:\$\$[\s\S]*?\$\$|[^;])+/g)!
   .map((x) => x.trim())
   .filter(Boolean))
   await db.$executeRawUnsafe(sql);

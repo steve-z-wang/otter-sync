@@ -244,10 +244,31 @@ test('the PostgreSQL persistence answers the persistence half through a two-meth
  for(const op of ['handle','handleAction','handleLoad','load'])
   await assert.rejects(()=>bound.call(entry(op).request),/Unsupported persistence operation/);
  await assert.rejects(()=>bound.call({op:'vacuum'}),/Unsupported persistence operation vacuum/);
- // The tagged membership tables do not exist in this schema yet: a Channel
- // operation fails loudly rather than answering from the retired table.
- for(const op of ['lockChannels','readChannelMembers','applyChannelMembers'])
-  await assert.rejects(()=>bound.call(entry(op).request),new RegExp(`${op} is not implemented by the PostgreSQL persistence yet`));
+ // The Channel operations answer through the same two methods.
+ assert.equal(await bound.call(entry('lockChannels').request),null);
+ assert.deepEqual(await bound.call(entry('readChannelMembers').request),[],'no rows, no members');
+});
+
+test('the PostgreSQL persistence refuses a malformed Channel request before any statement runs',async()=>{
+ const seen=[];const driver={transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push(sql);return [];}};
+ const read=entry('readChannelMembers').request,apply=entry('applyChannelMembers').request;
+ const [kept,removed]=apply.deltas;
+ for(const [request,pattern] of [
+  [{op:'lockChannels',channels:[]},/at least one Channel/],
+  [{op:'lockChannels',channels:['a','a']},/repeats/],
+  [{op:'lockChannels',channels:[' ']},/Invalid membership channel/],
+  [{...read,extra:1},/Unknown readChannelMembers field extra/],
+  [{...read,explicitKeys:[{model:'Task'}]},/identityKey must be a non-empty string/],
+  [{...read,tags:[1]},/tags must be an array of strings/],
+  [{...apply,deltas:[{...kept,stamp:1}]},/Unknown member delta field stamp/],
+  [{...apply,deltas:[{...removed,publish:false}]},/absent member delta/],
+  [{...apply,deltas:[{...removed,tags:['x']}]},/absent member delta/],
+  [{...apply,deltas:[kept,kept]},/names a pair twice/],
+ ]){
+  seen.length=0;
+  await assert.rejects(()=>answer(driver,'tx',request),pattern);
+  assert.deepEqual(seen,[],`${pattern}: no statement`);
+ }
 });
 
 test('a published position wakes its Channel after commit, a kept one does not, and a settlement conflict retries the whole transaction',async()=>{
@@ -285,7 +306,7 @@ test('the PostgreSQL persistence validates record requests and the rows it answe
   assert.deepEqual(await answer(driver,'tx',members),[]);
   assert.deepEqual(seen.map(([sql,params])=>[sql.split(/\s+/).slice(0,3).join(' '),params]),[
    ['UPDATE axton_record SET',['Task',lock.identityKey]],
-   ['SELECT channel FROM',['Task',members.identityKey]],
+   ['SELECT m.channel FROM',['Task',members.identityKey]],
   ]);
  }
  {

@@ -41,7 +41,7 @@ test("installed client and backend: local writes survive reopening, then sync", 
 
     // The backend: framework tables from the installed migration, one application table.
     const migration = await readFile(createRequire(import.meta.url).resolve("@axtonjs/postgres/migration.sql"), "utf8");
-    for (const statement of migration.split(";").map((s) => s.trim()).filter(Boolean)) await pool.query(statement);
+    await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
     await pool.query("CREATE TABLE note (id text PRIMARY KEY, text text NOT NULL)");
     const mutations: Mutations<PgClient> = {
       async addNote({ args, ctx }) {

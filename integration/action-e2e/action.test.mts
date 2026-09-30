@@ -861,8 +861,8 @@ test("Model Fetch reads through the real Loader: stored by default, shared only 
     await fixture.pool.query("INSERT INTO action_e2e_todo(id,title) VALUES('fetch-a','Fetched A'),('fetch-b','Preview B')");
     const note = "0190c3a1-0000-7000-8000-00000000f153";
     await fixture.pool.query("INSERT INTO action_e2e_note(id,body,mood,created_at,tag) VALUES($1,'noted','busy','2026-03-04T05:06:07.000Z',NULL)", [note]);
-    const invalidations = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_invalidation")).rows[0].n);
-    const memberships = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_membership")).rows[0].n);
+    const invalidations = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_channel_log")).rows[0].n);
+    const memberships = async () => Number((await fixture.pool.query("SELECT count(*)::int AS n FROM axton_channel_member")).rows[0].n);
     const published = await invalidations();
     const members = await memberships();
     client = await GeneratedClient.open({ path: join(directory, "client.sqlite"), server: server() });

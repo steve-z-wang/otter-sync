@@ -153,7 +153,7 @@ export async function createFixture() {
     get proxy() { return proxy!; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
-      for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
+      await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
       await pool.query("CREATE TABLE load_e2e_item(id text PRIMARY KEY, project text NOT NULL, title text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_tag(id text PRIMARY KEY, project text NOT NULL, label text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_ping(id bigserial PRIMARY KEY, note text NOT NULL)");

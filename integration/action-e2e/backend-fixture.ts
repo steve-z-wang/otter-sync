@@ -196,7 +196,7 @@ export async function createFixture() {
     set conflictUpdates(value: number) { conflictUpdates = value; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
-      for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
+      await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
       await pool.query("CREATE TABLE action_e2e_todo(id text PRIMARY KEY,title text NOT NULL)");
       await pool.query("CREATE TABLE action_e2e_note(id text PRIMARY KEY,body text NOT NULL,mood text NOT NULL,created_at text NOT NULL,tag text)");
       await pool.query("CREATE TABLE action_e2e_outbox(id bigserial PRIMARY KEY,recipient text NOT NULL,subject text NOT NULL,body text NOT NULL)");

@@ -21,7 +21,7 @@ const schema={enums:[],models:[{name:'Task',identity:['id'],fields:[{name:'id',t
 const config={schema,mutations:[{name:'edit',version:1,slots:[{name:'task',model:'Task',operation:'update',cardinality:'single',allowedPatchFields:['title']}]}]};
 const authenticate=async req=>req.headers.authorization==='Bearer alice'?'alice':null;
 const key=id=>JSON.stringify({id});
-before(async()=>{for(const sql of (await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8')).split(';').map(x=>x.trim()).filter(Boolean))await q(sql);await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');
+before(async()=>{await q(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8'));await q('CREATE TABLE IF NOT EXISTS conformance_task(id text PRIMARY KEY,title text NOT NULL)');
  // The lock-then-recheck races (#202). No foreign keys: a key check would make
  // even the old level fail serialization, hiding the stale re-check.
  for(const sql of ['CREATE TABLE IF NOT EXISTS race_book(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_author(id text PRIMARY KEY,book_id text NOT NULL)','CREATE TABLE IF NOT EXISTS race_archive(author_id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_post(id text PRIMARY KEY)','CREATE TABLE IF NOT EXISTS race_star(id text PRIMARY KEY,post_id text NOT NULL)'])await q(sql);
@@ -113,6 +113,8 @@ for(const shim of shims){
  const {database}=shim;const {driver}=database;
  const inTx=body=>driver.transaction(tx=>body(tx,(sql,params=[])=>driver.query(tx,sql,params),r=>answer(driver,tx,r)));
  const p=name=>`${shim.name}-${name}`;
+ /** One final member state, as settlement hands it to applyChannelMembers. */
+ const member=(channel,id,{present=true,tags=[],publish=true}={})=>({channel,model:'Task',identity:{id},identityKey:key(id),present,tags,publish});
  test(`[${shim.name}] call claims commit with business writes and replay without overwriting the original`,async()=>{
   const id=p('call-commit'), row=p('call-row');
   const claim={op:'claimCall',owner:'alice',callId:id,request:'{"name":"first"}'};
@@ -210,7 +212,7 @@ for(const shim of shims){
   const ref={model:'Task',identityKey:key(p('stamp'))};
   assert.deepEqual(await inTx(async(tx,_,a)=>[await a({op:'advanceStamp',...ref}),await a({op:'advanceStamp',...ref})]),[1,2]);
   assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[ref.identityKey]),[{stamp:2}]);
-  assert.deepEqual(await q('SELECT * FROM axton_invalidation WHERE identity_key=$1',[ref.identityKey]),[]);
+  assert.deepEqual(await q('SELECT l.* FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1',[ref.identityKey]),[]);
   const race={model:'Task',identityKey:key(p('race'))};
   const ensure=()=>inTx((tx,_,a)=>a({op:'ensureStamp',...race}));
   assert.deepEqual(await Promise.all([ensure(),ensure(),ensure()]),[1,1,1],'concurrent first publications agree on 1 (serialization retries)');
@@ -218,34 +220,39 @@ for(const shim of shims){
   await inTx((tx,_,a)=>a({op:'advanceStamp',...race}));
   assert.equal(await ensure(),2);
  });
- test(`[${shim.name}] publish allocates only the channel cursor at the record's current stamp and refuses a missing or stale stamp`,async()=>{
-  const id=p('pub');const ref={model:'Task',identity:{id},identityKey:key(id)};
-  await assert.rejects(()=>inTx((tx,_,a)=>a({op:'publish',channel:p('ch'),...ref,stamp:1})),/Record metadata missing/);
-  const published=await inTx(async(tx,_,a)=>{const stamp=await a({op:'ensureStamp',model:'Task',identityKey:ref.identityKey});return a({op:'publish',channel:p('ch'),...ref,stamp});});
-  assert.deepEqual(published,{cursor:1,stamp:1});
-  await assert.rejects(()=>inTx((tx,_,a)=>a({op:'publish',channel:p('ch'),...ref,stamp:5})),/names stamp 5 .* is at stamp 1/);
-  assert.deepEqual(await q('SELECT channel,cursor::int AS cursor,stamp::int AS stamp,identity FROM axton_invalidation WHERE identity_key=$1',[ref.identityKey]),[{channel:p('ch'),cursor:1,stamp:1,identity:{id}}]);
-  assert.equal(await inTx((tx,_,a)=>a({op:'head',channel:p('ch')})),1);
+ test(`[${shim.name}] applyChannelMembers reserves one consecutive range per Channel in delta order, answers a kept member's position and refuses a record without metadata`,async()=>{
+  const [a,b]=[p('range-a'),p('range-b')];const [x,y,z]=[p('rx'),p('ry'),p('rz')];
+  const apply=deltas=>inTx((tx,_,f)=>f({op:'applyChannelMembers',deltas}));
+  const at=positions=>positions.map(r=>[r.channel,JSON.parse(r.identityKey).id,r.cursor,r.kind]);
+  await assert.rejects(()=>apply([member(a,x)]),/Record metadata missing/);
+  assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[a]),[],'the refused call created no Channel');
+  await inTx(async(tx,_,f)=>{for(const id of [x,y,z])await f({op:'ensureStamp',model:'Task',identityKey:key(id)});});
+  assert.deepEqual(at(await apply([member(a,x,{tags:['t1']}),member(a,y),member(b,z,{tags:['t1','t2']})])),[[a,x,1,'upsert'],[a,y,2,'upsert'],[b,z,1,'upsert']]);
+  assert.deepEqual(at(await apply([member(a,x,{tags:['t2'],publish:false}),member(a,y,{present:false}),member(a,z),member(b,z,{tags:['t1','t2'],publish:false})])),
+   [[a,x,1,'upsert'],[a,y,3,'remove'],[a,z,4,'upsert'],[b,z,1,'upsert']],'kept deltas answer their positions; published ones continue each range');
+  assert.deepEqual(await q('SELECT channel,head::int AS head FROM axton_channel WHERE channel = ANY($1) ORDER BY channel',[[a,b]]),[{channel:a,head:4},{channel:b,head:1}]);
+  const read=await inTx((tx,_,f)=>f({op:'readChannelMembers',channel:a,explicitKeys:[x,y,z].map(id=>({model:'Task',identityKey:key(id)})),tags:[]}));
+  assert.deepEqual(read.map(r=>[JSON.parse(r.identityKey).id,r.tags]).sort(),[[x,['t2']],[z,[]]],'exactly the delta tags; the removed member is gone');
+  assert.deepEqual(await q('SELECT cursor::int,kind FROM axton_channel_log WHERE channel=$1 ORDER BY cursor',[a]),[{cursor:1,kind:'upsert'},{cursor:3,kind:'remove'},{cursor:4,kind:'upsert'}]);
+  assert.deepEqual(await q('SELECT name FROM axton_channel_tag WHERE channel=$1 ORDER BY name',[a]),[{name:'t2'}],'t1 lost its last member and was collected');
  });
  test(`[${shim.name}] a thrown body rolls back a first initialisation together with its publication`,async()=>{
   const id=p('undone');
-  await assert.rejects(()=>inTx(async(tx,_,a)=>{const stamp=await a({op:'ensureStamp',model:'Task',identityKey:key(id)});await a({op:'publish',channel:p('undone'),model:'Task',identity:{id},identityKey:key(id),stamp});throw new Error('cancel');}),/cancel/);
+  await assert.rejects(()=>inTx(async(tx,_,f)=>{await f({op:'ensureStamp',model:'Task',identityKey:key(id)});await f({op:'applyChannelMembers',deltas:[member(p('undone'),id,{tags:['t']})]});throw new Error('cancel');}),/cancel/);
   assert.deepEqual(await q('SELECT * FROM axton_record WHERE identity_key=$1',[key(id)]),[]);
-  assert.deepEqual(await q('SELECT * FROM axton_invalidation WHERE identity_key=$1',[key(id)]),[]);
+  assert.deepEqual(await q('SELECT * FROM axton_channel_log WHERE channel=$1',[p('undone')]),[]);
+  assert.deepEqual(await q('SELECT * FROM axton_channel_tag WHERE channel=$1',[p('undone')]),[]);
   assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[p('undone')]),[]);
  });
- test(`[${shim.name}] scan answers members only before its limit, pairs the invalidation cursor with the current record stamp and reports missing metadata`,async()=>{
+ test(`[${shim.name}] scan answers upsert positions only before its limit, pairs each cursor with the current record stamp and reports missing metadata`,async()=>{
   const channel=p('scan');const [id,gone,other]=[p('scan'),p('scan-gone'),p('scan-other')];
-  const set=(member,present)=>({op:'setMembership',channel,model:'Task',identityKey:key(member),present});
-  // Enrolled first: a scan answers members only.
-  await inTx(async(tx,_,a)=>{for(const member of [gone,other,id]){const stamp=await a({op:'ensureStamp',model:'Task',identityKey:key(member)});await a(set(member,true));await a({op:'publish',channel,model:'Task',identity:{id:member},identityKey:key(member),stamp});}await a({op:'advanceStamp',model:'Task',identityKey:key(id)});});
-  const scan=(after=0,limit=50)=>inTx((tx,_,a)=>a({op:'scan',channel,after,limit}));
+  await inTx(async(tx,_,f)=>{for(const m of [gone,other,id])await f({op:'ensureStamp',model:'Task',identityKey:key(m)});await f({op:'applyChannelMembers',deltas:[gone,other,id].map(m=>member(channel,m))});await f({op:'advanceStamp',model:'Task',identityKey:key(id)});});
+  const scan=(after=0,limit=50)=>inTx((tx,_,f)=>f({op:'scan',channel,after,limit}));
   assert.deepEqual((await scan()).map(r=>r.identity.id),[gone,other,id]);
-  await inTx((tx,_,a)=>a(set(gone,false)));
-  await inTx((tx,_,a)=>a(set(other,false)));
-  assert.deepEqual(await scan(0,1),[{channel,cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'removed rows are filtered before the limit');
-  assert.deepEqual((await q('SELECT cursor::int FROM axton_invalidation WHERE channel=$1 ORDER BY cursor',[channel])).map(r=>r.cursor),[1,2,3],'and retained');
-  // The membership foreign key forbids dropping a member's record row; forge the defect with triggers off.
+  await inTx((tx,_,f)=>f({op:'applyChannelMembers',deltas:[member(channel,gone,{present:false}),member(channel,other,{present:false})]}));
+  assert.deepEqual(await scan(0,1),[{channel,cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'remove positions are filtered before the limit');
+  assert.deepEqual((await q('SELECT cursor::int,kind FROM axton_channel_log WHERE channel=$1 ORDER BY cursor',[channel])).map(r=>[r.cursor,r.kind]),[[3,'upsert'],[4,'remove'],[5,'remove']],'one compacted row per pair');
+  // The log's foreign key forbids dropping a record row; forge the defect with triggers off.
   await inTx(async(tx,query)=>{await query('SET LOCAL session_replication_role = replica');await query('DELETE FROM axton_record WHERE identity_key=$1',[key(id)]);});
   await assert.rejects(()=>scan(),/Record metadata missing/);
  });
@@ -272,52 +279,57 @@ for(const shim of shims){
   assert.equal(await first,10);assert.equal(bodies,2);
   assert.equal(Number((await q('SELECT head FROM axton_channel WHERE channel=$1',[channel]))[0].head),11);
  });
- test(`[${shim.name}] membership adds, lists and removes idempotently, needs record metadata and never allocates a cursor`,async()=>{
-  const id=p('member');const rec={model:'Task',identityKey:key(id)};
+ test(`[${shim.name}] Channel operations add, read and remove members idempotently, need record metadata and create no Channel before a position`,async()=>{
+  const id=p('member');const rec={model:'Task',identityKey:key(id)};const tagged=p('member-tagged');
   const [a,b,c]=[p('member-a'),p('member-b'),p('member-c')];
-  const set=(channel,present)=>({op:'setMembership',channel,...rec,present});
+  const apply=(...deltas)=>inTx((tx,_,x)=>x({op:'applyChannelMembers',deltas}));
+  const read=(channel,ids,tags=[])=>inTx((tx,_,x)=>x({op:'readChannelMembers',channel,explicitKeys:ids.map(i=>({model:'Task',identityKey:key(i)})),tags})).then(rows=>rows.map(r=>[JSON.parse(r.identityKey).id,[...r.tags].sort()]).sort());
   const heads=async()=>Object.fromEntries((await q('SELECT channel,head::int AS head FROM axton_channel WHERE channel = ANY($1)',[[a,b,c]])).map(r=>[r.channel,r.head]));
   assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),null,'an absent record locks nothing');
   assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[]);
-  assert.equal(await inTx((tx,_,x)=>x(set(a,false))),null,'removing a non-member of an absent record is a no-op');
-  // Each tool reports the violation its own way (drizzle wraps it as the cause).
-  const foreignKey=error=>{for(let e=error;e;e=e.cause)if(/foreign key/.test(e.message))return true;return false;};
-  await assert.rejects(()=>inTx((tx,_,x)=>x(set(a,true))),foreignKey,'a member needs its record row');
+  assert.equal(await inTx((tx,_,x)=>x({op:'lockChannels',channels:[a,b]})),null,'locking absent Channels is a no-op');
+  assert.deepEqual(await heads(),{},'and creates none');
+  assert.deepEqual(await read(a,[id],['t']),[]);
+  await assert.rejects(()=>apply(member(a,id)),/Record metadata missing/,'a member needs its record row');
   assert.deepEqual(await q('SELECT * FROM axton_record WHERE identity_key=$1',[rec.identityKey]),[],'neither lock nor membership creates the record row');
   assert.deepEqual(await heads(),{},'the refused enrolment rolled its channel row back');
   assert.equal(await inTx((tx,_,x)=>x({op:'ensureStamp',...rec})),1);
-  assert.deepEqual(await inTx(async(tx,_,x)=>{for(const ch of [b,a,a])assert.equal(await x(set(ch,true)),null);return x({op:'memberships',...rec});}),[a,b],'duplicate insert is idempotent; the answer is sorted and unique');
-  assert.deepEqual(await heads(),{[a]:0,[b]:0},'enrolment creates the channel at head zero');
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a,b],'membership survives into a new transaction');
-  assert.deepEqual(await inTx(async(tx,_,x)=>{await x(set(b,false));await x(set(b,false));await x(set(c,false));return x({op:'memberships',...rec});}),[a],'duplicate delete and removing a non-member are no-ops');
-  assert.deepEqual(await q('SELECT channel FROM axton_membership WHERE identity_key=$1',[rec.identityKey]),[{channel:a}]);
-  assert.deepEqual(await heads(),{[a]:0,[b]:0},'removal neither increments nor deletes a channel head');
+  assert.equal(await inTx((tx,_,x)=>x({op:'ensureStamp',model:'Task',identityKey:key(tagged)})),1);
+  await apply(member(a,id),member(a,tagged,{tags:['t','u']}),member(b,id));
+  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a,b],'the answer is sorted and unique');
+  assert.deepEqual(await heads(),{[a]:2,[b]:1},'a first member takes the first position of a new Channel');
+  assert.equal(await inTx((tx,_,x)=>x({op:'lockChannels',channels:[a,b]})),null);
+  assert.deepEqual(await read(a,[id,id,tagged],['t']),[[id,[]],[tagged,['t','u']]],'named and tagged, each once with its complete tags');
+  assert.deepEqual(await read(a,[],['u']),[[tagged,['t','u']]]);
+  assert.deepEqual(await apply(member(a,id,{publish:false})).then(r=>r.map(x=>x.cursor)),[1],'an unchanged member keeps its position');
+  assert.deepEqual(await heads(),{[a]:2,[b]:1});
+  await apply(member(b,id,{present:false}));
+  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a]);
+  assert.deepEqual(await heads(),{[a]:2,[b]:2},'a removal takes a position; it never rewinds or deletes a head');
+  assert.deepEqual(await read(b,[id]),[],'and removing it again finds nothing to remove');
   assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),1,'the lock answers the current stamp');
   assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[rec.identityKey]),[{stamp:1}],'and preserves it');
   assert.equal(await inTx((tx,_,x)=>x({op:'advanceStamp',...rec})),2);
   assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),2);
-  assert.deepEqual(await q('SELECT * FROM axton_invalidation WHERE identity_key=$1',[rec.identityKey]),[],'membership alone publishes nothing');
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'publish',channel:a,model:'Task',identity:{id},identityKey:rec.identityKey,stamp:2})),{cursor:1,stamp:2},'publication allocates the first real position');
-  await inTx(async(tx,_,x)=>{await x(set(a,true));await x(set(a,false));await x(set(a,true));});
-  assert.deepEqual(await heads(),{[a]:1,[b]:0},'re-enrolment never resets or advances a published head');
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a]);
  });
- test(`[${shim.name}] savepoint and transaction rollback restore membership relationships`,async()=>{
+ test(`[${shim.name}] savepoint and transaction rollback restore members, tags, positions and heads`,async()=>{
   const id=p('member-undo');const rec={model:'Task',identityKey:key(id)};
   const [a,b,c]=[p('undo-a'),p('undo-b'),p('undo-c')];
-  const set=(channel,present)=>({op:'setMembership',channel,...rec,present});
+  const apply=(x,...deltas)=>x({op:'applyChannelMembers',deltas});
   const members=x=>x({op:'memberships',...rec});
-  await inTx(async(tx,_,x)=>{await x({op:'ensureStamp',...rec});await x(set(a,true));});
+  const tables=async()=>({log:await q('SELECT channel,cursor::int,kind FROM axton_channel_log WHERE channel = ANY($1) ORDER BY channel',[[a,b,c]]),tags:await q('SELECT channel,name FROM axton_channel_tag WHERE channel = ANY($1) ORDER BY channel,name',[[a,b,c]]),heads:await q('SELECT channel,head::int FROM axton_channel WHERE channel = ANY($1) ORDER BY channel',[[a,b,c]])});
+  await inTx(async(tx,_,x)=>{await x({op:'ensureStamp',...rec});await apply(x,member(a,id,{tags:['keep']}));});
+  const before=await tables();
   await inTx(async(tx,_,x)=>{
    await x({op:'savepoint',ordinal:1});
-   await x(set(b,true));await x(set(a,false));
+   await apply(x,member(a,id,{present:false}),member(b,id,{tags:['new']}));
    assert.deepEqual(await members(x),[b]);
    await x({op:'rollback',ordinal:1});await x({op:'release',ordinal:1});
    assert.deepEqual(await members(x),[a],'the savepoint restored both edits');
   });
-  await assert.rejects(()=>inTx(async(tx,_,x)=>{await x(set(a,false));await x(set(c,true));assert.deepEqual(await members(x),[c]);throw new Error('cancel');}),/cancel/);
-  assert.deepEqual(await q('SELECT channel FROM axton_membership WHERE identity_key=$1',[rec.identityKey]),[{channel:a}],'a rolled-back transaction restores the relationship it removed and drops the one it added');
-  assert.deepEqual(await q('SELECT channel FROM axton_channel WHERE channel = ANY($1)',[[b,c]]),[],'channels created only by rolled-back enrolments are gone');
+  await assert.rejects(()=>inTx(async(tx,_,x)=>{await apply(x,member(a,id,{present:false}),member(c,id));assert.deepEqual(await members(x),[c]);throw new Error('cancel');}),/cancel/);
+  assert.deepEqual(await q('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key=$1',[rec.identityKey]),[{channel:a}],'a rolled-back transaction restores the relationship it removed and drops the one it added');
+  assert.deepEqual(await tables(),before,'tags, positions and heads as before; channels created only by rolled-back enrolments are gone');
   assert.deepEqual(await inTx((tx,_,x)=>members(x)),[a]);
  });
  test(`[${shim.name}] a membership-only writer's no-op record UPDATE makes a stale-snapshot writer of the same record retry`,async()=>{
@@ -343,7 +355,7 @@ for(const shim of shims){
     return x({op:'advanceStamp',...rec});
    });
    await Promise.race([inside,writerB.then(()=>{throw new Error('B finished before its snapshot was held');})]);
-   await writerA(async(tx,_,x)=>{if(guard)assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'setMembership',channel,...rec,present:true});});
+   await writerA(async(tx,_,x)=>{if(guard)assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'applyChannelMembers',deltas:[{channel,...rec,identity:JSON.parse(rec.identityKey),present:true,tags:[],publish:true}]});});
    release();
    const stamp=await writerB;
    return {seen,stamp,channel,rec};
@@ -385,7 +397,7 @@ for(const shim of shims){
    return x({op:'advanceStamp',...rec});
   });
   await bSnapshot;
-  const writerA=inTx(async(tx,_,x)=>{assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'setMembership',channel,...rec,present:true});locked();await aGate;});
+  const writerA=inTx(async(tx,_,x)=>{assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'applyChannelMembers',deltas:[{channel,...rec,identity:JSON.parse(rec.identityKey),present:true,tags:[],publish:true}]});locked();await aGate;});
   let blocked=false;
   for(let attempt=0;attempt<200&&!blocked;attempt++){
    const rows=await q('SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1',[pid]);

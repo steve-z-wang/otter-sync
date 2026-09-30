@@ -44,7 +44,9 @@ const openShims = () => {
   };
 };
 before(async () => {
-  for (const sql of (await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')).split(';').map(s => s.trim()).filter(Boolean)) await db.$executeRawUnsafe(sql);
+  // Prisma prepares every statement, so the dollar-quoted file goes through pg in one call.
+  const migrate = new Pool({ connectionString: process.env.DATABASE_URL });
+  try { await migrate.query(await readFile(new URL('../../../packages/postgres/migration.sql', import.meta.url), 'utf8')); } finally { await migrate.end(); }
   await db.$executeRawUnsafe('CREATE TABLE action_todo(id text PRIMARY KEY,title text NOT NULL)');
   await db.$executeRawUnsafe('CREATE TABLE action_counter(id integer PRIMARY KEY,n integer NOT NULL)');
   await db.$executeRawUnsafe('INSERT INTO action_counter(id,n) VALUES(1,0)');

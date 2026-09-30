@@ -63,7 +63,8 @@ export async function createExample() {
         new URL("../../../../packages/postgres/migration.sql", import.meta.url),
         "utf8",
       );
-      for (const sql of migration.split(";").map((s) => s.trim()).filter(Boolean))
+      // Prisma runs one statement per call: split on semicolons outside dollar-quoted bodies.
+      for (const sql of migration.match(/(?:\$\$[\s\S]*?\$\$|[^;])+/g)!.map((s) => s.trim()).filter(Boolean))
         await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
@@ -174,7 +175,7 @@ export async function createExample() {
     /** The one retained position `id` has on `channel`, or `null`; a later publication replaces it in place. */
     async positionOf(channel: string, id: string): Promise<number | null> {
       const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
-        'SELECT cursor FROM axton_invalidation WHERE channel = $1 AND model = \'Entry\' AND identity_key = $2',
+        "SELECT l.cursor FROM axton_channel_log l JOIN axton_record r ON r.id = l.record_id WHERE l.channel = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
         channel,
         JSON.stringify({ id }),
       );
@@ -187,7 +188,7 @@ export async function createExample() {
      */
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_membership, axton_invalidation, axton_channel, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_channel_member_tag, axton_channel_member, axton_channel_tag, axton_channel_log, axton_channel, axton_record, axton_client, axton_call",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();

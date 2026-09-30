@@ -96,6 +96,7 @@ void main() {
   var requests = 0;
   final gates = <int, Completer<void>>{};
   final failing = <int>{};
+  final arrivals = <int, Completer<void>>{};
 
   Future<Client> open() => Client.open(
     path: '${directory.path}/db',
@@ -122,6 +123,7 @@ void main() {
     requests = 0;
     gates.clear();
     failing.clear();
+    arrivals.clear();
     directory = await Directory.systemTemp.createTemp('axton-query-once-');
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     served = server.listen((request) async {
@@ -132,6 +134,7 @@ void main() {
       }
       final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
       final n = ++requests;
+      arrivals[n]?.complete();
       await gates[n]?.future;
       if (failing.contains(n)) {
         request.response.statusCode = 500;
@@ -269,17 +272,29 @@ void main() {
     final connection = await connect(client);
     final gate = Completer<void>();
     gates[1] = gate;
+    final firstArrived = Completer<void>();
+    arrivals[1] = firstArrived;
     final older = once(client);
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    await client.invalidateQuery('GetTodos', 1, {'project': 'p'});
-    final newer = once(client);
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-    expect(requests, 2);
-    gate.complete();
-    expect((await older)['tags'], ['v1', 'x']);
-    expect((await newer)['tags'], ['v2', 'x']);
-    expect((await once(client))['tags'], ['v2', 'x']);
-    await connection.close();
+    // Observe every caller immediately so failure cleanup cannot leave an
+    // unhandled result while another request is held.
+    final settled = <Future<void>>[
+      older.then<void>((_) {}, onError: (Object _) {}),
+    ];
+    try {
+      await firstArrived.future;
+      await client.invalidateQuery('GetTodos', 1, {'project': 'p'});
+      final newer = once(client);
+      settled.add(newer.then<void>((_) {}, onError: (Object _) {}));
+      expect((await newer)['tags'], ['v2', 'x']);
+      expect(requests, 2);
+      gate.complete();
+      expect((await older)['tags'], ['v1', 'x']);
+      expect((await once(client))['tags'], ['v2', 'x']);
+    } finally {
+      if (!gate.isCompleted) gate.complete();
+      await connection.close();
+      await Future.wait(settled);
+    }
   });
 
   test('once and invalidate refuse an active transaction callback', () async {

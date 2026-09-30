@@ -133,6 +133,9 @@ Map<String, Object?> page(String text, int cursor, int stamp) => {
   },
   'changes': [
     {
+      'kind': 'upsert',
+      'channel': 'scope',
+      'cursor': cursor + 1,
       'model': 'Entry',
       'identity': {'id': 'live'},
       'stamp': stamp,
@@ -151,7 +154,7 @@ Map<String, Object?> loaded(Map body, int head) => {
   'to': body['until'],
   'until': body['until'],
   'head': head,
-  'records': <Object>[],
+  'changes': <Object>[],
 };
 
 Future<void> until(Future<bool> Function() predicate, String what) async {
@@ -905,6 +908,9 @@ void main() {
             },
             'changes': [
               {
+                'kind': 'upsert',
+                'channel': 'scope',
+                'cursor': 3,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
                 'stamp': 3,

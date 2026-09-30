@@ -61,10 +61,38 @@ Future<void> enrollment(sdk.SyncServer server, String path, String libraryPath) 
   }
 }
 
+Future<void> removal(sdk.SyncServer server, String path, String libraryPath) async {
+  var reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath, server: server);
+  try {
+    final first = await reader.scopes.subscribe('items:dart-release');
+    final second = await reader.scopes.subscribe('items:dart-release-other');
+    for (final subscription in [first, second]) {
+      await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
+    }
+    await (await reader.loads.projectItems(project: 'dart-release')).wait();
+    stdout.writeln('Dart release: loaded');
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while ((await reader.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=1", parameters: ['items:dart-release-other'])).isEmpty) {
+      check(DateTime.now().isBefore(deadline), 'second hold arrived');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    stdout.writeln('Dart release: second held');
+    await reader.models.item.watch(where: const app.ItemFilter(project: app.Present('dart-release')))
+      .firstWhere((items) => items.length == 1 && items.single.id == 'dart-release-2')
+      .timeout(const Duration(seconds: 20));
+    await reader.close();
+    reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath);
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-1')) == null, 'released content stays absent offline');
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Channel hold survives offline');
+    stdout.writeln('Dart Load removal: passed');
+  } finally { await reader.close(); }
+}
+
 Future<void> main(List<String> args) async {
   final [url, path, libraryPath, ...mode] = args;
   final server = sdk.SyncServer(url: url, token: () => 'alice');
   if (mode case ['enroll']) return enrollment(server, path, libraryPath);
+  if (mode case ['remove']) return removal(server, path, libraryPath);
   var hookRuns = 0;
   Future<void> hook(app.GeneratedTransaction tx, List<app.StoreChange<app.ItemIdentity, app.Item>> changes) async {
     hookRuns++;

@@ -32,8 +32,7 @@ struct Invalidation {
     /// *current* stamp instead (see `Tables::stamps`); this one only says how far
     /// behind the record this channel's own invalidation is.
     stamp: u64,
-    /// The latest position released the membership. `scan` answers members
-    /// only, so a removal is a hole no page returns until removal delivery.
+    /// The latest position released the membership; scans deliver its identity.
     removed: bool,
 }
 
@@ -975,21 +974,13 @@ impl Host for MemHost {
                     after,
                     limit,
                 } => {
-                    // `SQL.SCAN`: only rows whose record is still a member of
-                    // the channel, filtered before the limit, so removed
-                    // positions are holes no page returns or counts.
+                    // Match production SQL.SCAN: every retained final position,
+                    // including identity-only removals, counts toward the page limit.
                     let mut rows: Vec<&Invalidation> = s
                         .tables
                         .invalidations
                         .iter()
-                        .filter(|((c, record), row)| {
-                            *c == channel
-                                && row.cursor > after
-                                && !row.removed
-                                && s.tables
-                                    .memberships
-                                    .contains_key(&(record.clone(), c.clone()))
-                        })
+                        .filter(|((c, _), row)| *c == channel && row.cursor > after)
                         .map(|(_, row)| row)
                         .collect();
                     rows.sort_by_key(|row| row.cursor);
@@ -1009,7 +1000,11 @@ impl Host for MemHost {
                                 .map(|s| s.value)
                                 .unwrap_or(row.stamp);
                             ContractInvalidation {
-                                kind: axton_server::channel_members::PositionKind::Upsert,
+                                kind: if row.removed {
+                                    PositionKind::Remove
+                                } else {
+                                    PositionKind::Upsert
+                                },
                                 channel: channel.clone(),
                                 cursor: row.cursor,
                                 model: row.model.clone(),

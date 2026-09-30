@@ -155,11 +155,10 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
                     continue;
                 }
                 // A record's invalidation row on this channel outlives its
-                // membership: removal keeps the row, and the scan skips it. Once
-                // `channel` is no longer among the record's stored memberships,
-                // being at its head proves nothing about this record: the
-                // client's copy is retained data that only another channel it
-                // follows could refresh.
+                // membership. A release establishes no content authority: a
+                // second hold, local work, or a fresh unheld read may retain
+                // content. Presence after release is checked in channel_tags
+                // traces, separately from current-member content convergence.
                 if !sim
                     .host
                     .stored_memberships(&key)

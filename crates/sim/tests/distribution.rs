@@ -1,5 +1,5 @@
-//! Distribution on the simulation: channels deliver updates by stamp; records
-//! remain local once delivered, whatever happens to the channel.
+//! Distribution on the simulation: channels deliver updates by stamp; channel
+//! releases evict content when no other hold or local work retains it.
 use axton_sim::{
     Action, MutationSpec, Sim,
     schema::{comment_key, entry_key},
@@ -163,8 +163,8 @@ fn d3_one_change_is_one_stamp_on_every_channel() {
 }
 
 /// D4: a -> b then b -> a. Moving republishes the record to its new channel at its
-/// current stamp (no version is invented); the channel it leaves takes a removal
-/// position but delivers no content, and the client keeps the row. Later changes
+/// current stamp (no version is invented); the channel it leaves delivers a
+/// release while the second channel holds the row. Later changes
 /// reach it through the new channel only.
 #[test]
 fn d4_move_between_channels_and_back() {
@@ -386,12 +386,10 @@ fn d4_parent_and_child_move_channels_together_without_deletes() {
     sim.check().unwrap();
 }
 
-/// Removal stops future distribution and, until removal delivery, evicts
-/// nothing. It takes one position; the client keeps the row it applied; later
-/// content reaches no one through the Channel the record left, including a
-/// client that subscribes from zero afterwards.
+/// Removal takes one identity-only position and releases the last hold.
+/// Later content reaches neither the old holder nor a late subscriber.
 #[test]
-fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
+fn removal_evicts_client_rows_and_hides_later_content_from_the_old_channel() {
     let mut sim = Sim::new(61, 2);
     let e1 = entry_key("e1");
     subscribe(&mut sim, 0, &["a"]);
@@ -412,8 +410,8 @@ fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
     sim.settle();
     assert_eq!(
         sim.read_text(0, &e1).as_deref(),
-        Some("before"),
-        "the row stays as it was: no deletion, no eviction"
+        None,
+        "the final channel release evicts the row"
     );
     assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 1);
     assert_eq!(sim.client(0).cursor("a").unwrap(), Some(head));
@@ -443,7 +441,7 @@ fn re_adding_publishes_current_state_and_later_touches_follow() {
     declare(&mut sim, "Entry:e1", None, &[("a", false)]);
     declare(&mut sim, "Entry:e1", Some(Some("v2")), &[]);
     sim.settle();
-    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v1"));
+    assert_eq!(sim.read_text(0, &e1), None);
     let head = sim.host.head("a");
     declare(&mut sim, "Entry:e1", None, &[("a", true)]);
     assert_eq!(sim.host.head("a"), head + 1, "a fresh position");
@@ -498,17 +496,17 @@ fn a_deleted_record_stays_enrolled_and_its_recreation_is_delivered_again() {
     sim.settle();
     assert_eq!(
         sim.read_text(0, &e1).as_deref(),
-        Some("again"),
-        "no deletion reaches a Channel the record left"
+        None,
+        "the channel release removes its last hold"
     );
     sim.check().unwrap();
 }
 
 /// Generated add/remove/touch sequences, with client edits, dropped and
 /// duplicated messages and client crashes and restarts in between. Every step
-/// keeps the invariants; a row a client holds disappears only by applying the
-/// authority of a version at which the server had no record (removal evicts
-/// nothing); after settling, every client at a Channel's head holds the
+/// keeps the invariants; a row disappears only with authoritative absence
+/// or persisted channel-release evidence. After settling, every client at a
+/// Channel's head holds the
 /// server's state of that Channel's members, and a client that subscribes to
 /// every Channel from zero only then holds exactly the current members.
 #[test]
@@ -554,8 +552,9 @@ fn generated_membership_sequences_converge_through_restarts_and_duplicates() {
                 if sim.is_up(client) && sim.read_text(client, &key).is_none() {
                     let stamp = sim.client(client).record_stamp(&key).unwrap();
                     assert!(
-                        deletions.contains(&(key.encoded().unwrap(), stamp)),
-                        "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without a deletion"
+                        deletions.contains(&(key.encoded().unwrap(), stamp))
+                            || !sim.client(client).read_sql("SELECT 1 AS released FROM axton_channel_member WHERE model=? AND identity=? AND present=0", &[serde_json::json!(key.model), serde_json::json!(key.encoded_identity().unwrap())]).unwrap().is_empty(),
+                        "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without a deletion or channel release"
                     );
                 }
             }

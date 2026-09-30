@@ -158,6 +158,10 @@ pub enum Action {
         touch: Option<Option<String>>,
         memberships: Vec<(String, bool)>,
     },
+    /// Ordered tag declarations reduced by the production server.
+    ChannelTags {
+        intents: Vec<ChannelIntent>,
+    },
     RejectNext {
         code: String,
     },
@@ -778,6 +782,16 @@ impl Sim {
                     }
                 }
                 self.declare(&k, &writes, changes, &memberships)?;
+            }
+            Action::ChannelTags { intents } => {
+                self.host.transact(&[], vec![], intents)?;
+                for key in self.host.stamped_keys() {
+                    let channels = self.host.stored_memberships(&key);
+                    self.host.set_membership(
+                        &key,
+                        &channels.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                }
             }
             Action::RejectNext { code } => self.host.reject_next(&code),
             Action::FailNext => self.host.fail_next(),

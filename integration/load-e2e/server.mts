@@ -192,6 +192,12 @@ export async function createFixture() {
         if (channel !== undefined) join(channel).item.add({ id });
       });
     },
+    async membership(id: string, channelName: string, present: boolean) {
+      await backend.transaction(async ({ channel }) => {
+        const member = channel(channelName).item;
+        if (present) member.add({ id }); else member.remove({ id });
+      });
+    },
     /** A Channel's head: it moves only when something is published to it. */
     async head(channel: string) {
       return Number((await pool.query("SELECT head FROM axton_channel WHERE channel=$1", [channel])).rows[0]?.head ?? 0);

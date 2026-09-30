@@ -637,6 +637,33 @@ test("a Load enrolls the records it returns; a later touch or Mutation reaches t
   }
 });
 
+test("native Load enrollment releases live content durably and a second Channel hold prevents eviction", async () => {
+  const directory = await scratch("load-release");
+  await fixture.seed("release", 2);
+  fixture.enrolling.add("release");
+  let client = await GeneratedClient.open({ path: directory.path, server: server() });
+  try {
+    const first = await client.scopes.subscribe("items:release");
+    const second = await client.scopes.subscribe("items:release-other");
+    await wait(() => first.status.initialization === "ready" && second.status.initialization === "ready", "both Channels initialized");
+    await (await client.loads.projectItems({ project: "release" })).wait();
+    await fixture.membership("release-2", "items:release-other", true);
+    await wait(async () => (await client.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
+    await fixture.membership("release-1", "items:release", false);
+    await fixture.membership("release-2", "items:release", false);
+    await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
+    assert.ok(await client.models.item.get({ id: "release-2" }), "second Channel keeps content");
+    await client.close();
+    client = await GeneratedClient.open({ path: directory.path });
+    assert.equal(await client.models.item.get({ id: "release-1" }), null, "release persists across offline reopen");
+    assert.ok(await client.models.item.get({ id: "release-2" }), "second hold persists offline");
+  } finally {
+    fixture.enrolling.delete("release");
+    await client.close();
+    await directory.cleanup();
+  }
+});
+
 test("a newer Channel update of an enrolled record arrives before its held Load page: no regression, duplicates are harmless and a pending edit stays", async () => {
   const ids = await fixture.seed("gate", 2);
   fixture.enrolling.add("gate");
@@ -798,6 +825,34 @@ test("the generated Dart client receives a later change to a record its Load enr
     assert.ok(fixture.handled.some((page) => page.key === "dart-enr"), "the Dart client's Load reached the backend");
   } finally {
     fixture.enrolling.delete("dart-enr");
+    await cleanup();
+  }
+});
+
+
+test("the generated Dart client releases Load enrollment and reopens offline with a second hold retained", async () => {
+  const { path, cleanup } = await scratch("dart-release");
+  await fixture.seed("dart-release", 2);
+  fixture.enrolling.add("dart-release");
+  const root = join(here, "../..");
+  const child = spawn("dart", ["run", "client.dart", proxy.url, path,
+    join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "remove"], { cwd: here });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exited = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
+  try {
+    await wait(() => stdout.includes("Dart release: loaded"), "Dart Load stored its enrolled rows");
+    await fixture.membership("dart-release-2", "items:dart-release-other", true);
+    await wait(() => stdout.includes("Dart release: second held"), "Dart persisted the second hold");
+    await fixture.membership("dart-release-1", "items:dart-release", false);
+    await fixture.membership("dart-release-2", "items:dart-release", false);
+    await wait(() => stdout.includes("Dart Load removal: passed"), `Dart offline removal: ${stderr}`);
+    assert.equal(await exited, 0, stderr);
+  } finally {
+    child.kill();
+    fixture.enrolling.delete("dart-release");
     await cleanup();
   }
 });

@@ -391,24 +391,12 @@ impl Backend {
                 after,
                 limit,
             } => {
-                // `SQL.SCAN`: the Channel's upsert positions after `after` whose
-                // record is still a member, in cursor order, each with the
-                // record's current stamp, at most `limit`. Membership filters
-                // before the limit, so removal positions never fill a page.
+                // Scan the compacted log, including retained removals.
                 let mut rows: Vec<(u64, String, String)> = s
                     .tables
                     .invalidations
                     .iter()
-                    .filter(|((c, model, key), (cursor, stamp))| {
-                        *c == channel
-                            && *cursor > after
-                            && stamp.is_some()
-                            && s.tables.memberships.contains_key(&(
-                                model.clone(),
-                                key.clone(),
-                                channel.clone(),
-                            ))
-                    })
+                    .filter(|((c, _, _), (cursor, _))| *c == channel && *cursor > after)
                     .map(|((_, model, key), (cursor, _))| (*cursor, model.clone(), key.clone()))
                     .collect();
                 rows.sort();
@@ -421,8 +409,19 @@ impl Backend {
                         .get(&(model.clone(), key.clone()))
                         .ok_or_else(|| format!("Record metadata missing for {model} {key}"))?;
                     let identity: Value = serde_json::from_str(&key).map_err(|e| e.to_string())?;
-                    scanned.push(json!({"channel":channel,"cursor":cursor,"model":model,
-                        "identity":identity,"identityKey":key,"stamp":stamp}));
+                    let kind = if s.tables.memberships.contains_key(&(
+                        model.clone(),
+                        key.clone(),
+                        channel.clone(),
+                    )) {
+                        "upsert"
+                    } else {
+                        "remove"
+                    };
+                    scanned.push(
+                        json!({"kind":kind,"channel":channel,"cursor":cursor,"model":model,
+                        "identity":identity,"identityKey":key,"stamp":stamp}),
+                    );
                 }
                 Value::Array(scanned)
             }

@@ -12,11 +12,61 @@ use crate::host::{
     Positions, RecordRef, Stamped,
 };
 use crate::{Config, Error, Host, Result, code, internal};
-use axton_core::RecordKey;
+use axton_core::{AuthorityRecord, MembershipClaim, RecordKey};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Records in canonical key order, deduplicated by `(model, identity)`.
 pub(crate) type Changes = BTreeMap<String, RecordKey>;
+
+/// Content stamps and pair positions committed by one settlement.
+pub(crate) struct Settlement {
+    pub stamps: BTreeMap<String, u64>,
+    pub positions: Vec<MemberPosition>,
+}
+impl std::ops::Deref for Settlement {
+    type Target = BTreeMap<String, u64>;
+    fn deref(&self) -> &Self::Target {
+        &self.stamps
+    }
+}
+impl Settlement {
+    pub fn claims(
+        &self,
+        config: &Config,
+        intents: &[ChannelIntent],
+        records: &[AuthorityRecord],
+    ) -> Result<Vec<MembershipClaim>> {
+        let mut claims = BTreeMap::new();
+        for intent in intents {
+            if let ChannelIntent::Add {
+                channel, record, ..
+            } = intent
+            {
+                let key = resolve(config, record)?;
+                for position in &self.positions {
+                    if position.kind == PositionKind::Upsert
+                        && &position.channel == channel
+                        && position.key == key
+                        && let Some(returned) = records
+                            .iter()
+                            .find(|r| r.model == key.model && r.identity == key.identity)
+                    {
+                        claims.insert(
+                            (channel.clone(), key.encoded().map_err(internal)?),
+                            MembershipClaim {
+                                channel: channel.clone(),
+                                cursor: position.cursor,
+                                model: returned.model.clone(),
+                                identity: returned.identity.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(claims.into_values().collect())
+    }
+}
 
 /// The one refusal of a Model without a registered Loader: device-only
 /// ([#187](https://github.com/zanminwang/axton/issues/187)), so never
@@ -90,7 +140,7 @@ pub(crate) async fn settle_changes(
     changed: &Changes,
     memberships: &[ChannelIntent],
     host: &impl Host,
-) -> Result<BTreeMap<String, u64>> {
+) -> Result<Settlement> {
     settle_locked(config, changed, memberships, &BTreeSet::new(), host).await
 }
 
@@ -117,7 +167,7 @@ pub(crate) async fn settle_locked(
     memberships: &[ChannelIntent],
     held: &BTreeSet<String>,
     host: &impl Host,
-) -> Result<BTreeMap<String, u64>> {
+) -> Result<Settlement> {
     for key in changed.values() {
         if !config.loaders.contains(&key.model) {
             return Err(unregistered(&key.model));
@@ -277,18 +327,24 @@ pub(crate) async fn settle_locked(
     }
 
     // 6. Persist every final state at once.
-    if !deltas.is_empty() {
+    let positions = if !deltas.is_empty() {
         let request = HostRequest::ApplyChannelMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
         check_positions(&request, &positions)?;
-    }
-    Ok(guards
-        .into_iter()
-        .filter_map(|(encoded, guard)| match guard {
-            Guard::Changed(stamp) => Some((encoded, stamp)),
-            _ => None,
-        })
-        .collect())
+        positions
+    } else {
+        vec![]
+    };
+    Ok(Settlement {
+        positions,
+        stamps: guards
+            .into_iter()
+            .filter_map(|(encoded, guard)| match guard {
+                Guard::Changed(stamp) => Some((encoded, stamp)),
+                _ => None,
+            })
+            .collect(),
+    })
 }
 
 fn memberships_of(key: &RecordKey) -> Result<HostRequest> {
@@ -429,4 +485,22 @@ fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Resul
         }
     }
     Ok(())
+}
+
+/// Preserve saved cursor evidence while adapting its identity like readback.
+pub(crate) fn current_claims(
+    config: &Config,
+    claims: Vec<MembershipClaim>,
+) -> Result<Vec<MembershipClaim>> {
+    claims
+        .into_iter()
+        .map(|mut claim| {
+            let key = config
+                .schema
+                .record_key(&claim.model, &claim.identity)
+                .map_err(crate::storage_invalid)?;
+            claim.identity = key.identity;
+            Ok(claim)
+        })
+        .collect()
 }

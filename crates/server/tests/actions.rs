@@ -993,3 +993,67 @@ fn a_duplicate_or_inferred_touch_allocates_one_stamp() {
     assert_eq!(backend.stamp("Project", "p"), Some(7));
     assert_eq!(authority(&receipt), [("Todo".into(), "a".into(), 2)]);
 }
+
+#[test]
+fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_positions() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.seed("Todo", "extra", todo("extra", "hidden"), Some(1));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a"),support::add("c","Todo","extra")]}));
+    let first = support::push(
+        &backend,
+        1,
+        json!({"Todo":1}),
+        vec![edit(1, 80, "EditAndRead", "a", "new")],
+    );
+    assert_eq!(
+        first["memberships"],
+        json!([{ "channel":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+    );
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    let state = backend.tables();
+    let replay = support::push(
+        &backend,
+        2,
+        json!({"Todo":1}),
+        vec![edit(1, 80, "EditAndRead", "a", "new")],
+    );
+    assert_eq!(replay["memberships"], first["memberships"]);
+    assert_eq!(backend.tables(), state);
+}
+
+#[test]
+fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_replay() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    let request = json!({"call":{"callId":support::call_id(81),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string();
+    let first: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            request.as_bytes(),
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        first["memberships"],
+        json!([{ "channel":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+    );
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    let state = backend.tables();
+    let replay: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            request.as_bytes(),
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(backend.tables(), state);
+}

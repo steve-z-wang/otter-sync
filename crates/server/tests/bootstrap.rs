@@ -540,3 +540,86 @@ fn the_ordinary_pull_page_is_unchanged() {
         "{text}"
     );
 }
+
+fn channel_page(host: &Scoped, request: Value) -> Value {
+    serde_json::from_str(
+        &run(axton_server::process_channel_pull(
+            &config(),
+            "alice",
+            &serde_json::to_vec(&request).unwrap(),
+            host,
+        ))
+        .unwrap(),
+    )
+    .unwrap()
+}
+fn removed(cursor: u64, id: &str) -> Value {
+    let mut row = entry(cursor, id, 1);
+    row["kind"] = json!("remove");
+    row
+}
+#[test]
+fn channel_pages_keep_mixed_changes_and_each_channels_provenance_with_one_loader_read() {
+    let host = Scoped::new(
+        9,
+        vec![
+            entry(2, "e", 3),
+            removed(7, "gone"),
+            row("b", 8, "Entry", "e", 3),
+        ],
+    );
+    let page = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
+    assert_eq!(page["changes"].as_array().unwrap().len(), 3);
+    assert_eq!(page["changes"][1]["kind"], "remove");
+    assert_eq!(page["changes"][2]["channel"], "b");
+    assert_eq!(host.loaded(), vec![("Entry".into(), vec!["e".into()])]);
+}
+#[test]
+fn channel_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
+    for bootstrap in [false, true] {
+        let host = Scoped::new(
+            100,
+            (1..=50).map(|i| removed(i, &format!("e{i}"))).collect(),
+        );
+        let request = if bootstrap {
+            json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90})
+        } else {
+            json!({"models":{"Entry":1},"cursors":{"a":0}})
+        };
+        let page = channel_page(&host, request);
+        assert_eq!(page["changes"].as_array().unwrap().len(), 50);
+        assert_eq!(
+            if bootstrap {
+                &page["to"]
+            } else {
+                &page["cursors"]["a"]["to"]
+            },
+            &json!(if bootstrap { 90 } else { 100 })
+        );
+        assert!(host.loaded().is_empty());
+    }
+}
+#[test]
+fn channel_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
+    let host = Scoped::new(
+        100,
+        (1..=51)
+            .map(|i| removed(i, &format!("e{i}")))
+            .chain([entry(100, "moved", 4)])
+            .collect(),
+    );
+    let first = channel_page(
+        &host,
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90}),
+    );
+    assert_eq!(first["to"], 50);
+    let second = channel_page(
+        &host,
+        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":50,"until":90}),
+    );
+    assert_eq!(second["to"], 90);
+    assert_eq!(second["changes"].as_array().unwrap().len(), 1);
+    assert!(host.loaded().is_empty());
+    let delta = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
+    assert_eq!(delta["changes"][0]["identity"]["id"], "moved");
+}

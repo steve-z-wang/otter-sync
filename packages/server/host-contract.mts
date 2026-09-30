@@ -40,9 +40,8 @@ export type SaveCallRequest = {
 /** The channel's current head cursor. */
 export type HeadRequest = { op: "head"; channel: string };
 /**
- * Invalidation rows after `after` whose record is still a member of the
- * channel, at most `limit` of them, in cursor order. Membership filters before
- * the limit; a removed record's row stays but is not answered.
+ * Retained log rows after `after`, including removals, at most `limit`
+ * in cursor order. Legacy projection happens only in the engine.
  */
 export type ScanRequest = {
   op: "scan";
@@ -242,17 +241,19 @@ export type ClaimedCall = {
 /** The answer to `head`: a bare counter. */
 export type Head = number;
 /**
- * One row of the answer to `scan`: the invalidation's own cursor with the
- * record's *current* stamp, read from the record metadata in the same snapshot
- * the loader will read.
+ * One retained channel position and centralized identity. Only an upsert
+ * carries the current content stamp from the same snapshot as its Loader.
  */
 export type Invalidation = {
+  /** Omitted only by legacy hosts; new scans include retained removals. */
+  kind?: "upsert" | "remove";
   channel: string;
   cursor: number;
   model: string;
   identity: Record<string, unknown>;
   identityKey: string;
-  stamp: number;
+  /** Required on upserts; removals carry identity only. */
+  stamp?: number;
 };
 /** The answer to `advanceStamp` and `ensureStamp`: the record's stamp. */
 export type Stamped = number;

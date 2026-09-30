@@ -346,9 +346,8 @@ pub enum HostRequest {
     },
     /// The channel's current head cursor.
     Head { channel: String },
-    /// Invalidation rows after `after` whose record is still a member of the
-    /// channel, at most `limit` of them, in cursor order. Membership filters
-    /// before the limit; a removed record's row stays but is not answered.
+    /// Retained upsert and removal log rows after `after`, at most `limit`
+    /// in cursor order. Identity comes from centralized record metadata.
     Scan {
         channel: String,
         after: u64,
@@ -545,21 +544,26 @@ pub struct ClaimedCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Head(#[serde(with = "counter")] pub u64);
 
-/// One row of the answer to `scan`: the invalidation's own cursor with the
-/// record's *current* stamp, read from the record metadata in the same
-/// snapshot the loader will read. A record may have advanced since it was
-/// published; the cursor is delivery progress, the stamp is the content version.
+/// One retained channel position with centralized identity. Upserts carry
+/// the current content stamp from the Loader's snapshot; removals need no
+/// stamp and never enter a Loader. A missing kind is legacy upsert only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Invalidation {
+    #[serde(default = "legacy_upsert")]
+    pub kind: PositionKind,
     pub channel: String,
     #[serde(with = "cursor")]
     pub cursor: u64,
     pub model: String,
     pub identity: Value,
     pub identity_key: String,
-    #[serde(with = "stamp")]
+    #[serde(default, with = "stamp", skip_serializing_if = "zero_stamp")]
     pub stamp: u64,
+}
+
+fn zero_stamp(stamp: &u64) -> bool {
+    *stamp == 0
 }
 
 /// The answer to `scan`.
@@ -965,4 +969,8 @@ impl<H: Host + ?Sized> HostExt for H {
             serde_json::from_value(response).map_err(|error| request.invalid_response(error))
         })
     }
+}
+
+fn legacy_upsert() -> PositionKind {
+    PositionKind::Upsert
 }

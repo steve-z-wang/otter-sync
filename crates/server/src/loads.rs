@@ -269,7 +269,7 @@ async fn execute_fresh(
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
     }
-    let page = LoadPageResponse {
+    let mut page = LoadPageResponse {
         load_id: intent.load_id.clone(),
         call_id: intent.call_id.clone(),
         outcome: LoadOutcome::Succeeded { data, next },
@@ -304,7 +304,11 @@ async fn execute_fresh(
     // one publishes nothing. No loaded record is touched. Its Channels are
     // already locked, before the page's reads. A host fault here escapes the
     // page transaction like any other.
-    settle_locked(config, &Changes::new(), &memberships, &channels, host).await?;
+    let settled = settle_locked(config, &Changes::new(), &memberships, &channels, host).await?;
+    page.memberships = settled.claims(config, &memberships, &page.records)?;
+    page.clone()
+        .normalize(&config.schema, intent)
+        .map_err(|e| Error::new(code::LOAD_PAGE_TOO_LARGE, e.message))?;
     Ok(page)
 }
 
@@ -525,6 +529,7 @@ fn current(
     page: LoadPageResponse,
 ) -> Result<LoadPageResponse> {
     Ok(LoadPageResponse {
+        memberships: crate::settlement::current_claims(config, page.memberships)?,
         records: page
             .records
             .into_iter()

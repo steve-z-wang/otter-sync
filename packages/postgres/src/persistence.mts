@@ -394,17 +394,25 @@ export async function answer<Tx>(
     case "scan": {
       const rows = await q(SQL.SCAN, r.channel, BigInt(r.after), r.limit);
       const scanned: Invalidation[] = rows.map((row) => {
-        if (row.stamp === null || row.stamp === undefined)
+        if (row.kind !== "upsert" && row.kind !== "remove")
+          throw new Error("Invalid channel log kind");
+        if (
+          row.model === null ||
+          row.identity === null ||
+          (row.kind === "upsert" &&
+            (row.stamp === null || row.stamp === undefined))
+        )
           throw new Error(
             `Record metadata missing for record ${row.record_id} on channel ${row.channel}`,
           );
         return {
           channel: String(row.channel),
+          kind: row.kind,
           cursor: safe(row.cursor),
           model: String(row.model),
           identityKey: String(row.identity_key),
           identity: json(row.identity) as Record<string, unknown>,
-          stamp: safe(row.stamp),
+          ...(row.kind === "upsert" ? { stamp: safe(row.stamp) } : {}),
         };
       });
       return scanned;

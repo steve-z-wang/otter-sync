@@ -1078,7 +1078,13 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
         json!({"todos":[{"id":"t1"},{"id":"t2"}],"projects":[]}),
         "the page answers exactly what it answered before enrollment existed"
     );
-    assert!(!first.to_string().contains("memberships"));
+    assert_eq!(
+        first["memberships"],
+        json!([
+            {"channel":"c","cursor":1,"model":"Todo","identity":{"id":"t1"}},
+            {"channel":"c","cursor":2,"model":"Todo","identity":{"id":"t2"}}
+        ])
+    );
     assert_eq!(saved(&backend, 1), Some(first.clone()));
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
     assert_eq!(backend.members("Todo", "t2"), ["c"]);
@@ -1590,6 +1596,10 @@ fn a_page_that_fails_after_validation_keeps_no_enrollment_or_initialized_stamp()
             None => page(&backend, &item(1, Value::Null)),
         };
         assert_eq!(outcome_code(&failed), expected, "{case}");
+        assert!(
+            failed.get("memberships").is_none(),
+            "{case}: a failed Loader never claims enrollment"
+        );
         assert_eq!(saved(&backend, 1), Some(failed), "{case}");
         assert_eq!(
             durable(&backend),
@@ -1700,6 +1710,10 @@ fn a_replayed_page_neither_enrolls_nor_undoes_a_later_removal_and_a_fresh_page_r
         enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]),
     );
     let first = page(&backend, &item(1, Value::Null));
+    assert_eq!(
+        first["memberships"],
+        json!([{ "channel":"c", "cursor":1, "model":"Todo", "identity":{"id":"t1"} }])
+    );
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
     assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 1)));
 
@@ -1820,4 +1834,47 @@ fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_t
     page(&backend, &item(3, Value::Null));
     assert_eq!(backend.ops(), fixed_page(settled(500, 2)));
     assert_eq!(backend.publishes().len(), 1000);
+}
+
+#[test]
+fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cursors() {
+    let lower = "01890f47-1234-7123-8123-123456789abc";
+    let upper = lower.to_uppercase();
+    let original_config = config();
+    let mut schema = serde_json::to_value(&original_config.schema).unwrap();
+    schema["models"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    schema["resultModels"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    schema["loads"][0]["outputs"][0]["handlerType"]["fields"][0]["type"]["name"] = json!("uuid");
+    let cfg = Config::decode(json!({"schema":schema,"loaders":["Todo","Project"],"mutations":[]}))
+        .unwrap();
+    let backend = Backend::new();
+    backend.seed("Todo", lower, json!({"id":lower,"title":"T"}), Some(1));
+    backend.with(|s| {
+        s.tables.heads.insert("c".into(), 9);
+    });
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&[lower]), json!([]), vec![add("c", "Todo", &upper)]),
+    );
+    let first = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
+    assert_eq!(
+        first["memberships"],
+        json!([{ "channel":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
+    );
+    support::settle(&backend, vec![], vec![remove("c", "Todo", lower)]);
+    let removed = durable(&backend);
+    // A saved legacy representation uses the equivalent noncanonical UUID.
+    backend.with(|s| {
+        let response = s.tables.calls.get_mut(&id(1)).unwrap().1.as_mut().unwrap();
+        let mut value: Value = serde_json::from_str(response).unwrap();
+        value["records"][0]["identity"]["id"] = json!(upper);
+        value["memberships"][0]["identity"]["id"] = json!(upper);
+        *response = value.to_string();
+    });
+    backend.clear_log();
+    let replay = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
+    assert_eq!(replay["records"][0]["identity"]["id"], lower);
+    assert_eq!(replay["memberships"], first["memberships"]);
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(durable(&backend), removed);
 }

@@ -309,3 +309,14 @@ fn events_and_actions_cross_the_boundary_as_tagged_json() {
         json!({"type":"listen","scope":"a"})
     );
 }
+
+#[test]
+fn a_channel_live_removal_advances_and_preserves_its_identity_only_frame() {
+    let (mut session, _) = Subscriptions::open(negotiation(&[("a", 0)]));
+    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","channel":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
+    let actions = session
+        .handle_channel(LiveEvent::Pulled { page: page.clone() })
+        .unwrap();
+    assert_eq!(actions, vec![LiveAction::Send { frame: page }]);
+    assert_eq!(session.scopes()[0].cursor, 8);
+}

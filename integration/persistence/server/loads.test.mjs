@@ -359,6 +359,7 @@ test('a Load enrolls the records it declares on every shim, waking the Channel a
     const [done] = outcomes(await app.loads('alice', batch(item)));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(done.outcome.status, 'succeeded', name);
+    assert.deepEqual(done.memberships, [1, 2].map((cursor) => ({channel, cursor, model: 'Todo', identity: {id: `${project}-${cursor}`}})), name);
     assert.deepEqual(await channelsOf(`${project}-1`), [channel], name);
     assert.deepEqual(await channelsOf(`${project}-2`), [channel], name);
     assert.deepEqual(await channelsOf(`${project}-3`), [], `${name}: returning a record does not enroll it`);
@@ -824,4 +825,28 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
   const [done] = outcomes(await app.loads('alice', batch(page('deny'))));
   assert.equal(done.outcome.status, 'succeeded');
   assert.deepEqual(await q("SELECT t.name FROM axton_channel_tag t JOIN axton_channel_member_tag mt ON mt.tag_id=t.id JOIN axton_channel_member m ON m.id=mt.member_id WHERE m.channel=$1", [A]), [{ name: 'X' }]);
+});
+
+
+test('a saved enrolled page keeps its old claim after a later removal on every shim', async () => {
+  for (const {name,database} of shims) {
+    const project = `claim-retry-${name}`;
+    const channel = `claim:${project}`;
+    await seed(project, project, 'alice', 1);
+    const app = enrolling(database, ({ctx,rows}) => ctx.channel(channel).todo.add({id:rows[0].id}));
+    await q('INSERT INTO axton_channel(channel,head) VALUES($1,9)', [channel]);
+    const item = page(project);
+    const [original] = outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(original.memberships,[{channel,cursor:10,model:'Todo',identity:{id:`${project}-1`}}]);
+    await app.transaction(async ({channel:scope}) => scope(channel).todo.remove({id:`${project}-1`}));
+    const before = await q('SELECT l.channel,l.cursor,l.kind,r.model,r.identity FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1',[channel]);
+    assert.equal(Number(before[0].cursor),11);
+    assert.equal(before[0].kind,'remove');
+    const heads = await q('SELECT * FROM axton_channel WHERE channel=$1',[channel]);
+    const [replayed] = outcomes(await app.loads('alice',batch(item)));
+    assert.deepEqual(replayed,original);
+    assert.deepEqual(await channelsOf(`${project}-1`),[]);
+    assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[channel]),heads);
+    assert.deepEqual(await q('SELECT l.channel,l.cursor,l.kind,r.model,r.identity FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1',[channel]),before);
+  }
 });

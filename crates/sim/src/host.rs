@@ -1009,6 +1009,7 @@ impl Host for MemHost {
                                 .map(|s| s.value)
                                 .unwrap_or(row.stamp);
                             ContractInvalidation {
+                                kind: axton_server::channel_members::PositionKind::Upsert,
                                 channel: channel.clone(),
                                 cursor: row.cursor,
                                 model: row.model.clone(),

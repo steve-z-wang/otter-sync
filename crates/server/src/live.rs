@@ -200,6 +200,15 @@ impl Subscriptions {
     /// invalid page progression is `live.invalid_page`. The host reports either
     /// and closes the socket.
     pub fn handle(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
+        self.handle_page(event, false)
+    }
+
+    /// Apply a channel-aware live page without projecting away removals.
+    pub fn handle_channel(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
+        self.handle_page(event, true)
+    }
+
+    fn handle_page(&mut self, event: LiveEvent, channel: bool) -> Result<Vec<LiveAction>> {
         match event {
             LiveEvent::Committed { scope } => {
                 self.scope_mut(&scope)?.pending = true;
@@ -218,7 +227,11 @@ impl Subscriptions {
                 if self.closed {
                     return Ok(vec![]);
                 }
-                let progress = page_progress(&page, &asked)?;
+                let progress = if channel {
+                    channel_page_progress(&page, &asked)?
+                } else {
+                    page_progress(&page, &asked)?
+                };
                 let mut actions = vec![];
                 let advanced = progress.cursors.values().any(|range| range.to > range.from);
                 if advanced {
@@ -298,4 +311,41 @@ impl Subscriptions {
                 )
             })
     }
+}
+
+/// Validate channel-aware live progress, preserving the complete frame.
+pub fn channel_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
+    let invalid = |m| Error::new(code::LIVE_INVALID_PAGE, m);
+    let decoded =
+        axton_core::ChannelPullPage::decode(page.as_bytes()).map_err(|e| invalid(e.to_string()))?;
+    if !decoded.cursors.keys().eq(expected.keys())
+        || decoded
+            .cursors
+            .iter()
+            .any(|(channel, range)| range.from != expected[channel])
+    {
+        return Err(invalid("invalid live page progression".into()));
+    }
+    Ok(PageProgress {
+        page: page.into(),
+        cursors: decoded.cursors,
+    })
+}
+
+/// Pull channel membership events for a live session in the host transaction.
+pub async fn channel_pull(
+    config: &crate::Config,
+    owner: &str,
+    cursors: &BTreeMap<String, u64>,
+    models: &BTreeMap<String, u64>,
+    host: &impl Host,
+) -> Result<PageProgress> {
+    let request = PullRequest {
+        models: models.clone(),
+        cursors: cursors.clone(),
+    }
+    .encode()
+    .map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))?;
+    let page = crate::process_channel_pull(config, owner, &request, host).await?;
+    channel_page_progress(&page, cursors)
 }

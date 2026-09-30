@@ -741,3 +741,49 @@ fn a_cursor_ahead_of_its_channel_head_is_refused() {
     assert_eq!(err.code, axton_server::code::REQUEST_INVALID);
     assert!(err.message.contains("on a"), "{err}");
 }
+
+#[test]
+fn channel_removal_is_identity_only_and_never_loads_content() {
+    let host = Fixed::new(
+        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"}]),
+        Value::Null,
+    );
+    let page = run(axton_server::process_channel_pull(
+        &config(),
+        "alice",
+        br#"{"models":{"Entry":1},"cursors":{"c":0}}"#,
+        &host,
+    ))
+    .unwrap();
+    let page: Value = serde_json::from_str(&page).unwrap();
+    assert_eq!(
+        page["changes"],
+        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"}}])
+    );
+    assert_eq!(page["cursors"]["c"]["to"], 5);
+    assert!(host.loaded.lock().unwrap().is_empty());
+}
+
+#[test]
+fn channel_loader_null_and_error_remain_stamped_upserts() {
+    for (answer, error) in [
+        (json!([null]), None),
+        (json!({"error":"boom"}), Some("loader.failed")),
+    ] {
+        let host = multi(&[("a", vec![scan_row("a", 1, "e", 2)], 1)], vec![answer]);
+        let text = run(axton_server::process_channel_pull(
+            &config(),
+            "alice",
+            br#"{"models":{"Entry":1},"cursors":{"a":0}}"#,
+            &host,
+        ))
+        .unwrap();
+        let page = axton_core::ChannelPullPage::decode(text.as_bytes()).unwrap();
+        let axton_core::ChannelChange::Upsert { record, .. } = &page.changes[0] else {
+            panic!("a Loader result is never a channel removal")
+        };
+        assert_eq!(record.stamp, 2);
+        assert_eq!(record.error.as_deref(), error);
+        assert!(record.state.is_null());
+    }
+}

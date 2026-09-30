@@ -952,3 +952,12 @@ fn a_load_handler_answer_may_carry_membership_intents_and_nothing_else() {
         assert!(decode(refused.clone()).is_err(), "accepted {refused}");
     }
 }
+
+#[test]
+fn a_legacy_scan_row_without_kind_decodes_as_upsert() {
+    let row: axton_server::host::Invalidation = serde_json::from_value(json!({"channel":"c","cursor":1,"model":"Task","identity":{"id":"t"},"identityKey":"{\"id\":\"t\"}","stamp":1})).unwrap();
+    assert_eq!(
+        row.kind,
+        axton_server::channel_members::PositionKind::Upsert
+    );
+}

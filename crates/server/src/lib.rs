@@ -18,7 +18,7 @@ use axton_core::{
 };
 pub use error::{Error, code};
 pub use fetch::process_fetch;
-use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
+use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest};
 pub use loads::{
     LoadFault, LoadItemAnswer, encode_load_batch, load_fault_outcome, process_load,
     validate_load_batch,
@@ -601,7 +601,9 @@ pub async fn process_push(
     let mut rejections = vec![];
     // The last successful authority per record, in canonical key order.
     let mut results: BTreeMap<String, axton_core::AuthorityRecord> = BTreeMap::new();
+    let mut claims = BTreeMap::new();
     for m in &request.mutations {
+        let mut enrolled = vec![];
         // A mutation naming a version this backend does not serve rejects
         // only itself; its handler never runs.
         if let (Some(name), Some(v)) = (m.raw["name"].as_str(), version(&m.raw))
@@ -672,7 +674,7 @@ pub async fn process_push(
                 }
                 let stamps =
                     settlement::settle_changes(config, &changed, &memberships, host).await?;
-                readback::read_back(
+                let outcome = readback::read_back(
                     config,
                     &request.models,
                     owner,
@@ -680,7 +682,11 @@ pub async fn process_push(
                     &stamps,
                     host,
                 )
-                .await?
+                .await?;
+                if let Outcome::Records(records) = &outcome {
+                    enrolled = stamps.claims(config, &memberships, records)?;
+                }
+                outcome
             }
         };
         match outcome {
@@ -694,6 +700,18 @@ pub async fn process_push(
                 });
             }
             Outcome::Records(records) => {
+                for claim in enrolled {
+                    let key = (
+                        claim.channel.clone(),
+                        claim.key().encoded().map_err(internal)?,
+                    );
+                    if claims
+                        .get(&key)
+                        .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
+                    {
+                        claims.insert(key, claim);
+                    }
+                }
                 for record in records {
                     let key = config
                         .schema
@@ -713,7 +731,7 @@ pub async fn process_push(
         rejections,
         completions: vec![],
         records: results.into_values().collect(),
-        memberships: Vec::new(),
+        memberships: claims.into_values().collect(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host
@@ -772,13 +790,7 @@ async fn process_delta(
                 "cursor ahead of head on {channel}"
             )));
         }
-        let rows: Vec<Invalidation> = host
-            .call_typed(HostRequest::Scan {
-                channel: channel.clone(),
-                after: *from,
-                limit: limits::PULL_CHANGES as u64,
-            })
-            .await?;
+        let rows = loading::legacy_rows(config, channel, *from, maximum, host).await?;
         if rows.len() > limits::PULL_CHANGES {
             return Err(storage_invalid("invalid scan size"));
         }
@@ -786,7 +798,9 @@ async fn process_delta(
         for row in &rows {
             let key = loading::validate_row(config, channel, maximum, previous, row)?;
             previous = row.cursor;
-            loading::insert(&mut records, key, row.stamp)?;
+            if row.kind == channel_members::PositionKind::Upsert {
+                loading::insert(&mut records, key, row.stamp)?;
+            }
         }
         // The scan answers only rows whose record is still a member of the
         // Channel, filtered before the limit, so a removed position is a hole
@@ -855,4 +869,21 @@ pub async fn settle_external(
             })
             .collect(),
     ))
+}
+
+/// Channel-aware pull delivery.
+pub async fn process_channel_pull(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    principal(owner)?;
+    match axton_core::pull_mode(bytes).as_deref() {
+        None => loading::process_channel_delta(config, owner, bytes, host).await,
+        Some(axton_core::BOOTSTRAP_MODE) => {
+            loading::process_channel_bootstrap(config, owner, bytes, host).await
+        }
+        Some(_) => Err(request_invalid("pull mode must be absent or bootstrap")),
+    }
 }

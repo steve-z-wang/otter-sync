@@ -16,17 +16,15 @@ export const SAVE_CALL =
   "UPDATE axton_call SET response=$3 WHERE owner_id=$1 AND call_id=$2 AND response IS NULL AND claim_tx=pg_current_xact_id() RETURNING call_id";
 export const HEAD = "SELECT head FROM axton_channel WHERE channel=$1";
 /**
- * The Channel's `upsert` positions after a cursor, in cursor order, each with
- * its record's identity and *current* stamp, read in the snapshot the loader
- * reads. The kind filters before ORDER BY and LIMIT, so a `remove` position
- * never fills a page (their delivery is not implemented yet). A record with no
- * metadata is a storage defect: that join is outer so it is reported, never
- * dropped as a missing row.
+ * The Channel's retained positions after a cursor, including removals,
+ * ordered before the limit. Identity comes from centralized record metadata;
+ * upserts carry its current stamp from the Loader's snapshot. The outer join
+ * exposes a missing record as a storage defect rather than dropping evidence.
  */
 export const SCAN =
-  "SELECT l.channel,l.cursor,l.record_id::text AS record_id,r.model,r.identity_key,r.identity,r.stamp " +
+  "SELECT l.channel,l.cursor,l.kind,l.record_id::text AS record_id,r.model,r.identity_key,r.identity,CASE WHEN l.kind='upsert' THEN r.stamp END AS stamp " +
   "FROM axton_channel_log l LEFT JOIN axton_record r ON r.id=l.record_id " +
-  "WHERE l.channel=$1 AND l.cursor>$2 AND l.kind='upsert' " +
+  "WHERE l.channel=$1 AND l.cursor>$2 " +
   "ORDER BY l.cursor LIMIT $3";
 /** The upsert locks the record row, so concurrent changes never share a stamp. */
 export const ADVANCE_STAMP =

@@ -39,7 +39,7 @@
       "op": "scan",
       "request": {"op": "scan", "channel": "shared", "after": 4, "limit": 50},
       "responses": [
-        {"variant": "rows", "value": [{"channel": "shared", "cursor": 5, "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "stamp": 4}]},
+        {"variant": "rows", "value": [{"kind": "upsert", "channel": "shared", "cursor": 5, "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "stamp": 4}]},
         {"variant": "none", "value": []}
       ]
     },

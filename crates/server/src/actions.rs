@@ -20,6 +20,8 @@ use std::collections::BTreeMap;
 pub struct ActionResponse {
     pub completion: CallCompletion,
     pub records: Vec<AuthorityRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memberships: Vec<axton_core::MembershipClaim>,
 }
 
 fn rejected(call_id: &str, code: &str) -> ActionResponse {
@@ -32,6 +34,7 @@ fn rejected(call_id: &str, code: &str) -> ActionResponse {
             },
         },
         records: vec![],
+        memberships: vec![],
     }
 }
 
@@ -77,6 +80,11 @@ pub(crate) fn current_authority(
     let contract = config
         .contract(&record.model, version)
         .ok_or_else(|| storage_invalid("authority read contract not retained"))?;
+    record.identity = config
+        .schema
+        .record_key(&record.model, &record.identity)
+        .map_err(storage_invalid)?
+        .identity;
     if !record.state.is_null() {
         let mut state = record
             .state
@@ -149,7 +157,7 @@ pub async fn process_action(
             .into_iter()
             .map(|record| current_authority(config, &request.models, record))
             .collect::<Result<Vec<_>>>()?,
-        memberships: Vec::new(),
+        memberships: settlement::current_claims(config, response.memberships)?,
     };
     String::from_utf8(response.encode().map_err(internal)?).map_err(internal)
 }
@@ -255,6 +263,7 @@ async fn execute_fresh(
             call_id: call.call_id.clone(),
             outcome: ActionOutcome::Succeeded { result },
         },
+        memberships: stamps.claims(config, &memberships, &records)?,
         records,
     })
 }
@@ -340,6 +349,7 @@ pub async fn process_action_push(
     }
     let mut rejections = vec![];
     let mut completions = vec![];
+    let mut claims = BTreeMap::new();
     let mut authority: BTreeMap<String, AuthorityRecord> = BTreeMap::new();
     for mutation in &request.mutations {
         let mut call: ActionIntent =
@@ -359,6 +369,18 @@ pub async fn process_action_push(
                 ordinal: mutation.ordinal,
                 code: code.clone(),
             });
+        }
+        for claim in settlement::current_claims(config, response.memberships)? {
+            let key = (
+                claim.channel.clone(),
+                claim.key().encoded().map_err(internal)?,
+            );
+            if claims
+                .get(&key)
+                .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
+            {
+                claims.insert(key, claim);
+            }
         }
         completions.push(response.completion);
         for record in response.records {
@@ -386,7 +408,7 @@ pub async fn process_action_push(
         rejections,
         completions,
         records: authority.into_values().collect(),
-        memberships: Vec::new(),
+        memberships: claims.into_values().collect(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host

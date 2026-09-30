@@ -42,13 +42,7 @@ pub(crate) async fn process_bootstrap(
     let mut historical: BTreeMap<String, (RecordKey, u64)> = BTreeMap::new();
     let mut to = request.until;
     if !request.exhausted() {
-        let rows: Vec<Invalidation> = host
-            .call_typed(HostRequest::Scan {
-                channel: channel.into(),
-                after: request.after,
-                limit: limits::PULL_CHANGES as u64,
-            })
-            .await?;
+        let rows = legacy_rows(config, channel, request.after, maximum, host).await?;
         if rows.len() > limits::PULL_CHANGES {
             return Err(storage_invalid("invalid scan size"));
         }
@@ -63,7 +57,9 @@ pub(crate) async fn process_bootstrap(
                 continue;
             }
             last_historical = row.cursor;
-            insert(&mut historical, key, row.stamp)?;
+            if row.kind == crate::channel_members::PositionKind::Upsert {
+                insert(&mut historical, key, row.stamp)?;
+            }
         }
         // The interval is finished when the scan ran out of rows or reached
         // the origin; otherwise the page stops at its last historical cursor.
@@ -118,6 +114,9 @@ pub(crate) fn validate_row(
 ) -> Result<RecordKey> {
     if row.channel != channel || row.cursor <= previous || row.cursor > maximum {
         return Err(storage_invalid("invalid invalidation order"));
+    }
+    if row.kind == crate::channel_members::PositionKind::Upsert && row.stamp == 0 {
+        return Err(storage_invalid("upsert stamp missing"));
     }
     if !config.loaders.contains(&row.model) {
         return Err(crate::settlement::unregistered(&row.model));
@@ -282,5 +281,232 @@ fn refusal_code(loaded: Loaded) -> String {
     match loaded {
         Loaded::Refused { rejection } => rejection,
         Loaded::Failed { .. } | Loaded::Rows(_) => code::LOADER_FAILED.into(),
+    }
+}
+
+/// Scan a bounded interval, including tombstones. A one-row probe identifies
+/// a terminal full page even when compaction leaves a gap before the bound.
+async fn channel_rows(
+    config: &Config,
+    channel: &str,
+    after: u64,
+    bound: u64,
+    maximum: u64,
+    host: &impl Host,
+) -> Result<(Vec<Invalidation>, u64)> {
+    if after == bound {
+        return Ok((vec![], bound));
+    }
+    let rows: Vec<Invalidation> = host
+        .call_typed(HostRequest::Scan {
+            channel: channel.into(),
+            after,
+            limit: limits::PULL_CHANGES as u64,
+        })
+        .await?;
+    if rows.len() > limits::PULL_CHANGES {
+        return Err(storage_invalid("invalid scan size"));
+    }
+    let mut previous = after;
+    for row in &rows {
+        validate_row(config, channel, maximum, previous, row)?;
+        previous = row.cursor;
+    }
+    let full = rows.len() == limits::PULL_CHANGES;
+    let rows: Vec<_> = rows.into_iter().filter(|row| row.cursor <= bound).collect();
+    let mut to = bound;
+    if full && previous < bound {
+        let later: Vec<Invalidation> = host
+            .call_typed(HostRequest::Scan {
+                channel: channel.into(),
+                after: previous,
+                limit: 1,
+            })
+            .await?;
+        if later.len() > 1 {
+            return Err(storage_invalid("invalid continuation scan size"));
+        }
+        if let Some(row) = later.first() {
+            validate_row(config, channel, maximum, previous, row)?;
+            if row.cursor <= bound {
+                to = previous;
+            }
+        }
+    }
+    Ok((rows, to))
+}
+
+/// Resolve content once per identity, retaining every channel pair's evidence.
+async fn channel_changes(
+    config: &Config,
+    owner: &str,
+    models: &BTreeMap<String, u64>,
+    rows: Vec<Invalidation>,
+    host: &impl Host,
+) -> Result<Vec<axton_core::ChannelChange>> {
+    let mut keys = Vec::new();
+    for row in &rows {
+        if row.kind == crate::channel_members::PositionKind::Upsert {
+            keys.push((
+                config
+                    .schema
+                    .record_key(&row.model, &row.identity)
+                    .map_err(storage_invalid)?,
+                row.stamp,
+            ));
+        }
+    }
+    let authority = resolve_records(config, owner, models, keys, host).await?;
+    let records: BTreeMap<_, _> = authority
+        .into_iter()
+        .map(|r| {
+            let key = RecordKey {
+                model: r.model.clone(),
+                identity: r.identity.clone(),
+            }
+            .encoded()
+            .map_err(internal)?;
+            Ok((key, r))
+        })
+        .collect::<Result<_>>()?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(match row.kind {
+                crate::channel_members::PositionKind::Remove => axton_core::ChannelChange::Remove {
+                    channel: row.channel,
+                    cursor: row.cursor,
+                    key: RecordKey {
+                        model: row.model,
+                        identity: row.identity,
+                    },
+                },
+                crate::channel_members::PositionKind::Upsert => {
+                    let key = RecordKey {
+                        model: row.model,
+                        identity: row.identity,
+                    }
+                    .encoded()
+                    .map_err(internal)?;
+                    axton_core::ChannelChange::Upsert {
+                        channel: row.channel,
+                        cursor: row.cursor,
+                        record: records
+                            .get(&key)
+                            .ok_or_else(|| internal("missing resolved authority"))?
+                            .clone(),
+                    }
+                }
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn process_channel_delta(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    let request = axton_core::PullRequest::decode(bytes).map_err(request_invalid)?;
+    config.check_declared(&request.models)?;
+    let mut cursors = BTreeMap::new();
+    let mut rows = vec![];
+    for (channel, from) in request.cursors {
+        let maximum = head(host, &channel).await?;
+        if from > maximum {
+            return Err(request_invalid("cursor ahead of head"));
+        }
+        let (page, to) = channel_rows(config, &channel, from, maximum, maximum, host).await?;
+        rows.extend(page);
+        cursors.insert(
+            channel,
+            axton_core::CursorRange {
+                from,
+                to,
+                head: maximum,
+            },
+        );
+    }
+    let changes = channel_changes(config, owner, &request.models, rows, host).await?;
+    String::from_utf8(
+        axton_core::ChannelPullPage { cursors, changes }
+            .encode()
+            .map_err(internal)?,
+    )
+    .map_err(internal)
+}
+
+pub(crate) async fn process_channel_bootstrap(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    let request = BootstrapRequest::decode(bytes).map_err(request_invalid)?;
+    config.check_declared(&request.models)?;
+    let maximum = head(host, &request.channel).await?;
+    if request.until > maximum {
+        return Err(request_invalid("bootstrap origin ahead of head"));
+    }
+    let (rows, to) = channel_rows(
+        config,
+        &request.channel,
+        request.after,
+        request.until,
+        maximum,
+        host,
+    )
+    .await?;
+    let changes = channel_changes(config, owner, &request.models, rows, host).await?;
+    String::from_utf8(
+        axton_core::ChannelBootstrapPage {
+            channel: request.channel,
+            from: request.after,
+            to,
+            until: request.until,
+            head: maximum,
+            changes,
+        }
+        .encode()
+        .map_err(internal)?,
+    )
+    .map_err(internal)
+}
+
+/// Staged record-only readers retain their old page limit after filtering.
+/// Only this compatibility path projects removals away; channel delivery
+/// consumes the unfiltered log directly.
+pub(crate) async fn legacy_rows(
+    config: &Config,
+    channel: &str,
+    after: u64,
+    maximum: u64,
+    host: &impl Host,
+) -> Result<Vec<Invalidation>> {
+    let mut result = vec![];
+    let mut cursor = after;
+    loop {
+        let limit = (limits::PULL_CHANGES - result.len()) as u64;
+        let rows: Vec<Invalidation> = host
+            .call_typed(HostRequest::Scan {
+                channel: channel.into(),
+                after: cursor,
+                limit,
+            })
+            .await?;
+        if rows.len() > limit as usize {
+            return Err(storage_invalid("invalid scan size"));
+        }
+        let exhausted = rows.len() < limit as usize;
+        for row in rows {
+            validate_row(config, channel, maximum, cursor, &row)?;
+            cursor = row.cursor;
+            if row.kind == crate::channel_members::PositionKind::Upsert {
+                result.push(row);
+            }
+        }
+        if exhausted || result.len() == limits::PULL_CHANGES || cursor == maximum {
+            return Ok(result);
+        }
     }
 }

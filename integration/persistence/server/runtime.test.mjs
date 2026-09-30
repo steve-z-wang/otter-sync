@@ -111,7 +111,7 @@ test('handler registration names every retained version and a function means v1 
 });
 test('push commits business + compacted publication + exact durable receipt together',async()=>{
  const request=push('dedup',1,[mutation(1,'first')]);const receipt=await backend.push('alice',request);const calls=called;
- assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
+ assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"channel":"shared","cursor":1,"identity":{"id":"a"},"model":"Task"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
  // Replay is keyed by (clientId, batchSequence): the same frozen bytes and a changed body both return the stored receipt without a handler call, a business write, a publication or a subscriber wake.
  let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_channel_log');
  assert.equal(await backend.push('alice',request),receipt);assert.equal(called,calls);
@@ -558,7 +558,7 @@ test('a handler may keep using the transaction after a declaration; the membersh
   await tx.$queryRawUnsafe('SELECT 1');
  }},loaders:{task:readTasks}});
  const receipt=JSON.parse(await deferredBackend.push('alice',push('deferred',1,[mutation(1,'deferred','deferred-a')])));
- assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
+ assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',memberships:[{channel:'deferred',cursor:1,model:'Task',identity:{id:'deferred-a'}}],records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
  const page=JSON.parse(await deferredBackend.pull('alice',pullBody({deferred:0})));
  assert.deepEqual(page.changes.at(-1),{model:'Task',identity:{id:'deferred-a'},stamp:1,state:{title:'deferred'}});
 });

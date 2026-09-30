@@ -357,7 +357,7 @@ test('the forward upgrade copies memberships, maps invalidations to current pres
   try{
    const d=pg(upgradedPool).driver;
    const call=r=>d.transaction(tx=>answer(d,tx,r));
-   assert.deepEqual((await call({op:'scan',channel:'m-A',after:0,limit:50})).map(r=>[r.model,r.identity.id,r.cursor,r.stamp]),[['Todo','c',2,2],['Todo','a',5,3],['Note','a',6,1],['Todo','aa',7,1],['Todo','d',8,1]]);
+   assert.deepEqual((await call({op:'scan',channel:'m-A',after:0,limit:50})).map(r=>[r.model,r.identity.id,r.cursor,r.kind,r.stamp??null]),[['Todo','c',2,'upsert',2],['Todo','b',4,'remove',null],['Todo','a',5,'upsert',3],['Note','a',6,'upsert',1],['Todo','aa',7,'upsert',1],['Todo','d',8,'upsert',1]]);
    const removed=await call({op:'applyChannelMembers',deltas:[{channel:'m-A',model:'Todo',identity:{id:'c'},identityKey:JSON.stringify({id:'c'}),present:false,tags:[],publish:true}]});
    assert.deepEqual(removed.map(p=>[p.cursor,p.kind]),[[9,'remove']]);
   }finally{await upgradedPool.end();}

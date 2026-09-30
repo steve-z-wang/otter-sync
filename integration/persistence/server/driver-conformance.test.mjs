@@ -244,13 +244,14 @@ for(const shim of shims){
   assert.deepEqual(await q('SELECT * FROM axton_channel_tag WHERE channel=$1',[p('undone')]),[]);
   assert.deepEqual(await q('SELECT * FROM axton_channel WHERE channel=$1',[p('undone')]),[]);
  });
- test(`[${shim.name}] scan answers upsert positions only before its limit, pairs each cursor with the current record stamp and reports missing metadata`,async()=>{
+ test(`[${shim.name}] scan retains removals before its limit and reads current stamps only for upserts`,async()=>{
   const channel=p('scan');const [id,gone,other]=[p('scan'),p('scan-gone'),p('scan-other')];
   await inTx(async(tx,_,f)=>{for(const m of [gone,other,id])await f({op:'ensureStamp',model:'Task',identityKey:key(m)});await f({op:'applyChannelMembers',deltas:[gone,other,id].map(m=>member(channel,m))});await f({op:'advanceStamp',model:'Task',identityKey:key(id)});});
   const scan=(after=0,limit=50)=>inTx((tx,_,f)=>f({op:'scan',channel,after,limit}));
   assert.deepEqual((await scan()).map(r=>r.identity.id),[gone,other,id]);
   await inTx((tx,_,f)=>f({op:'applyChannelMembers',deltas:[member(channel,gone,{present:false}),member(channel,other,{present:false})]}));
-  assert.deepEqual(await scan(0,1),[{channel,cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'remove positions are filtered before the limit');
+  assert.deepEqual(await scan(0,1),[{channel,kind:'upsert',cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'the first retained position fills the limit');
+  assert.deepEqual(await scan(3,1),[{channel,kind:'remove',cursor:4,model:'Task',identityKey:key(gone),identity:{id:gone}}],'a removal fills a page without authority fields');
   assert.deepEqual((await q('SELECT cursor::int,kind FROM axton_channel_log WHERE channel=$1 ORDER BY cursor',[channel])).map(r=>[r.cursor,r.kind]),[[3,'upsert'],[4,'remove'],[5,'remove']],'one compacted row per pair');
   // The log's foreign key forbids dropping a record row; forge the defect with triggers off.
   await inTx(async(tx,query)=>{await query('SET LOCAL session_replication_role = replica');await query('DELETE FROM axton_record WHERE identity_key=$1',[key(id)]);});

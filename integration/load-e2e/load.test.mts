@@ -913,7 +913,10 @@ test("native Load validates each tagged add separately, unions 65 labels once, a
   const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004", args: { project: "tag-overflow" } };
   const refused = (await post({ loads: [invalid] })).loads;
   assert.equal(refused[0]!.outcome.status, "failed");
-  if (refused[0]!.outcome.status === "failed") assert.equal(refused[0]!.outcome.error.code, "handler.invalid");
+  if (refused[0]!.outcome.status === "failed") {
+    assert.equal(refused[0]!.outcome.error.code, "handler.failed", "the collector refuses inside the handler");
+    assert.match(refused[0]!.outcome.error.message, /more than 64 distinct tags/);
+  }
   assert.deepEqual(await fixture.taggedMembers("items:tag-overflow"), []);
   assert.equal(await fixture.head("items:tag-overflow"), 0);
   assert.deepEqual((await post({ loads: [invalid] })).loads, refused);

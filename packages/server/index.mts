@@ -39,8 +39,11 @@ export type {
   JsonValue,
   LoadNext,
   Locked,
+  MemberDelta,
+  MemberKey,
+  MemberPosition,
+  MemberState,
   Memberships,
-  Published,
   Stamped,
   Stamps,
 } from "./host-contract.mts";
@@ -1297,10 +1300,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             case "advanceStamp":
             case "ensureStamp":
             case "readStamps":
-            case "publish":
             case "lockRecord":
             case "memberships":
-            case "setMembership":
+            case "lockChannels":
+            case "readChannelMembers":
+            case "applyChannelMembers":
               break;
             default: {
               const unreachable: never = req;
@@ -1308,9 +1312,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             }
           }
           result = await storage.call(req);
-          // Every publication that survives its savepoint wakes the channel's
+          // Every position that survives its savepoint wakes the channel's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "publish") session.touched.add(req.channel);
+          if (req.op === "applyChannelMembers")
+            for (const delta of req.deltas)
+              if (delta.publish) session.touched.add(delta.channel);
         }
         return callbackJson(result);
       });

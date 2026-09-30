@@ -1,15 +1,16 @@
 //! The server's persistence, in memory. Mirrors packages/postgres/src/persistence.mts
 //! closely enough that axton_server cannot tell the difference: per-client receipts,
-//! per-channel heads, one invalidation row per (channel, record) carrying the latest
-//! cursor, one stamp counter per record that only a business change advances, and
-//! the persistent (record, channel) memberships of `axton_membership`.
+//! per-channel heads, one position row per (channel, record) carrying the latest
+//! cursor and whether it is a removal, one stamp counter per record that only a
+//! business change advances, and the persistent tagged (record, channel) memberships.
 use axton_core::{PushRequest, RecordKey};
 use axton_server::{
     Host,
+    channel_members::{MemberPosition, MemberState, PositionKind},
     host::{
-        Acknowledged, ChannelIntent, Claimed, ClaimedCall, Handled, Head, HostRequest,
-        Invalidation as ContractInvalidation, Loaded, Locked, Memberships, Published, RecordRef,
-        Scanned, Stamped, Stamps,
+        Acknowledged, ChannelIntent, ChannelMembers, Claimed, ClaimedCall, Handled, Head,
+        HostRequest, Invalidation as ContractInvalidation, Loaded, Locked, Memberships, Positions,
+        RecordRef, Scanned, Stamped, Stamps,
     },
 };
 use serde_json::{Map, Value, json};
@@ -31,6 +32,9 @@ struct Invalidation {
     /// *current* stamp instead (see `Tables::stamps`); this one only says how far
     /// behind the record this channel's own invalidation is.
     stamp: u64,
+    /// The latest position released the membership. `scan` answers members
+    /// only, so a removal is a hole no page returns until removal delivery.
+    removed: bool,
 }
 
 /// One record's stamp row: the counter, and the evidence the invariant
@@ -61,11 +65,11 @@ struct Tables {
     stamps: BTreeMap<String, Stamp>,
     heads: BTreeMap<String, u64>,
     invalidations: BTreeMap<(String, String), Invalidation>,
-    /// `axton_membership`: (encoded record key, channel), in primary-key order.
-    /// Kept apart from `stamps` and `invalidations`: enrolment allocates no
-    /// cursor and advances no stamp. It lives in the tables, so savepoints and
-    /// failed transactions restore it with everything else.
-    memberships: BTreeSet<(String, String)>,
+    /// Live members: (encoded record key, channel), in primary-key order, to
+    /// the member's tags. Kept apart from `stamps` and `invalidations`. It
+    /// lives in the tables, so savepoints and failed transactions restore it
+    /// with everything else.
+    memberships: BTreeMap<(String, String), BTreeSet<String>>,
 }
 
 #[derive(Default)]
@@ -479,6 +483,7 @@ fn publish_at(t: &mut Tables, channel: &str, key: &RecordKey, stamp: u64) -> Res
             identity_key: key.encoded_identity().unwrap(),
             cursor,
             stamp,
+            removed: false,
         },
     );
     Ok(cursor)
@@ -489,14 +494,14 @@ fn stored_memberships(t: &Tables, key: &RecordKey) -> BTreeSet<String> {
     let k = encoded(key);
     t.memberships
         .range((k.clone(), String::new())..)
-        .take_while(|(record, _)| *record == k)
-        .map(|(_, channel)| channel.clone())
+        .take_while(|((record, _), _)| *record == k)
+        .map(|((_, channel), _)| channel.clone())
         .collect()
 }
 
-/// `setMembership`: add (creating the channel at head zero) or remove one
-/// membership. Idempotent both ways; adding needs the record's metadata row,
-/// as the foreign key does.
+/// Add (creating the channel at head zero) or remove one membership, keeping
+/// an existing member's tags. Idempotent both ways; allocates no cursor;
+/// adding needs the record's metadata row, as the foreign key does.
 fn set_stored_membership(
     t: &mut Tables,
     channel: &str,
@@ -514,8 +519,63 @@ fn set_stored_membership(
         ));
     }
     t.heads.entry(channel.to_string()).or_insert(0);
-    t.memberships.insert((k, channel.to_string()));
+    t.memberships.entry((k, channel.to_string())).or_default();
     Ok(())
+}
+
+/// `applyChannelMembers`: persist final member states as given. A published
+/// delta takes its Channel's next cursor (an upsert at the record's current
+/// stamp, or a removal); an unpublished one keeps its member's position.
+fn apply_members(
+    t: &mut Tables,
+    deltas: Vec<axton_server::channel_members::MemberDelta>,
+) -> Result<Positions, String> {
+    let mut positions = vec![];
+    for delta in deltas {
+        let key = key_of(&delta.key.model, &delta.key.identity);
+        let k = encoded(&key);
+        let member = (k.clone(), delta.channel.clone());
+        let pair = (delta.channel.clone(), k.clone());
+        let was_member = t.memberships.contains_key(&member);
+        let (cursor, kind) = if delta.present {
+            set_stored_membership(t, &delta.channel, &key, true)?;
+            t.memberships.insert(member, delta.tags);
+            if delta.publish {
+                let stamp = t.stamps[&k].value;
+                (
+                    publish_at(t, &delta.channel, &key, stamp)?,
+                    PositionKind::Upsert,
+                )
+            } else {
+                match t.invalidations.get(&pair) {
+                    Some(row) if was_member && !row.removed => (row.cursor, PositionKind::Upsert),
+                    _ => return Err(format!("{k} keeps no position in {}", delta.channel)),
+                }
+            }
+        } else {
+            if !was_member {
+                return Err(format!("{k} is no member of {} to remove", delta.channel));
+            }
+            t.memberships.remove(&member);
+            let head = t.heads.entry(delta.channel.clone()).or_insert(0);
+            *head += 1;
+            let cursor = *head;
+            let row = t
+                .invalidations
+                .get_mut(&pair)
+                .ok_or_else(|| format!("{k} has no position in {}", delta.channel))?;
+            row.cursor = cursor;
+            row.removed = true;
+            (cursor, PositionKind::Remove)
+        };
+        positions.push(MemberPosition {
+            channel: delta.channel,
+            key: delta.key,
+            cursor,
+            kind,
+        });
+    }
+    Ok(positions)
 }
 
 fn key_of(model: &str, identity: &Value) -> RecordKey {
@@ -856,17 +916,6 @@ impl Host for MemHost {
                     }
                     response!(stamps)
                 }
-                HostRequest::Publish {
-                    channel,
-                    model,
-                    identity,
-                    stamp,
-                    ..
-                } => {
-                    let key = key_of(&model, &identity);
-                    let cursor = publish_at(&mut s.tables, &channel, &key, stamp)?;
-                    response!(Published { cursor, stamp })
-                }
                 HostRequest::LockRecord {
                     model,
                     identity_key,
@@ -888,15 +937,38 @@ impl Host for MemHost {
                     let key = key_from_identity_key(&model, &identity_key)?;
                     response!(Memberships(stored_memberships(&s.tables, &key)))
                 }
-                HostRequest::SetMembership {
+                // One thread: the lock is the order check the decoder made.
+                HostRequest::LockChannels { .. } => response!(Acknowledged),
+                HostRequest::ReadChannelMembers {
                     channel,
-                    model,
-                    identity_key,
-                    present,
+                    explicit_keys,
+                    tags,
                 } => {
-                    let key = key_from_identity_key(&model, &identity_key)?;
-                    set_stored_membership(&mut s.tables, &channel, &key, present)?;
-                    response!(Acknowledged)
+                    let named: BTreeSet<String> = explicit_keys
+                        .iter()
+                        .map(|key| encoded(&key_of(&key.model, &key.identity)))
+                        .collect();
+                    let members: ChannelMembers = s
+                        .tables
+                        .memberships
+                        .iter()
+                        .filter(|((record, c), held)| {
+                            *c == channel
+                                && (named.contains(record)
+                                    || tags.iter().any(|tag| held.contains(tag)))
+                        })
+                        .map(|((record, _), held)| {
+                            let row = &s.tables.stamps[record];
+                            MemberState {
+                                key: row.key.clone(),
+                                tags: held.clone(),
+                            }
+                        })
+                        .collect();
+                    response!(members)
+                }
+                HostRequest::ApplyChannelMembers { deltas } => {
+                    response!(apply_members(&mut s.tables, deltas)?)
                 }
                 HostRequest::Scan {
                     channel,
@@ -913,7 +985,10 @@ impl Host for MemHost {
                         .filter(|((c, record), row)| {
                             *c == channel
                                 && row.cursor > after
-                                && s.tables.memberships.contains(&(record.clone(), c.clone()))
+                                && !row.removed
+                                && s.tables
+                                    .memberships
+                                    .contains_key(&(record.clone(), c.clone()))
                         })
                         .map(|(_, row)| row)
                         .collect();
@@ -1321,12 +1396,24 @@ mod tests {
             json!({"op":"memberships","model":"Entry","identityKey":identity_key}),
         )
     }
-    fn enroll(host: &MemHost, channel: &str, id: &str, present: bool) -> Result<Value, String> {
-        let identity_key = entry_key(id).encoded_identity().unwrap();
+    /// One final member state of `id` in `channel`, as settlement writes it.
+    fn apply(
+        host: &MemHost,
+        channel: &str,
+        id: &str,
+        present: bool,
+        publish: bool,
+    ) -> Result<Value, String> {
+        let key = entry_key(id);
         call(
             host,
-            json!({"op":"setMembership","channel":channel,"model":"Entry","identityKey":identity_key,"present":present}),
+            json!({"op":"applyChannelMembers","deltas":[{"channel":channel,"model":"Entry",
+                "identity":key.identity,"identityKey":key.encoded_identity().unwrap(),
+                "present":present,"tags":[],"publish":publish}]}),
         )
+    }
+    fn enroll(host: &MemHost, channel: &str, id: &str, present: bool) -> Result<Value, String> {
+        apply(host, channel, id, present, true)
     }
     fn ensure_stamp(host: &MemHost, id: &str) -> Result<Value, String> {
         let identity_key = entry_key(id).encoded_identity().unwrap();
@@ -1365,8 +1452,9 @@ mod tests {
     }
 
     #[test]
-    fn persistent_membership_is_idempotent_sorted_and_needs_record_metadata() {
+    fn channel_members_need_record_metadata_and_take_one_position_per_published_state() {
         let host = MemHost::new();
+        let cursor = |answer: Value| answer[0]["cursor"].clone();
         host.transaction(|| {
             assert_eq!(
                 lock(&host, "e1")?,
@@ -1379,24 +1467,32 @@ mod tests {
                     .contains("Record metadata missing"),
                 "a member needs its record row first"
             );
-            assert_eq!(
-                enroll(&host, "a", "e1", false)?,
-                Value::Null,
-                "removing a non-member of an absent record is a no-op"
+            assert!(
+                enroll(&host, "a", "e1", false)
+                    .unwrap_err()
+                    .contains("no member"),
+                "settlement never removes a non-member"
             );
             assert_eq!(
                 lock(&host, "e1")?,
                 Value::Null,
-                "neither lock nor removal creates the row"
+                "neither lock nor refusal creates the row"
             );
             assert_eq!(ensure_stamp(&host, "e1")?, json!(1));
-            for channel in ["b", "a", "a"] {
-                assert_eq!(enroll(&host, channel, "e1", true)?, Value::Null);
-            }
+            assert_eq!(cursor(enroll(&host, "b", "e1", true)?), json!(1));
+            assert_eq!(cursor(enroll(&host, "a", "e1", true)?), json!(1));
+            assert_eq!(
+                cursor(apply(&host, "a", "e1", true, false)?),
+                json!(1),
+                "an unpublished state keeps its position"
+            );
             assert_eq!(members(&host, "e1")?, json!(["a", "b"]), "unique, sorted");
             assert_eq!(members(&host, "e2")?, json!([]));
-            assert_eq!(enroll(&host, "b", "e1", false)?, Value::Null);
-            assert_eq!(enroll(&host, "b", "e1", false)?, Value::Null);
+            let removed = enroll(&host, "b", "e1", false)?;
+            assert_eq!(
+                (cursor(removed.clone()), removed[0]["kind"].clone()),
+                (json!(2), json!("remove"))
+            );
             assert_eq!(members(&host, "e1")?, json!(["a"]));
             assert_eq!(
                 lock(&host, "e1")?,
@@ -1412,9 +1508,7 @@ mod tests {
             1,
             "locks and membership never advance a stamp"
         );
-        assert_eq!(host.head("a"), 0, "enrolment publishes nothing");
-        assert_eq!(host.head("b"), 0);
-        assert!(host.channel_records("a").is_empty());
+        assert_eq!((host.head("a"), host.head("b")), (1, 2));
         assert_eq!(
             host.membership(&entry_key("e1")),
             Vec::<String>::new(),

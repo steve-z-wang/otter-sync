@@ -270,7 +270,7 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
         declare(&mut sim, &format!("Entry:e{i:03}"), None, &[("a", false)]);
     }
     let origin = sim.host.head("a");
-    assert_eq!(origin, 125, "removal allocated no position");
+    assert_eq!(origin, 185, "one removal position per removed member");
     sim.apply(Action::SubscribeAtHead {
         client: 1,
         channel: "a".into(),

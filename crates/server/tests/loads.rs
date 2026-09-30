@@ -1041,8 +1041,9 @@ fn settlement_ops(backend: &Backend) -> Vec<String> {
         "ensureStamp",
         "lockRecord",
         "memberships",
-        "setMembership",
-        "publish",
+        "lockChannels",
+        "readChannelMembers",
+        "applyChannelMembers",
     ];
     backend
         .ops()
@@ -1096,18 +1097,24 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
     assert_eq!(
         backend.ops(),
         [
-            strings(&["claimCall", "savepoint", "handleLoad", "readStamps", "load"]),
+            strings(&[
+                "claimCall",
+                "savepoint",
+                "handleLoad",
+                "readStamps",
+                "load",
+                "lockChannels"
+            ]),
             repeated("ensureStamp", 2),
-            repeated("memberships", 2),
-            repeated("setMembership", 2),
-            repeated("publish", 2),
+            strings(&["readChannelMembers", "applyChannelMembers"]),
             strings(&["release", "saveCall"]),
         ]
         .concat(),
         "settlement runs after the page's reads and before its release; nothing advances a stamp"
     );
 
-    // A fresh page re-adding existing members publishes nothing more.
+    // A fresh page re-adding existing members publishes nothing more: each
+    // unchanged member keeps, and answers, its existing position.
     backend.clear_log();
     let before = durable(&backend);
     let again = page(&backend, &item(2, Value::Null));
@@ -1115,8 +1122,40 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
     assert_eq!(durable(&backend), before);
     assert_eq!(
         settlement_ops(&backend),
-        [repeated("ensureStamp", 2), repeated("memberships", 2)].concat()
+        [
+            strings(&["lockChannels"]),
+            repeated("ensureStamp", 2),
+            strings(&["readChannelMembers", "applyChannelMembers"]),
+        ]
+        .concat()
     );
+    assert!(backend.deltas().iter().all(|delta| !delta.publish));
+}
+
+/// A Load's add carries tags like a Mutation's: a repeated pair unions its
+/// tags into the first, and the pair still takes one position.
+#[test]
+fn a_page_enrolls_with_tags_and_a_repeated_pair_unions_them() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![
+                support::add_tagged("c", "Todo", "t1", &["X"]),
+                support::add_tagged("c", "Todo", "t1", &["Y", "X"]),
+            ],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".to_string(), vec!["X".to_string(), "Y".to_string()])]
+    );
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
 }
 
 #[test]
@@ -1137,22 +1176,21 @@ fn one_record_joins_several_channels_without_republishing_to_its_existing_ones()
     assert_eq!(backend.members("Todo", "t1"), ["a", "b", "c"]);
     assert_eq!(backend.invalidation("a", "Todo", "t1"), Some((1, 3)));
     assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 3)));
-    assert_eq!(backend.invalidation("b", "Todo", "t1"), None);
+    assert_eq!(backend.invalidation("b", "Todo", "t1"), Some((8, 3)));
     assert_eq!(
         backend.head("b"),
-        7,
+        8,
         "an existing Channel is not republished"
     );
     assert_eq!(backend.stamp("Todo", "t1"), Some(3));
     assert_eq!(
         settlement_ops(&backend),
         strings(&[
+            "lockChannels",
             "ensureStamp",
-            "memberships",
-            "setMembership",
-            "setMembership",
-            "publish",
-            "publish"
+            "readChannelMembers",
+            "readChannelMembers",
+            "applyChannelMembers"
         ])
     );
 }
@@ -1185,9 +1223,14 @@ fn repeated_declarations_across_outputs_and_mixed_lists_are_one_effect_per_pair(
     assert_eq!(backend.head("c"), 3, "one position per distinct pair");
     assert_eq!(backend.head("d"), 1);
     assert_eq!(backend.count("ensureStamp"), 3, "one guard per record");
-    assert_eq!(backend.count("memberships"), 3);
-    assert_eq!(backend.count("setMembership"), 4);
-    assert_eq!(backend.count("publish"), 4);
+    assert_eq!(backend.count("memberships"), 0, "nothing is touched");
+    assert_eq!(
+        backend.count("readChannelMembers"),
+        2,
+        "one read per Channel"
+    );
+    assert_eq!(backend.deltas().len(), 4, "one final state per pair");
+    assert_eq!(backend.publishes().len(), 4);
     assert_eq!(backend.count("advanceStamp"), 0);
 }
 
@@ -1233,23 +1276,25 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
             "an invalid declaration after a valid one",
             vec![add("c", "Todo", "t1"), add("c", "Todo", "t9")],
         ),
-        // A Load has no tag selector, and tags do not settle yet: both are
-        // refused before any read, never dropped.
+        // A Load has no tag selector, and its tags follow the add rules:
+        // each is refused before any read, never dropped.
         (
             "a tag selector",
             vec![json!({"kind":"removeTag","channel":"c","tag":"X"})],
         ),
         (
-            "a tagged addition",
-            vec![
-                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":["X"]}),
-            ],
+            "a blank tag",
+            vec![support::add_tagged("c", "Todo", "t1", &["\u{feff}"])],
         ),
         (
-            "a repeated pair that adds a tag",
+            "a tag past 256 bytes",
+            vec![support::add_tagged("c", "Todo", "t1", &[&"x".repeat(257)])],
+        ),
+        (
+            "a repeated pair adding a blank tag",
             vec![
                 add("c", "Todo", "t1"),
-                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":["X"]}),
+                support::add_tagged("c", "Todo", "t1", &[" "]),
             ],
         ),
     ];
@@ -1336,7 +1381,7 @@ fn enrollment_is_bounded_by_distinct_pairs_after_deduplication() {
         backend.members("Todo", "t1").len(),
         limits::LOAD_ENROLLMENT_PAIRS
     );
-    assert_eq!(backend.count("publish"), limits::LOAD_ENROLLMENT_PAIRS);
+    assert_eq!(backend.publishes().len(), limits::LOAD_ENROLLMENT_PAIRS);
 
     // One distinct pair more is a saved size failure that keeps nothing.
     let backend = Backend::new();
@@ -1403,6 +1448,19 @@ fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
         &config(),
         code::LOAD_PAGE_TOO_LARGE,
         "one byte over",
+    );
+
+    // A repeated pair's unioned tag is measured again: three bytes over.
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let mut tagged: Vec<Value> = channels.iter().map(|c| add(c, "Todo", "t1")).collect();
+    tagged.push(support::add_tagged(&channels[0], "Todo", "t1", &["y"]));
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), tagged));
+    refused_before_resolution(
+        &backend,
+        &config(),
+        code::LOAD_PAGE_TOO_LARGE,
+        "a unioned tag over",
     );
 }
 
@@ -1519,20 +1577,27 @@ fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrol
             code::HOST,
         ),
         (
-            "memberships",
+            "lockChannels",
             Err("connection reset".to_string()),
             code::HOST,
         ),
         (
-            "setMembership",
+            "readChannelMembers",
             Err("serialization failure".to_string()),
             code::HOST,
         ),
-        ("publish", Err("deadlock detected".to_string()), code::HOST),
+        (
+            "applyChannelMembers",
+            Err("deadlock detected".to_string()),
+            code::HOST,
+        ),
         ("saveCall", Err("connection reset".to_string()), code::HOST),
         (
-            "publish",
-            Ok(json!({"cursor":1,"stamp":99})),
+            "applyChannelMembers",
+            Ok(
+                json!([{"channel":"c","model":"Todo","identityKey":"{\"id\":\"t1\"}",
+                "cursor":1,"kind":"remove"}]),
+            ),
             code::HOST_INVALID,
         ),
     ];
@@ -1577,6 +1642,16 @@ fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrol
             "{op}"
         );
     }
+    // A settlement whose Channel locks went stale, once the carrier's own
+    // retries ran out, is retryable like a serialization conflict.
+    let outcome = load_fault_outcome(&LoadFault::Engine {
+        code: code::TRANSACTION_CONFLICT.into(),
+        message: "Todo joined Channel d after settlement locked its Channels".into(),
+    });
+    assert!(
+        matches!(&outcome, axton_core::LoadOutcome::Retryable { error } if error.code == code::TRANSACTION_CONFLICT),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -1609,7 +1684,7 @@ fn a_replayed_page_neither_enrolls_nor_undoes_a_later_removal_and_a_fresh_page_r
     let fresh = page(&backend, &item(2, Value::Null));
     assert_eq!(fresh["outcome"]["status"], "succeeded");
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
-    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((2, 1)));
+    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((3, 1)));
     assert_eq!(backend.stamp("Todo", "t1"), Some(1));
 }
 
@@ -1643,10 +1718,18 @@ fn batch_siblings_enroll_or_fail_independently() {
 }
 
 #[test]
-fn enrollment_adds_per_record_guards_and_per_new_pair_writes_to_the_fixed_page_path() {
+fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_the_fixed_page_path()
+{
     let fixed_page = |settlement: Vec<String>| {
         [
-            strings(&["claimCall", "savepoint", "handleLoad", "readStamps", "load"]),
+            strings(&[
+                "claimCall",
+                "savepoint",
+                "handleLoad",
+                "readStamps",
+                "load",
+                "lockChannels",
+            ]),
             settlement,
             strings(&["release", "saveCall"]),
         ]
@@ -1660,34 +1743,31 @@ fn enrollment_adds_per_record_guards_and_per_new_pair_writes_to_the_fixed_page_p
         ids.iter().map(|id| add(channel, "Todo", id)).collect()
     };
 
-    // 1,000 records newly joining one Channel: per record one ensureStamp and
-    // one memberships read, per new pair one setMembership and one publish.
+    // 1,000 records newly joining one Channel: per record one ensureStamp,
+    // then one member read and one write for the whole page.
+    let settled = |guards: usize, reads: usize| {
+        [
+            repeated("ensureStamp", guards),
+            repeated("readChannelMembers", reads),
+            strings(&["applyChannelMembers"]),
+        ]
+        .concat()
+    };
     backend.script(
         "ProjectTodos",
         enrolling(ids(&all), json!([]), into("c", &all)),
     );
     let result = page(&backend, &item(1, Value::Null));
     assert_eq!(result["outcome"]["status"], "succeeded");
-    assert_eq!(
-        backend.ops(),
-        fixed_page(
-            [
-                repeated("ensureStamp", 1000),
-                repeated("memberships", 1000),
-                repeated("setMembership", 1000),
-                repeated("publish", 1000),
-            ]
-            .concat()
-        )
-    );
+    assert_eq!(backend.ops(), fixed_page(settled(1000, 1)));
+    assert_eq!(backend.publishes().len(), 1000);
 
-    // The same 1,000 re-added by a fresh page: guards and reads only.
+    // The same 1,000 re-added by a fresh page: the same operations, and the
+    // write only answers their existing positions.
     backend.clear_log();
     page(&backend, &item(2, Value::Null));
-    assert_eq!(
-        backend.ops(),
-        fixed_page([repeated("ensureStamp", 1000), repeated("memberships", 1000)].concat())
-    );
+    assert_eq!(backend.ops(), fixed_page(settled(1000, 1)));
+    assert_eq!(backend.publishes().len(), 0);
 
     // 500 records joining two new Channels: the per-record work is shared.
     backend.clear_log();
@@ -1701,16 +1781,6 @@ fn enrollment_adds_per_record_guards_and_per_new_pair_writes_to_the_fixed_page_p
         ),
     );
     page(&backend, &item(3, Value::Null));
-    assert_eq!(
-        backend.ops(),
-        fixed_page(
-            [
-                repeated("ensureStamp", 500),
-                repeated("memberships", 500),
-                repeated("setMembership", 1000),
-                repeated("publish", 1000),
-            ]
-            .concat()
-        )
-    );
+    assert_eq!(backend.ops(), fixed_page(settled(500, 2)));
+    assert_eq!(backend.publishes().len(), 1000);
 }

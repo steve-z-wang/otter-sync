@@ -115,11 +115,6 @@
       "responses": [{"variant": "stamped", "value": [4, 1]}]
     },
     {
-      "op": "publish",
-      "request": {"op": "publish", "channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "stamp": 4},
-      "responses": [{"variant": "published", "value": {"cursor": 6, "stamp": 4}}]
-    },
-    {
       "op": "lockRecord",
       "request": {"op": "lockRecord", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
       "responses": [
@@ -136,9 +131,32 @@
       ]
     },
     {
-      "op": "setMembership",
-      "request": {"op": "setMembership", "channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}", "present": true},
+      "op": "lockChannels",
+      "request": {"op": "lockChannels", "channels": ["other", "shared"]},
       "responses": [{"variant": "acknowledged", "value": null}]
+    },
+    {
+      "op": "readChannelMembers",
+      "request": {"op": "readChannelMembers", "channel": "shared", "explicitKeys": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}], "tags": ["Journal:1"]},
+      "responses": [
+        {"variant": "members", "value": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}", "tags": []}, {"model": "Task", "identityKey": "{\"id\":\"t-2\"}", "tags": ["Journal:1", "x"]}]},
+        {"variant": "none", "value": []}
+      ]
+    },
+    {
+      "op": "applyChannelMembers",
+      "request": {"op": "applyChannelMembers", "deltas": [
+        {"channel": "shared", "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "present": true, "tags": ["x"], "publish": false},
+        {"channel": "shared", "model": "Task", "identity": {"id": "t-2"}, "identityKey": "{\"id\":\"t-2\"}", "present": false, "tags": [], "publish": true},
+        {"channel": "shared", "model": "Task", "identity": {"id": "t-3"}, "identityKey": "{\"id\":\"t-3\"}", "present": true, "tags": [], "publish": true}
+      ]},
+      "responses": [
+        {"variant": "positions", "value": [
+          {"channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}", "cursor": 5, "kind": "upsert"},
+          {"channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-2\"}", "cursor": 7, "kind": "remove"},
+          {"channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-3\"}", "cursor": 8, "kind": "upsert"}
+        ]}
+      ]
     }
   ]
 }

@@ -18,11 +18,12 @@
 //! that escaped its transaction, to [`encode_load_batch`], which classifies
 //! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
+use crate::channel_members::declared_tags;
 use crate::host::{
     Acknowledged, ChannelIntent, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef,
     Stamps,
 };
-use crate::settlement::{Changes, settle_changes, tags_unsupported};
+use crate::settlement::{Changes, invalid_tags, settle_changes};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -304,9 +305,10 @@ async fn execute_fresh(
 /// under a valid identity, that the page's validated outputs name:
 /// `data_keys` holds their canonical keys. Repeated pairs count once toward
 /// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
-/// a pair measuring its canonical add intent, and validation stops at the
-/// first pair past either bound. A removal or tag selector is refused; so is
-/// a tagged add, until settlement supports tags ([`tags_unsupported`]).
+/// a pair measuring its canonical add intent with its tags, and validation
+/// stops at the first pair past either bound. A repeated pair unions its tags
+/// into the first, in declaration order, and is measured again. Tags follow
+/// the add rules ([`declared_tags`]). A removal or tag selector is refused.
 fn validate_enrollment(
     config: &Config,
     data_keys: &BTreeSet<String>,
@@ -317,15 +319,12 @@ fn validate_enrollment(
     let mut pairs: BTreeMap<(String, String), ChannelIntent> = BTreeMap::new();
     let mut bytes = 0;
     for intent in memberships {
-        let (channel, record) = match intent {
+        let (channel, record, tags) = match intent {
             ChannelIntent::Add {
                 channel,
                 record,
                 tags,
-            } if tags.is_empty() => (channel, record),
-            ChannelIntent::Add { channel, .. } => {
-                return Err(tags_unsupported(&channel, "a tagged add"));
-            }
+            } => (channel, record, tags),
             ChannelIntent::Remove { channel, record } => {
                 return Err(invalid(format!(
                     "a Load only adds records to Channels; it removes {} from {channel}",
@@ -355,21 +354,46 @@ fn validate_enrollment(
                 key.model, key.identity
             )));
         }
-        let Entry::Vacant(pair) = pairs.entry((channel.clone(), encoded)) else {
-            continue;
+        declared_tags(&tags).map_err(|reason| invalid_tags(&channel, reason))?;
+        // Distinct, in first-declaration order, as the collector measures them.
+        let mut distinct: Vec<String> = vec![];
+        for tag in tags {
+            if !distinct.contains(&tag) {
+                distinct.push(tag);
+            }
+        }
+        let measure = |intent: &ChannelIntent| -> Result<usize> {
+            Ok(
+                canonical_json(&serde_json::to_value(intent).map_err(internal)?)
+                    .map_err(internal)?
+                    .len(),
+            )
         };
-        let canonical = ChannelIntent::Add {
-            channel,
-            record: RecordRef {
-                model: key.model,
-                identity: key.identity,
-            },
-            tags: vec![],
-        };
-        bytes += canonical_json(&serde_json::to_value(&canonical).map_err(internal)?)
-            .map_err(internal)?
-            .len();
-        pair.insert(canonical);
+        match pairs.entry((channel.clone(), encoded)) {
+            Entry::Vacant(pair) => {
+                let canonical = ChannelIntent::Add {
+                    channel,
+                    record: RecordRef {
+                        model: key.model,
+                        identity: key.identity,
+                    },
+                    tags: distinct,
+                };
+                bytes += measure(&canonical)?;
+                pair.insert(canonical);
+            }
+            Entry::Occupied(mut pair) => {
+                let before = measure(pair.get())?;
+                if let ChannelIntent::Add { tags: held, .. } = pair.get_mut() {
+                    for tag in distinct {
+                        if !held.contains(&tag) {
+                            held.push(tag);
+                        }
+                    }
+                }
+                bytes = bytes - before + measure(pair.get())?;
+            }
+        }
         if pairs.len() > limits::LOAD_ENROLLMENT_PAIRS {
             return Err(too_large(format!(
                 "Load page enrolls more than {} Channel/record pairs",
@@ -566,6 +590,12 @@ pub fn load_fault_outcome(fault: &LoadFault) -> LoadOutcome {
         LoadFault::Engine { code, .. } if code == code::HOST => retryable(
             code::SERVER_UNAVAILABLE,
             "the page transaction did not complete; resend the same call ID",
+        ),
+        // Settlement found its Channel locks outdated and the carrier's
+        // retries ran out: a conflict like any other.
+        LoadFault::Engine { code, .. } if code == code::TRANSACTION_CONFLICT => retryable(
+            code::TRANSACTION_CONFLICT,
+            "the page transaction kept conflicting; resend it",
         ),
         LoadFault::Engine { code, message } => LoadOutcome::Failed {
             error: LoadError::bounded(code.clone(), message.clone()),

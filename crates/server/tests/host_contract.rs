@@ -1,9 +1,10 @@
 //! The host operation contract: the shared fixture round-trips through the
 //! Rust types, and a malformed request or response is refused per operation.
+use axton_server::channel_members::{MemberDelta, MemberPosition, MemberState, PositionKind};
 use axton_server::host::{
-    Acknowledged, ChannelIntent, Claimed, ClaimedCall, Handled, HandledAction, HandledLoad, Head,
-    HostRequest, Invalidation, Loaded, Locked, Memberships, OPERATIONS, Published, RecordRef,
-    Scanned, Stamped, Stamps,
+    Acknowledged, ChannelIntent, ChannelMembers, Claimed, ClaimedCall, Handled, HandledAction,
+    HandledLoad, Head, HostRequest, Invalidation, Loaded, Locked, Memberships, OPERATIONS,
+    Positions, RecordRef, Scanned, Stamped, Stamps,
 };
 use serde_json::{Value, json};
 
@@ -26,7 +27,7 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
     match op {
         "claim" => round!(Claimed),
         "claimCall" => round!(ClaimedCall),
-        "saveReceipt" | "saveCall" | "savepoint" | "rollback" | "release" | "setMembership" => {
+        "saveReceipt" | "saveCall" | "savepoint" | "rollback" | "release" | "lockChannels" => {
             round!(Acknowledged)
         }
         "head" => round!(Head),
@@ -37,9 +38,10 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
         "load" => round!(Loaded),
         "advanceStamp" | "ensureStamp" => round!(Stamped),
         "readStamps" => round!(Stamps),
-        "publish" => round!(Published),
         "lockRecord" => round!(Locked),
         "memberships" => round!(Memberships),
+        "readChannelMembers" => round!(ChannelMembers),
+        "applyChannelMembers" => round!(Positions),
         other => panic!("no response type is wired for {other}"),
     }
 }
@@ -166,8 +168,9 @@ fn a_response_carrying_an_unknown_field_is_refused() {
                     Value::Object(fields)
                 }
                 Value::Array(rows) if !rows.is_empty() => {
-                    // `load` entries are opaque record state; `scan` rows are not.
-                    if op != "scan" {
+                    // `load` entries are opaque record state; `scan`, member
+                    // and position rows are not.
+                    if !["scan", "readChannelMembers", "applyChannelMembers"].contains(&op) {
                         continue;
                     }
                     let mut rows = rows.clone();
@@ -204,7 +207,7 @@ fn a_claimed_call_always_names_its_response_even_when_uncompleted() {
 #[test]
 fn a_response_of_the_wrong_type_is_refused_per_operation() {
     // One clearly wrong answer per operation, in the shape a host might drift into.
-    let wrong: [(&str, Value); 19] = [
+    let wrong: [(&str, Value); 20] = [
         ("claim", json!({"clientId":"c","owner":"o","sequence":-1})),
         ("saveReceipt", json!({"saved": true})),
         (
@@ -223,10 +226,18 @@ fn a_response_of_the_wrong_type_is_refused_per_operation() {
         ("advanceStamp", json!("4")),
         ("ensureStamp", json!(0)),
         ("readStamps", json!([1, 0])),
-        ("publish", json!({"cursor": 0, "stamp": 1})),
         ("lockRecord", json!(0)),
         ("memberships", json!(["shared", "shared"])),
-        ("setMembership", json!(false)),
+        ("lockChannels", json!(["shared"])),
+        (
+            "readChannelMembers",
+            json!([{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}]),
+        ),
+        (
+            "applyChannelMembers",
+            json!([{"channel": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}",
+                "cursor": 0, "kind": "upsert"}]),
+        ),
     ];
     for (op, value) in wrong {
         assert!(
@@ -507,12 +518,15 @@ fn an_unusable_response_names_its_operation_and_ordinal() {
             model: record().0,
             identity_key: record().1,
         },
-        HostRequest::SetMembership {
-            channel: "shared".into(),
-            model: record().0,
-            identity_key: record().1,
-            present: true,
+        HostRequest::LockChannels {
+            channels: vec!["shared".into()],
         },
+        HostRequest::ReadChannelMembers {
+            channel: "shared".into(),
+            explicit_keys: vec![],
+            tags: vec![],
+        },
+        HostRequest::ApplyChannelMembers { deltas: vec![] },
     ] {
         let error = request.invalid_response("x");
         assert_eq!(error.code, axton_server::code::HOST_INVALID);
@@ -568,38 +582,64 @@ fn channel_intents_decode_every_kind_in_declaration_order() {
     assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
 }
 
+/// Channel requests are canonical: `lockChannels` names distinct valid
+/// Channels in byte order, the one lock order; `readChannelMembers` names a
+/// valid Channel, canonical record keys and distinct valid tags in byte order.
 #[test]
-fn membership_requests_name_a_valid_channel_and_a_required_boolean_presence() {
-    let set = |fields: Value| {
-        let mut request = json!({"op":"setMembership","channel":"shared","model":"Task","identityKey":"{\"id\":\"t-1\"}","present":false});
-        for (name, value) in fields.as_object().unwrap() {
-            if value.is_null() {
-                request.as_object_mut().unwrap().remove(name);
-            } else {
-                request[name] = value.clone();
-            }
-        }
+fn channel_requests_are_canonical() {
+    let decode = |request: Value| {
         serde_json::from_value::<HostRequest>(request).map_err(|error| error.to_string())
     };
     assert_eq!(
-        set(json!({})).unwrap(),
-        HostRequest::SetMembership {
-            channel: "shared".into(),
-            model: "Task".into(),
-            identity_key: "{\"id\":\"t-1\"}".into(),
-            present: false,
-        },
-        "removal is an explicit false"
+        decode(json!({"op": "lockChannels", "channels": ["Other", "a b", "shared"]})).unwrap(),
+        HostRequest::LockChannels {
+            channels: vec!["Other".into(), "a b".into(), "shared".into()]
+        }
     );
-    for (fields, detail) in [
-        (json!({"present": null}), "present"),
-        (json!({"present": 1}), "boolean"),
-        (json!({"present": "false"}), "boolean"),
-        (json!({"channel": ""}), "channel"),
-        (json!({"channel": "  "}), "channel"),
-        (json!({"channel": 7}), "string"),
+    for (channels, detail) in [
+        (json!([]), "no Channel"),
+        (json!(["shared", "other"]), "canonical byte order"),
+        (json!(["shared", "shared"]), "distinct"),
+        (json!(["shared", " "]), "channel"),
+        (json!("shared"), "invalid type"),
     ] {
-        let error = set(fields.clone()).unwrap_err();
+        let error = decode(json!({"op": "lockChannels", "channels": channels})).unwrap_err();
+        assert!(error.contains(detail), "{channels}: {error}");
+    }
+    let read = |fields: Value| {
+        let mut request = json!({"op": "readChannelMembers", "channel": "shared",
+            "explicitKeys": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}], "tags": ["X", "Y"]});
+        for (name, value) in fields.as_object().unwrap() {
+            request[name] = value.clone();
+        }
+        decode(request)
+    };
+    assert!(read(json!({})).is_ok());
+    assert!(read(json!({"explicitKeys": [], "tags": []})).is_ok());
+    for (fields, detail) in [
+        (json!({"channel": "  "}), "channel"),
+        (json!({"tags": ["Y", "X"]}), "canonical byte order"),
+        (json!({"tags": ["X", "X"]}), "distinct"),
+        (json!({"tags": ["\u{feff}"]}), "blank"),
+        (json!({"tags": ["x".repeat(257)]}), "256"),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identityKey": "{ \"id\": \"t-1\" }"}]}),
+            "not canonical",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identityKey": "\"t-1\""}]}),
+            "not an object",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "", "identityKey": "{\"id\":\"t-1\"}"}]}),
+            "no Model",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identity": {"id": "t-1"}}]}),
+            "unknown field",
+        ),
+    ] {
+        let error = read(fields.clone()).unwrap_err();
         assert!(error.contains(detail), "{fields}: {error}");
     }
     for op in ["lockRecord", "memberships"] {
@@ -610,6 +650,85 @@ fn membership_requests_name_a_valid_channel_and_a_required_boolean_presence() {
             .is_err(),
             "{op} names a record, never a channel"
         );
+    }
+}
+
+/// A member answers its complete tags, as a set; a delta is a final state
+/// whose removal carries no tags and always publishes; a position names its
+/// pair, a positive safe cursor and its kind. Every record key is canonical.
+#[test]
+fn members_deltas_and_positions_decode_only_whole_and_canonical() {
+    let key = || json!({"model": "Task", "identityKey": "{\"id\":\"t-1\"}"});
+    let with = |base: Value, fields: Value| {
+        let mut value = base;
+        for (name, field) in fields.as_object().unwrap() {
+            if field.is_null() {
+                value.as_object_mut().unwrap().remove(name);
+            } else {
+                value[name] = field.clone();
+            }
+        }
+        value
+    };
+    let member = |fields: Value| {
+        serde_json::from_value::<MemberState>(with(
+            with(key(), json!({"tags": ["Y", "X"]})),
+            fields,
+        ))
+        .map_err(|error| error.to_string())
+    };
+    let decoded = member(json!({})).unwrap();
+    assert_eq!(
+        decoded.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["X", "Y"],
+        "tags are a set in any answered order, held in byte order"
+    );
+    assert_eq!(decoded.key.identity, json!({"id": "t-1"}));
+    for (fields, detail) in [
+        (json!({"tags": null}), "missing field `tags`"),
+        (json!({"tags": ["X", "X"]}), "duplicate tag"),
+        (json!({"tags": [" "]}), "blank"),
+        (json!({"identityKey": "{\"id\": \"t-1\"}"}), "not canonical"),
+        (json!({"model": null}), "missing field `model`"),
+        (json!({"stamp": 1}), "unknown field"),
+    ] {
+        let error = member(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
+    }
+    let delta = |fields: Value| {
+        let base = json!({"channel": "shared", "model": "Task", "identity": {"id": "t-1"},
+            "identityKey": "{\"id\":\"t-1\"}", "present": true, "tags": ["X"], "publish": false});
+        serde_json::from_value::<MemberDelta>(with(base, fields)).map_err(|error| error.to_string())
+    };
+    assert!(delta(json!({})).is_ok());
+    assert!(delta(json!({"present": false, "tags": [], "publish": true})).is_ok());
+    for (fields, detail) in [
+        (json!({"present": false, "publish": true}), "no tags"),
+        (json!({"present": false, "tags": []}), "always publishes"),
+        (json!({"identity": {"id": "t-2"}}), "different records"),
+        (json!({"channel": ""}), "channel"),
+        (json!({"publish": null}), "missing field `publish`"),
+    ] {
+        let error = delta(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
+    }
+    let position = |fields: Value| {
+        let base = json!({"channel": "shared", "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}", "cursor": 5, "kind": "remove"});
+        serde_json::from_value::<MemberPosition>(with(base, fields))
+            .map_err(|error| error.to_string())
+    };
+    assert_eq!(position(json!({})).unwrap().kind, PositionKind::Remove);
+    for (fields, detail) in [
+        (json!({"kind": "delete"}), "unknown variant"),
+        (json!({"kind": null}), "missing field `kind`"),
+        (json!({"cursor": 0}), "cursor"),
+        (json!({"cursor": 9007199254740992u64}), "cursor"),
+        (json!({"channel": " "}), "channel"),
+        (json!({"identity": {"id": "t-1"}}), "unknown field"),
+    ] {
+        let error = position(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
     }
 }
 

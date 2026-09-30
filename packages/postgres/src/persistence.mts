@@ -7,7 +7,6 @@ import type {
   Invalidation,
   Locked,
   Memberships,
-  Published,
   Stamped,
   Stamps,
   Database,
@@ -44,14 +43,13 @@ const channelName = (channel: unknown): string => {
 };
 
 /**
- * The membership operations name exactly these fields: a request carrying
+ * The record operations name exactly these fields: a request carrying
  * another, or an empty or non-string model or identity key, is refused before
  * any SQL runs.
  */
 const MEMBERSHIP_FIELDS = {
   lockRecord: ["op", "model", "identityKey"],
   memberships: ["op", "model", "identityKey"],
-  setMembership: ["op", "channel", "model", "identityKey", "present"],
 } as const;
 const checkMembershipRequest = (
   r: { op: keyof typeof MEMBERSHIP_FIELDS } & Record<string, unknown>,
@@ -64,11 +62,6 @@ const checkMembershipRequest = (
     throw new Error(`${r.op}: model must be a non-empty string`);
   if (typeof r.identityKey !== "string" || r.identityKey === "")
     throw new Error(`${r.op}: identityKey must be a non-empty string`);
-  if (r.op === "setMembership") {
-    channelName(r.channel);
-    if (typeof r.present !== "boolean")
-      throw new Error("setMembership: present must be a boolean");
-  }
 };
 
 /**
@@ -199,34 +192,6 @@ export async function answer<Tx>(
       });
       return stamps as Stamps;
     }
-    case "publish": {
-      // Distribution allocates only the channel cursor. The record row is
-      // locked and must carry the stamp the request names: a stale one is a
-      // defect of the caller's ordering, never silently re-stamped.
-      const locked = await q(SQL.LOCK_STAMP, r.model, r.identityKey);
-      if (locked.length !== 1)
-        throw new Error(
-          `Record metadata missing for ${r.model} ${r.identityKey}: publish needs its stamp first`,
-        );
-      const stamp = safe(locked[0]!.stamp);
-      if (stamp !== r.stamp)
-        throw new Error(
-          `Publication names stamp ${r.stamp} but ${r.model} ${r.identityKey} is at stamp ${stamp}`,
-        );
-      const rows = await q(SQL.ADVANCE_HEAD, r.channel);
-      const cursor = safe(rows[0]!.head);
-      await q(
-        SQL.UPSERT_INVALIDATION,
-        r.channel,
-        r.model,
-        r.identityKey,
-        JSON.stringify(r.identity),
-        BigInt(cursor),
-        BigInt(stamp),
-      );
-      const published: Published = { cursor, stamp };
-      return published;
-    }
     case "lockRecord": {
       checkMembershipRequest(r);
       const rows = await q(SQL.LOCK_RECORD, r.model, r.identityKey);
@@ -249,19 +214,14 @@ export async function answer<Tx>(
         );
       return memberships;
     }
-    case "setMembership": {
-      // Membership never allocates a cursor: adding ensures the Channel row
-      // at head zero, removing leaves the Channel and its history alone.
-      checkMembershipRequest(r);
-      if (r.present) {
-        await q(SQL.ENSURE_CHANNEL, r.channel);
-        await q(SQL.INSERT_MEMBERSHIP, r.channel, r.model, r.identityKey);
-      } else {
-        await q(SQL.DELETE_MEMBERSHIP, r.channel, r.model, r.identityKey);
-      }
-      const acknowledged: Acknowledged = null;
-      return acknowledged;
-    }
+    case "lockChannels":
+    case "readChannelMembers":
+    case "applyChannelMembers":
+      // The tagged membership tables these answer from do not exist in this
+      // schema yet; a settlement that reaches a Channel fails here, loudly.
+      throw new Error(
+        `${r.op} is not implemented by the PostgreSQL persistence yet`,
+      );
     case "savepoint":
     case "rollback":
     case "release": {

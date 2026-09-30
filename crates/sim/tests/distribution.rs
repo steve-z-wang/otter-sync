@@ -163,8 +163,9 @@ fn d3_one_change_is_one_stamp_on_every_channel() {
 }
 
 /// D4: a -> b then b -> a. Moving republishes the record to its new channel at its
-/// current stamp (no version is invented); the channel it leaves hears nothing and
-/// the client keeps the row. Later changes reach it through the new channel only.
+/// current stamp (no version is invented); the channel it leaves takes a removal
+/// position but delivers no content, and the client keeps the row. Later changes
+/// reach it through the new channel only.
 #[test]
 fn d4_move_between_channels_and_back() {
     let mut sim = Sim::new(14, 1);
@@ -180,7 +181,7 @@ fn d4_move_between_channels_and_back() {
         1,
         "a move is not a change"
     );
-    assert_eq!(sim.host.head("a"), 1);
+    assert_eq!(sim.host.head("a"), 2, "the removal takes a position");
     assert_eq!(sim.host.head("b"), 1);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("e1")).as_deref(), Some("in a"));
@@ -191,15 +192,15 @@ fn d4_move_between_channels_and_back() {
     assert_eq!(sim.read_text(0, &entry_key("e1")).as_deref(), Some("in b"));
     assert_eq!(
         sim.client(0).cursor("a").unwrap(),
-        Some(1),
-        "a heard nothing"
+        Some(2),
+        "a delivered no content, only its removal position"
     );
     // Move back to a: a is told at stamp 2.
     move_to(&mut sim, "Entry:e1", &["a"]);
     assert_eq!(sim.host.stamp(&entry_key("e1")), 2);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("e1")).as_deref(), Some("in b"));
-    assert_eq!(sim.client(0).cursor("a").unwrap(), Some(2));
+    assert_eq!(sim.client(0).cursor("a").unwrap(), Some(3));
     change(&mut sim, "Entry:e1", Some("back in a"), &["a"]); // stamp 3
     sim.settle();
     assert_eq!(
@@ -385,10 +386,10 @@ fn d4_parent_and_child_move_channels_together_without_deletes() {
     sim.check().unwrap();
 }
 
-/// Spec §4: removal stops future distribution and evicts nothing. The client
-/// keeps the row it applied; later content reaches no one through the Channel
-/// the record left, including a client that subscribes from zero afterwards,
-/// which the retained invalidation row would otherwise hand the new content.
+/// Removal stops future distribution and, until removal delivery, evicts
+/// nothing. It takes one position; the client keeps the row it applied; later
+/// content reaches no one through the Channel the record left, including a
+/// client that subscribes from zero afterwards.
 #[test]
 fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
     let mut sim = Sim::new(61, 2);
@@ -397,9 +398,9 @@ fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
     declare(&mut sim, "Entry:e1", Some(Some("before")), &[("a", true)]);
     sim.settle();
     assert_eq!(sim.read_text(0, &e1).as_deref(), Some("before"));
-    let head = sim.host.head("a");
+    let head = sim.host.head("a") + 1;
     declare(&mut sim, "Entry:e1", None, &[("a", false)]);
-    assert_eq!(sim.host.head("a"), head, "removal allocates no position");
+    assert_eq!(sim.host.head("a"), head, "removal allocates one position");
     assert_eq!(
         sim.host.channel_stamp("a", &e1),
         Some(1),
@@ -429,8 +430,9 @@ fn removal_keeps_client_rows_and_hides_later_content_from_the_old_channel() {
 }
 
 /// Re-adding publishes the record's current state at a fresh position without
-/// a new stamp; later touches reach it again. Intents that cancel within one
-/// settlement change nothing.
+/// a new stamp; later touches reach it again. Within one settlement, a
+/// non-member added and removed changes nothing, and a member removed and
+/// re-added is positioned once more.
 #[test]
 fn re_adding_publishes_current_state_and_later_touches_follow() {
     let mut sim = Sim::new(62, 1);
@@ -452,8 +454,8 @@ fn re_adding_publishes_current_state_and_later_touches_follow() {
     declare(&mut sim, "Entry:e1", Some(Some("v3")), &[]);
     sim.settle();
     assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v3"));
-    // Cancelling intents: a member removed and re-added, a non-member added
-    // and removed, in one settlement.
+    // A member removed and re-added, a non-member added and removed, in one
+    // settlement.
     let heads = (sim.host.head("a"), sim.host.head("b"));
     declare(
         &mut sim,
@@ -461,7 +463,10 @@ fn re_adding_publishes_current_state_and_later_touches_follow() {
         None,
         &[("a", false), ("b", true), ("a", true), ("b", false)],
     );
-    assert_eq!((sim.host.head("a"), sim.host.head("b")), heads);
+    assert_eq!(
+        (sim.host.head("a"), sim.host.head("b")),
+        (heads.0 + 1, heads.1)
+    );
     assert_eq!(sim.host.stored_memberships(&e1), ["a"]);
     assert_eq!(sim.host.stamp(&e1), 3);
     assert_eq!(sim.conflicts, 0);
@@ -470,7 +475,7 @@ fn re_adding_publishes_current_state_and_later_touches_follow() {
 
 /// A deleted record stays enrolled, so its Channel delivers the deletion, and
 /// recreating the same identity reaches the same Channel without a new add.
-/// Deleting and removing in one settlement tells the Channel nothing.
+/// Deleting and removing in one settlement positions only the removal.
 #[test]
 fn a_deleted_record_stays_enrolled_and_its_recreation_is_delivered_again() {
     let mut sim = Sim::new(63, 1);
@@ -489,7 +494,7 @@ fn a_deleted_record_stays_enrolled_and_its_recreation_is_delivered_again() {
     assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 3);
     let head = sim.host.head("a");
     declare(&mut sim, "Entry:e1", Some(None), &[("a", false)]);
-    assert_eq!(sim.host.head("a"), head, "the final relationship wins");
+    assert_eq!(sim.host.head("a"), head + 1, "the final relationship wins");
     sim.settle();
     assert_eq!(
         sim.read_text(0, &e1).as_deref(),

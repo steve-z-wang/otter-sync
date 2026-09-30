@@ -80,8 +80,12 @@ pub mod code {
     /// unknown. Answered as that item's unsaved `retryable` outcome: the
     /// client resends the same call ID.
     pub const SERVER_UNAVAILABLE: &str = "server.unavailable";
-    /// A Load item's transaction kept failing with a serialization conflict
-    /// or deadlock. Answered as that item's unsaved `retryable` outcome.
+    /// A serialization conflict, deadlock or outdated Channel lock set: the
+    /// whole application transaction must run again. Settlement raises it
+    /// when a competing membership write moved a changed record into a
+    /// Channel it had not locked; it is never a call's saved outcome. A Load
+    /// item whose transaction kept failing this way answers it as its unsaved
+    /// `retryable` outcome.
     pub const TRANSACTION_CONFLICT: &str = "transaction.conflict";
     /// Encoding a response failed.
     pub const INTERNAL: &str = "internal";

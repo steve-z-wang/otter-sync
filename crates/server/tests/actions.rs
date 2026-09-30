@@ -711,9 +711,10 @@ fn forged_query_effects_reject_only_that_call_before_framework_handling() {
         "advanceStamp",
         "lockRecord",
         "memberships",
-        "setMembership",
+        "lockChannels",
+        "readChannelMembers",
+        "applyChannelMembers",
         "load",
-        "publish",
     ] {
         assert!(!ops.iter().any(|request| request["op"] == op), "{op}");
     }
@@ -749,10 +750,9 @@ fn forged_query_effects_are_rejected_on_the_direct_path_too() {
     assert_eq!(response["records"], json!([]));
     let ops = host.0.lock().unwrap();
     assert!(ops.iter().any(|op| op["op"] == "rollback"));
-    assert!(
-        !ops.iter()
-            .any(|op| op["op"] == "ensureStamp" || op["op"] == "load" || op["op"] == "publish")
-    );
+    assert!(!ops.iter().any(|op| op["op"] == "ensureStamp"
+        || op["op"] == "load"
+        || op["op"] == "applyChannelMembers"));
 }
 
 #[test]
@@ -873,10 +873,10 @@ fn an_extra_touch_of_an_undeclared_model_fans_out_without_caller_authority() {
     assert_eq!(receipt["rejections"], json!([]));
     assert_eq!(authority(&receipt), [("Todo".into(), "a".into(), 1)]);
     assert_eq!(backend.stamp("Project", "p"), Some(3));
-    assert_eq!(backend.head("project:p"), 8);
+    assert_eq!(backend.head("project:p"), 9);
     assert_eq!(
         backend.invalidation("project:p", "Project", "p"),
-        Some((8, 3))
+        Some((9, 3))
     );
     assert_eq!(
         backend.loaded_models(),

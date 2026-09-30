@@ -5,9 +5,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {createRequire} from 'node:module';
-import {createBackend,MutationRejected} from '../../../packages/server/index.mts';
+import {createBackend,MutationRejected,isRetryableTransactionError} from '../../../packages/server/index.mts';
 import {HOST_OPERATIONS} from '../../../packages/server/host-contract.mts';
 import {answer,persistence} from '../../../packages/postgres/index.mts';
+import {withRetries} from '../../../packages/postgres/src/driver.mts';
 const require=createRequire(import.meta.url);
 const native=require('../../../bindings/node/axton-node.node');
 const fixture=JSON.parse(await readFile(new URL('../../../fixtures/protocol/host-operations.json',import.meta.url),'utf8'));
@@ -43,10 +44,11 @@ const fakePersistence=seen=>({
    case 'advanceStamp':return response('advanceStamp','stamped');
    case 'ensureStamp':return response('ensureStamp','stamped');
    case 'readStamps':return response('readStamps','stamped');
-   case 'publish':return response('publish','published');
    case 'lockRecord':return response('lockRecord','locked');
    case 'memberships':return response('memberships','members');
-   case 'setMembership':return null;
+   case 'lockChannels':return null;
+   case 'readChannelMembers':return response('readChannelMembers','members');
+   case 'applyChannelMembers':return response('applyChannelMembers','positions');
    default:throw new Error(`fake persistence reached ${request.op}`);
   }
  },
@@ -114,8 +116,9 @@ test('every fixture request replays through the TypeScript host to the fixture a
   claim:response('claim','claimed'),saveReceipt:null,claimCall:response('claimCall','fresh'),saveCall:null,head:response('head','cursor'),
   scan:response('scan','rows'),savepoint:null,rollback:null,release:null,
   handle:response('handle','settled'),handleAction:response('handleAction','settled'),handleLoad:response('handleLoad','settled'),load:response('load','rows'),
-  advanceStamp:response('advanceStamp','stamped'),ensureStamp:response('ensureStamp','stamped'),readStamps:response('readStamps','stamped'),publish:response('publish','published'),
-  lockRecord:response('lockRecord','locked'),memberships:response('memberships','members'),setMembership:null,
+  advanceStamp:response('advanceStamp','stamped'),ensureStamp:response('ensureStamp','stamped'),readStamps:response('readStamps','stamped'),
+  lockRecord:response('lockRecord','locked'),memberships:response('memberships','members'),lockChannels:null,
+  readChannelMembers:response('readChannelMembers','members'),applyChannelMembers:response('applyChannelMembers','positions'),
  };
  assert.equal(Object.keys(expected).length,HOST_OPERATIONS.length,'every operation has an expected answer');
  for(const [op,answer] of answers)assert.deepEqual(answer,expected[op],`${op} answer`);
@@ -241,24 +244,49 @@ test('the PostgreSQL persistence answers the persistence half through a two-meth
  for(const op of ['handle','handleAction','handleLoad','load'])
   await assert.rejects(()=>bound.call(entry(op).request),/Unsupported persistence operation/);
  await assert.rejects(()=>bound.call({op:'vacuum'}),/Unsupported persistence operation vacuum/);
+ // The tagged membership tables do not exist in this schema yet: a Channel
+ // operation fails loudly rather than answering from the retired table.
+ for(const op of ['lockChannels','readChannelMembers','applyChannelMembers'])
+  await assert.rejects(()=>bound.call(entry(op).request),new RegExp(`${op} is not implemented by the PostgreSQL persistence yet`));
 });
 
-test('the PostgreSQL persistence validates membership requests and the rows it answers from',async()=>{
+test('a published position wakes its Channel after commit, a kept one does not, and a settlement conflict retries the whole transaction',async()=>{
+ const [kept,removed]=entry('applyChannelMembers').request.deltas;
+ const request={op:'applyChannelMembers',deltas:[{...kept,channel:'kept'},removed]};
+ let attempts=0;
+ const seen=[];
+ const backend=createBackend({config,
+  native:{validateConfig:c=>native.validateConfig(c),
+   settleExternal:async(_config,_settlement,callback)=>{
+    if(++attempts===1)throw new Error(JSON.stringify({code:'transaction.conflict',message:'Task {"id":"t-1"} joined Channel b after settlement locked its Channels; the transaction must retry'}));
+    await callback(JSON.stringify(request));
+    return '[]';
+   }},
+  database:{transaction:body=>withRetries(()=>body({}),isRetryableTransactionError,3,()=>0),persistence:()=>fakePersistence(seen)},
+  authenticate:()=>'alice',handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
+  loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
+ const woken=[];
+ for(const channel of ['kept','shared'])backend.onCommitted(channel,()=>woken.push(channel));
+ await backend.transaction(async()=>{});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(attempts,2,'the conflict reached the driver retry loop once');
+ assert.deepEqual(seen.map(r=>r.op),['applyChannelMembers']);
+ assert.deepEqual(woken,['shared'],'only a published position wakes');
+ assert.equal(isRetryableTransactionError({code:'transaction.conflict'}),true);
+ assert.equal(isRetryableTransactionError({code:'handler.invalid'}),false);
+});
+
+test('the PostgreSQL persistence validates record requests and the rows it answers from',async()=>{
  const driverAnswering=rows=>{const seen=[];return {seen,driver:{transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push([sql,params]);return rows(sql);}}};};
- const lock=entry('lockRecord').request,members=entry('memberships').request,set=entry('setMembership').request;
+ const lock=entry('lockRecord').request,members=entry('memberships').request;
  {
   const {driver,seen}=driverAnswering(()=>[]);
   assert.equal(await answer(driver,'tx',lock),null,'no row: nothing locked, nothing created');
   assert.deepEqual(await answer(driver,'tx',members),[]);
-  assert.equal(await answer(driver,'tx',set),null);
-  assert.equal(await answer(driver,'tx',{...set,present:false}),null);
   assert.deepEqual(seen.map(([sql,params])=>[sql.split(/\s+/).slice(0,3).join(' '),params]),[
    ['UPDATE axton_record SET',['Task',lock.identityKey]],
    ['SELECT channel FROM',['Task',members.identityKey]],
-   ['INSERT INTO axton_channel(channel,head)',['shared']],
-   ['INSERT INTO axton_membership(channel,model,identity_key)',['shared','Task',set.identityKey]],
-   ['DELETE FROM axton_membership',['shared','Task',set.identityKey]],
-  ],'adding ensures the channel then inserts; removing only deletes');
+  ]);
  }
  {
   const {driver}=driverAnswering(sql=>sql.startsWith('UPDATE')?[{stamp:4n}]:[{channel:'shared'},{channel:'other'}]);
@@ -274,11 +302,6 @@ test('the PostgreSQL persistence validates membership requests and the rows it a
   await assert.rejects(()=>answer(driver,'tx',members),pattern);
  }
  for(const [request,pattern] of [
-  [{...set,present:undefined},/present must be a boolean/],
-  [{...set,present:'true'},/present must be a boolean/],
-  [{...set,channel:''},/Invalid membership channel/],
-  [{...set,channel:'  '},/Invalid membership channel/],
-  [{...set,surprise:1},/Unknown setMembership field surprise/],
   [{...lock,channel:'shared'},/Unknown lockRecord field channel/],
   [{...members,present:true},/Unknown memberships field present/],
  ]){

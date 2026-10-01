@@ -97,7 +97,7 @@ fn nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill() {
     let request = LoadBatchRequest::decode_envelope(eight.body.as_bytes()).unwrap();
     assert_eq!(
         String::from_utf8(
-            with_capabilities(&request.encode().unwrap(), &[SCOPE_MEMBERSHIP_CAPABILITY]).unwrap()
+            with_capabilities(&request.encode().unwrap(), &[STREAM_MEMBERSHIP_CAPABILITY]).unwrap()
         )
         .unwrap(),
         eight.body,
@@ -492,7 +492,7 @@ fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
     let path = dir.path().join("db");
     let mut c = open_db(&path);
     subscribe(&mut c, "a");
-    c.apply_scope_page(ScopePullPage {
+    c.apply_stream_page(StreamPullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -502,8 +502,8 @@ fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
             },
         )]
         .into(),
-        changes: vec![ScopeChange::Upsert {
-            scope: "a".into(),
+        changes: vec![StreamChange::Upsert {
+            stream: "a".into(),
             cursor: 1,
             record: authority(Some("base"), 7),
         }],
@@ -517,7 +517,7 @@ fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
         run: job.run,
         call_id: job.call_id.unwrap(),
     };
-    c.apply_scope_page(ScopePullPage {
+    c.apply_stream_page(StreamPullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -527,8 +527,8 @@ fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
             },
         )]
         .into(),
-        changes: vec![ScopeChange::Remove {
-            scope: "a".into(),
+        changes: vec![StreamChange::Remove {
+            stream: "a".into(),
             cursor: 2,
             key: key(),
         }],
@@ -635,7 +635,7 @@ fn native_load_dispatch_advertises_scope_membership() {
     assert!(
         read_capabilities(&envelope)
             .unwrap()
-            .contains(SCOPE_MEMBERSHIP_CAPABILITY)
+            .contains(STREAM_MEMBERSHIP_CAPABILITY)
     );
 }
 
@@ -685,7 +685,7 @@ fn a_saved_exact_limit_page_reopens_with_its_identity_and_negotiation_headroom()
         .unwrap();
     drop(c);
     let mut raw = SqliteStore::open(&path).unwrap();
-    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN scope_membership_version; ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch").unwrap();
+    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN stream_membership_version; ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch").unwrap();
     drop(raw);
     let mut c = open_db(&path);
     let mut w = LoadWorker::default();
@@ -693,7 +693,15 @@ fn a_saved_exact_limit_page_reopens_with_its_identity_and_negotiation_headroom()
     let sent = dispatch(&mut w, &mut c, 0).expect("a valid saved page must remain sendable");
     assert_eq!(loads(&sent), std::slice::from_ref(&saved.id));
     assert_eq!(sent.pages[0].fence, ready.fence);
-    assert_eq!(sent.body.len(), limits::LOAD_REQUEST_BYTES + 39);
+    let negotiation_bytes =
+        serde_json::to_vec(&json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY]}))
+            .unwrap()
+            .len()
+            - 1;
+    assert_eq!(
+        sent.body.len(),
+        limits::LOAD_REQUEST_BYTES + negotiation_bytes
+    );
     assert_eq!(
         LoadBatchRequest::decode_envelope(sent.body.as_bytes())
             .unwrap()

@@ -164,7 +164,7 @@ fn authority_hooks_rotate_capabilities_and_commit_after_all_models() {
     let mut h = hooked_harness(&["Entry", "Alpha"]);
     h.task(
         "1",
-        json!({"kind":"scope","scope":"feed","subscribed":true}),
+        json!({"kind":"stream","stream":"feed","subscribed":true}),
     );
     assert_eq!(h.run(), vec![done("1", Value::Null)]);
     common::acknowledge(h.runtime.client(), &[("feed", 0)]);
@@ -232,11 +232,11 @@ fn failed_authority_hook_rolls_back_and_close_cancels_a_stalled_hook() {
         let mut h = hooked_harness(&["Entry"]);
         h.task(
             "1",
-            json!({"kind":"scope","scope":"feed","subscribed":true}),
+            json!({"kind":"stream","stream":"feed","subscribed":true}),
         );
         h.run();
         common::acknowledge(h.runtime.client(), &[("feed", 0)]);
-        let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+        let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","stream":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
         h.task("2", json!({"kind":"pull","page":scope_fixture(page)}));
         let first = h.run();
         let hook = Open {
@@ -702,7 +702,7 @@ fn authority_rollback_failure_reports_cleanup_and_closes_before_next_write() {
         };
         h.task(
             "scope",
-            json!({"kind":"scope","scope":"feed","subscribed":true}),
+            json!({"kind":"stream","stream":"feed","subscribed":true}),
         );
         h.run();
         let state = h
@@ -718,7 +718,7 @@ fn authority_rollback_failure_reports_cleanup_and_closes_before_next_write() {
                 &std::collections::BTreeMap::from([("feed".into(), 0)]),
             )
             .unwrap();
-        h.task("owner", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+        h.task("owner", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","stream":"feed","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]}}));
         let first = h.run();
         assert_eq!(first[0]["operation"]["kind"], "storeCallback", "{first:?}");
         let hook = Open {
@@ -1226,10 +1226,10 @@ fn pending_rebuild_drains_old_authority_then_activates_target_hooks() {
     assert_eq!(h.call("rebuild", json!({"kind":"rebuild"})).0["ok"], true);
     h.call(
         "scope",
-        json!({"kind":"scope","scope":"feed","subscribed":true}),
+        json!({"kind":"stream","stream":"feed","subscribed":true}),
     );
     common::acknowledge(h.runtime.client(), &[("feed", 0)]);
-    h.task("pull", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"feed","cursor":1,"model":"Alpha","identity":{"id":"a"},"stamp":1,"state":{"text":"server","note":null}}]}}));
+    h.task("pull", json!({"kind":"pull","page":{"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","stream":"feed","cursor":1,"model":"Alpha","identity":{"id":"a"},"stamp":1,"state":{"text":"server","note":null}}]}}));
     let events = h.run();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["operation"]["kind"], "storeCallback");
@@ -1581,7 +1581,7 @@ fn a_local_callback_admits_only_its_own_local_commands() {
         ("submit", ping()),
         (
             "scope",
-            json!({"kind":"scope","scope":"book","subscribed":true}),
+            json!({"kind":"stream","stream":"book","subscribed":true}),
         ),
         ("savepoint", json!({"kind":"savepoint"})),
         ("release", json!({"kind":"release"})),
@@ -2115,7 +2115,7 @@ fn a_store_hook_cannot_submit_a_mutation_or_run_a_local_callback() {
     };
     h.task(
         "sub",
-        json!({"kind":"scope","scope":"feed","subscribed":true}),
+        json!({"kind":"stream","stream":"feed","subscribed":true}),
     );
     h.run();
     common::acknowledge(h.runtime.client(), &[("feed", 0)]);
@@ -2173,7 +2173,7 @@ fn a_store_hook_cannot_submit_a_mutation_or_run_a_local_callback() {
 #[test]
 fn native_scope_tasks_reject_retired_ownership_even_beside_scope() {
     use axton_client::runtime::protocol::{Command, TransactionCommand};
-    let canonical = json!({"kind":"scope","scope":"U","subscribed":true});
+    let canonical = json!({"kind":"stream","stream":"U","subscribed":true});
     assert!(serde_json::from_value::<Command>(canonical.clone()).is_ok());
     assert!(serde_json::from_value::<TransactionCommand>(canonical.clone()).is_ok());
     for old in ["channel", "channels"] {

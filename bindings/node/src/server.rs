@@ -167,7 +167,7 @@ pub async fn process_pull(
     request_json: String,
     callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
 ) -> Result<String> {
-    axton_server::process_scope_pull(
+    axton_server::process_stream_pull(
         &config(&config_json)?,
         &owner,
         request_json.as_bytes(),
@@ -217,7 +217,7 @@ fn live_invalid(message: &str) -> Error {
 /// Negotiates the subscribe frame inside the host's transaction, opens the
 /// socket's `Subscriptions`, and answers `{handle, actions}`: the handle names
 /// the session for `live_event` and `live_close`, and the actions are the
-/// session's first (listen, send the acknowledgement, pull each scope).
+/// session's first (listen, send the acknowledgement, pull each stream).
 #[napi]
 pub async fn negotiate_live(
     config_json: String,
@@ -256,7 +256,7 @@ pub fn live_event(handle: i64, event_json: String) -> Result<String> {
             .ok()
             .and_then(|handle| sessions.open.get_mut(&handle))
             .ok_or_else(|| live_invalid("live session handle is not open"))?;
-        subscriptions.handle_scope(event).map_err(reason)?
+        subscriptions.handle_stream(event).map_err(reason)?
     };
     serde_json::to_string(&actions).map_err(internal)
 }
@@ -293,7 +293,7 @@ pub async fn pull_live(
                 "invalid live cursors",
             ))
         })?;
-    let result = axton_server::live::scope_pull(
+    let result = axton_server::live::stream_pull(
         &config(&config_json)?,
         &owner,
         &cursors,

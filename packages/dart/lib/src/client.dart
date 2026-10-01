@@ -91,9 +91,9 @@ class Client implements WritePort, MutatePort {
   /// publishes for them.
   late final Subscriptions _subscriptions = Subscriptions(_bridge);
 
-  /// The Scope surface the generated `scopes` facade delegates to, with no
+  /// The Stream surface the generated `streams` facade delegates to, with no
   /// logic of its own.
-  late final ClientScopes scopes = ClientScopes(this);
+  late final ClientStreams streams = ClientStreams(this);
 
   /// The refusals retained until dismissed, each with the act as submitted.
   late final ClientRejections rejections = ClientRejections._(this);
@@ -594,21 +594,21 @@ class Client implements WritePort, MutatePort {
   Future<void> invalidateLoad(String name, Map<String, dynamic> args) =>
       _loads.invalidate(name, args);
 
-  /// Register durable intent to follow [scope] and answer with its handle. It
+  /// Register durable intent to follow [stream] and answer with its handle. It
   /// resolves when the local transaction commits: it awaits no
-  /// authentication, connection or acknowledgement, and the same Scope answers
+  /// authentication, connection or acknowledgement, and the same Stream answers
   /// with the same handle while its registration lives. The socket is never
   /// cancelled here; the Downlink worker sees the committed change and
   /// reconciles its own session.
-  Future<Subscription> subscribeScope(String scope) => _inTransaction
+  Future<Subscription> subscribeStream(String stream) => _inTransaction
       ? Future.error(StateError('transaction_active'))
-      : _subscriptions.subscribe(scope);
-  Future<Subscription> subscribe(String scope) => subscribeScope(scope);
+      : _subscriptions.subscribe(stream);
+  Future<Subscription> subscribe(String stream) => subscribeStream(stream);
 
-  /// Remove whatever registration this Scope name has; its handle stops.
-  Future<void> unsubscribe(String scope) => _inTransaction
+  /// Remove whatever registration this Stream name has; its handle stops.
+  Future<void> unsubscribe(String stream) => _inTransaction
       ? Future.error(StateError('transaction_active'))
-      : _subscriptions.unsubscribeScope(scope);
+      : _subscriptions.unsubscribeStream(stream);
 
   /// Connect to [server]: the runtime runs both lanes and every direct call
   /// from here on, and this client only executes the effects it asks for.
@@ -838,12 +838,13 @@ class Client implements WritePort, MutatePort {
   }
 }
 
-/// The Scope surface of one client: what the generated `scopes` facade
+/// The Stream surface of one client: what the generated `streams` facade
 /// delegates to.
-class ClientScopes {
+class ClientStreams {
   final Client _client;
-  const ClientScopes(this._client);
-  Future<Subscription> subscribe(String scope) => _client.subscribeScope(scope);
+  const ClientStreams(this._client);
+  Future<Subscription> subscribe(String stream) =>
+      _client.subscribeStream(stream);
 }
 
 /// The runtime's refusal of an outer transaction command issued while a
@@ -869,7 +870,7 @@ class Transaction implements WritePort, SubmitMutationPort {
   Transaction._(this._client, this._transactionId);
   void _cancel() => _open = false;
 
-  late final scopes = TransactionScopes._(this);
+  late final streams = TransactionStreams._(this);
 
   /// Dismiss a refusal as part of this transaction.
   late final TransactionRejections rejections = TransactionRejections._(this);
@@ -1150,7 +1151,7 @@ class Transaction implements WritePort, SubmitMutationPort {
 
 /// The handle a Mutation's `local` callback receives: local Model reads and
 /// direct writes through the callback's own capability, nothing else - no
-/// Mutation, Scope, watch or savepoint. Its writes are the submitting call's
+/// Mutation, Stream, watch or savepoint. Its writes are the submitting call's
 /// local companions. It expires when the callback returns: a later command is
 /// refused, and poisons the transaction while it is still open. The
 /// unawaited-work rule is the transaction's, and a failed command it caught
@@ -1273,23 +1274,15 @@ class LocalTransaction implements WritePort {
   }
 }
 
-/// Local Scope intent in a transaction; no live Subscription handle.
-class TransactionScopes {
+/// Local Stream intent in a transaction; no live Subscription handle.
+class TransactionStreams {
   final Transaction _tx;
-  const TransactionScopes._(this._tx);
-  Future<void> subscribe(String scope) async {
-    await _tx._send({
-      'kind': 'scope',
-      'scope': scope,
-      'subscribed': true,
-    });
+  const TransactionStreams._(this._tx);
+  Future<void> subscribe(String stream) async {
+    await _tx._send({'kind': 'stream', 'stream': stream, 'subscribed': true});
   }
 
-  Future<void> unsubscribe(String scope) async {
-    await _tx._send({
-      'kind': 'scope',
-      'scope': scope,
-      'subscribed': false,
-    });
+  Future<void> unsubscribe(String stream) async {
+    await _tx._send({'kind': 'stream', 'stream': stream, 'subscribed': false});
   }
 }

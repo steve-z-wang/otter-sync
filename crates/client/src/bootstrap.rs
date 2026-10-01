@@ -301,7 +301,7 @@ impl<S: ClientStore> Client<S> {
         Ok(self.bootstrap_schedule_scan(rotation)?.0)
     }
     pub(crate) fn retry_reconciliation_failures(&mut self) -> Result<()> {
-        let streams=self.view(|e| Ok(e.rows("SELECT scope FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
+        let streams=self.view(|e| Ok(e.rows("SELECT stream FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
         if streams.is_empty() {
             return Ok(());
         }
@@ -362,7 +362,7 @@ impl<S: ClientStore> Client<S> {
         self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state NOT IN ('not_requested','complete') LIMIT 1", &[])?.is_some()))
     }
     pub(crate) fn reconciliation_pending(&mut self, stream: &str) -> Result<bool> {
-        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE scope=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(stream)])?.is_some()))
+        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE stream=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(stream)])?.is_some()))
     }
     pub(crate) fn apply_stream_history_page(
         &mut self,

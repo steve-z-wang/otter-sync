@@ -69,16 +69,16 @@ export class Transaction {
   cancel(): void {
     this.#open = false;
   }
-  /** Local Scope intent inside this transaction; no Subscription handle. */
-  get scopes(): {
-    subscribe(scope: string): Promise<void>;
-    unsubscribe(scope: string): Promise<void>;
+  /** Local Stream intent inside this transaction; no Subscription handle. */
+  get streams(): {
+    subscribe(stream: string): Promise<void>;
+    unsubscribe(stream: string): Promise<void>;
   } {
     return {
-      subscribe: (scope) =>
-        this.#call({ kind: "scope", scope, subscribed: true }).then(() => {}),
-      unsubscribe: (scope) =>
-        this.#call({ kind: "scope", scope, subscribed: false }).then(() => {}),
+      subscribe: (stream) =>
+        this.#call({ kind: "stream", stream, subscribed: true }).then(() => {}),
+      unsubscribe: (stream) =>
+        this.#call({ kind: "stream", stream, subscribed: false }).then(() => {}),
     };
   }
   /** Dismiss a refusal as part of this transaction. */

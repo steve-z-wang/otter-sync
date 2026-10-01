@@ -120,7 +120,7 @@ pub fn acknowledge(c: &mut Client<SqliteStore>, heads: &[(&str, u64)]) -> Initia
             .subscription_state(scope)
             .unwrap()
             .expect("a registered subscription");
-        expected.insert(state.scope, state.subscription_id);
+        expected.insert(state.stream, state.subscription_id);
     }
     let heads = heads.iter().map(|(c, h)| (c.to_string(), *h)).collect();
     c.initialize_subscriptions(&expected, &heads).unwrap()
@@ -130,14 +130,14 @@ pub fn acknowledge(c: &mut Client<SqliteStore>, heads: &[(&str, u64)]) -> Initia
 /// commits the boundary a first acknowledgement at head zero establishes -
 /// where these tests measure their pages from.
 pub fn subscribe(c: &mut Client<SqliteStore>, scope: &str) {
-    c.transaction(|tx| tx.set_scope(scope.into(), true))
+    c.transaction(|tx| tx.set_stream(scope.into(), true))
         .unwrap();
     acknowledge(c, &[(scope, 0)]);
 }
 /// Unsubscribe and subscribe again: a new identity, initialized at zero as its
 /// own first acknowledgement would leave it.
 pub fn resubscribe(c: &mut Client<SqliteStore>, scope: &str) {
-    c.transaction(|tx| tx.set_scope(scope.into(), false))
+    c.transaction(|tx| tx.set_stream(scope.into(), false))
         .unwrap();
     subscribe(c, scope);
 }
@@ -334,8 +334,16 @@ pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
 }
 
 /// Upgrade the old authority-only fixture vocabulary at the test host boundary.
-/// Production decoders stay strict; these fixtures now state scope provenance.
+/// Production decoders stay strict; these fixtures now state Stream provenance.
 pub fn scope_fixture(mut value: Value) -> Value {
+    if value["mode"] == "bootstrap" {
+        if let Some(scope) = value
+            .as_object_mut()
+            .and_then(|object| object.remove("scope"))
+        {
+            value["stream"] = scope;
+        }
+    }
     let ranges = value.get("cursors").and_then(Value::as_object).cloned();
     if let Some(ranges) = ranges {
         if let Some(records) = value["changes"].as_array().cloned() {
@@ -352,7 +360,7 @@ pub fn scope_fixture(mut value: Value) -> Value {
                 for (i, record) in records.iter().enumerate() {
                     let mut record = record.clone();
                     record["kind"] = json!("upsert");
-                    record["scope"] = json!(scope);
+                    record["stream"] = json!(scope);
                     record["cursor"] =
                         json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
                     changes.push(record);
@@ -370,7 +378,7 @@ pub fn scope_fixture(mut value: Value) -> Value {
             .map(|(i, record)| {
                 let mut record = record.clone();
                 record["kind"] = json!("upsert");
-                record["scope"] = value["scope"].clone();
+                record["stream"] = value["stream"].clone();
                 record["cursor"] =
                     json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
                 record

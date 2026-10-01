@@ -235,7 +235,7 @@ test('inside a callback, every task of the outer client rejects promptly with tr
    outcomes.syncState = await message(client.syncState());
    outcomes.recordState = await message(client.syncState('Entry', { id: 'e' }));
    outcomes.subscribe = await message(client.subscribe('scope'));
-   outcomes.subscribeScope = await message(client.subscribeScope('scope'));
+   outcomes.subscribeStream = await message(client.subscribeStream('scope'));
    outcomes.unsubscribe = await message(client.unsubscribe('scope'));
    outcomes.rebuild = await message(client.rebuild());
    outcomes.pendingTasks = await message(client.pendingTasks());
@@ -252,6 +252,6 @@ test('inside a callback, every task of the outer client rejects promptly with tr
   assert.deepEqual(rows, [], 'no nested body ran and no watch delivered');
   // Nothing was left parked behind the transaction.
   assert.equal((await client.read('Entry', { id: 'e' })).text, 'inside');
-  assert.deepEqual((await client.syncState()).scopes, []);
+  assert.deepEqual((await client.syncState()).streams, []);
  } finally { await client.close(); await rm(dir, { recursive: true, force: true }); }
 });

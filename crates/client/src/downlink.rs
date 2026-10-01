@@ -184,7 +184,7 @@ impl<S: ClientStore> Engine<'_, S> {
             }) {
                 continue;
             }
-            if self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE scope=? AND subscription_id=? AND reconcile_state='requested' AND reconcile_bound IS NULL", &[serde_json::json!(range.head),serde_json::json!(stream),serde_json::json!(state.subscription_id)])? > 0 { self.mark_bootstrap(stream); }
+            if self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE stream=? AND subscription_id=? AND reconcile_state='requested' AND reconcile_bound IS NULL", &[serde_json::json!(range.head),serde_json::json!(stream),serde_json::json!(state.subscription_id)])? > 0 { self.mark_bootstrap(stream); }
         }
         Ok(())
     }

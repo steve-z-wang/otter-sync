@@ -20,7 +20,7 @@ pub(crate) struct Loaded {
     pub state: BootstrapState,
 }
 
-const COLUMNS: &str = "scope, subscription_id, starting_cursor, cursor, \
+const COLUMNS: &str = "stream, subscription_id, starting_cursor, cursor, \
      bootstrap_state, bootstrap_run, bootstrap_cursor, bootstrap_barrier, bootstrap_error";
 
 /// A decode error is cut to this many UTF-8 bytes before it enters a
@@ -153,7 +153,7 @@ fn closed(stream: &str, subscription_id: u64) -> axton_core::Error {
 impl<S: ClientStore> Engine<'_, S> {
     fn ledger_columns(&self) -> &'static str {
         if self.reconciliation {
-            "scope, subscription_id, reconcile_bound, cursor, reconcile_state, reconcile_run, reconcile_cursor, reconcile_barrier, reconcile_error"
+            "stream, subscription_id, reconcile_bound, cursor, reconcile_state, reconcile_run, reconcile_cursor, reconcile_barrier, reconcile_error"
         } else {
             COLUMNS
         }
@@ -178,7 +178,7 @@ impl<S: ClientStore> Engine<'_, S> {
     pub(crate) fn bootstrap_row(&mut self, stream: &str) -> Result<Option<Loaded>> {
         let rows = self.rows(
             &format!(
-                "SELECT {} FROM axton_subscription WHERE scope=?",
+                "SELECT {} FROM axton_subscription WHERE stream=?",
                 self.ledger_columns()
             ),
             &[json!(stream)],
@@ -214,7 +214,7 @@ impl<S: ClientStore> Engine<'_, S> {
             "axton_subscription",
             &self.ledger_sql("UPDATE axton_subscription SET bootstrap_state=?, bootstrap_run=?, bootstrap_cursor=?, \
              bootstrap_barrier=?, bootstrap_error=? \
-             WHERE scope=? AND subscription_id=? AND bootstrap_run=?"),
+             WHERE stream=? AND subscription_id=? AND bootstrap_run=?"),
             &[
                 json!(state.state.as_str()),
                 json!(state.run),
@@ -269,7 +269,7 @@ impl<S: ClientStore> Engine<'_, S> {
             &self.ledger_sql(&format!(
                 "SELECT {} FROM axton_subscription \
                  WHERE starting_cursor IS NOT NULL AND bootstrap_state IN ('requested','loading','catching_up') \
-                 ORDER BY scope", self.ledger_columns()
+                 ORDER BY stream", self.ledger_columns()
             )),
             &[],
         )
@@ -305,7 +305,7 @@ impl<S: ClientStore> Engine<'_, S> {
                      WHERE starting_cursor IS NOT NULL \
                        AND bootstrap_state='catching_up' AND bootstrap_barrier IS NOT NULL \
                        AND cursor IS NOT NULL AND cursor >= bootstrap_barrier \
-                       AND scope IN ({named}) ORDER BY scope",
+                       AND stream IN ({named}) ORDER BY stream",
                     self.ledger_columns()
                 )),
                 &chunk.iter().map(|stream| json!(stream)).collect::<Vec<_>>(),

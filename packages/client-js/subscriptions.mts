@@ -13,9 +13,9 @@ import type { RecordValue } from "./values.mts";
  * listeners.
  */
 
-/** One stored subscription, as the native Scope commands answer it. A boundary that is not committed yet is `null`; zero is a delivery position. */
+/** One stored subscription, as the native Stream commands answer it. A boundary that is not committed yet is `null`; zero is a delivery position. */
 export type SubscriptionState = {
-  scope: string;
+  stream: string;
   subscriptionId: number;
   startingCursor: number | null;
   cursor: number | null;
@@ -27,7 +27,7 @@ export type SubscriptionState = {
  * bound its interval yet, `catching-up` a loaded interval whose completion
  * barrier ordinary delivery has not reached, and `complete` says the initial
  * publication coverage was processed - not that a snapshot was taken, nor that
- * the Scope is currently fresh.
+ * the Stream is currently fresh.
  */
 export type BootstrapPhase =
   | "not-requested"
@@ -47,16 +47,16 @@ export type SubscriptionStatus = Readonly<{
   initialization: "pending" | "ready";
   /** `live` means the session delivers normally, not that all history is loaded. */
   connection: "offline" | "connecting" | "catching-up" | "live" | "stopped";
-  /** The durable load of this Scope's published history, as it was last committed. */
+  /** The durable load of this Stream's published history, as it was last committed. */
   bootstrap: BootstrapStatus;
 }>;
 export interface Subscription {
-  readonly scope: string;
+  readonly stream: string;
   readonly status: SubscriptionStatus;
   /** Deliver the current snapshot at once, then every change, until the returned function is called. */
   watch(listener: (status: SubscriptionStatus) => void): () => void;
   /**
-   * Prepare this Scope's published history. The registration is submitted when
+   * Prepare this Stream's published history. The registration is submitted when
    * the call is made, whether or not the returned Promise is awaited; the
    * Promise resolves only after the completion transaction commits. Calls
    * during one active run share it, a call after a valid completion resolves
@@ -83,18 +83,18 @@ const bootstrapFailed = (error: { code: string; message: string }) =>
  * resolves from another run's, so a rapid retry cannot turn an earlier failed
  * call into a success ([#151](https://github.com/zanminwang/axton/issues/151)).
  */
-const bootstrapSuperseded = (scope: string) =>
+const bootstrapSuperseded = (stream: string) =>
   Object.assign(
-    Error(`the bootstrap run of ${scope} this call waited for was superseded`),
+    Error(`the bootstrap run of ${stream} this call waited for was superseded`),
     { code: "bootstrap.superseded" as const },
   );
 /**
- * The public error of a failed `scopeBootstrap` task, by the code the runtime
+ * The public error of a failed `streamBootstrap` task, by the code the runtime
  * decided (`details.code`). A task still queued when the runtime closed has no
  * details and fails `client_closed`; any other failure is the caller's to see
  * unchanged.
  */
-function bootstrapError(scope: string, error: TaskError): unknown {
+function bootstrapError(stream: string, error: TaskError): unknown {
   const details = error?.details;
   if (details === undefined)
     return error?.message === "client_closed" ? clientClosed() : error;
@@ -104,7 +104,7 @@ function bootstrapError(scope: string, error: TaskError): unknown {
     case "client_closed":
       return clientClosed();
     case "bootstrap.superseded":
-      return bootstrapSuperseded(scope);
+      return bootstrapSuperseded(stream);
     default:
       return bootstrapFailed({
         code: details.code,
@@ -138,7 +138,7 @@ function frozen(status: SubscriptionStatus): SubscriptionStatus {
 }
 
 class Handle implements Subscription {
-  readonly scope: string;
+  readonly stream: string;
   readonly subscriptionId: number;
   #registry: Subscriptions;
   #bridge: SubscriptionBridge;
@@ -159,7 +159,7 @@ class Handle implements Subscription {
     bridge: SubscriptionBridge,
     report: (error: unknown) => void,
   ) {
-    this.scope = state.scope;
+    this.stream = state.stream;
     this.subscriptionId = state.subscriptionId;
     this.#registry = registry;
     this.#bridge = bridge;
@@ -243,14 +243,14 @@ class Handle implements Subscription {
     // returned Promise is awaited. The runtime parks the task on its run.
     return this.#bridge
       .task({
-        kind: "scopeBootstrap",
-        scope: this.scope,
+        kind: "streamBootstrap",
+        stream: this.stream,
         subscriptionId: this.subscriptionId,
       })
       .then(
         () => undefined,
         (error: TaskError) => {
-          throw bootstrapError(this.scope, error);
+          throw bootstrapError(this.stream, error);
         },
       );
   }
@@ -260,8 +260,8 @@ class Handle implements Subscription {
     if (this.#closed === "stopped") throw subscriptionClosed();
     this.#removing = true;
     await this.#bridge.task({
-      kind: "scopeUnsubscribe",
-      scope: this.scope,
+      kind: "streamUnsubscribe",
+      stream: this.stream,
       subscriptionId: this.subscriptionId,
     });
   }
@@ -290,10 +290,10 @@ export class Subscriptions {
    * commit belongs to. Concurrent calls run through the runtime's serialized
    * command path, read the same identity and share one cached handle.
    */
-  async subscribe(scope: string): Promise<Subscription> {
+  async subscribe(stream: string): Promise<Subscription> {
     let handle!: Handle;
     await this.#bridge.task(
-      { kind: "scopeSubscribe", scope },
+      { kind: "streamSubscribe", stream },
       {
         // While the completion is dispatched: the runtime publishes the
         // observer's first snapshot behind it, in the same batch.
@@ -315,14 +315,14 @@ export class Subscriptions {
     return handle;
   }
   /**
-   * Remove whatever registration a Scope name has. One command, so a removal and a
-   * registration of the same Scope commit in the order they were called in;
+   * Remove whatever registration a Stream name has. One command, so a removal and a
+   * registration of the same Stream commit in the order they were called in;
    * the runtime closes the handle it had before the command completes.
    */
-  async unsubscribeScope(scope: string): Promise<void> {
+  async unsubscribeStream(stream: string): Promise<void> {
     await this.#bridge.task({
-      kind: "scope",
-      scope: scope,
+      kind: "stream",
+      stream: stream,
       subscribed: false,
     });
   }

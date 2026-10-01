@@ -1561,3 +1561,107 @@ fn a_failed_page_commit_retries_the_same_call_locally() {
     assert_eq!((job.pages, job.attempts, job.retry), (1, 0, None));
     assert!(c.read(&key).unwrap().is_some());
 }
+
+#[test]
+fn standing_null_hook_reclaims_cache_but_late_load_requires_query_eligibility() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut value = load_schema_value();
+    let standing = json!({"name":"Standing","version":1,"identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}}]});
+    value["models"]
+        .as_array_mut()
+        .unwrap()
+        .push(standing.clone());
+    let mut result = standing;
+    result["enums"] = json!([]);
+    value["resultModels"].as_array_mut().unwrap().push(result);
+    let schema = Schema::from_value(value).unwrap();
+    let mut c = Client::open(SqliteStore::open(dir.path().join("db")).unwrap(), schema).unwrap();
+    c.transaction(|tx| {
+        tx.direct(create("Standing", "lost", json!({})))?;
+        tx.direct(create("Standing", "other", json!({})))?;
+        for id in ["child", "own", "independent", "pending", "composition"] {
+            tx.direct(create("Entry", id, json!({"text":id,"note":"lost"})))?;
+        }
+        tx.enqueue(Mutation::new(
+            "Edit",
+            vec![Operation {
+                model: "Entry".into(),
+                op: OperationKind::Update,
+                identity: json!({"id":"pending"}),
+                values: Some(json!({"text":"pending words"})),
+            }],
+        ))?;
+        Ok(())
+    })
+    .unwrap();
+    let id = start(&mut c, plain()).job.id;
+    let fence = fence(&mut c, &id);
+    let mut page = load_page(&fence, &[("child", "late", 20)], None);
+    page.records[0].state = json!({"text":"late","note":"lost"});
+    let LoadPageStep::Store(delayed) = c.load_page_step(&fence, reply(page)).unwrap() else {
+        panic!("held page");
+    };
+    // The application hook runs only for an actual authority-null delivery.
+    subscribe(&mut c, "standing");
+    c.begin_session().unwrap();
+    let absence = c
+        .prepare_store(StoreDelivery::Page(PullPage {
+            cursors: std::collections::BTreeMap::from([(
+                "standing".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![AuthorityRecord {
+                model: "Standing".into(),
+                identity: json!({"id":"lost"}),
+                stamp: 10,
+                state: Value::Null,
+                error: None,
+            }],
+        }))
+        .unwrap();
+    assert!(matches!(
+        &absence.changes()["Standing"][0],
+        StoreChange::Delete { .. }
+    ));
+    c.session(|tx| {
+        tx.direct(Operation {
+            model: "Entry".into(),
+            op: OperationKind::Delete,
+            identity: json!({"id":"child"}),
+            values: None,
+        })
+    })
+    .unwrap();
+    c.apply_prepared_store(absence).unwrap();
+    c.commit_session().unwrap();
+    assert!(entry(&mut c, "child").is_none());
+    assert_eq!(entry(&mut c, "pending").unwrap()["text"], "pending words");
+    assert!(entry(&mut c, "composition").is_some());
+    let epoch = c
+        .read_sql("SELECT store_epoch FROM axton_client", &[])
+        .unwrap();
+    c.begin_session().unwrap();
+    let prepared = c.prepare_store(delayed).unwrap();
+    assert_eq!(prepared.changes()["Entry"].len(), 1);
+    c.apply_prepared_store(prepared).unwrap();
+    c.commit_session().unwrap();
+    assert_eq!(entry(&mut c, "child").unwrap()["text"], "late");
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_client", &[])
+            .unwrap(),
+        epoch
+    );
+    let eligible = c.read_sql("SELECT id FROM Entry WHERE id IN ('own','pending','composition') OR EXISTS (SELECT 1 FROM Standing WHERE id=Entry.note) OR (id='independent' AND EXISTS (SELECT 1 FROM Standing WHERE id='other')) ORDER BY id", &[]).unwrap();
+    assert_eq!(
+        eligible,
+        json!([{ "id":"composition"},{"id":"independent"},{"id":"own"},{"id":"pending"}])
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    assert_eq!(c.pending_count().unwrap(), 1);
+}

@@ -314,7 +314,10 @@ impl<S: ClientStore + 'static> Host<S> {
     }
     /// Subscribe `book`, and on the socket that follows acknowledge `head`.
     fn streaming(&mut self, head: u64) -> String {
-        self.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+        self.task(
+            "subscribe",
+            json!({"kind":"streamSubscribe","stream":"book"}),
+        );
         let events = self.run();
         assert_eq!(sockets(&events).len(), 1, "{events:?}");
         let socket = self.socket();
@@ -389,7 +392,7 @@ fn cancelled(events: &[Value], id: &str) -> bool {
     events.contains(&json!({"type":"cancelEffect","effectId":id}))
 }
 fn page(from: u64, to: u64, id: &str, text: &str) -> String {
-    json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"kind":"upsert","scope":"book","cursor":to,"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]}).to_string()
+    json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"kind":"upsert","stream":"book","cursor":to,"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]}).to_string()
 }
 fn call_id(body: &str) -> String {
     serde_json::from_str::<Value>(body).unwrap()["call"]["callId"]
@@ -849,7 +852,10 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
     for (recreate, ok) in [(false, true), (true, true), (false, false), (true, false)] {
         let mut h = hooked_host();
         h.connect(false);
-        h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+        h.task(
+            "subscribe",
+            json!({"kind":"streamSubscribe","stream":"book"}),
+        );
         let registration = h.run();
         let observer = h.completion(&registration, "subscribe")["value"]["observerId"].clone();
         let socket = h.socket();
@@ -870,12 +876,12 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"scope","scope":"book","subscribed":false}}),
+            "command":{"kind":"stream","stream":"book","subscribed":false}}),
         );
         assert!(h.run().contains(&done("remove", Value::Null)));
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"scope","scope":"book","subscribed":true}}));
+                "command":{"kind":"stream","stream":"book","subscribed":true}}));
             assert!(h.run().contains(&done("replace", Value::Null)));
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,
@@ -950,12 +956,12 @@ fn terminal_bootstrap_hook_unsubscribe_keeps_authority_without_old_run_progress(
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"scope","scope":"book","subscribed":false}}),
+            "command":{"kind":"stream","stream":"book","subscribed":false}}),
         );
         assert!(h.run().contains(&done("remove", Value::Null)));
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"scope","scope":"book","subscribed":true}}));
+                "command":{"kind":"stream","stream":"book","subscribed":true}}));
             assert!(h.run().contains(&done("replace", Value::Null)));
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
@@ -1021,12 +1027,12 @@ fn terminal_bootstrap_hook_failure_rolls_back_page_then_fails_the_original_run()
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"scope","scope":"book","subscribed":false}}),
+            "command":{"kind":"stream","stream":"book","subscribed":false}}),
         );
         h.run();
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"scope","scope":"book","subscribed":true}}));
+                "command":{"kind":"stream","stream":"book","subscribed":true}}));
             h.run();
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":false,"error":"refused"}));
@@ -1216,7 +1222,7 @@ fn hooked_live_commit_keeps_notifications_and_barrier_retry_after_scan_failure()
             run,
             0,
             &BootstrapPage {
-                scope: "book".into(),
+                stream: "book".into(),
                 from: 0,
                 to: 0,
                 until: 0,
@@ -1396,14 +1402,17 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
             .starts_with("unknown variant `downlink`")
     );
 
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     let events = h.run();
     let socket = h.socket();
     let subscribe: Value =
         serde_json::from_str(h.open[&socket]["subscribe"].as_str().unwrap()).unwrap();
     assert_eq!(
         subscribe,
-        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"type":"subscribe","scopes":["book"],"models":{"Entry":1}})
+        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"type":"subscribe","streams":["book"],"models":{"Entry":1}})
     );
     assert_eq!(sockets(&events).len(), 1);
     assert!(
@@ -1441,7 +1450,7 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
     let (pull, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
+        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
     );
     assert_eq!(connections(&events), ["catching-up"]);
     h.frame(&socket, &page(1, 2, "e", "queued"));
@@ -1632,13 +1641,16 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     let mut h = host();
     h.connect(false);
     let client_id = h.client().client_id().to_string();
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     let events = h.run();
     let subscription =
         h.completion(&events, "subscribe")["value"]["state"]["subscriptionId"].clone();
     h.task(
         "load",
-        json!({"kind":"scopeBootstrap","scope":"book","subscriptionId":subscription}),
+        json!({"kind":"streamBootstrap","stream":"book","subscriptionId":subscription}),
     );
     h.run();
     let socket = h.socket();
@@ -1647,7 +1659,7 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     let (load, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","scope":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Live traffic flows beside the outstanding historical page.
     h.frame(&socket, &page(7, 8, "live", "streamed"));
@@ -1668,7 +1680,7 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     h.frame(&socket, &page(8, 9, "live", "again"));
     h.ok(
         &load,
-        &json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
+        &json!({"mode":"bootstrap","stream":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
             .to_string(),
     );
     let mut events = h.take();
@@ -1722,7 +1734,10 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
 #[test]
 fn pause_abandons_lane_io_without_backoff_resume_asks_again_and_stop_is_final() {
     let mut h = host();
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     let events = h.run();
     let subscription =
         h.completion(&events, "subscribe")["value"]["state"]["subscriptionId"].clone();
@@ -1734,7 +1749,7 @@ fn pause_abandons_lane_io_without_backoff_resume_asks_again_and_stop_is_final() 
     h.connect(false);
     h.task(
         "load",
-        json!({"kind":"scopeBootstrap","scope":"book","subscriptionId":subscription}),
+        json!({"kind":"streamBootstrap","stream":"book","subscriptionId":subscription}),
     );
     h.run();
     let socket = h.socket();
@@ -2054,7 +2069,7 @@ fn rebuildable(dir: &Path, scope: bool, bootstrap: bool) -> ClientRuntime<Sqlite
         let client = runtime.client();
         if scope {
             client
-                .transaction(|tx| tx.set_scope("book".into(), true))
+                .transaction(|tx| tx.set_stream("book".into(), true))
                 .unwrap();
         }
         client
@@ -2149,7 +2164,7 @@ fn a_rebuild_fences_old_lane_io_and_reopens_in_the_same_intent() {
     let generation = h.client().generation();
     h.ok(
         &old_load,
-        &json!({"mode":"bootstrap","scope":"book","from":0,"to":2,"until":2,"head":2,"changes":[]})
+        &json!({"mode":"bootstrap","stream":"book","from":0,"to":2,"until":2,"head":2,"changes":[]})
             .to_string(),
     );
     h.ok(&old_push, "{}");
@@ -2205,12 +2220,12 @@ fn historical(records: Value) -> String {
         .map(|(i, record)| {
             let mut record = record.clone();
             record["kind"] = json!("upsert");
-            record["scope"] = json!("book");
+            record["stream"] = json!("book");
             record["cursor"] = json!(7 - records.as_array().unwrap().len() + i + 1);
             record
         })
         .collect();
-    json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":changes})
+    json!({"mode":"bootstrap","stream":"book","from":0,"to":7,"until":7,"head":9,"changes":changes})
         .to_string()
 }
 impl Host {
@@ -2340,7 +2355,7 @@ fn a_rebuild_keeps_a_running_lane_running_under_fresh_effects() {
         assert!(cancelled(&events, id), "{id} abandoned: {events:?}");
     }
     assert_eq!(
-        Vec::from_iter(h.client().desired_scopes().unwrap()),
+        Vec::from_iter(h.client().desired_streams().unwrap()),
         ["book"],
         "the Scope is carried"
     );
@@ -2405,7 +2420,7 @@ fn a_rebuild_fences_a_bootstrap_page_in_flight() {
     let new = h.socket();
     assert_ne!(new, old);
     let carried =
-        h.call("state", json!({"kind":"scopeState","scope":"book"}))["value"]["subscriptionId"]
+        h.call("state", json!({"kind":"streamState","stream":"book"}))["value"]["subscriptionId"]
             .as_u64()
             .unwrap();
     assert_ne!(carried, subscription, "a fresh identity");
@@ -2419,7 +2434,7 @@ fn a_rebuild_fences_a_bootstrap_page_in_flight() {
     h.run();
     h.task(
         "load",
-        json!({"kind":"scopeBootstrap","scope":"book","subscriptionId":carried}),
+        json!({"kind":"streamBootstrap","stream":"book","subscriptionId":carried}),
     );
     h.run();
     let (fresh, body) = h.http("pull");
@@ -2441,7 +2456,7 @@ fn a_rebuild_fences_a_bootstrap_page_in_flight() {
     let applied = h.client().bootstrap_state("book", carried).unwrap();
     assert_eq!(
         serde_json::to_value(&applied).unwrap(),
-        json!({"scope":"book","subscriptionId":carried,"state":"catching_up","run":1,"cursor":7,"barrier":9,"error":null}),
+        json!({"stream":"book","subscriptionId":carried,"state":"catching_up","run":1,"cursor":7,"barrier":9,"error":null}),
         "the fresh page applies to the fresh run"
     );
 }
@@ -2466,7 +2481,7 @@ fn a_rebuild_under_a_running_lane_with_no_scope_resets_and_idles() {
     assert!(h.open.is_empty(), "still idle: {:?}", h.open);
     h.task(
         "subscribe",
-        json!({"kind":"scope","scope":"book","subscribed":true}),
+        json!({"kind":"stream","stream":"book","subscribed":true}),
     );
     let events = h.run();
     assert_eq!(sockets(&events).len(), 1, "{events:?}");
@@ -2568,11 +2583,11 @@ fn inbound_work_admitted_after_an_ordinary_task_runs_after_it() {
     );
     h.task(
         "unsubscribe",
-        json!({"kind":"scope","scope":"book","subscribed":false}),
+        json!({"kind":"stream","stream":"book","subscribed":false}),
     );
     h.task(
         "resubscribe",
-        json!({"kind":"scopeSubscribe","scope":"book"}),
+        json!({"kind":"streamSubscribe","stream":"book"}),
     );
     h.frame(&socket, &page(1, 2, "live", "obsolete"));
     assert!(
@@ -2669,7 +2684,7 @@ fn completed(events: &[Value], id: &str) -> bool {
 impl<S: ClientStore + 'static> Host<S> {
     /// Subscribe `scope` and answer its identity and observer.
     fn subscribe(&mut self, id: &str, scope: &str) -> (u64, Value, Vec<Value>) {
-        self.task(id, json!({"kind":"scopeSubscribe","scope":scope}));
+        self.task(id, json!({"kind":"streamSubscribe","stream":scope}));
         let events = self.run();
         let value = self.completion(&events, id)["value"].clone();
         (
@@ -2681,7 +2696,7 @@ impl<S: ClientStore + 'static> Host<S> {
     fn bootstrap(&mut self, id: &str, subscription: u64) {
         self.task(
             id,
-            json!({"kind":"scopeBootstrap","scope":"book","subscriptionId":subscription}),
+            json!({"kind":"streamBootstrap","stream":"book","subscriptionId":subscription}),
         );
     }
 }
@@ -2705,7 +2720,7 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     assert_eq!(
         snapshots(&events, &observer),
         [
-            json!({"kind":"subscription","scope":"book","subscriptionId":subscription,"status":status("pending","offline","not-requested")})
+            json!({"kind":"subscription","stream":"book","subscriptionId":subscription,"status":status("pending","offline","not-requested")})
         ]
     );
     // The same identity answers the same observer and publishes nothing new.
@@ -2763,7 +2778,7 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     // The removal commits and ends the observer with one terminal snapshot.
     h.task(
         "unsubscribe",
-        json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":subscription}),
+        json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":subscription}),
     );
     let events = h.run();
     assert_eq!(
@@ -2773,13 +2788,13 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     assert_eq!(
         snapshots(&events, &observer),
         [
-            json!({"kind":"subscription","scope":"book","subscriptionId":subscription,"status":status("ready","stopped","not-requested"),"closed":true})
+            json!({"kind":"subscription","stream":"book","subscriptionId":subscription,"status":status("ready","stopped","not-requested"),"closed":true})
         ]
     );
     h.task("wake", json!({"kind":"connection","event":"wake"}));
     h.task(
         "twice",
-        json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":subscription}),
+        json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":subscription}),
     );
     let events = h.run();
     assert_eq!(snapshots(&events, &observer), Vec::<Value>::new());
@@ -2808,7 +2823,7 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["until"], 6);
     h.ok(
         &history,
-        &json!({"mode":"bootstrap","scope":"book","from":0,"to":6,"until":6,"head":6,"changes":[]})
+        &json!({"mode":"bootstrap","stream":"book","from":0,"to":6,"until":6,"head":6,"changes":[]})
             .to_string(),
     );
     let events = h.run();
@@ -2852,7 +2867,7 @@ fn bootstrap_waiters_answer_after_the_completion_commit_and_share_the_run() {
     );
     h.ok(
         &load,
-        &json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
+        &json!({"mode":"bootstrap","stream":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
             .to_string(),
     );
     let events = h.run();
@@ -2888,18 +2903,18 @@ fn bootstrap_waiters_answer_after_the_completion_commit_and_share_the_run() {
     let (other, _, _) = h.subscribe("other", "shelf");
     h.task(
         "load shelf",
-        json!({"kind":"scopeBootstrap","scope":"shelf","subscriptionId":other}),
+        json!({"kind":"streamBootstrap","stream":"shelf","subscriptionId":other}),
     );
     h.run();
     let socket = h.socket();
     h.frame(&socket, &ack(&[("book", 9), ("shelf", 3)]));
     h.run();
     let (load, _) = h.http("pull");
-    h.ok(&load, &json!({"mode":"bootstrap","scope":"shelf","from":0,"to":3,"until":3,"head":3,"changes":[]}).to_string());
+    h.ok(&load, &json!({"mode":"bootstrap","stream":"shelf","from":0,"to":3,"until":3,"head":3,"changes":[]}).to_string());
     // The page answers - and completes the run - ahead of the late call.
     h.task(
         "late",
-        json!({"kind":"scopeBootstrap","scope":"shelf","subscriptionId":other}),
+        json!({"kind":"streamBootstrap","stream":"shelf","subscriptionId":other}),
     );
     let events = h.run();
     let early = position(&events, |e| *e == done("load shelf", Value::Null));
@@ -2981,7 +2996,7 @@ fn a_failed_run_fails_its_waiters_and_a_retry_supersedes_an_unobserved_run() {
     // closed, then the observer ends.
     h.task(
         "unsubscribe",
-        json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":subscription}),
+        json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":subscription}),
     );
     let events = h.run();
     let closed = position(&events, |e| {
@@ -3068,7 +3083,7 @@ fn close_fails_waiters_and_ends_every_observer_before_runtime_closed() {
     assert!(load < subscription_end && subscription_end < watch_end);
     assert_eq!(
         events[subscription_end]["snapshot"],
-        json!({"kind":"subscription","scope":"book","subscriptionId":subscription,"status":status("pending","stopped","waiting-for-initialization"),"closed":true})
+        json!({"kind":"subscription","stream":"book","subscriptionId":subscription,"status":status("pending","stopped","waiting-for-initialization"),"closed":true})
     );
     assert_eq!(
         events[watch_end]["snapshot"],
@@ -3128,7 +3143,7 @@ fn watches_re_run_after_commits_and_publish_only_what_changed() {
     assert_eq!(snapshots(&events, &one), Vec::<Value>::new());
     // A commit that touches no Model re-runs both and publishes nothing.
     let generation = h.client().generation();
-    h.task("scope", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task("scope", json!({"kind":"streamSubscribe","stream":"book"}));
     let events = h.run();
     assert_ne!(h.client().generation(), generation);
     assert!(snapshots(&events, &all).is_empty() && snapshots(&events, &one).is_empty());
@@ -3297,7 +3312,10 @@ fn a_refusal_on_the_socket_a_catch_up_or_a_direct_call_stops_the_connection() {
     // The upgrade.
     let mut h = host();
     h.connect(true);
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     h.run();
     let socket = h.socket();
     refuse(&mut h, &socket, 403, r#"{"reason":"blocked"}"#);
@@ -3388,17 +3406,20 @@ impl Host {
 #[test]
 fn scope_commands_register_read_and_remove_one_identity() {
     let mut h = host();
-    let state = json!({"kind":"scopeState","scope":"book"});
+    let state = json!({"kind":"streamState","stream":"book"});
     assert_eq!(
         h.call("state", state.clone())["value"],
         Value::Null,
         "no row means unsubscribed"
     );
     let generation = h.client().generation();
-    let registered = h.call("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    let registered = h.call(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     assert_eq!(
         registered["value"]["state"],
-        json!({"scope":"book","subscriptionId":1,"startingCursor":null,"cursor":null}),
+        json!({"stream":"book","subscriptionId":1,"startingCursor":null,"cursor":null}),
         "a fresh registration carries no boundary at all, not zero"
     );
     assert_ne!(
@@ -3407,7 +3428,7 @@ fn scope_commands_register_read_and_remove_one_identity() {
         "the registration committed"
     );
     let generation = h.client().generation();
-    let again = h.call("again", json!({"kind":"scopeSubscribe","scope":"book"}));
+    let again = h.call("again", json!({"kind":"streamSubscribe","stream":"book"}));
     assert_eq!(
         again["value"], registered["value"],
         "the same identity and observer"
@@ -3419,23 +3440,23 @@ fn scope_commands_register_read_and_remove_one_identity() {
     );
     // A name the wire refuses names no Scope: nothing is written for it.
     for blank in ["", " ", "\t\n"] {
-        let subscribe = h.call("blank", json!({"kind":"scopeSubscribe","scope":blank}));
+        let subscribe = h.call("blank", json!({"kind":"streamSubscribe","stream":blank}));
         assert!(refused(&subscribe).is_some(), "{blank:?}: {subscribe}");
         let scope = h.call(
             "blank scope",
-            json!({"kind":"scope","scope":blank,"subscribed":true}),
+            json!({"kind":"stream","stream":blank,"subscribed":true}),
         );
         assert!(refused(&scope).is_some(), "the same rule: {blank:?}");
     }
     assert_eq!(
-        Vec::from_iter(h.client().desired_scopes().unwrap()),
+        Vec::from_iter(h.client().desired_streams().unwrap()),
         ["book"],
         "nothing of a refused registration was written"
     );
     // The Scope command shares the ledger: the same row, the same identity.
     h.call(
         "scope",
-        json!({"kind":"scope","scope":"book","subscribed":true}),
+        json!({"kind":"stream","stream":"book","subscribed":true}),
     );
     assert_eq!(h.call("read", state.clone())["value"]["subscriptionId"], 1);
     for malformed in [
@@ -3448,27 +3469,27 @@ fn scope_commands_register_read_and_remove_one_identity() {
     ] {
         let removed = h.call(
             "malformed",
-            json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":malformed}),
+            json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":malformed}),
         );
         assert!(refused(&removed).is_some(), "refused: {malformed}");
     }
     assert_eq!(
         h.call(
             "other",
-            json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":2})
+            json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":2})
         )["value"],
         json!({"removed":false}),
         "another identity's unsubscribe removes nothing"
     );
     assert_eq!(
-        Vec::from_iter(h.client().desired_scopes().unwrap()),
+        Vec::from_iter(h.client().desired_streams().unwrap()),
         ["book"]
     );
     let generation = h.client().generation();
     assert_eq!(
         h.call(
             "remove",
-            json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":1})
+            json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":1})
         )["value"],
         json!({"removed":true})
     );
@@ -3476,7 +3497,7 @@ fn scope_commands_register_read_and_remove_one_identity() {
     assert_eq!(h.call("read", state)["value"], Value::Null);
     // Identities are never recycled.
     assert_eq!(
-        h.call("next", json!({"kind":"scopeSubscribe","scope":"book"}))["value"]["state"]["subscriptionId"],
+        h.call("next", json!({"kind":"streamSubscribe","stream":"book"}))["value"]["state"]["subscriptionId"],
         2
     );
 
@@ -3484,9 +3505,9 @@ fn scope_commands_register_read_and_remove_one_identity() {
     // task waits outside the open transaction until it ends.
     let (effect, transaction) = h.begin("tx");
     for (i, command) in [
-        json!({"kind":"scopeSubscribe","scope":"other"}),
-        json!({"kind":"scopeState","scope":"other"}),
-        json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":2}),
+        json!({"kind":"streamSubscribe","stream":"other"}),
+        json!({"kind":"streamState","stream":"other"}),
+        json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":2}),
     ]
     .into_iter()
     .enumerate()
@@ -3501,7 +3522,10 @@ fn scope_commands_register_read_and_remove_one_identity() {
             "{events:?}"
         );
     }
-    h.task("outside", json!({"kind":"scopeSubscribe","scope":"other"}));
+    h.task(
+        "outside",
+        json!({"kind":"streamSubscribe","stream":"other"}),
+    );
     assert_eq!(h.run(), Vec::<Value>::new(), "it waits for the callback");
     h.submit(
         json!({"type":"callbackResult","effectId":effect,"transactionId":transaction,"ok":true}),
@@ -3524,7 +3548,8 @@ fn scope_commands_register_read_and_remove_one_identity() {
 fn bootstrap_commands_register_read_and_schedule_one_page() {
     let mut h = host();
     let (subscription, _, _) = h.subscribe("subscribe", "book");
-    let stored = json!({"kind":"scopeBootstrapState","scope":"book","subscriptionId":subscription});
+    let stored =
+        json!({"kind":"streamBootstrapState","stream":"book","subscriptionId":subscription});
     let generation = h.client().generation();
     h.bootstrap("load", subscription);
     let events = h.run();
@@ -3536,7 +3561,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     );
     assert_eq!(
         h.call("stored", stored.clone())["value"],
-        json!({"scope":"book","subscriptionId":subscription,"state":"requested","run":1,"cursor":0,"barrier":null,"error":null})
+        json!({"stream":"book","subscriptionId":subscription,"state":"requested","run":1,"cursor":0,"barrier":null,"error":null})
     );
     // Connected, before an origin: no interval, no page.
     h.connect(false);
@@ -3552,7 +3577,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     let (page, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","scope":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Nothing asks twice: a wake finds the request in flight.
     h.call("wake", json!({"kind":"connection","event":"wake"}));
@@ -3565,20 +3590,20 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     h.run();
     assert_eq!(
         h.call("stored", stored)["value"],
-        json!({"scope":"book","subscriptionId":subscription,"state":"catching_up","run":1,"cursor":7,"barrier":9,"error":null}),
+        json!({"stream":"book","subscriptionId":subscription,"state":"catching_up","run":1,"cursor":7,"barrier":9,"error":null}),
         "the terminal page fixed the barrier; delivery at 7 has not reached 9"
     );
     for malformed in [json!(null), json!("1"), json!(0), json!(-1), json!(1.5)] {
         let answer = h.call(
             "malformed",
-            json!({"kind":"scopeBootstrap","scope":"book","subscriptionId":malformed}),
+            json!({"kind":"streamBootstrap","stream":"book","subscriptionId":malformed}),
         );
         assert!(refused(&answer).is_some(), "refused: {malformed}");
     }
-    for kind in ["scopeBootstrap", "scopeBootstrapState"] {
+    for kind in ["streamBootstrap", "streamBootstrapState"] {
         let other = h.call(
             "other",
-            json!({"kind":kind,"scope":"book","subscriptionId":99}),
+            json!({"kind":kind,"stream":"book","subscriptionId":99}),
         );
         // The stable prefix and code both SDKs raise `subscription.closed` by.
         let error = refused(&other).unwrap();
@@ -3587,7 +3612,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
         assert_eq!(other["details"], json!({"code":"subscription.closed"}));
         let absent = h.call(
             "absent",
-            json!({"kind":kind,"scope":"absent","subscriptionId":1}),
+            json!({"kind":kind,"stream":"absent","subscriptionId":1}),
         );
         assert!(
             refused(&absent).is_some(),
@@ -3598,7 +3623,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     let (effect, transaction) = h.begin("tx");
     h.submit(
         json!({"type":"transactionCommand","requestId":"inside","transactionId":transaction,
-        "command":{"kind":"scopeBootstrap","scope":"book","subscriptionId":subscription}}),
+        "command":{"kind":"streamBootstrap","stream":"book","subscriptionId":subscription}}),
     );
     let events = h.run();
     assert!(refused(h.completion(&events, "inside")).is_some());
@@ -3629,7 +3654,7 @@ fn closing_a_client_keeps_the_subscriptions_unsubscribe_removes() {
         h.submit(json!({"type":"close"}));
         assert_eq!(h.run().last().unwrap(), &json!({"type":"runtimeClosed"}));
     };
-    let state = json!({"kind":"scopeState","scope":"book"});
+    let state = json!({"kind":"streamState","stream":"book"});
     let mut h = open();
     let (subscription, _, _) = h.subscribe("subscribe", "book");
     h.connect(false);
@@ -3639,7 +3664,7 @@ fn closing_a_client_keeps_the_subscriptions_unsubscribe_removes() {
     let initialized = h.call("state", state.clone())["value"].clone();
     assert_eq!(
         initialized,
-        json!({"scope":"book","subscriptionId":subscription,"startingCursor":7,"cursor":7}),
+        json!({"stream":"book","subscriptionId":subscription,"startingCursor":7,"cursor":7}),
         "the acknowledged head is the committed boundary"
     );
     close(h);
@@ -3652,7 +3677,7 @@ fn closing_a_client_keeps_the_subscriptions_unsubscribe_removes() {
     assert_eq!(
         h.call(
             "remove",
-            json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":subscription})
+            json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":subscription})
         )["value"],
         json!({"removed":true})
     );
@@ -3933,14 +3958,14 @@ fn a_ledger_issue_reaches_the_application_once_per_unchanged_defect() {
     h.call("stop", json!({"kind":"connection","event":"stop"}));
     h.task(
         "load",
-        json!({"kind":"scopeBootstrap","scope":"bad","subscriptionId":subscription}),
+        json!({"kind":"streamBootstrap","stream":"bad","subscriptionId":subscription}),
     );
     h.run();
     // Damaged behind the runtime's back, as a foreign writer would.
     let mut raw = SqliteStore::open(&path).unwrap();
     assert_eq!(
         raw.execute(
-            "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE scope=?",
+            "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE stream=?",
             &[json!("bad")]
         )
         .unwrap(),
@@ -3992,7 +4017,7 @@ fn a_committed_callback_transaction_wakes_the_lanes() {
         "command":{"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"create","identity":{"id":"e"},"values":{"text":"queued","note":null}}]}}}));
     h.submit(
         json!({"type":"transactionCommand","requestId":"subscribe","transactionId":transaction,
-        "command":{"kind":"scope","scope":"book","subscribed":true}}),
+        "command":{"kind":"stream","stream":"book","subscribed":true}}),
     );
     let events = h.run();
     assert_eq!(h.completion(&events, "enqueue")["ok"], true);
@@ -5200,7 +5225,7 @@ fn a_join_over_three_models_re_emits_after_a_commit_to_each_and_nothing_else() {
     let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
     let events = [
         events,
-        h.commit("scope", json!({"kind":"scopeSubscribe","scope":"book"})),
+        h.commit("scope", json!({"kind":"streamSubscribe","stream":"book"})),
         h.commit(
             "queued",
             json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
@@ -5500,7 +5525,7 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
         h.connect(false);
         common::subscribe(h.client(), "a");
         h.client()
-            .apply_scope_page(ScopePullPage {
+            .apply_stream_page(StreamPullPage {
                 cursors: [(
                     "a".into(),
                     CursorRange {
@@ -5510,8 +5535,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                     },
                 )]
                 .into(),
-                changes: vec![ScopeChange::Upsert {
-                    scope: "a".into(),
+                changes: vec![StreamChange::Upsert {
+                    stream: "a".into(),
                     cursor: 1,
                     record: common::authority(Some("base"), 7),
                 }],
@@ -5521,7 +5546,7 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
         h.run();
         let (http, body) = h.http("fetch");
         h.client()
-            .apply_scope_page(ScopePullPage {
+            .apply_stream_page(StreamPullPage {
                 cursors: [(
                     "a".into(),
                     CursorRange {
@@ -5531,8 +5556,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                     },
                 )]
                 .into(),
-                changes: vec![ScopeChange::Remove {
-                    scope: "a".into(),
+                changes: vec![StreamChange::Remove {
+                    stream: "a".into(),
                     cursor: 2,
                     key: common::key(),
                 }],
@@ -5582,7 +5607,7 @@ fn runtime_direct_effect_advertises_membership_without_changing_call_identity() 
     assert!(
         read_capabilities(&request)
             .unwrap()
-            .contains(SCOPE_MEMBERSHIP_CAPABILITY)
+            .contains(STREAM_MEMBERSHIP_CAPABILITY)
     );
 }
 
@@ -5591,7 +5616,7 @@ fn native_pull_command_consumes_removal_frames() {
     let mut h = host();
     h.connect(false);
     h.streaming(0);
-    let reply=h.call("remove",json!({"kind":"pull","page":{"cursors":{"book":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","scope":"book","cursor":1,"model":"Entry","identity":{"id":"e"}}]}}));
+    let reply=h.call("remove",json!({"kind":"pull","page":{"cursors":{"book":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","stream":"book","cursor":1,"model":"Entry","identity":{"id":"e"}}]}}));
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(h.client().cursor("book").unwrap(), Some(1));
 }

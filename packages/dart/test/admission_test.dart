@@ -63,7 +63,7 @@ class AdmissionServer {
         socket.add(
           jsonEncode({
             'type': 'subscribed',
-            'cursors': {for (final c in sub['scopes'] as List) c: 0},
+            'cursors': {for (final c in sub['streams'] as List) c: 0},
           }),
         );
       });
@@ -160,7 +160,7 @@ void main() {
     session.open(
       jsonEncode({
         'type': 'subscribe',
-        'scopes': ['scope'],
+        'streams': ['scope'],
       }),
       cancel.future,
       events(message: (_) async => opened.complete()),
@@ -293,7 +293,7 @@ void main() {
       await until(() => server.acknowledged == 2, 'the later socket');
       expect(server.envelopes, isNotEmpty);
       for (final envelope in server.envelopes) {
-        expect(envelope['capabilities'], contains('scope-membership-v1'));
+        expect(envelope['capabilities'], contains('stream-membership-v1'));
       }
       expect(errors, hasLength(1));
       expect(

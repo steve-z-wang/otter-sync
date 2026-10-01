@@ -96,7 +96,7 @@ fn a_selected_historical_request_is_delivered_after_a_later_read_fails() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -113,7 +113,7 @@ fn a_selected_historical_request_is_delivered_after_a_later_read_fails() {
         .unwrap();
     // The scheduler selected the historical request; opening the socket then
     // reads the plain subscription list and trips this one-shot fault.
-    fault.arm("FROM axton_subscription ORDER BY scope");
+    fault.arm("FROM axton_subscription ORDER BY stream");
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -165,7 +165,7 @@ fn pause_or_stop_discards_an_unsent_historical_request_and_restart_selects_a_new
         let path = dir.path().join("db");
         let mut setup = open(&path);
         setup
-            .transaction(|tx| tx.set_scope("a".into(), true))
+            .transaction(|tx| tx.set_stream("a".into(), true))
             .unwrap();
         acknowledge(&mut setup, &[("a", 100)]);
         let id = setup
@@ -179,7 +179,7 @@ fn pause_or_stop_discards_an_unsent_historical_request_and_restart_selects_a_new
         worker
             .handle(&mut client, DownlinkEvent::Start, 1000, 500)
             .unwrap();
-        fault.arm("FROM axton_subscription ORDER BY scope");
+        fault.arm("FROM axton_subscription ORDER BY stream");
         assert!(
             worker
                 .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -237,7 +237,7 @@ fn a_committed_page_still_announces_its_change_after_a_later_read_fails() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 0)]);
     drop(setup);
@@ -292,7 +292,9 @@ fn a_committed_page_still_announces_its_change_after_a_later_read_fails() {
     assert_eq!(
         actions
             .iter()
-            .filter(|a| matches!(a, DownlinkAction::Changed { scopes } if scopes == &["a"]))
+            .filter(
+                |a| matches!(a, DownlinkAction::Changed { streams: scopes } if scopes == &["a"])
+            )
             .count(),
         1,
         "a committed cursor must be announced once: {actions:?}"
@@ -306,7 +308,7 @@ fn a_rebuild_drops_an_undelivered_status_from_the_old_replica() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -334,8 +336,8 @@ fn a_rebuild_drops_an_undelivered_status_from_the_old_replica() {
             _ => None,
         })
         .unwrap();
-    let terminal = ScopeBootstrapPage {
-        scope: "a".into(),
+    let terminal = StreamBootstrapPage {
+        stream: "a".into(),
         from: 0,
         to: 100,
         until: 100,
@@ -356,9 +358,9 @@ fn a_rebuild_drops_an_undelivered_status_from_the_old_replica() {
     // A changed subscription generation ends the old socket. The historical
     // answer still commits, then the new socket's read fails.
     client
-        .transaction(|tx| tx.set_scope("b".into(), true))
+        .transaction(|tx| tx.set_stream("b".into(), true))
         .unwrap();
-    fault.arm("FROM axton_subscription ORDER BY scope");
+    fault.arm("FROM axton_subscription ORDER BY stream");
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -391,7 +393,7 @@ fn a_failed_historical_apply_keeps_its_answer_and_request_slot() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -419,8 +421,8 @@ fn a_failed_historical_apply_keeps_its_answer_and_request_slot() {
             _ => None,
         })
         .unwrap();
-    let terminal = ScopeBootstrapPage {
-        scope: "a".into(),
+    let terminal = StreamBootstrapPage {
+        stream: "a".into(),
         from: 0,
         to: 100,
         until: 100,
@@ -438,7 +440,7 @@ fn a_failed_historical_apply_keeps_its_answer_and_request_slot() {
             500,
         )
         .unwrap();
-    fault.arm("FROM axton_subscription WHERE scope=?");
+    fault.arm("FROM axton_subscription WHERE stream=?");
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -461,7 +463,7 @@ fn a_catch_up_commit_reaches_a_barrier_even_when_the_next_pull_fails() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -471,13 +473,13 @@ fn a_catch_up_commit_reaches_a_barrier_even_when_the_next_pull_fails() {
         .subscription_id;
     let run = setup.request_bootstrap("a", id).unwrap().run;
     setup
-        .apply_scope_bootstrap_page(
+        .apply_stream_bootstrap_page(
             "a",
             id,
             run,
             0,
-            &ScopeBootstrapPage {
-                scope: "a".into(),
+            &StreamBootstrapPage {
+                stream: "a".into(),
                 from: 0,
                 to: 100,
                 until: 100,
@@ -537,7 +539,7 @@ fn a_catch_up_commit_reaches_a_barrier_even_when_the_next_pull_fails() {
             500,
         )
         .unwrap();
-    fault.arm_after("FROM axton_subscription ORDER BY scope", 1);
+    fault.arm_after("FROM axton_subscription ORDER BY stream", 1);
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -576,7 +578,7 @@ fn a_committed_refusal_announces_failed_without_a_post_commit_read() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -640,7 +642,7 @@ fn a_subscription_change_fences_undelivered_session_actions_before_outbox_drain(
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 0)]);
     drop(setup);
@@ -673,7 +675,7 @@ fn a_subscription_change_fences_undelivered_session_actions_before_outbox_drain(
             .is_err()
     );
     client
-        .transaction(|tx| tx.set_scope("b".into(), true))
+        .transaction(|tx| tx.set_stream("b".into(), true))
         .unwrap();
     worker
         .handle(&mut client, DownlinkEvent::Wake, 1000, 500)
@@ -705,7 +707,7 @@ fn a_subscription_change_fences_undelivered_session_actions_before_outbox_drain(
             .find(|a| matches!(a, DownlinkAction::Open { .. }))
             .unwrap(),
     );
-    assert_eq!(subscribed.scopes, ["a", "b"]);
+    assert_eq!(subscribed.streams, ["a", "b"]);
 }
 
 #[test]
@@ -714,7 +716,7 @@ fn a_barrier_scan_failure_after_delivery_commit_is_retried_without_another_event
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -723,8 +725,8 @@ fn a_barrier_scan_failure_after_delivery_commit_is_retried_without_another_event
         .unwrap()
         .subscription_id;
     let run = setup.request_bootstrap("a", id).unwrap().run;
-    let terminal = ScopeBootstrapPage {
-        scope: "a".into(),
+    let terminal = StreamBootstrapPage {
+        stream: "a".into(),
         from: 0,
         to: 100,
         until: 100,
@@ -732,7 +734,7 @@ fn a_barrier_scan_failure_after_delivery_commit_is_retried_without_another_event
         changes: vec![],
     };
     setup
-        .apply_scope_bootstrap_page("a", id, run, 0, &terminal)
+        .apply_stream_bootstrap_page("a", id, run, 0, &terminal)
         .unwrap();
     assert_eq!(
         setup.bootstrap_state("a", id).unwrap().state,
@@ -802,7 +804,7 @@ fn the_runtime_retries_a_failed_pump_without_an_external_wake() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 100)]);
     let id = setup
@@ -822,7 +824,7 @@ fn the_runtime_retries_a_failed_pump_without_an_external_wake() {
     runtime.receive(connect, now, 500).unwrap();
     assert!(runtime.step(now, 500));
     runtime.take_events();
-    fault.arm("FROM axton_subscription ORDER BY scope");
+    fault.arm("FROM axton_subscription ORDER BY stream");
     let mut events = vec![];
     for _ in 0..20 {
         if !runtime.step(now, 500) {
@@ -889,7 +891,7 @@ fn a_failed_acknowledgement_continues_its_catch_up_request() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 0)]);
     drop(setup);
@@ -912,7 +914,7 @@ fn a_failed_acknowledgement_continues_its_catch_up_request() {
             500,
         )
         .unwrap();
-    fault.arm("FROM axton_subscription ORDER BY scope");
+    fault.arm("FROM axton_subscription ORDER BY stream");
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -939,7 +941,7 @@ fn a_failed_catch_up_page_keeps_its_answer_and_request_slot() {
     let path = dir.path().join("db");
     let mut setup = open(&path);
     setup
-        .transaction(|tx| tx.set_scope("a".into(), true))
+        .transaction(|tx| tx.set_stream("a".into(), true))
         .unwrap();
     acknowledge(&mut setup, &[("a", 0)]);
     drop(setup);
@@ -990,7 +992,7 @@ fn a_failed_catch_up_page_keeps_its_answer_and_request_slot() {
             500,
         )
         .unwrap();
-    fault.arm("FROM axton_subscription WHERE scope=?");
+    fault.arm("FROM axton_subscription WHERE stream=?");
     assert!(
         worker
             .handle(&mut client, DownlinkEvent::Next, 1000, 500)
@@ -1007,7 +1009,7 @@ fn a_failed_catch_up_page_keeps_its_answer_and_request_slot() {
     assert!(
         actions
             .iter()
-            .any(|a| matches!(a, DownlinkAction::Changed { scopes } if scopes == &["a"])),
+            .any(|a| matches!(a, DownlinkAction::Changed { streams: scopes } if scopes == &["a"])),
         "the retried answer announces its commit: {actions:?}"
     );
 }

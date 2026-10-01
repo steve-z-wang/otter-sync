@@ -36,7 +36,7 @@ impl<S: ClientStore> Engine<'_, S> {
             json!(key.model),
             json!(key.encoded_identity()?),
         ];
-        let rows = self.rows("SELECT cursor, present FROM axton_scope_member WHERE scope=? AND model=? AND identity=?", &parameters)?;
+        let rows = self.rows("SELECT cursor, present FROM axton_stream_member WHERE stream=? AND model=? AND identity=?", &parameters)?;
         if let Some(row) = rows.rows.first() {
             let cursor = as_u64(&row[0])?;
             if evidence.cursor < cursor {
@@ -49,7 +49,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 return Ok(MembershipMerge::Identical);
             }
         }
-        self.exec("axton_scope_member", "INSERT INTO axton_scope_member(scope, model, identity, cursor, present) VALUES(?,?,?,?,?) ON CONFLICT(scope,model,identity) DO UPDATE SET cursor=excluded.cursor,present=excluded.present", &[parameters[0].clone(),parameters[1].clone(),parameters[2].clone(),json!(evidence.cursor),json!(u8::from(evidence.present))])?;
+        self.exec("axton_stream_member", "INSERT INTO axton_stream_member(stream, model, identity, cursor, present) VALUES(?,?,?,?,?) ON CONFLICT(stream,model,identity) DO UPDATE SET cursor=excluded.cursor,present=excluded.present", &[parameters[0].clone(),parameters[1].clone(),parameters[2].clone(),json!(evidence.cursor),json!(u8::from(evidence.present))])?;
         Ok(MembershipMerge::Newer)
     }
     pub fn merge_memberships(&mut self, claims: &[MembershipClaim]) -> Result<()> {
@@ -65,7 +65,7 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(())
     }
     pub fn held(&mut self, key: &RecordKey) -> Result<bool> {
-        Ok(self.scalar("SELECT 1 FROM axton_scope_member WHERE model=? AND identity=? AND present=1 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
+        Ok(self.scalar("SELECT 1 FROM axton_stream_member WHERE model=? AND identity=? AND present=1 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
     }
     pub fn replica_evicted(&mut self, key: &RecordKey) -> Result<bool> {
         Ok(self

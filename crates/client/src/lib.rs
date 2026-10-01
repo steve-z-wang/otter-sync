@@ -24,10 +24,10 @@ pub mod queue;
 pub mod rows;
 pub mod runtime;
 pub mod schema_store;
-pub mod scope_members;
 pub mod store;
 mod store_delivery;
 mod store_epoch;
+pub mod stream_members;
 pub mod subscriptions;
 pub mod transport;
 pub mod unsent;
@@ -430,7 +430,7 @@ impl<S: ClientStore> Client<S> {
     /// store is built for is recorded (or replaced) once reconciliation succeeds.
     pub fn open(mut store: S, schema: Schema) -> Result<Self> {
         schema.validate()?;
-        ddl::migrate_scope_layout(&mut store)?;
+        ddl::migrate_stream_layout(&mut store)?;
         if let ddl::Layout::Legacy(what) = ddl::check_layout(&mut store)? {
             return Err(invalid(format!(
                 "this database was created by an earlier AXTON runtime ({what}); open it through a path so it can be rebuilt beside"
@@ -521,7 +521,7 @@ impl<S: ClientStore> Client<S> {
         let path = path.as_ref().to_path_buf();
         let file = schema_store::current_file(&path);
         let mut store = factory(&file)?;
-        ddl::migrate_scope_layout(&mut store)?;
+        ddl::migrate_stream_layout(&mut store)?;
         let mut client = match ddl::check_layout(&mut store)? {
             ddl::Layout::Fresh => Self::open(store, schema.clone())?,
             ddl::Layout::Legacy(what) => {
@@ -604,8 +604,20 @@ impl<S: ClientStore> Client<S> {
         }
         let new_file = schema_store::next_free_file(path);
         let mut old = factory(old_file)?;
+        // Incompatible older layouts are deliberately not migrated in place;
+        // retain their intent when the existing rebuild path carries it over.
+        let columns = old.query_committed("PRAGMA table_info(axton_subscription)", &[])?;
+        let delivery_column = ["stream", "scope", "channel"]
+            .into_iter()
+            .find(|name| columns.rows.iter().any(|row| row[1].as_str() == Some(name)))
+            .unwrap_or("stream");
         let streams: Vec<String> = old
-            .query_committed("SELECT scope FROM axton_subscription ORDER BY scope", &[])
+            .query_committed(
+                &format!(
+                    "SELECT {delivery_column} FROM axton_subscription ORDER BY {delivery_column}"
+                ),
+                &[],
+            )
             .map(|rows| {
                 rows.rows
                     .iter()

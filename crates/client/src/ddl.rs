@@ -10,7 +10,7 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_schema",
     "axton_client",
     "axton_record",
-    "axton_scope_member",
+    "axton_stream_member",
     "axton_local_replica_layer",
     "axton_subscription",
     "axton_mutation",
@@ -38,13 +38,13 @@ const CLIENT_COLUMNS: &[&str] = &["last_completed_push", "push_models", "next_su
 /// subscriptions keep their identities and delivery boundaries.
 /// `diverged` marks a queued mutation whose replay failed over new authority
 /// ([#122](https://github.com/zanminwang/axton/issues/122)); the `bootstrap_`
-/// columns carry a Scope's historical load beside its subscription
+/// columns carry a Stream's historical load beside its subscription
 /// ([#151](https://github.com/zanminwang/axton/issues/151)), whose defaults are
 /// a load that was never requested.
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     (
         "axton_client",
-        "scope_membership_version",
+        "stream_membership_version",
         "INTEGER NOT NULL DEFAULT 0",
     ),
     (
@@ -116,8 +116,8 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
         }
         store.execute_batch(
             "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=reconcile_run+1
-             WHERE EXISTS (SELECT 1 FROM axton_client WHERE scope_membership_version=0);
-             UPDATE axton_client SET scope_membership_version=1;"
+             WHERE EXISTS (SELECT 1 FROM axton_client WHERE stream_membership_version=0);
+             UPDATE axton_client SET stream_membership_version=1;"
         )?;
         store.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
@@ -141,9 +141,10 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
 
 /// Upgrade framework ownership names before fresh DDL or layout reconciliation.
 /// Durable business JSON and the membership reconciliation marker are untouched.
-pub fn migrate_scope_layout<S: ClientStore>(store: &mut S) -> Result<()> {
+pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
     store.begin()?;
     let result = (|| {
+        migrate_channel_layout(store)?;
         let rows = store.query("SELECT name FROM sqlite_master WHERE type='table'", &[])?;
         let tables: Vec<&str> = rows.rows.iter().filter_map(|r| r[0].as_str()).collect();
         let columns = |store: &mut S, table: &str| -> Result<Vec<String>> {
@@ -156,58 +157,75 @@ pub fn migrate_scope_layout<S: ClientStore>(store: &mut S) -> Result<()> {
         };
         let client = columns(store, "axton_client")?;
         let subscription = columns(store, "axton_subscription")?;
-        let old_member = tables.contains(&"axton_channel_member");
-        let old = old_member
-            || subscription.iter().any(|c| c == "channel")
-            || client.iter().any(|c| c == "channel_membership_version");
+        let old = tables.contains(&"axton_scope_member")
+            || subscription.iter().any(|c| c == "scope")
+            || client.iter().any(|c| c == "scope_membership_version");
         if !old {
             return Ok(());
         }
-        if tables.contains(&"axton_scope_member")
-            || subscription.iter().any(|c| c == "scope")
-            || client.iter().any(|c| c == "scope_membership_version")
+        // Older incompatible replicas are still rebuilt beside by opening;
+        // do not turn their pre-membership Scope vocabulary into a refusal.
+        if LEGACY_TABLES.iter().any(|table| tables.contains(table))
+            || CLIENT_COLUMNS
+                .iter()
+                .any(|required| !client.iter().any(|column| column == required))
         {
-            return Err(invalid("conflicting old and Scope framework layouts"));
+            return Ok(());
+        }
+        if tables.contains(&"axton_stream_member")
+            || subscription.iter().any(|c| c == "stream")
+            || client.iter().any(|c| c == "stream_membership_version")
+        {
+            return Err(invalid("conflicting Scope and Stream framework layouts"));
         }
         if !tables.contains(&"axton_client")
             || !tables.contains(&"axton_subscription")
-            || !subscription.iter().any(|c| c == "channel")
+            || !subscription.iter().any(|c| c == "scope")
         {
-            return Err(invalid("incomplete old framework layout"));
+            return Err(invalid("incomplete Scope framework layout"));
         }
         for table in FRAMEWORK_TABLES {
-            let original = if *table == "axton_scope_member" {
-                "axton_channel_member"
+            let original = if *table == "axton_stream_member" {
+                "axton_scope_member"
             } else {
                 table
             };
-            if original == "axton_channel_member"
-                && !client.iter().any(|c| c == "channel_membership_version")
+            // Pre-membership Channel layouts still acquire their first marker and table below.
+            if original == "axton_scope_member"
+                && !client.iter().any(|c| c == "scope_membership_version")
             {
                 continue;
             }
             if !tables.contains(&original) {
                 return Err(invalid(format!(
-                    "incomplete old framework layout: {original}"
+                    "incomplete Scope framework layout: {original}"
                 )));
             }
         }
-        if client.iter().any(|c| c == "channel_membership_version") && !old_member {
-            return Err(invalid("old membership layout lacks axton_channel_member"));
+        if client.iter().any(|c| c == "scope_membership_version")
+            && !tables.contains(&"axton_scope_member")
+        {
+            return Err(invalid("Scope membership layout lacks axton_scope_member"));
         }
-        if old_member {
-            let member = columns(store, "axton_channel_member")?;
-            if !member.iter().any(|c| c == "channel") || member.iter().any(|c| c == "scope") {
-                return Err(invalid("conflicting or incomplete old membership columns"));
+        if tables.contains(&"axton_scope_member") {
+            let member = columns(store, "axton_scope_member")?;
+            if ["scope", "model", "identity", "cursor", "present"]
+                .iter()
+                .any(|required| !member.iter().any(|c| c == required))
+                || member.iter().any(|c| c == "stream")
+            {
+                return Err(invalid(
+                    "conflicting or incomplete Scope membership columns",
+                ));
             }
-            store.execute_batch("ALTER TABLE axton_channel_member RENAME TO axton_scope_member;
-                ALTER TABLE axton_scope_member RENAME COLUMN channel TO scope;
-                DROP INDEX IF EXISTS axton_channel_member_record;
-                CREATE INDEX axton_scope_member_record ON axton_scope_member(model, identity, present);")?;
+            store.execute_batch("ALTER TABLE axton_scope_member RENAME TO axton_stream_member;
+                ALTER TABLE axton_stream_member RENAME COLUMN scope TO stream;
+                DROP INDEX IF EXISTS axton_scope_member_record;
+                CREATE INDEX axton_stream_member_record ON axton_stream_member(model, identity, present);")?;
         }
-        store.execute_batch("ALTER TABLE axton_subscription RENAME COLUMN channel TO scope")?;
-        if client.iter().any(|c| c == "channel_membership_version") {
-            store.execute_batch("ALTER TABLE axton_client RENAME COLUMN channel_membership_version TO scope_membership_version")?;
+        store.execute_batch("ALTER TABLE axton_subscription RENAME COLUMN scope TO stream")?;
+        if client.iter().any(|c| c == "scope_membership_version") {
+            store.execute_batch("ALTER TABLE axton_client RENAME COLUMN scope_membership_version TO stream_membership_version")?;
         }
         Ok(())
     })();
@@ -226,6 +244,75 @@ pub fn migrate_scope_layout<S: ClientStore>(store: &mut S) -> Result<()> {
     }
 }
 
+fn migrate_channel_layout<S: ClientStore>(store: &mut S) -> Result<()> {
+    let rows = store.query("SELECT name FROM sqlite_master WHERE type='table'", &[])?;
+    let tables: Vec<&str> = rows.rows.iter().filter_map(|r| r[0].as_str()).collect();
+    let columns = |store: &mut S, table: &str| -> Result<Vec<String>> {
+        Ok(store
+            .query(&format!("PRAGMA table_info({table})"), &[])?
+            .rows
+            .iter()
+            .filter_map(|r| r[1].as_str().map(str::to_owned))
+            .collect())
+    };
+    let client = columns(store, "axton_client")?;
+    let subscription = columns(store, "axton_subscription")?;
+    let old_member = tables.contains(&"axton_channel_member");
+    let old = old_member
+        || subscription.iter().any(|c| c == "channel")
+        || client.iter().any(|c| c == "channel_membership_version");
+    if !old {
+        return Ok(());
+    }
+    if tables.contains(&"axton_scope_member")
+        || subscription.iter().any(|c| c == "scope")
+        || client.iter().any(|c| c == "scope_membership_version")
+    {
+        return Err(invalid("conflicting old and Scope framework layouts"));
+    }
+    if !tables.contains(&"axton_client")
+        || !tables.contains(&"axton_subscription")
+        || !subscription.iter().any(|c| c == "channel")
+    {
+        return Err(invalid("incomplete old framework layout"));
+    }
+    for table in FRAMEWORK_TABLES {
+        let original = if *table == "axton_stream_member" {
+            "axton_channel_member"
+        } else {
+            table
+        };
+        if original == "axton_channel_member"
+            && !client.iter().any(|c| c == "channel_membership_version")
+        {
+            continue;
+        }
+        if !tables.contains(&original) {
+            return Err(invalid(format!(
+                "incomplete old framework layout: {original}"
+            )));
+        }
+    }
+    if client.iter().any(|c| c == "channel_membership_version") && !old_member {
+        return Err(invalid("old membership layout lacks axton_channel_member"));
+    }
+    if old_member {
+        let member = columns(store, "axton_channel_member")?;
+        if !member.iter().any(|c| c == "channel") || member.iter().any(|c| c == "scope") {
+            return Err(invalid("conflicting or incomplete old membership columns"));
+        }
+        store.execute_batch("ALTER TABLE axton_channel_member RENAME TO axton_scope_member;
+                ALTER TABLE axton_scope_member RENAME COLUMN channel TO scope;
+                DROP INDEX IF EXISTS axton_channel_member_record;
+                CREATE INDEX axton_scope_member_record ON axton_scope_member(model, identity, present);")?;
+    }
+    store.execute_batch("ALTER TABLE axton_subscription RENAME COLUMN channel TO scope")?;
+    if client.iter().any(|c| c == "channel_membership_version") {
+        store.execute_batch("ALTER TABLE axton_client RENAME COLUMN channel_membership_version TO scope_membership_version")?;
+    }
+    Ok(())
+}
+
 pub const FRAMEWORK_DDL: &str = "
 CREATE TABLE IF NOT EXISTS axton_schema (
   descriptor TEXT NOT NULL, created_at TEXT NOT NULL
@@ -238,7 +325,7 @@ CREATE TABLE IF NOT EXISTS axton_client (
   last_completed_push INTEGER NOT NULL DEFAULT 0,
   push_models  TEXT,
   push_results TEXT,
-  scope_membership_version INTEGER NOT NULL DEFAULT 1,
+  stream_membership_version INTEGER NOT NULL DEFAULT 1,
   store_epoch INTEGER NOT NULL DEFAULT 0,
   next_subscription INTEGER NOT NULL DEFAULT 1
 );
@@ -248,18 +335,18 @@ CREATE TABLE IF NOT EXISTS axton_record (
   evicted_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (model, identity)
 );
-CREATE TABLE IF NOT EXISTS axton_scope_member (
-  scope TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS axton_stream_member (
+  stream TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
   cursor INTEGER NOT NULL CHECK(cursor > 0), present INTEGER NOT NULL CHECK(present IN (0,1)),
-  PRIMARY KEY(scope, model, identity)
+  PRIMARY KEY(stream, model, identity)
 );
-CREATE INDEX IF NOT EXISTS axton_scope_member_record ON axton_scope_member(model, identity, present);
+CREATE INDEX IF NOT EXISTS axton_stream_member_record ON axton_stream_member(model, identity, present);
 CREATE TABLE IF NOT EXISTS axton_local_replica_layer (
   model TEXT NOT NULL, identity TEXT NOT NULL, operations TEXT NOT NULL,
   PRIMARY KEY(model, identity)
 );
 CREATE TABLE IF NOT EXISTS axton_subscription (
-  scope          TEXT PRIMARY KEY,
+  stream          TEXT PRIMARY KEY,
   subscription_id  INTEGER NOT NULL UNIQUE,
   starting_cursor  INTEGER,
   cursor           INTEGER,

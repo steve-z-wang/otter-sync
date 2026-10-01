@@ -24,7 +24,7 @@ fn a_fresh_subscription_initializes_at_the_acknowledged_head_and_loads_no_histor
     let actions = lane.send(DownlinkEvent::Start);
     let (epoch, subscribe) = opened(&actions[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["a"],
         "an uninitialized subscription is still asked for on the socket"
     );
@@ -33,7 +33,7 @@ fn a_fresh_subscription_initializes_at_the_acknowledged_head_and_loads_no_histor
         lane.message(epoch, ack(&[("a", 100)])),
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ],
@@ -69,7 +69,7 @@ fn an_offline_subscribe_registers_without_a_boundary_and_asks_for_nothing() {
         vec![],
         "no delivery position, so no cursor to pull from"
     );
-    assert!(lane.client.desired_scopes().unwrap().contains("a"));
+    assert!(lane.client.desired_streams().unwrap().contains("a"));
     assert_eq!(
         lane.client.downlink_request().unwrap(),
         None,
@@ -93,7 +93,7 @@ fn an_acknowledgement_at_head_zero_initializes_at_zero() {
         acknowledged,
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ]
@@ -278,7 +278,7 @@ fn a_mixed_set_catches_up_one_scope_initializes_another_and_never_asks_for_a_thi
     let actions = lane.send(DownlinkEvent::Start);
     let (epoch, subscribe) = opened(&actions[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["a", "b"],
         "c has no row: it is not desired"
     );
@@ -286,7 +286,7 @@ fn a_mixed_set_catches_up_one_scope_initializes_another_and_never_asks_for_a_thi
     assert_eq!(
         acknowledged[0],
         DownlinkAction::Changed {
-            scopes: vec!["b".into()]
+            streams: vec!["b".into()]
         },
         "only b crossed into initialized"
     );
@@ -354,7 +354,7 @@ fn an_uninitialized_subscription_produces_no_request_in_either_lane() {
         lane.message(epoch, ack(&[("a", 7)])),
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ]
@@ -394,7 +394,7 @@ fn a_rolled_back_registration_reaches_no_session() {
     let dir = tempfile::tempdir().unwrap();
     let mut lane = Lane::new(dir.path());
     let failed: Result<()> = lane.client.transaction(|tx| {
-        tx.set_scope("a".into(), true)?;
+        tx.set_stream("a".into(), true)?;
         Err(invalid("host failure"))
     });
     assert!(failed.is_err());
@@ -407,7 +407,7 @@ fn a_rolled_back_registration_reaches_no_session() {
     lane.set("b", true);
     let (_, subscribe) = opened(&lane.send(DownlinkEvent::Wake)[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["b"],
         "only the committed registration is desired"
     );
@@ -425,7 +425,7 @@ fn scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head() {
     let actions = lane.send(DownlinkEvent::Start);
     let (epoch, subscribe) = opened(&actions[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["a", "b"],
         "the carried Scopes are desired although neither has a boundary"
     );
@@ -433,7 +433,7 @@ fn scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head() {
         lane.message(epoch, ack(&[("a", 30), ("b", 40)])),
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into(), "b".into()]
+                streams: vec!["a".into(), "b".into()]
             },
             established(&["a", "b"])
         ],
@@ -449,8 +449,8 @@ fn scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head() {
 
 /// The historical page answering a load of `scope` over `(0, until]`.
 fn loaded(scope: &str, until: u64, head: u64) -> String {
-    let page = ScopeBootstrapPage {
-        scope: scope.into(),
+    let page = StreamBootstrapPage {
+        stream: scope.into(),
         from: 0,
         to: until,
         until,
@@ -550,7 +550,7 @@ fn a_rebuild_resets_a_running_lane_in_place_and_fences_what_the_old_replica_had_
     );
     let (second, subscribe) = opened(&actions[1]);
     assert!(second > first, "a new socket never reuses an epoch");
-    assert_eq!(subscribe.scopes, ["a"], "the carried Scope is desired");
+    assert_eq!(subscribe.streams, ["a"], "the carried Scope is desired");
     assert_eq!(
         actions.len(),
         2,
@@ -625,7 +625,7 @@ fn a_rebuild_resets_a_running_lane_in_place_and_fences_what_the_old_replica_had_
         lane.message(third, ack(&[("a", 9)])),
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ],
@@ -657,7 +657,7 @@ fn a_rebuild_keeps_a_paused_lane_paused_and_a_stopped_lane_stopped() {
     assert_eq!(paused.send(DownlinkEvent::Wake), vec![], "still paused");
     let (second, subscribe) = opened(&paused.send(DownlinkEvent::Resume)[0]);
     assert!(second > first);
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
 
     let mut stopped = Lane::rebuildable(&dir.path().join("stopped"));
     stopped.saved("a", 0);
@@ -712,7 +712,7 @@ fn a_pump_that_fails_after_a_rebuild_announces_the_reset_on_the_next_one() {
     );
     let (second, subscribe) = opened(&actions[1]);
     assert!(second > first);
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     assert_eq!(lane.pump(), vec![], "and only once");
 }
 
@@ -823,7 +823,7 @@ fn the_worker_outlives_the_socket_it_was_streaming_on() {
     let actions = lane.drain();
     let (second, subscribe) = opened(&actions[0]);
     assert!(second > first, "a new socket, a new epoch");
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     let actions = lane.message(second, ack(&[("a", 2)]));
     assert_eq!(
         cursors(&request(&actions[0]).1),
@@ -935,12 +935,12 @@ fn a_session_subscribes_pulls_only_when_behind_and_then_streams() {
     assert_eq!(
         lane.drain(),
         vec![],
-        "no scopes: the lane stays idle until a subscribe wakes it"
+        "no streams: the lane stays idle until a subscribe wakes it"
     );
     lane.saved("a", 0);
     let actions = lane.send(DownlinkEvent::Wake);
     let (epoch, subscribe) = opened(&actions[0]);
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     assert_eq!(actions.len(), 1);
     // A streamed page before the acknowledgement is a protocol violation.
     let early = lane.frame(epoch, &page("a", 5, 6, Some("early")));
@@ -1015,7 +1015,7 @@ fn heads_equal_to_the_cursors_mean_no_catch_up_at_all() {
     lane.saved("a", 3);
     lane.saved("b", 2);
     let (epoch, subscribe) = opened(&lane.send(DownlinkEvent::Start)[0]);
-    assert_eq!(subscribe.scopes, ["a", "b"]);
+    assert_eq!(subscribe.streams, ["a", "b"]);
     assert_eq!(
         lane.message(epoch, ack(&[("a", 3), ("b", 2)])),
         vec![established(&["a", "b"])],
@@ -1040,7 +1040,7 @@ fn one_pull_covers_every_scope_and_continues_while_any_scope_is_full() {
     let actions = lane.send(DownlinkEvent::Start);
     let (epoch, subscribe) = opened(&actions[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["a", "b"],
         "the frame carries the normalized set"
     );
@@ -1221,7 +1221,7 @@ fn a_subscription_change_ends_the_session_and_the_next_one_uses_the_new_set() {
         }
     );
     let (second, subscribe) = opened(&actions[1]);
-    assert_eq!(subscribe.scopes, ["a", "b"]);
+    assert_eq!(subscribe.streams, ["a", "b"]);
     assert_eq!(actions.len(), 2);
     // The old session's late answers and frames are ignored.
     assert_eq!(
@@ -1273,7 +1273,7 @@ fn a_dropped_socket_reconnects_with_backoff_and_resubscribes() {
     let actions = lane.drain();
     let (second, subscribe) = opened(&actions[0]);
     assert_eq!(
-        subscribe.scopes,
+        subscribe.streams,
         ["a"],
         "resubscribes without an application event"
     );
@@ -1419,7 +1419,7 @@ fn a_recreated_subscription_starts_over_at_the_next_acknowledged_head() {
         actions,
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ],
@@ -1524,7 +1524,7 @@ fn a_restarted_lane_does_not_close_the_socket_of_the_lane_it_replaced() {
     let actions = lane.send(DownlinkEvent::Start);
     let (second, subscribe) = opened(&actions[0]);
     assert!(second > first, "the next lane opens its own socket");
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     assert_eq!(
         actions.len(),
         1,
@@ -1550,7 +1550,7 @@ fn a_socket_the_subscription_change_abandoned_reconnects_without_backoff() {
     );
     let (second, subscribe) = opened(&actions[1]);
     assert!(second > first);
-    assert_eq!(subscribe.scopes, ["a", "b"]);
+    assert_eq!(subscribe.streams, ["a", "b"]);
     assert_eq!(
         actions.len(),
         2,
@@ -1589,7 +1589,7 @@ fn a_commit_pair_replaces_the_session_with_a_catch_up_still_in_flight() {
     );
     let (second, subscribe) = opened(&actions[1]);
     assert!(second > first);
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     assert_eq!(
         actions.len(),
         2,
@@ -1607,7 +1607,7 @@ fn a_commit_pair_replaces_the_session_with_a_catch_up_still_in_flight() {
         lane.message(second, ack(&[("a", 5)])),
         vec![
             DownlinkAction::Changed {
-                scopes: vec!["a".into()]
+                streams: vec!["a".into()]
             },
             established(&["a"])
         ]
@@ -1642,7 +1642,7 @@ fn a_lane_left_with_no_scope_opens_the_next_session_on_the_recreating_commit() {
     let actions = lane.send(DownlinkEvent::Wake);
     let (second, subscribe) = opened(&actions[0]);
     assert!(second > first);
-    assert_eq!(subscribe.scopes, ["a"]);
+    assert_eq!(subscribe.streams, ["a"]);
     assert_eq!(actions.len(), 1, "no backoff on the way back");
     assert_eq!(
         lane.response(held, &page("a", 0, 1, Some("obsolete"))),

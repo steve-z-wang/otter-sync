@@ -547,7 +547,7 @@ fn generated_membership_sequences_converge_through_restarts_and_duplicates() {
                     let stamp = sim.client(client).record_stamp(&key).unwrap();
                     assert!(
                         deletions.contains(&(key.encoded().unwrap(), stamp))
-                            || !sim.client(client).read_sql("SELECT 1 AS released FROM axton_scope_member WHERE model=? AND identity=? AND present=0 AND NOT EXISTS (SELECT 1 FROM axton_scope_member AS held WHERE held.model=axton_scope_member.model AND held.identity=axton_scope_member.identity AND held.present=1)", &[serde_json::json!(key.model), serde_json::json!(key.encoded_identity().unwrap())]).unwrap().is_empty(),
+                            || !sim.client(client).read_sql("SELECT 1 AS released FROM axton_stream_member WHERE model=? AND identity=? AND present=0 AND NOT EXISTS (SELECT 1 FROM axton_stream_member AS held WHERE held.model=axton_stream_member.model AND held.identity=axton_stream_member.identity AND held.present=1)", &[serde_json::json!(key.model), serde_json::json!(key.encoded_identity().unwrap())]).unwrap().is_empty(),
                         "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without a deletion or stream release"
                     );
                 }

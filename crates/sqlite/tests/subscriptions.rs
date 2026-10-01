@@ -53,7 +53,7 @@ fn identity_and_uninitialized_cursors_survive_a_reopen() {
 
     let mut c = open(&path);
     let reopened = state(&mut c, "a");
-    assert_eq!(reopened.scope, "a");
+    assert_eq!(reopened.stream, "a");
     assert_eq!(reopened.subscription_id, second.subscription_id);
     assert_eq!((reopened.starting_cursor, reopened.cursor), (None, None));
     assert_eq!(
@@ -71,7 +71,7 @@ fn a_rolled_back_registration_leaves_no_subscription() {
     let mut c = open(&dir.path().join("db"));
     let generation = c.subscription_generation();
     let failed: Result<()> = c.transaction(|tx| {
-        tx.set_scope("a".into(), true)?;
+        tx.set_stream("a".into(), true)?;
         Err(invalid("host failure"))
     });
     assert!(failed.is_err());
@@ -97,15 +97,15 @@ fn a_blank_scope_name_is_refused_and_registers_nothing() {
     for blank in ["", " ", "\t\n", "   "] {
         let refused = c.ensure_subscription(blank).expect_err("a blank name");
         assert!(
-            refused.to_string().contains("scope must not be empty"),
+            refused.to_string().contains("stream must not be empty"),
             "{refused}"
         );
         assert!(c.subscription_state(blank).unwrap().is_none(), "no row");
         let refused = c
-            .transaction(|tx| tx.set_scope(blank.into(), true))
+            .transaction(|tx| tx.set_stream(blank.into(), true))
             .expect_err("a blank name, through the transaction path");
         assert!(
-            refused.to_string().contains("scope must not be empty"),
+            refused.to_string().contains("stream must not be empty"),
             "{refused}"
         );
         assert!(c.subscription_state(blank).unwrap().is_none(), "no row");
@@ -116,7 +116,7 @@ fn a_blank_scope_name_is_refused_and_registers_nothing() {
         "nothing was committed, so no session was invalidated"
     );
     assert_eq!(
-        c.desired_scopes().unwrap().into_iter().collect::<Vec<_>>(),
+        c.desired_streams().unwrap().into_iter().collect::<Vec<_>>(),
         ["a".to_string()],
         "the Scope that is registered is the only one"
     );
@@ -131,10 +131,10 @@ fn a_blank_scope_name_is_refused_and_registers_nothing() {
 /// repeating it changes nothing at all. The boundary is the head the first
 /// acknowledgement negotiates.
 #[test]
-fn set_scope_registers_without_a_boundary_and_repeats_without_a_generation_change() {
+fn set_stream_registers_without_a_boundary_and_repeats_without_a_generation_change() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
-    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
     let registered = state(&mut c, "a");
     assert_eq!(
         (registered.starting_cursor, registered.cursor),
@@ -156,7 +156,7 @@ fn set_scope_registers_without_a_boundary_and_repeats_without_a_generation_chang
         "page application advances the cursor and leaves the origin"
     );
     let generation = c.subscription_generation();
-    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
     let again = state(&mut c, "a");
     assert_eq!(
         (again.subscription_id, again.starting_cursor, again.cursor),
@@ -350,17 +350,18 @@ fn a_first_boundary_survives_a_reopen_only_once_committed() -> Result<()> {
 /// Unsubscribing through the transaction path removes whatever identity the
 /// Scope holds, and the next subscribe is a new subscription.
 #[test]
-fn set_scope_removes_the_current_identity_and_recreation_starts_over() {
+fn set_stream_removes_the_current_identity_and_recreation_starts_over() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
     c.apply_page(page("a", 0, 2, Some("A"))).unwrap();
     let before = state(&mut c, "a");
     let generation = c.subscription_generation();
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
     assert!(c.subscription_state("a").unwrap().is_none());
     assert!(c.subscription_generation() > generation);
-    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
     let after = state(&mut c, "a");
     assert_ne!(after.subscription_id, before.subscription_id);
     assert_eq!(
@@ -405,7 +406,7 @@ fn an_uninitialized_subscription_is_never_read_as_cursor_zero() {
     c.ensure_subscription("a").unwrap();
     assert_eq!(c.cursor("a").unwrap(), None);
     assert_eq!(c.subscriptions().unwrap(), vec![]);
-    assert!(c.desired_scopes().unwrap().contains("a"));
+    assert!(c.desired_streams().unwrap().contains("a"));
     assert_eq!(
         c.downlink_request().unwrap(),
         None,
@@ -436,7 +437,8 @@ fn cursor_advancement_cannot_resurrect_a_removed_subscription() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
     c.apply_page(page("a", 0, 1, Some("A"))).unwrap();
     assert!(c.subscription_state("a").unwrap().is_none());
     assert_eq!(table_count(&mut c, "axton_subscription"), 0);
@@ -489,7 +491,7 @@ fn the_table_refuses_a_half_initialized_cursor_pair() {
         let error = sql(
             &path,
             &format!(
-                "INSERT INTO axton_subscription (scope, subscription_id, starting_cursor, cursor) VALUES ('a', 1, {starting}, {cursor})"
+                "INSERT INTO axton_subscription (stream, subscription_id, starting_cursor, cursor) VALUES ('a', 1, {starting}, {cursor})"
             ),
         )
         .unwrap_err()
@@ -498,12 +500,12 @@ fn the_table_refuses_a_half_initialized_cursor_pair() {
     }
     sql(
         &path,
-        "INSERT INTO axton_subscription (scope, subscription_id, starting_cursor, cursor) VALUES ('a', 1, 4, 4)",
+        "INSERT INTO axton_subscription (stream, subscription_id, starting_cursor, cursor) VALUES ('a', 1, 4, 4)",
     )
     .unwrap();
     let error = sql(
         &path,
-        "UPDATE axton_subscription SET cursor = 3 WHERE scope = 'a'",
+        "UPDATE axton_subscription SET cursor = 3 WHERE stream = 'a'",
     )
     .unwrap_err()
     .to_string();
@@ -513,7 +515,7 @@ fn the_table_refuses_a_half_initialized_cursor_pair() {
     );
     let error = sql(
         &path,
-        "INSERT INTO axton_subscription (scope, subscription_id, starting_cursor, cursor) VALUES ('b', 1, 0, 0)",
+        "INSERT INTO axton_subscription (stream, subscription_id, starting_cursor, cursor) VALUES ('b', 1, 0, 0)",
     )
     .unwrap_err()
     .to_string();
@@ -529,12 +531,12 @@ fn subscription_state_is_serializable() {
     let registered = c.ensure_subscription("waiting").unwrap();
     assert_eq!(
         serde_json::to_value(&registered).unwrap(),
-        json!({"scope":"waiting","subscriptionId":registered.subscription_id,"startingCursor":null,"cursor":null})
+        json!({"stream":"waiting","subscriptionId":registered.subscription_id,"startingCursor":null,"cursor":null})
     );
     subscribe(&mut c, "a");
     let state = state(&mut c, "a");
     assert_eq!(
         serde_json::to_value(&state).unwrap(),
-        json!({"scope":"a","subscriptionId":state.subscription_id,"startingCursor":0,"cursor":0})
+        json!({"stream":"a","subscriptionId":state.subscription_id,"startingCursor":0,"cursor":0})
     );
 }

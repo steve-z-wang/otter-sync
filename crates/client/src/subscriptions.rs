@@ -41,7 +41,7 @@ pub struct Initialization {
     pub fault: Option<String>,
 }
 
-const COLUMNS: &str = "scope, subscription_id, starting_cursor, cursor";
+const COLUMNS: &str = "stream, subscription_id, starting_cursor, cursor";
 
 fn optional(value: &Value) -> Result<Option<u64>> {
     if value.is_null() {
@@ -70,7 +70,7 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     pub fn subscription(&mut self, stream: &str) -> Result<Option<SubscriptionState>> {
         let rows = self.rows(
-            &format!("SELECT {COLUMNS} FROM axton_subscription WHERE scope=?"),
+            &format!("SELECT {COLUMNS} FROM axton_subscription WHERE stream=?"),
             &[json!(stream)],
         )?;
         rows.rows.first().map(|r| decode(r)).transpose()
@@ -78,7 +78,7 @@ impl<S: ClientStore> Engine<'_, S> {
     /// Every subscription, subscribed order, initialized or not.
     pub fn subscription_states(&mut self) -> Result<Vec<SubscriptionState>> {
         let rows = self.rows(
-            &format!("SELECT {COLUMNS} FROM axton_subscription ORDER BY scope"),
+            &format!("SELECT {COLUMNS} FROM axton_subscription ORDER BY stream"),
             &[],
         )?;
         rows.rows.iter().map(|r| decode(r)).collect()
@@ -123,12 +123,12 @@ impl<S: ClientStore> Engine<'_, S> {
         )?;
         if self
             .scalar(
-                "SELECT 1 FROM axton_scope_member WHERE scope=? LIMIT 1",
+                "SELECT 1 FROM axton_stream_member WHERE stream=? LIMIT 1",
                 &[json!(stream)],
             )?
             .is_some()
         {
-            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE scope=? AND subscription_id=?", &[json!(stream), json!(subscription_id)])?;
+            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE stream=? AND subscription_id=?", &[json!(stream), json!(subscription_id)])?;
         }
         Ok((state, true))
     }
@@ -144,7 +144,7 @@ impl<S: ClientStore> Engine<'_, S> {
     ) -> Result<bool> {
         let affected = self.exec(
             "axton_subscription",
-            "UPDATE axton_subscription SET starting_cursor=?, cursor=? WHERE scope=? AND subscription_id=? AND starting_cursor IS NULL",
+            "UPDATE axton_subscription SET starting_cursor=?, cursor=? WHERE stream=? AND subscription_id=? AND starting_cursor IS NULL",
             &[json!(cursor), json!(cursor), json!(stream), json!(subscription_id)],
         )?;
         Ok(affected == 1)
@@ -208,7 +208,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         for (stream, head) in heads {
             if let Some(id) = expected.get(stream) {
-                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE scope=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(stream),json!(id)])?;
+                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE stream=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(stream),json!(id)])?;
             }
         }
         for (stream, subscription_id, head) in boundaries {
@@ -232,7 +232,7 @@ impl<S: ClientStore> Engine<'_, S> {
     ) -> Result<()> {
         let affected = self.exec(
             "axton_subscription",
-            "UPDATE axton_subscription SET cursor=? WHERE scope=? AND subscription_id=? AND cursor IS NOT NULL",
+            "UPDATE axton_subscription SET cursor=? WHERE stream=? AND subscription_id=? AND cursor IS NOT NULL",
             &[json!(cursor), json!(stream), json!(subscription_id)],
         )?;
         if affected != 1 {
@@ -253,12 +253,12 @@ impl<S: ClientStore> Engine<'_, S> {
         let affected = match subscription_id {
             Some(id) => self.exec(
                 "axton_subscription",
-                "DELETE FROM axton_subscription WHERE scope=? AND subscription_id=?",
+                "DELETE FROM axton_subscription WHERE stream=? AND subscription_id=?",
                 &[json!(stream), json!(id)],
             )?,
             None => self.exec(
                 "axton_subscription",
-                "DELETE FROM axton_subscription WHERE scope=?",
+                "DELETE FROM axton_subscription WHERE stream=?",
                 &[json!(stream)],
             )?,
         };

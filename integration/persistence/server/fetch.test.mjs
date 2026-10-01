@@ -33,7 +33,7 @@ const todo = async ({ tx, ids }) => {
   }));
 };
 const backend = (db = database) => createBackend({ config, native, database: db, authenticate: devAuth(), onError: error => reported.push(error), loaders: { todo } });
-const body = (callId, id, extra = {}) => JSON.stringify({ capabilities:['stream-membership-v1'],callId, model: 'Todo', version: 1, identity: { id }, ...extra });
+const body = (callId, id, extra = {}) => JSON.stringify({ capabilities:['stream-authority-v1'],callId, model: 'Todo', version: 1, identity: { id }, ...extra });
 const stamps = async id => (await q("SELECT stamp FROM axton_record WHERE model='Todo' AND identity_key=$1", [JSON.stringify({ id })])).map(row => Number(row.stamp));
 const scopeState = async () => ({
   streams: await q('SELECT stream, head FROM axton_stream ORDER BY stream'),
@@ -88,7 +88,7 @@ test('HTTP Fetch authenticates, commits one snapshot, replays it and isolates ow
     assert.deepEqual(conflict.completion.outcome, { status: 'failed', code: 'call.identity_conflict', execution: 'rejected' });
     assert.equal(loads, loaded + 1);
     // Envelope and identity errors are HTTP failures before any claim.
-    const malformed = await send(JSON.stringify({ capabilities:['stream-membership-v1'],callId: '01890f47-1234-7123-8123-1234567f0002', model: 'Todo', version: 1, identity: { id: 'f1' }, store: 'yes' }));
+    const malformed = await send(JSON.stringify({ capabilities:['stream-authority-v1'],callId: '01890f47-1234-7123-8123-1234567f0002', model: 'Todo', version: 1, identity: { id: 'f1' }, store: 'yes' }));
     assert.equal(malformed.status, 400);
     assert.deepEqual(await malformed.json(), { code: 'request.invalid' });
     const unknownField = await send(body('01890f47-1234-7123-8123-1234567f0003', 'f1', { identity: { id: 'f1', title: 'A' } }));
@@ -96,7 +96,7 @@ test('HTTP Fetch authenticates, commits one snapshot, replays it and isolates ow
     assert.equal((await q("SELECT 1 FROM axton_call WHERE call_id IN ('01890f47-1234-7123-8123-1234567f0002','01890f47-1234-7123-8123-1234567f0003')")).length, 0);
     // An unserved read version is the call's own committed rejection.
     const unserved = '01890f47-1234-7123-8123-1234567f0004';
-    const refused = await send(JSON.stringify({ capabilities:['stream-membership-v1'],callId: unserved, model: 'Todo', version: 9, identity: { id: 'f1' } }));
+    const refused = await send(JSON.stringify({ capabilities:['stream-authority-v1'],callId: unserved, model: 'Todo', version: 9, identity: { id: 'f1' } }));
     assert.equal(refused.status, 200);
     assert.deepEqual((await refused.json()).completion.outcome, { status: 'failed', code: 'model_version_unsupported', execution: 'rejected' });
     assert.equal((await q('SELECT 1 FROM axton_call WHERE call_id=$1 AND response IS NOT NULL', [unserved])).length, 1);

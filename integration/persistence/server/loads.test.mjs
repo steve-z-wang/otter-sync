@@ -37,7 +37,7 @@ let next = 0x10000;
 /** One page of `ProjectTodos(projectId)` with fresh IDs unless given. */
 const page = (projectId, { continuation = null, loadId = uuid(next++), callId = uuid(next++) } = {}) =>
   ({ loadId, callId, name: 'ProjectTodos', version: 1, args: { projectId }, continuation, models: { Todo: 1 } });
-const batch = (...items) => JSON.stringify({ capabilities:['stream-membership-v1'],loads: items });
+const batch = (...items) => JSON.stringify({ capabilities:['stream-authority-v1'],loads: items });
 
 /**
  * The page handler over `load_todo`: two identities per page in id order
@@ -300,7 +300,7 @@ test('POST /sync/loads authenticates once, refuses a malformed envelope whole an
     assert.equal((await send(batch(page('http')), null)).status, 401);
     const nine = Array.from({ length: 9 }, () => page('http'));
     const duplicate = page('http');
-    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ capabilities:['stream-membership-v1'],loads: [page('http')], extra: 1 })]) {
+    for (const body of [batch(), batch(...nine), batch(duplicate, { ...page('http'), callId: duplicate.callId }), JSON.stringify({ capabilities:['stream-authority-v1'],loads: [page('http')], extra: 1 })]) {
       const refused = await send(body);
       assert.equal(refused.status, 400, body.slice(0, 60));
       assert.deepEqual(await refused.json(), { code: 'request.invalid' });
@@ -360,7 +360,7 @@ test('a Load enrolls the records it declares on every shim, waking the Stream af
     const [done] = outcomes(await app.loads('alice', batch(item)));
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(done.outcome.status, 'succeeded', name);
-    assert.deepEqual(done.memberships, [1, 2].map((cursor) => ({stream, cursor, model: 'Todo', identity: {id: `${project}-${cursor}`}})), name);
+    assert.equal(Object.hasOwn(done,'memberships'),false,name);
     assert.deepEqual(await scopesOf(`${project}-1`), [stream], name);
     assert.deepEqual(await scopesOf(`${project}-2`), [stream], name);
     assert.deepEqual(await scopesOf(`${project}-3`), [], `${name}: returning a record does not enroll it`);
@@ -436,7 +436,7 @@ const tables = async (ids, scopes) => ({
 const claimed = async callId => (await q('SELECT claim_tx::text AS tx, response FROM axton_call WHERE call_id=$1', [callId])).map(row => ({ tx: row.tx, response: row.response && JSON.parse(row.response) }));
 /** What a Stream delivers from `from`: identity, stamp and title of each change. */
 const delivered = async (app, stream, from = 0) =>
-  JSON.parse(await app.pull('alice', JSON.stringify({ capabilities:['stream-membership-v1'],cursors: { [stream]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
+  JSON.parse(await app.pull('alice', JSON.stringify({ capabilities:['stream-authority-v1'],cursors: { [stream]: from }, models: { Todo: 1 } }))).changes.map(change => [change.identity.id, change.stamp, change.state?.title ?? null]);
 
 test('on every shim a page commits its enrollment with its saved outcome; a re-add and an existing membership publish nothing', async () => {
   for (const { name, database } of shims) {
@@ -620,7 +620,7 @@ test('an initialized live subscription hears a Load enrollment and a later touch
   try {
     await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
     socket.addEventListener('message', event => frames.push(JSON.parse(String(event.data))));
-    socket.send(JSON.stringify({ capabilities:['stream-membership-v1'],type: 'subscribe', streams: [stream], models: { Todo: 1 } }));
+    socket.send(JSON.stringify({ capabilities:['stream-authority-v1'],type: 'subscribe', streams: [stream], models: { Todo: 1 } }));
     await until(() => frames.length >= 1, 'the acknowledgement');
     assert.equal(frames[0].type, 'subscribed');
     assert.equal(frames[0].cursors[stream], 0, 'initialized at an empty Stream');
@@ -777,7 +777,10 @@ test('a saved enrolled page keeps its old claim after a later removal on every s
     await q('INSERT INTO axton_stream(stream,head) VALUES($1,9)', [stream]);
     const item = page(project);
     const [original] = outcomes(await app.loads('alice',batch(item)));
-    assert.deepEqual(original.memberships,[{stream,cursor:10,model:'Todo',identity:{id:`${project}-1`}}]);
+    assert.equal(Object.hasOwn(original,'memberships'),false);
+    // Saved historical metadata is replayed verbatim; a fresh page produces none.
+    original.memberships=[{stream,cursor:10,model:'Todo',identity:{id:`${project}-1`}}];
+    await q('UPDATE axton_call SET response=$2 WHERE call_id=$1',[item.callId,JSON.stringify(original)]);
     await historicalRemove(database,stream,`${project}-1`);
     const before = await q('SELECT l.stream,l.cursor,l.kind,r.model,r.identity FROM axton_stream_log l JOIN axton_record r ON r.id=l.record_id WHERE l.stream=$1',[stream]);
     assert.equal(Number(before[0].cursor),11);
@@ -799,7 +802,7 @@ test('a capable retry across cutover replays a saved legacy Load without claims 
     const app=enrolling(database,({ctx,rows})=>{runs++;ctx.stream(stream).track.todo({id:rows[0].id});});
     const item=page(project);
     const [first]=outcomes(await app.loads('alice',batch(item)));
-    assert.equal(first.memberships.length,1,name);
+    assert.equal(Object.hasOwn(first,'memberships'),false,name);
     await historicalRemove(database,stream,record);
     // The durable pre-capability fixture has no claims. Negotiation in a
     // stored request is nonsemantic, regardless of which writer saved it.

@@ -42,9 +42,9 @@ const make=db=>createBackend({config,native,database:db,authenticate:()=>'alice'
  mutations:{async mark({ctx,args}){await write(ctx.tx,args.todo.id,args.todo.title);await plans.get(args.todo.title)?.(ctx);}},
  loaders:{todo:loader}});
 const backend=make(database);
-const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({capabilities:['stream-membership-v1'],cursors,models:{Todo:1}})));
-const load=async(stream,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],mode:'bootstrap',stream,models:{Todo:1},after,until})));
-const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({capabilities:['stream-membership-v1'],clientId,batchSequence:1,models:{Todo:1},
+const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({capabilities:['stream-authority-v1'],cursors,models:{Todo:1}})));
+const load=async(stream,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['stream-authority-v1'],mode:'bootstrap',stream,models:{Todo:1},after,until})));
+const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({capabilities:['stream-authority-v1'],clientId,batchSequence:1,models:{Todo:1},
  mutations:calls.map(([callId,id,title],i)=>({ordinal:i+1,callId,name:'Mark',version:1,args:{todo:{id,title}}}))})).then(JSON.parse);
 const seed=(id,title)=>q('INSERT INTO member_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
 const head=async stream=>Number((await q('SELECT head FROM axton_stream WHERE stream=$1',[stream]))[0]?.head??0);

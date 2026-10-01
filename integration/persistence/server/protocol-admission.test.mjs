@@ -56,3 +56,15 @@ test('new capability with retired immediate wire fields is refused before host e
   assert.deepEqual(effects,[]);
  }finally{await listening.close();}
 });
+
+// Explicit bootstrap ingress must negotiate before range scans, Loaders or progress.
+test('bootstrap with old capability has no host effects on native and HTTP boundaries', async () => {
+ const {backend,effects}=app(); const listening=await backend.listen({port:0});
+ const request={mode:'bootstrap',stream:'room',after:0,until:10,models:{Entry:1},capabilities:['stream-membership-v1']};
+ try {
+  await assert.rejects(()=>native.processPull(JSON.stringify(config),'alice',JSON.stringify(request),async()=>{effects.push('host');throw new Error('host must not run');}),error=>JSON.parse(error.message).code==='protocol.unsupported');
+  const response=await fetch(listening.url+'/sync/pull',{method:'POST',body:JSON.stringify(request)});
+  assert.equal(response.status,426);assert.deepEqual(await response.json(),{code:'protocol.unsupported'});
+  assert.deepEqual(effects,[]);
+ } finally { await listening.close(); }
+});

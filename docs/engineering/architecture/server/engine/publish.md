@@ -10,7 +10,7 @@ Mutation and legacy handlers, `backend.transaction` and `backend.publish` provid
 
 A first pair establishes unique durable interest and one upsert position, ensuring a stamp without advancing existing authority. Repeated tracking moves neither stamp nor cursor. Global invalidation reaches every finally tracking Stream; selected invalidation intersects names with final tracking and never enrolls. Selected sets union and global wins. Inferred changed Mutation inputs always invalidate globally. Each invalidated identity advances once per settlement, even without holders; each final pair receives at most one upsert. Explicitly empty selected names declare nothing.
 
-Shared content changes require global invalidation. Selected invalidation serves viewer-specific authority changes; row-to-null answers need newer stamps. Tracking survives Loader absence and provides no automatic retention policy. Fresh APIs have no withdrawal or labels. Retained historical removal positions remain decodable and source holdings remain on clients, separately from stamped authority absence.
+Shared content changes require global invalidation. Selected invalidation serves viewer-specific authority changes; row-to-null answers need newer stamps. Tracking survives Loader absence and provides no automatic retention policy. Fresh APIs have no withdrawal or labels. Retained historical removal positions remain decodable cursor evidence and change no client Model. Client cache retention is independent of server tracking; newer viewer Loader null supplies canonical absence.
 
 ## 5. Building Block View
 
@@ -43,3 +43,5 @@ Bulk contracts, global/selected precedence, one-stamp/one-position settlement, r
 ## 11. Risks and Technical Debt
 
 Wakes are process-local ([#62](https://github.com/zanminwang/axton/issues/62)). Hot Streams and records serialize and can retry whole transactions. Tracking/log retention requires separate policy ([#61](https://github.com/zanminwang/axton/issues/61)); Loader absence never prunes tracking automatically.
+
+After prior layout upgrades, the stopped-writer [authority repair](../../../../../packages/postgres/migrations/2026-10-01-local-authority.sql) re-tracks historical removed pairs, advances each affected identity once and publishes upserts to all its current tracking pairs. Viewers then resolve current state or null through their Loader. Reapplication allocates nothing; saved calls/receipts and business bytes remain unchanged ([Deployment](../../../../../website/docs/backend/deployment.md#stream-membership-cutover)).

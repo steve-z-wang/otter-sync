@@ -699,3 +699,38 @@ test('transaction streams commit, rollback and reopen local intent without a cha
   assert.equal(followed.status.active,false);
  } finally { await fixture.close(); }
 });
+
+test('Stream authority, hook cleanup and cursor roll back and commit together without holds', async () => {
+ const dir=await mkdtemp(join(tmpdir(),'axton-authority-hook-'));
+ const schema=JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json',import.meta.url),'utf8'));
+ let refuse=true,hooks=0;
+ const errors=[];
+ const client=await runtime.Client.open({path:join(dir,'db'),schema,onStore:{Entry:async(tx)=>{
+  hooks++;await tx.direct({model:'Entry',op:'delete',identity:{id:'child'}});
+  if(refuse)throw Error('cleanup refused');
+ }}});
+ const server=await fakeServer();
+ let connection;
+ try {
+  await client.direct({model:'Entry',op:'create',identity:{id:'child'},values:{text:'cached',note:null}});
+  await client.subscribeStream('scope');
+  connection=await client.connect(server.config,{onError:error=>errors.push(error)});
+  await until(async()=> (await client.syncState()).cursors.scope===0);
+  assert.deepEqual(await client.readSql("SELECT name FROM sqlite_master WHERE name='axton_stream_member'"),[]);
+  server.sockets.at(-1).send(JSON.stringify(page('canonical')));
+  await until(()=>hooks===1);
+  await until(()=>errors.length===1);
+  assert.equal((await client.syncState()).cursors.scope,0);
+  assert.equal(await client.read('Entry',{id:'live'}),null);
+  assert.equal((await client.read('Entry',{id:'child'})).text,'cached');
+  refuse=false;await client.applyPull(page('canonical'));
+  await until(async()=> (await client.syncState()).cursors.scope===1);
+  assert.equal((await client.read('Entry',{id:'live'})).text,'canonical');
+  assert.equal(await client.read('Entry',{id:'child'}),null);
+  await client.unsubscribe('scope');
+  assert.equal((await client.read('Entry',{id:'live'})).text,'canonical');
+  assert.equal(hooks,2);
+ } finally {
+  if(connection)await connection.close();await client.close();await server.close();await rm(dir,{recursive:true,force:true});
+ }
+});

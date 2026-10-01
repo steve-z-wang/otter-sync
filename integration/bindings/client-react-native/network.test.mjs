@@ -41,7 +41,7 @@ test('mobile transport authenticates real HTTP/WS and streams without polling',a
     peer=socket;authorization=request.headers.authorization;
     socket.on('message',message=>{
       const sub=JSON.parse(message);
-      assert.ok(sub.capabilities.includes('stream-membership-v1'));
+      assert.ok(sub.capabilities.includes('stream-authority-v1'));
       socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.streams.map(c=>[c,head]))}));
     });
   });
@@ -60,7 +60,7 @@ test('mobile transport authenticates real HTTP/WS and streams without polling',a
     assert.equal(authorization,'Bearer alice');
     assert.equal(requests[0].authorization,'Bearer alice');
     assert.equal(requests[0].url,'/sync/pull');
-    assert.ok(requests[0].body.capabilities.includes('stream-membership-v1'));
+    assert.ok(requests[0].body.capabilities.includes('stream-authority-v1'));
     assert.deepEqual(requests[0].body.cursors,{scope:0},'the catch-up starts at the committed cursor');
     await until(async()=>(await client.syncState()).cursors.scope===1);
     const change={cursors:{scope:{from:1,to:2,head:2}},changes:[{stream:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'one'},stamp:1,state:{text:'live',note:null}}]};

@@ -773,21 +773,28 @@ test('a saved enrolled page keeps its old claim after a later removal on every s
     const project = `claim-retry-${name}`;
     const stream = `claim:${project}`;
     await seed(project, project, 'alice', 1);
-    const app = enrolling(database, ({ctx,rows}) => ctx.stream(stream).track.todo({id:rows[0].id}));
+    let runs=0;
+    const seen={handled:[],loaded:[]};
+    const app = enrolling(database, ({ctx,rows}) => {runs++;ctx.stream(stream).track.todo({id:rows[0].id});}, {loaders:loaders(database,seen)});
     await q('INSERT INTO axton_stream(stream,head) VALUES($1,9)', [stream]);
     const item = page(project);
     const [original] = outcomes(await app.loads('alice',batch(item)));
     assert.equal(Object.hasOwn(original,'memberships'),false);
     // Saved historical metadata is replayed verbatim; a fresh page produces none.
     original.memberships=[{stream,cursor:10,model:'Todo',identity:{id:`${project}-1`}}];
+    original.outcome.next={state:{memberships:[{scope:'business',cursor:42}],nested:{channel:'opaque',scope:'application'}}};
+
     await q('UPDATE axton_call SET response=$2 WHERE call_id=$1',[item.callId,JSON.stringify(original)]);
     await historicalRemove(database,stream,`${project}-1`);
     const before = await q('SELECT l.stream,l.cursor,l.kind,r.model,r.identity FROM axton_stream_log l JOIN axton_record r ON r.id=l.record_id WHERE l.stream=$1',[stream]);
     assert.equal(Number(before[0].cursor),11);
     assert.equal(before[0].kind,'remove');
     const heads = await q('SELECT * FROM axton_stream WHERE stream=$1',[stream]);
+    const loaderRuns=seen.loaded.length;
     const [replayed] = outcomes(await app.loads('alice',batch(item)));
     assert.deepEqual(replayed,original);
+    assert.equal(runs,1,'saved historical metadata runs no Handler');
+    assert.equal(seen.loaded.length,loaderRuns,'nested saved continuation runs no Loader');
     assert.deepEqual(await scopesOf(`${project}-1`),[]);
     assert.deepEqual(await q('SELECT * FROM axton_stream WHERE stream=$1',[stream]),heads);
     assert.deepEqual(await q('SELECT l.stream,l.cursor,l.kind,r.model,r.identity FROM axton_stream_log l JOIN axton_record r ON r.id=l.record_id WHERE l.stream=$1',[stream]),before);

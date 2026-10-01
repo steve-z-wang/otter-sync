@@ -740,7 +740,7 @@ test("the native engine refuses a full Model value that type-checks as an identi
     await backend.loads(
       "alice",
       JSON.stringify({
-        capabilities: ["stream-membership-v1"],
+        capabilities: ["stream-authority-v1"],
         loads: [item(1, null), item(2, { state: "ids" })],
       }),
     ),

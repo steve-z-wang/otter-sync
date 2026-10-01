@@ -614,6 +614,29 @@ void main() {
         await until(
           () async => (await client.syncState())['cursors']['scope'] == 12,
         );
+        expect(
+          (await client.read('Entry', {'id': 'live'}))?['text'],
+          'recovered',
+        );
+        sockets.last.add(
+          jsonEncode({
+            'cursors': {'scope': range(12, 13)},
+            'changes': [
+              {
+                'kind': 'upsert',
+                'stream': 'scope',
+                'cursor': 13,
+                'model': 'Entry',
+                'identity': {'id': 'live'},
+                'stamp': 100,
+                'state': null,
+              },
+            ],
+          }),
+        );
+        await until(
+          () async => (await client.syncState())['cursors']['scope'] == 13,
+        );
         expect(await client.read('Entry', {'id': 'live'}), isNull);
         expect(errors, isEmpty);
         await connection.close();
@@ -784,8 +807,8 @@ void main() {
         stampBase = 100;
         await client.subscribe('scope');
         hold.complete();
-        // Retained holds require a fixed-bound reconciliation. Its fresh
-        // authority replaces earlier content; the obsolete HTTP page stays inert.
+        // Resubscribe establishes an ordinary origin and leaves old cached
+        // authority alone; the obsolete HTTP page stays inert.
         await until(() async => sockets.length >= 4);
         await until(
           () async => (await client.syncState())['cursors']['scope'] == 57,
@@ -798,20 +821,20 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 30));
         expect(
           (await client.read('Entry', {'id': 'e57'}))?['text'],
-          'fresh',
-          reason: 'fresh reconciliation wins over the obsolete HTTP completion',
+          isNull,
+          reason: 'no implicit bootstrap and obsolete HTTP completion is inert',
         );
         expect(
           (await client.read('Entry', {'id': 'e1'}))?['text'],
-          'fresh',
-          reason: 'retained membership is reconciled before catching up',
+          'initial',
+          reason: 'resubscribe retains previously delivered authority',
         );
         expect(
           (await client.read('Entry', {'id': 'e56'}))?['text'],
-          'fresh',
-          reason: 'reconciliation refreshes the old live delivery too',
+          'live',
+          reason: 'resubscribe retains the old live delivery too',
         );
-        expect((await client.query('Entry')).length, 58);
+        expect((await client.query('Entry')).length, 57);
         expect((await client.syncState())['cursors']['scope'], 58);
         expect(errors, isEmpty);
         await connection.close();
@@ -1472,7 +1495,7 @@ void moreTests() {
           'type': 'subscribe',
           'streams': ['scope'],
           'models': {'Entry': 1},
-          'capabilities': ['stream-membership-v1'],
+          'capabilities': ['stream-authority-v1'],
         });
         sockets[1].add(
           jsonEncode({

@@ -4,7 +4,7 @@ Engine behavior: [Client Pull](../client/engine/pull.md), [Server Pull](../serve
 
 ## 3. Context and Scope
 
-`POST /sync/pull` accepts `{capabilities, models, cursors}` for delta delivery or `{capabilities, mode: "bootstrap", stream, models, after, until}` for one historical page. The SDK advertises `stream-membership-v1`; [Common](common.md) owns capability admission. `models` declares every generated Model's read version; authentication supplies the viewer. A durable subscription must have an initialized position before delta pull names it.
+`POST /sync/pull` accepts `{capabilities, models, cursors}` for delta delivery or `{capabilities, mode: "bootstrap", stream, models, after, until}` for one historical page. The SDK advertises `stream-authority-v1`; [Common](common.md) owns capability admission. `models` declares every generated Model's read version; authentication supplies the viewer. A durable subscription must have an initialized position before delta pull names it.
 
 A delta response remains `{cursors: {stream: {from, to, head}}, changes}`. Each change names its Stream and log cursor:
 
@@ -23,15 +23,15 @@ Bootstrap answers `{mode: "bootstrap", stream, from, to, until, head, changes}` 
 
 - Each Stream range satisfies `from ≤ to ≤ head`. Every event satisfies `from < cursor ≤ to`; each Stream/record pair and Stream position occurs at most once. A shared record may appear once in each Stream. Its body is loaded once in the server transaction, preserving each pair's evidence.
 - Scans read the compacted log before applying the 50-event limit, including removals and without joining live membership. If another retained row exists, continue from the last emitted position; otherwise advance to the observed head, or the fixed bootstrap bound, across compacted gaps. A pair compacted above bootstrap's bound belongs to ordinary delivery.
-- Delivery cursors advance by whole committed pages. The per-record membership cursor is local ordering evidence, never a second polling cursor. Content stamps independently order authority across paths.
-- Clients merge all membership evidence before applying any positive body or releasing any base. Older evidence is inert; conflicting equal evidence aborts the transaction. Last-hold release evicts replication without Model cascade, pending-write deletion or domain writes. Another hold keeps the base.
-- Historical identity/run checks and the delivery gap gate still apply. Membership evidence, content, progress and release commit atomically. Tags never enter client storage or the wire.
+- Delivery cursors advance by whole committed pages. Model/identity stamps independently order authority across paths; clients have no per-Stream holding ledger.
+- Upserts stage canonical authority under the shared stamp rules, without claims or holdings. Newer null invokes eligible Model deletion hooks/cascades. Historical identity-only Remove validates its range and advances page progress without changing any Model, stamp, hook, cascade or queue.
+- Historical identity/run checks and the delivery gap gate still apply. Eligible authority, hook writes and progress commit atomically. Tags never enter client storage or the wire.
 
 Errors: malformed requests and positions ahead of the head are `400 request.invalid`; unsupported retained Model versions are `409 model_version_unsupported`; missing required capability is `426 protocol.unsupported`; infrastructure failures are server errors. Loader errors are per-record diagnostics.
 
 ## 10. Quality Requirements
 
-The shared [stream-membership fixture](../../../../fixtures/protocol/scope-membership.json) pins provenance, duplicate-pair refusal, safe counters, identity-only removal, authoritative-null and diagnostic distinctions, bootstrap and enrollment claims. Server delivery coverage lives in [stamp.rs](../../../../crates/server/tests/stamp.rs), [bootstrap.rs](../../../../crates/server/tests/bootstrap.rs) and [live.rs](../../../../crates/server/tests/live.rs); client holds and release coverage lives in [stream_members.rs](../../../../crates/sqlite/tests/stream_members.rs). These are evidence locations, not a claim that final cross-runtime acceptance has run.
+The shared [stream-membership fixture](../../../../fixtures/protocol/scope-membership.json) pins provenance, duplicate-pair refusal, safe counters, identity-only removal, authoritative-null and diagnostic distinctions, bootstrap and enrollment claims. Server delivery coverage lives in [stamp.rs](../../../../crates/server/tests/stamp.rs), [bootstrap.rs](../../../../crates/server/tests/bootstrap.rs) and [live.rs](../../../../crates/server/tests/live.rs); client authority, retention and compatibility coverage lives in [stream_members.rs](../../../../crates/sqlite/tests/stream_members.rs). These are evidence locations, not a claim that final cross-runtime acceptance has run.
 
 ## 11. Risks and Technical Debt
 

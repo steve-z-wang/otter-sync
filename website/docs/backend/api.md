@@ -234,7 +234,7 @@ The enclosing settlement combines declarations regardless of order. Each identit
 
 Shared content changes must invalidate all holders. Selected invalidation serves viewer-specific projection or permission changes when other viewers' answers remain valid. A changed row-to-null answer requires a newer stamp even if only selected streams are notified. Loader errors retain local content and are never absence; grouped Loader reads preserve per-identity fallback after batch failures.
 
-Business deletion and access revocation are authority changes: invalidate affected identities and let their viewer Loader return `null`. Tracking survives absence, allowing offline deletion delivery and later reinstatement. The public API has no withdrawal, tags or selectors and no automatic tracking retention policy. Retained historical removal positions and the client's source holdings remain supported protocol evidence; they are separate from stamped Loader absence. Unsubscribe stops delivery and retains both cache and server tracking.
+Business deletion and access revocation are authority changes: invalidate affected identities and let their viewer Loader return `null`. Tracking survives absence, allowing offline deletion delivery and later reinstatement. The public API has no withdrawal, tags or selectors and no automatic tracking retention policy. Retained historical identity-only Remove is cursor evidence and changes no client Model, hook or stamp; newer stamped Loader null supplies canonical absence. Clients have no Stream holding ledger. Unsubscribe stops delivery and retains both cache and server tracking.
 
 | Context | Available declarations |
 | --- | --- |
@@ -285,7 +285,7 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
 | (your `admit` refusal) | Your status, with `axton-admission: refused` | Your JSON body ([Admission](#admission)) |
-| `protocol.unsupported` | 426 | Missing or unsupported `stream-membership-v1`; refused before handler or progress effects |
+| `protocol.unsupported` | 426 | Missing or unsupported `stream-authority-v1`; refused before handler or progress effects |
 | `request.invalid` | 400 | Malformed body, or a pull cursor ahead of the stream head |
 | `client.owner_mismatch` | 403 | The client identity belongs to another user |
 | `gap`, `overlap` | 409 | The batch sequence is not the next one and not a retry of the last |

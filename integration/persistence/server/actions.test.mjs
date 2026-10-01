@@ -404,3 +404,24 @@ test('a forged Query settlement rolls back its own transaction writes and keeps 
     await close();
   }
 });
+
+
+test('historical Action metadata and nested business result replay without Handler or Loader work', async () => {
+ const app=backend(prisma(db));
+ const callId='01890f47-1234-7123-8123-123456789a01';
+ const body=JSON.stringify({capabilities:['stream-authority-v1'],call:{callId,name:'Add',version:1,args:{todo:{id:'historical-result',title:'saved'}}},models:{Todo:1}});
+ const first=JSON.parse(await app.action('alice',body));
+ assert.equal(Object.hasOwn(first,'memberships'),false);
+ // Restore opaque historical saved business JSON, not a fresh response shape.
+ const original={...first,memberships:[{stream:'historical',cursor:17,model:'Todo',identity:{id:'historical-result'}}]};
+ original.completion.outcome.result.metadata={memberships:[{scope:'business'}],nested:{channel:'application',stream:'opaque'}};
+ const [stored]=await db.$queryRawUnsafe('SELECT request FROM axton_call WHERE call_id=$1',callId);
+ const logical=JSON.parse(stored.request);logical.capabilities=['stream-membership-v1'];
+ await db.$executeRawUnsafe('UPDATE axton_call SET request=$2,response=$3 WHERE call_id=$1',callId,JSON.stringify(logical),JSON.stringify(original));
+ const before={handlers,loaders};
+ const replay=JSON.parse(await app.action('alice',body));
+ assert.deepEqual(replay,original);
+ assert.deepEqual({handlers,loaders},before,'saved result does not rerun business or authority readers');
+ const [saved]=await db.$queryRawUnsafe('SELECT request,response FROM axton_call WHERE call_id=$1',callId);
+ assert.equal(saved.request,JSON.stringify(logical));assert.equal(saved.response,JSON.stringify(original));
+});

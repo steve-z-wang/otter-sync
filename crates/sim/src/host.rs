@@ -1186,14 +1186,14 @@ mod tests {
     fn push_bytes(client_id: &str, sequence: u64, mutation: &axton_client::Mutation) -> Vec<u8> {
         let m = serde_json::to_value(mutation).unwrap();
         let ops = &m["operations"];
-        let body = json!({"capabilities":["stream-membership-v1"],"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
+        let body = json!({"capabilities":["stream-authority-v1"],"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
         let bytes = axton_core::canonical_json(&body).unwrap().into_bytes();
         axton_core::PushRequest::decode(&bytes).unwrap();
         bytes
     }
 
     fn pull(host: &MemHost, stream: &str, from: u64) -> StreamPullPage {
-        let req = json!({"capabilities":["stream-membership-v1"],"cursors":BTreeMap::from([(stream.to_string(),from)]),"models":schema::declared_models()});
+        let req = json!({"capabilities":["stream-authority-v1"],"cursors":BTreeMap::from([(stream.to_string(),from)]),"models":schema::declared_models()});
         StreamPullPage::decode(
             host.pull("u", &serde_json::to_vec(&req).unwrap())
                 .unwrap()

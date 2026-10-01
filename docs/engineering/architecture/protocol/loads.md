@@ -74,3 +74,5 @@ A bound is never met by silent truncation. A page with more than 1,000 identitie
 - **Envelopes are structural and bounded, correlation is by ID, and a malformed page fails only its own item.** Evidence: `request_envelopes_are_structural_and_bounded`, `only_correlation_structure_rejects_a_response_envelope`, `a_malformed_page_shape_fails_only_its_own_item`, `pages_carry_declared_identity_lists_and_matching_authority`, `eight_maximal_pages_fit_one_response`, `server_encoding_bounds_item_errors_instead_of_refusing_the_batch`, `loads_never_route_as_actions`.
 
 Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo test --workspace --locked`); the server side of the envelope is in [Server / Engine / Loads](../server/engine/loads.md#10-quality-requirements).
+
+Fresh responses carry canonical Model authority without enrollment claims or client holdings. Saved historical top-level metadata remains replayable; nested business result and continuation JSON is unchanged. All delivery paths share Model/identity/stamp ordering ([Common](common.md#authority-capability-and-historical-metadata)).

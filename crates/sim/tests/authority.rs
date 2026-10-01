@@ -378,3 +378,270 @@ fn restart_keeps_rows_retained_after_unsubscribe() {
     assert_eq!(sim.client(0).last_completed_push().unwrap(), 1);
     sim.check().unwrap();
 }
+
+/// A canonical null is Model authority, independently of the transport that
+/// delivered it. The other path's older positive answer cannot resurrect it.
+#[test]
+fn newer_null_wins_between_fetch_and_stream_in_both_orders_through_restart() {
+    use axton_core::{ActionOutcome, AuthorityRecord, CallCompletion, FetchResponse};
+    use serde_json::json;
+    for fetch_null in [false, true] {
+        let mut sim = setup(40);
+        sim.apply(Action::ServerChange {
+            key: "Entry:e1".into(),
+            text: None,
+            streams: vec!["a".into()],
+        })
+        .unwrap();
+        let fetched = |state, stamp| FetchResponse {
+            completion: CallCompletion {
+                call_id: "123e4567-e89b-42d3-a456-426614174000".into(),
+                outcome: ActionOutcome::Succeeded {
+                    result: json!(null),
+                },
+            },
+            records: vec![AuthorityRecord {
+                model: "Entry".into(),
+                identity: json!({"id":"e1"}),
+                stamp,
+                state,
+                error: None,
+            }],
+        };
+        if fetch_null {
+            sim.client(0)
+                .apply_fetch_response(&fetched(json!(null), 2))
+                .unwrap();
+            // The ordinary Stream still has an old covered positive page in flight.
+            let old = axton_core::StreamPullPage::decode(&serde_json::to_vec(&json!({
+                "cursors":{"a":{"from":1,"to":2,"head":2}},
+                "changes":[{"kind":"upsert","stream":"a","cursor":2,"model":"Entry","identity":{"id":"e1"},"stamp":1,"state":{"text":"base","note":null}}]
+            })).unwrap()).unwrap();
+            sim.client(0).apply_stream_page(old).unwrap();
+        } else {
+            sim.settle();
+            sim.client(0)
+                .apply_fetch_response(&fetched(json!({"text":"base","note":null}), 1))
+                .unwrap();
+        }
+        assert_eq!(sim.read_text(0, &entry_key("e1")), None);
+        assert_eq!(sim.client(0).record_stamp(&entry_key("e1")).unwrap(), 2);
+        sim.apply(Action::Crash { client: 0 }).unwrap();
+        sim.apply(Action::Restart { client: 0 }).unwrap();
+        assert_eq!(sim.read_text(0, &entry_key("e1")), None);
+        assert_eq!(sim.client(0).record_stamp(&entry_key("e1")).unwrap(), 2);
+        assert!(
+            sim.client(0)
+                .read_sql(
+                    "SELECT name FROM sqlite_master WHERE name='axton_stream_member'",
+                    &[]
+                )
+                .unwrap()
+                .is_empty()
+        );
+        sim.check().unwrap();
+    }
+}
+
+/// Action, receipt and explicit Bootstrap absence share the same authority as
+/// Stream/Fetch. A delayed positive Load can complete without resurrecting it.
+#[test]
+fn action_receipt_and_bootstrap_null_outrank_old_positive_load_and_fetch() {
+    use axton_client::{LoadFence, LoadOptions, LoadStored};
+    use axton_core::{LoadPageReply, LoadPageResponse, Schema};
+    use serde_json::json;
+    for source in ["action", "receipt", "bootstrap"] {
+        let mut value = serde_json::to_value(axton_sim::schema::enrollment_schema()).unwrap();
+        value["actions"] = json!([{"name":"Inspect","version":1,"inputs":[],"outputs":[]}]);
+        let schema = Schema::from_value(value).unwrap();
+        let mut sim = Sim::new_with_schema(41, 1, schema);
+        sim.apply(Action::Subscribe {
+            client: 0,
+            stream: "a".into(),
+        })
+        .unwrap();
+        sim.apply(Action::Declare {
+            key: "Entry:e1".into(),
+            touch: Some(Some("base".into())),
+            memberships: vec![("a".into(), true), ("b".into(), true)],
+        })
+        .unwrap();
+        sim.settle();
+        sim.apply(Action::SubscribeAtHead {
+            client: 0,
+            stream: "b".into(),
+        })
+        .unwrap();
+        let load = sim
+            .client(0)
+            .start_load(
+                "EnrolledEntries",
+                1,
+                &json!({"channel":"a"}),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .job;
+        let fence = LoadFence {
+            replica: sim.client(0).replica_generation(),
+            load_id: load.id,
+            run: load.run,
+            call_id: load.call_id.unwrap(),
+        };
+        let authority = |state, stamp| json!({"model":"Entry","identity":{"id":"e1"},"stamp":stamp,"state":state});
+        let old_page = LoadPageResponse::decode_item(&json!({
+            "loadId":fence.load_id,"callId":fence.call_id,
+            "outcome":{"status":"succeeded","data":{"entries":[{"id":"e1"}]},"next":null},
+            "records":[authority(json!({"text":"base","note":null}),1)]
+        }))
+        .unwrap();
+        if source != "receipt" {
+            sim.apply(Action::ServerChange {
+                key: "Entry:e1".into(),
+                text: None,
+                streams: vec!["a".into(), "b".into()],
+            })
+            .unwrap();
+        }
+        match source {
+            "action" => {
+                let request = sim
+                    .client(0)
+                    .prepare_action("Inspect", 1, json!({}))
+                    .unwrap();
+                let reply = json!({"completion":{"callId":request.call.call_id,"outcome":{"status":"succeeded","result":null}},"records":[authority(json!(null),2)]});
+                sim.client(0)
+                    .apply_action_response(&request, &serde_json::to_vec(&reply).unwrap())
+                    .unwrap();
+            }
+            "receipt" => {
+                sim.apply(Action::Enqueue {
+                    client: 0,
+                    mutation: MutationSpec::DeleteEntry { id: "e1".into() },
+                })
+                .unwrap();
+                sim.apply(Action::Freeze { client: 0 }).unwrap();
+                sim.apply(Action::Deliver).unwrap();
+                sim.apply(Action::Deliver).unwrap();
+                assert_eq!(sim.client(0).pending_count().unwrap(), 0);
+            }
+            "bootstrap" => {
+                let registration = sim
+                    .client(0)
+                    .subscription_state("b")
+                    .unwrap()
+                    .unwrap()
+                    .subscription_id;
+                let run = sim
+                    .client(0)
+                    .request_bootstrap("b", registration)
+                    .unwrap()
+                    .run;
+                let page = axton_core::StreamBootstrapPage::decode(&serde_json::to_vec(&json!({
+                    "mode":"bootstrap","stream":"b","from":0,"to":1,"until":1,"head":2,
+                    "changes":[{"stream":"b","cursor":1,"kind":"upsert","model":"Entry","identity":{"id":"e1"},"stamp":2,"state":null}]
+                })).unwrap()).unwrap();
+                sim.client(0)
+                    .apply_stream_bootstrap_page("b", registration, run, 0, &page)
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            sim.read_text(0, &entry_key("e1")),
+            None,
+            "{source} supplies null authority"
+        );
+        let stored = sim
+            .client(0)
+            .store_load_page(
+                &fence,
+                LoadPageReply {
+                    load_id: fence.load_id.clone(),
+                    call_id: fence.call_id.clone(),
+                    page: Ok(old_page),
+                },
+            )
+            .unwrap();
+        assert!(
+            matches!(stored, LoadStored::Applied { .. }),
+            "{source}: old Load still completes"
+        );
+        assert_eq!(
+            sim.read_text(0, &entry_key("e1")),
+            None,
+            "{source}: old Load cannot resurrect"
+        );
+        assert_eq!(sim.client(0).record_stamp(&entry_key("e1")).unwrap(), 2);
+        let old_fetch = axton_core::FetchResponse {
+            completion: axton_core::CallCompletion {
+                call_id: "123e4567-e89b-42d3-a456-426614174000".into(),
+                outcome: axton_core::ActionOutcome::Succeeded {
+                    result: json!({"id":"e1","text":"base","note":null}),
+                },
+            },
+            records: vec![axton_core::AuthorityRecord {
+                model: "Entry".into(),
+                identity: json!({"id":"e1"}),
+                stamp: 1,
+                state: json!({"text":"base","note":null}),
+                error: None,
+            }],
+        };
+        sim.client(0).apply_fetch_response(&old_fetch).unwrap();
+        assert_eq!(
+            sim.read_text(0, &entry_key("e1")),
+            None,
+            "{source}: old Fetch cannot resurrect"
+        );
+        // N2 intentionally forbids null Model outputs in a successful Load.
+        // Refusal keeps every authority stamp and page-progress field unchanged.
+        let malformed = sim
+            .client(0)
+            .start_load(
+                "EnrolledEntries",
+                1,
+                &json!({"channel":"a"}),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .job;
+        let malformed_fence = LoadFence {
+            replica: sim.client(0).replica_generation(),
+            load_id: malformed.id,
+            run: malformed.run,
+            call_id: malformed.call_id.unwrap(),
+        };
+        let null_page = LoadPageResponse::decode_item(&json!({
+            "loadId":malformed_fence.load_id,"callId":malformed_fence.call_id,
+            "outcome":{"status":"succeeded","data":{"entries":[{"id":"e1"}]},"next":null},
+            "records":[authority(json!(null),99)]
+        }))
+        .unwrap();
+        let refused = sim
+            .client(0)
+            .store_load_page(
+                &malformed_fence,
+                LoadPageReply {
+                    load_id: malformed_fence.load_id.clone(),
+                    call_id: malformed_fence.call_id.clone(),
+                    page: Ok(null_page),
+                },
+            )
+            .unwrap();
+        let LoadStored::Failed(refused) = refused else {
+            panic!("null Load must fail");
+        };
+        assert_eq!(refused.pages, 0);
+        assert_eq!(
+            refused.error.unwrap().code,
+            axton_client::loads::PROTOCOL_INVALID
+        );
+        assert_eq!(sim.client(0).record_stamp(&entry_key("e1")).unwrap(), 2);
+        sim.apply(Action::Crash { client: 0 }).unwrap();
+        sim.apply(Action::Restart { client: 0 }).unwrap();
+        assert_eq!(sim.read_text(0, &entry_key("e1")), None);
+        sim.settle();
+        sim.check().unwrap();
+    }
+}

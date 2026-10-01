@@ -14,17 +14,17 @@ export const SAVE_CALL =
   // The full creating transaction ID survives savepoints and prevents a later
   // transaction from completing an unexpectedly committed placeholder.
   "UPDATE axton_call SET response=$3 WHERE owner_id=$1 AND call_id=$2 AND response IS NULL AND claim_tx=pg_current_xact_id() RETURNING call_id";
-export const HEAD = "SELECT head FROM axton_scope WHERE scope=$1";
+export const HEAD = "SELECT head FROM axton_stream WHERE stream=$1";
 /**
- * The Scope's retained positions after a cursor, including removals,
+ * The Stream's retained positions after a cursor, including removals,
  * ordered before the limit. Identity comes from centralized record metadata;
  * upserts carry its current stamp from the Loader's snapshot. The outer join
  * exposes a missing record as a storage defect rather than dropping evidence.
  */
 export const SCAN =
-  "SELECT l.scope,l.cursor,l.kind,l.record_id::text AS record_id,r.model,r.identity_key,r.identity,CASE WHEN l.kind='upsert' THEN r.stamp END AS stamp " +
-  "FROM axton_scope_log l LEFT JOIN axton_record r ON r.id=l.record_id " +
-  "WHERE l.scope=$1 AND l.cursor>$2 " +
+  "SELECT l.stream,l.cursor,l.kind,l.record_id::text AS record_id,r.model,r.identity_key,r.identity,CASE WHEN l.kind='upsert' THEN r.stamp END AS stamp " +
+  "FROM axton_stream_log l LEFT JOIN axton_record r ON r.id=l.record_id " +
+  "WHERE l.stream=$1 AND l.cursor>$2 " +
   "ORDER BY l.cursor LIMIT $3";
 /** The upsert locks the record row, so concurrent changes never share a stamp. */
 export const ADVANCE_STAMP =
@@ -65,122 +65,91 @@ export const READ_STAMPS =
  */
 export const LOCK_RECORD =
   "UPDATE axton_record SET stamp=stamp WHERE model=$1 AND identity_key=$2 RETURNING stamp";
-/** The Scopes this record is a live member of: a touch's recipients. */
-export const MEMBERSHIPS =
-  "SELECT m.scope FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id " +
-  "WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.scope";
 /**
  * The most entries one statement carries in its JSON array parameter. Every
- * Scope statement binds at most three parameters, so PostgreSQL's 65,535
+ * Stream statement binds at most three parameters, so PostgreSQL's 65,535
  * bind-parameter limit never applies; this bounds each statement's payload
  * and row count instead. A larger call runs several statements of the same
  * group inside the caller's transaction.
  */
-export const SCOPE_BATCH = 1000;
+export const STREAM_BATCH = 1000;
 /**
- * Lock the existing rows of these Scopes (`$1`, a JSON array) in exactly
+ * Lock the existing rows of these Streams (`$1`, a JSON array) in exactly
  * that order, then give each a new row version with a no-op UPDATE. Creates no
- * row. The version makes any concurrent Scope writer whose snapshot predates
+ * row. The version makes any concurrent Stream writer whose snapshot predates
  * this commit fail serialization and retry, so after the lock a settlement
- * reads every committed change of its Scopes, at Serializable or in a
+ * reads every committed change of its Streams, at Serializable or in a
  * caller-owned Repeatable Read transaction; Read Committed reads them anyway.
  */
-export const LOCK_SCOPES =
-  "UPDATE axton_scope c SET head=c.head FROM (" +
-  "SELECT ch.scope FROM axton_scope ch " +
-  "JOIN jsonb_array_elements_text($1::jsonb) WITH ORDINALITY AS w(scope, ord) ON w.scope=ch.scope " +
+export const LOCK_STREAMS =
+  "UPDATE axton_stream c SET head=c.head FROM (" +
+  "SELECT ch.stream FROM axton_stream ch " +
+  "JOIN jsonb_array_elements_text($1::jsonb) WITH ORDINALITY AS w(stream, ord) ON w.stream=ch.stream " +
   "ORDER BY w.ord FOR NO KEY UPDATE OF ch) locked " +
-  "WHERE c.scope=locked.scope RETURNING c.scope";
+  "WHERE c.stream=locked.stream RETURNING c.stream";
+/** Set-based all-holder and explicit-pair lookup, deduplicated by UNION. */
+export const READ_TRACKING = `
+WITH records AS (SELECT v->>'model' model,v->>'identityKey' identity_key FROM jsonb_array_elements($1::jsonb) v),
+pairs AS (SELECT v->>'stream' stream,v->>'model' model,v->>'identityKey' identity_key FROM jsonb_array_elements($2::jsonb) v),
+selected AS (
+ SELECT m.stream,r.model,r.identity_key FROM records w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_member m ON m.record_id=r.id
+ UNION
+ SELECT m.stream,r.model,r.identity_key FROM pairs w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_member m ON m.record_id=r.id AND m.stream=w.stream)
+SELECT * FROM selected`;
+/** Canonical ordered INSERT input acquires mixed-mode record guards in one pass. */
+export const GUARD_RECORDS = `
+WITH wanted AS (
+ SELECT v->>'model' model,v->>'identityKey' identity_key,v->>'mode' mode,COALESCE((v->>'ordinal')::bigint,ord) ord
+ FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v,ord)
+), guarded AS (
+ INSERT INTO axton_record(model,identity_key,stamp)
+ SELECT w.model,w.identity_key,1 FROM wanted w
+ WHERE w.mode <> 'lock' OR EXISTS (
+  SELECT 1 FROM axton_record r WHERE r.model=w.model AND r.identity_key=w.identity_key)
+ ORDER BY w.ord
+ ON CONFLICT(model,identity_key) DO UPDATE SET stamp=CASE
+  WHEN (SELECT w.mode FROM wanted w WHERE w.model=EXCLUDED.model AND w.identity_key=EXCLUDED.identity_key)='advance'
+  THEN axton_record.stamp+1 ELSE axton_record.stamp END
+ RETURNING model,identity_key,stamp
+)
+SELECT w.ord,g.stamp FROM wanted w LEFT JOIN guarded g USING(model,identity_key) ORDER BY w.ord`;
 /**
- * The live members of Scope `$1` that `$2` names (a JSON array of
- * `{model, identityKey}`, in any order, repeats allowed) or that carry a tag
- * in `$3` (a JSON array), or all present members when `$4` is true,
- * each once with its complete tags.
- */
-export const READ_SCOPE_MEMBERS =
-  "WITH keys AS (SELECT k->>'model' AS model, k->>'identityKey' AS identity_key FROM jsonb_array_elements($2::jsonb) k), " +
-  "selected AS (" +
-  "SELECT m.id FROM keys JOIN axton_record r ON r.model=keys.model AND r.identity_key=keys.identity_key " +
-  "JOIN axton_scope_member m ON m.scope=$1::text AND m.record_id=r.id " +
-  "UNION SELECT mt.member_id FROM axton_scope_tag t JOIN axton_scope_member_tag mt ON mt.tag_id=t.id " +
-  "WHERE t.scope=$1::text AND t.name IN (SELECT jsonb_array_elements_text($3::jsonb)) " +
-  "UNION SELECT m.id FROM axton_scope_member m WHERE m.scope=$1::text AND $4::boolean) " +
-  "SELECT m.id::text AS member_id, r.model, r.identity_key, " +
-  "COALESCE((SELECT jsonb_agg(t.name) FROM axton_scope_member_tag mt JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE mt.member_id=m.id), '[]'::jsonb) AS tags " +
-  "FROM selected s JOIN axton_scope_member m ON m.id=s.id JOIN axton_record r ON r.id=m.record_id";
-/**
- * One reservation per Scope: `$1` is a JSON array of `{scope, count}`
- * in canonical order. A missing Scope is inserted at `count`; an existing
+ * One reservation per Stream: `$1` is a JSON array of `{stream, count}`
+ * in canonical order. A missing Stream is inserted at `count`; an existing
  * one is locked by the upsert and advanced, so two first writers of one
- * Scope serialize on its primary key. A head that would pass the safe bound
+ * Stream serialize on its primary key. A head that would pass the safe bound
  * is not updated and its row is not returned, which the caller refuses.
- * Answers each Scope's new head; its range ends there.
+ * Answers each Stream's new head; its range ends there.
  */
 export const RESERVE_HEADS =
-  "INSERT INTO axton_scope(scope,head) " +
-  "SELECT v->>'scope', (v->>'count')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
-  "ON CONFLICT(scope) DO UPDATE SET head=axton_scope.head+EXCLUDED.head " +
-  "WHERE axton_scope.head <= 9007199254740991 - EXCLUDED.head " +
-  "RETURNING scope, head";
+  "INSERT INTO axton_stream(stream,head) " +
+  "SELECT v->>'stream', (v->>'count')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
+  "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+EXCLUDED.head " +
+  "WHERE axton_stream.head <= 9007199254740991 - EXCLUDED.head " +
+  "RETURNING stream, head";
 /**
  * Write the published deltas' positions and answer every delta's position,
- * in the order of `$1`, a JSON array of `{scope, model, identityKey,
+ * in the order of `$1`, a JSON array of `{stream, model, identityKey,
  * cursor, kind}` where an unpublished delta has no cursor. A published one
  * upserts the pair's single log row; an unpublished one answers the existing
  * row, read in one set-based pass. Answers the record ID too, `null` for a
  * record without metadata, which the caller refuses.
  */
-export const WRITE_SCOPE_LOG =
-  "WITH d AS (SELECT v->>'scope' AS scope, v->>'model' AS model, v->>'identityKey' AS identity_key, " +
-  "(v->>'cursor')::bigint AS cursor, v->>'kind' AS kind, ord FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord)), " +
+export const WRITE_STREAM_LOG =
+  "WITH d AS (SELECT v->>'stream' AS stream, v->>'model' AS model, v->>'identityKey' AS identity_key, " +
+  "(v->>'cursor')::bigint AS cursor, v->>'kind' AS kind, COALESCE((v->>'ordinal')::bigint,ord) ord FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord)), " +
   "resolved AS (SELECT d.*, r.id AS record_id FROM d LEFT JOIN axton_record r ON r.model=d.model AND r.identity_key=d.identity_key), " +
-  "written AS (INSERT INTO axton_scope_log(scope,record_id,cursor,kind) " +
-  "SELECT scope, record_id, cursor, kind FROM resolved WHERE cursor IS NOT NULL AND record_id IS NOT NULL ORDER BY ord " +
-  "ON CONFLICT(scope,record_id) DO UPDATE SET cursor=EXCLUDED.cursor, kind=EXCLUDED.kind RETURNING 1) " +
+  "written AS (INSERT INTO axton_stream_log(stream,record_id,cursor,kind) " +
+  "SELECT stream, record_id, cursor, kind FROM resolved WHERE cursor IS NOT NULL AND record_id IS NOT NULL ORDER BY ord " +
+  "ON CONFLICT(stream,record_id) DO UPDATE SET cursor=EXCLUDED.cursor, kind=EXCLUDED.kind RETURNING 1) " +
   "SELECT s.ord, s.record_id::text AS record_id, COALESCE(s.cursor, l.cursor) AS cursor, " +
   "CASE WHEN s.cursor IS NULL THEN l.kind ELSE s.kind END AS kind " +
-  "FROM resolved s LEFT JOIN axton_scope_log l ON s.cursor IS NULL AND l.scope=s.scope AND l.record_id=s.record_id " +
+  "FROM resolved s LEFT JOIN axton_stream_log l ON s.cursor IS NULL AND l.stream=s.stream AND l.record_id=s.record_id " +
   "ORDER BY s.ord";
-/** Make each `{scope, recordId}` of `$1` a live member; an existing one is left alone. */
-export const INSERT_SCOPE_MEMBERS =
-  "INSERT INTO axton_scope_member(scope,record_id) " +
-  "SELECT v->>'scope', (v->>'recordId')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
-  "ON CONFLICT(scope,record_id) DO NOTHING";
-/**
- * Give each live member `{scope, recordId, tags}` of `$1` exactly `tags`:
- * missing tag rows are created, associations outside the set dropped and
- * missing ones added, set-based. An unchanged member writes nothing. Answers
- * the IDs of tags that lost an association, for collection.
- */
-export const SET_MEMBER_TAGS =
-  "WITH d AS (SELECT v->>'scope' AS scope, (v->>'recordId')::bigint AS record_id, v->'tags' AS tags FROM jsonb_array_elements($1::jsonb) v), " +
-  "m AS (SELECT d.scope, mem.id AS member_id, d.tags FROM d JOIN axton_scope_member mem ON mem.scope=d.scope AND mem.record_id=d.record_id), " +
-  "wanted AS (SELECT m.scope, m.member_id, t.name FROM m CROSS JOIN LATERAL jsonb_array_elements_text(m.tags) AS t(name)), " +
-  "names AS (SELECT DISTINCT scope, name FROM wanted), " +
-  "created AS (INSERT INTO axton_scope_tag(scope,name) SELECT scope, name FROM names ORDER BY scope, name " +
-  "ON CONFLICT(scope,name) DO NOTHING RETURNING id, scope, name), " +
-  "tags AS (SELECT id, scope, name FROM created UNION ALL " +
-  "SELECT t.id, t.scope, t.name FROM axton_scope_tag t JOIN names n ON n.scope=t.scope AND n.name=t.name), " +
-  "dropped AS (DELETE FROM axton_scope_member_tag mt USING m, axton_scope_tag t " +
-  "WHERE mt.member_id=m.member_id AND t.id=mt.tag_id " +
-  "AND NOT EXISTS (SELECT 1 FROM wanted w WHERE w.member_id=m.member_id AND w.name=t.name) RETURNING mt.tag_id), " +
-  "added AS (INSERT INTO axton_scope_member_tag(member_id,tag_id) " +
-  "SELECT w.member_id, tags.id FROM wanted w JOIN tags ON tags.scope=w.scope AND tags.name=w.name " +
-  "ON CONFLICT DO NOTHING RETURNING 1) " +
-  "SELECT DISTINCT tag_id::text AS tag_id FROM dropped";
-/**
- * Delete the live members `{scope, recordId}` of `$1` and their
- * associations. Their log rows, already written, keep the record. Answers
- * the IDs of tags that lost an association, for collection.
- */
-export const DELETE_SCOPE_MEMBERS =
-  "WITH d AS (SELECT v->>'scope' AS scope, (v->>'recordId')::bigint AS record_id FROM jsonb_array_elements($1::jsonb) v), " +
-  "gone AS (DELETE FROM axton_scope_member m USING d WHERE m.scope=d.scope AND m.record_id=d.record_id RETURNING m.id), " +
-  "dropped AS (DELETE FROM axton_scope_member_tag mt USING gone WHERE mt.member_id=gone.id RETURNING mt.tag_id) " +
-  "SELECT DISTINCT tag_id::text AS tag_id FROM dropped";
-/** Delete the tags of `$1` (a JSON array of IDs) that no member carries any more. */
-export const COLLECT_TAGS =
-  "DELETE FROM axton_scope_tag t WHERE t.id IN (SELECT jsonb_array_elements_text($1::jsonb)::bigint) " +
-  "AND NOT EXISTS (SELECT 1 FROM axton_scope_member_tag mt WHERE mt.tag_id=t.id)";
+/** Make each `{stream, recordId}` of `$1` a live member; an existing one is left alone. */
+export const INSERT_STREAM_MEMBERS =
+  "INSERT INTO axton_stream_member(stream,record_id) " +
+  "SELECT v->>'stream', (v->>'recordId')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
+  "ON CONFLICT(stream,record_id) DO NOTHING";
 export const savepointName = (ordinal: number): string =>
   `axton_mutation_${ordinal}`;

@@ -197,21 +197,28 @@
         {
           "variant": "settled",
           "value": {
-            "changes": [
+            "changes": [],
+            "declarations": [
               {
-                "model": "Task",
-                "identity": {
-                  "id": "t-1"
+                "kind": "invalidate",
+                "streams": null,
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-1"
+                  }
                 }
               },
               {
-                "model": "Task",
-                "identity": {
-                  "id": "t-2"
+                "kind": "invalidate",
+                "streams": null,
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-2"
+                  }
                 }
-              }
-            ],
-            "declarations": [
+              },
               {
                 "kind": "track",
                 "stream": "shared",
@@ -537,22 +544,6 @@
       ]
     },
     {
-      "op": "lockStreams",
-      "request": {
-        "op": "lockStreams",
-        "streams": [
-          "other",
-          "shared"
-        ]
-      },
-      "responses": [
-        {
-          "variant": "acknowledged",
-          "value": null
-        }
-      ]
-    },
-    {
       "op": "guardRecords",
       "request": {
         "op": "guardRecords",
@@ -576,6 +567,22 @@
             8,
             null
           ]
+        }
+      ]
+    },
+    {
+      "op": "lockStreams",
+      "request": {
+        "op": "lockStreams",
+        "streams": [
+          "other",
+          "shared"
+        ]
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
         }
       ]
     },

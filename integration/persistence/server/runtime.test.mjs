@@ -14,8 +14,8 @@ const db=new PrismaClient();
 // The server suite runs on the Prisma shim (its handlers use Prisma's raw API); driver-conformance.test.mjs proves every shim.
 const database=()=>prisma(db);
 const store=tx=>prisma(db).persistence(tx);
-/** A business change made outside a handler: touch the records and add each to one Scope. */
-const external=(backendLike,name,records)=>backendLike.transaction(({scope: scope,touch})=>{scope(name).add(records);for(const {model,identity} of records)touch[model.charAt(0).toLowerCase()+model.slice(1)](identity);});
+/** A business change made outside a handler: invalidate the records and add each to one Stream. */
+const external=(backendLike,name,records)=>backendLike.transaction(({stream: stream,invalidate})=>{stream(name).track(records);for(const {model,identity} of records)invalidate[model.charAt(0).toLowerCase()+model.slice(1)](identity);});
 const run=prismaDriver(db).transaction;
 const schema={enums:[],models:[{name:'Task',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false},{name:'title',type:{kind:'scalar',name:'string'},nullable:false}]}]};
 const config={schema,mutations:[{name:'edit',version:1,slots:[{name:'task',model:'Task',operation:'update',cardinality:'single',allowedPatchFields:['title']}]}]};
@@ -25,35 +25,35 @@ let called=0,prepared=0,lastInput,lastHandles;const loaderCalls=[];
 const write=(tx,id,title)=>tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',id,title);
 const readTasks=({ids,tx})=>Promise.all(ids.map(async identity=>{const rows=await tx.$queryRawUnsafe('SELECT title FROM business_task WHERE id=$1',identity.id);return rows[0]??null;}));
 // The patch title steers the handler: every mutation writes its row and, unless told to stay quiet, adds its record to `shared`.
-const backend=createBackend({config,database:database(),authenticate,handlers:{
- async edit({input,tx,scope: scope,touch}){
-  called++;lastInput=input;lastHandles={scope:scope,touch};const {identity,patch}=input.task;
+const backend=createBackend({config,native,database:database(),authenticate,handlers:{
+ async edit({input,tx,stream: stream,invalidate}){
+  called++;lastInput=input;lastHandles={stream:stream,invalidate};const {identity,patch}=input.task;
   await write(tx,identity.id,patch.title);
-  if(patch.title==='empty-scope')scope('');
-  if(patch.title==='bad-records')scope('shared').add('x');
-  if(patch.title==='bogus-record')scope('shared').add([{bogus:true}]);
+  if(patch.title==='empty-stream')stream('');
+  if(patch.title==='bad-records')stream('shared').track('x');
+  if(patch.title==='bogus-record')stream('shared').track([{bogus:true}]);
   if(patch.title==='quiet')return;
-  const shared=scope('shared');shared.add.task(identity);
+  const shared=stream('shared');shared.track.task(identity);
   if(patch.title==='refuse')throw new MutationRejected('task.refused');if(patch.title==='crash')throw new Error('business crash');
-  if(patch.title==='two')scope('other').add.task(identity);
-  if(patch.title==='extra'){const extra={id:`${identity.id}-extra`};await write(tx,extra.id,'extra too');touch.task(extra);shared.add.task(extra);}
-  if(patch.title==='publish-only')scope('other').add.task({id:'pub-only'});
+  if(patch.title==='two')stream('other').track.task(identity);
+  if(patch.title==='extra'){const extra={id:`${identity.id}-extra`};await write(tx,extra.id,'extra too');invalidate.task(extra);shared.track.task(extra);}
+  if(patch.title==='publish-only')stream('other').track.task({id:'pub-only'});
  }},
  loaders:{async task(call){loaderCalls.push(Object.keys(call));return readTasks(call);}},
  loaderHooks:{task:{async prepareForViewer(){prepared++}}},
 });
 const mutation=(ordinal,title,id='a')=>({ordinal,name:'edit',operations:[{model:'Task',op:'update',identity:{id},values:{title}}]});
-const push=(clientId,batchSequence,mutations)=>JSON.stringify({capabilities:['scope-membership-v1'],clientId,batchSequence,mutations,models:{Task:1}});
+const push=(clientId,batchSequence,mutations)=>JSON.stringify({capabilities:['stream-membership-v1'],clientId,batchSequence,mutations,models:{Task:1}});
 const authority=(id,stamp,state)=>({identity:{id},model:'Task',stamp,state});
-const pullBody=(cursors,models={Task:1})=>JSON.stringify({capabilities:['scope-membership-v1'],cursors,models});
-const pull=(scope='shared',fromCursor=0)=>backend.pull('alice',pullBody({[scope]:fromCursor})).then(JSON.parse);
-const to=(page,scope='shared')=>page.cursors[scope].to;
+const pullBody=(cursors,models={Task:1})=>JSON.stringify({capabilities:['stream-membership-v1'],cursors,models});
+const pull=(stream='shared',fromCursor=0)=>backend.pull('alice',pullBody({[stream]:fromCursor})).then(JSON.parse);
+const to=(page,stream='shared')=>page.cursors[stream].to;
 const count=async table=>Number((await db.$queryRawUnsafe(`SELECT count(*) AS count FROM ${table}`))[0].count);
 const key=id=>`{"id":"${id}"}`;
 const recordStamp=async id=>{const rows=await db.$queryRawUnsafe('SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2','Task',key(id));return rows.length?Number(rows[0].stamp):null;};
-/** The record's upsert positions: [Scope, cursor, the record's current stamp]. */
-const positions=async id=>(await db.$queryRawUnsafe("SELECT l.scope, l.cursor, r.stamp FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1 AND l.kind='upsert' ORDER BY l.scope",key(id))).map(r=>[r.scope,Number(r.cursor),Number(r.stamp)]);
-const head=async scope=>{const rows=await db.$queryRawUnsafe('SELECT head FROM axton_scope WHERE scope=$1',scope);return rows.length?Number(rows[0].head):0;};
+/** The record's upsert positions: [Stream, cursor, the record's current stamp]. */
+const positions=async id=>(await db.$queryRawUnsafe("SELECT l.stream, l.cursor, r.stamp FROM axton_stream_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1 AND l.kind='upsert' ORDER BY l.stream",key(id))).map(r=>[r.stream,Number(r.cursor),Number(r.stamp)]);
+const head=async stream=>{const rows=await db.$queryRawUnsafe('SELECT head FROM axton_stream WHERE stream=$1',stream);return rows.length?Number(rows[0].head):0;};
 // Prisma prepares every statement, so the dollar-quoted migration goes through pg in one call.
 const migrate=async()=>{const pool=new Pool({connectionString:process.env.DATABASE_URL});try{await pool.query(await readFile(new URL('../../../packages/postgres/migration.sql',import.meta.url),'utf8'));}finally{await pool.end();}};
 before(async()=>{await migrate();await db.$executeRawUnsafe('CREATE TABLE business_task(id text PRIMARY KEY,title text NOT NULL)');});
@@ -66,21 +66,21 @@ test('native exports production runtime',()=>{assert.equal(typeof native.process
 });
 test('backend validates config and complete registrations at startup',()=>{
  const base={...config,schema:structuredClone(schema)};
- assert.throws(()=>createBackend({config:{...base,mutations:[{name:'bad',version:0,slots:[]}]},native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/invalid mutation descriptor/);
- assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/Missing handler edit for edit v1/);
+ assert.throws(()=>createBackend({native,config:{...base,mutations:[{name:'bad',version:0,slots:[]}]},native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/invalid mutation descriptor/);
+ assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/Missing handler edit for edit v1/);
  // Omitting the Loader of a Model a slot writes is refused by the engine, naming the Mutation, slot and Model.
- assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Mutation edit v1 slot task names Model Task, which has no Loader/);
+ assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Mutation edit v1 slot task names Model Task, which has no Loader/);
  // A Loader under a key that names no Model is a typo, never a silent device-only Model.
- assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
+ assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
  // A hand-written config gets the compiler's accessor rules: unique, and neither add nor remove.
  const withModel=name=>({...base,schema:{...base.schema,models:[...base.schema.models,{...base.schema.models[0],name}]}});
- assert.doesNotThrow(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}));
- assert.throws(()=>createBackend({config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
+ assert.doesNotThrow(()=>createBackend({native,config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}));
+ assert.throws(()=>createBackend({native,config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
 });
 test('loader registration names every retained model version and a function means v1 only',()=>{
  const base={...config,schema:structuredClone(schema)};
  const contract=version=>({name:'Task',version,identity:['id'],fields:schema.models[0].fields,enums:[]});
- const register=(models,loaders,currentVersion=1)=>{const c={...base,schema:structuredClone(schema),models};c.schema.models[0].version=currentVersion;return createBackend({config:c,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders});};
+ const register=(models,loaders,currentVersion=1)=>{const c={...base,schema:structuredClone(schema),models};c.schema.models[0].version=currentVersion;return createBackend({native,config:c,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders});};
  const both=[contract(1),contract(2)];
  assert.throws(()=>register(both,{task:async()=>[]},2),/Loader task must register v1, v2 of Task; a function registers v1 only/);
  assert.throws(()=>register([contract(2)],{task:async()=>[]},2),/Loader task must register v2 of Task; a function registers v1 only/);
@@ -97,7 +97,7 @@ test('loader registration names every retained model version and a function mean
 });
 test('handler registration names every retained version and a function means v1 only',()=>{
  const base={...config,schema:structuredClone(schema)};
- const register=(mutations,handlers)=>createBackend({config:{...base,mutations},native,database:database(),authenticate,handlers,loaders:{task:async()=>[]}});
+ const register=(mutations,handlers)=>createBackend({native,config:{...base,mutations},native,database:database(),authenticate,handlers,loaders:{task:async()=>[]}});
  const both=[config.mutations[0],{...config.mutations[0],version:2}];
  assert.throws(()=>register(both,{edit:async()=>{}}),/Handler edit must register v1, v2 of edit; a function registers v1 only/);
  assert.throws(()=>register([{...config.mutations[0],version:2}],{edit:async()=>{}}),/Handler edit must register v2 of edit; a function registers v1 only/);
@@ -111,16 +111,16 @@ test('handler registration names every retained version and a function means v1 
 });
 test('push commits business + compacted publication + exact durable receipt together',async()=>{
  const request=push('dedup',1,[mutation(1,'first')]);const receipt=await backend.push('alice',request);const calls=called;
- assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"cursor":1,"identity":{"id":"a"},"model":"Task","scope":"shared"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
+ assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"cursor":1,"identity":{"id":"a"},"model":"Task","stream":"shared"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
  // Replay is keyed by (clientId, batchSequence): the same frozen bytes and a changed body both return the stored receipt without a handler call, a business write, a publication or a subscriber wake.
- let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_scope_log');
+ let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_stream_log');
  assert.equal(await backend.push('alice',request),receipt);assert.equal(called,calls);
  assert.equal(await backend.push('alice',push('dedup',1,[mutation(1,'changed')])),receipt);assert.equal(called,calls);
  await new Promise(resolve=>setImmediate(resolve));unsubscribe();assert.equal(wakes,0,'replayed receipts must not wake subscribers');
- assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_scope_log'),rows);
+ assert.deepEqual(await db.$queryRawUnsafe("SELECT title FROM business_task WHERE id='a'"),[{title:'first'}]);assert.equal(await count('axton_stream_log'),rows);
  await assert.rejects(()=>backend.push('bob',request),/owner_mismatch/);
  await assert.rejects(()=>backend.push('alice',push('dedup',3,[mutation(1,'gap')])),/gap/);
- const page=await pull();assert.deepEqual(page,{cursors:{shared:{from:0,to:1,head:1}},changes:[{scope:'shared',cursor:1,kind:'upsert',model:'Task',identity:{id:'a'},stamp:1,state:{title:'first'}}]});assert.equal(prepared,2,'the push readback and the pull each prepared the loader once; the replays did not');
+ const page=await pull();assert.deepEqual(page,{cursors:{shared:{from:0,to:1,head:1}},changes:[{stream:'shared',cursor:1,kind:'upsert',model:'Task',identity:{id:'a'},stamp:1,state:{title:'first'}}]});assert.equal(prepared,2,'the push readback and the pull each prepared the loader once; the replays did not');
 });
 test('explicit rejection rolls back only mutation and its publication',async()=>{
  const result=JSON.parse(await backend.push('alice',push('refusal',1,[mutation(1,'good','b'),mutation(2,'refuse','c'),mutation(3,'last','d')])));
@@ -136,7 +136,7 @@ test('rejected mutation publishes nothing even though it declared a membership f
 });
 test('a handler that throws rejects only its mutation and reaches onError',async()=>{
  const errors=[];
- const crashBackend=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){
+ const crashBackend=createBackend({config,native,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){
   await write(tx,input.task.identity.id,input.task.patch.title);
   if(input.task.patch.title==='crash')throw new Error('business crash');
  }},loaders:{task:readTasks}});
@@ -149,7 +149,7 @@ test('a handler that throws rejects only its mutation and reaches onError',async
 });
 test('a handler whose SQL fails leaves an aborted transaction that the savepoint rollback recovers into one rejection',async()=>{
  const errors=[];
- const sqlBackend=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){
+ const sqlBackend=createBackend({config,native,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){
   await write(tx,input.task.identity.id,input.task.patch.title);
   // A PostgreSQL error (not a JavaScript one) marks the whole transaction aborted;
   // only ROLLBACK TO SAVEPOINT can make it usable again for the next mutation.
@@ -164,7 +164,7 @@ test('a handler whose SQL fails leaves an aborted transaction that the savepoint
 });
 test('a loader that throws during readback rejects only that mutation',async()=>{
  const errors=[];
- const throwingBackend=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{task:async call=>{if(call.ids.some(id=>id.id==='loader-throw-bad'))throw new Error('loader broke');return readTasks(call);}}});
+ const throwingBackend=createBackend({config,native,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{task:async call=>{if(call.ids.some(id=>id.id==='loader-throw-bad'))throw new Error('loader broke');return readTasks(call);}}});
  const result=JSON.parse(await throwingBackend.push('alice',push('loader-throw',1,[mutation(1,'ok','loader-throw-ok'),mutation(2,'bad','loader-throw-bad'),mutation(3,'ok2','loader-throw-ok2')])));
  assert.deepEqual(result.rejections,[{ordinal:2,code:'loader.failed'}]);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='loader-throw-bad'")).length,0,'the loader failure rolled back its write');
@@ -173,7 +173,7 @@ test('a loader that throws during readback rejects only that mutation',async()=>
 });
 test('a handler that breaks the transaction still fails the delivery',async()=>{
  const before=called;let broken=false;
- const breakingBackend=createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx}){
+ const breakingBackend=createBackend({config,native,database:database(),authenticate,handlers:{async edit({input,tx}){
   called++;
   await write(tx,input.task.identity.id,input.task.patch.title);
   if(!broken){broken=true;try{await tx.$executeRawUnsafe('SELECT 1/0');}catch{}}
@@ -197,7 +197,7 @@ test('a mixed batch rejects the unsupported version alone and commits the rest',
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='w'")).length,1);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='v'")).length,0);
 });
-test('loaders receive no scope',async()=>{
+test('loaders receive no stream',async()=>{
  await pull('shared',0);assert.ok(loaderCalls.length>1,'pushes and pulls both reached the loader');
  for(const keys of loaderCalls)assert.deepEqual([...keys].sort(),['ids','tx','userId']);
 });
@@ -210,7 +210,7 @@ test('a pull reaches the loader of the declared model version and normalizes row
  const v2={name:'Task',version:2,identity:['id'],fields:c.schema.models[0].fields,enums:[]};
  c.models=[v1,v2];
  const reached=[];
- const versioned=createBackend({config:c,database:database(),authenticate,handlers:{},loaders:{task:{
+ const versioned=createBackend({native,config:c,database:database(),authenticate,handlers:{},loaders:{task:{
   async v1({ids}){reached.push(1);return ids.map(id=>({id:id.id,title:'old'}))},
   async v2({ids}){reached.push(2);return ids.map(id=>({id:id.id,title:'new',note:'n'}))},
  }}});
@@ -223,12 +223,12 @@ test('a pull reaches the loader of the declared model version and normalizes row
  assert.deepEqual(reached.at(-1),1);
  // A missing declaration is a malformed request; an unretained version or an
  // unknown model is refused with the model named.
- await assert.rejects(()=>versioned.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{shared:0}})),error=>error instanceof EngineError&&error.code==='request.invalid');
+ await assert.rejects(()=>versioned.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{shared:0}})),error=>error instanceof EngineError&&error.code==='request.invalid');
  await assert.rejects(()=>versioned.pull('alice',pullBody({shared:0},{Task:3})),error=>error instanceof EngineError&&error.code==='model_version_unsupported'&&error.details.model==='Task'&&error.details.version===3);
  await assert.rejects(()=>versioned.pull('alice',pullBody({shared:0},{Task:2,Ghost:1})),error=>error instanceof EngineError&&error.code==='model_version_unsupported'&&error.details.model==='Ghost');
  // A row outside the served contract is a loader defect, never silently trimmed:
  // that record fails alone as loader.invalid.
- const wide=createBackend({config:c,database:database(),authenticate,handlers:{},loaders:{task:{
+ const wide=createBackend({native,config:c,database:database(),authenticate,handlers:{},loaders:{task:{
   async v1({ids}){return ids.map(id=>({id:id.id,title:'old'}))},
   async v2({ids}){return ids.map(id=>({id:id.id,title:'new',note:'n',extra:true}))},
  }}});
@@ -238,31 +238,31 @@ test('a pull reaches the loader of the declared model version and normalizes row
 });
 test('compaction materializes latest state; deletion is aligned null',async()=>{
  await backend.push('alice',push('dedup',2,[mutation(1,'updated')]));await assert.rejects(()=>backend.push('alice',push('dedup',1,[mutation(1,'first')])),/overlap/);
- await backend.transaction(async({tx,scope: scope,touch})=>{await tx.$executeRawUnsafe("DELETE FROM business_task WHERE id='a'");touch.task({id:'a'});scope('shared').add.task({id:'a'});});
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{await tx.$executeRawUnsafe("DELETE FROM business_task WHERE id='a'");invalidate.task({id:'a'});stream('shared').track.task({id:'a'});});
  const page=await pull();assert.equal(page.changes.length,4);assert.deepEqual(page.changes.find(c=>c.identity.id==='a').state,null);assert.equal(to(page),6);
  await assert.rejects(()=>pull('shared',999),/cursor ahead/);
 });
 test('50-row pages retain original cursor progression and remainder reaches head',async()=>{
- await backend.transaction(async({tx,scope: scope,touch})=>{const shared=scope('shared');for(let i=0;i<51;i++){const id={id:`page-${i}`};await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id.id,'page');touch.task(id);shared.add.task(id);}});
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{const shared=stream('shared');for(let i=0;i<51;i++){const id={id:`page-${i}`};await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id.id,'page');invalidate.task(id);shared.track.task(id);}});
  const first=await pull('shared',6);assert.equal(first.changes.length,50);assert.equal(to(first),56);assert.equal(first.cursors.shared.head,57);const last=await pull('shared',56);assert.equal(last.changes.length,1);assert.equal(to(last),57);assert.equal(last.cursors.shared.head,57);
 });
 test('concurrent same-client retry executes once under PostgreSQL lock',async()=>{const before=called;const request=push('race',1,[mutation(1,'race','race')]);const receipts=await Promise.all([backend.push('alice',request),backend.push('alice',request)]);assert.equal(receipts[0],receipts[1]);assert.equal(called,before+1);});
-test('declarations roll back with the user transaction, and an unknown Model is refused at the declaration',async()=>{const before=to(await pull('shared',56));await assert.rejects(()=>backend.transaction(async({scope: scope,touch})=>{touch.task({id:'rollback'});scope('shared').add.task({id:'rollback'});throw new Error('cancel');}),/cancel/);assert.equal(to(await pull('shared',56)),before);await assert.rejects(()=>external(backend,'shared',[{model:'Unknown',identity:{id:'x'}}]),/unknown Model Unknown/);});
+test('declarations roll back with the user transaction, and an unknown Model is refused at the declaration',async()=>{const before=to(await pull('shared',56));await assert.rejects(()=>backend.transaction(async({stream: stream,invalidate})=>{invalidate.task({id:'rollback'});stream('shared').track.task({id:'rollback'});throw new Error('cancel');}),/cancel/);assert.equal(to(await pull('shared',56)),before);await assert.rejects(()=>external(backend,'shared',[{model:'Unknown',identity:{id:'x'}}]),/unknown Model Unknown/);});
 test('loader defects fail only their records; the page is served and the cursor advances',async()=>{
- const make=load=>createBackend({config:{...config,mutations:[]},database:database(),authenticate,handlers:{},loaders:{task:load}});
+ const make=load=>createBackend({native,config:{...config,mutations:[]},database:database(),authenticate,handlers:{},loaders:{task:load}});
  const misaligned=JSON.parse(await make(async()=>[]).pull('alice',pullBody({shared:0})));
  assert.ok(misaligned.changes.length>0);
  assert.ok(misaligned.changes.every(c=>c.error==='loader.invalid'),'an answer that cannot be matched fails each record');
  assert.ok(to(misaligned)>0,'the cursor advances past the failed records');
  const reported=[];
- const malformed=JSON.parse(await createBackend({config:{...config,mutations:[]},database:database(),authenticate,onError:e=>reported.push(e.message),handlers:{},loaders:{task:async({ids})=>ids.map(id=>id.id==='a'?({title:'x',unexpected:true}):({title:'ok'}))}}).pull('alice',pullBody({shared:0})));
+ const malformed=JSON.parse(await createBackend({native,config:{...config,mutations:[]},database:database(),authenticate,onError:e=>reported.push(e.message),handlers:{},loaders:{task:async({ids})=>ids.map(id=>id.id==='a'?({title:'x',unexpected:true}):({title:'ok'}))}}).pull('alice',pullBody({shared:0})));
  assert.equal(reported.length,1,reported.join('; '));assert.match(reported[0],/Task contract does not accept: \{"id":"a"\}/);
  const bad=malformed.changes.filter(c=>c.error);
  assert.deepEqual(bad.map(c=>[c.identity.id,c.error]),[['a','loader.invalid']],'only the malformed row fails');
  assert.ok(malformed.changes.filter(c=>!c.error).every(c=>c.state===null||c.state.title==='ok'));
 });
 test('registered translator rejects one mutation; malformed translator code aborts transaction',async()=>{
- const make=code=>createBackend({config,database:database(),authenticate,translateRejection:()=>code,handlers:{async edit({tx}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('translated','temporary')");throw new Error('product refusal');}},loaders:{async task(){return []}}});
+ const make=code=>createBackend({config,native,database:database(),authenticate,translateRejection:()=>code,handlers:{async edit({tx}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('translated','temporary')");throw new Error('product refusal');}},loaders:{async task(){return []}}});
  const receipt=JSON.parse(await make('product.denied').push('alice',push('translated',1,[mutation(1,'x')])));assert.deepEqual(receipt.rejections,[{ordinal:1,code:'product.denied'}]);assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='translated'")).length,0);
  await assert.rejects(()=>make('Not a machine code').push('alice',push('bad-translator',1,[mutation(1,'x')])),/stable machine code/);assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_client WHERE client_id='bad-translator'")).length,0);
 });
@@ -278,7 +278,7 @@ test('HTTP adapter authenticates and serves the real native persistence path',as
 });
 test('an undefined loader entry fails only its record, reaches onError and never becomes a tombstone',async()=>{
  const errors=[];
- const bad=createBackend({config:{...config,mutations:[]},database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{},loaders:{async task({ids}){return ids.map(id=>id.id==='a'?undefined:null)}}});
+ const bad=createBackend({native,config:{...config,mutations:[]},database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{},loaders:{async task({ids}){return ids.map(id=>id.id==='a'?undefined:null)}}});
  const page=JSON.parse(await bad.pull('alice',pullBody({shared:0})));
  const failed=page.changes.filter(c=>c.error);
  assert.deepEqual(failed.map(c=>[c.identity.id,c.error,c.state]),[['a','loader.failed',null]]);
@@ -286,7 +286,7 @@ test('an undefined loader entry fails only its record, reaches onError and never
 });
 test('a declaration naming an unknown Model fails its handler: only that mutation and its write roll back',async()=>{
  const errors=[];
- const broken=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({tx,scope: scope}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('caught','bad')");scope('shared').add([{model:'Unknown',identity:{id:'caught'}}]);}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const broken=createBackend({config,native,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({tx,stream: stream}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('caught','bad')");stream('shared').track([{model:'Unknown',identity:{id:'caught'}}]);}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const receipt=JSON.parse(await broken.push('alice',push('caught',1,[mutation(1,'x')])));
  assert.deepEqual(receipt.rejections,[{ordinal:1,code:'handler.failed'}]);assert.match(errors[0],/unknown Model Unknown/);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='caught'")).length,0);assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_client WHERE client_id='caught'")).length,1,'the batch still commits');
@@ -294,19 +294,19 @@ test('a declaration naming an unknown Model fails its handler: only that mutatio
 test('a nonfinite loader value fails its record rather than clearing to null',async()=>{
  const expanded=structuredClone(config);expanded.schema.models[0].fields.push({name:'score',type:{kind:'scalar',name:'float'},nullable:true});
  const errors=[];
- expanded.mutations=[];const bad=createBackend({config:expanded,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{},loaders:{async task({ids}){return ids.map(()=>({title:'x',score:NaN}))}}});
+ expanded.mutations=[];const bad=createBackend({native,config:expanded,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{},loaders:{async task({ids}){return ids.map(()=>({title:'x',score:NaN}))}}});
  const page=JSON.parse(await bad.pull('alice',pullBody({shared:56})));
  assert.ok(page.changes.length>0);
  assert.ok(page.changes.every(c=>c.error==='loader.failed'&&c.state===null));
  assert.ok(errors.some(m=>/nonfinite/.test(m)),errors.join('; '));
 });
 test('backend.transaction rolls the business write back when a declaration is refused',async()=>{
- await assert.rejects(()=>backend.transaction(async({tx,scope: scope})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");scope('shared').add([{model:'Unknown',identity:{id:'x'}}]);}),/unknown Model Unknown/);
+ await assert.rejects(()=>backend.transaction(async({tx,stream: stream})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");stream('shared').track([{model:'Unknown',identity:{id:'x'}}]);}),/unknown Model Unknown/);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='external'")).length,0);
  // A malformed UUID is refused at the declaration, by the engine's own rule, before anything settles.
- const tickets=createBackend({config:{mutations:[],schema:{enums:[],models:[ticketModel]}},database:database(),authenticate,handlers:{},loaders:{async ticket({ids}){return ids.map(()=>null)}}});
+ const tickets=createBackend({native,config:{mutations:[],schema:{enums:[],models:[ticketModel]}},database:database(),authenticate,handlers:{},loaders:{async ticket({ids}){return ids.map(()=>null)}}});
  let declared=false;
- await assert.rejects(()=>tickets.transaction(async({tx,touch})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");try{touch.ticket({id:'not-a-uuid'});}finally{declared=true;}}),/Ticket identity field id must be a UUID/);
+ await assert.rejects(()=>tickets.transaction(async({tx,invalidate})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");try{invalidate.ticket({id:'not-a-uuid'});}finally{declared=true;}}),/Ticket identity field id must be a UUID/);
  assert.ok(declared,'the refusal was synchronous, inside the body');
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='external'")).length,0);
 });
@@ -316,9 +316,9 @@ test('a malformed UUID declared in a push rejects only its mutation; well-formed
  const errors=[];
  const slot={name:'Slot',identity:['at'],fields:[{name:'at',type:{kind:'scalar',name:'dateTime'},nullable:false}]};
  const slots={'uuid-a':'2026-01-01T00:00:00.123456789+05:30','uuid-b':'2026-03-01T00:00:00Z','uuid-c':'2024-02-29T00:00:00z'};
- const mixed=createBackend({config:{...config,schema:{enums:[],models:[...schema.models,ticketModel,slot]}},database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({input,tx,touch}){
+ const mixed=createBackend({native,config:{...config,schema:{enums:[],models:[...schema.models,ticketModel,slot]}},database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({input,tx,invalidate}){
   const {identity,patch}=input.task;await write(tx,identity.id,patch.title);
-  touch.ticket({id:patch.title});touch.slot({at:slots[identity.id]});
+  invalidate.ticket({id:patch.title});invalidate.slot({at:slots[identity.id]});
  }},loaders:{task:readTasks,async ticket({ids}){return ids.map(()=>null)},async slot({ids}){return ids.map(()=>null)}}});
  const receipt=JSON.parse(await mixed.push('alice',push('uuid-batch',1,[mutation(1,'123e4567-e89b-42d3-a456-426614174000','uuid-a'),mutation(2,'not-a-uuid','uuid-b'),mutation(3,'123E4567-E89B-82D3-B456-426614174001','uuid-c')])));
  assert.deepEqual(receipt.rejections,[{ordinal:2,code:'handler.failed'}]);
@@ -332,7 +332,7 @@ test('a malformed UUID declared in a push rejects only its mutation; well-formed
 });
 test('the serializable runner keeps head, scan, and loader coherent across concurrent publication',async()=>{
  await external(backend,'snapshot',[{model:'Task',identity:{id:'a'}}]);let changed=false;
- const reader=createBackend({config:{...config,mutations:[]},database:{transaction:run,persistence:tx=>{const storage=store(tx);return {call:async r=>{const result=await storage.call(r);if(r.op==='head'&&!changed){changed=true;await external(backend,'snapshot',[{model:'Task',identity:{id:'b'}}]);}return result;}}}},authenticate,handlers:{},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const reader=createBackend({native,config:{...config,mutations:[]},database:{transaction:run,persistence:tx=>{const storage=store(tx);return {call:async r=>{const result=await storage.call(r);if(r.op==='head'&&!changed){changed=true;await external(backend,'snapshot',[{model:'Task',identity:{id:'b'}}]);}return result;}}}},authenticate,handlers:{},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const page=JSON.parse(await reader.pull('alice',pullBody({snapshot:0})));assert.equal(to(page,'snapshot'),1);assert.equal(page.changes.length,1);
  const next=JSON.parse(await reader.pull('alice',pullBody({snapshot:1})));assert.equal(to(next,'snapshot'),2);assert.equal(next.changes.length,1);
 });
@@ -354,34 +354,34 @@ const nextMessage=socket=>new Promise((resolve,reject)=>{
 test('live transport negotiates, wakes only after commit, reconnects, and cleans up',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared','bob','shared'],models:{Task:1}}));
+ socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared','bob','shared'],models:{Task:1}}));
  while(frames.length<1)await delay(5);
- assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['bob','shared']);assert.equal(frames[0].cursors.bob,0,'a fresh scope is at head 0');assert.ok(frames[0].cursors.shared>0,'the acknowledgement carries the current head');
+ assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['bob','shared']);assert.equal(frames[0].cursors.bob,0,'a fresh stream is at head 0');assert.ok(frames[0].cursors.shared>0,'the acknowledgement carries the current head');
 
  let release,ready;const held=new Promise(resolve=>{release=resolve;});const started=new Promise(resolve=>{ready=resolve;});
- const committing=backend.transaction(async({tx,scope: scope,touch})=>{
+ const committing=backend.transaction(async({tx,stream: stream,invalidate})=>{
    await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('live-external','committed')");
-   touch.task({id:'live-external'});scope('shared').add.task({id:'live-external'});ready();await held;
+   invalidate.task({id:'live-external'});stream('shared').track.task({id:'live-external'});ready();await held;
  });
  await started;await delay(80);assert.equal(frames.length,1,'uncommitted publication must stay silent');release();await committing;
  while(frames.length<2)await delay(5);
- assert.deepEqual(frames[1].changes.at(-1),{scope:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-external'},stamp:1,state:{title:'committed'}});assert.deepEqual(Object.keys(frames[1].cursors),['shared'],'a frame names only the scopes that moved');assert.equal(frames[1].cursors.shared.from,frames[0].cursors.shared);
+ assert.deepEqual(frames[1].changes.at(-1),{stream:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-external'},stamp:1,state:{title:'committed'}});assert.deepEqual(Object.keys(frames[1].cursors),['shared'],'a frame names only the streams that moved');assert.equal(frames[1].cursors.shared.from,frames[0].cursors.shared);
 
  const pageStart=frames.length;
- await backend.transaction(async({tx,scope: scope,touch})=>{const shared=scope('shared');for(let i=0;i<51;i++){const id=`live-page-${i}`;await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id,'paged');touch.task({id});shared.add.task({id});}});
- while(frames.length<pageStart+2)await delay(5);assert.equal(frames[pageStart].changes.length,50);assert.equal(frames[pageStart+1].changes.length,1);assert.equal(frames[pageStart+1].cursors.shared.from,frames[pageStart].cursors.shared.to);assert.ok(frames[pageStart].cursors.shared.to<frames[pageStart].cursors.shared.head,'a full frame says the scope continues');
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{const shared=stream('shared');for(let i=0;i<51;i++){const id=`live-page-${i}`;await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id,'paged');invalidate.task({id});shared.track.task({id});}});
+ while(frames.length<pageStart+2)await delay(5);assert.equal(frames[pageStart].changes.length,50);assert.equal(frames[pageStart+1].changes.length,1);assert.equal(frames[pageStart+1].cursors.shared.from,frames[pageStart].cursors.shared.to);assert.ok(frames[pageStart].cursors.shared.to<frames[pageStart].cursors.shared.head,'a full frame says the stream continues');
 
  const beforeRollback=frames.length;
- await assert.rejects(()=>backend.transaction(async({scope: scope,touch})=>{touch.task({id:'live-rollback'});scope('shared').add.task({id:'live-rollback'});throw new Error('rollback live');}),/rollback live/);
+ await assert.rejects(()=>backend.transaction(async({stream: stream,invalidate})=>{invalidate.task({id:'live-rollback'});stream('shared').track.task({id:'live-rollback'});throw new Error('rollback live');}),/rollback live/);
  await delay(80);assert.equal(frames.length,beforeRollback);
 
  socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));
- const reconnected=await openSocket(port);reconnected.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}}));await nextMessage(reconnected);
+ const reconnected=await openSocket(port);reconnected.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}}));await nextMessage(reconnected);
  const pagePromise=nextMessage(reconnected);await backend.push('alice',push('live-push',1,[mutation(1,'from push','live-push')]));
  const page=await pagePromise;assert.deepEqual(page.changes.at(-1).state,{title:'from push'});
  const afterPush=[];reconnected.addEventListener('message',event=>afterPush.push(event));await backend.push('alice',push('live-push',1,[mutation(1,'from push','live-push')]));
  await delay(80);assert.equal(afterPush.length,0,'duplicate receipt must not wake live subscribers');
- const protocol=await openSocket(port);protocol.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}}));await nextMessage(protocol);protocol.send('{}');
+ const protocol=await openSocket(port);protocol.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}}));await nextMessage(protocol);protocol.send('{}');
  const closeCode=await new Promise(resolve=>protocol.addEventListener('close',event=>resolve(event.code),{once:true}));assert.equal(closeCode,1002);
  reconnected.close();await new Promise(resolve=>reconnected.addEventListener('close',resolve,{once:true}));
  await server.close();
@@ -392,19 +392,19 @@ test('a publication committed between negotiation and the acknowledgement is del
  // gate; a push commits meanwhile, before any listener exists for the socket.
  const base=prisma(db);let hold;
  const gated={transaction:async body=>{const result=await base.transaction(body);const gate=hold;hold=undefined;if(gate)await gate;return result;},persistence:base.persistence};
- const gatedBackend=createBackend({config,database:gated,authenticate,handlers:{async edit({input,tx,scope: scope}){const {identity,patch}=input.task;await write(tx,identity.id,patch.title);scope('shared').add.task(identity);}},loaders:{task:readTasks}});
+ const gatedBackend=createBackend({config,native,database:gated,authenticate,handlers:{async edit({input,tx,stream: stream}){const {identity,patch}=input.task;await write(tx,identity.id,patch.title);stream('shared').track.task(identity);}},loaders:{task:readTasks}});
  const server=await gatedBackend.listen({port:0});const port=Number(new URL(server.url).port);
  try{
   const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
   let release;hold=new Promise(resolve=>{release=resolve;});
-  socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}}));
+  socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}}));
   await delay(100);assert.equal(frames.length,0,'the acknowledgement is held on the gate');
   await gatedBackend.push('alice',push('between',1,[mutation(1,'between negotiation and ack','live-between')]));
   await delay(50);assert.equal(frames.length,0,'no listener exists yet, so the commit wakes nobody');
   release();
   while(frames.length<2)await delay(5);
   assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['shared']);
-  assert.deepEqual(frames[1].changes.at(-1),{scope:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-between'},stamp:1,state:{title:'between negotiation and ack'}});
+  assert.deepEqual(frames[1].changes.at(-1),{stream:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-between'},stamp:1,state:{title:'between negotiation and ack'}});
   socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));
  }finally{await server.close();}
 });
@@ -446,7 +446,7 @@ const refusedUpgrade=(url,headers)=>new Promise((resolve,reject)=>{
 });
 test('admission sees client headers and the identity, refuses an old build on every route and the upgrade with its own status and body, and admits a current build',async()=>{
  const seen=[];const errors=[];
- const admitted=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task(call){return readTasks(call);}},
+ const admitted=createBackend({config,native,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task(call){return readTasks(call);}},
   admit:(request,userId)=>{
    seen.push([request.url,request.headers['x-app-build']??null,userId]);
    const build=request.headers['x-app-build'];
@@ -492,7 +492,7 @@ test('listen answers pull over HTTP with authentication and closes cleanly',asyn
 });
 test('onError captures server-side failures and HTTP responds with {code:"server"}',async()=>{
  const errors=[];
- const boomBackend=createBackend({config,database:database(),authenticate:async()=>{throw new Error('boom')},onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const boomBackend=createBackend({config,native,database:database(),authenticate:async()=>{throw new Error('boom')},onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const server=await boomBackend.listen({port:0});
  try{
   const result=await fetch(`${server.url}/sync/mutations`,{method:'POST',headers:{authorization:'Bearer alice'},body:push('boom',1,[mutation(1,'x','boom-a')])});
@@ -506,20 +506,20 @@ test('slot arguments are plain data; a handler declares with their identity, and
  await backend.push('alice',push('plain',1,[mutation(1,'hello','plain-a')]));
  assert.deepEqual(Object.keys(lastInput.task),['identity','patch']);
  assert.deepEqual(Object.getOwnPropertySymbols(lastInput.task),[],'no hidden record tag');
- assert.deepEqual((await positions('plain-a')).map(([scope,,stamp])=>[scope,stamp]),[['shared',1]]);
- assert.throws(()=>lastHandles.scope('shared'),/closed/);assert.throws(()=>lastHandles.touch.task({id:'plain-a'}),/closed/);
+ assert.deepEqual((await positions('plain-a')).map(([stream,,stamp])=>[stream,stamp]),[['shared',1]]);
+ assert.throws(()=>lastHandles.stream('shared'),/closed/);assert.throws(()=>lastHandles.invalidate.task({id:'plain-a'}),/closed/);
 });
-test('a handler that declares no membership still returns readback records and touches no scope',async()=>{
- const scopes=await count('axton_scope');
+test('a handler that declares no membership still returns readback records and touches no stream',async()=>{
+ const streams=await count('axton_stream');
  const receipt=JSON.parse(await backend.push('alice',push('quiet',1,[mutation(1,'quiet','quiet-a')])));
  assert.deepEqual(receipt,{batchSequence:1,clientId:'quiet',records:[authority('quiet-a',1,{title:'quiet'})],rejections:[]});
- assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await positions('quiet-a'),[]);assert.equal(await count('axton_scope'),scopes);
+ assert.equal(await recordStamp('quiet-a'),1);assert.deepEqual(await positions('quiet-a'),[]);assert.equal(await count('axton_stream'),streams);
  const again=JSON.parse(await backend.push('alice',push('quiet',2,[mutation(2,'quiet','quiet-a')])));assert.deepEqual(again.records,[authority('quiet-a',2,{title:'quiet'})],'every successful change advances the stamp, published or not');
 });
-test('a touched extra record added to a Scope is settled and delivered there, but is not caller authority',async()=>{
+test('a touched extra record added to a Stream is settled and delivered there, but is not caller authority',async()=>{
  const receipt=JSON.parse(await backend.push('alice',push('extra',1,[mutation(1,'extra','extra-a')])));
  assert.deepEqual(receipt.records,[authority('extra-a',1,{title:'extra'})],'only the uploaded target is read back');assert.equal(await recordStamp('extra-a-extra'),1,'the touched record is still settled');
- assert.deepEqual((await positions('extra-a')).map(([scope,,stamp])=>[scope,stamp]),[['shared',1]]);assert.deepEqual((await positions('extra-a-extra')).map(([scope,,stamp])=>[scope,stamp]),[['shared',1]]);
+ assert.deepEqual((await positions('extra-a')).map(([stream,,stamp])=>[stream,stamp]),[['shared',1]]);assert.deepEqual((await positions('extra-a-extra')).map(([stream,,stamp])=>[stream,stamp]),[['shared',1]]);
 });
 test('an added record is not a changed one: it is initialised at stamp 1 once, and re-adding a member publishes nothing',async()=>{
  assert.equal(await recordStamp('pub-only'),null,'no metadata before the first enrolment');
@@ -529,51 +529,51 @@ test('an added record is not a changed one: it is initialised at stamp 1 once, a
  const second=JSON.parse(await backend.push('alice',push('pub-only',2,[mutation(2,'publish-only','pub-only-b')])));
  assert.deepEqual(second.records,[authority('pub-only-b',1,{title:'publish-only'})]);
  assert.equal(await head('other'),other,'an existing unchanged member is not published again');assert.deepEqual(await positions('pub-only'),[['other',other,1]],'the invalidation keeps its cursor');assert.equal(await recordStamp('pub-only'),1,'enrolling an unchanged record never advances it');
- const page=await pull('other',0);assert.deepEqual(page.changes.find(c=>c.identity.id==='pub-only'),{scope:'other',cursor:other,kind:'upsert',model:'Task',identity:{id:'pub-only'},stamp:1,state:null});
+ const page=await pull('other',0);assert.deepEqual(page.changes.find(c=>c.identity.id==='pub-only'),{stream:'other',cursor:other,kind:'upsert',model:'Task',identity:{id:'pub-only'},stamp:1,state:null});
  assert.equal(page.changes.some(c=>c.identity.id.startsWith('pub-only-')),false,'the changed records went to shared only');
 });
 test('a loader refusal during push rejects only that mutation; so does a thrown loader error',async()=>{
- const make=load=>createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,scope: scope}){await write(tx,input.task.identity.id,input.task.patch.title);scope('shared').add.task(input.task.identity);}},loaders:{task:load}});
+ const make=load=>createBackend({config,native,database:database(),authenticate,handlers:{async edit({input,tx,stream: stream}){await write(tx,input.task.identity.id,input.task.patch.title);stream('shared').track.task(input.task.identity);}},loaders:{task:load}});
  const refusing=make(async call=>{if(call.ids.some(id=>id.id==='ld-forbidden'))throw new MutationRejected('task.forbidden');return readTasks(call);});
  const receipt=JSON.parse(await refusing.push('alice',push('loader-refuse',1,[mutation(1,'ok','ld-ok'),mutation(2,'hidden','ld-forbidden'),mutation(3,'ok','ld-last')])));
  assert.deepEqual(receipt.rejections,[{ordinal:2,code:'task.forbidden'}]);assert.deepEqual(receipt.records,[authority('ld-last',1,{title:'ok'}),authority('ld-ok',1,{title:'ok'})]);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-forbidden'")).length,0,'the refused mutation rolled back its write');assert.equal(await recordStamp('ld-forbidden'),null,'and its stamp');assert.deepEqual(await positions('ld-forbidden'),[],'and its publication');
- const translated=createBackend({config,database:database(),authenticate,translateRejection:()=>'task.translated',handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{async task(){throw new Error('product read refusal');}}});
+ const translated=createBackend({config,native,database:database(),authenticate,translateRejection:()=>'task.translated',handlers:{async edit({input,tx}){await write(tx,input.task.identity.id,input.task.patch.title);}},loaders:{async task(){throw new Error('product read refusal');}}});
  assert.deepEqual(JSON.parse(await translated.push('alice',push('loader-translated',1,[mutation(1,'x','ld-translated')]))).rejections,[{ordinal:1,code:'task.translated'}]);
  const crashing=JSON.parse(await make(async()=>{throw new Error('loader crash');}).push('alice',push('loader-crash',1,[mutation(1,'x','ld-crash')])));
  assert.deepEqual(crashing.rejections,[{ordinal:1,code:'loader.failed'}]);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='ld-crash'")).length,0);assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_client WHERE client_id='loader-crash'")).length,1,'the batch still commits');
 });
-test('a declaration validates its Scope and records at the call; the invalid call rejects only that mutation as a failure',async()=>{
- const badchan=JSON.parse(await backend.push('alice',push('badchan',1,[mutation(1,'empty-scope','bad-a')])));assert.equal(badchan.rejections[0].code,'handler.failed');
+test('a declaration validates its Stream and records at the call; the invalid call rejects only that mutation as a failure',async()=>{
+ const badchan=JSON.parse(await backend.push('alice',push('badchan',1,[mutation(1,'empty-stream','bad-a')])));assert.equal(badchan.rejections[0].code,'handler.failed');
  const badrecs=JSON.parse(await backend.push('alice',push('badrecs',1,[mutation(1,'bad-records','bad-b')])));assert.equal(badrecs.rejections[0].code,'handler.failed');
  const badbogus=JSON.parse(await backend.push('alice',push('badbogus',1,[mutation(1,'bogus-record','bad-c')])));assert.equal(badbogus.rejections[0].code,'handler.failed');
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id IN ('bad-a','bad-b','bad-c')")).length,0,'the failed mutations rolled back their writes');
 });
 test('a handler may keep using the transaction after a declaration; the membership settles with the commit',async()=>{
- const deferredBackend=createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,scope: scope}){
+ const deferredBackend=createBackend({config,native,database:database(),authenticate,handlers:{async edit({input,tx,stream: stream}){
   const {identity,patch}=input.task;
-  scope('deferred').add.task(identity);
+  stream('deferred').track.task(identity);
   await write(tx,identity.id,patch.title);
   await tx.$queryRawUnsafe('SELECT 1');
  }},loaders:{task:readTasks}});
  const receipt=JSON.parse(await deferredBackend.push('alice',push('deferred',1,[mutation(1,'deferred','deferred-a')])));
- assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',memberships:[{scope:'deferred',cursor:1,model:'Task',identity:{id:'deferred-a'}}],records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
+ assert.deepEqual(receipt,{batchSequence:1,clientId:'deferred',memberships:[{stream:'deferred',cursor:1,model:'Task',identity:{id:'deferred-a'}}],records:[authority('deferred-a',1,{title:'deferred'})],rejections:[]});
  const page=JSON.parse(await deferredBackend.pull('alice',pullBody({deferred:0})));
- assert.deepEqual(page.changes.at(-1),{scope:'deferred',cursor:1,kind:'upsert',model:'Task',identity:{id:'deferred-a'},stamp:1,state:{title:'deferred'}});
+ assert.deepEqual(page.changes.at(-1),{stream:'deferred',cursor:1,kind:'upsert',model:'Task',identity:{id:'deferred-a'},stamp:1,state:{title:'deferred'}});
 });
 test('an all-rejected batch settles with no records',async()=>{
  const receipt=JSON.parse(await backend.push('alice',push('allrej',1,[mutation(1,'refuse','rej-a')])));
  assert.deepEqual(receipt,{batchSequence:1,clientId:'allrej',records:[],rejections:[{ordinal:1,code:'task.refused'}]});
 });
-test('advanceStamp increments without a scope: no invalidation, no scope head',async()=>{
+test('advanceStamp increments without a stream: no invalidation, no stream head',async()=>{
  const stamps=await db.$transaction(async tx=>{const storage=store(tx);const ref={model:'Task',identityKey:key('stamped')};return [await storage.call({op:'advanceStamp',...ref}),await storage.call({op:'advanceStamp',...ref})];});
  assert.deepEqual(stamps,[1,2]);assert.equal(await recordStamp('stamped'),2);assert.deepEqual(await positions('stamped'),[]);
- assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_scope WHERE scope LIKE 'stamp%'")).length,0);
+ assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_stream WHERE stream LIKE 'stamp%'")).length,0);
 });
-test('one push enrolled in two scopes carries the same stamp to both and advances each head once',async()=>{
+test('one push enrolled in two streams carries the same stamp to both and advances each head once',async()=>{
  const before=[await head('shared'),await head('other')];
- const receipt=JSON.parse(await backend.push('alice',push('two-scopes',1,[mutation(1,'two','two-a')])));
+ const receipt=JSON.parse(await backend.push('alice',push('two-streams',1,[mutation(1,'two','two-a')])));
  assert.deepEqual(receipt.records,[authority('two-a',1,{title:'two'})]);
  assert.deepEqual(await positions('two-a'),[['other',before[1]+1,1],['shared',before[0]+1,1]]);
  assert.deepEqual([await head('shared'),await head('other')],[before[0]+1,before[1]+1]);
@@ -596,31 +596,31 @@ test('concurrent first publications initialise one stamp of 1 and never overwrit
  assert.equal(await db.$transaction(ensure),2,'ensureStamp keeps an advanced stamp');
 });
 test('a rolled-back transaction removes a first initialisation together with its publication',async()=>{
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});assert.equal(stamp,1);await storage.call({op:'applyScopeMembers',deltas:[{scope:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),present:true,tags:['t'],publish:true}]});throw new Error('cancel');}),/cancel/);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('undone')});assert.equal(stamp,1);await storage.call({op:'applyStreamMembers',deltas:[{stream:'undone',model:'Task',identity:{id:'undone'},identityKey:key('undone'),publish:true}]});throw new Error('cancel');}),/cancel/);
  assert.equal(await recordStamp('undone'),null);assert.deepEqual(await positions('undone'),[]);assert.equal(await head('undone'),0);
 });
-test('applyScopeMembers refuses a record without metadata and a kept member without a position',async()=>{
- const member=(id,publish)=>({scope:'stale',model:'Task',identity:{id},identityKey:key(id),present:true,tags:[],publish});
- await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'applyScopeMembers',deltas:[member('unstamped',true)]})),/Record metadata missing/);
- await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'applyScopeMembers',deltas:[member('stale',false)]});}),/keeps no upsert position in Scope stale/);
+test('applyStreamMembers refuses a record without metadata and a kept member without a position',async()=>{
+ const member=(id,publish)=>({stream:'stale',model:'Task',identity:{id},identityKey:key(id),publish});
+ await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'applyStreamMembers',deltas:[member('unstamped',true)]})),/Record metadata missing|missing record metadata/);
+ await assert.rejects(()=>db.$transaction(async tx=>{const storage=store(tx);await storage.call({op:'ensureStamp',model:'Task',identityKey:key('stale')});await storage.call({op:'applyStreamMembers',deltas:[member('stale',false)]});}),/Invalid Stream position/);
  assert.equal(await head('stale'),0);assert.deepEqual(await positions('stale'),[]);
 });
 test('scan pairs the invalidation cursor with the current record stamp; a missing record row is a storage defect',async()=>{
  await backend.push('alice',push('join',1,[mutation(1,'published','join-a')]));
  const [[,cursor,stored]]=await positions('join-a');assert.equal(stored,1);
- // A change that reaches no Scope: the business write and its stamp alone
+ // A change that reaches no Stream: the business write and its stamp alone
  // (a member's change through settlement would move its position).
  await db.$transaction(async tx=>{await write(tx,'join-a','quiet');await store(tx).call({op:'advanceStamp',model:'Task',identityKey:key('join-a')});});
  assert.equal(await recordStamp('join-a'),2);assert.deepEqual(await positions('join-a'),[['shared',cursor,2]],'no publication: the position is untouched and pairs with the current stamp');
  const page=await pull('shared',cursor-1);
- assert.deepEqual(page.changes[0],{scope:'shared',cursor:cursor,kind:'upsert',model:'Task',identity:{id:'join-a'},stamp:2,state:{title:'quiet'}},'the original cursor with the current stamp and content');
- const rows=await db.$transaction(tx=>store(tx).call({op:'scan',scope:'shared',after:cursor-1,limit:1}));assert.deepEqual(rows.map(r=>[r.cursor,r.stamp]),[[cursor,2]]);
+ assert.deepEqual(page.changes[0],{stream:'shared',cursor:cursor,kind:'upsert',model:'Task',identity:{id:'join-a'},stamp:2,state:{title:'quiet'}},'the original cursor with the current stamp and content');
+ const rows=await db.$transaction(tx=>store(tx).call({op:'scan',stream:'shared',after:cursor-1,limit:1}));assert.deepEqual(rows.map(r=>[r.cursor,r.stamp]),[[cursor,2]]);
  // Enrolled first: a scan answers members only.
- await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});assert.equal(stamp,1);await storage.call({op:'applyScopeMembers',deltas:[{scope:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),present:true,tags:[],publish:true}]});});
+ await db.$transaction(async tx=>{const storage=store(tx);const stamp=await storage.call({op:'ensureStamp',model:'Task',identityKey:key('orphan')});assert.equal(stamp,1);await storage.call({op:'applyStreamMembers',deltas:[{stream:'orphan',model:'Task',identity:{id:'orphan'},identityKey:key('orphan'),publish:true}]});});
  // The membership foreign key forbids dropping a member's record row; forge the defect with triggers off.
  await db.$transaction(async tx=>{await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');await tx.$executeRawUnsafe('DELETE FROM axton_record WHERE identity_key=$1',key('orphan'));});
- await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'scan',scope:'orphan',after:0,limit:50})),/Record metadata missing/);
- await assert.rejects(()=>pull('orphan',0),/Record metadata missing/);
+ await assert.rejects(()=>db.$transaction(tx=>store(tx).call({op:'scan',stream:'orphan',after:0,limit:50})),/Record metadata missing|missing record metadata/);
+ await assert.rejects(()=>pull('orphan',0),/Record metadata missing|missing record metadata/);
 });
 test('concurrent notifies of one record receive distinct stamps',async()=>{
  const change=()=>external(backend,'race-stamp',[{model:'Task',identity:{id:'stamp-race'}}]);
@@ -660,7 +660,7 @@ test('a reverse proxy forwarding HTTP and the WebSocket upgrade with headers ser
   const socket=new serverSdk.WebSocket(`${proxy.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
   await new Promise((resolve,reject)=>{socket.on('open',resolve);socket.on('error',reject);});
   const frames=[];socket.on('message',data=>frames.push(JSON.parse(String(data))));
-  socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
+  socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
   assert.equal(frames[0].type,'subscribed');
   await backend.push('alice',push('proxied',2,[mutation(2,'live through proxy','proxy-a')]));
   while(frames.length<2)await delay(5);assert.equal(frames.at(-1).changes.at(-1).state.title,'live through proxy');
@@ -683,20 +683,20 @@ test('HTTP maps engine codes to statuses: 403, 409 gap/overlap/version fields, 4
   const overlap=await post('/sync/mutations',push('map',1,[mutation(9,'other','map-a')]));assert.equal(overlap.status,200,'a retry of the accepted sequence returns its receipt');
   await backend.push('alice',push('map',2,[mutation(2,'second','map-a')]));
   const behind=await post('/sync/mutations',push('map',1,[mutation(1,'one','map-a')]));assert.equal(behind.status,409);assert.deepEqual(await behind.json(),{code:'overlap'});
-  const bobBackend=createBackend({config,database:database(),authenticate:async req=>req.headers.authorization==='Bearer bob'?'bob':null,handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+  const bobBackend=createBackend({config,native,database:database(),authenticate:async req=>req.headers.authorization==='Bearer bob'?'bob':null,handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
   const bobServer=await bobBackend.listen({port:0});
   try{const owner=await fetch(`${bobServer.url}/sync/mutations`,{method:'POST',headers:{authorization:'Bearer bob'},body:push('map',3,[mutation(3,'x','map-a')])});assert.equal(owner.status,403);assert.deepEqual(await owner.json(),{code:'client.owner_mismatch'});}
   finally{await bobServer.close();}
   const version=await post('/sync/mutations',push('map',3,[{...mutation(3,'x','map-a'),version:7}]));assert.equal(version.status,200,'an unsupported mutation version rejects only that mutation; the batch still settles');
   assert.deepEqual((await version.json()).rejections,[{ordinal:3,code:'mutation_version_unsupported'}]);
   const ahead=await post('/sync/pull',pullBody({shared:1e9}));assert.equal(ahead.status,400);assert.deepEqual(await ahead.json(),{code:'request.invalid'});
-  const undeclared=await post('/sync/pull',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{shared:0}}));assert.equal(undeclared.status,400);assert.deepEqual(await undeclared.json(),{code:'request.invalid'});
+  const undeclared=await post('/sync/pull',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{shared:0}}));assert.equal(undeclared.status,400);assert.deepEqual(await undeclared.json(),{code:'request.invalid'});
   const unretained=await post('/sync/pull',pullBody({shared:0},{Task:9}));assert.equal(unretained.status,409);
   assert.deepEqual(await unretained.json(),{code:'model_version_unsupported',model:'Task',version:9});
   const array=await post('/sync/pull','[]');assert.equal(array.status,400);assert.deepEqual(await array.json(),{code:'request.invalid'});
   const missing=await post('/sync/nowhere','{}');assert.equal(missing.status,404);assert.deepEqual(await missing.json(),{code:'not_found'});
   const get=await fetch(`${url}/sync/pull`,{headers:{authorization:'Bearer alice'}});assert.equal(get.status,405);assert.equal(get.headers.get('allow'),'POST');assert.deepEqual(await get.json(),{code:'method_not_allowed'});
-  const large=await post('/sync/pull',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{shared:0},padding:'x'.repeat(1_048_577)}));assert.equal(large.status,413);assert.deepEqual(await large.json(),{code:'request_too_large'});
+  const large=await post('/sync/pull',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{shared:0},padding:'x'.repeat(1_048_577)}));assert.equal(large.status,413);assert.deepEqual(await large.json(),{code:'request_too_large'});
  }finally{await server.close();}
 });
 test('HTTP classifies native failures by code, not message wording; unknown codes fall back to 500',async()=>{
@@ -704,7 +704,7 @@ test('HTTP classifies native failures by code, not message wording; unknown code
  const reason=(code,message,details)=>Object.assign(new Error(JSON.stringify({code,message,...(details?{details}:{})})),{});
  const fake={validateConfig(){},async processPush(){throw reason('gap','the batch sequence 5 skips ahead of 1 (reworded)');},async processPull(){throw reason('mutation_version_unsupported','anything',{ordinal:2,name:'edit',version:9});},async publish(){return '[]';},async negotiateLive(){throw reason('request.invalid','no');},async pullLive(){throw reason('loader.unregistered','unregistered loader');},liveEvent(){return '[]';},liveClose(){}};
  const memory={transaction:body=>body({}),persistence:()=>({call:async()=>null})};
- const fakeBackend=createBackend({config,database:memory,native:fake,authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const fakeBackend=createBackend({config,native,database:memory,native:fake,authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  await assert.rejects(()=>fakeBackend.push('alice','{}'),error=>error instanceof EngineError&&error.code==='gap'&&error.message.includes('reworded'));
  const server=await fakeBackend.listen({port:0});
  try{
@@ -712,11 +712,11 @@ test('HTTP classifies native failures by code, not message wording; unknown code
   const version=await fetch(`${server.url}/sync/pull`,{method:'POST',headers:{authorization:'Bearer alice'},body:'{}'});assert.equal(version.status,409);assert.deepEqual(await version.json(),{code:'mutation_version_unsupported',ordinal:2,name:'edit',version:9});
   assert.equal(errors.length,0,'classified refusals are not server errors');
   const socket=new serverSdk.WebSocket(`${server.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
-  const closed=await new Promise(resolve=>{socket.on('open',()=>socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}})));socket.on('close',(code,reasonText)=>resolve({code,reason:String(reasonText)}));socket.on('error',()=>{});});
+  const closed=await new Promise(resolve=>{socket.on('open',()=>socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}})));socket.on('close',(code,reasonText)=>resolve({code,reason:String(reasonText)}));socket.on('error',()=>{});});
   assert.equal(closed.code,1002);assert.equal(errors.length,0);
-  fake.negotiateLive=async()=>JSON.stringify({handle:1,actions:[{type:'listen',scope:'shared'},{type:'send',frame:JSON.stringify({type:'subscribed',cursors:{shared:0}})},{type:'pull',cursors:{shared:0},models:{Task:1}}]});
+  fake.negotiateLive=async()=>JSON.stringify({handle:1,actions:[{type:'listen',stream:'shared'},{type:'send',frame:JSON.stringify({type:'subscribed',cursors:{shared:0}})},{type:'pull',cursors:{shared:0},models:{Task:1}}]});
   const drained=new serverSdk.WebSocket(`${server.url.replace('http','ws')}/sync/live`,{headers:{authorization:'Bearer alice'}});
-  const drainClose=await new Promise(resolve=>{drained.on('open',()=>drained.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}})));drained.on('close',code=>resolve(code));drained.on('error',()=>{});});
+  const drainClose=await new Promise(resolve=>{drained.on('open',()=>drained.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}})));drained.on('close',code=>resolve(code));drained.on('error',()=>{});});
   assert.equal(drainClose,1011);assert.equal(errors.length,1);assert.ok(errors[0] instanceof EngineError);assert.equal(errors[0].code,'loader.unregistered');
   fake.processPush=async()=>{throw reason('storage.invalid','receipt missing');};
   const unknown=await fetch(`${server.url}/sync/mutations`,{method:'POST',headers:{authorization:'Bearer alice'},body:'{}'});assert.equal(unknown.status,500);assert.deepEqual(await unknown.json(),{code:'server'});
@@ -746,25 +746,25 @@ test('the Prisma driver retries only serialization failures, a bounded number of
  assert.deepEqual(attempts.map(o=>o.timeout),[5,5],'prisma() passes retries and timeout to the runner');
 });
 test('a serialization conflict on the real database retries the whole body once and commits it exactly once',async()=>{
- await db.$executeRawUnsafe("INSERT INTO axton_scope(scope,head) VALUES('serial',0) ON CONFLICT(scope) DO UPDATE SET head=0");
+ await db.$executeRawUnsafe("INSERT INTO axton_stream(stream,head) VALUES('serial',0) ON CONFLICT(stream) DO UPDATE SET head=0");
  let bodies=0;let entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});
- const first=run(async tx=>{bodies++;const [{head}]=await tx.$queryRawUnsafe("SELECT head FROM axton_scope WHERE scope='serial'");if(bodies===1){entered();await gate;}
-  await tx.$executeRawUnsafe("UPDATE axton_scope SET head=head+1 WHERE scope='serial'");return Number(head);});
+ const first=run(async tx=>{bodies++;const [{head}]=await tx.$queryRawUnsafe("SELECT head FROM axton_stream WHERE stream='serial'");if(bodies===1){entered();await gate;}
+  await tx.$executeRawUnsafe("UPDATE axton_stream SET head=head+1 WHERE stream='serial'");return Number(head);});
  await inside;
- await db.$executeRawUnsafe("UPDATE axton_scope SET head=head+10 WHERE scope='serial'");
+ await db.$executeRawUnsafe("UPDATE axton_stream SET head=head+10 WHERE stream='serial'");
  release();
  assert.equal(await first,10,'the retried body read the snapshot taken after the concurrent commit');
  assert.equal(bodies,2,'the first attempt failed with a serialization error after the concurrent update and the body ran again');
- assert.equal(Number((await db.$queryRawUnsafe("SELECT head FROM axton_scope WHERE scope='serial'"))[0].head),11,'the rolled-back attempt left nothing behind and the retry committed once');
+ assert.equal(Number((await db.$queryRawUnsafe("SELECT head FROM axton_stream WHERE stream='serial'"))[0].head),11,'the rolled-back attempt left nothing behind and the retry committed once');
  const exhausted=prismaDriver(db,{retries:0}).transaction;bodies=0;let entered2,release2;const inside2=new Promise(resolve=>{entered2=resolve;});const gate2=new Promise(resolve=>{release2=resolve;});
- const second=exhausted(async tx=>{bodies++;await tx.$queryRawUnsafe("SELECT head FROM axton_scope WHERE scope='serial'");entered2();await gate2;await tx.$executeRawUnsafe("UPDATE axton_scope SET head=head+1 WHERE scope='serial'");});
- await inside2;await db.$executeRawUnsafe("UPDATE axton_scope SET head=head+10 WHERE scope='serial'");release2();
+ const second=exhausted(async tx=>{bodies++;await tx.$queryRawUnsafe("SELECT head FROM axton_stream WHERE stream='serial'");entered2();await gate2;await tx.$executeRawUnsafe("UPDATE axton_stream SET head=head+1 WHERE stream='serial'");});
+ await inside2;await db.$executeRawUnsafe("UPDATE axton_stream SET head=head+10 WHERE stream='serial'");release2();
  await assert.rejects(second,error=>error.code==='P2034'||(error.code==='P2010'&&error.meta?.code==='40001'));
- assert.equal(bodies,1);assert.equal(Number((await db.$queryRawUnsafe("SELECT head FROM axton_scope WHERE scope='serial'"))[0].head),21,'with no retries the conflict is reported and the transaction leaves no trace');
+ assert.equal(bodies,1);assert.equal(Number((await db.$queryRawUnsafe("SELECT head FROM axton_stream WHERE stream='serial'"))[0].head),21,'with no retries the conflict is reported and the transaction leaves no trace');
 });
 test('an upgrade whose authentication completes after close begins is refused with 503; missing and invalid credentials are refused with 401',async()=>{
  let release;const gate=new Promise(resolve=>{release=resolve;});const seen=[];
- const gated=createBackend({config,database:database(),authenticate:async req=>{seen.push(req.headers.authorization);if(req.headers.authorization==='Bearer slow'){await gate;return 'alice';}return req.headers.authorization==='Bearer alice'?'alice':null;},handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const gated=createBackend({config,native,database:database(),authenticate:async req=>{seen.push(req.headers.authorization);if(req.headers.authorization==='Bearer slow'){await gate;return 'alice';}return req.headers.authorization==='Bearer alice'?'alice':null;},handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const server=await gated.listen({port:0});const ws=server.url.replace('http','ws');
  const refusal=socket=>new Promise(resolve=>{socket.on('error',error=>resolve(String(error.message)));socket.on('open',()=>resolve('open'));});
  try{
@@ -780,21 +780,21 @@ test('an upgrade whose authentication completes after close begins is refused wi
 
 test('a version dispatches only to its own handler and a function registers v1',async()=>{
  const seen=[];
- const record=tag=>async({input,scope: scope})=>{seen.push([tag,input.task.patch.title]);scope('registration').add.task(input.task.identity);};
- const make=(handlers,mutations=config.mutations)=>createBackend({config:{...config,schema:structuredClone(schema),mutations},database:database(),authenticate,handlers,loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const record=tag=>async({input,stream: stream})=>{seen.push([tag,input.task.patch.title]);stream('registration').track.task(input.task.identity);};
+ const make=(handlers,mutations=config.mutations)=>createBackend({native,config:{...config,schema:structuredClone(schema),mutations},database:database(),authenticate,handlers,loaders:{async task({ids}){return ids.map(()=>null)}}});
  const shorthand=JSON.parse(await make({edit:record('function')}).push('alice',push('register-function',1,[mutation(1,'same','reg-a')])));
  const explicit=JSON.parse(await make({edit:{v1:record('v1 key')}}).push('alice',push('register-v1-key',1,[mutation(1,'same','reg-a')])));
  assert.deepEqual(seen,[['function','same'],['v1 key','same']],'both registrations reach the same v1 handler');
  assert.deepEqual(shorthand.rejections,[]);assert.deepEqual(explicit.rejections,[]);
  assert.deepEqual(shorthand.records,[authority('reg-a',1,null)]);assert.deepEqual(explicit.records,[authority('reg-a',2,null)],'only the stamp differs');
- assert.deepEqual((await positions('reg-a')).map(([scope,,stamp])=>[scope,stamp]),[['registration',2]]);
+ assert.deepEqual((await positions('reg-a')).map(([stream,,stamp])=>[stream,stamp]),[['registration',2]]);
  const two=make({edit:{v1:record('v1'),v2:record('v2')}},[config.mutations[0],{...config.mutations[0],version:2}]);
  await two.push('alice',push('register-dispatch',1,[mutation(1,'from v1','reg-b')]));
  await two.push('alice',push('register-dispatch',2,[{...mutation(1,'from v2','reg-c'),version:2}]));
  assert.deepEqual(seen.slice(2),[['v1','from v1'],['v2','from v2']],'no fallback between versions');
 });
 test('concurrent same-client delivery with different bodies commits at most one under the PostgreSQL lock',async()=>{
- const before=called;const shared=async()=>Number((await db.$queryRawUnsafe("SELECT head FROM axton_scope WHERE scope='shared'"))[0].head);
+ const before=called;const shared=async()=>Number((await db.$queryRawUnsafe("SELECT head FROM axton_stream WHERE stream='shared'"))[0].head);
  // A concurrent delivery of the same sequence with a different body commits at most one of the two: the loser waits on the row lock, then replays the winner's receipt.
  const head=await shared();const changed=push('race-body',1,[mutation(1,'winner','race-body')]);const other=push('race-body',1,[mutation(1,'loser','race-body')]);
  const pair=await Promise.all([backend.push('alice',changed),backend.push('alice',other)]);assert.equal(pair[0],pair[1]);assert.equal(called,before+1);
@@ -825,7 +825,7 @@ test('the live stream serves the declared model version and refuses an unretaine
  const v1={name:'Task',version:1,identity:['id'],fields:schema.models[0].fields,enums:[]};
  c.schema.models[0].fields=[...schema.models[0].fields,{name:'note',type:{kind:'scalar',name:'string'},nullable:true}];
  c.models=[v1,{name:'Task',version:2,identity:['id'],fields:c.schema.models[0].fields,enums:[]}];
- const versioned=createBackend({config:c,database:database(),authenticate,handlers:{},loaders:{task:{
+ const versioned=createBackend({native,config:c,database:database(),authenticate,handlers:{},loaders:{task:{
   async v1({ids}){return ids.map(id=>({id:id.id,title:'old'}))},
   async v2({ids}){return ids.map(id=>({id:id.id,title:'new',note:'n'}))},
  }}});
@@ -834,7 +834,7 @@ test('the live stream serves the declared model version and refuses an unretaine
   const shapes=[];
   for(const [version,expected] of [[1,{title:'old'}],[2,{title:'new',note:'n'}]]){
    const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
-   socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:version}}));
+   socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:version}}));
    while(frames.length<1)await delay(5);
    assert.equal(frames[0].type,'subscribed');
    // Streaming starts at the head: publish after the handshake; the commit
@@ -847,11 +847,11 @@ test('the live stream serves the declared model version and refuses an unretaine
   }
   const refused=await openSocket(port);
   const closed=new Promise(resolve=>refused.addEventListener('close',event=>resolve({code:event.code,reason:String(event.reason)}),{once:true}));
-  refused.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:3}}));
+  refused.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:3}}));
   assert.deepEqual(await closed,{code:1002,reason:'model_version_unsupported'});
   const undeclared=await openSocket(port);
   const closedToo=new Promise(resolve=>undeclared.addEventListener('close',event=>resolve(event.code),{once:true}));
-  undeclared.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared']}));
+  undeclared.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared']}));
   assert.equal(await closedToo,1002);
  }finally{await server.close();}
 });
@@ -859,7 +859,7 @@ test('the live stream serves the declared model version and refuses an unretaine
 test('backend.transaction publishes in the application transaction and wakes after commit',async()=>{
  let woke=0;const unsubscribe=backend.onCommitted('shared',()=>{woke++;});
  const from=await head('shared');
- const result=await backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'tx-1','via transaction');touch.task({id:'tx-1'});scope('shared').add.task({id:'tx-1'});return 'done';});
+ const result=await backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'tx-1','via transaction');invalidate.task({id:'tx-1'});stream('shared').track.task({id:'tx-1'});return 'done';});
  assert.equal(result,'done');await delay(0);assert.equal(woke,1,'one wake after commit');
  const page=await pull('shared',from);assert.ok(page.changes.some(c=>c.identity.id==='tx-1'&&c.state.title==='via transaction'),JSON.stringify(page));
  unsubscribe();
@@ -867,7 +867,7 @@ test('backend.transaction publishes in the application transaction and wakes aft
 test('backend.transaction rolls back a failing body and wakes nobody',async()=>{
  let woke=0;const unsubscribe=backend.onCommitted('shared',()=>{woke++;});
  const before=await head('shared');
- await assert.rejects(()=>backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'tx-rollback','never');touch.task({id:'tx-rollback'});scope('shared').add.task({id:'tx-rollback'});throw new Error('cancel');}),/cancel/);
+ await assert.rejects(()=>backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'tx-rollback','never');invalidate.task({id:'tx-rollback'});stream('shared').track.task({id:'tx-rollback'});throw new Error('cancel');}),/cancel/);
  await delay(0);assert.equal(woke,0);assert.equal(await head('shared'),before);
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='tx-rollback'"))[0].count,0n);
  unsubscribe();
@@ -875,8 +875,8 @@ test('backend.transaction rolls back a failing body and wakes nobody',async()=>{
 test('backend.transaction wakes a connected live subscriber without reconnect',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
- await backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'tx-live','live via transaction');touch.task({id:'tx-live'});scope('shared').add.task({id:'tx-live'});});
+ socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'tx-live','live via transaction');invalidate.task({id:'tx-live'});stream('shared').track.task({id:'tx-live'});});
  while(frames.length<2)await delay(5);
  assert.deepEqual(frames[1].changes.at(-1).identity,{id:'tx-live'});assert.deepEqual(frames[1].changes.at(-1).state,{title:'live via transaction'});
  socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));await server.close();
@@ -884,22 +884,22 @@ test('backend.transaction wakes a connected live subscriber without reconnect',a
 test('notify and bindTransaction are gone; backend.transaction is the only external write path',async()=>{
  assert.equal(backend.notify,undefined);assert.equal(backend.bindTransaction,undefined);
  const before=await head('shared');
- await backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'tx-only-path','only path');touch.task({id:'tx-only-path'});scope('shared').add.task({id:'tx-only-path'});});
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'tx-only-path','only path');invalidate.task({id:'tx-only-path'});stream('shared').track.task({id:'tx-only-path'});});
  assert.equal(await head('shared'),before+1);
 });
 // #180: a transaction the application opened and owns. `owned` is the caller's
 // own runner (Prisma, Repeatable Read, its own retry loop): AXTON never opens it.
 const owned=async body=>{for(let attempt=1;;attempt++){try{return await db.$transaction(body,{isolationLevel:'RepeatableRead'});}catch(error){if(attempt<4&&isRetryableTransactionError(error))continue;throw error;}}};
-const members=async id=>(await db.$queryRawUnsafe('SELECT m.scope FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.scope','Task',key(id))).map(r=>r.scope);
+const members=async id=>(await db.$queryRawUnsafe('SELECT m.stream FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.stream','Task',key(id))).map(r=>r.stream);
 test('backend.publish settles in a caller-owned transaction; its wake, called after commit, reaches a live subscriber once',async()=>{
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
- socket.send(JSON.stringify({capabilities:['scope-membership-v1'],type:'subscribe',scopes:['owned'],models:{Task:1}}));while(frames.length<1)await delay(5);
+ socket.send(JSON.stringify({capabilities:['stream-membership-v1'],type:'subscribe',streams:['owned'],models:{Task:1}}));while(frames.length<1)await delay(5);
  let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
  const from=await head('owned');
  const wake=await owned(async tx=>{
   await write(tx,'owned-1','owned write');
-  const wake=await backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-1'});scope('owned').add.task({id:'owned-1'});});
+  const wake=await backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-1'});stream('owned').track.task({id:'owned-1'});});
   assert.equal(typeof wake,'function');
   assert.equal(await recordStamp('owned-1'),null,'nothing is visible outside the caller transaction before it commits');
   return wake;
@@ -911,7 +911,7 @@ test('backend.publish settles in a caller-owned transaction; its wake, called af
  wake();
  while(frames.length<2)await delay(5);
  assert.equal(woke,1);
- assert.deepEqual(frames[1].changes,[{scope:'owned',cursor:from+1,kind:'upsert',model:'Task',identity:{id:'owned-1'},stamp:1,state:{title:'owned write'}}]);
+ assert.deepEqual(frames[1].changes,[{stream:'owned',cursor:from+1,kind:'upsert',model:'Task',identity:{id:'owned-1'},stamp:1,state:{title:'owned write'}}]);
  assert.deepEqual(frames[1].cursors.owned,{from,to:from+1,head:from+1});
  unsubscribe();socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));await server.close();
 });
@@ -920,7 +920,7 @@ test('a throw after backend.publish rolls back the business row with every AXTON
  const before=await head('owned');
  await assert.rejects(()=>owned(async tx=>{
   await write(tx,'owned-rollback','never');
-  await backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-rollback'});scope('owned').add.task({id:'owned-rollback'});});
+  await backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-rollback'});stream('owned').track.task({id:'owned-rollback'});});
   throw new Error('after publication');
  }),/after publication/);
  await delay(20);assert.equal(woke,0);
@@ -934,10 +934,10 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  const wakes=await owned(async tx=>{
   await tx.$executeRawUnsafe('SAVEPOINT caller_act');
   await write(tx,'owned-savepoint','rejected act');
-  const undone=await backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-savepoint'});scope('owned').add.task({id:'owned-savepoint'});});
+  const undone=await backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-savepoint'});stream('owned').track.task({id:'owned-savepoint'});});
   await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT caller_act');
   await write(tx,'owned-kept','kept act');
-  const kept=await backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-kept'});scope('owned').add.task({id:'owned-kept'});});
+  const kept=await backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-kept'});stream('owned').track.task({id:'owned-kept'});});
   return [undone,kept];
  });
  for(const wake of wakes)wake();
@@ -945,7 +945,7 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  assert.deepEqual(await positions('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
 });
 test('a conflicted caller transaction retries and its publication commits once',async()=>{
- await backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});scope('owned').add.task({id:'owned-race'});});
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'owned-race','v1');invalidate.task({id:'owned-race'});stream('owned').track.task({id:'owned-race'});});
  const from=await head('owned');assert.equal(await recordStamp('owned-race'),1);
  let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
  let bodies=0,entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});const failures=[];
@@ -955,17 +955,17 @@ test('a conflicted caller transaction retries and its publication commits once',
   await tx.$queryRawUnsafe('SELECT stamp FROM axton_record WHERE identity_key=$1',key('owned-race'));
   if(bodies===1){entered();await gate;}
   await write(tx,'owned-race-note',`attempt ${bodies}`);
-  try{return await backend.publish(tx,({touch})=>{touch.task({id:'owned-race'});});}
+  try{return await backend.publish(tx,({invalidate})=>{invalidate.task({id:'owned-race'});});}
   catch(error){failures.push(error);throw error;}
  });
  await inside;
- await backend.transaction(async({touch})=>{touch.task({id:'owned-race'});});
+ await backend.transaction(async({invalidate})=>{invalidate.task({id:'owned-race'});});
  await delay(0);woke=0;
  release();
  const wake=await caller;
  assert.equal(bodies,2,'the stale attempt failed inside the publication and the caller ran its body again');
  assert.equal(failures.length,1);assert.ok(isRetryableTransactionError(failures[0]),'the database conflict reaches the caller unwrapped');
- assert.equal(await recordStamp('owned-race'),3,'the concurrent touch and the one committed publication');
+ assert.equal(await recordStamp('owned-race'),3,'the concurrent invalidate and the one committed publication');
  assert.deepEqual(await positions('owned-race'),[['owned',from+2,3]]);assert.equal(await head('owned'),from+2);
  await delay(20);assert.equal(woke,0,'no attempt wakes by itself');wake();await delay(0);assert.equal(woke,1);
  unsubscribe();
@@ -976,7 +976,7 @@ test('backend.publish settles the same way in a caller-owned Serializable transa
  const from=await head('owned');
  const wake=await db.$transaction(async tx=>{
   await write(tx,'owned-serializable','serializable write');
-  return backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-serializable'});scope('owned').add.task({id:'owned-serializable'});});
+  return backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-serializable'});stream('owned').track.task({id:'owned-serializable'});});
  },{isolationLevel:'Serializable'});
  wake();
  assert.equal(await recordStamp('owned-serializable'),1);
@@ -984,16 +984,16 @@ test('backend.publish settles the same way in a caller-owned Serializable transa
  assert.deepEqual(await members('owned-serializable'),['owned']);
 });
 test('backend.publish refuses a transaction the framework already owns',async()=>{
- await assert.rejects(()=>backend.transaction(async({tx})=>{await backend.publish(tx,({touch})=>{touch.task({id:'owned-nested'});});}),/already/);
+ await assert.rejects(()=>backend.transaction(async({tx})=>{await backend.publish(tx,({invalidate})=>{invalidate.task({id:'owned-nested'});});}),/already/);
  assert.equal(await recordStamp('owned-nested'),null);
 });
 test('a throw inside the backend.publish body settles nothing and releases the caller transaction for a later publication',async()=>{
  const before=await head('owned');const refused=new Error('body refused');
  const wake=await owned(async tx=>{
   await write(tx,'owned-body-throw','kept business row');
-  await assert.rejects(()=>backend.publish(tx,({scope: scope,touch})=>{touch.task({id:'owned-body-throw'});scope('owned').add.task({id:'owned-body-throw'});throw refused;}),error=>error===refused,'the body error is the original one');
-  await assert.rejects(()=>backend.publish(tx,({scope: scope})=>{scope(' ').add.task({id:'owned-body-throw'});}),/nonblank/,'a refused declaration rejects the same way');
-  return backend.publish(tx,({touch})=>{touch.task({id:'owned-body-throw'});});
+  await assert.rejects(()=>backend.publish(tx,({stream: stream,invalidate})=>{invalidate.task({id:'owned-body-throw'});stream('owned').track.task({id:'owned-body-throw'});throw refused;}),error=>error===refused,'the body error is the original one');
+  await assert.rejects(()=>backend.publish(tx,({stream: stream})=>{stream(' ').track.task({id:'owned-body-throw'});}),/nonblank/,'a refused declaration rejects the same way');
+  return backend.publish(tx,({invalidate})=>{invalidate.task({id:'owned-body-throw'});});
  });
  wake();
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='owned-body-throw'"))[0].count,1n,'the caller write commits');
@@ -1001,30 +1001,30 @@ test('a throw inside the backend.publish body settles nothing and releases the c
  assert.deepEqual(await members('owned-body-throw'),[],'the failed body enrolled nothing');
  assert.deepEqual(await positions('owned-body-throw'),[]);assert.equal(await head('owned'),before);
 });
-test('re-adding an unchanged member keeps its stamp and publishes nothing; a later touch reaches its Scope without another add',async()=>{
+test('re-adding an unchanged member keeps its stamp and publishes nothing; a later invalidate reaches its Stream without another add',async()=>{
  await external(backend,'shared',[{model:'Task',identity:{id:'stamp-probe'}}]);
  const stampOf=()=>recordStamp('stamp-probe');
  const first=await stampOf();
  const headBefore=await head('shared');
- await backend.transaction(async({scope: scope})=>{scope('shared').add.task({id:'stamp-probe'});});
+ await backend.transaction(async({stream: stream})=>{stream('shared').track.task({id:'stamp-probe'});});
  assert.equal(await stampOf(),first,'membership-only records keep their stamp');assert.equal(await head('shared'),headBefore,'and an existing member is not published again');
- await backend.transaction(async({touch})=>{touch.task({id:'stamp-probe'});});
- assert.equal(await stampOf(),first+1,'a touch advances the stamp without a membership declaration');assert.equal(await head('shared'),headBefore+1,'and reach the Scope the record is a member of');
+ await backend.transaction(async({invalidate})=>{invalidate.task({id:'stamp-probe'});});
+ assert.equal(await stampOf(),first+1,'a invalidate advances the stamp without a membership declaration');assert.equal(await head('shared'),headBefore+1,'and reach the Stream the record is a member of');
 });
-test('a pull covers every scope in one request and preserves both memberships of a shared record',async()=>{
+test('a pull covers every stream in one request and preserves both memberships of a shared record',async()=>{
  await db.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('multi-a','A'),('multi-b','B') ON CONFLICT(id) DO NOTHING");
- await backend.transaction(async({scope: scope,touch})=>{touch.task({id:'multi-a'});touch.task({id:'multi-b'});scope('multi-x').add.task({id:'multi-a'});scope('multi-x').add.task({id:'multi-b'});scope('multi-y').add.task({id:'multi-a'});});
+ await backend.transaction(async({stream: stream,invalidate})=>{invalidate.task({id:'multi-a'});invalidate.task({id:'multi-b'});stream('multi-x').track.task({id:'multi-a'});stream('multi-x').track.task({id:'multi-b'});stream('multi-y').track.task({id:'multi-a'});});
  const page=JSON.parse(await backend.pull('alice',pullBody({'multi-x':0,'multi-y':0})));
  assert.deepEqual(Object.keys(page.cursors),['multi-x','multi-y']);
  assert.deepEqual(page.cursors['multi-x'],{from:0,to:2,head:2});assert.deepEqual(page.cursors['multi-y'],{from:0,to:1,head:1});
- assert.deepEqual(page.changes.map(c=>c.identity.id),['multi-a','multi-b','multi-a'],'each scope retains its own membership event');
+ assert.deepEqual(page.changes.map(c=>c.identity.id),['multi-a','multi-b','multi-a'],'each stream retains its own membership event');
  assert.equal(page.changes[0].stamp,await recordStamp('multi-a'));
  const nothing=JSON.parse(await backend.pull('alice',pullBody({'multi-x':2,'multi-y':1})));
  assert.deepEqual(nothing,{cursors:{'multi-x':{from:2,to:2,head:2},'multi-y':{from:1,to:1,head:1}},changes:[]});
 });
 test('a loader that throws for one id fails only that record and reaches onError',async()=>{
  const errors=[];const calls=[];
- const flaky=createBackend({config:{...config,mutations:[]},database:prisma(db),authenticate,onError:e=>errors.push(e),handlers:{},loaders:{task:async({ids,tx})=>{calls.push(ids.length);if(ids.some(id=>id.id==='multi-b'))throw new Error('b is broken');return readTasks({ids,tx});}}});
+ const flaky=createBackend({native,config:{...config,mutations:[]},database:prisma(db),authenticate,onError:e=>errors.push(e),handlers:{},loaders:{task:async({ids,tx})=>{calls.push(ids.length);if(ids.some(id=>id.id==='multi-b'))throw new Error('b is broken');return readTasks({ids,tx});}}});
  const page=JSON.parse(await flaky.pull('alice',pullBody({'multi-x':0})));
  const a=page.changes.find(c=>c.identity.id==='multi-a'),b=page.changes.find(c=>c.identity.id==='multi-b');
  assert.deepEqual(a.state,{title:'A'});assert.equal(a.error,undefined);
@@ -1033,7 +1033,7 @@ test('a loader that throws for one id fails only that record and reaches onError
  assert.equal(errors.length,2,'the batched failure and the single failure both reach onError');assert.equal(errors[0].message,'b is broken');
 });
 test('a loader refusal for one id is an error change carrying the refusal code',async()=>{
- const refusing=createBackend({config:{...config,mutations:[]},database:prisma(db),authenticate,handlers:{},loaders:{task:async({ids,tx})=>{if(ids.some(id=>id.id==='multi-a'))throw new MutationRejected('task.forbidden');return readTasks({ids,tx});}}});
+ const refusing=createBackend({native,config:{...config,mutations:[]},database:prisma(db),authenticate,handlers:{},loaders:{task:async({ids,tx})=>{if(ids.some(id=>id.id==='multi-a'))throw new MutationRejected('task.forbidden');return readTasks({ids,tx});}}});
  const page=JSON.parse(await refusing.pull('alice',pullBody({'multi-x':0})));
  assert.equal(page.changes.find(c=>c.identity.id==='multi-a').error,'task.forbidden');
  assert.deepEqual(page.changes.find(c=>c.identity.id==='multi-b').state,{title:'B'});
@@ -1041,20 +1041,20 @@ test('a loader refusal for one id is an error change carrying the refusal code',
 test('onError defaults to console.error so nothing is dropped silently',async()=>{
  const seen=[];const original=console.error;console.error=(...args)=>seen.push(args);
  try{
-  const quiet=createBackend({config:{...config,mutations:[]},database:prisma(db),authenticate,handlers:{},loaders:{task:async({ids})=>{if(ids.length===1)throw new Error('single');throw new Error('batched');}}});
+  const quiet=createBackend({native,config:{...config,mutations:[]},database:prisma(db),authenticate,handlers:{},loaders:{task:async({ids})=>{if(ids.length===1)throw new Error('single');throw new Error('batched');}}});
   const page=JSON.parse(await quiet.pull('alice',pullBody({'multi-x':0})));
   assert.ok(page.changes.every(c=>c.error==='loader.failed'));
   assert.ok(seen.some(args=>args[0]?.message==='batched'),'the batched failure was logged');
  }finally{console.error=original;}
 });
-// A bounded bootstrap request on the same `/sync/pull` route: one scope, the
+// A bounded bootstrap request on the same `/sync/pull` route: one stream, the
 // committed historical progress B and the fixed subscription origin S (#151).
-const bootstrapBody=(scope,after,until,models={Task:1})=>JSON.stringify({capabilities:['scope-membership-v1'],mode:'bootstrap',scope,models,after,until});
-const bootstrap=(scope,after,until)=>backend.pull('alice',bootstrapBody(scope,after,until)).then(JSON.parse);
-/** Publish `count` fresh records to one scope, one cursor each. */
-const fill=(name,prefix,count)=>backend.transaction(async({tx,scope: scope,touch})=>{
- const target=scope(name);
- for(let i=0;i<count;i++){const id={id:`${prefix}-${i}`};await write(tx,id.id,`title ${i}`);touch.task(id);target.add.task(id);}
+const bootstrapBody=(stream,after,until,models={Task:1})=>JSON.stringify({capabilities:['stream-membership-v1'],mode:'bootstrap',stream,models,after,until});
+const bootstrap=(stream,after,until)=>backend.pull('alice',bootstrapBody(stream,after,until)).then(JSON.parse);
+/** Publish `count` fresh records to one stream, one cursor each. */
+const fill=(name,prefix,count)=>backend.transaction(async({tx,stream: stream,invalidate})=>{
+ const target=stream(name);
+ for(let i=0;i<count;i++){const id={id:`${prefix}-${i}`};await write(tx,id.id,`title ${i}`);invalidate.task(id);target.track.task(id);}
 });
 test('a bounded bootstrap request pages the historical interval and stops at the fixed origin',async()=>{
  await fill('boot','boot',60);
@@ -1063,7 +1063,7 @@ test('a bounded bootstrap request pages the historical interval and stops at the
  await fill('boot','boot-late',5);
  const later=await head('boot');assert.equal(later,origin+5);
  const first=await bootstrap('boot',0,origin);
- assert.equal(first.mode,'bootstrap');assert.equal(first.scope,'boot');
+ assert.equal(first.mode,'bootstrap');assert.equal(first.stream,'boot');
  assert.equal(first.from,0);assert.equal(first.to,50);assert.equal(first.until,origin);assert.equal(first.head,later);
  assert.notEqual(first.to,first.until,'a full scan below the origin continues');
  assert.equal(first.changes.length,50);
@@ -1078,9 +1078,9 @@ test('a bounded bootstrap request pages the historical interval and stops at the
  assert.ok(second.changes.every(r=>!r.identity.id.startsWith('boot-late')),'nothing above the origin is loaded');
  // An exhausted interval is an empty terminal page carrying the current head.
  const done=await bootstrap('boot',origin,origin);
- assert.deepEqual(done,{mode:'bootstrap',scope:'boot',from:origin,to:origin,until:origin,head:await head('boot'),changes:[]});
- // An empty Scope completes at zero, and an origin above the head is refused.
- assert.deepEqual(await bootstrap('boot-empty',0,0),{mode:'bootstrap',scope:'boot-empty',from:0,to:0,until:0,head:0,changes:[]});
+ assert.deepEqual(done,{mode:'bootstrap',stream:'boot',from:origin,to:origin,until:origin,head:await head('boot'),changes:[]});
+ // An empty Stream completes at zero, and an origin above the head is refused.
+ assert.deepEqual(await bootstrap('boot-empty',0,0),{mode:'bootstrap',stream:'boot-empty',from:0,to:0,until:0,head:0,changes:[]});
  await assert.rejects(()=>bootstrap('boot',0,later+1),/ahead of head/);
 });
 test('a record republished above the origin leaves the historical interval between pages',async()=>{
@@ -1091,7 +1091,7 @@ test('a record republished above the origin leaves the historical interval betwe
  // `moved-55` sits in (50, origin]; republishing it moves its only row above
  // the origin, where the subscription's own delivery covers it.
  await external(backend,'moved',[{model:'Task',identity:{id:'moved-55'}}]);
- assert.ok((await positions('moved-55')).some(([scope,cursor])=>scope==='moved'&&cursor>origin));
+ assert.ok((await positions('moved-55')).some(([stream,cursor])=>stream==='moved'&&cursor>origin));
  const second=await bootstrap('moved',first.to,origin);
  assert.equal(second.to,origin,'the interval still completes at the fixed origin');
  assert.equal(second.head,await head('moved'));
@@ -1099,21 +1099,21 @@ test('a record republished above the origin leaves the historical interval betwe
  assert.ok(!second.changes.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
 });
 test('a bootstrap page reads content and stamps at its own transaction snapshot',async()=>{
- await backend.transaction(async({tx,scope: scope,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});scope('coherent').add.task({id:'coherent'});});
+ await backend.transaction(async({tx,stream: stream,invalidate})=>{await write(tx,'coherent','first');invalidate.task({id:'coherent'});stream('coherent').track.task({id:'coherent'});});
  const origin=await head('coherent');const before=await recordStamp('coherent');
  // A concurrent transaction rewrites and republishes the record after the page
  // transaction has read its head; the page must still answer its own snapshot.
  let changed=false;
- const reader=createBackend({config:{...config,mutations:[]},database:{transaction:run,persistence:tx=>{const storage=store(tx);return {call:async r=>{
+ const reader=createBackend({native,config:{...config,mutations:[]},database:{transaction:run,persistence:tx=>{const storage=store(tx);return {call:async r=>{
   const result=await storage.call(r);
-  if(r.op==='head'&&!changed){changed=true;await backend.transaction(async({tx:other,touch})=>{await write(other,'coherent','second');touch.task({id:'coherent'});});}
+  if(r.op==='head'&&!changed){changed=true;await backend.transaction(async({tx:other,invalidate})=>{await write(other,'coherent','second');invalidate.task({id:'coherent'});});}
   return result;
  }}}},authenticate,handlers:{},loaders:{task:async({ids,tx})=>readTasks({ids,tx})}});
  const page=JSON.parse(await reader.pull('alice',bootstrapBody('coherent',0,origin)));
  assert.ok(changed,'the concurrent publication committed during the page');
  assert.equal(page.head,origin,'the head the page reports is its snapshot head');
  assert.equal(page.to,origin);
- assert.deepEqual(page.changes,[{scope:'coherent',cursor:origin,kind:'upsert',model:'Task',identity:{id:'coherent'},stamp:before,state:{title:'first'}}],'cursor, stamp and content come from one snapshot');
+ assert.deepEqual(page.changes,[{stream:'coherent',cursor:origin,kind:'upsert',model:'Task',identity:{id:'coherent'},stamp:before,state:{title:'first'}}],'cursor, stamp and content come from one snapshot');
  assert.equal(await recordStamp('coherent'),before+1,'the concurrent write did commit');
  assert.ok(await head('coherent')>origin);
 });
@@ -1129,14 +1129,14 @@ test('the pull route dispatches by mode over HTTP and refuses any other mode',as
   const ordinary=await post(pullBody({route:0}));assert.equal(ordinary.status,200);
   assert.equal((await ordinary.json()).mode,undefined,'an absent mode still answers an ordinary page');
   for(const mode of ['snapshot',null,1]){
-   const refused=await post(JSON.stringify({capabilities:['scope-membership-v1'],mode,scope:'route',models:{Task:1},after:0,until:origin}));
+   const refused=await post(JSON.stringify({capabilities:['stream-membership-v1'],mode,stream:'route',models:{Task:1},after:0,until:origin}));
    assert.equal(refused.status,400,`mode ${JSON.stringify(mode)}`);
    assert.deepEqual(await refused.json(),{code:'request.invalid'});
   }
   const malformed=await post(bootstrapBody('  ',0,origin));assert.equal(malformed.status,400);
  }finally{await server.close();}
  // The same dispatch through the direct backend call, with no HTTP in between.
- await assert.rejects(()=>backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],mode:'snapshot',scope:'route',models:{Task:1},after:0,until:origin})),/mode/);
+ await assert.rejects(()=>backend.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],mode:'snapshot',stream:'route',models:{Task:1},after:0,until:origin})),/mode/);
  await assert.rejects(()=>bootstrap('route',2,1),/request.invalid|origin/);
 });
 // #183: Prisma 7 driver adapters report a raw query's serialization conflict
@@ -1154,50 +1154,50 @@ test('a Prisma 7 driver-adapter write conflict is retryable; other adapter error
 const draftModel={name:'Draft',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false}]};
 const withDraft={...config,schema:{...structuredClone(schema),models:[...structuredClone(schema).models,draftModel]}};
 test('a backend omitting the Loader of a device-only Model starts; a Mutation writing it in a slot does not',async()=>{
- const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async({input,tx})=>write(tx,input.task.identity.id,input.task.patch.title)},loaders:{task:readTasks}});
+ const deviceOnly=createBackend({native,config:withDraft,database:database(),authenticate,handlers:{edit:async({input,tx})=>write(tx,input.task.identity.id,input.task.patch.title)},loaders:{task:readTasks}});
  const result=JSON.parse(await deviceOnly.push('alice',push('device-only-starts',1,[mutation(1,'still served','device-only-a')])));
  assert.deepEqual(result.rejections,[]);
  assert.deepEqual(result.records,[authority('device-only-a',1,{title:'still served'})]);
  // A pull and a live pull of Task are served as before; a client declaring Draft's read contract is accepted.
  assert.ok(Array.isArray(JSON.parse(await deviceOnly.pull('alice',pullBody({shared:0},{Task:1,Draft:1}))).changes));
  const slot={name:'saveDraft',version:1,slots:[{name:'draft',model:'Draft',operation:'create',cardinality:'single'}]};
- assert.throws(()=>createBackend({config:{...withDraft,mutations:[...withDraft.mutations,slot]},database:database(),authenticate,handlers:{edit:async()=>{},saveDraft:async()=>{}},loaders:{task:readTasks}}),/Mutation saveDraft v1 slot draft names Model Draft, which has no Loader/);
+ assert.throws(()=>createBackend({native,config:{...withDraft,mutations:[...withDraft.mutations,slot]},database:database(),authenticate,handlers:{edit:async()=>{},saveDraft:async()=>{}},loaders:{task:readTasks}}),/Mutation saveDraft v1 slot draft names Model Draft, which has no Loader/);
  // An explicitly undefined registration is the same omission; null stays a missing registration.
- createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:undefined}});
- assert.throws(()=>createBackend({config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:null}}),/Missing loader draft for Draft v1/);
+ createBackend({native,config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:undefined}});
+ assert.throws(()=>createBackend({native,config:withDraft,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:readTasks,draft:null}}),/Missing loader draft for Draft v1/);
 });
 test('touching or publishing a device-only Model is refused at the call, naming the Model; nothing is published',async()=>{
  const errors=[];
- const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx,scope: scope,touch}){
+ const deviceOnly=createBackend({native,config:withDraft,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx,stream: stream,invalidate}){
   await write(tx,input.task.identity.id,input.task.patch.title);
-  if(input.task.patch.title==='touch')touch.draft({id:'d'});
-  if(input.task.patch.title==='add')scope('drafts').add.draft({id:'d'});
-  if(input.task.patch.title==='remove')scope('drafts').remove.draft({id:'d'});
-  if(input.task.patch.title==='mixed')scope('drafts').add([{model:'Task',identity:{id:'x'}},{model:'Draft',identity:{id:'d'}}]);
+  if(input.task.patch.title==='invalidate')invalidate.draft({id:'d'});
+  if(input.task.patch.title==='add')stream('drafts').track.draft({id:'d'});
+  if(input.task.patch.title==='remove')stream('drafts').invalidate.draft({id:'d'});
+  if(input.task.patch.title==='mixed')stream('drafts').track([{model:'Task',identity:{id:'x'}},{model:'Draft',identity:{id:'d'}}]);
  }},loaders:{task:readTasks}});
  const headBefore=await head('drafts');
- const result=JSON.parse(await deviceOnly.push('alice',push('device-only-touch',1,[mutation(1,'touch','do-1'),mutation(2,'add','do-2'),mutation(3,'remove','do-3'),mutation(4,'mixed','do-4'),mutation(5,'fine','do-5')])));
+ const result=JSON.parse(await deviceOnly.push('alice',push('device-only-invalidate',1,[mutation(1,'invalidate','do-1'),mutation(2,'add','do-2'),mutation(3,'remove','do-3'),mutation(4,'mixed','do-4'),mutation(5,'fine','do-5')])));
  assert.deepEqual(result.rejections,[1,2,3,4].map(ordinal=>({ordinal,code:'handler.failed'})));
  assert.deepEqual(result.records,[authority('do-5',1,{title:'fine'})]);
  assert.deepEqual(errors.map(e=>e.message),[
-  'touch.draft: Model Draft has no Loader, so it is device-only and cannot be published',
-  'scope.add.draft: Model Draft has no Loader, so it is device-only and cannot be published',
-  'scope.remove.draft: Model Draft has no Loader, so it is device-only and cannot be published',
-  'scope.add: Model Draft has no Loader, so it is device-only and cannot be published',
+  'invalidate.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'stream.track.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'invalidate.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'stream.track: Model Draft has no Loader, so it is device-only and cannot be published',
  ]);
- assert.equal(await head('drafts'),headBefore,'nothing reached the Scope');
+ assert.equal(await head('drafts'),headBefore,'nothing reached the Stream');
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_record WHERE model='Draft'")).length,0,'no Draft was stamped');
  // backend.transaction refuses the same declaration and rolls its business write back.
- await assert.rejects(()=>deviceOnly.transaction(async({tx,touch})=>{await write(tx,'do-external','never');touch.draft({id:'d'});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
- await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/scope.add: Model Draft has no Loader/);
+ await assert.rejects(()=>deviceOnly.transaction(async({tx,invalidate})=>{await write(tx,'do-external','never');invalidate.draft({id:'d'});}),/invalidate\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
+ await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/stream.track: Model Draft has no Loader/);
  // backend.publish in a caller-owned transaction refuses it the same way; the caller's transaction rolls back.
- await assert.rejects(()=>owned(async tx=>{await write(tx,'do-owned','never');await deviceOnly.publish(tx,({touch})=>{touch.draft({id:'d'});});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
+ await assert.rejects(()=>owned(async tx=>{await write(tx,'do-owned','never');await deviceOnly.publish(tx,({invalidate})=>{invalidate.draft({id:'d'});});}),/invalidate\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
  for(const id of ['do-external','do-owned'])assert.equal((await db.$queryRawUnsafe('SELECT * FROM business_task WHERE id=$1',id)).length,0,id);
  assert.equal(await head('drafts'),headBefore);
 });
 test('an always-null Loader for a device-only Model keeps the registered behavior',async()=>{
  // Before #187 every Model needed a Loader, so device-only Models registered one answering null.
- const nulls=createBackend({config:withDraft,database:database(),authenticate,handlers:{async edit({input,tx,touch,scope: scope}){await write(tx,input.task.identity.id,input.task.patch.title);touch.draft({id:'null-d'});scope('null-drafts').add.draft({id:'null-d'});}},loaders:{task:readTasks,async draft({ids}){return ids.map(()=>null);}}});
+ const nulls=createBackend({native,config:withDraft,database:database(),authenticate,handlers:{async edit({input,tx,invalidate,stream: stream}){await write(tx,input.task.identity.id,input.task.patch.title);invalidate.draft({id:'null-d'});stream('null-drafts').track.draft({id:'null-d'});}},loaders:{task:readTasks,async draft({ids}){return ids.map(()=>null);}}});
  const result=JSON.parse(await nulls.push('alice',push('always-null',1,[mutation(1,'with draft','null-a')])));
  assert.deepEqual(result.rejections,[]);
  const page=JSON.parse(await nulls.pull('alice',pullBody({'null-drafts':0},{Task:1,Draft:1})));

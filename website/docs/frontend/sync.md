@@ -7,51 +7,51 @@ Local reads and writes go through the Rust engine and SQLite. A connection handl
 === "TypeScript"
 
     ```ts
-    const followed = await client.scopes.subscribe('book:demo');
+    const followed = await client.streams.subscribe('book:demo');
     const stop = client.models.entry.watch({}, entries => render(entries), console.error);
     ```
 
 === "Flutter"
 
     ```dart
-    final followed = await client.scopes.subscribe('book:demo');
+    final followed = await client.streams.subscribe('book:demo');
     final subscription = client.models.entry.watch().listen(
       render,
       onError: (Object error) => print(error),
     );
     ```
 
-Here `render` is your UI's update function. Subscribing records the desired scope durably - it works offline and survives a restart - and wakes the connection; it does not wait for the initial data. `watch` emits again when synchronization commits records.
+Here `render` is your UI's update function. Subscribing records the desired stream durably - it works offline and survives a restart - and wakes the connection; it does not wait for the initial data. `watch` emits again when synchronization commits records.
 
-**A subscription delivers changes from the moment it is established, not the scope's existing records.** The first time a connection negotiates a session for it, the position the server acknowledges becomes that subscription's starting point, and records published to the scope before that point are not downloaded. On a new database the initial result is empty and stays empty until something is published. Ask for what the scope already held:
+**A subscription delivers changes from the moment it is established, not the stream's existing records.** The first time a connection negotiates a session for it, the position the server acknowledges becomes that subscription's starting point, and records published to the stream before that point are not downloaded. On a new database the initial result is empty and stays empty until something is published. Ask for what the stream already held:
 
 === "TypeScript"
 
     ```ts
-    const followed = await client.scopes.subscribe('book:demo');
+    const followed = await client.streams.subscribe('book:demo');
     followed.bootstrap().catch(console.error);
     ```
 
 === "Flutter"
 
     ```dart
-    final followed = await client.scopes.subscribe('book:demo');
+    final followed = await client.streams.subscribe('book:demo');
     followed.bootstrap().catchError((Object error) => print(error));
     ```
 
-`bootstrap()` loads what was published to the scope before this subscription's starting point. It starts when you call it, awaited or not, so a first screen can render local data immediately and fill in as the load commits; `await` it instead when the screen has nothing to show without it. The call is durable: it survives a restart and resumes without being called again, it waits for connectivity rather than failing, and a call that finds the work already done resolves offline. Completing it means that history and the changes up to the position the load finished at have been processed - not that you hold a snapshot, that the data is fresh now, or that every record loaded (a failed loader read is reported and corrected on the next delivery). See [`bootstrap()`](client-api.md#scopes) for the full contract.
+`bootstrap()` loads what was published to the stream before this subscription's starting point. It starts when you call it, awaited or not, so a first screen can render local data immediately and fill in as the load commits; `await` it instead when the screen has nothing to show without it. The call is durable: it survives a restart and resumes without being called again, it waits for connectivity rather than failing, and a call that finds the work already done resolves offline. Completing it means that history and the changes up to the position the load finished at have been processed - not that you hold a snapshot, that the data is fresh now, or that every record loaded (a failed loader read is reported and corrected on the next delivery). See [`bootstrap()`](client-api.md#streams) for the full contract.
 
 The handle `subscribe` returns tells you where that is: `followed.status` has `initialization` (`pending` until the starting point is committed, then `ready`), `connection` (`offline`, `connecting`, `catching-up`, `live` or `stopped`) and `bootstrap` (`{phase, error}`), and `followed.watch(status => …)` reports the current snapshot and every change. `live` means the stream is healthy, not that everything has arrived. `followed.unsubscribe()` removes this registration, and the load with it; later calls through that handle fail with `subscription.closed`.
 
-Use scope names your backend adds records to, and subscribe when the client needs to receive changes other clients make. The backend adds a record when a handler creates it or, progressively, when a [Load](loads.md#add-loaded-records-to-a-scope) handler adds records its page returns; adding records never subscribes a client. To follow the records a Load brings, wait for `initialization` to be `ready` before starting it: until the first handshake, `subscribe` has only stored your intent ([Keep loaded records current](loads.md#keep-loaded-records-current)). A scope is not a database query or an authorization token. Loaders decide which requested records the authenticated user may see.
+Use stream names your backend adds records to, and subscribe when the client needs to receive changes other clients make. The backend adds a record when a handler creates it or, progressively, when a [Load](loads.md#track-loaded-records-in-a-stream) handler adds records its page returns; adding records never subscribes a client. To follow the records a Load brings, wait for `initialization` to be `ready` before starting it: until the first handshake, `subscribe` has only stored your intent ([Keep loaded records current](loads.md#keep-loaded-records-current)). A stream is not a database query or an authorization token. Loaders decide which requested records the authenticated user may see.
 
 ## Receive your own results
 
 **A subscription is not required to see your own result.** A durable Mutation's inferred local Model changes are optimistic. Its handle's `wait()` returns the final per-invocation result or an error. The receipt also carries batch-final authority for the records its Model inputs target, read through the Loader in the handler transaction, whatever outputs the operation declares. AXTON applies that authority and replays later pending edits over it. Thus the result snapshot and current local Model view can differ. A direct call, such as a default Query, has no automatic local optimism or durable queue; its response carries its result and applies authority through the same local state path.
 
-Subscribe with `client.scopes.subscribe(scope)` as above when the client needs changes made elsewhere: by other users, by background jobs, or by handlers that touch records beyond the Model inputs. Subscription starts synchronization from the point it was established and does not wait for initial data; `bootstrap()` is what fetches what the scope already held. Use `watch` to observe the records, and wait for an existing record to be available locally before updating it.
+Subscribe with `client.streams.subscribe(stream)` as above when the client needs changes made elsewhere: by other users, by background jobs, or by handlers that touch records beyond the Model inputs. Subscription starts synchronization from the point it was established and does not wait for initial data; `bootstrap()` is what fetches what the stream already held. Use `watch` to observe the records, and wait for an existing record to be available locally before updating it.
 
-You can send Mutations and Queries without subscribing to any scope. The receipt still corrects the local row to the server's batch-final state; what you do not receive is later changes from elsewhere. If you subscribe to a scope the record belongs to, the page for your own change carries the same stamp as the receipt and rewrites nothing, whichever arrives first.
+You can send Mutations and Queries without subscribing to any stream. The receipt still corrects the local row to the server's batch-final state; what you do not receive is later changes from elsewhere. If you subscribe to a stream the record belongs to, the page for your own change carries the same stamp as the receipt and rewrites nothing, whichever arrives first.
 
 ## Work offline
 
@@ -127,7 +127,7 @@ If the backend refuses this client's admission, for example because the app buil
 
 Use `wake()` after an application event that should prompt another scheduling check. Use `resume()` after explicitly pausing. A closed connection cannot resume; create a new one with `client.connect` or reopen the client. Direct requests use a finite timeout; an `unknown` execution status can mean the backend committed but the client did not observe the response.
 
-On connection or reconnection, AXTON establishes the WebSocket subscription and receives the current position of each scope. A scope with no saved position takes the acknowledged one as its starting point and downloads nothing older. For a scope that has one, reconnecting is not a new starting point: if the saved position is already current it streams at once; otherwise it sends one HTTP pull for all scopes from their saved positions, holding changes that arrive meanwhile, then continues with WebSocket updates. A position never moves backwards, and a server position below saved progress is reported as an error instead of silently resetting the scope. Both sources use the same Rust page processing: each page applies as one transaction, covered pages are discarded, overlapping pages apply their unseen changes, and gaps trigger HTTP recovery from saved progress. Subscription changes replace the session; pages from replaced or canceled sessions cannot update local data.
+On connection or reconnection, AXTON establishes the WebSocket subscription and receives the current position of each stream. A stream with no saved position takes the acknowledged one as its starting point and downloads nothing older. For a stream that has one, reconnecting is not a new starting point: if the saved position is already current it streams at once; otherwise it sends one HTTP pull for all streams from their saved positions, holding changes that arrive meanwhile, then continues with WebSocket updates. A position never moves backwards, and a server position below saved progress is reported as an error instead of silently resetting the stream. Both sources use the same Rust page processing: each page applies as one transaction, covered pages are discarded, overlapping pages apply their unseen changes, and gaps trigger HTTP recovery from saved progress. Subscription changes replace the session; pages from replaced or canceled sessions cannot update local data.
 
 ## Authentication and account changes
 
@@ -135,23 +135,25 @@ Authenticate requests on the backend and check business permissions in handlers 
 
 Use a separate local database per signed-in user. On an account change, stop and close the old client before opening the other user's database. Changing only the transport token leaves the old user's cached records and client identity in place.
 
-Backend membership removal sends a synchronized release. The client folds all Scope evidence before applying content: removing one hold keeps a record held elsewhere, while removing the last evicts its replicated base without cascading to children, running `onStore` as a deletion, or sending a domain write. Pending operations and device-local work survive. An equal-stamp re-add can restore an evicted base.
+Tracking records durable interest, not permission. Loader `null` at a newer stamp is authoritative absence and follows Model hooks/cascades; Loader failure is a diagnostic that retains local data. Errors do not make incomplete pages evidence of absence. Unsubscribe removes registration/progress and retains cache, holding evidence and server tracking. A saved call replays its exact outcome without running a Loader or declaring tracking again.
 
-A Loader's stamped `null` is authoritative absence and still follows Model deletion/cascade rules. A Loader error is a diagnostic, never release or deletion. Unsubscribing stops delivery and removes its registration and progress; it retains content and recorded holds.
+An application can use explicit standing-record absence as a cache-reclamation signal. End the relationship and invalidate its identity in the backend transaction; its viewer Loader answers `null`. The standing Model's local `onStore` callback responds to explicit incoming delete changes through the supplied local transaction. Hooks see the pre-store view: when checking children, exclude the standing identities this callback is deleting rather than treating their still-cached rows as valid paths. Reclaim only replicated children no longer reachable through ownership or another currently valid relationship/delivery path, preserving pending and device-only work under the application's chosen cleanup policy. Direct `tx.models.delete` uses ordinary local-write/cascade semantics; preservation is the application's responsibility, not a special withdrawal guarantee. Other holders of a deleted relationship need global invalidation; a viewer-only projection change may use selected invalidation.
 
-A stored one-shot Fetch or Query does not enroll membership. Its untracked cache has no promise of automatic cleanup; an explicit removal for that identity can evict it, but AXTON cannot infer a hold never recorded. A fresh authorized read after release may cache the record again. Delayed positive bodies from requests begun before release cannot restore it; request epoch admission is separate from content stamps. Load enrollment and explicit Add claims record holds without advancing the ordinary delivery cursor. See [cutover](../backend/deployment.md#scope-membership-cutover).
+Queries must gate presentation by current standing and independently valid paths, even if child rows exist. Direct `tx.models.delete` does not create a Stream-withdrawal request-epoch fence: delayed newer-stamp Load/Fetch authority or saved replay may materialize children again. Hook cleanup reclaims cache; standing and independent reachability decide eligibility. No automatic dependent traversal or retention policy is supplied. Children actually changed or deleted on the backend need their own invalidation; releasing their cache alone does not.
 
-An upgraded database reconciles retained subscribed Scope history automatically. This walk has its own fixed bound and progress, including removals below saved delivery progress; ordinary delivery then catches up to its terminal barrier. HTTP-only clients fix the bound from a valid current delta head, and reopening resumes the same walk. Background failures retry with bounded backoff. This does not request or complete your separate `bootstrap()` call, and a fresh subscription still starts from its first acknowledged position. See [local reconciliation](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/client/storage/reconciliation.md#scope-membership-upgrade).
+Retained historical Stream removals still release source holdings: another hold protects the replicated base, and final release preserves pending and device-only work, running neither Loader nor business hooks/cascades. Their request fences remain supported. One-shot Fetch/Query cache without tracking has no automatic cleanup guarantee. Tracking claims record holds without advancing ordinary delivery progress. See [cutover](../backend/deployment.md#stream-membership-cutover).
+
+An upgraded database reconciles retained subscribed Stream history automatically. This walk has its own fixed bound and progress, including removals below saved delivery progress; ordinary delivery then catches up to its terminal barrier. HTTP-only clients fix the bound from a valid current delta head, and reopening resumes the same walk. Background failures retry with bounded backoff. This does not request or complete your separate `bootstrap()` call, and a fresh subscription still starts from its first acknowledged position. See [local reconciliation](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/client/storage/reconciliation.md#stream-membership-upgrade).
 
 ## Diagnose pending work
 
 | Observation | Check |
 | --- | --- |
-| Empty local query after opening | Desired scope, running connection, loader output and read permission |
+| Empty local query after opening | Desired stream, running connection, loader output and read permission |
 | `queued` with failed prerequisites | The handler failed terminally; reset its readiness to pending and the client runs it again |
 | `frozen` after a network failure | Connectivity/authentication; retain the frozen bytes for retry |
 | `frozen` long after the network recovered | Either the server refused the batch on identity or order grounds (401/403/409 `client.owner_mismatch`/`gap`/`overlap`) — the code reaches `onError` and the batch is resent as is because the server never ran it — or a received receipt was refused locally (it named another client or batch, or omitted an accepted record): check `onError` and the backend's loaders |
-| Server values do not update | Whether the record was added to the scope (`scope(name).add.todo`) and is still a member, and whether the handler touched every record it changed beyond its Model inputs (`touch.todo`) |
+| Server values do not update | Whether the record was added to the stream (`stream(name).track.todo`), and whether every changed identity was invalidated globally (`invalidate.todo`) or through appropriate selected authority invalidation |
 | Local client fails after another process wrote | One active client per SQLite file; close/reopen the stale instance |
 | Empty local data after an app update | `syncState().schema.rebuilt`: the schema was incompatible and a fresh database is synchronising from the beginning; `syncState().schema.pending` means the old file is still sending its last changes, call `rebuild()` when it reaches 0 ([local storage](storage.md#change-the-schema)) |
 

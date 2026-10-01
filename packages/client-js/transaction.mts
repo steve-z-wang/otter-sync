@@ -78,7 +78,9 @@ export class Transaction {
       subscribe: (stream) =>
         this.#call({ kind: "stream", stream, subscribed: true }).then(() => {}),
       unsubscribe: (stream) =>
-        this.#call({ kind: "stream", stream, subscribed: false }).then(() => {}),
+        this.#call({ kind: "stream", stream, subscribed: false }).then(
+          () => {},
+        ),
     };
   }
   /** Dismiss a refusal as part of this transaction. */

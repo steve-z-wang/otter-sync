@@ -42,7 +42,7 @@ pub mod limits {
     pub const LOAD_ENROLLMENT_PAIRS: usize = 1000;
     /// The encoded bytes of one Load page's distinct enrollment: the sum of
     /// the UTF-8 lengths of each pair's canonical JSON intent
-    /// `{stream, identity, model, present}` at its canonical identity.
+    /// `{kind: "track", stream, record: {model, identity}}` at its canonical identity.
     pub const LOAD_ENROLLMENT_BYTES: usize = 1024 * 1024;
 }
 

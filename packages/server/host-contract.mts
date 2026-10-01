@@ -141,14 +141,27 @@ export type LockRecordRequest = {
 };
 export type MemberKey = { model: string; identityKey: string };
 export type TrackingPair = MemberKey & { stream: string };
-export type ReadTrackingRequest = { op: "readTracking"; records: MemberKey[]; pairs: TrackingPair[] };
+export type ReadTrackingRequest = {
+  op: "readTracking";
+  records: MemberKey[];
+  pairs: TrackingPair[];
+};
 export type ReadTrackingResponse = TrackingPair[];
-export type GuardRecordsRequest = { op: "guardRecords"; records: (MemberKey & { mode: "advance" | "ensure" | "lock" })[] };
+export type GuardRecordsRequest = {
+  op: "guardRecords";
+  records: (MemberKey & { mode: "advance" | "ensure" | "lock" })[];
+};
 export type GuardRecordsResponse = (number | null)[];
 /** Distinct, strictly ordered UTF-8 names; lock before canonical record guards. */
 export type LockStreamsRequest = { op: "lockStreams"; streams: string[] };
-export type TrackingDelta = TrackingPair & { identity: Record<string, unknown>; publish: boolean };
-export type ApplyStreamMembersRequest = { op: "applyStreamMembers"; deltas: TrackingDelta[] };
+export type TrackingDelta = TrackingPair & {
+  identity: Record<string, unknown>;
+  publish: boolean;
+};
+export type ApplyStreamMembersRequest = {
+  op: "applyStreamMembers";
+  deltas: TrackingDelta[];
+};
 
 export type HostRequest =
   | ClaimRequest
@@ -219,14 +232,23 @@ export type Stamped = number;
 export type Stamps = number[];
 /** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
 export type Locked = number | null;
-export type MemberPosition = TrackingPair & { cursor: number; kind: "upsert" | "remove" };
+export type MemberPosition = TrackingPair & {
+  cursor: number;
+  kind: "upsert" | "remove";
+};
 /** A record a handler names: an additional changed record. */
 export type HostRecordRef = {
   model: string;
   identity: Record<string, unknown>;
 };
-export type TrackIntent = { kind: "track"; stream: string; record: HostRecordRef };
-export type StreamIntent = TrackIntent | { kind: "invalidate"; streams: string[] | null; record: HostRecordRef };
+export type TrackIntent = {
+  kind: "track";
+  stream: string;
+  record: HostRecordRef;
+};
+export type StreamIntent =
+  | TrackIntent
+  | { kind: "invalidate"; streams: string[] | null; record: HostRecordRef };
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input

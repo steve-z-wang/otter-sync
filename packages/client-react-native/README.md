@@ -28,7 +28,7 @@ const client = await GeneratedClient.open({
   server: { url: 'http://127.0.0.1:4242', token: 'demo-user' },
   connection: { onError: error => console.error(error) },
 });
-await client.scopes.subscribe('book:demo');
+await client.streams.subscribe('book:demo');
 ```
 
 The URL above is for a simulator using a backend on its host. Configure a reachable address and the application's real authentication for other environments. Local HTTP permission belongs to the development app configuration.
@@ -41,7 +41,7 @@ Each client is one Rust runtime on its own thread, reached through the [native m
 
 ## Client behavior
 
-Generated reads, queries, watches, direct writes, Mutations, Queries, transactions, and scope subscriptions use the same ports as Node. A durable `client.mutations` call commits its optimistic changes and queue entry together before returning its `Call`; network delivery proceeds independently. Public transactions hold local model reads and direct writes, and queue Mutations through the raw `submitMutation`, whose optional `local` callback writes that call's local companions; each `Call` stays provisional until the transaction commits. See [client API](../../website/docs/frontend/client-api.md) for the shared generated API.
+Generated reads, queries, watches, direct writes, Mutations, Queries, transactions, and stream subscriptions use the same ports as Node. A durable `client.mutations` call commits its optimistic changes and queue entry together before returning its `Call`; network delivery proceeds independently. Public transactions hold local model reads and direct writes, and queue Mutations through the raw `submitMutation`, whose optional `local` callback writes that call's local companions; each `Call` stays provisional until the transaction commits. See [client API](../../website/docs/frontend/client-api.md) for the shared generated API.
 
 Always await each operation inside a transaction. A failed command poisons that transaction even if the callback catches its error. Unawaited operations prevent commit; queued work drains before rollback, and escaped transaction objects reject further calls. The mobile raw transaction does **not** expose nested `savepoint`; Node's existing savepoint API remains available on Node. Await each `submitMutation` that has a `local` callback: until it settles, every other command of the transaction fails with `invalid transaction capability` and fails the transaction. A captured `client.mutations` or `client.queries` call during an active public transaction fails promptly with `transaction_active`. React Native applies this guard to unrelated concurrent mutation calls too; retry those after the public transaction settles. Because React Native cannot tell the callback's own calls from unrelated ones, it does not guard the outer client's other calls (reads, `transaction`, subscriptions): from inside a callback they wait behind the transaction that waits for them, so use `tx` there. Node refuses every outer-client call from its callback with `transaction_active`.
 

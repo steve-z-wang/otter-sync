@@ -43,10 +43,10 @@ void main(){
      final DateTime at=change.row.at;
      final Status status=change.row.status;
      await tx.models.entry.get(EntryIdentity(id:id));
-     await tx.scopes.subscribe('entry:$id');
+     await tx.streams.subscribe('entry:$id');
      expect(at,isA<DateTime>());expect(status,isA<Status>());
     }else if(change is StoreDelete<EntryIdentity,Entry>){
-     await tx.scopes.unsubscribe('entry:$id');
+     await tx.streams.unsubscribe('entry:$id');
     }
    }
   });
@@ -259,17 +259,17 @@ void main(){
   final temp=await Directory.systemTemp.createTemp('generated-api-scopes-');
   final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY'] ?? '../../target/debug/libaxton_dart.dylib');
   try{
-   final handles=await Future.wait([client.scopes.subscribe('project:123'),client.scopes.subscribe('project:123')]);
+   final handles=await Future.wait([client.streams.subscribe('project:123'),client.streams.subscribe('project:123')]);
    final Subscription a=handles.first;
    expect(identical(a,handles.last),isTrue,reason:'concurrent calls obtain one cached handle');
    expect(a.status.initialization,SubscriptionInitialization.pending);
    await a.unsubscribe();
-   final c=await client.scopes.subscribe('project:123');
+   final c=await client.streams.subscribe('project:123');
    await a.unsubscribe();
    expect(c.status.active,isTrue,reason:'an old handle cannot remove the registration that replaced it');
    // The handle is the runtime's: its Scope, its immutable status and its
    // observers are all named through the generated library.
-   final String scope=c.scope;
+   final String scope=c.stream;
    final SubscriptionStatus status=c.status;
    expect(scope,'project:123');
    expect(status.connection,SubscriptionConnection.offline);
@@ -279,7 +279,7 @@ void main(){
    await observer.cancel();
    expect(seen.map((s)=>s.connection),[SubscriptionConnection.offline],reason:'the current snapshot arrives first');
    // A second Scope registers durable intent before any server boundary.
-   final Subscription retained=await client.scopes.subscribe('project:456');
+   final Subscription retained=await client.streams.subscribe('project:456');
    expect(retained.status.initialization,SubscriptionInitialization.pending);
    await retained.unsubscribe();
    expect(retained.status.active,isFalse);
@@ -302,19 +302,19 @@ void main(){
     // Only a bootstrap page is expected here, and the test transport holds it.
     loads.add(body);
     await held.future;
-    request.response.write(jsonEncode({'mode':'bootstrap','scope':body['scope'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'changes':<Object>[]}));
+    request.response.write(jsonEncode({'mode':'bootstrap','stream':body['stream'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'changes':<Object>[]}));
     await request.response.close();
     return;
    }
    final socket=await WebSocketTransformer.upgrade(request);
    socket.listen((message){
     final subscribe=jsonDecode(message as String) as Map;
-    socket.add(jsonEncode({'type':'subscribed','cursors':{for(final scope in subscribe['scopes'] as List) scope:0}}));
+    socket.add(jsonEncode({'type':'subscribed','cursors':{for(final scope in subscribe['streams'] as List) scope:0}}));
    },onError:(Object _){});
   });
   final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY'] ?? '../../target/debug/libaxton_dart.dylib');
   try{
-   final Subscription subscription=await client.scopes.subscribe('project:123');
+   final Subscription subscription=await client.streams.subscribe('project:123');
    final BootstrapStatus initial=subscription.status.bootstrap;
    final BootstrapPhase phase=initial.phase;
    final BootstrapError? failure=initial.error;

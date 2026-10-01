@@ -889,8 +889,14 @@ const GENERATED_NAMES: &[&str] = &[
 /// calls, Stream tracking and invalidation. A model or enum with one of these names
 /// would collide with them in the generated backend file.
 const GENERATED_BACKEND_NAMES: &[&str] = &[
-    "Stream", "LoadStream", "RecordDeclaration", "HandlerCall", "MutationContext",
-    "QueryContext", "RecordRef", "TransactionCall",
+    "Stream",
+    "LoadStream",
+    "RecordDeclaration",
+    "HandlerCall",
+    "MutationContext",
+    "QueryContext",
+    "RecordRef",
+    "TransactionCall",
 ];
 
 /// Top-level names the Model Fetch facade declares

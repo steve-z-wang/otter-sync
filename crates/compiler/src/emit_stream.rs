@@ -4,28 +4,26 @@ use serde_json::Value;
 use std::fmt::Write;
 
 pub(crate) fn backend(models: &[Value], o: &mut String) {
-    for (name, result) in [("RecordDeclaration", "void")] {
+    writeln!(
+        o,
+        "export interface RecordDeclaration {{\n (records: RecordRef | readonly RecordRef[]): void;"
+    )
+    .unwrap();
+    for m in models {
+        let n = s(m, "name");
+        let ids = arr(m, "identity");
+        let operand = if ids.len() == 1 {
+            format!("{n}Identity | {n}Identity[{}]", ids[0])
+        } else {
+            format!("{n}Identity")
+        };
         writeln!(
             o,
-            "export interface {name} {{\n (records: RecordRef | readonly RecordRef[]): {result};"
+            " {}(ids: {operand} | readonly ({operand})[]): void;",
+            lower(n)
         )
         .unwrap();
-        for m in models {
-            let n = s(m, "name");
-            let ids = arr(m, "identity");
-            let operand = if ids.len() == 1 {
-                format!("{n}Identity | {n}Identity[{}]", ids[0])
-            } else {
-                format!("{n}Identity")
-            };
-            writeln!(
-                o,
-                " {}(ids: {operand} | readonly ({operand})[]): {result};",
-                lower(n)
-            )
-            .unwrap();
-        }
-        o.push_str("}\n");
     }
+    o.push_str("}\n");
     o.push_str("export interface Stream { readonly track: RecordDeclaration; readonly invalidate: RecordDeclaration }\nexport interface LoadStream { readonly track: RecordDeclaration }\n");
 }

@@ -1031,8 +1031,8 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                 : shape(slot, raw);
           }
           // The engine derives the records the operations target and adds
-          // them to the change set itself; `changes` carries only the
-          // handler's own `invalidate` declarations.
+          // them to the change set itself; `declarations` carries the
+          // handler's explicit tracking and invalidation.
           const effects = createEffects();
           try {
             await entry.handler({

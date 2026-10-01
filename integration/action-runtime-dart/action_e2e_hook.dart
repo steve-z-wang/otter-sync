@@ -32,7 +32,7 @@ Future<void> main(List<String> args) async {
         final before = await tx.models.todo.get(change.identity);
         observed.add('${change.row.title}:${before?.title}');
         await tx.models.todo.update(const app.TodoIdentity(id: 'dart-hook-b'), const app.TodoPatch(title: app.Present('derived B')));
-        await tx.scopes.subscribe('dart:derived');
+        await tx.streams.subscribe('dart:derived');
       }
     }),
   );
@@ -51,7 +51,7 @@ Future<void> main(List<String> args) async {
     check(observedIdentities.length == 1 && observedIdentities.single == 'dart-hook-a', 'store:false invoked only A, not output B: $observedIdentities');
     check((await client.models.todo.get(const app.TodoIdentity(id: 'dart-hook-a')))?.title == 'A1', 'input A authority committed');
     check((await client.models.todo.get(const app.TodoIdentity(id: 'dart-hook-b')))?.title == 'derived B', 'derived B committed before success');
-    final rows = await client.readSql('SELECT scope FROM axton_subscription WHERE scope = ?', parameters: ['dart:derived']);
+    final rows = await client.readSql('SELECT stream FROM axton_subscription WHERE stream = ?', parameters: ['dart:derived']);
     check(rows.length == 1, 'hook subscription intent committed');
     for (var attempt = 0; attempt < 100 && !watched.any((rows) => rows.contains('dart-hook-a:A1') && rows.contains('dart-hook-b:derived B')); attempt++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));

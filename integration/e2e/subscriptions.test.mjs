@@ -41,7 +41,7 @@ async function never(predicate, label, millis = 400) {
 /** The stored ledger row for `SCOPE`: identity and both boundaries as SQLite holds them. */
 async function ledger(client) {
  const rows = await client.readSql(
-  'SELECT subscription_id, starting_cursor, cursor FROM axton_subscription WHERE scope = ?',
+  'SELECT subscription_id, starting_cursor, cursor FROM axton_subscription WHERE stream = ?',
   [SCOPE],
  );
  assert.equal(rows.length, 1, 'one subscription row');
@@ -56,10 +56,10 @@ test('a new subscription starts at the acknowledged head and keeps that origin a
  let client;
  let server;
  /** Publish one Entry on the Scope, the way a background job does. */
- const publish = (id, text) => app.backend.transaction(async ({ tx, scope: scope, touch }) => {
+ const publish = (id, text) => app.backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
   await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
   touch.entry({ id });
-  scope(SCOPE).add.entry({ id });
+  scope(SCOPE).track.entry({ id });
  });
  const onError = { onError: error => errors.push(error) };
  try {
@@ -72,11 +72,11 @@ test('a new subscription starts at the acknowledged head and keeps that origin a
   // Offline registration: the intent commits without a connection, and its
   // first boundary is not committed yet.
   client = await GeneratedClient.open({ path });
-  const subscription = await client.scopes.subscribe(SCOPE);
-  assert.equal(subscription.scope, SCOPE);
+  const subscription = await client.streams.subscribe(SCOPE);
+  assert.equal(subscription.stream, SCOPE);
   assert.deepEqual(subscription.status, { active: true, initialization: 'pending', connection: 'offline', bootstrap: notRequested });
   assert.deepEqual(await ledger(client), { subscription_id: 1, starting_cursor: null, cursor: null });
-  assert.equal(await client.scopes.subscribe(SCOPE), subscription, 'a repeated registration answers the same handle');
+  assert.equal(await client.streams.subscribe(SCOPE), subscription, 'a repeated registration answers the same handle');
 
   // The first handshake establishes the origin S. Nothing rewinds to zero.
   const observed = [];
@@ -128,7 +128,7 @@ test('a new subscription starts at the acknowledged head and keeps that origin a
   await client.close();
   client = await GeneratedClient.open({ path });
   assert.deepEqual(await ledger(client), afterOutage, 'the boundaries survive close and reopen');
-  const resumed = await client.scopes.subscribe(SCOPE);
+  const resumed = await client.streams.subscribe(SCOPE);
   assert.deepEqual(
    resumed.status,
    { active: true, initialization: 'ready', connection: 'offline', bootstrap: notRequested },

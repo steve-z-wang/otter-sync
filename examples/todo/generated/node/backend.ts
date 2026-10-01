@@ -9,37 +9,19 @@ export type Todo = TodoRecord;
 export type { TodoIdentity, TodoPatch };
 export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: "Todo" }> { return { model: "Todo", identity }; }
 export type RecordRef = { readonly model: "User"; readonly identity: UserIdentity } | { readonly model: "Todo"; readonly identity: TodoIdentity };
-export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
-export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
-export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
-export interface ScopeAdd {
- (records: RecordRef | readonly RecordRef[]): AddDeclaration;
- user(ids: UserIdentity | UserIdentity["id"] | readonly (UserIdentity | UserIdentity["id"])[]): AddDeclaration;
- todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): AddDeclaration;
-}
-export interface ScopeRecords {
+export interface RecordDeclaration {
  (records: RecordRef | readonly RecordRef[]): void;
  user(ids: UserIdentity | UserIdentity["id"] | readonly (UserIdentity | UserIdentity["id"])[]): void;
  todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
 }
-export interface Touch {
- (records: RecordRef | readonly RecordRef[]): void;
- user(ids: UserIdentity | UserIdentity["id"] | readonly (UserIdentity | UserIdentity["id"])[]): void;
- todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
-}
-export interface ScopeTagRemoval extends ScopeRecords { (): void }
-export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
- user(predicate: ScopePredicate): ScopeSelection;
- todo(predicate: ScopePredicate): ScopeSelection;
-}
-export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
-export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
+export interface Stream { readonly track: RecordDeclaration; readonly invalidate: RecordDeclaration }
+export interface LoadStream { readonly track: RecordDeclaration }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface QueryContext<Tx> {
  tx: Tx;
@@ -50,18 +32,18 @@ export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}},{"name":"createdById","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"create"}],"kind":"mutation","name":"AddTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["done"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"}],"kind":"mutation","name":"SetTodoDone","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todo","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"deprecations":[],"inverses":[],"loaders":["User","Todo"],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}},{"name":"createdById","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"name","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"User","version":1}],"mutations":[],"prerequisites":[],"requirements":[],"schema":{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}},{"name":"createdById","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"create"}],"kind":"mutation","name":"AddTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["done"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"}],"kind":"mutation","name":"SetTodoDone","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todo","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"name","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"User","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}},{"name":"createdById","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","relations":[{"fields":["createdById"],"name":"createdBy","onDelete":"none","target":"User","targetFields":["id"]}],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"done","nullable":false,"type":{"kind":"scalar","name":"boolean"}},{"name":"createdById","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"name","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"User","version":1}]},"uniqueConstraints":[]} as const;
 /** Trusted framework context and caller-supplied arguments of a Mutation. */
 export type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };
-/** A Query's context has no `scope` or `touch`: it reads without business side effects. */
+/** A Query's context has no `stream` or `invalidate`: it reads without business side effects. */
 export type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };
 export interface AddTodoInput {
  todo: Todo;

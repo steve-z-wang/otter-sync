@@ -260,7 +260,7 @@ test("generated Fetch routes through the mobile host connection to /sync/fetch",
     );
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  // No Scope is followed, so no socket is opened; one would fail the test.
+  // No Stream is followed, so no socket is opened; one would fail the test.
   class NoSocket {
     constructor() {
       throw Error("no socket expected");

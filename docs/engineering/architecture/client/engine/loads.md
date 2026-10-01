@@ -82,6 +82,6 @@ Verified 2026-09-27 by the host gate (`bash scripts/test.sh`, which runs `cargo 
 
 ## 11. Risks and Technical Debt
 
-**Accepted limitation.** Once is an application assertion that an earlier enumeration is reusable. Local deletion, Scope changes and elapsed time do not invalidate it; the application refreshes or invalidates when needed.
+**Accepted limitation.** Once is an application assertion that an earlier enumeration is reusable. Local deletion, Stream changes and elapsed time do not invalidate it; the application refreshes or invalidates when needed.
 
 **Accepted limitation.** Terminal jobs stay until forgotten; there is no automatic retention policy.

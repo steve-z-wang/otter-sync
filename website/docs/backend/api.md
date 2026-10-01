@@ -47,9 +47,9 @@ The Rust runtime processes the sync protocol and nothing else. The rules below a
 
 | Rule | Who owns it | What the runtime does |
 | --- | --- | --- |
-| Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever scope asked. | Authenticates the request and passes `userId` through. There is no scope-level policy. |
+| Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever stream asked. | Authenticates the request and passes `userId` through. There is no stream-level policy. |
 | Unique constraints and identities | Your database schema. `@@unique` and `@@id` are enforced on the client only; the client's local database refuses a violating write, but nothing checks the server. | Decodes identities and patches by shape. A duplicate that your database allows is stored. |
-| Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself and touch them (`ctx.touch.todo(identity)`), leaving them in the Scopes that delivered them so those Scopes receive the deletion. | Reads the parent back as deleted and delivers it; a child the handler did not touch stays on other clients until a Scope delivers it. |
+| Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself and touch them (`ctx.invalidate.todo(identity)`), leaving them in the Streams that delivered them so those Streams receive the deletion. | Reads the parent back as deleted and delivers it; a child the handler did not touch stays on other clients until a Stream delivers it. |
 | Client identity | Each signed-in user gets their own local client database. A client id is bound to the first user that pushed with it; a push from another user with the same client id answers `403 client.owner_mismatch`, and there is no reassignment. | Stores the owner with the client row. |
 | Backend language | TypeScript on Node, through the generated `createBackend`. The Dart package is a client SDK; there is no Dart or Rust-hosted backend. | Runs the same Rust engine inside the Node addon. |
 | Prerequisite expressions | `@requires(Name(field: self))` is the only supported form: every argument is `self`, the value of the annotated field. The runner that satisfies prerequisites is client code. | Never sees prerequisites; they gate when the client sends a durable call, not what the backend receives. |
@@ -68,13 +68,13 @@ const handleAddTodoV2: Mutations<Tx>['addTodo']['v2'] =
   async ({ ctx, args }) => {
     if (!args.todo.title.trim()) throw new CallRejected('todo.title_empty');
     await saveTodo(ctx.tx, args.todo);
-    // The new Todo joins the Scope once; its later changes reach it with no enrollment.
-    ctx.scope('todos').add.todo(args.todo);
+    // The new Todo joins the Stream once; its later changes reach it with no enrollment.
+    ctx.stream('todos').track.todo(args.todo);
     return { relatedTodo: null, matches: [], count: 1, state: null };
   };
 ```
 
-The `todo` input is already a change: AXTON stamps it and returns its authority to the caller, which completes without a subscription, whatever the outputs or the call's `store` option. It is not part of the result. The result holds only the declared outputs: `relatedTodo` and `matches` are identity-selected Model outputs that the Loader resolves at this invocation, and `count` and `state` are ordinary outputs. Other clients learn of the change through the `todos` Scope.
+The `todo` input is already a change: AXTON stamps it and returns its authority to the caller, which completes without a subscription, whatever the outputs or the call's `store` option. It is not part of the result. The result holds only the declared outputs: `relatedTodo` and `matches` are identity-selected Model outputs that the Loader resolves at this invocation, and `count` and `state` are ordinary outputs. Other clients learn of the change through the `todos` Stream.
 
 An output is independent of the inputs even when the names match. The fixture's `EditAndRead(todo Todo.update) { todo Todo }` may edit one Todo and return another:
 
@@ -109,14 +109,14 @@ Returning identity objects lets the Loader resolve the visible records in order,
 | `tx` | Yes | Yes | Your database transaction object |
 | `userId` | Yes | Yes | Authenticated caller; use it for business authorization |
 | `callId` | Yes | Yes | Stable identity of this invocation, including retries |
-| `touch` | Yes | No | `touch.todo(identity)` declares a record this Mutation changed beyond its Model inputs; see [Scopes](#scopes) |
-| `scope(name)` | Yes | No | A handle for adding records to or removing them from a Scope; see [Scopes](#scopes) |
+| `invalidate` | Yes | No | `invalidate.todo(identity)` declares a record this Mutation changed beyond its Model inputs; see [Streams](#streams) |
+| `stream(name)` | Yes | No | A handle for tracking records and selected invalidation; see [Streams](#streams) |
 
-A handler returns the generated explicit output shape, or no value when the operation has no explicit outputs. AXTON allocates a **stamp** for each changed record, the Model inputs plus the records the handler touched, and on durable delivery reads the inputs' batch-final content through the Loader into the receipt. Touch every other business record the handler changed: a touched record is delivered to its Scopes, but it is not returned to the caller, so the caller need not know its Model.
+A handler returns the generated explicit output shape, or no value when the operation has no explicit outputs. AXTON allocates a **stamp** for each changed record, the Model inputs plus the records the handler touched, and on durable delivery reads the inputs' batch-final content through the Loader into the receipt. Touch every other business record the handler changed: a touched record is delivered to its Streams, but it is not returned to the caller, so the caller need not know its Model.
 
-A Query's context has no `touch` or `scope`, in its type and at runtime. The engine also refuses any Query settlement that reports changes or memberships: that call fails with `query.effects_forbidden`, its savepoint rolls back before any stamp, readback or publication, and adjacent calls in the batch are unaffected. This is not a SQL sandbox. `ctx.tx` is still your application's transaction, and the framework cannot inspect the SQL a handler runs or other clients it has captured, so keeping a Query free of business side effects is your application's responsibility. Framework metadata is still written: each Query outcome is saved by call ID like a Mutation's, so retrying the same call ID replays the saved result and a new invocation reads again.
+A Query's context has no `invalidate` or `stream`, in its type and at runtime. The engine also refuses any Query settlement that reports changes or memberships: that call fails with `query.effects_forbidden`, its savepoint rolls back before any stamp, readback or publication, and adjacent calls in the batch are unaffected. This is not a SQL sandbox. `ctx.tx` is still your application's transaction, and the framework cannot inspect the SQL a handler runs or other clients it has captured, so keeping a Query free of business side effects is your application's responsibility. Framework metadata is still written: each Query outcome is saved by call ID like a Mutation's, so retrying the same call ID replays the saved result and a new invocation reads again.
 
-A loader is scope-independent: the row it returns for a record is the row every client receives for it, in the receipt, in a catch-up page and on the live stream, at the same stamp. What a loader may vary by is `userId`.
+A loader is stream-independent: the row it returns for a record is the row every client receives for it, in the receipt, in a catch-up page and on the live stream, at the same stamp. What a loader may vary by is `userId`.
 
 One Mutation can have several operands and perform several business writes in one savepoint. The schema's Model operands describe local optimism; the backend can normalize values or use different tables.
 
@@ -137,7 +137,7 @@ An error that is neither `CallRejected` nor translated to a business code reject
 
 ## Load handlers
 
-A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId`, `loadId` and `scope(name)`, and no `touch`. That `scope(name)` is a `LoadScope`: it enrolls and attaches labels only for records this page returns, which commit with the page ([Add loaded records to a Scope](../frontend/loads.md#add-loaded-records-to-a-scope)). Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again or adding anything. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
+A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId`, `loadId` and `stream(name)`, and no `invalidate`. That `stream(name)` is a `LoadStream`: it tracks only records this page returns, which commit with the page ([Track loaded records in a Stream](../frontend/loads.md#track-loaded-records-in-a-stream)). Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again or adding anything. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
 
 ## Loaders
 
@@ -157,7 +157,7 @@ const loadTodoV2: NonNullable<Loaders<Tx>['todo']>['v2'] =
 | `tx` | Your transaction, shared with sync persistence for this request |
 | `userId` | Caller whose visibility must be checked |
 
-A Loader is not told which scope, if any, asked: it serves Mutation and Query Model outputs, durable authority readback, catch-up pages, the live stream and a client's [`client.fetch`](../frontend/client-api.md#fetch-a-record-from-the-backend) of one record, which needs no handler of its own. It sees the same application transaction during a call.
+A Loader is not told which stream, if any, asked: it serves Mutation and Query Model outputs, durable authority readback, catch-up pages, the live stream and a client's [`client.fetch`](../frontend/client-api.md#fetch-a-record-from-the-backend) of one record, which needs no handler of its own. It sees the same application transaction during a call.
 
 A loader returns `Promise<readonly (Record | null)[]>`. Return exactly one item per identity, in the same order. Do not filter out missing rows or return a differently ordered database result directly.
 
@@ -177,7 +177,7 @@ What each item may be:
 | Item | Meaning | Result |
 | --- | --- | --- |
 | A row object | The record's current state for this user | Delivered with the record's current stamp |
-| `null` | The record does not exist, or this user must not see it | Delivered as a deletion. A newer stamp clears the authoritative row, whichever scope delivered it; the client keeps the stamp so older content cannot bring the record back; pending local operations are replayed on that state. |
+| `null` | The record does not exist, or this user must not see it | Delivered as a deletion. A newer stamp clears the authoritative row, whichever stream delivered it; the client keeps the stamp so older content cannot bring the record back; pending local operations are replayed on that state. |
 | a thrown `CallRejected` (or an error `translateRejection` maps to a code) | A refused read | During a call, that call is rejected with the code and rolled back. In a pull, that record is delivered as an error with that code: the client keeps its local copy and reports it, and the rest of the page applies |
 | any other thrown error | A failure | Reported to `onError` (default `console.error`). During a call, the call is rejected with `loader.failed`; in a pull, that record is delivered as a `loader.failed` error and the rest of the page applies |
 | `undefined`, a missing entry, a non-array result, a nonfinite number | A defect | Reported to `onError` and treated like a thrown error: only the records it affects fail. It is never read as `null` |
@@ -194,116 +194,56 @@ A Model whose Loader you leave out is device-only: a composer's working copy or 
 
 - **On the client** the Model works like any other for local `create`, `update`, `delete`, `get`, `query` and `watch`, and inside transactions and local companions. Those writes stay in local SQLite and are never sent.
 - **At startup** `createBackend` throws when a retained Mutation would carry the Model on the wire, or a Mutation, Query or Load would return it, because each needs its Loader: `Mutation SaveDraft v1 slot draft names Model Draft, which has no Loader; a Model without a Loader is device-only and never on the wire`.
-- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `touch.draft(…)`, `scope(name).add.draft(…)` / `scope(name).remove.draft(…)` and a mixed `scope(name).add/remove([...])` naming it throw at the call: `touch.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
+- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `invalidate.draft(…)`, `stream(name).track.draft(…)` and mixed `stream(name).track([...])` naming it throw at the call: `invalidate.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
 - **`client.fetch.draft(…)`** fails with `loader.unregistered`.
 
 A backend that registers a Loader for every Model, including one that always answers `null` for a device-only Model, keeps working unchanged.
 
-## Scopes
+## Streams
 
-A Scope holds identities for delivery to subscribed clients. Enroll a record once; later changes reach every Scope holding it. The viewer's Loader decides what each subscriber may see. Scope names and labels grant no access.
-
-```ts title="action-contract"
-import { Todo, type MutationContext } from './generated/backend.ts';
-
-function organize(ctx: MutationContext<unknown>) {
-  const s = ctx.scope('User:alice');
-  s.add.todo(['A', 'B']).tag('journal:1');
-  s.add(Todo({ id: 'C' }));
-  s.remove.todo('D');
-  s.where({ tags: { only: ['journal:1'] } }).remove();
-  s.tag('journal:1').remove();
-  ctx.touch.todo(['E', 'F']);
-}
-```
-
-| Interface | Return value and effect |
-| --- | --- |
-| `ctx.scope(name)` | A callback-bound `Scope` handle; creates no membership and sends no request. The name must be nonblank. |
-| `s.add.todo(identityOrList)` | `AddDeclaration`; ensures membership for one Model. |
-| `s.add(referenceOrList)` | `AddDeclaration`; ensures membership for generated references, which may name different Models. |
-| `s.remove.todo(identityOrList)`, `s.remove(referenceOrList)` | `void`; withdraws the entire membership and its labels. An absent membership is a no-op. |
-| `addition.tag(labelOrList)` | The same `AddDeclaration`; attaches labels to exactly the addition's captured identities. |
-| `s.tag(labelOrList)` | A label editor, with record-targeted `add` and `remove`; its argument-free `remove()` detaches those labels from every current member. |
-| `s.where(predicate)`, `s.where.todo(predicate)` | A selection handle; selects current members, optionally restricted to one generated Model. |
-| `selection.remove()` | `void`; withdraws matching memberships. |
-| `selection.tag(labelOrList).add()` / `.remove()` | `void`; edits labels on matching memberships. |
-| `ctx.touch.todo(identityOrList)`, `ctx.touch(referenceOrList)` | `void`; declares changed business content. |
-| `Todo(identity)` | A generated `RecordRef`, for mixed operations. |
-
-For a single-field Identity, typed methods accept either the field's scalar value or the complete Identity object. Composite identities require complete objects. Each record operation accepts one operand or a readonly list. Mixed operations require generated references: a bare `{ id: 'A' }` does not identify its Model. Empty record lists do nothing; argument-free root `s.add()` and `s.remove()` are invalid.
-
-Declarations are synchronous. They copy operands when called and settle with the enclosing operation, in invocation order. No `await`, execute or terminal commit call is needed: ignoring an add's return value still declares enrollment. Scope, add, label and selection handles expire when their originating callback returns or throws. A later rejection or failure rolls back the enclosing unit's effects.
-
-### Add declarations and label editors
+A Stream is a resumable ordered notification sequence. `track` establishes durable interest in a record; `invalidate` requests current authority for existing interested streams. Neither grants permission. The viewer Loader decides current content or absence independently of the delivery source.
 
 ```ts title="action-contract"
-import type { MutationContext } from './generated/backend.ts';
+import { Todo, createBackend, devAuth } from './generated/backend.ts';
 
-function label(ctx: MutationContext<unknown>) {
-  const s = ctx.scope('board:1');
-  s.add.todo('A').tag(['X', 'Y']).tag('Z');
-  s.tag('X').add.todo('A');
-  s.tag(['X', 'Y']).remove.todo('A');
-  s.tag('Z').remove();
-}
+const backend = createBackend<Tx>({
+  database, authenticate: devAuth(), mutations, queries, loads, loaders,
+});
+await backend.transaction(async ctx => {
+  const records = [Todo({ id: 'A' }), Todo({ id: 'B' })];
+  ctx.stream(['User:alice', 'User:bob']).track(records);
+  ctx.invalidate.todo(['A', 'B']);
+  ctx.stream('User:alice').invalidate.todo('C');
+});
 ```
 
-`add` preserves existing labels; repeated enrollment is idempotent. Chained `.tag(...)` adds labels after the add declaration. Each later call to a saved add handle appends its label attachment at that later invocation position. It does not rewrite the original add or resurrect a removed member.
-
-Standalone `s.tag('X').add.todo('A')` requires A to be a member at that declaration's settlement position. A missing member fails the enclosing handler or host operation and rolls back its effects. To enroll and label, use `s.add.todo('A').tag('X')`. Saving that add handle, removing A and then calling the saved handle's `.tag('X')` also fails.
-
-Label removal is idempotent, including for absent memberships. Removing the last label leaves membership present. Labels are backend-only grouping data: editing labels alone invokes no Loader, allocates no content stamp or delivery cursor and emits no client event. A label editor's argument-free `add()` is invalid; its argument-free `remove()` explicitly detaches its labels Scope-wide.
-
-Labels are case-sensitive, opaque nonblank strings of at most 256 UTF-8 bytes each. Accepted spelling is preserved. Label operations copy and deduplicate their input and accept at most 64 distinct labels. A label editor accepts one string or a nonempty readonly list; the list names labels to edit, rather than a matching condition.
-
-### Select members
-
-```ts title="action-contract"
-import type { MutationContext } from './generated/backend.ts';
-
-function retireLabel(ctx: MutationContext<unknown>) {
-  const s = ctx.scope('board:1');
-  s.where({ tags: { only: ['X'] } }).remove();
-  s.tag('X').remove();
-}
-```
-
-If A has X and Y, B has only X, and C has only Y, these declarations leave A/Y and C/Y present and withdraw B. Only B emits a withdrawal. Reversing the calls detaches X first, so `only: ['X']` matches nothing. `all: ['X'], none: ['Y']` is broader than `only: ['X']`: it also matches a member with X and an additional Z.
-
-| Predicate | Matching members |
+| Interface | Return and behavior |
 | --- | --- |
-| `tags.all: ['X', 'Y']` | Have every listed label; extra labels are allowed. |
-| `tags.any: ['X', 'Y']` | Have at least one listed label. |
-| `tags.none: ['X', 'Y']` | Have none of the listed labels. |
-| `tags.only: ['X']` | Have exactly the listed label set. |
-| `tags.only: []` | Have no labels. |
-| `and: [predicate, ...]` | Match every child. |
-| `or: [predicate, ...]` | Match at least one child. |
-| `not: predicate` | Do not match the child. |
+| `ctx.stream(nameOrNames)` | Callback-bound `Stream`; accepts a nonblank string or readonly list of nonblank names. Creates no row, subscription or request by itself. Names are opaque and case-sensitive. |
+| `stream.track.todo(identityOrList)`, `stream.track(referenceOrList)` | `void`; establishes durable unique Stream/Model/Identity pairs. A first pair gets one upsert at current authority, initializing a missing stamp. Repeating a pair moves neither stamp nor cursor. |
+| `ctx.invalidate.todo(identityOrList)`, `ctx.invalidate(referenceOrList)` | `void`; advances each distinct identity's stamp once and notifies every finally tracking Stream. An identity without holders still advances. |
+| `stream.invalidate.todo(identityOrList)`, `stream.invalidate(referenceOrList)` | `void`; advances each identity's stamp once, notifying only the selected names that already track it. Never enrolls. |
 
-Sibling conditions combine with AND; label order and duplicates do not affect matching. Predicates are copied at invocation. Building a selection changes nothing and freezes no database result. Each terminal call evaluates it at its settlement position, after earlier declarations; reusing a selection evaluates it again.
+Generated Model methods accept scalar or complete object identities for a single-field identity, complete objects for composite identities, and one identity or a readonly list. Mixed calls require generated `RecordRef` constructors that identify the Model. Models without a viewer Loader cannot be declared.
 
-A predicate may have depth at most 16, counting the root as 1; at most 128 predicate nodes; at most 64 distinct labels per leaf operator; and at most 65,536 UTF-8 bytes of JSON. Empty predicates, empty `tags`, empty `and`/`or`, empty `all`/`any`/`none`, unknown keys, null conditions and malformed values are invalid. `only: []` is valid.
+Declarations are synchronous, copy and canonicalize operands before appending, and expire with the callback. Multiple names and records declare their Cartesian product; use separate declarations for different associations. Empty name or record lists do nothing. Ordinary invalid declarations throw before appending any effects; Load collectors retain a sticky failure even if caught.
 
-Selectors inspect Scope membership and labels. They do not query business fields, execute application code or SQL, or join business tables. There is no selection `.add()`; selected records are already members. `selection.tag('Y').add()` adds labels to them.
+The enclosing settlement combines declarations regardless of order. Each identity advances at most once and each final pair receives at most one position. Targeted sets union; global invalidation dominates. A Mutation's inferred changed Model inputs are always global and cannot be narrowed. Tracking another Stream or reading an output does not change authority. There is no extra batch or execute call and no request per declaration. Separate `backend.publish` invocations remain separate settlements.
 
-### Content and withdrawal
+### Content and authority
 
-`touch` allocates one content stamp per identity per enclosing operation and publishes through all Scopes holding it. A Mutation's Model inputs already declare their authority; touch additional identities affected by the operation. Labels never imply touch.
+Shared content changes must invalidate all holders. Selected invalidation serves viewer-specific projection or permission changes when other viewers' answers remain valid. A changed row-to-null answer requires a newer stamp even if only selected streams are notified. Loader errors retain local content and are never absence; grouped Loader reads preserve per-identity fallback after batch failures.
 
-Withdrawal releases one Scope's holding; it does not delete the business row. Another current Scope holding the same Model/Identity preserves the client's replicated base. Releasing the last hold uses the local membership ledger and request fences to evict that base while preserving pending and device-local work. Withdrawal invokes neither `onStore` nor a schema cascade. Explicitly enroll and withdraw dependents according to your application's publication policy.
+Business deletion and access revocation are authority changes: invalidate affected identities and let their viewer Loader return `null`. Tracking survives absence, allowing offline deletion delivery and later reinstatement. The public API has no withdrawal, tags or selectors and no automatic tracking retention policy. Retained historical removal positions and the client's source holdings remain supported protocol evidence; they are separate from stamped Loader absence. Unsubscribe stops delivery and retains both cache and server tracking.
 
-Business deletion is authoritative content. Touch a deleted identity and keep it enrolled when subscribers must receive its Loader's `null`. A Model without a Loader is device-only and cannot be enrolled, withdrawn, labeled, targeted by generated selection methods or touched through publication interfaces.
-
-| Context | Allowed declarations |
+| Context | Available declarations |
 | --- | --- |
-| Mutation or legacy slot handler; `backend.transaction` or `backend.publish` | Membership add/remove, label edits, selection and touch. |
-| Load handler | Membership add, chained labels and explicit label add, only for identities returned by the current page. |
-| Query handler or viewer Loader | No Scope effects or touch. |
-| Client transaction or `onStore` | Local subscription intent through `tx.scopes`; no server Scope effects. |
+| Mutation or legacy slot handler; `backend.transaction` or `backend.publish` | Multi-stream tracking, global and selected invalidation. |
+| Native Load handler | `ctx.stream(...).track` only, restricted to this page's returned records; commits with the page. |
+| Query handler or viewer Loader | Neither declaration. |
+| Client transaction or `onStore` | Local subscription intent through `tx.streams`, without server tracking edits. |
 
-Settlement emits at most one final membership event per Scope/Identity: initially absent add/remove emits none; existing remove/add emits one upsert; final withdrawal emits an identity-only removal. Label-only edits emit none. Adding unchanged content reuses its stamp; each delivering Scope has its own cursor. See [How state moves](../concepts.md#scope-and-cursor).
+See [Load tracking](../frontend/loads.md#track-loaded-records-in-a-stream), [cache and standing](../frontend/sync.md#authentication-and-account-changes), and [settlement](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/engine/publish.md).
 
 ## Authentication
 
@@ -345,8 +285,8 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | Code | HTTP status | Meaning |
 | --- | --- | --- |
 | (your `admit` refusal) | Your status, with `axton-admission: refused` | Your JSON body ([Admission](#admission)) |
-| `protocol.unsupported` | 426 | Missing or unsupported `scope-membership-v1`; refused before handler or progress effects |
-| `request.invalid` | 400 | Malformed body, or a pull cursor ahead of the scope head |
+| `protocol.unsupported` | 426 | Missing or unsupported `stream-membership-v1`; refused before handler or progress effects |
+| `request.invalid` | 400 | Malformed body, or a pull cursor ahead of the stream head |
 | `client.owner_mismatch` | 403 | The client identity belongs to another user |
 | `gap`, `overlap` | 409 | The batch sequence is not the next one and not a retry of the last |
 | `model_version_unsupported` | 409 | Pull and live subscribe: a Model read contract this backend does not serve. During a call it is a per-call failure. |
@@ -364,21 +304,21 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 | `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
 | `POST /sync/loads` | Serve batched pages of native Loads for `client.loads` |
 | `POST /sync/pull` | Materialize changed records through loaders for catch-up and gap recovery |
-| `/sync/live` (WebSocket) | Subscribe to scopes and stream ongoing record changes |
+| `/sync/live` (WebSocket) | Subscribe to streams and stream ongoing record changes |
 
 The listener has no TLS, CORS or proxy-header handling and binds to loopback by default; run it behind a reverse proxy as described in [Deploy the backend](deployment.md).
 
-Generated clients use all of these routes automatically from one `server` configuration. The WebSocket subscription acknowledgement confirms that scope listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must separately close its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
+Generated clients use all of these routes automatically from one `server` configuration. The WebSocket subscription acknowledgement confirms that stream listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must separately close its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
 
 ## Background writes
 
-Writes outside handlers have no readback and no receipt; they reach clients only through Scopes. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `touch` and `scope` a Mutation handler receives. When the body returns, the framework allocates one new stamp per touched record and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Scopes are woken.
+Writes outside handlers have no readback and no receipt; they reach clients only through Streams. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `invalidate` and `stream` a Mutation handler receives. When the body returns, the framework allocates one new stamp per touched record and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Streams are woken.
 
 ```ts
-await backend.transaction(async ({ tx, scope, touch }) => {
+await backend.transaction(async ({ tx, stream, invalidate }) => {
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From a job' } });
-  touch.entry({ id: 'entry-1' });
-  scope('book:demo').add.entry({ id: 'entry-1' });
+  invalidate.entry({ id: 'entry-1' });
+  stream('book:demo').track.entry({ id: 'entry-1' });
 });
 ```
 
@@ -387,10 +327,10 @@ await backend.transaction(async ({ tx, scope, touch }) => {
 | `TransactionCall<Tx>` member | Contract |
 | --- | --- |
 | `tx` | The application transaction; write business data through it |
-| `touch` | `touch.entry(identity)` declares a changed record; each gets one new stamp when the body returns |
-| `scope(name)` | The same Scope handle as in a handler, for adding and removing members |
+| `invalidate` | `invalidate.entry(identity)` declares a changed record; each gets one new stamp when the body returns |
+| `stream(name)` | The same Stream handle as in a handler, for tracking records and selected invalidation |
 
-Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A touched record advances its stamp even without a Scope; adding an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
+Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A touched record advances its stamp even without a Stream; adding an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
 
 ### In a transaction you own
 
@@ -399,9 +339,9 @@ When your code has already opened the transaction, for example another framework
 ```ts
 const wake = await db.$transaction(async (tx) => {
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From my host' } });
-  return backend.publish(tx, ({ scope, touch }) => {
-    touch.entry({ id: 'entry-1' });
-    scope('book:demo').add.entry({ id: 'entry-1' });
+  return backend.publish(tx, ({ stream, invalidate }) => {
+    invalidate.entry({ id: 'entry-1' });
+    stream('book:demo').track.entry({ id: 'entry-1' });
   });
 });
 wake();
@@ -409,11 +349,11 @@ wake();
 
 | Behavior | Contract |
 | --- | --- |
-| Settlement | Runs before `publish` resolves: stamps, memberships and Scope positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two stamps |
+| Settlement | Runs before `publish` resolves: stamps, memberships and Stream positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two stamps |
 | Wake | `publish` resolves to a function. Call it after `tx` commits; after a rollback, drop it. Until it is called, no live subscriber is told; they catch up on their next wake or reconnect |
 | Errors | A refused declaration or a database error rejects `publish` with the original error, so your retry loop can recognize a serialization failure and run the whole transaction again. Wakes from failed attempts are simply never called |
 | Isolation | AXTON does not choose the level of your transaction. The settlement works at Read Committed, Repeatable Read or Serializable; run at Serializable, as every AXTON transaction does, if your own reads and writes rely on it, and retry serialization failures as `backend.transaction` does |
-| Refusal | A transaction AXTON is already serving, a handler's or `backend.transaction`'s, is refused: declare through its own `touch` and `scope` |
+| Refusal | A transaction AXTON is already serving, a handler's or `backend.transaction`'s, is refused: declare through its own `invalidate` and `stream` |
 
 ## Extension points
 

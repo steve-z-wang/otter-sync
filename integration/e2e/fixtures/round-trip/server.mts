@@ -60,10 +60,10 @@ export async function createExample() {
     schema,
     get loaderCalls() { return loaderCalls; },
     async members(scope: string) {
-      const rows = await db.$queryRawUnsafe<{ identity_key: string; tags: string[] }[]>(
-        "SELECT r.identity_key, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 AND r.model='Entry' GROUP BY r.identity_key ORDER BY r.identity_key", scope,
+      const rows = await db.$queryRawUnsafe<{ identity_key: string }[]>(
+        "SELECT r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model='Entry' ORDER BY r.identity_key", scope,
       );
-      return rows.map(row => [JSON.parse(row.identity_key).id, row.tags]);
+      return rows.map(row => JSON.parse(row.identity_key).id);
     },
     get handlerCalls() {
       return calls;
@@ -78,14 +78,14 @@ export async function createExample() {
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );
-      await backend.transaction(async ({ tx, scope: scope, touch }) => {
+      await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
         await tx.entry.upsert({
           where: { id: "entry-1" },
           create: { id: "entry-1", text: "Hello from the server" },
           update: {},
         });
         touch.entry({ id: "entry-1" });
-        scope("book:demo").add.entry({ id: "entry-1" });
+        scope("book:demo").track.entry({ id: "entry-1" });
       });
     },
     /**
@@ -95,14 +95,14 @@ export async function createExample() {
      * ([#150](https://github.com/zanminwang/axton/issues/150)), so a client that
      * subscribes after `initialize` meets the seeded rows either this way or
      * through `subscription.bootstrap()`
-     * ([#151](https://github.com/zanminwang/axton/issues/151)); `readd` below is
+     * ([#151](https://github.com/zanminwang/axton/issues/151)); `invalidateRecords` below is
      * the version that moves a position without touching the stamp.
      */
     async notify(ids: string[] = ["entry-1"], name = "book:demo") {
-      await backend.transaction(async ({ scope: scope, touch }) => {
+      await backend.transaction(async ({ stream: scope, invalidate: touch }) => {
         for (const id of ids) {
           touch.entry({ id });
-          scope(name).add.entry({ id });
+          scope(name).track.entry({ id });
         }
       });
     },
@@ -121,7 +121,7 @@ export async function createExample() {
       const ids = Array.from({ length: count }, (_, i) => `${options.prefix}-${from + i}`);
       for (let start = 0; start < ids.length; start += size) {
         const batch = ids.slice(start, start + size);
-        await backend.transaction(async ({ tx, scope: scope, touch }) => {
+        await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
           for (const id of batch) {
             await tx.entry.upsert({
               where: { id },
@@ -129,7 +129,7 @@ export async function createExample() {
               update: { text: `${id} text` },
             });
             touch.entry({ id });
-            scope(options.scope).add.entry({ id });
+            scope(options.scope).track.entry({ id });
           }
         });
       }
@@ -137,31 +137,19 @@ export async function createExample() {
     },
     /** Write one `Entry` and enroll it on every named Scope: one stamp, one position on each. */
     async publishOne(id: string, text: string, scopes: string[]): Promise<void> {
-      await backend.transaction(async ({ tx, scope: scope, touch }) => {
+      await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
         await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
         touch.entry({ id });
-        for (const name of scopes) scope(name).add.entry({ id });
+        for (const name of scopes) scope(name).track.entry({ id });
       });
     },
-    /**
-     * Remove existing members from `name`, then add them back in a second
-     * settlement, without changing them. Adding an absent member publishes its
-     * current state, so each takes a new cursor at the stamp it already has
-     * (guarantee D3); adding a present member would do nothing. This is how a
-     * record leaves a subscription's historical interval and becomes the
-     * subscription's own delivery ([#151](https://github.com/zanminwang/axton/issues/151)).
-     */
-    async readd(ids: string[], name: string): Promise<void> {
-      await backend.transaction(async ({ scope: scope }) => {
-        scope(name).remove(ids.map((id) => Entry({ id })));
-      });
-      await backend.transaction(async ({ scope: scope }) => {
-        scope(name).add(ids.map((id) => Entry({ id })));
-      });
+    /** Invalidate selected tracked records without changing their business rows. */
+    async invalidateRecords(ids: string[], name: string): Promise<void> {
+      await backend.transaction(async (ctx) => ctx.stream(name).invalidate(ids.map((id) => Entry({ id }))));
     },
     /** Delete the row and touch it: its members' Loader answers `null`, an authoritative deletion (D6). */
     async tombstone(id: string): Promise<void> {
-      await backend.transaction(async ({ tx, touch }) => {
+      await backend.transaction(async ({ tx, invalidate: touch }) => {
         await tx.entry.delete({ where: { id } });
         touch.entry({ id });
       });
@@ -176,7 +164,7 @@ export async function createExample() {
     /** The scope head: the highest cursor the invalidation log has allocated. */
     async head(scope: string): Promise<number> {
       const rows = await db.$queryRawUnsafe<{ head: bigint }[]>(
-        "SELECT head FROM axton_scope WHERE scope = $1",
+        "SELECT head FROM axton_stream WHERE stream = $1",
         scope,
       );
       return rows.length === 0 ? 0 : Number(rows[0]!.head);
@@ -184,7 +172,7 @@ export async function createExample() {
     /** The one retained position `id` has on `scope`, or `null`; a later publication replaces it in place. */
     async positionOf(scope: string, id: string): Promise<number | null> {
       const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
-        "SELECT l.cursor FROM axton_scope_log l JOIN axton_record r ON r.id = l.record_id WHERE l.scope = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
+        "SELECT l.cursor FROM axton_stream_log l JOIN axton_record r ON r.id = l.record_id WHERE l.stream = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
         scope,
         JSON.stringify({ id }),
       );
@@ -197,7 +185,7 @@ export async function createExample() {
      */
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_scope_member_tag, axton_scope_member, axton_scope_tag, axton_scope_log, axton_scope, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_stream_member, axton_stream_log, axton_stream, axton_record, axton_client, axton_call",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();

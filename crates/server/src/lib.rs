@@ -765,7 +765,7 @@ pub async fn process_pull(
     process_stream_pull(config, owner, bytes, host).await
 }
 /// Settle a business change made outside a handler, in the application's
-/// transaction: the same `{changes, memberships}` shape a handler answers
+/// transaction: the same `{changes, declarations}` shape a handler answers
 /// with, through the same settlement. Every changed record gets its next
 /// stamp and reaches its Streams at that stamp; nothing is read back, since
 /// no client is waiting for a receipt. Answers `[{model, identity, stamp}]`
@@ -784,7 +784,7 @@ pub async fn settle_external(
     else {
         return Err(Error::new(
             code::PUBLISH_INVALID,
-            "an external settlement carries changes and memberships",
+            "an external settlement carries changes and declarations",
         ));
     };
     let mut changed = Changes::new();

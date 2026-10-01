@@ -218,7 +218,7 @@ loadContext.invalidate.todo({ id: 'x' });
 // @ts-expect-error A Load handler cannot remove memberships.
 const removingLoad: Loads<{}>['recentTodos'] = async ({ ctx }) => { ctx.stream('todos').invalidate.todo({ id: 'x' }); return { data: { todos: [] }, next: null }; };
 // @ts-expect-error A Loader has no Stream: materializing a record enrolls nothing.
-const scopeLoader: Loaders<{}>['project'] = async ({ ids, scope: scope }) => { scope('tenant:t').track.project(ids[0]!); return []; };
+const scopeLoader: Loaders<{}>['project'] = async ({ ids, stream: scope }) => { scope('tenant:t').track.project(ids[0]!); return []; };
 // @ts-expect-error A Load handler cannot use Mutation declarations.
 const effectfulLoad: Loads<{}>['projectTodos'] = async ({ ctx }) => { ctx.invalidate.todo({ id: 'x' }); return { data: { todos: [], projects: [] }, next: null }; };
 // @ts-expect-error Load args keep their declared types.

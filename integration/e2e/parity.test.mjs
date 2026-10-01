@@ -25,7 +25,7 @@ import {Client} from '../../packages/client-js/index.mts';
 // content cannot pass by agreeing with the other one.
 const INITIAL='Hello from the server';
 async function reseed(app){
- await app.backend.transaction(async({tx,touch})=>{
+ await app.backend.transaction(async({tx,invalidate:touch})=>{
   await tx.entry.update({where:{id:'entry-1'},data:{text:INITIAL}});
   touch.entry({id:'entry-1'});
  });
@@ -55,7 +55,7 @@ async function nodeScript(url,directory,schema,ready){
   return {
    initial,afterAccepted,
    entries:entries.map(row=>({id:row.id,text:row.text,note:row.note})),
-   pending:status.pending,beforeImages:status.beforeImages,scopes:status.scopes,rejections:status.rejections,
+   pending:status.pending,beforeImages:status.beforeImages,streams:status.streams,rejections:status.rejections,
    entry1:await client.syncState('Entry',{id:'entry-1'}),
    localOnly:await client.syncState('Entry',{id:'local-only'}),
   };

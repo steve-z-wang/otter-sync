@@ -247,6 +247,7 @@ Use the single transaction to check supported required table/column shapes befor
 - Modify: `crates/sim/src/invariants.rs`, `crates/sim/src/sim.rs`, `crates/sim/src/host.rs`, `crates/sim/tests/authority.rs`, `historical_removals.rs`, `stream_tracking.rs`, `upgrade.rs`, `distribution.rs`, `bootstrap.rs`, and `push.rs` where active capability or removed ownership expectations need adaptation.
 - Modify: `integration/persistence/server/protocol-admission.test.mjs`, `actions.test.mjs`, `loads.test.mjs`, `stream-tracking.test.mjs`; `integration/persistence/client/reopen.mts`.
 - Modify affected fixtures/capability literals in `integration/bindings/client-js/*.test.mjs`, `packages/dart/test/*_test.dart`, `integration/generated-api/`, `integration/action-e2e/`, `integration/load-e2e/` and `integration/e2e/` as discovered by the literal scan below. Preserve original historical fixtures as migration inputs.
+- Modify active React Native transport expectations in `integration/bindings/client-react-native/network.test.mjs` and `live.test.mjs`; retain the same native/runtime boundary, with no SDK-specific ownership implementation.
 - Modify: `docs/engineering/guarantees.md`, `docs/engineering/architecture/protocol/common.md`, `push.md`, `actions.md`, `loads.md`, `pull.md`, `subscriptions.md`; `docs/engineering/architecture/client/storage/reconciliation.md`, `client/engine/README.md`, `client/connection/controller/downlink-worker.md`; `docs/engineering/architecture/server/engine/publish.md`, `server/persistence.md`; `website/docs/backend/deployment.md`, `backend/api.md`, `frontend/sync.md`.
 - Active documentation consumers: `docs/engineering/architecture/client/engine/pull.md`, `docs/engineering/testing/components/client.md`, `docs/engineering/testing/components/server.md`, and `website/docs/backend/database.md`. Keep dated historical observations distinct from new evidence; update their current contract descriptions.
 - Read-only preparation inventory: `/private/tmp/authority-boundary-inventory.md` identifies existing active fixtures, rollback/replay anchors and remaining docs. Verify against current source while implementing; this inventory is not acceptance evidence.
@@ -291,15 +292,12 @@ Use existing `website/docs/frontend/sync.md` onStore transaction example infrast
 - [ ] **4.4 Run the assembled gate and final independent review.** The root runs the following from the shared worktree, reads the complete output, and fixes failures through diagnosis/RED/GREEN rather than weakening assertions:
 
 ```sh
-cargo fmt --all --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
 bash scripts/test.sh
 git diff --check
 git status --short
 ```
 
-The host script performs dependency setup/build, Rust/language lint and tests, real PostgreSQL persistence, generated APIs, end-to-end Action/Load paths, docs examples and installed npm verification. Record actual commands/results and infrastructure limitations; the plan does not claim they were executed. Commit fixtures/docs with `test: verify authority-only delivery across runtimes` before review. Have an independent reviewer assess the final assembled baseline..HEAD diff against every required-evidence bullet in the approved design, focusing on old saved replay, corrupted-layout rollback, legacy absence, hook/cursor atomicity and historical repair. Address actionable findings, rerun only affected checks unless changes justify another assembled gate, and commit any fixes before their independent review. Report branch/commits and evidence to the user; do not merge or publish.
+The host script performs dependency setup/build, Rust formatting, workspace tests and clippy, language lint/tests, real PostgreSQL persistence, generated APIs, end-to-end Action/Load paths, docs examples and installed npm verification. Run that assembled script once rather than separately repeating its Rust gates immediately beforehand. Record actual commands/results and infrastructure limitations; the plan does not claim they were executed. Commit fixtures/docs with `test: verify authority-only delivery across runtimes` before review. Have an independent reviewer assess the final assembled baseline..HEAD diff against every required-evidence bullet in the approved design, focusing on old saved replay, corrupted-layout rollback, legacy absence, hook/cursor atomicity and historical repair. Address actionable findings, rerun only affected checks unless changes justify another assembled gate, and commit any fixes before their independent review. Report branch/commits and evidence to the user; do not merge or publish.
 
 ## Acceptance checklist
 

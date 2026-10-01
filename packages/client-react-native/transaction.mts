@@ -62,19 +62,15 @@ export class Transaction {
   cancel(): void {
     this.#open = false;
   }
-  get channels(): {
-    subscribe(channel: string): Promise<void>;
-    unsubscribe(channel: string): Promise<void>;
+  get scopes(): {
+    subscribe(scope: string): Promise<void>;
+    unsubscribe(scope: string): Promise<void>;
   } {
     return {
-      subscribe: (channel) =>
-        this.#call({ kind: "channel", channel, subscribed: true }).then(
-          () => {},
-        ),
-      unsubscribe: (channel) =>
-        this.#call({ kind: "channel", channel, subscribed: false }).then(
-          () => {},
-        ),
+      subscribe: (scope) =>
+        this.#call({ kind: "scope", scope, subscribed: true }).then(() => {}),
+      unsubscribe: (scope) =>
+        this.#call({ kind: "scope", scope, subscribed: false }).then(() => {}),
     };
   }
   /** Dismiss a refusal as part of this transaction. */

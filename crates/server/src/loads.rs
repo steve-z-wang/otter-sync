@@ -5,7 +5,7 @@
 //! transaction. A repeated call ID answers the saved outcome without running
 //! the handler or any Loader.
 //!
-//! A fresh page may also enroll records it loaded into Channels, as the
+//! A fresh page may also enroll records it loaded into Scopes, as the
 //! add-only handles of its handler declared. The enrollment is judged against
 //! the validated page before any read and settled by shared settlement once
 //! the page is final, inside the page's savepoint: it commits or rolls back
@@ -18,12 +18,12 @@
 //! that escaped its transaction, to [`encode_load_batch`], which classifies
 //! the faults and writes the one bounded response.
 use crate::actions::{call_error, current_authority};
-use crate::channel_members::declared_tags;
 use crate::host::{
-    Acknowledged, ChannelIntent, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef,
+    Acknowledged, ClaimedCall, HandledLoad, HostExt, HostRequest, Loaded, RecordRef, ScopeIntent,
     Stamps,
 };
-use crate::settlement::{Changes, invalid_tags, lock_channels, settle_locked};
+use crate::scope_members::declared_tags;
+use crate::settlement::{Changes, invalid_tags, lock_scopes, settle_locked};
 use crate::{
     Config, Error, Host, Result, code, internal, principal, request_invalid, storage_invalid,
 };
@@ -51,11 +51,9 @@ pub fn validate_load_batch(bytes: &[u8]) -> Result<Vec<String>> {
         .iter()
         .map(|item| {
             let encoded = serde_json::to_vec(item).map_err(internal)?;
-            let capable = axton_core::with_capabilities(
-                &encoded,
-                &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
-            )
-            .map_err(internal)?;
+            let capable =
+                axton_core::with_capabilities(&encoded, &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY])
+                    .map_err(internal)?;
             String::from_utf8(capable).map_err(internal)
         })
         .collect()
@@ -267,13 +265,13 @@ async fn execute_fresh(
     // Judged before any read: an enrollment the page may not declare costs
     // no stamp or Loader work.
     let memberships = validate_enrollment(config, &data_keys, memberships)?;
-    // Every membership writer locks its Channels before any record row:
+    // Every membership writer locks its Scopes before any record row:
     // `readStamps` below may insert a record's metadata row.
-    let channels: BTreeSet<String> = memberships
+    let scopes: BTreeSet<String> = memberships
         .iter()
-        .map(|intent| intent.channel().to_string())
+        .map(|intent| intent.scope().to_string())
         .collect();
-    lock_channels(&channels, host).await?;
+    lock_scopes(&scopes, host).await?;
     let mut records = vec![];
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
@@ -310,10 +308,10 @@ async fn execute_fresh(
     // The page is final. Its enrollment settles as an external transaction's
     // unchanged records do: a new member keeps the stamp `resolve` read (and
     // initialized) for this page and gains one position at it; an existing
-    // one publishes nothing. No loaded record is touched. Its Channels are
+    // one publishes nothing. No loaded record is touched. Its Scopes are
     // already locked, before the page's reads. A host fault here escapes the
     // page transaction like any other.
-    let settled = settle_locked(config, &Changes::new(), &memberships, &channels, host).await?;
+    let settled = settle_locked(config, &Changes::new(), &memberships, &scopes, host).await?;
     page.memberships = settled.claims(config, &memberships, &page.records)?;
     page.clone()
         .normalize(&config.schema, intent)
@@ -322,7 +320,7 @@ async fn execute_fresh(
 }
 
 /// The page's enrollment as canonical additions, preserving each declaration.
-/// Each intent must `add` to a named Channel a record of a loaded Model,
+/// Each intent must `add` to a named Scope a record of a loaded Model,
 /// under a valid identity, that the page's validated outputs name:
 /// `data_keys` holds their canonical keys. Repeated pairs count once toward
 /// [`limits::LOAD_ENROLLMENT_PAIRS`] and [`limits::LOAD_ENROLLMENT_BYTES`],
@@ -335,34 +333,41 @@ async fn execute_fresh(
 fn validate_enrollment(
     config: &Config,
     data_keys: &BTreeSet<String>,
-    memberships: Vec<ChannelIntent>,
-) -> Result<Vec<ChannelIntent>> {
+    memberships: Vec<ScopeIntent>,
+) -> Result<Vec<ScopeIntent>> {
     let invalid = |message: String| Error::new(code::HANDLER_INVALID, message);
     let too_large = |message: String| Error::new(code::LOAD_PAGE_TOO_LARGE, message);
-    let mut pairs: BTreeMap<(String, String), ChannelIntent> = BTreeMap::new();
+    let mut pairs: BTreeMap<(String, String), ScopeIntent> = BTreeMap::new();
     let mut bytes = 0;
     let mut declarations = vec![];
     for intent in memberships {
-        let (channel, record, tags) = match intent {
-            ChannelIntent::Add {
-                channel,
+        let (scope, record, tags, label_only) = match intent {
+            ScopeIntent::Add {
+                scope,
                 record,
                 tags,
-            } => (channel, record, tags),
-            ChannelIntent::Remove { channel, record } => {
+            } => (scope, record, tags, false),
+            ScopeIntent::TagAdd {
+                scope,
+                record,
+                tags,
+            } => (scope, record, tags, true),
+            ScopeIntent::Remove { scope, record } => {
                 return Err(invalid(format!(
-                    "a Load only adds records to Channels; it removes {} from {channel}",
+                    "a Load only adds records to Scopes; it removes {} from {scope}",
                     record.model
                 )));
             }
-            ChannelIntent::RemoveTag { channel, tag } => {
-                return Err(invalid(format!(
-                    "a Load only adds records to Channels; it removes tag {tag} from {channel}"
-                )));
+            ScopeIntent::TagRemove { .. }
+            | ScopeIntent::DetachTags { .. }
+            | ScopeIntent::Select { .. } => {
+                return Err(invalid(
+                    "a Load only adds membership or labels for returned records".into(),
+                ));
             }
         };
-        if axton_core::check_channel(&channel).is_err() {
-            return Err(invalid("Load enrollment names a blank Channel".into()));
+        if axton_core::check_scope(&scope).is_err() {
+            return Err(invalid("Load enrollment names a blank Scope".into()));
         }
         let key = config
             .schema
@@ -378,7 +383,10 @@ fn validate_enrollment(
                 key.model, key.identity
             )));
         }
-        declared_tags(&tags).map_err(|reason| invalid_tags(&channel, reason))?;
+        if label_only && tags.is_empty() {
+            return Err(invalid("label operation must name at least one tag".into()));
+        }
+        declared_tags(&tags).map_err(|reason| invalid_tags(&scope, reason))?;
         // Distinct, in first-declaration order, as the collector measures them.
         let mut distinct: Vec<String> = vec![];
         for tag in tags {
@@ -387,25 +395,34 @@ fn validate_enrollment(
             }
         }
         // Settlement must see validated declarations, never their larger union.
-        declarations.push(ChannelIntent::Add {
-            channel: channel.clone(),
-            record: RecordRef {
-                model: key.model.clone(),
-                identity: key.identity.clone(),
-            },
-            tags: distinct.clone(),
+        let record = RecordRef {
+            model: key.model.clone(),
+            identity: key.identity.clone(),
+        };
+        declarations.push(if label_only {
+            ScopeIntent::TagAdd {
+                scope: scope.clone(),
+                record,
+                tags: distinct.clone(),
+            }
+        } else {
+            ScopeIntent::Add {
+                scope: scope.clone(),
+                record,
+                tags: distinct.clone(),
+            }
         });
-        let measure = |intent: &ChannelIntent| -> Result<usize> {
+        let measure = |intent: &ScopeIntent| -> Result<usize> {
             Ok(
                 canonical_json(&serde_json::to_value(intent).map_err(internal)?)
                     .map_err(internal)?
                     .len(),
             )
         };
-        match pairs.entry((channel.clone(), encoded)) {
+        match pairs.entry((scope.clone(), encoded)) {
             Entry::Vacant(pair) => {
-                let canonical = ChannelIntent::Add {
-                    channel,
+                let canonical = ScopeIntent::Add {
+                    scope,
                     record: RecordRef {
                         model: key.model,
                         identity: key.identity,
@@ -417,7 +434,7 @@ fn validate_enrollment(
             }
             Entry::Occupied(mut pair) => {
                 let before = measure(pair.get())?;
-                if let ChannelIntent::Add { tags: held, .. } = pair.get_mut() {
+                if let ScopeIntent::Add { tags: held, .. } = pair.get_mut() {
                     for tag in distinct {
                         if !held.contains(&tag) {
                             held.push(tag);
@@ -429,7 +446,7 @@ fn validate_enrollment(
         }
         if pairs.len() > limits::LOAD_ENROLLMENT_PAIRS {
             return Err(too_large(format!(
-                "Load page enrolls more than {} Channel/record pairs",
+                "Load page enrolls more than {} Scope/record pairs",
                 limits::LOAD_ENROLLMENT_PAIRS
             )));
         }
@@ -625,7 +642,7 @@ pub fn load_fault_outcome(fault: &LoadFault) -> LoadOutcome {
             code::SERVER_UNAVAILABLE,
             "the page transaction did not complete; resend the same call ID",
         ),
-        // Settlement found its Channel locks outdated and the carrier's
+        // Settlement found its Scope locks outdated and the carrier's
         // retries ran out: a conflict like any other.
         LoadFault::Engine { code, .. } if code == code::TRANSACTION_CONFLICT => retryable(
             code::TRANSACTION_CONFLICT,

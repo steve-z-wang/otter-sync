@@ -1,130 +1,130 @@
 {
- "comment": "The bounded pull request both sides must decode alike: `mode: \"bootstrap\"` on the existing pull route, one channel, the read contracts the client expects, the committed historical progress B (`after`) and the subscription origin S (`until`). Counters are safe and `0 <= after <= until`. A mode that is present and is not the string `bootstrap` is not a bootstrap request.",
+ "comment": "The bounded pull request both sides must decode alike: `mode: \"bootstrap\"` on the existing pull route, one scope, the read contracts the client expects, the committed historical progress B (`after`) and the subscription origin S (`until`). Counters are safe and `0 <= after <= until`. A mode that is present and is not the string `bootstrap` is not a bootstrap request.",
  "canonical": {
-  "wire": "{\"after\":40,\"channel\":\"project:123\",\"mode\":\"bootstrap\",\"models\":{\"Comment\":1,\"Entry\":2},\"until\":100}",
-  "channel": "project:123",
+  "wire": "{\"after\":40,\"mode\":\"bootstrap\",\"models\":{\"Comment\":1,\"Entry\":2},\"scope\":\"project:123\",\"until\":100}",
+  "scope": "project:123",
   "after": 40,
   "until": 100
  },
  "request": [
   {
    "name": "a first page of a fresh interval",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"models\":{\"Entry\":2},\"after\":0,\"until\":100}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"models\":{\"Entry\":2},\"after\":0,\"until\":100}",
    "valid": true
   },
   {
    "name": "a continuation page",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"models\":{\"Entry\":2},\"after\":40,\"until\":100}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"models\":{\"Entry\":2},\"after\":40,\"until\":100}",
    "valid": true
   },
   {
    "name": "an exhausted interval carries after equal to until",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":100,\"until\":100}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":100,\"until\":100}",
    "valid": true
   },
   {
    "name": "an empty scope bootstraps at zero",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":0}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":0}",
    "valid": true
   },
   {
    "name": "safe maximum counters",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":9007199254740991,\"until\":9007199254740991}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":9007199254740991,\"until\":9007199254740991}",
    "valid": true
   },
   {
    "name": "unknown fields are ignored so a newer client can extend the request",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1,\"future\":true}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1,\"future\":true}",
    "valid": true
   },
   {
    "name": "an unknown mode is not a bootstrap request",
-   "wire": "{\"mode\":\"snapshot\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":\"snapshot\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "a null mode is not a bootstrap request",
-   "wire": "{\"mode\":null,\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":null,\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "a numeric mode is not a bootstrap request",
-   "wire": "{\"mode\":1,\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":1,\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "mode missing",
-   "wire": "{\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "wire": "{\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "after past until",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":2,\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":2,\"until\":1}",
    "valid": false
   },
   {
    "name": "after missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"until\":1}",
    "valid": false
   },
   {
    "name": "until missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0}",
    "valid": false
   },
   {
    "name": "after negative",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":-1,\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":-1,\"until\":1}",
    "valid": false
   },
   {
    "name": "until overflows the safe integer range",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":9007199254740992}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":0,\"until\":9007199254740992}",
    "valid": false
   },
   {
    "name": "after is not a whole number",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":1},\"after\":1.5,\"until\":2}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":1},\"after\":1.5,\"until\":2}",
    "valid": false
   },
   {
-   "name": "channel missing",
+   "name": "scope missing",
    "wire": "{\"mode\":\"bootstrap\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
-   "name": "channel empty",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "name": "scope empty",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"\",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
-   "name": "channel blank",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"  \",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "name": "scope blank",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"  \",\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
-   "name": "channel is not a string",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":[\"a\"],\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
+   "name": "scope is not a string",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":[\"a\"],\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
-   "name": "a bootstrap request names one channel, never a cursor map",
+   "name": "a bootstrap request names one scope, never a cursor map",
    "wire": "{\"mode\":\"bootstrap\",\"cursors\":{\"a\":0},\"models\":{\"Entry\":1},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "models missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "models declares no model",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{},\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{},\"after\":0,\"until\":1}",
    "valid": false
   },
   {
    "name": "a model version must be positive",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"models\":{\"Entry\":0},\"after\":0,\"until\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"models\":{\"Entry\":0},\"after\":0,\"until\":1}",
    "valid": false
   },
   {

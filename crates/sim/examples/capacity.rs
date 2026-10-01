@@ -1,6 +1,6 @@
 //! Reproducible diagnostic, not a throughput guarantee. Each enqueue is a real SQLite commit.
 use axton_client::{Client, Mutation, Operation, OperationKind};
-use axton_core::{AuthorityRecord, ChannelChange, ChannelPullPage, CursorRange, Schema};
+use axton_core::{AuthorityRecord, CursorRange, Schema, ScopeChange, ScopePullPage};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -14,10 +14,10 @@ fn main() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("capacity.sqlite");
         let mut client = Client::open(SqliteStore::open(&path).unwrap(), schema.clone()).unwrap();
-        let page = |from, to| ChannelPullPage {
+        let page = |from, to| ScopePullPage {
             cursors: BTreeMap::from([("book".to_string(), CursorRange { from, to, head: to })]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "book".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "book".into(),
                 cursor: to,
                 record: AuthorityRecord {
                     model: "Entry".into(),
@@ -29,7 +29,7 @@ fn main() {
             }],
         };
         client
-            .transaction(|tx| tx.set_channel("book".into(), true))
+            .transaction(|tx| tx.set_scope("book".into(), true))
             .unwrap();
         let subscription = client.subscription_state("book").unwrap().unwrap();
         client
@@ -38,7 +38,7 @@ fn main() {
                 &BTreeMap::from([("book".into(), 0)]),
             )
             .unwrap();
-        client.apply_channel_page(page(0, 1)).unwrap();
+        client.apply_scope_page(page(0, 1)).unwrap();
         let mut samples = Vec::new();
         for i in 0..count {
             let start = Instant::now();
@@ -60,7 +60,7 @@ fn main() {
         }
         samples.sort_by(f64::total_cmp);
         let start = Instant::now();
-        client.apply_channel_page(page(1, 2)).unwrap();
+        client.apply_scope_page(page(1, 2)).unwrap();
         let replay_ms = start.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(client.pending_count().unwrap(), count);
         let key = schema.record_key("Entry", &json!({"id":"one"})).unwrap();

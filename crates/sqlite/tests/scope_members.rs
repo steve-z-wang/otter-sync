@@ -4,36 +4,31 @@ use common::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-fn up(channel: &str, cursor: u64, stamp: u64, text: Option<&str>) -> ChannelChange {
-    ChannelChange::Upsert {
-        channel: channel.into(),
+fn up(scope: &str, cursor: u64, stamp: u64, text: Option<&str>) -> ScopeChange {
+    ScopeChange::Upsert {
+        scope: scope.into(),
         cursor,
         record: authority(text, stamp),
     }
 }
-fn remove(channel: &str, cursor: u64) -> ChannelChange {
-    ChannelChange::Remove {
-        channel: channel.into(),
+fn remove(scope: &str, cursor: u64) -> ScopeChange {
+    ScopeChange::Remove {
+        scope: scope.into(),
         cursor,
         key: key(),
     }
 }
-fn deliver(
-    c: &mut Client<axton_sqlite::SqliteStore>,
-    channel: &str,
-    to: u64,
-    change: ChannelChange,
-) {
-    let from = c.cursor(channel).unwrap().unwrap();
-    c.apply_channel_page(ChannelPullPage {
-        cursors: BTreeMap::from([(channel.into(), CursorRange { from, to, head: to })]),
+fn deliver(c: &mut Client<axton_sqlite::SqliteStore>, scope: &str, to: u64, change: ScopeChange) {
+    let from = c.cursor(scope).unwrap().unwrap();
+    c.apply_scope_page(ScopePullPage {
+        cursors: BTreeMap::from([(scope.into(), CursorRange { from, to, head: to })]),
         changes: vec![change],
     })
     .unwrap();
 }
 fn holds(c: &mut Client<axton_sqlite::SqliteStore>) -> u64 {
     c.read_sql(
-        "SELECT COUNT(*) AS n FROM axton_channel_member WHERE present=1",
+        "SELECT COUNT(*) AS n FROM axton_scope_member WHERE present=1",
         &[],
     )
     .unwrap()[0]["n"]
@@ -41,7 +36,7 @@ fn holds(c: &mut Client<axton_sqlite::SqliteStore>) -> u64 {
         .unwrap()
 }
 #[test]
-fn two_channels_release_only_last_replica_and_restore_same_stamp() {
+fn two_scopes_release_only_last_replica_and_restore_same_stamp() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -60,7 +55,7 @@ fn two_channels_release_only_last_replica_and_restore_same_stamp() {
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "A");
     assert_eq!(holds(&mut c), 1);
     let conflict = c
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -93,7 +88,7 @@ fn cached_untracked_authority_is_released_and_stamped_null_stays_global() {
     deliver(&mut c, "a", 4, remove("a", 4));
     let from = c.cursor("a").unwrap().unwrap();
     let report = c
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -109,14 +104,14 @@ fn cached_untracked_authority_is_released_and_stamped_null_stays_global() {
     assert!(c.read(&key()).unwrap().is_none());
 }
 #[test]
-fn removal_and_other_channel_upsert_fold_before_release() {
+fn removal_and_other_scope_upsert_fold_before_release() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
     let report = c
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([
                 (
                     "a".into(),
@@ -195,7 +190,7 @@ fn prepared_removal_rolls_back_members_and_cursor_and_runs_no_store_hook() {
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
     c.begin_session().unwrap();
     let prepared = c
-        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -209,7 +204,7 @@ fn prepared_removal_rolls_back_members_and_cursor_and_runs_no_store_hook() {
         .unwrap();
     assert!(prepared.changes().is_empty());
     assert_eq!(
-        c.session_sql("SELECT present FROM axton_channel_member", &[])
+        c.session_sql("SELECT present FROM axton_scope_member", &[])
             .unwrap()[0]["present"],
         1
     );
@@ -251,9 +246,9 @@ fn store_enrolled(
     c.commit_session()?;
     Ok(result)
 }
-fn claim(channel: &str, cursor: u64) -> MembershipClaim {
+fn claim(scope: &str, cursor: u64) -> MembershipClaim {
     MembershipClaim {
-        channel: channel.into(),
+        scope: scope.into(),
         cursor,
         model: "Entry".into(),
         identity: json!({"id":"e"}),
@@ -263,8 +258,7 @@ fn claim(channel: &str, cursor: u64) -> MembershipClaim {
 fn stale_claim_and_bootstrap_cannot_restore_removal_even_with_newer_body() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
-    c.transaction(|tx| tx.set_channel("a".into(), true))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
     acknowledge(&mut c, &[("a", 10)]);
     let id = c.subscription_state("a").unwrap().unwrap().subscription_id;
     let run = c.request_bootstrap("a", id).unwrap().run;
@@ -274,13 +268,13 @@ fn stale_claim_and_bootstrap_cannot_restore_removal_even_with_newer_body() {
     assert!(c.read(&key()).unwrap().is_none());
     assert_eq!(c.record_stamp(&key()).unwrap(), 7);
     let result = c
-        .apply_channel_bootstrap_page(
+        .apply_scope_bootstrap_page(
             "a",
             id,
             run,
             0,
-            &ChannelBootstrapPage {
-                channel: "a".into(),
+            &ScopeBootstrapPage {
+                scope: "a".into(),
                 from: 0,
                 to: 10,
                 until: 10,
@@ -300,7 +294,7 @@ fn equal_cursor_conflict_rolls_back_whole_delivery() {
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     store_enrolled(&mut c, vec![claim("a", 2)], "base", 7).unwrap();
-    let result = c.apply_channel_page(ChannelPullPage {
+    let result = c.apply_scope_page(ScopePullPage {
         cursors: BTreeMap::from([
             (
                 "a".into(),
@@ -345,7 +339,7 @@ fn parent_release_leaves_independently_held_child() {
         model: "Comment".into(),
         identity: json!({"id":"c"}),
     };
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: BTreeMap::from([
             (
                 "a".into(),
@@ -365,8 +359,8 @@ fn parent_release_leaves_independently_held_child() {
             ),
         ]),
         changes: vec![
-            ChannelChange::Upsert {
-                channel: "a".into(),
+            ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record: AuthorityRecord {
                     model: parent.model.clone(),
@@ -376,8 +370,8 @@ fn parent_release_leaves_independently_held_child() {
                     error: None,
                 },
             },
-            ChannelChange::Upsert {
-                channel: "b".into(),
+            ScopeChange::Upsert {
+                scope: "b".into(),
                 cursor: 1,
                 record: AuthorityRecord {
                     model: child.model.clone(),
@@ -390,7 +384,7 @@ fn parent_release_leaves_independently_held_child() {
         ],
     })
     .unwrap();
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: BTreeMap::from([(
             "a".into(),
             CursorRange {
@@ -399,8 +393,8 @@ fn parent_release_leaves_independently_held_child() {
                 head: 2,
             },
         )]),
-        changes: vec![ChannelChange::Remove {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
             cursor: 2,
             key: parent.clone(),
         }],
@@ -426,7 +420,7 @@ fn legacy_authoritative_absence_is_not_reclassified_as_eviction() {
     let mut c = open(&dir.path().join("db"));
     deliver(&mut c, "a", 2, remove("a", 2));
     let result = c
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -468,7 +462,7 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
             state: json!({"bookId":"p","text":"child"}),
             error: None,
         };
-        c.apply_channel_page(ChannelPullPage {
+        c.apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([
                 (
                     "a".into(),
@@ -488,8 +482,8 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                 ),
             ]),
             changes: vec![
-                ChannelChange::Upsert {
-                    channel: "a".into(),
+                ScopeChange::Upsert {
+                    scope: "a".into(),
                     cursor: 1,
                     record: AuthorityRecord {
                         model: parent.model.clone(),
@@ -499,8 +493,8 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                         error: None,
                     },
                 },
-                ChannelChange::Upsert {
-                    channel: "b".into(),
+                ScopeChange::Upsert {
+                    scope: "b".into(),
                     cursor: 1,
                     record: child_record.clone(),
                 },
@@ -508,7 +502,7 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
         })
         .unwrap();
         if child_evicted_first {
-            c.apply_channel_page(ChannelPullPage {
+            c.apply_scope_page(ScopePullPage {
                 cursors: BTreeMap::from([(
                     "b".into(),
                     CursorRange {
@@ -517,8 +511,8 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                         head: 2,
                     },
                 )]),
-                changes: vec![ChannelChange::Remove {
-                    channel: "b".into(),
+                changes: vec![ScopeChange::Remove {
+                    scope: "b".into(),
                     cursor: 2,
                     key: child.clone(),
                 }],
@@ -533,7 +527,7 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
             })
             .unwrap();
         }
-        c.apply_channel_page(ChannelPullPage {
+        c.apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -542,8 +536,8 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                     head: 2,
                 },
             )]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 2,
                 record: AuthorityRecord {
                     model: parent.model.clone(),
@@ -556,7 +550,7 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
         })
         .unwrap();
         let from = c.cursor("b").unwrap().unwrap();
-        c.apply_channel_page(ChannelPullPage {
+        c.apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "b".into(),
                 CursorRange {
@@ -565,15 +559,15 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                     head: from + 1,
                 },
             )]),
-            changes: vec![ChannelChange::Remove {
-                channel: "b".into(),
+            changes: vec![ScopeChange::Remove {
+                scope: "b".into(),
                 cursor: from + 1,
                 key: child.clone(),
             }],
         })
         .unwrap();
         let report = c
-            .apply_channel_page(ChannelPullPage {
+            .apply_scope_page(ScopePullPage {
                 cursors: BTreeMap::from([(
                     "b".into(),
                     CursorRange {
@@ -582,8 +576,8 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
                         head: from + 2,
                     },
                 )]),
-                changes: vec![ChannelChange::Upsert {
-                    channel: "b".into(),
+                changes: vec![ScopeChange::Upsert {
+                    scope: "b".into(),
                     cursor: from + 2,
                     record: child_record,
                 }],
@@ -601,20 +595,19 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
 fn prepared_bootstrap_rollback_retains_no_members_or_run_progress() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
-    c.transaction(|tx| tx.set_channel("a".into(), true))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
     acknowledge(&mut c, &[("a", 1)]);
     let id = c.subscription_state("a").unwrap().unwrap().subscription_id;
     let run = c.request_bootstrap("a", id).unwrap().run;
     c.begin_session().unwrap();
     let prepared = c
-        .prepare_store(StoreDelivery::ChannelBootstrap {
+        .prepare_store(StoreDelivery::ScopeBootstrap {
             scope: "a".into(),
             subscription_id: id,
             run,
             expected_after: 0,
-            page: ChannelBootstrapPage {
-                channel: "a".into(),
+            page: ScopeBootstrapPage {
+                scope: "a".into(),
                 from: 0,
                 to: 1,
                 until: 1,
@@ -625,7 +618,7 @@ fn prepared_bootstrap_rollback_retains_no_members_or_run_progress() {
         .unwrap();
     assert_eq!(prepared.accepted(), &[0]);
     assert_eq!(
-        c.session_sql("SELECT COUNT(*) AS n FROM axton_channel_member", &[])
+        c.session_sql("SELECT COUNT(*) AS n FROM axton_scope_member", &[])
             .unwrap()[0]["n"],
         0
     );
@@ -643,7 +636,7 @@ fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
-    let malformed = ChannelPullPage {
+    let malformed = ScopePullPage {
         cursors: BTreeMap::from([(
             "a".into(),
             CursorRange {
@@ -654,13 +647,13 @@ fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
         )]),
         changes: vec![remove("a", 2)],
     };
-    assert!(c.apply_channel_page(malformed).is_err());
+    assert!(c.apply_scope_page(malformed).is_err());
     assert_eq!(c.cursor("a").unwrap(), Some(0));
     assert_eq!(holds(&mut c), 0);
     let mut record = authority(Some("invalid"), 7);
     record.state = json!({"text":99});
     let report = c
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -669,8 +662,8 @@ fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
                     head: 1,
                 },
             )]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record,
             }],
@@ -680,7 +673,7 @@ fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
     assert_eq!(holds(&mut c), 1);
     assert_eq!(c.record_stamp(&key()).unwrap(), 0);
     assert_eq!(c.cursor("a").unwrap(), Some(1));
-    assert!(ChannelPullPage::decode(&serde_json::to_vec(&json!({"cursors":{"a":{"from":1,"to":2,"head":2}},"changes":[{"kind":"remove","channel":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":9,"state":null}]})).unwrap()).is_err());
+    assert!(ScopePullPage::decode(&serde_json::to_vec(&json!({"cursors":{"a":{"from":1,"to":2,"head":2}},"changes":[{"kind":"remove","scope":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":9,"state":null}]})).unwrap()).is_err());
 }
 #[test]
 fn dirty_direct_create_survives_release_and_settlement_then_reopen() {
@@ -741,7 +734,7 @@ fn accepted_companion_create_is_preserved_as_local_work_after_release() {
         model: "Entry".into(),
         identity: json!({"id":"local"}),
     };
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: BTreeMap::from([(
             "a".into(),
             CursorRange {
@@ -750,8 +743,8 @@ fn accepted_companion_create_is_preserved_as_local_work_after_release() {
                 head: 1,
             },
         )]),
-        changes: vec![ChannelChange::Remove {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
             cursor: 1,
             key: local_key.clone(),
         }],
@@ -818,7 +811,7 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
             model: "Entry".into(),
             identity: json!({"id":lower}),
         };
-        c.apply_channel_page(ChannelPullPage {
+        c.apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -827,8 +820,8 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
                     head: 1,
                 },
             )]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record: AuthorityRecord {
                     model: "Entry".into(),
@@ -840,7 +833,7 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
             }],
         })
         .unwrap();
-        c.apply_channel_page(ChannelPullPage {
+        c.apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -849,8 +842,8 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
                     head: 2,
                 },
             )]),
-            changes: vec![ChannelChange::Remove {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Remove {
+                scope: "a".into(),
                 cursor: 2,
                 key: key.clone(),
             }],
@@ -874,7 +867,7 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
                         error: None,
                     }],
                     memberships: vec![MembershipClaim {
-                        channel: "a".into(),
+                        scope: "a".into(),
                         cursor: 1,
                         model: "Entry".into(),
                         identity: json!({"id":upper}),
@@ -1053,7 +1046,7 @@ fn fresh_receipt_with_stale_enrollment_claim_still_cannot_restore() {
         ],
     );
     r.memberships = vec![MembershipClaim {
-        channel: "a".into(),
+        scope: "a".into(),
         cursor: 1,
         model: "Entry".into(),
         identity: key().identity,
@@ -1112,7 +1105,7 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
     assert_eq!(epoch(&mut c), 0);
     c.begin_session().unwrap();
     let prepared = c
-        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
             cursors: [(
                 "b".into(),
                 CursorRange {
@@ -1138,8 +1131,8 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
             .unwrap()[0]["evicted_at"],
         1
     );
-    // Identical and stale channel evidence cannot mint another eviction.
-    c.apply_channel_page(ChannelPullPage {
+    // Identical and stale scope evidence cannot mint another eviction.
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "b".into(),
             CursorRange {
@@ -1153,7 +1146,7 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
     })
     .unwrap();
     assert_eq!(epoch(&mut c), 1);
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "b".into(),
             CursorRange {
@@ -1172,7 +1165,7 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
         model: "Entry".into(),
         identity: json!({"id":"other"}),
     };
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -1182,8 +1175,8 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
             },
         )]
         .into(),
-        changes: vec![ChannelChange::Remove {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
             cursor: 3,
             key: other.clone(),
         }],
@@ -1224,4 +1217,40 @@ fn old_queued_write_keeps_epoch_and_frozen_bytes_across_release_and_restart() {
     assert_eq!(c.pending_count().unwrap(), 0);
     assert!(c.read(&key()).unwrap().is_none());
     assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+}
+
+#[test]
+fn fresh_framework_catalog_uses_only_scope_ownership() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    let objects = c
+        .read_sql(
+            "SELECT name, sql FROM sqlite_master WHERE name LIKE 'axton_%' OR name LIKE 'sqlite_autoindex_axton_%' ORDER BY name",
+            &[],
+        )
+        .unwrap();
+    let catalog = serde_json::to_string(&objects).unwrap();
+    assert!(!catalog.contains("channel"), "{catalog}");
+    for table in ["axton_scope_member", "axton_subscription", "axton_client"] {
+        let columns = c
+            .read_sql(
+                &format!("SELECT name FROM pragma_table_info('{table}')"),
+                &[],
+            )
+            .unwrap();
+        let names: Vec<_> = columns
+            .iter()
+            .map(|column| column["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            names.contains(&if table == "axton_client" {
+                "scope_membership_version"
+            } else {
+                "scope"
+            }),
+            "{names:?}"
+        );
+        assert!(!names.iter().any(|name| name.contains("channel")));
+    }
 }

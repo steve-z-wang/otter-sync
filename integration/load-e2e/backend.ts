@@ -12,32 +12,40 @@ export type Seen = SeenRecord;
 export type { SeenIdentity, SeenPatch };
 export function Seen(identity: SeenIdentity): Extract<RecordRef, { model: "Seen" }> { return { model: "Seen", identity }; }
 export type RecordRef = { readonly model: "Item"; readonly identity: ItemIdentity } | { readonly model: "Tag"; readonly identity: TagIdentity } | { readonly model: "Seen"; readonly identity: SeenIdentity };
-/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */
-export type MembershipOptions = { readonly tags?: readonly string[] };
-/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */
-export type TagSelector = { readonly tag: string };
-export interface ModelMembership<Identity> {
- add(identity: Identity, options?: MembershipOptions): void;
- remove(identity: Identity): void;
+export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
+export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
+export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
+export interface ScopeAdd {
+ (records: RecordRef | readonly RecordRef[]): AddDeclaration;
+ item(ids: ItemIdentity | ItemIdentity["id"] | readonly (ItemIdentity | ItemIdentity["id"])[]): AddDeclaration;
+ tag(ids: TagIdentity | TagIdentity["id"] | readonly (TagIdentity | TagIdentity["id"])[]): AddDeclaration;
+ seen(ids: SeenIdentity | SeenIdentity["id"] | readonly (SeenIdentity | SeenIdentity["id"])[]): AddDeclaration;
 }
-export interface Channel {
- item: ModelMembership<ItemIdentity>;
- tag: ModelMembership<TagIdentity>;
- seen: ModelMembership<SeenIdentity>;
- add(records: readonly RecordRef[], options?: MembershipOptions): void;
- remove(records: readonly RecordRef[]): void;
- remove(selector: TagSelector): void;
+export interface ScopeRecords {
+ (records: RecordRef | readonly RecordRef[]): void;
+ item(ids: ItemIdentity | ItemIdentity["id"] | readonly (ItemIdentity | ItemIdentity["id"])[]): void;
+ tag(ids: TagIdentity | TagIdentity["id"] | readonly (TagIdentity | TagIdentity["id"])[]): void;
+ seen(ids: SeenIdentity | SeenIdentity["id"] | readonly (SeenIdentity | SeenIdentity["id"])[]): void;
 }
 export interface Touch {
- item(identity: ItemIdentity): void;
- tag(identity: TagIdentity): void;
- seen(identity: SeenIdentity): void;
+ (records: RecordRef | readonly RecordRef[]): void;
+ item(ids: ItemIdentity | ItemIdentity["id"] | readonly (ItemIdentity | ItemIdentity["id"])[]): void;
+ tag(ids: TagIdentity | TagIdentity["id"] | readonly (TagIdentity | TagIdentity["id"])[]): void;
+ seen(ids: SeenIdentity | SeenIdentity["id"] | readonly (SeenIdentity | SeenIdentity["id"])[]): void;
 }
+export interface ScopeTagRemoval extends ScopeRecords { (): void }
+export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
+ item(predicate: ScopePredicate): ScopeSelection;
+ tag(predicate: ScopePredicate): ScopeSelection;
+ seen(predicate: ScopePredicate): ScopeSelection;
+}
+export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
+export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
- channel(name: string): Channel;
+ scope(name: string): Scope;
  touch: Touch;
 }
 export interface QueryContext<Tx> {
@@ -49,18 +57,18 @@ export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
- channel(name: string): Channel;
+ scope(name: string): Scope;
  touch: Touch;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
- channel(name: string): Channel;
+ scope(name: string): Scope;
  touch: Touch;
 }
 const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"deprecations":[],"inverses":[],"loaders":["Item","Tag","Seen"],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}],"mutations":[],"prerequisites":[],"requirements":[],"schema":{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]},"uniqueConstraints":[]} as const;
 /** Trusted framework context and caller-supplied arguments of a Mutation. */
 export type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };
-/** A Query's context has no `channel` or `touch`: it reads without business side effects. */
+/** A Query's context has no `scope` or `touch`: it reads without business side effects. */
 export type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };
 export interface AddItemInput {
  item: Item;
@@ -87,20 +95,13 @@ export interface Queries<Tx> {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 /** A page's `continuation` is `null` on the first page, and answering `next: null` completes the Load; `{ state }` continues it, and `{ state: null }` is a legitimate state. At most 64 KiB encoded and 64 levels deep. */
 export type LoadNext = null | { state: JsonValue };
-/** A Load page's Channel handle: it only adds records this page returns, by Model or as a mixed list, with optional tags. */
-export interface LoadChannel {
- item: { add(identity: ItemIdentity, options?: MembershipOptions): void };
- tag: { add(identity: TagIdentity, options?: MembershipOptions): void };
- seen: { add(identity: SeenIdentity, options?: MembershipOptions): void };
- add(records: readonly RecordRef[], options?: MembershipOptions): void;
-}
-/** A Load page's context: it has no `touch`, and its `channel` only adds. `callId` is the page's durable call ID and `loadId` its job. */
+/** A Load page's context: it has no `touch`, and its `scope` only adds. `callId` is the page's durable call ID and `loadId` its job. */
 export interface LoadContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
  loadId: string;
- channel(name: string): LoadChannel;
+ scope(name: string): LoadScope;
 }
 /** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */
 export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };

@@ -39,7 +39,7 @@ The same normalization runs wherever a value enters a record: before an operatio
 ## 10. Quality Requirements
 
 - An integer outside the safe range is refused on every path, so no runtime can widen a value another cannot read. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `state_is_complete_but_patch_preserves_absent_and_null`; PostgreSQL `bigint` narrowing in [runtime.test.mjs](../../../../integration/persistence/server/runtime.test.mjs) `loader safely converts PostgreSQL BigInt scalar and list values`.
-- Identity values normalize identically everywhere, so one record has one key. Evidence: `identities_are_exact_normalized_and_independent_of_channels` in the same core test file.
+- Identity values normalize identically everywhere, so one record has one key. Evidence: `identities_are_exact_normalized_and_independent_of_scopes` in the same core test file.
 - Booleans and lists survive the SQLite round trip. Evidence: [sqlite/tests/engine.rs](../../../../crates/sqlite/tests/engine.rs) `model_rows_round_trip_booleans_lists_and_copy_aside`.
 
 ## 11. Risks and Technical Debt

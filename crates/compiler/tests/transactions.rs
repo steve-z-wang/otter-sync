@@ -58,7 +58,7 @@ fn typescript_application_transactions_queue_typed_mutations() {
     // The companion context and the onStore transaction carry no Mutations.
     let companion = line(&ts, "export class CompanionContext ");
     assert!(!companion.contains("mutations"), "{companion}");
-    assert!(!companion.contains("channels"), "{companion}");
+    assert!(!companion.contains("scopes"), "{companion}");
     let store = line(&ts, "export class GeneratedTransaction ");
     assert!(!store.contains("mutations"), "{store}");
     assert!(!store.contains("rejections"), "{store}");
@@ -123,7 +123,7 @@ fn dart_application_transactions_queue_typed_mutations() {
     );
     let companion = line(&dart, "class CompanionContext ");
     assert!(!companion.contains("mutations"), "{companion}");
-    assert!(!companion.contains("channels"), "{companion}");
+    assert!(!companion.contains("scopes"), "{companion}");
     // The client-level routes keep no `local` parameter.
     for class in [
         "class Mutations {",

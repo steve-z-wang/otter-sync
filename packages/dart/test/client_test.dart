@@ -445,7 +445,7 @@ void main() {
 
   /// A rebuild resets the worker behind a connected lane that is asleep with no
   /// timer; the client wakes it once the native rebuild answered, so the
-  /// carried Channel is subscribed again without another `connect` or `start`.
+  /// carried Scope is subscribed again without another `connect` or `start`.
   /// The TypeScript twin is `a rebuild wakes the sleeping downlink lane without
   /// another start` ([#162](https://github.com/zanminwang/axton/issues/162)).
   test(
@@ -514,9 +514,9 @@ void main() {
         await client.rebuild(discardPending: true);
         await _eventually(
           () => handshakes.length == 2,
-          'the carried Channel subscribed again after the rebuild',
+          'the carried Scope subscribed again after the rebuild',
         );
-        expect(handshakes[1]['channels'], ['scope']);
+        expect(handshakes[1]['scopes'], ['scope']);
         await closed[0].future.timeout(
           const Duration(seconds: 5),
           onTimeout: () => fail('the old socket was not abandoned'),
@@ -873,7 +873,7 @@ void _mutationTests() {
             tx.read('Entry', {'id': 'e'}),
             tx.direct(const {}),
             tx.submitMutation('Ping', 1, const {}, _decode),
-            tx.channels.subscribe('book'),
+            tx.scopes.subscribe('book'),
             tx.savepoint(() async {}),
           ]) {
             await expectLater(refused, _stateError(_capability));
@@ -1146,7 +1146,7 @@ void _mutationTests() {
               _stateError(_capability),
             );
             await expectLater(
-              tx.channels.subscribe('book'),
+              tx.scopes.subscribe('book'),
               _stateError(_capability),
             );
             await expectLater(

@@ -880,11 +880,11 @@ fn stamps_decide_content_and_only_divergent_equal_stamps_fail() {
 }
 
 #[test]
-fn loads_coexist_with_optimism_and_channel_delivery_by_stamp() {
+fn loads_coexist_with_optimism_and_scope_delivery_by_stamp() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open_db(&dir.path().join("db"));
     subscribe(&mut c, "ch");
-    c.apply_page(page("ch", 0, 1, Some("channel"))).unwrap();
+    c.apply_page(page("ch", 0, 1, Some("scope"))).unwrap();
     let edit = |text: &str| Operation {
         model: "Entry".into(),
         op: OperationKind::Update,
@@ -901,7 +901,7 @@ fn loads_coexist_with_optimism_and_channel_delivery_by_stamp() {
         "optimism stays visible"
     );
     assert_eq!(stamp(&mut c, "e"), 2);
-    // A later Channel update wins; an older Load page cannot regress it.
+    // A later Scope update wins; an older Load page cannot regress it.
     c.apply_page(page("ch", 1, 5, Some("live"))).unwrap();
     applied(store(&mut c, &id, &[("e", "stale", 4)], None));
     assert_eq!(stamp(&mut c, "e"), 5);

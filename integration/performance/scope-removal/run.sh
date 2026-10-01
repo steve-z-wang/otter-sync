@@ -8,4 +8,4 @@ port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));prin
 initdb -D "$cluster/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$cluster/data" -l "$cluster/log" -o "-p $port -h 127.0.0.1 -k $cluster" start >/dev/null
 export DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres"
-node "$root/integration/performance/channel-removal/measure.mjs" "${1:-$root/integration/performance/channel-removal/evidence.json}"
+node "$root/integration/performance/scope-removal/measure.mjs" "${1:-/tmp/scope-removal-evidence.json}"

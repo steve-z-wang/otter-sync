@@ -1,16 +1,16 @@
-//! Durable per-channel ownership evidence. A removal releases a replica base;
+//! Durable per-scope ownership evidence. A removal releases a replica base;
 //! it is never authoritative absence or a cascading domain delete.
 use crate::authority::{Held, StageEntry, StageMode};
 use crate::engine::{Engine, as_u64};
 use crate::store::ClientStore;
 use crate::{ApplyReport, Operation};
-use axton_core::{ChannelChange, MAX_SAFE_INTEGER, MembershipClaim, RecordKey, Result, invalid};
+use axton_core::{MAX_SAFE_INTEGER, MembershipClaim, RecordKey, Result, ScopeChange, invalid};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct MemberEvidence {
-    pub channel: String,
+    pub scope: String,
     pub key: RecordKey,
     pub cursor: u64,
     pub present: bool,
@@ -24,19 +24,18 @@ pub enum MembershipMerge {
 
 impl<S: ClientStore> Engine<'_, S> {
     pub fn merge_member(&mut self, evidence: MemberEvidence) -> Result<MembershipMerge> {
-        if evidence.channel.is_empty() || evidence.cursor == 0 || evidence.cursor > MAX_SAFE_INTEGER
-        {
+        if evidence.scope.is_empty() || evidence.cursor == 0 || evidence.cursor > MAX_SAFE_INTEGER {
             return Err(invalid("invalid membership evidence"));
         }
         let key = self
             .schema
             .record_key(&evidence.key.model, &evidence.key.identity)?;
         let parameters = [
-            json!(evidence.channel),
+            json!(evidence.scope),
             json!(key.model),
             json!(key.encoded_identity()?),
         ];
-        let rows = self.rows("SELECT cursor, present FROM axton_channel_member WHERE channel=? AND model=? AND identity=?", &parameters)?;
+        let rows = self.rows("SELECT cursor, present FROM axton_scope_member WHERE scope=? AND model=? AND identity=?", &parameters)?;
         if let Some(row) = rows.rows.first() {
             let cursor = as_u64(&row[0])?;
             if evidence.cursor < cursor {
@@ -49,14 +48,14 @@ impl<S: ClientStore> Engine<'_, S> {
                 return Ok(MembershipMerge::Identical);
             }
         }
-        self.exec("axton_channel_member", "INSERT INTO axton_channel_member(channel, model, identity, cursor, present) VALUES(?,?,?,?,?) ON CONFLICT(channel,model,identity) DO UPDATE SET cursor=excluded.cursor,present=excluded.present", &[parameters[0].clone(),parameters[1].clone(),parameters[2].clone(),json!(evidence.cursor),json!(u8::from(evidence.present))])?;
+        self.exec("axton_scope_member", "INSERT INTO axton_scope_member(scope, model, identity, cursor, present) VALUES(?,?,?,?,?) ON CONFLICT(scope,model,identity) DO UPDATE SET cursor=excluded.cursor,present=excluded.present", &[parameters[0].clone(),parameters[1].clone(),parameters[2].clone(),json!(evidence.cursor),json!(u8::from(evidence.present))])?;
         Ok(MembershipMerge::Newer)
     }
     pub fn merge_memberships(&mut self, claims: &[MembershipClaim]) -> Result<()> {
         for claim in claims {
             claim.validate()?;
             self.merge_member(MemberEvidence {
-                channel: claim.channel.clone(),
+                scope: claim.scope.clone(),
                 key: claim.key(),
                 cursor: claim.cursor,
                 present: true,
@@ -65,7 +64,7 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(())
     }
     pub fn held(&mut self, key: &RecordKey) -> Result<bool> {
-        Ok(self.scalar("SELECT 1 FROM axton_channel_member WHERE model=? AND identity=? AND present=1 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
+        Ok(self.scalar("SELECT 1 FROM axton_scope_member WHERE model=? AND identity=? AND present=1 LIMIT 1", &[json!(key.model),json!(key.encoded_identity()?)])?.is_some())
     }
     pub fn replica_evicted(&mut self, key: &RecordKey) -> Result<bool> {
         Ok(self
@@ -264,37 +263,30 @@ impl<S: ClientStore> Engine<'_, S> {
         report.reports.extend(self.rebuild_held(&pending)?);
         Ok(report)
     }
-    pub(crate) fn apply_channel_changes(
-        &mut self,
-        changes: &[ChannelChange],
-    ) -> Result<ApplyReport> {
+    pub(crate) fn apply_scope_changes(&mut self, changes: &[ScopeChange]) -> Result<ApplyReport> {
         let mut releases = BTreeMap::new();
         // Merge the complete delivery before staging any body or release.
         for change in changes {
-            let (channel, cursor, key, present) = match change {
-                ChannelChange::Upsert {
-                    channel,
+            let (scope, cursor, key, present) = match change {
+                ScopeChange::Upsert {
+                    scope,
                     cursor,
                     record,
                 } => (
-                    channel,
+                    scope,
                     *cursor,
                     self.schema.record_key(&record.model, &record.identity)?,
                     true,
                 ),
-                ChannelChange::Remove {
-                    channel,
-                    cursor,
-                    key,
-                } => (
-                    channel,
+                ScopeChange::Remove { scope, cursor, key } => (
+                    scope,
                     *cursor,
                     self.schema.record_key(&key.model, &key.identity)?,
                     false,
                 ),
             };
             let merged = self.merge_member(MemberEvidence {
-                channel: channel.clone(),
+                scope: scope.clone(),
                 cursor,
                 key: key.clone(),
                 present,
@@ -306,7 +298,7 @@ impl<S: ClientStore> Engine<'_, S> {
         let mut report = ApplyReport::default();
         let mut held = Held::new();
         for change in changes {
-            if let ChannelChange::Upsert { record, .. } = change {
+            if let ScopeChange::Upsert { record, .. } = change {
                 let key = self.schema.record_key(&record.model, &record.identity)?;
                 if !record.state.is_null() && !self.held(&key)? {
                     self.skip_authority_occurrence()?;

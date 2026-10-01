@@ -44,12 +44,9 @@ pub(super) fn execute<S: ClientStore + 'static>(
             client.transaction(|tx| tx.direct(operation))?;
             Value::Null
         }
-        Command::Channel {
-            channel,
-            subscribed,
-        } => {
-            let (channel, subscribed) = (channel.clone(), *subscribed);
-            client.transaction(|tx| tx.set_channel(channel, subscribed))?;
+        Command::Scope { scope, subscribed } => {
+            let (scope, subscribed) = (scope.clone(), *subscribed);
+            client.transaction(|tx| tx.set_scope(scope, subscribed))?;
             Value::Null
         }
         Command::SubmitAction {
@@ -105,8 +102,8 @@ pub(super) fn execute<S: ClientStore + 'static>(
             serde_json::to_value(client.acknowledge(*sequence, receipt)?)?
         }
         Command::Pull { page } => {
-            let page = ChannelPullPage::decode(serde_json::to_string(page)?.as_bytes())?;
-            serde_json::to_value(client.apply_channel_page(page)?)?
+            let page = ScopePullPage::decode(serde_json::to_string(page)?.as_bytes())?;
+            serde_json::to_value(client.apply_scope_page(page)?)?
         }
         Command::Readiness { key, state } => {
             client.set_readiness(key, *state)?;
@@ -126,7 +123,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         Command::RecordStatus { key } => client.record_status(key)?,
         Command::Tasks => json!(client.pending_tasks()?),
         Command::Status => {
-            json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"channels":client.desired_channels()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
+            json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"scopes":client.desired_scopes()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
         }
         Command::Malformed { error } => return Err(invalid(error.clone())),
         Command::Transaction
@@ -193,12 +190,9 @@ pub(super) fn execute_in_session<S: ClientStore>(
             let mutation = mutation.clone();
             json!(client.session(|tx| tx.enqueue(mutation))?)
         }
-        TransactionCommand::Channel {
-            channel,
-            subscribed,
-        } => {
-            let (channel, subscribed) = (channel.clone(), *subscribed);
-            client.session(|tx| tx.set_channel(channel, subscribed))?;
+        TransactionCommand::Scope { scope, subscribed } => {
+            let (scope, subscribed) = (scope.clone(), *subscribed);
+            client.session(|tx| tx.set_scope(scope, subscribed))?;
             Value::Null
         }
         TransactionCommand::Malformed { error } => return Err(invalid(error.clone())),

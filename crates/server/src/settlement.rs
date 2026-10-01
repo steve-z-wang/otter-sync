@@ -1,15 +1,15 @@
 //! Shared settlement of one Mutation's, legacy mutation's, Load page's or
 //! external transaction's effects, inside the application's transaction:
-//! Channel locks, record guards, membership reduction, stamp allocation and
+//! Scope locks, record guards, membership reduction, stamp allocation and
 //! positions ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
 //! Every step is a host operation; no application SQL lives here.
-use crate::channel_members::{
-    Declaration, MemberDelta, MemberPosition, MemberState, PositionKind, check_tag, declared_tags,
-    reduce,
-};
 use crate::host::{
-    Acknowledged, ChannelIntent, ChannelMembers, HostExt, HostRequest, Locked, Memberships,
-    Positions, RecordRef, Stamped,
+    Acknowledged, HostExt, HostRequest, Locked, Memberships, Positions, RecordRef, ScopeIntent,
+    ScopeMembers, Stamped,
+};
+use crate::scope_members::{
+    Declaration, MemberDelta, MemberPosition, MemberState, PositionKind, SelectionAction,
+    declared_tags, reduce,
 };
 use crate::{Config, Error, Host, Result, code, internal};
 use axton_core::{AuthorityRecord, MembershipClaim, RecordKey};
@@ -33,28 +33,25 @@ impl Settlement {
     pub fn claims(
         &self,
         config: &Config,
-        intents: &[ChannelIntent],
+        intents: &[ScopeIntent],
         records: &[AuthorityRecord],
     ) -> Result<Vec<MembershipClaim>> {
         let mut claims = BTreeMap::new();
         for intent in intents {
-            if let ChannelIntent::Add {
-                channel, record, ..
-            } = intent
-            {
+            if let ScopeIntent::Add { scope, record, .. } = intent {
                 let key = resolve(config, record)?;
                 for position in &self.positions {
                     if position.kind == PositionKind::Upsert
-                        && &position.channel == channel
+                        && &position.scope == scope
                         && position.key == key
                         && let Some(returned) = records
                             .iter()
                             .find(|r| r.model == key.model && r.identity == key.identity)
                     {
                         claims.insert(
-                            (channel.clone(), key.encoded().map_err(internal)?),
+                            (scope.clone(), key.encoded().map_err(internal)?),
                             MembershipClaim {
-                                channel: channel.clone(),
+                                scope: scope.clone(),
                                 cursor: position.cursor,
                                 model: returned.model.clone(),
                                 identity: returned.identity.clone(),
@@ -92,11 +89,18 @@ pub(crate) fn resolve(config: &Config, record: &RecordRef) -> Result<RecordKey> 
 
 /// A tag or selector that breaks the tag rules
 /// ([`check_tag`], [`declared_tags`]): refused with its declaration.
-pub(crate) fn invalid_tags(channel: &str, reason: impl std::fmt::Display) -> Error {
-    Error::new(
-        code::HANDLER_INVALID,
-        format!("Channel {channel}: {reason}"),
-    )
+pub(crate) fn invalid_tags(scope: &str, reason: impl std::fmt::Display) -> Error {
+    Error::new(code::HANDLER_INVALID, format!("Scope {scope}: {reason}"))
+}
+
+fn label_tags(scope: &str, tags: &[String]) -> Result<BTreeSet<String>> {
+    if tags.is_empty() {
+        return Err(invalid_tags(
+            scope,
+            "label operation must name at least one tag",
+        ));
+    }
+    declared_tags(tags).map_err(|reason| invalid_tags(scope, reason))
 }
 
 pub(crate) fn insert(changes: &mut Changes, key: RecordKey) -> Result<()> {
@@ -104,7 +108,7 @@ pub(crate) fn insert(changes: &mut Changes, key: RecordKey) -> Result<()> {
     Ok(())
 }
 
-/// The guard settlement took on one record after locking its Channels.
+/// The guard settlement took on one record after locking its Scopes.
 enum Guard {
     /// `advanceStamp`: the record changed and has this new stamp.
     Changed(u64),
@@ -116,40 +120,40 @@ enum Guard {
 
 /// Settle `changed` records and ordered membership intents.
 ///
-/// 1. Validate every intent before any host call: a Channel name, a
+/// 1. Validate every intent before any host call: a Scope name, a
 ///    registered Model and identity, tag spelling and count.
-/// 2. Resolve the Channels to lock: every Channel an intent names plus every
-///    Channel a changed record is a member of (`memberships`, a touch's
-///    recipients), and `lockChannels` them in canonical order.
+/// 2. Resolve the Scopes to lock: every Scope an intent names plus every
+///    Scope a changed record is a member of (`memberships`, a touch's
+///    recipients), and `lockScopes` them in canonical order.
 /// 3. Guard the records the settlement names in canonical key order: a
 ///    changed one advances its stamp once, one an add certainly leaves a
 ///    member ensures its stamp, any other is only locked.
-/// 4. Re-read each changed record's Channels under the locks. One outside
+/// 4. Re-read each changed record's Scopes under the locks. One outside
 ///    the locked set means a competing membership write moved it: the
 ///    settlement fails `transaction.conflict`, so the owning transaction
 ///    retries whole, and never locks out of order.
-/// 5. Per locked Channel, read the members its declarations and touches
-///    reach (`readChannelMembers`), reduce the declarations in order
+/// 5. Per locked Scope, read the members its declarations and touches
+///    reach (`readScopeMembers`), reduce the declarations in order
 ///    ([`reduce`]) and collect the deltas; a record without metadata that
 ///    ends a member is given its first stamp.
-/// 6. `applyChannelMembers` the deltas at once, and check each position.
+/// 6. `applyScopeMembers` the deltas at once, and check each position.
 ///
 /// Answers the stamp allocated to each changed record, keyed canonically.
 pub(crate) async fn settle_changes(
     config: &Config,
     changed: &Changes,
-    memberships: &[ChannelIntent],
+    memberships: &[ScopeIntent],
     host: &impl Host,
 ) -> Result<Settlement> {
     settle_locked(config, changed, memberships, &BTreeSet::new(), host).await
 }
 
-/// Lock `channels` in canonical byte order; nothing when there are none.
-pub(crate) async fn lock_channels(channels: &BTreeSet<String>, host: &impl Host) -> Result<()> {
-    if !channels.is_empty() {
+/// Lock `scopes` in canonical byte order; nothing when there are none.
+pub(crate) async fn lock_scopes(scopes: &BTreeSet<String>, host: &impl Host) -> Result<()> {
+    if !scopes.is_empty() {
         let Acknowledged = host
-            .call_typed(HostRequest::LockChannels {
-                channels: channels.iter().cloned().collect(),
+            .call_typed(HostRequest::LockScopes {
+                scopes: scopes.iter().cloned().collect(),
             })
             .await?;
     }
@@ -157,14 +161,14 @@ pub(crate) async fn lock_channels(channels: &BTreeSet<String>, host: &impl Host)
 }
 
 /// [`settle_changes`] in a transaction that already holds the locks of
-/// `held` ([`lock_channels`]), taken before an earlier record write such as
+/// `held` ([`lock_scopes`]), taken before an earlier record write such as
 /// a Load page's `readStamps`. Settlement locks again only when it needs a
-/// Channel outside them, which the caller must rule out when its own record
+/// Scope outside them, which the caller must rule out when its own record
 /// writes preceded settlement.
 pub(crate) async fn settle_locked(
     config: &Config,
     changed: &Changes,
-    memberships: &[ChannelIntent],
+    memberships: &[ScopeIntent],
     held: &BTreeSet<String>,
     host: &impl Host,
 ) -> Result<Settlement> {
@@ -173,53 +177,92 @@ pub(crate) async fn settle_locked(
             return Err(unregistered(&key.model));
         }
     }
-    // 1. Each Channel's declarations, in order, and every record to guard.
-    let mut channels: BTreeMap<String, Vec<Declaration>> = BTreeMap::new();
+    // 1. Each Scope's declarations, in order, and every record to guard.
+    let mut scopes: BTreeMap<String, Vec<Declaration>> = BTreeMap::new();
     let mut records = changed.clone();
     for intent in memberships {
-        // The one Channel-name rule, as every frame and registration applies
-        // it: a name that is nothing but whitespace names no Channel either.
-        if axton_core::check_channel(intent.channel()).is_err() {
-            return Err(Error::new(
-                code::PUBLISH_INVALID,
-                "channel must not be blank",
-            ));
+        // The one Scope-name rule, as every frame and registration applies
+        // it: a name that is nothing but whitespace names no Scope either.
+        if axton_core::check_scope(intent.scope()).is_err() {
+            return Err(Error::new(code::PUBLISH_INVALID, "scope must not be blank"));
         }
         let declaration = match intent {
-            ChannelIntent::Add {
-                channel,
+            ScopeIntent::Add {
+                scope,
                 record,
                 tags,
             } => Declaration::Add {
                 key: resolve(config, record)?,
-                tags: declared_tags(tags).map_err(|reason| invalid_tags(channel, reason))?,
+                tags: declared_tags(tags).map_err(|reason| invalid_tags(scope, reason))?,
             },
-            ChannelIntent::Remove { record, .. } => Declaration::Remove {
+            ScopeIntent::Remove { record, .. } => Declaration::Remove {
                 key: resolve(config, record)?,
             },
-            ChannelIntent::RemoveTag { channel, tag } => {
-                check_tag(tag).map_err(|reason| invalid_tags(channel, reason))?;
-                Declaration::RemoveTag { tag: tag.clone() }
+            ScopeIntent::TagAdd {
+                scope,
+                record,
+                tags,
+            } => Declaration::TagAdd {
+                key: resolve(config, record)?,
+                tags: label_tags(scope, tags)?,
+            },
+            ScopeIntent::TagRemove {
+                scope,
+                record,
+                tags,
+            } => Declaration::TagRemove {
+                key: resolve(config, record)?,
+                tags: label_tags(scope, tags)?,
+            },
+            ScopeIntent::DetachTags { scope, tags } => Declaration::DetachTags {
+                tags: label_tags(scope, tags)?,
+            },
+            ScopeIntent::Select {
+                scope,
+                model,
+                predicate,
+                action,
+            } => {
+                if let Some(model) = model {
+                    if !config.loaders.contains(model) {
+                        return Err(unregistered(model));
+                    }
+                    config
+                        .schema
+                        .model(model)
+                        .map_err(|e| invalid_tags(scope, e))?;
+                }
+                match action {
+                    SelectionAction::TagAdd { tags } | SelectionAction::TagRemove { tags } => {
+                        label_tags(scope, &tags.iter().cloned().collect::<Vec<_>>())?;
+                    }
+                    SelectionAction::Remove => {}
+                }
+                Declaration::Select {
+                    model: model.clone(),
+                    predicate: predicate.clone(),
+                    action: action.clone(),
+                }
             }
         };
         if let Some(key) = declaration.key() {
             insert(&mut records, key.clone())?;
         }
-        channels
-            .entry(intent.channel().to_string())
+        scopes
+            .entry(intent.scope().to_string())
             .or_default()
             .push(declaration);
     }
-    let certain = certainly_present(&channels)?;
+    let certain = certainly_present(&scopes)?;
 
-    // 2. The Channels to lock, then the locks, before any record guard.
-    let mut locked: BTreeSet<String> = channels.keys().cloned().collect();
+    // 2. The Scopes to lock, then the locks, before any record guard.
+    let mut locked: BTreeSet<String> = scopes.keys().cloned().collect();
     for key in changed.values() {
         let Memberships(recipients) = host.call_typed(memberships_of(key)?).await?;
         locked.extend(recipients);
     }
     if !locked.is_subset(held) {
-        lock_channels(&locked, host).await?;
+        lock_scopes(&locked, host).await?;
     }
 
     // 3. One guard per record, in canonical key order.
@@ -266,7 +309,7 @@ pub(crate) async fn settle_locked(
             return Err(Error::new(
                 code::TRANSACTION_CONFLICT,
                 format!(
-                    "{} {} joined Channel {moved} after settlement locked its Channels; the transaction must retry",
+                    "{} {} joined Scope {moved} after settlement locked its Scopes; the transaction must retry",
                     key.model, key.identity
                 ),
             ));
@@ -274,39 +317,48 @@ pub(crate) async fn settle_locked(
         recipients.insert(encoded, current);
     }
 
-    // 5. Read, reduce and collect each Channel's deltas.
+    // 5. Read, reduce and collect each Scope's deltas.
     let touched: BTreeSet<String> = changed.keys().cloned().collect();
     let mut deltas: Vec<MemberDelta> = vec![];
-    for channel in &locked {
-        let declarations = channels.get(channel).map(Vec::as_slice).unwrap_or(&[]);
+    for scope in &locked {
+        let declarations = scopes.get(scope).map(Vec::as_slice).unwrap_or(&[]);
         let mut explicit: BTreeMap<String, RecordKey> = BTreeMap::new();
         let mut tags: BTreeSet<String> = BTreeSet::new();
+        let mut all = false;
         for declaration in declarations {
             match declaration {
-                Declaration::Add { key, .. } | Declaration::Remove { key } => {
+                Declaration::Add { key, .. }
+                | Declaration::Remove { key }
+                | Declaration::TagAdd { key, .. }
+                | Declaration::TagRemove { key, .. } => {
                     insert(&mut explicit, key.clone())?;
                 }
-                Declaration::RemoveTag { tag } => {
-                    tags.insert(tag.clone());
+                Declaration::DetachTags { tags: labels } => {
+                    tags.extend(labels.iter().cloned());
+                }
+                Declaration::Select { predicate, .. } => {
+                    tags.extend(predicate.labels());
+                    all |= predicate.requires_all();
                 }
             }
         }
         for (encoded, current) in &recipients {
-            if current.contains(channel) {
+            if current.contains(scope) {
                 explicit.insert((*encoded).clone(), changed[*encoded].clone());
             }
         }
-        if explicit.is_empty() && tags.is_empty() {
+        if !all && explicit.is_empty() && tags.is_empty() {
             continue;
         }
-        let request = HostRequest::ReadChannelMembers {
-            channel: channel.clone(),
+        let request = HostRequest::ReadScopeMembers {
+            scope: scope.clone(),
             explicit_keys: explicit.into_values().collect(),
+            all,
             tags: tags.into_iter().collect(),
         };
-        let members: ChannelMembers = host.call_typed(request.clone()).await?;
+        let members: ScopeMembers = host.call_typed(request.clone()).await?;
         check_members(&request, &members)?;
-        deltas.extend(reduce(channel, members, declarations, &touched)?);
+        deltas.extend(reduce(scope, members, declarations, &touched)?);
     }
     let joined: BTreeSet<String> = deltas
         .iter()
@@ -328,7 +380,7 @@ pub(crate) async fn settle_locked(
 
     // 6. Persist every final state at once.
     let positions = if !deltas.is_empty() {
-        let request = HostRequest::ApplyChannelMembers { deltas };
+        let request = HostRequest::ApplyScopeMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
         check_positions(&request, &positions)?;
         positions
@@ -354,16 +406,22 @@ fn memberships_of(key: &RecordKey) -> Result<HostRequest> {
     })
 }
 
-/// The records an add leaves a member whatever the Channel held before: the
+/// The records an add leaves a member whatever the Scope held before: the
 /// last add or remove naming the pair is an add, and no selector follows it
-/// on that Channel. Only these are guarded with `ensureStamp` up front;
+/// on that Scope. Only these are guarded with `ensureStamp` up front;
 /// another record that ends a member without metadata gets it afterwards.
-fn certainly_present(channels: &BTreeMap<String, Vec<Declaration>>) -> Result<BTreeSet<String>> {
+fn certainly_present(scopes: &BTreeMap<String, Vec<Declaration>>) -> Result<BTreeSet<String>> {
     let mut certain = BTreeSet::new();
-    for declarations in channels.values() {
-        let selector = declarations
-            .iter()
-            .rposition(|declaration| matches!(declaration, Declaration::RemoveTag { .. }));
+    for declarations in scopes.values() {
+        let selector = declarations.iter().rposition(|declaration| {
+            matches!(
+                declaration,
+                Declaration::Select {
+                    action: SelectionAction::Remove,
+                    ..
+                }
+            )
+        });
         let mut last: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         for (index, declaration) in declarations.iter().enumerate() {
             match declaration {
@@ -373,7 +431,10 @@ fn certainly_present(channels: &BTreeMap<String, Vec<Declaration>>) -> Result<BT
                 Declaration::Remove { key } => {
                     last.insert(key.encoded().map_err(internal)?, (index, false));
                 }
-                Declaration::RemoveTag { .. } => {}
+                Declaration::TagAdd { .. }
+                | Declaration::TagRemove { .. }
+                | Declaration::DetachTags { .. }
+                | Declaration::Select { .. } => {}
             }
         }
         certain.extend(
@@ -385,16 +446,17 @@ fn certainly_present(channels: &BTreeMap<String, Vec<Declaration>>) -> Result<BT
     Ok(certain)
 }
 
-/// A `readChannelMembers` answer names each record once, and only records the
+/// A `readScopeMembers` answer names each record once, and only records the
 /// request named or that carry a requested tag.
 fn check_members(request: &HostRequest, members: &[MemberState]) -> Result<()> {
-    let HostRequest::ReadChannelMembers {
+    let HostRequest::ReadScopeMembers {
         explicit_keys,
         tags,
+        all,
         ..
     } = request
     else {
-        return Err(internal("check_members needs a readChannelMembers request"));
+        return Err(internal("check_members needs a readScopeMembers request"));
     };
     let explicit: BTreeSet<String> = explicit_keys
         .iter()
@@ -406,7 +468,8 @@ fn check_members(request: &HostRequest, members: &[MemberState]) -> Result<()> {
         if !seen.insert(encoded.clone()) {
             return Err(request.invalid_response(format!("answers {encoded} twice")));
         }
-        if !explicit.contains(&encoded) && !tags.iter().any(|tag| member.tags.contains(tag)) {
+        if !all && !explicit.contains(&encoded) && !tags.iter().any(|tag| member.tags.contains(tag))
+        {
             return Err(request.invalid_response(format!(
                 "answers {encoded}, which the request neither names nor selects by tag"
             )));
@@ -415,14 +478,14 @@ fn check_members(request: &HostRequest, members: &[MemberState]) -> Result<()> {
     Ok(())
 }
 
-/// An `applyChannelMembers` answer holds one position per delta, in delta
-/// order, naming the delta's Channel and record with the kind its presence
-/// implies. Per Channel, the published positions are consecutive and above
+/// An `applyScopeMembers` answer holds one position per delta, in delta
+/// order, naming the delta's Scope and record with the kind its presence
+/// implies. Per Scope, the published positions are consecutive and above
 /// every kept one, and no cursor repeats.
 fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Result<()> {
-    let HostRequest::ApplyChannelMembers { deltas } = request else {
+    let HostRequest::ApplyScopeMembers { deltas } = request else {
         return Err(internal(
-            "check_positions needs an applyChannelMembers request",
+            "check_positions needs an applyScopeMembers request",
         ));
     };
     if positions.len() != deltas.len() {
@@ -440,16 +503,16 @@ fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Resul
         } else {
             PositionKind::Remove
         };
-        if position.channel != delta.channel || position.key != delta.key || position.kind != kind {
+        if position.scope != delta.scope || position.key != delta.key || position.kind != kind {
             return Err(request.invalid_response(format!(
-                "answers a {:?} position of {} {} in Channel {} for {} {} in Channel {}",
+                "answers a {:?} position of {} {} in Scope {} for {} {} in Scope {}",
                 position.kind,
                 position.key.model,
                 position.key.identity,
-                position.channel,
+                position.scope,
                 delta.key.model,
                 delta.key.identity,
-                delta.channel
+                delta.scope
             )));
         }
         let cursors = if delta.publish {
@@ -458,30 +521,31 @@ fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Resul
             &mut kept
         };
         cursors
-            .entry(delta.channel.as_str())
+            .entry(delta.scope.as_str())
             .or_default()
             .push(position.cursor);
     }
-    for (channel, cursors) in &published {
+    for (scope, cursors) in &published {
         if cursors.windows(2).any(|pair| pair[1] != pair[0] + 1) {
             return Err(request.invalid_response(format!(
-                "Channel {channel} positions {cursors:?} are not one consecutive range"
+                "Scope {scope} positions {cursors:?} are not one consecutive range"
             )));
         }
         let start = cursors[0];
         if kept
-            .get(channel)
+            .get(scope)
             .is_some_and(|kept| kept.iter().any(|cursor| *cursor >= start))
         {
             return Err(request.invalid_response(format!(
-                "Channel {channel} keeps a position at or above its new range from {start}"
+                "Scope {scope} keeps a position at or above its new range from {start}"
             )));
         }
     }
-    for (channel, cursors) in &kept {
+    for (scope, cursors) in &kept {
         if cursors.iter().collect::<BTreeSet<_>>().len() != cursors.len() {
-            return Err(request
-                .invalid_response(format!("Channel {channel} answers one kept position twice")));
+            return Err(
+                request.invalid_response(format!("Scope {scope} answers one kept position twice"))
+            );
         }
     }
     Ok(())

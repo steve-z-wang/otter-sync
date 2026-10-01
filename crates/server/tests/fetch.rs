@@ -27,16 +27,16 @@ const CALL: &str = "01890f47-1234-7123-8123-123456789ab1";
 const CALL2: &str = "01890f47-1234-7123-8123-123456789ab2";
 
 /// Operations a Fetch must never issue: it runs no Handler and changes no
-/// stamp, membership, Channel or publication.
+/// stamp, membership, Scope or publication.
 const FORBIDDEN: [&str; 10] = [
     "handle",
     "handleAction",
     "advanceStamp",
     "lockRecord",
     "memberships",
-    "lockChannels",
-    "readChannelMembers",
-    "applyChannelMembers",
+    "lockScopes",
+    "readScopeMembers",
+    "applyScopeMembers",
     "head",
     "scan",
 ];

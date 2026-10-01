@@ -186,7 +186,7 @@ void main() {
       final body =
           jsonDecode(await utf8.decoder.bind(request).join())
               as Map<String, dynamic>;
-      expect(body['capabilities'], contains('channel-membership-v1'));
+      expect(body['capabilities'], contains('scope-membership-v1'));
       batches.add(body);
       await gate?.future;
       if (status != null) {

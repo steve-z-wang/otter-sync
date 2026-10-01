@@ -504,35 +504,35 @@ fn backend_emitter_declares_handlers_loaders_and_references() {
     assert!(!axton_compiler::typescript(&v).contains("backendConfig"));
 }
 #[test]
-fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
+fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     let v = compile("model Todo { id String @@id(id) }\nmodel Pin { todo String at DateTime @@id(todo, at) }\nmutation Edit(todo Todo.update)\nquery Look(id String) { todo Todo? }\nmutation Legacy { todo Todo.delete }").unwrap();
     let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     // A discriminated reference per Model, and constructors narrowed to their own variant.
     assert!(ts.contains("export type RecordRef = { readonly model: \"Todo\"; readonly identity: TodoIdentity } | { readonly model: \"Pin\"; readonly identity: PinIdentity };\n"), "{ts}");
     assert!(ts.contains("export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: \"Todo\" }> { return { model: \"Todo\", identity }; }"), "{ts}");
     assert!(ts.contains("export function Pin(identity: PinIdentity): Extract<RecordRef, { model: \"Pin\" }> { return { model: \"Pin\", identity }; }"), "{ts}");
-    assert!(
-        ts.contains("export type MembershipOptions = { readonly tags?: readonly string[] };\n"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("export type TagSelector = { readonly tag: string };\n"),
-        "{ts}"
-    );
-    assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Touch {\n todo(identity: TodoIdentity): void;\n pin(identity: PinIdentity): void;\n}\n"), "{ts}");
+    for retired in [
+        "interface Channel",
+        "interface ModelMembership",
+        "type MembershipOptions",
+        "type TagSelector",
+        "channel(name:",
+    ] {
+        assert!(!ts.contains(retired), "{retired}: {ts}");
+    }
+    assert!(ts.contains("export interface Scope {"), "{ts}");
+    assert!(ts.contains("export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     assert!(
         ts.contains(
             "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
         ),
         "{ts}"
     );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     // `backend.transaction` hands its body the same generated handles.
     assert!(
         ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
@@ -551,15 +551,20 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    // Without Models, a Channel has only its mixed verbs and nothing to name.
+    // Without Models, a Scope has only its mixed verbs and nothing to name.
     let empty =
         axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axtonjs/server");
     assert!(
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{empty}");
-    assert!(empty.contains("export interface Touch {\n}\n"), "{empty}");
+    assert!(empty.contains("export interface Scope {"), "{empty}");
+    assert!(
+        empty.contains(
+            "export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
+        ),
+        "{empty}"
+    );
 }
 
 #[test]
@@ -800,7 +805,7 @@ fn generated_store_hooks_are_typed_and_decode_incoming_records() {
         ts.contains("id: row.id as string"),
         "composite identity decoder: {ts}"
     );
-    assert!(ts.contains("readonly channels:"), "{ts}");
+    assert!(ts.contains("readonly scopes:"), "{ts}");
     assert!(client.contains("onStore?: StoreHooks"), "{client}");
     assert!(
         client.contains("decodeEntryIdentity(change.identity)"),
@@ -989,11 +994,7 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
     for name in [
         "MutationContext",
         "QueryContext",
-        "Channel",
         "Touch",
-        "ModelMembership",
-        "MembershipOptions",
-        "TagSelector",
         "RecordRef",
         "HandlerCall",
         "TransactionCall",
@@ -1020,7 +1021,6 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "ActionCall",
         "Calls",
         "Order",
-        "Scope",
         "Subscriptions",
     ] {
         assert!(
@@ -1031,8 +1031,8 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
 }
 
 #[test]
-fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
-    // `ctx.touch.todo` and `ctx.channel(name).todo` use the lower-first
+fn model_accessors_are_unique_and_leave_the_scope_verbs_free() {
+    // `ctx.touch.todo` and `ctx.scope(name).todo` use the lower-first
     // accessor, so two Models must not share one.
     let e = compile("model Todo { id String @@id(id) }\n\nmodel todo { id String @@id(id) }\n\n")
         .unwrap_err();
@@ -1041,20 +1041,18 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "{e}"
     );
     assert_eq!(line_of(&e), 3, "{e}");
-    // A Channel keeps `add` and `remove` for mixed record lists.
-    for name in ["Add", "add", "Remove", "remove"] {
-        let e = compile(&format!(
-            "model Other {{ id UUID @@id(id) }}\n\nmodel {name} {{ id UUID @@id(id) }}\n\n"
-        ))
-        .unwrap_err();
-        assert!(
-            e.contains(&format!(
-                "model {name} generates the accessor {}, which a Channel reserves for mixed record lists",
-                name.to_ascii_lowercase()
-            )),
-            "{name}: {e}"
-        );
-        assert_eq!(line_of(&e), 3, "{name}: {e}");
+    for name in [
+        "Add",
+        "add",
+        "Remove",
+        "remove",
+        "Channel",
+        "ModelMembership",
+        "MembershipOptions",
+        "TagSelector",
+        "LoadChannel",
+    ] {
+        compile(&format!("model {name} {{ id UUID @@id(id) }}")).unwrap();
     }
     // No other accessor is reserved: dictionary keys are own properties.
     for name in [
@@ -1064,7 +1062,7 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "__proto__",
         "ToString",
         "Publish",
-        // A Channel handle is no function, so function members stay free too.
+        // A Scope handle is no function, so function members stay free too.
         "Name",
         "Length",
         "Bind",
@@ -1783,7 +1781,6 @@ fn generated_clients_expose_the_scope_facade() {
         " subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }",
         " readonly scopes: Scopes;",
         "this.scopes = new Scopes(client);",
-        " subscribe(channel: string): Promise<Subscription> { return this.#client.subscribe(channel); }",
     ] {
         assert!(ts.contains(line), "{line} missing from {ts}");
     }
@@ -1797,7 +1794,6 @@ fn generated_clients_expose_the_scope_facade() {
         "class Scopes { final Client client; Scopes(this.client);",
         " Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);",
         " late final Scopes scopes = Scopes(client);",
-        " Future<Subscription> subscribe(String channel) => client.subscribe(channel);",
     ] {
         assert!(dart.contains(line), "{line} missing from {dart}");
     }
@@ -2433,5 +2429,33 @@ fn dotted_argument_names_are_refused_outside_a_sequence() {
     ] {
         let err = compile(source).unwrap_err();
         assert!(err.starts_with(needle), "{source}: {err}");
+    }
+}
+
+#[test]
+fn canonical_scope_type_names_refuse_model_and_enum_collisions() {
+    for name in [
+        "Scope",
+        "LoadScope",
+        "ScopeAdd",
+        "ScopeRecords",
+        "ScopeWhere",
+        "ScopeSelection",
+        "ScopeTagRemoval",
+        "ScopePredicate",
+        "AddDeclaration",
+    ] {
+        for source in [
+            format!("model {name} {{ id String @@id(id) }}"),
+            format!("enum {name} {{ A B }}"),
+        ] {
+            assert!(
+                compile(&source).unwrap_err().contains("generated backend"),
+                "{source}"
+            );
+        }
+    }
+    for name in ["Tag", "Name", "Length", "Prototype"] {
+        assert!(compile(&format!("model {name} {{ id String @@id(id) }}")).is_ok());
     }
 }

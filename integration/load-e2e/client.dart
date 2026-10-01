@@ -1,7 +1,7 @@
 // The generated Dart client against the Load end-to-end backend:
 // `dart run client.dart URL PATH LIBRARY [enroll]`. The backend holds the
 // Items dart-1..3; with `enroll`, the Items dart-enr-1..3 that its
-// ProjectItems handler adds to Channel `items:dart-enr`.
+// ProjectItems handler adds to Scope `items:dart-enr`.
 import 'dart:io';
 import 'package:axton/axton.dart' as sdk;
 
@@ -36,7 +36,7 @@ Future<sdk.LoadStatus?> statusOf(app.GeneratedClient client, String id) async {
 }
 
 /// Subscribe and wait for the first handshake, then Load records its handler
-/// enrolls: a later change by another client arrives through the Channel with
+/// enrolls: a later change by another client arrives through the Scope with
 /// no second add.
 Future<void> enrollment(sdk.SyncServer server, String path, String libraryPath) async {
   final reader = await app.GeneratedClient.open(path: '$path.reader', libraryPath: libraryPath, server: server);
@@ -72,7 +72,7 @@ Future<void> removal(sdk.SyncServer server, String path, String libraryPath) asy
     await (await reader.loads.projectItems(project: 'dart-release')).wait();
     stdout.writeln('Dart release: loaded');
     final deadline = DateTime.now().add(const Duration(seconds: 20));
-    while ((await reader.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=1", parameters: ['items:dart-release-other'])).isEmpty) {
+    while ((await reader.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=1", parameters: ['items:dart-release-other'])).isEmpty) {
       check(DateTime.now().isBefore(deadline), 'second hold arrived');
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
@@ -81,15 +81,15 @@ Future<void> removal(sdk.SyncServer server, String path, String libraryPath) asy
       .firstWhere((items) => items.length == 1 && items.single.id == 'dart-release-2')
       .timeout(const Duration(seconds: 20));
     final releaseDeadline = DateTime.now().add(const Duration(seconds: 20));
-    while ((await reader.readSql("SELECT present FROM axton_channel_member WHERE channel=? AND model='Item' AND present=0", parameters: ['items:dart-release'])).length != 2) {
-      check(DateTime.now().isBefore(releaseDeadline), 'both first-Channel removals persisted before checking the second hold');
+    while ((await reader.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", parameters: ['items:dart-release'])).length != 2) {
+      check(DateTime.now().isBefore(releaseDeadline), 'both first-Scope removals persisted before checking the second hold');
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
-    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Channel keeps content after first hold release');
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Scope keeps content after first hold release');
     await reader.close();
     reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath);
     check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-1')) == null, 'released content stays absent offline');
-    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Channel hold survives offline');
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Scope hold survives offline');
     stdout.writeln('Dart Load removal: passed');
   } finally { await reader.close(); }
 }

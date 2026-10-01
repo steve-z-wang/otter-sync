@@ -332,11 +332,6 @@ class TxModels { final WritePort port; TxModels(this.port);
 class Scopes { final Client client; Scopes(this.client);
  Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);
 }
-/// The retained `channels` spelling of the same registrations; `scopes` is the current one.
-class Channels { final Client client; Channels(this.client);
- Future<Subscription> subscribe(String channel) => client.subscribe(channel);
- Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
-}
 /// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);
@@ -349,8 +344,8 @@ class StoreHooks {
  final StoreHandler<NoteIdentity,Note>? note;
  const StoreHooks({this.note});
 }
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
-/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints.
+class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final scopes = transaction.scopes; GeneratedTransaction(this.transaction); }
+/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Scopes, watch or savepoints.
 class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
 /// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
 class TransactionMutations {
@@ -359,13 +354,12 @@ class TransactionMutations {
  Future<Call<PingOutput>> ping({PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
  Future<Call<TouchOutput>> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
 }
-/// The application transaction: local Models and Channels, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+/// The application transaction: local Models and Scopes, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
 class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
  late final Scopes scopes = Scopes(client);
- late final Channels channels = Channels(client);
  /// Durable by default; `mutations.call` waits for the backend outcome.
  late final Mutations mutations = Mutations(client);
  /// Direct by default; `queries.enqueue` accepts durably.

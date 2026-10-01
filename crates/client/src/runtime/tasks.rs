@@ -269,10 +269,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             {
                 match serde_json::to_vec(page)
                     .map_err(|e| crate::invalid(e.to_string()))
-                    .and_then(|bytes| crate::ChannelPullPage::decode(&bytes))
+                    .and_then(|bytes| crate::ScopePullPage::decode(&bytes))
                 {
                     Ok(page) => self.open_store(
-                        crate::StoreDelivery::ChannelPage(page),
+                        crate::StoreDelivery::ScopePage(page),
                         StoreContinuation::Pull { request_id },
                         now,
                         entropy,

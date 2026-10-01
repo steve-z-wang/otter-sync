@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServerConnection} from '../../../packages/client-react-native/live.mts';
 const tick=()=>new Promise(r=>setImmediate(r));
-const subscribe=JSON.stringify({type:'subscribe',channels:['scope'],models:{Entry:1}});
+const subscribe=JSON.stringify({type:'subscribe',scopes:['scope'],models:{Entry:1}});
 const handlers=(over={})=>({message:async()=>{},overflow:async()=>{},closed:()=>{},...over});
 class Socket {
   static last;

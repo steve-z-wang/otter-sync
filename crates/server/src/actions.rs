@@ -182,7 +182,7 @@ async fn execute_fresh(
         .map_err(|_| Error::code("action.invalid"))?;
     let store = call.store.clone().canonical();
     // Input targets are mandatory caller authority: each is reconciled
-    // whatever the outputs, `store` policy or Channels say.
+    // whatever the outputs, `store` policy or Scopes say.
     let mut input_targets = Changes::new();
     for input in &action.inputs {
         if let ActionInputDescriptor::Model { name, model, .. } = input {
@@ -374,7 +374,7 @@ pub async fn process_action_push(
         }
         for claim in settlement::current_claims(config, response.memberships)? {
             let key = (
-                claim.channel.clone(),
+                claim.scope.clone(),
                 claim.key().encoded().map_err(internal)?,
             );
             if claims
@@ -424,7 +424,7 @@ pub async fn process_action_push(
     Ok(text)
 }
 
-/// Explicit compatibility is confined to saved outcomes, never fresh channel
+/// Explicit compatibility is confined to saved outcomes, never fresh scope
 /// frames. Historical outcomes carry no enrollment evidence.
 fn decode_saved_action(saved: &str) -> Result<ActionResponse> {
     #[derive(Deserialize)]

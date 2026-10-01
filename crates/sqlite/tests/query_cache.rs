@@ -1005,7 +1005,7 @@ fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_st
         &[("a".into(), 0)].into(),
     )
     .unwrap();
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -1015,15 +1015,15 @@ fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_st
             },
         )]
         .into(),
-        changes: vec![ChannelChange::Upsert {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Upsert {
+            scope: "a".into(),
             cursor: 1,
             record,
         }],
     })
     .unwrap();
     let (flight, request) = fetch(begin(&mut c, false));
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -1033,8 +1033,8 @@ fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_st
             },
         )]
         .into(),
-        changes: vec![ChannelChange::Remove {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
             cursor: 2,
             key: todo.clone(),
         }],
@@ -1073,7 +1073,7 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
         model: "Todo".into(),
         identity: json!({"id":"a"}),
     };
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -1083,8 +1083,8 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
             },
         )]
         .into(),
-        changes: vec![ChannelChange::Upsert {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Upsert {
+            scope: "a".into(),
             cursor: 1,
             record: AuthorityRecord {
                 model: "Todo".into(),
@@ -1097,7 +1097,7 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
     })
     .unwrap();
     let old = c.prepare_action("GetTodos", 1, args()).unwrap();
-    c.apply_channel_page(ChannelPullPage {
+    c.apply_scope_page(ScopePullPage {
         cursors: [(
             "a".into(),
             CursorRange {
@@ -1107,8 +1107,8 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
             },
         )]
         .into(),
-        changes: vec![ChannelChange::Remove {
-            channel: "a".into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
             cursor: 2,
             key: todo.clone(),
         }],
@@ -1124,7 +1124,7 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
     let mut response: Value =
         serde_json::from_slice(&succeeded(&fresh, "stale enrollment", 99)).unwrap();
     response["memberships"] =
-        json!([{"channel":"a","cursor":1,"model":"Todo","identity":{"id":"a"}}]);
+        json!([{"scope":"a","cursor":1,"model":"Todo","identity":{"id":"a"}}]);
     let report = c
         .apply_action_response(&fresh, &serde_json::to_vec(&response).unwrap())
         .unwrap();
@@ -1133,7 +1133,7 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
     let fresh = c.prepare_action("GetTodos", 1, args()).unwrap();
     let mut response: Value = serde_json::from_slice(&succeeded(&fresh, "restored", 7)).unwrap();
     response["memberships"] =
-        json!([{"channel":"a","cursor":3,"model":"Todo","identity":{"id":"a"}}]);
+        json!([{"scope":"a","cursor":3,"model":"Todo","identity":{"id":"a"}}]);
     assert_eq!(
         c.apply_action_response(&fresh, &serde_json::to_vec(&response).unwrap())
             .unwrap()

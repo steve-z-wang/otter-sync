@@ -13,12 +13,12 @@ pub fn text(page: &PullPage) -> String {
         .cursors
         .iter()
         .filter(|(_, range)| range.to > range.from)
-        .flat_map(|(channel, range)| {
+        .flat_map(|(scope, range)| {
             page.changes
                 .iter()
                 .enumerate()
-                .map(move |(i, record)| ChannelChange::Upsert {
-                    channel: channel.clone(),
+                .map(move |(i, record)| ScopeChange::Upsert {
+                    scope: scope.clone(),
                     cursor: range
                         .to
                         .saturating_sub(page.changes.len().saturating_sub(i + 1) as u64),
@@ -27,7 +27,7 @@ pub fn text(page: &PullPage) -> String {
         })
         .collect();
     String::from_utf8(
-        ChannelPullPage {
+        ScopePullPage {
             cursors: page.cursors.clone(),
             changes,
         }
@@ -36,7 +36,7 @@ pub fn text(page: &PullPage) -> String {
     )
     .unwrap()
 }
-/// The acknowledgement: every channel at its current head.
+/// The acknowledgement: every scope at its current head.
 pub fn ack(heads: &[(&str, u64)]) -> String {
     let ack =
         SubscriptionAck::new(heads.iter().map(|(c, h)| (c.to_string(), *h)).collect()).unwrap();
@@ -102,14 +102,14 @@ pub fn reports(action: &DownlinkAction) -> &[Report] {
 pub fn committed(actions: &[DownlinkAction], scopes: &[&str]) {
     assert_eq!(&actions[..2], &applied(scopes)[..]);
 }
-pub fn empty(channel: &str, at: u64) -> PullPage {
-    multi(&[(channel, at, at, at)], vec![])
+pub fn empty(scope: &str, at: u64) -> PullPage {
+    multi(&[(scope, at, at, at)], vec![])
 }
-/// A full page of `channel` from `from`: fifty records, the channel continues.
-pub fn full(channel: &str, from: u64) -> PullPage {
+/// A full page of `scope` from `from`: fifty records, the scope continues.
+pub fn full(scope: &str, from: u64) -> PullPage {
     let to = from + limits::PULL_CHANGES as u64;
     multi(
-        &[(channel, from, to, to + 1)],
+        &[(scope, from, to, to + 1)],
         (1..=limits::PULL_CHANGES as u64)
             .map(|i| AuthorityRecord {
                 model: "Entry".into(),
@@ -141,7 +141,7 @@ impl Lane {
         store
             .execute_batch(
                 "CREATE TABLE axton_client (client_id TEXT PRIMARY KEY, next_ordinal INTEGER NOT NULL, next_push INTEGER NOT NULL, generation INTEGER NOT NULL, last_completed_push INTEGER NOT NULL DEFAULT 0, push_models TEXT, push_results TEXT);
-                 CREATE TABLE axton_subscription (channel TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
+                 CREATE TABLE axton_subscription (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
                  INSERT INTO axton_client (client_id, next_ordinal, next_push, generation) VALUES ('old', 1, 1, 1);
                  INSERT INTO axton_subscription VALUES ('a', 9);
                  INSERT INTO axton_subscription VALUES ('b', 4);",
@@ -243,38 +243,38 @@ impl Lane {
             body: text(page),
         })
     }
-    /// How far `channel` committed delivery; `None` while it waits for its
+    /// How far `scope` committed delivery; `None` while it waits for its
     /// first boundary.
-    pub fn cursor(&mut self, channel: &str) -> Option<u64> {
-        self.client.cursor(channel).unwrap()
+    pub fn cursor(&mut self, scope: &str) -> Option<u64> {
+        self.client.cursor(scope).unwrap()
     }
-    pub fn set(&mut self, channel: &str, subscribed: bool) {
+    pub fn set(&mut self, scope: &str, subscribed: bool) {
         self.client
-            .transaction(|tx| tx.set_channel(channel.into(), subscribed))
+            .transaction(|tx| tx.set_scope(scope.into(), subscribed))
             .unwrap();
     }
     /// A subscription an earlier session left at `cursor`: registered, and its
     /// first boundary already committed there, as that session's
     /// acknowledgement did. Every session this lane then opens negotiates
     /// against durable progress instead of initializing.
-    pub fn saved(&mut self, channel: &str, cursor: u64) {
-        self.set(channel, true);
-        acknowledge(&mut self.client, &[(channel, cursor)]);
-        assert_eq!(self.cursor(channel), Some(cursor));
+    pub fn saved(&mut self, scope: &str, cursor: u64) {
+        self.set(scope, true);
+        acknowledge(&mut self.client, &[(scope, cursor)]);
+        assert_eq!(self.cursor(scope), Some(cursor));
     }
     pub fn text(&mut self) -> Value {
         self.client.read(&key()).unwrap().unwrap()["text"].clone()
     }
-    /// Subscribe `channel`, start the lane and acknowledge at `head`: the
-    /// epoch of the socket and what the acknowledgement asked for. A channel
+    /// Subscribe `scope`, start the lane and acknowledge at `head`: the
+    /// epoch of the socket and what the acknowledgement asked for. A scope
     /// with no committed boundary initializes at `head`; one [`Lane::saved`]
     /// left behind catches up to it.
-    pub fn streaming(&mut self, channel: &str, head: u64) -> (u64, Vec<DownlinkAction>) {
-        self.set(channel, true);
+    pub fn streaming(&mut self, scope: &str, head: u64) -> (u64, Vec<DownlinkAction>) {
+        self.set(scope, true);
         let actions = self.send(DownlinkEvent::Start);
         let (epoch, subscribe) = opened(&actions[0]);
-        assert_eq!(subscribe.channels, [channel]);
-        let acknowledged = self.message(epoch, ack(&[(channel, head)]));
+        assert_eq!(subscribe.scopes, [scope]);
+        let acknowledged = self.message(epoch, ack(&[(scope, head)]));
         (epoch, acknowledged)
     }
 }

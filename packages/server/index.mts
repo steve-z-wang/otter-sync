@@ -1,3 +1,10 @@
+import type { RuntimeScope, RuntimeLoadScope } from "./scope.mts";
+export type {
+  RuntimeScope,
+  RuntimeLoadScope,
+  AddDeclaration,
+  ScopePredicate,
+} from "./scope.mts";
 import { createRequire } from "node:module";
 import { createServer, STATUS_CODES } from "node:http";
 import type { IncomingMessage, RequestListener, Server } from "node:http";
@@ -7,8 +14,6 @@ import {
   effectsFor,
   loadEffectsFor,
   lowerFirst,
-  type RuntimeChannel,
-  type RuntimeLoadChannel,
   type RuntimeTouch,
 } from "./effects.mts";
 import type {
@@ -19,16 +24,7 @@ import type {
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
-export type {
-  MembershipOptions,
-  RecordRef,
-  RuntimeChannel,
-  RuntimeLoadChannel,
-  RuntimeLoadModelMembership,
-  RuntimeModelMembership,
-  RuntimeTouch,
-  TagSelector,
-} from "./effects.mts";
+export type { RecordRef, RuntimeTouch } from "./effects.mts";
 export type {
   Acknowledged,
   Claimed,
@@ -122,7 +118,7 @@ export type Native = {
   /** Forgets the session; idempotent. */
   liveClose(handle: number): void;
 };
-/** One channel's progress in a page: after `from`, up to `to`, of a channel at `head`. */
+/** One scope's progress in a page: after `from`, up to `to`, of a scope at `head`. */
 export type CursorRange = { from: number; to: number; head: number };
 /** What the executor reports to the Rust `Subscriptions` controller. */
 export type LiveEvent =
@@ -135,7 +131,7 @@ export type LiveAction =
   | { type: "send"; frame: string }
   | {
       type: "pull";
-      /** The cursor to pull after, per channel: one pull covers them all. */
+      /** The cursor to pull after, per scope: one pull covers them all. */
       cursors: Record<string, number>;
       /** The read contracts the session declared: model name to version. */
       models: Record<string, number>;
@@ -314,13 +310,13 @@ export { MutationRejected as CallRejected };
 /**
  * What `backend.transaction` hands its body: the application transaction and
  * the same declaration handles a Mutation receives. `touch` declares a record
- * the body changed; `channel(name)` adds or removes Channel members. The
+ * the body changed; `scope(name)` adds or removes Scope members. The
  * engine settles them after the body returns, inside the same transaction.
  * A generated backend narrows both to its schema's Models.
  */
 export interface TransactionCall<Tx> {
   tx: Tx;
-  channel(name: string): RuntimeChannel;
+  scope(name: string): RuntimeScope;
   touch: RuntimeTouch;
 }
 /** A legacy slot handler's call: its decoded input and the same declaration handles. */
@@ -328,10 +324,10 @@ export interface HandlerCall<Tx, Input> {
   input: Input;
   tx: Tx;
   userId: string;
-  channel(name: string): RuntimeChannel;
+  scope(name: string): RuntimeScope;
   touch: RuntimeTouch;
 }
-/** Loads name no channel: the same identity, version and stamp describe the same content on every delivery path. */
+/** Loads name no scope: the same identity, version and stamp describe the same content on every delivery path. */
 export interface LoaderCall<Tx, Identity> {
   ids: readonly Identity[];
   tx: Tx;
@@ -349,18 +345,18 @@ export type HandlerRegistration<Tx> =
 /**
  * Trusted framework context of a Mutation: it may change business state,
  * declare records it changed beyond its inputs (`touch`) and add or remove
- * Channel members (`channel(name)`). The handles close when the handler
+ * Scope members (`scope(name)`). The handles close when the handler
  * settles.
  */
 export interface MutationContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
-  channel(name: string): RuntimeChannel;
+  scope(name: string): RuntimeScope;
   touch: RuntimeTouch;
 }
 /**
- * Trusted framework context of a Query. It carries no `channel` or `touch`:
+ * Trusted framework context of a Query. It carries no `scope` or `touch`:
  * a Query reads without business side effects. `tx` is still the
  * application's own transaction; the framework cannot inspect arbitrary SQL,
  * so honoring the read-only contract is the handler's responsibility.
@@ -373,8 +369,8 @@ export interface QueryContext<Tx> {
 /**
  * Trusted framework context of one Load page. A Load reads without business
  * side effects, so it carries no `touch`, and the framework cannot inspect
- * arbitrary SQL on `tx`. `channel(name)` only adds: it enrolls records this
- * page returns into a Channel, which the engine settles with the page. Its
+ * arbitrary SQL on `tx`. `scope(name)` only adds: it enrolls records this
+ * page returns into a Scope, which the engine settles with the page. Its
  * handles close when the handler settles. `callId` is the page's durable
  * call ID and `loadId` its job.
  */
@@ -383,7 +379,7 @@ export interface LoadContext<Tx> {
   userId: string;
   callId: string;
   loadId: string;
-  channel(name: string): RuntimeLoadChannel;
+  scope(name: string): RuntimeLoadScope;
 }
 /**
  * One page of a Load: `continuation` is `null` on the first page and the
@@ -795,7 +791,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     loaders: loadedModels,
   });
   native.validateConfig(config);
-  // Refuses Models whose accessors collide or take a Channel's add/remove,
+  // Refuses Models whose generated accessors collide,
   // and declarations naming a device-only Model.
   const createEffects = effectsFor(
     schemaModels,
@@ -1049,7 +1045,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               input,
               tx,
               userId: req.owner,
-              channel: effects.channel,
+              scope: effects.scope,
               touch: effects.touch,
             });
             result = effects.settlement();
@@ -1103,7 +1099,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                     tx,
                     userId: req.owner,
                     callId: req.callId,
-                    channel: effects.channel,
+                    scope: effects.scope,
                     touch: effects.touch,
                   }
                 : { tx, userId: req.owner, callId: req.callId },
@@ -1164,7 +1160,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                   userId: req.owner,
                   callId: req.callId,
                   loadId: req.loadId,
-                  channel: effects.channel,
+                  scope: effects.scope,
                 },
                 args,
                 continuation: req.continuation,
@@ -1303,9 +1299,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             case "readStamps":
             case "lockRecord":
             case "memberships":
-            case "lockChannels":
-            case "readChannelMembers":
-            case "applyChannelMembers":
+            case "lockScopes":
+            case "readScopeMembers":
+            case "applyScopeMembers":
               break;
             default: {
               const unreachable: never = req;
@@ -1313,11 +1309,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             }
           }
           result = await storage.call(req);
-          // Every position that survives its savepoint wakes the channel's
+          // Every position that survives its savepoint wakes the scope's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "applyChannelMembers")
+          if (req.op === "applyScopeMembers")
             for (const delta of req.deltas)
-              if (delta.publish) session.touched.add(delta.channel);
+              if (delta.publish) session.touched.add(delta.scope);
         }
         return callbackJson(result);
       });
@@ -1325,7 +1321,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   /**
    * Runs `operation` under one session bound to `tx`: every host callback is
    * tracked, and the operation completes only once none is unfinished or
-   * failed. Answers its value and the Channels it published to, which the
+   * failed. Answers its value and the Scopes it published to, which the
    * caller wakes after `tx` commits. A transaction holds one session at a
    * time, so AXTON never settles into a transaction it is already serving.
    */
@@ -1368,9 +1364,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     return result;
   };
   /**
-   * Runs `body` with a Mutation's `channel` and `touch`, then settles what it
+   * Runs `body` with a Mutation's `scope` and `touch`, then settles what it
    * declared in `tx`: one new stamp per touched record, published at that
-   * stamp to each Channel it is a member of, and each newly added member
+   * stamp to each Scope it is a member of, and each newly added member
    * published once. The handles close when the body settles, whether it
    * returns or throws.
    */
@@ -1384,7 +1380,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     try {
       const call: TransactionCall<T> = {
         tx,
-        channel: effects.channel,
+        scope: effects.scope,
         touch: effects.touch,
       };
       result = await body(call as unknown as External);
@@ -1403,7 +1399,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   /**
    * Runs `body` in one application transaction the framework opens, and
    * settles its declarations there. After the driver commits, the live
-   * subscribers of every channel published to are woken; a failure rolls
+   * subscribers of every scope published to are woken; a failure rolls
    * back and wakes nobody. Answers the body's own value. Not for use inside
    * a handler, which already has a transaction.
    */

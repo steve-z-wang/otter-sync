@@ -315,15 +315,14 @@ export class Subscriptions {
     return handle;
   }
   /**
-   * Remove whatever registration a Scope name has - the Scope-named form the
-   * generated `channels` facade keeps. One command, so a removal and a
+   * Remove whatever registration a Scope name has. One command, so a removal and a
    * registration of the same Scope commit in the order they were called in;
    * the runtime closes the handle it had before the command completes.
    */
   async unsubscribeScope(scope: string): Promise<void> {
     await this.#bridge.task({
-      kind: "channel",
-      channel: scope,
+      kind: "scope",
+      scope: scope,
       subscribed: false,
     });
   }

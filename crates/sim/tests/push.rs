@@ -7,7 +7,7 @@ fn setup(seed: u64) -> Sim {
     let mut sim = Sim::new(seed, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -79,7 +79,7 @@ fn p2_contiguous_sequence_and_server_refuses_gap_and_overlap() {
     // Hand-built gap and overlap against the host directly.
     let id = sim.client(0).client_id().to_string();
     let batch = |seq: u64| {
-        let body = serde_json::json!({"capabilities":["channel-membership-v1"],"clientId":id,"batchSequence":seq,"models":axton_sim::schema::declared_models(),"mutations":[{"ordinal":99,"name":"Edit","version":1,"operations":[{"model":"Entry","op":"update","identity":{"id":"e1"},"values":{"text":"z"}}]}]});
+        let body = serde_json::json!({"capabilities":["scope-membership-v1"],"clientId":id,"batchSequence":seq,"models":axton_sim::schema::declared_models(),"mutations":[{"ordinal":99,"name":"Edit","version":1,"operations":[{"model":"Entry","op":"update","identity":{"id":"e1"},"values":{"text":"z"}}]}]});
         let bytes = axton_core::canonical_json(&body).unwrap().into_bytes();
         axton_core::PushRequest::decode(&bytes).unwrap();
         bytes
@@ -96,7 +96,7 @@ fn p3_lifecycle_dependent_waits_for_the_parent_receipt() {
     let mut sim = Sim::new(23, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -178,7 +178,7 @@ fn p5_rejection_rolls_back_and_rejects_dependents() {
     let mut sim = Sim::new(25, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {

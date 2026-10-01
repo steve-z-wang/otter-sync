@@ -42,7 +42,7 @@ fn setup() -> Sim {
     for client in 0..2 {
         sim.apply(Action::Subscribe {
             client,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
     }
@@ -106,7 +106,7 @@ fn an_incompatible_schema_sends_unsent_work_from_the_old_file_then_rebuilds_and_
     // the rebuilt file converges from it like a new client.
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert_eq!(
@@ -148,7 +148,7 @@ fn discarding_unsent_work_rebuilds_at_once_and_reports_what_the_old_file_keeps()
     assert_eq!(sim.read_text(0, &entry_key("e2")), None);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.settle();

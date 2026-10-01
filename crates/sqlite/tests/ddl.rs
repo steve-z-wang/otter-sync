@@ -156,7 +156,7 @@ fn a_database_from_the_checkpoint_era_is_refused_untouched() {
         let mut s = SqliteStore::open(&checkpoint).unwrap();
         s.execute_batch(FRAMEWORK_DDL).unwrap();
         s.execute_batch(
-            "CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, channel TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, channel));
+            "CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, scope TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, scope));
              INSERT INTO axton_push_checkpoint VALUES (1, 'book', 2);",
         )
         .unwrap();
@@ -165,7 +165,7 @@ fn a_database_from_the_checkpoint_era_is_refused_untouched() {
     assert_eq!(
         count(
             &checkpoint,
-            "SELECT COUNT(*) FROM axton_push_checkpoint WHERE push = 1 AND channel = 'book' AND cursor = 2"
+            "SELECT COUNT(*) FROM axton_push_checkpoint WHERE push = 1 AND scope = 'book' AND cursor = 2"
         ),
         1,
         "the checkpoint row is left untouched"
@@ -385,7 +385,7 @@ fn epoch_column_migration_is_atomic_on_late_ddl_failure() {
     let dir = tempfile::tempdir().unwrap();
     let mut s = SqliteStore::open(dir.path().join("db")).unwrap();
     s.execute_batch(FRAMEWORK_DDL).unwrap();
-    s.execute_batch("INSERT INTO axton_client(client_id,next_ordinal,next_push,generation,next_subscription) VALUES('client',2,1,1,2); INSERT INTO axton_mutation(ordinal,name,version) VALUES(1,'pending',1); INSERT INTO axton_subscription(channel,subscription_id,starting_cursor,cursor) VALUES('a',1,5,9); ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_mutation DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch; ALTER TABLE axton_load RENAME TO old_load; CREATE VIEW axton_load AS SELECT * FROM old_load;").unwrap();
+    s.execute_batch("INSERT INTO axton_client(client_id,next_ordinal,next_push,generation,next_subscription) VALUES('client',2,1,1,2); INSERT INTO axton_mutation(ordinal,name,version) VALUES(1,'pending',1); INSERT INTO axton_subscription(scope,subscription_id,starting_cursor,cursor) VALUES('a',1,5,9); ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_mutation DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch; ALTER TABLE axton_load RENAME TO old_load; CREATE VIEW axton_load AS SELECT * FROM old_load;").unwrap();
     assert!(axton_client::ddl::add_framework_columns(&mut s).is_err());
     assert!(
         !columns(&mut s, "axton_client")

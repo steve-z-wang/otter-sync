@@ -1,25 +1,25 @@
-//! Pulls on the simulation: one request for every channel, and records that
+//! Pulls on the simulation: one request for every scope, and records that
 //! cannot be read or applied fail alone and are reported (#95, #51, #122).
 use axton_client::ReportKind;
 use axton_sim::{Action, MutationSpec, Sim, schema::entry_key};
 
-fn subscribe(sim: &mut Sim, client: usize, channels: &[&str]) {
-    for c in channels {
+fn subscribe(sim: &mut Sim, client: usize, scopes: &[&str]) {
+    for c in scopes {
         sim.apply(Action::Subscribe {
             client,
-            channel: c.to_string(),
+            scope: c.to_string(),
         })
         .unwrap();
     }
 }
-fn member(sim: &mut Sim, id: &str, channels: &[&str]) {
-    sim.host.set_membership(&entry_key(id), channels);
+fn member(sim: &mut Sim, id: &str, scopes: &[&str]) {
+    sim.host.set_membership(&entry_key(id), scopes);
 }
-fn change(sim: &mut Sim, id: &str, text: Option<&str>, channels: &[&str]) {
+fn change(sim: &mut Sim, id: &str, text: Option<&str>, scopes: &[&str]) {
     sim.apply(Action::ServerChange {
         key: format!("Entry:{id}"),
         text: text.map(str::to_string),
-        channels: channels.iter().map(|c| c.to_string()).collect(),
+        scopes: scopes.iter().map(|c| c.to_string()).collect(),
     })
     .unwrap();
 }
@@ -28,10 +28,10 @@ fn pull(sim: &mut Sim, client: usize) {
     sim.drain();
 }
 
-/// A record published to two channels the client follows arrives once, in one
+/// A record published to two scopes the client follows arrives once, in one
 /// pull, and moves both cursors.
 #[test]
-fn two_channels_sharing_a_record_arrive_in_one_pull() {
+fn two_scopes_sharing_a_record_arrive_in_one_pull() {
     let mut sim = Sim::new(31, 1);
     subscribe(&mut sim, 0, &["a", "b"]);
     member(&mut sim, "e1", &["a", "b"]);
@@ -191,22 +191,22 @@ fn a_divergence_is_reported_and_cleared_by_completion() {
     sim.check().unwrap();
 }
 
-/// Seed 206's minimized regression: a channel frame keeps both occurrences;
+/// Seed 206's minimized regression: a scope frame keeps both occurrences;
 /// skipping malformed authority on one does not prevent the other from applying.
 #[test]
-fn skipped_occurrence_does_not_hide_successful_sibling_channel_authority() {
+fn skipped_occurrence_does_not_hide_successful_sibling_scope_authority() {
     let mut sim = Sim::new(206, 1);
-    for channel in ["a", "b"] {
+    for scope in ["a", "b"] {
         sim.apply(Action::Subscribe {
             client: 0,
-            channel: channel.into(),
+            scope: scope.into(),
         })
         .unwrap();
     }
     sim.apply(Action::ServerChange {
         key: "Entry:e1".into(),
         text: Some("valid sibling".into()),
-        channels: vec!["a".into(), "b".into()],
+        scopes: vec!["a".into(), "b".into()],
     })
     .unwrap();
     sim.apply(Action::CorruptNextPage).unwrap();

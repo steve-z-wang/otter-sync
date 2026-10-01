@@ -1,11 +1,12 @@
-//! The final membership of each Channel/record pair after one settlement's
+//! The final membership of each Scope/record pair after one settlement's
 //! ordered declarations ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
 //!
 //! Pure: settlement reads the members its declarations and touches can reach
-//! (`readChannelMembers`), [`reduce`] folds the declarations over that
+//! (`readScopeMembers`), [`reduce`] folds the declarations over that
 //! transaction-local view in order, and the [`MemberDelta`]s it answers are
-//! what `applyChannelMembers` persists. The wire shapes of the three types
+//! what `applyScopeMembers` persists. The wire shapes of the three types
 //! belong to the host contract ([`crate::host`]).
+use crate::scope_predicate::ScopePredicate;
 use crate::{Result, internal};
 use axton_core::RecordKey;
 use serde::{Deserialize, Serialize};
@@ -57,7 +58,7 @@ pub fn declared_tags(tags: &[String]) -> std::result::Result<BTreeSet<String>, S
     Ok(distinct)
 }
 
-/// One live member as `readChannelMembers` answers it: the record and its
+/// One live member as `readScopeMembers` answers it: the record and its
 /// complete current tags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -69,7 +70,7 @@ pub struct MemberState {
     pub tags: BTreeSet<String>,
 }
 
-/// One pair's final state, as `applyChannelMembers` persists it. `present`
+/// One pair's final state, as `applyScopeMembers` persists it. `present`
 /// with its complete final `tags`, or absent with none. `publish` allocates a
 /// new position (`upsert` when present, `remove` when not); without it a
 /// present member keeps its existing position and only its tags may change.
@@ -79,7 +80,7 @@ pub struct MemberState {
     into = "crate::host::MemberDeltaWire"
 )]
 pub struct MemberDelta {
-    pub channel: String,
+    pub scope: String,
     pub key: RecordKey,
     pub present: bool,
     pub tags: BTreeSet<String>,
@@ -94,7 +95,7 @@ pub enum PositionKind {
     Remove,
 }
 
-/// The latest position of one pair after `applyChannelMembers`: new for a
+/// The latest position of one pair after `applyScopeMembers`: new for a
 /// published delta, the existing one otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -102,13 +103,13 @@ pub enum PositionKind {
     into = "crate::host::MemberPositionWire"
 )]
 pub struct MemberPosition {
-    pub channel: String,
+    pub scope: String,
     pub key: RecordKey,
     pub cursor: u64,
     pub kind: PositionKind,
 }
 
-/// One declaration against one Channel, its record resolved to a canonical key.
+/// One declaration against one Scope, its record resolved to a canonical key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declaration {
     /// Ensure membership and union `tags` into its labels.
@@ -117,19 +118,48 @@ pub enum Declaration {
         tags: BTreeSet<String>,
     },
     /// Release the record's whole membership.
-    Remove { key: RecordKey },
+    Remove {
+        key: RecordKey,
+    },
     /// Release every member carrying `tag` as the preceding declarations left it.
-    RemoveTag { tag: String },
+    TagAdd {
+        key: RecordKey,
+        tags: BTreeSet<String>,
+    },
+    TagRemove {
+        key: RecordKey,
+        tags: BTreeSet<String>,
+    },
+    DetachTags {
+        tags: BTreeSet<String>,
+    },
+    Select {
+        model: Option<String>,
+        predicate: ScopePredicate,
+        action: SelectionAction,
+    },
 }
 
 impl Declaration {
     /// The record an add or remove names; a selector names none.
     pub fn key(&self) -> Option<&RecordKey> {
         match self {
-            Self::Add { key, .. } | Self::Remove { key } => Some(key),
-            Self::RemoveTag { .. } => None,
+            Self::Add { key, .. }
+            | Self::Remove { key }
+            | Self::TagAdd { key, .. }
+            | Self::TagRemove { key, .. } => Some(key),
+            Self::DetachTags { .. } | Self::Select { .. } => None,
         }
     }
+}
+
+/// An action applies to a selection's current members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SelectionAction {
+    Remove,
+    TagAdd { tags: BTreeSet<String> },
+    TagRemove { tags: BTreeSet<String> },
 }
 
 /// One pair's life inside the settlement.
@@ -152,7 +182,7 @@ impl Pair {
     }
 }
 
-/// Reduce `channel`'s declarations, in order, over the members read for it,
+/// Reduce `scope`'s declarations, in order, over the members read for it,
 /// to one delta per pair that changes, is touched while present, or is named
 /// by an add, in canonical record key order.
 ///
@@ -163,7 +193,7 @@ impl Pair {
 /// both ends publishes when the member was released and re-added or its
 /// record is touched; otherwise the delta only carries its final tags.
 pub fn reduce(
-    channel: &str,
+    scope: &str,
     initial: Vec<MemberState>,
     declarations: &[Declaration],
     touched: &BTreeSet<String>,
@@ -203,10 +233,59 @@ pub fn reduce(
                     pair.release();
                 }
             }
-            Declaration::RemoveTag { tag } => {
+            Declaration::TagAdd { key, tags } => {
+                let pair = pairs
+                    .get_mut(&key.encoded().map_err(internal)?)
+                    .filter(|pair| pair.current.is_some())
+                    .ok_or_else(|| {
+                        crate::settlement::invalid_tags(
+                            scope,
+                            format!(
+                                "cannot add labels to absent member {} {}",
+                                key.model, key.identity
+                            ),
+                        )
+                    })?;
+                pair.current.as_mut().unwrap().extend(tags.iter().cloned());
+            }
+            Declaration::TagRemove { key, tags } => {
+                if let Some(current) = pairs
+                    .get_mut(&key.encoded().map_err(internal)?)
+                    .and_then(|pair| pair.current.as_mut())
+                {
+                    current.retain(|tag| !tags.contains(tag));
+                }
+            }
+            Declaration::DetachTags { tags } => {
                 for pair in pairs.values_mut() {
-                    if pair.current.as_ref().is_some_and(|tags| tags.contains(tag)) {
-                        pair.release();
+                    if let Some(current) = &mut pair.current {
+                        current.retain(|tag| !tags.contains(tag));
+                    }
+                }
+            }
+            Declaration::Select {
+                model,
+                predicate,
+                action,
+            } => {
+                for pair in pairs.values_mut() {
+                    if model.as_ref().is_none_or(|model| *model == pair.key.model)
+                        && pair
+                            .current
+                            .as_ref()
+                            .is_some_and(|tags| predicate.matches(tags))
+                    {
+                        match action {
+                            SelectionAction::Remove => pair.release(),
+                            SelectionAction::TagAdd { tags } => {
+                                pair.current.as_mut().unwrap().extend(tags.iter().cloned())
+                            }
+                            SelectionAction::TagRemove { tags } => pair
+                                .current
+                                .as_mut()
+                                .unwrap()
+                                .retain(|tag| !tags.contains(tag)),
+                        }
                     }
                 }
             }
@@ -227,7 +306,7 @@ pub fn reduce(
             }
         };
         deltas.push(MemberDelta {
-            channel: channel.into(),
+            scope: scope.into(),
             key: pair.key,
             present,
             tags,
@@ -267,11 +346,15 @@ mod tests {
         Declaration::Remove { key: key(id) }
     }
     fn remove_tag(tag: &str) -> Declaration {
-        Declaration::RemoveTag { tag: tag.into() }
+        Declaration::Select {
+            model: None,
+            predicate: serde_json::from_value(serde_json::json!({"tags":{"any":[tag]}})).unwrap(),
+            action: SelectionAction::Remove,
+        }
     }
     fn delta(id: &str, present: bool, names: &[&str], publish: bool) -> MemberDelta {
         MemberDelta {
-            channel: "U".into(),
+            scope: "U".into(),
             key: key(id),
             present,
             tags: tags(names),
@@ -390,8 +473,8 @@ mod tests {
     }
 
     /// A touched member publishes once however it is also declared; a
-    /// touched record that leaves the Channel publishes its removal instead;
-    /// a touched non-member of this Channel is not in it.
+    /// touched record that leaves the Scope publishes its removal instead;
+    /// a touched non-member of this Scope is not in it.
     #[test]
     fn a_touch_publishes_each_final_member_once() {
         let deltas = reduce(
@@ -433,5 +516,129 @@ mod tests {
         let mut past = many;
         past.push("t64".into());
         assert!(declared_tags(&past).unwrap_err().contains("64"));
+    }
+    #[test]
+    fn exact_selection_and_detachment_preserve_overlapping_members() {
+        let predicate = serde_json::from_value(json!({"tags":{"only":["X"]}})).unwrap();
+        let declarations = vec![
+            Declaration::Select {
+                model: None,
+                predicate,
+                action: SelectionAction::Remove,
+            },
+            Declaration::DetachTags { tags: tags(&["X"]) },
+        ];
+        assert_eq!(
+            reduce(
+                "U",
+                vec![
+                    member("A", &["X", "Y"]),
+                    member("B", &["X"]),
+                    member("C", &["Y"]),
+                    member("D", &["X", "Z"])
+                ],
+                &declarations,
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![
+                delta("A", true, &["Y"], false),
+                delta("B", false, &[], true),
+                delta("D", true, &["Z"], false)
+            ]
+        );
+    }
+    #[test]
+    fn label_edits_require_membership_and_never_remove_it() {
+        let add = Declaration::TagAdd {
+            key: key("A"),
+            tags: tags(&["X"]),
+        };
+        assert_eq!(
+            reduce("U", vec![], std::slice::from_ref(&add), &BTreeSet::new())
+                .unwrap_err()
+                .code,
+            crate::code::HANDLER_INVALID
+        );
+        assert_eq!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    add,
+                    Declaration::TagRemove {
+                        key: key("A"),
+                        tags: tags(&["X"])
+                    }
+                ],
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![delta("A", true, &[], false)]
+        );
+        assert!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[Declaration::TagRemove {
+                    key: key("A"),
+                    tags: tags(&["Z"])
+                }],
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    remove("A"),
+                    Declaration::TagAdd {
+                        key: key("A"),
+                        tags: tags(&["Y"])
+                    }
+                ],
+                &BTreeSet::new()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn selection_uses_current_labels_and_model() {
+        let select = Declaration::Select {
+            model: Some("Other".into()),
+            predicate: serde_json::from_value(json!({"tags":{"only":[]}})).unwrap(),
+            action: SelectionAction::Remove,
+        };
+        assert!(
+            reduce("U", vec![member("A", &[])], &[select], &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        let select = Declaration::Select {
+            model: None,
+            predicate: serde_json::from_value(json!({"tags":{"all":["Y"]}})).unwrap(),
+            action: SelectionAction::TagRemove {
+                tags: tags(&["X", "Y"]),
+            },
+        };
+        assert_eq!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    Declaration::TagAdd {
+                        key: key("A"),
+                        tags: tags(&["Y"])
+                    },
+                    select
+                ],
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![delta("A", true, &[], false)]
+        );
     }
 }

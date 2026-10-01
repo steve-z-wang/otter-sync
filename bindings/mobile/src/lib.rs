@@ -62,7 +62,7 @@ pub unsafe extern "C" fn axton_mobile_free(output: *mut c_char) {
 mod tests {
     use std::ffi::{CStr, CString};
 
-    /// The wake context: a channel the test waits on, never a sleep.
+    /// The wake context: a scope the test waits on, never a sleep.
     extern "C" fn wake(runtime: u64, context: *mut std::ffi::c_void) {
         let sender =
             unsafe { &*(context as *const std::sync::Mutex<std::sync::mpsc::Sender<u64>>) };

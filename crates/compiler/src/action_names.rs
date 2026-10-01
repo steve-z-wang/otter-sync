@@ -58,7 +58,6 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
 pub(crate) const LOAD_HELPERS: &[&str] = &[
     "JsonValue",
     "Load",
-    "LoadChannel",
     "LoadContext",
     "LoadError",
     "LoadException",

@@ -10,7 +10,7 @@ use common::*;
 use serde_json::json;
 
 /// One historical page: `(from, to]` of `scope`, bounded by origin `until`,
-/// observed at channel head `head`.
+/// observed at scope head `head`.
 fn historical(
     scope: &str,
     from: u64,
@@ -23,14 +23,14 @@ fn historical(
     let changes = records
         .into_iter()
         .enumerate()
-        .map(|(i, record)| ChannelChange::Upsert {
-            channel: scope.into(),
+        .map(|(i, record)| ScopeChange::Upsert {
+            scope: scope.into(),
             cursor: to.saturating_sub(count.saturating_sub(i + 1) as u64),
             record,
         })
         .collect();
-    let page = ChannelBootstrapPage {
-        channel: scope.into(),
+    let page = ScopeBootstrapPage {
+        scope: scope.into(),
         from,
         to,
         until,
@@ -180,7 +180,7 @@ fn a_registered_load_asks_for_its_interval_and_leaves_delivery_alone() {
     let actions = lane.register("a");
     let (id, request) = only(&actions);
     assert_eq!(
-        (request.channel.as_str(), request.after, request.until),
+        (request.scope.as_str(), request.after, request.until),
         ("a", 0, 100),
         "the historical interval is bounded by the committed origin"
     );
@@ -255,14 +255,14 @@ fn two_scopes_take_turns_one_page_each() {
     lane.intend("b");
     let first = lane.send(DownlinkEvent::Wake);
     let (id, request) = only(&first);
-    assert_eq!(request.channel, "a", "Scope order opens the rotation");
+    assert_eq!(request.scope, "a", "Scope order opens the rotation");
     let second = lane.answer(id, historical("a", 0, 40, 100, 130, vec![]));
     let (id, request) = only(&second);
-    assert_eq!(request.channel, "b", "the turn moved on");
+    assert_eq!(request.scope, "b", "the turn moved on");
     assert_eq!((request.after, request.until), (0, 200));
     let third = lane.answer(id, historical("b", 0, 60, 200, 240, vec![]));
     let (id, request) = only(&third);
-    assert_eq!(request.channel, "a", "and back again");
+    assert_eq!(request.scope, "a", "and back again");
     assert_eq!(
         (request.after, request.until),
         (40, 100),
@@ -271,7 +271,7 @@ fn two_scopes_take_turns_one_page_each() {
     let fourth = lane.answer(id, historical("a", 40, 100, 100, 130, vec![]));
     let (_, request) = only(&fourth);
     assert_eq!(
-        request.channel, "b",
+        request.scope, "b",
         "a Scope that finished its interval leaves the rotation"
     );
 }
@@ -349,7 +349,7 @@ fn a_stale_refusal_writes_nothing_and_errors_nothing() {
         lane.message(epoch, ack(&[("a", head), (scope, 200)]));
         lane.intend(scope);
         let (id, request) = only(&lane.send(DownlinkEvent::Wake));
-        assert_eq!(request.channel, scope);
+        assert_eq!(request.scope, scope);
         // The registration goes while its page is in flight.
         lane.set(scope, false);
         lane.enqueue(stale(id));
@@ -1031,14 +1031,14 @@ fn the_socket_backoff_never_paces_the_historical_pages() {
     );
 }
 
-/// Every ledger issue in these actions, as the host receives it: the channel
+/// Every ledger issue in these actions, as the host receives it: the scope
 /// and the bounded reason.
 fn issues(actions: &[DownlinkAction]) -> Vec<(&str, &str)> {
     actions
         .iter()
         .filter_map(|action| match action {
-            DownlinkAction::LedgerIssue { channel, message } => {
-                Some((channel.as_str(), message.as_str()))
+            DownlinkAction::LedgerIssue { scope, message } => {
+                Some((scope.as_str(), message.as_str()))
             }
             _ => None,
         })
@@ -1054,15 +1054,15 @@ fn undecodable(issue: (&str, &str)) -> bool {
         .1
         .starts_with("the stored Bootstrap row cannot be decoded: ")
 }
-/// The Bootstrap columns of `channel`'s row as stored, with the SQLite type of
+/// The Bootstrap columns of `scope`'s row as stored, with the SQLite type of
 /// the progress and of the failure: what "kept exactly as stored" is checked
 /// against. The delivery cursor is left out, since ordinary delivery moves it.
-fn stored(raw: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
+fn stored(raw: &mut SqliteStore, scope: &str) -> Vec<serde_json::Value> {
     raw.query_committed(
         "SELECT subscription_id, bootstrap_state, bootstrap_run, bootstrap_cursor, \
          typeof(bootstrap_cursor), bootstrap_barrier, bootstrap_error, typeof(bootstrap_error) \
-         FROM axton_subscription WHERE channel=?",
-        &[json!(channel)],
+         FROM axton_subscription WHERE scope=?",
+        &[json!(scope)],
     )
     .unwrap()
     .rows
@@ -1070,32 +1070,31 @@ fn stored(raw: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
     .next()
     .expect("the row is still there")
 }
-/// Write `set` into `channel`'s row behind the client's back, as a damaged or
+/// Write `set` into `scope`'s row behind the client's back, as a damaged or
 /// foreign writer would.
-fn tamper(raw: &mut SqliteStore, channel: &str, set: &str) {
+fn tamper(raw: &mut SqliteStore, scope: &str, set: &str) {
     let changed = raw
         .execute(
-            &format!("UPDATE axton_subscription SET {set} WHERE channel=?"),
-            &[json!(channel)],
+            &format!("UPDATE axton_subscription SET {set} WHERE scope=?"),
+            &[json!(scope)],
         )
         .unwrap();
     assert_eq!(changed, 1);
 }
-/// Take `channel` through its whole interval `(0, 100]` without the lane: it is
+/// Take `scope` through its whole interval `(0, 100]` without the lane: it is
 /// catching up to the barrier H = 130 while delivery stands where it was.
-fn finished(lane: &mut Lane, channel: &str) {
-    let state = lane.load(channel);
+fn finished(lane: &mut Lane, scope: &str) {
+    let state = lane.load(scope);
     let page =
-        ChannelBootstrapPage::decode(historical(channel, 0, 100, 100, 130, vec![]).as_bytes())
-            .unwrap();
+        ScopeBootstrapPage::decode(historical(scope, 0, 100, 100, 130, vec![]).as_bytes()).unwrap();
     lane.client
-        .apply_channel_bootstrap_page(channel, state.subscription_id, state.run, 0, &page)
+        .apply_scope_bootstrap_page(scope, state.subscription_id, state.run, 0, &page)
         .unwrap();
-    assert_eq!(lane.load(channel).state, BootstrapPhase::CatchingUp);
+    assert_eq!(lane.load(scope).state, BootstrapPhase::CatchingUp);
 }
 
 /// One active row that cannot be decoded is reported to the application once,
-/// by channel and reason, and the healthy load beside it still gets its page.
+/// by scope and reason, and the healthy load beside it still gets its page.
 /// Nothing that leaves the defect as it was reports it again: more pumps, more
 /// wakes, a page that advances the damaged row's own valid delivery cursor.
 /// With no healthy work left the schedule goes quiet instead of spinning. A
@@ -1115,17 +1114,17 @@ fn an_undecodable_row_is_reported_once_while_a_healthy_load_proceeds() {
 
     let started = lane.send(DownlinkEvent::Start);
     assert_eq!(issues(&started), vec![("bad", NOT_A_NUMBER)], "{started:?}");
-    // What the host receives over the binding: the channel and the reason only.
+    // What the host receives over the binding: the scope and the reason only.
     let issue = started
         .iter()
         .find(|action| matches!(action, DownlinkAction::LedgerIssue { .. }))
         .unwrap();
     assert_eq!(
         serde_json::to_value(issue).unwrap(),
-        json!({"type": "ledgerIssue", "channel": "bad", "message": NOT_A_NUMBER})
+        json!({"type": "ledgerIssue", "scope": "bad", "message": NOT_A_NUMBER})
     );
     let (id, request) = only(&started);
-    assert_eq!(request.channel, "good", "the healthy load still asks");
+    assert_eq!(request.scope, "good", "the healthy load still asks");
     let epoch = session(&started).expect("the session opened");
     let acknowledged = lane.message(epoch, ack(&[("bad", 100), ("good", 100)]));
     assert_eq!(issues(&acknowledged), vec![]);
@@ -1192,9 +1191,9 @@ fn an_undecodable_row_is_reported_once_while_a_healthy_load_proceeds() {
 
     // Removed, then back exactly as it was: reported again.
     let row = raw
-        .query_committed("SELECT * FROM axton_subscription WHERE channel='bad'", &[])
+        .query_committed("SELECT * FROM axton_subscription WHERE scope='bad'", &[])
         .unwrap();
-    raw.execute("DELETE FROM axton_subscription WHERE channel='bad'", &[])
+    raw.execute("DELETE FROM axton_subscription WHERE scope='bad'", &[])
         .unwrap();
     assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "nothing to report");
     let named = row.columns.join(", ");
@@ -1221,14 +1220,14 @@ fn a_reopen_settles_a_healthy_barrier_beside_an_undecodable_row() {
     let dir = tempfile::tempdir().unwrap();
     let mut lane = Lane::new(dir.path());
     let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
-    for channel in ["bad", "good", "waiting"] {
-        lane.saved(channel, 100);
-        lane.intend(channel);
+    for scope in ["bad", "good", "waiting"] {
+        lane.saved(scope, 100);
+        lane.intend(scope);
     }
-    for channel in ["bad", "waiting"] {
-        finished(&mut lane, channel);
+    for scope in ["bad", "waiting"] {
+        finished(&mut lane, scope);
         lane.client
-            .apply_page(page(channel, 100, 130, Some("caught up")))
+            .apply_page(page(scope, 100, 130, Some("caught up")))
             .unwrap();
     }
     tamper(&mut raw, "bad", "bootstrap_error='{not json'");
@@ -1249,7 +1248,7 @@ fn a_reopen_settles_a_healthy_barrier_beside_an_undecodable_row() {
     assert_eq!(reported[0].0, "bad");
     assert!(undecodable(reported[0]), "{reported:?}");
     let (_, request) = only(&started);
-    assert_eq!(request.channel, "good");
+    assert_eq!(request.scope, "good");
     assert_eq!(
         stored(&mut raw, "bad"),
         damaged,
@@ -1267,10 +1266,10 @@ fn an_undecodable_barrier_candidate_is_reported_once_beside_a_healthy_one() {
     let dir = tempfile::tempdir().unwrap();
     let mut lane = Lane::new(dir.path());
     let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
-    for channel in ["bad", "good"] {
-        lane.saved(channel, 100);
-        lane.intend(channel);
-        finished(&mut lane, channel);
+    for scope in ["bad", "good"] {
+        lane.saved(scope, 100);
+        lane.intend(scope);
+        finished(&mut lane, scope);
     }
     let started = lane.send(DownlinkEvent::Start);
     assert_eq!(issues(&started), vec![]);
@@ -1314,12 +1313,12 @@ fn a_failed_pump_reports_each_ledger_issue_once_with_or_without_restart() {
         let dir = tempfile::tempdir().unwrap();
         let mut lane = Lane::new(dir.path());
         let mut raw = SqliteStore::open(dir.path().join("db")).unwrap();
-        for channel in ["bad", "waiting"] {
-            lane.saved(channel, 100);
-            lane.intend(channel);
-            finished(&mut lane, channel);
+        for scope in ["bad", "waiting"] {
+            lane.saved(scope, 100);
+            lane.intend(scope);
+            finished(&mut lane, scope);
             lane.client
-                .apply_page(page(channel, 100, 130, Some("caught up")))
+                .apply_page(page(scope, 100, 130, Some("caught up")))
                 .unwrap();
         }
         tamper(&mut raw, "bad", "bootstrap_error='{not json'");

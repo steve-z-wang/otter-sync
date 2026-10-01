@@ -29,20 +29,20 @@ pub enum StoreChange {
 #[derive(Clone)]
 pub enum StoreDelivery {
     Page(PullPage),
-    ChannelPage(axton_core::ChannelPullPage),
-    ChannelBootstrap {
+    ScopePage(axton_core::ScopePullPage),
+    ScopeBootstrap {
         scope: String,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: axton_core::ChannelBootstrapPage,
+        page: axton_core::ScopeBootstrapPage,
     },
-    ChannelReconciliation {
+    ScopeReconciliation {
         scope: String,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: axton_core::ChannelBootstrapPage,
+        page: axton_core::ScopeBootstrapPage,
     },
     Bootstrap {
         scope: String,
@@ -161,7 +161,7 @@ impl<S: ClientStore> Client<S> {
             .map(|p| p.request_token)
             .unwrap_or_else(|| self.delivery_token(delivery));
         match delivery {
-            StoreDelivery::ChannelPage(page) => {
+            StoreDelivery::ScopePage(page) => {
                 page.validate()?;
                 let legacy = PullPage {
                     cursors: page.cursors.clone(),
@@ -177,27 +177,27 @@ impl<S: ClientStore> Client<S> {
                     ));
                 }
                 self.staged(mode, |e| {
-                    e.apply_channel_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
+                    e.apply_scope_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
                         .map(StoreResult::Page)
                 })
             }
-            StoreDelivery::ChannelBootstrap {
+            StoreDelivery::ScopeBootstrap {
                 scope,
                 subscription_id,
                 run,
                 expected_after,
                 page,
             }
-            | StoreDelivery::ChannelReconciliation {
+            | StoreDelivery::ScopeReconciliation {
                 scope,
                 subscription_id,
                 run,
                 expected_after,
                 page,
             } => self.staged(mode, |e| {
-                e.reconciliation = matches!(delivery, StoreDelivery::ChannelReconciliation { .. });
+                e.reconciliation = matches!(delivery, StoreDelivery::ScopeReconciliation { .. });
                 let outcome = if let Some(prepared) = prepared {
-                    e.apply_channel_bootstrap_prepared_body(
+                    e.apply_scope_bootstrap_prepared_body(
                         scope,
                         *subscription_id,
                         *run,
@@ -206,7 +206,7 @@ impl<S: ClientStore> Client<S> {
                         prepared.bootstrap_admitted.as_ref(),
                     )?
                 } else {
-                    e.apply_channel_bootstrap_body(
+                    e.apply_scope_bootstrap_body(
                         scope,
                         *subscription_id,
                         *run,
@@ -326,12 +326,12 @@ impl<S: ClientStore> Client<S> {
                 report
                     .cursors
                     .iter()
-                    .map(|(channel, to)| {
+                    .map(|(scope, to)| {
                         let state = tx
                             .engine
-                            .subscription(channel)?
+                            .subscription(scope)?
                             .ok_or_else(|| invalid("prepared subscription disappeared"))?;
-                        Ok((channel.clone(), state.subscription_id, *to))
+                        Ok((scope.clone(), state.subscription_id, *to))
                     })
                     .collect::<Result<Vec<_>>>()
             })?
@@ -405,7 +405,7 @@ impl<S: ClientStore> Client<S> {
         }
         let cursors = match &prepared.delivery {
             StoreDelivery::Page(page) => Some(&page.cursors),
-            StoreDelivery::ChannelPage(page) => Some(&page.cursors),
+            StoreDelivery::ScopePage(page) => Some(&page.cursors),
             _ => None,
         };
         if let Some(cursors) = cursors {

@@ -7,13 +7,13 @@ import 'package:test/test.dart';
 
 final subscribeFrame = jsonEncode({
   'type': 'subscribe',
-  'channels': ['scope'],
+  'scopes': ['scope'],
 });
 
-/// The acknowledgement: every subscribed channel at `head`.
+/// The acknowledgement: every subscribed scope at `head`.
 String ack(Map sub, [int head = 0]) => jsonEncode({
   'type': 'subscribed',
-  'cursors': {for (final channel in sub['channels'] as List) channel: head},
+  'cursors': {for (final scope in sub['scopes'] as List) scope: head},
 });
 Map<String, dynamic> range(int from, int to, [int? head]) => {
   'from': from,
@@ -21,7 +21,7 @@ Map<String, dynamic> range(int from, int to, [int? head]) => {
   'head': head ?? to,
 };
 
-/// An HTTP answer that moves nothing: every requested channel stays where it is.
+/// An HTTP answer that moves nothing: every requested scope stays where it is.
 Map<String, dynamic> emptyPage(Map pull) => {
   'cursors': {
     for (final entry in (pull['cursors'] as Map).entries)
@@ -139,7 +139,7 @@ void main() {
       try {
         expect(await handshake.future.timeout(const Duration(seconds: 2)), {
           'type': 'subscribe',
-          'channels': ['scope'],
+          'scopes': ['scope'],
         });
         await second.future.timeout(const Duration(seconds: 2));
         expect(
@@ -330,7 +330,7 @@ void main() {
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
         expect(subscribes, hasLength(1));
-        expect((await client.syncState())['channels'], isEmpty);
+        expect((await client.syncState())['scopes'], isEmpty);
         expect(errors, isEmpty);
       } finally {
         if (!held.isCompleted) held.complete();
@@ -450,7 +450,7 @@ void main() {
         throw StateError('condition timed out: $errors');
       }
 
-      // A resubscribed channel restarts at cursor 0 while the record it
+      // A resubscribed scope restarts at cursor 0 while the record it
       // delivered before is retained at its stamp, so pages of the fresh
       // session carry newer stamps than the first session's did.
       var stampBase = 0;
@@ -459,7 +459,7 @@ void main() {
         'changes': [
           {
             'kind': 'upsert',
-            'channel': 'scope',
+            'scope': 'scope',
             'cursor': cursor + 1,
             'model': 'Entry',
             'identity': {'id': 'live'},
@@ -477,7 +477,7 @@ void main() {
             r.response.write(
               jsonEncode({
                 'mode': 'bootstrap',
-                'channel': pull['channel'],
+                'scope': pull['scope'],
                 'from': pull['after'],
                 'to': pull['until'],
                 'until': pull['until'],
@@ -542,7 +542,7 @@ void main() {
         // belonged to became stale.
         expect((await client.read('Entry', {'id': 'live'}))?['text'], 'first');
         expect(handshakes.last.containsKey('cursors'), isFalse);
-        // The resubscribed channel restarts at cursor 0, but the record is
+        // The resubscribed scope restarts at cursor 0, but the record is
         // retained at stamp 1: the fresh session's pages need newer stamps.
         stampBase = 10;
         sockets.last.add(jsonEncode(page('fresh', 0)));
@@ -603,7 +603,7 @@ void main() {
             'changes': [
               {
                 'kind': 'remove',
-                'channel': 'scope',
+                'scope': 'scope',
                 'cursor': 12,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
@@ -666,7 +666,7 @@ void main() {
           for (var cursor = from + 1; cursor <= to; cursor++)
             {
               'kind': 'upsert',
-              'channel': 'scope',
+              'scope': 'scope',
               'cursor': cursor,
               'model': 'Entry',
               'identity': {'id': 'e$cursor'},
@@ -696,7 +696,7 @@ void main() {
             request.response.write(
               jsonEncode({
                 'mode': 'bootstrap',
-                'channel': body['channel'],
+                'scope': body['scope'],
                 'from': from,
                 'to': to,
                 'until': bound,
@@ -828,7 +828,7 @@ void main() {
   );
 
   test(
-    'shared live factory isolates cancellation and pushes with no subscribed channels',
+    'shared live factory isolates cancellation and pushes with no subscribed scopes',
     () async {
       final dir = await Directory.systemTemp.createTemp('axton-shared-live-');
       final schema =
@@ -992,7 +992,7 @@ void moreTests() {
               'changes': [
                 {
                   'kind': 'upsert',
-                  'channel': 'scope',
+                  'scope': 'scope',
                   'cursor': from + 1,
                   'model': 'Entry',
                   'identity': {'id': 'live'},
@@ -1125,7 +1125,7 @@ void moreTests() {
         'changes': [
           {
             'kind': 'upsert',
-            'channel': 'scope',
+            'scope': 'scope',
             'cursor': to,
             'model': 'Entry',
             'identity': {'id': 'live'},
@@ -1264,7 +1264,7 @@ void moreTests() {
         }
         if (request.uri.path == '/sync/mutations') {
           pushes++;
-          // The receipt names no channel: the push completes on its own,
+          // The receipt names no scope: the push completes on its own,
           // whatever the live lane is doing.
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
@@ -1470,9 +1470,9 @@ void moreTests() {
         await until(() => subscribes.length == 2, 'second subscribe');
         expect(subscribes[1], {
           'type': 'subscribe',
-          'channels': ['scope'],
+          'scopes': ['scope'],
           'models': {'Entry': 1},
-          'capabilities': ['channel-membership-v1'],
+          'capabilities': ['scope-membership-v1'],
         });
         sockets[1].add(
           jsonEncode({
@@ -1480,7 +1480,7 @@ void moreTests() {
             'changes': [
               {
                 'kind': 'upsert',
-                'channel': 'scope',
+                'scope': 'scope',
                 'cursor': 1,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
@@ -1716,7 +1716,7 @@ void moreTests() {
         int cursor,
       ) => {
         'kind': 'upsert',
-        'channel': 'scope',
+        'scope': 'scope',
         'cursor': cursor,
         'model': 'Entry',
         'identity': {'id': id},
@@ -1755,7 +1755,7 @@ void moreTests() {
             'changes': [
               {
                 'kind': 'upsert',
-                'channel': 'scope',
+                'scope': 'scope',
                 'cursor': 2,
                 'model': 'Entry',
                 'identity': {'id': 'live'},

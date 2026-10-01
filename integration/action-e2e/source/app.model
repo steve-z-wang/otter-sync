@@ -40,7 +40,7 @@ mutation AddNote(note Note.create) { saved Note }
 mutation Restamp(note Note.update<createdAt>?, at DateTime) { at DateTime }
 // Retitles a Todo and rewrites a Note through an explicit extra touch. The Note
 // is not caller authority, so a caller that declares only Todo can run it; the
-// Note reaches its own Channel's subscribers (#140).
+// Note reaches its own Scope's subscribers (#140).
 mutation AnnotateTodo(todo Todo.update<title>, note UUID, body String)
 // Transactional Mutation enqueue with a local companion: a client reads a
 // local Composition, submits PublishEntry built from it and deletes the

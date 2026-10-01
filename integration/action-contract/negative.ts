@@ -47,16 +47,16 @@ client.queries.findTodos({ text: 'x' });
 void [directCall, queuedOutput];
 declare const queryContext: QueryContext<{}>;
 // @ts-expect-error A Query context has no membership writer.
-queryContext.channel('todos');
+queryContext.scope('todos');
 // @ts-expect-error A Query context has no change declaration.
 queryContext.touch.todo({ id: 'x' });
 // @ts-expect-error A Query handler cannot use Mutation declarations.
 const effectfulQuery: Queries<{}>['findTodos'] = async ({ ctx }) => { ctx.touch.todo({ id: 'x' }); return { todos: [], nextCursor: null }; };
 declare const mutationContext: actionBackend.MutationContext<{}>;
 // @ts-expect-error A composite identity names every component.
-mutationContext.channel('tenant:t').project.add({ id: 'p' });
+mutationContext.scope('tenant:t').add.project({ id: 'p' });
 // @ts-expect-error The old publish API is gone.
-mutationContext.publish({ channel: 'todos' });
+mutationContext.publish({ scope: 'todos' });
 // @ts-expect-error The old changes collector is gone.
 mutationContext.changes.add({ model: 'Todo', identity: { id: 'x' } });
 // @ts-expect-error Query Model outputs are identity objects.
@@ -190,35 +190,35 @@ void [missing, recordOutput, editResult, identityResult];
 
 // Loads (#173): typed backend handlers.
 declare const loadContext: LoadContext<{}>;
-// A Load Channel only adds: there is no remove on either handle form.
-// @ts-expect-error A Load Channel's Model accessor has no remove.
-loadContext.channel('todos').todo.remove({ id: 'x' });
-// @ts-expect-error A Load Channel has no remove for mixed record lists.
-loadContext.channel('todos').remove([actionBackend.Todo({ id: 'x' })]);
-// @ts-expect-error A Load Channel has no tag selector either.
-loadContext.channel('todos').remove({ tag: 'X' });
+// A Load Scope only adds: there is no remove on either handle form.
+// @ts-expect-error A Load Scope's Model accessor has no remove.
+loadContext.scope('todos').remove.todo({ id: 'x' });
+// @ts-expect-error A Load Scope has no remove for mixed record lists.
+loadContext.scope('todos').remove([actionBackend.Todo({ id: 'x' })]);
+// @ts-expect-error A Load Scope has no tag selector either.
+loadContext.scope('todos').where({ tags: { all: ['X'] } }).remove();
 // @ts-expect-error A tagged Load add still names the Model's identity.
-loadContext.channel('todos').todo.add({ id: 1 }, { tags: ['X'] });
+loadContext.scope('todos').add.todo({ id: 1 }).tag(['X']);
 // @ts-expect-error Load tags are a list of strings.
-loadContext.channel('todos').todo.add({ id: 'x' }, { tags: 'X' });
-// @ts-expect-error A Load Channel is not a Mutation's full Channel.
-const fullLoadChannel: actionBackend.Channel = loadContext.channel('todos');
+loadContext.scope('todos').add.todo({ id: 'x' }).tag(3);
+// @ts-expect-error A Load Scope is not a Mutation's full Scope.
+const fullLoadScope: actionBackend.Scope = loadContext.scope('todos');
 // @ts-expect-error A composite identity names every component.
-loadContext.channel('tenant:t').project.add({ id: 'p' });
+loadContext.scope('tenant:t').add.project({ id: 'p' });
 // @ts-expect-error A Todo identity is a string id, not a Project identity.
-loadContext.channel('todos').todo.add({ tenantId: 't', id: 'x' });
+loadContext.scope('todos').add.todo({ tenantId: 't', id: 'x' });
 // @ts-expect-error A Todo id is a string.
-loadContext.channel('todos').todo.add({ id: 1 });
+loadContext.scope('todos').add.todo({ id: 1 });
 // @ts-expect-error A mixed list takes references, not raw identities.
-loadContext.channel('todos').add([{ id: 'x' }]);
+loadContext.scope('todos').add([{ id: 'x' }]);
 // @ts-expect-error Only schema Models have an accessor.
-loadContext.channel('todos').tsak.add({ id: 'x' });
+loadContext.scope('todos').add.tsak({ id: 'x' });
 // @ts-expect-error A Load context has no change declaration.
 loadContext.touch.todo({ id: 'x' });
 // @ts-expect-error A Load handler cannot remove memberships.
-const removingLoad: Loads<{}>['recentTodos'] = async ({ ctx }) => { ctx.channel('todos').todo.remove({ id: 'x' }); return { data: { todos: [] }, next: null }; };
-// @ts-expect-error A Loader has no Channel: materializing a record enrolls nothing.
-const channelLoader: Loaders<{}>['project'] = async ({ ids, channel }) => { channel('tenant:t').project.add(ids[0]!); return []; };
+const removingLoad: Loads<{}>['recentTodos'] = async ({ ctx }) => { ctx.scope('todos').remove.todo({ id: 'x' }); return { data: { todos: [] }, next: null }; };
+// @ts-expect-error A Loader has no Scope: materializing a record enrolls nothing.
+const scopeLoader: Loaders<{}>['project'] = async ({ ids, scope: scope }) => { scope('tenant:t').add.project(ids[0]!); return []; };
 // @ts-expect-error A Load handler cannot use Mutation declarations.
 const effectfulLoad: Loads<{}>['projectTodos'] = async ({ ctx }) => { ctx.touch.todo({ id: 'x' }); return { data: { todos: [], projects: [] }, next: null }; };
 // @ts-expect-error Load args keep their declared types.
@@ -277,7 +277,7 @@ const partialLoader: Loaders<{}> = { todo: { async v1() { return []; } } };
 const unknownLoader: Loaders<{}> = { tsak: async () => [] };
 // @ts-expect-error A schema that retains Loads requires the loads map.
 const withoutLoads = () => actionBackend.createBackend({ database, authenticate: () => 'alice', mutations: everyMutation, queries: everyQuery, loaders: everyLoader });
-void [fullLoadChannel, removingLoad, channelLoader, partialLoader, unknownLoader, effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
+void [fullLoadScope, removingLoad, scopeLoader, partialLoader, unknownLoader, effectfulLoad, wrongArgType, undeclaredArg, operandArgs, missingNullableArg, fullPage, barePage, singlePage, partialPage, scalarPage, partialComposite, wrongPageModel, noNext, bareState, extraWrapper, dateState, undefinedState, bigintState, functionState, dateStateHandler, loadInQueries, queryInLoads, loadV2, noLoads, withoutLoads];
 
 // Client Loads (#173): typed business args, call-site options apart from them.
 declare const job: Load<'ProjectTodos'>;
@@ -344,8 +344,8 @@ client.transaction(async tx => {
       void local.fetch;
       // @ts-expect-error The callback runs no Query.
       void local.queries;
-      // @ts-expect-error The callback modifies no Channel.
-      void local.channels;
+      // @ts-expect-error The callback modifies no Scope.
+      void local.scopes;
       // @ts-expect-error The callback opens no savepoint and has no raw port.
       void local.transaction;
       // @ts-expect-error The callback cannot watch.
@@ -363,3 +363,43 @@ client.queries.enqueue.findTodos({ text: 'x', cursor: null }, { local: async () 
 void storeTransaction.mutations;
 // @ts-expect-error onStore starts no Load.
 void storeTransaction.loads;
+
+function invalidCanonicalScope(ctx: import('./backend.ts').MutationContext<object>, load: import('./backend.ts').LoadContext<object>, query: import('./backend.ts').QueryContext<object>) {
+ // @ts-expect-error wrong scalar identity
+ ctx.scope('U').add.todo(3);
+ // @ts-expect-error composite requires every field
+ ctx.scope('U').add.project({id:'P'});
+ // @ts-expect-error mixed operands name their model
+ ctx.scope('U').add({id:'A'});
+ // @ts-expect-error root add needs explicit operands
+ ctx.scope('U').add();
+ // @ts-expect-error root remove needs explicit operands
+ ctx.scope('U').remove();
+ // @ts-expect-error label add needs explicit operands
+ ctx.scope('U').tag('X').add();
+ // @ts-expect-error existing selection cannot enroll
+ ctx.scope('U').where({tags:{only:[]}}).add();
+ // @ts-expect-error Load cannot remove
+ load.scope('U').remove.todo('A');
+ // @ts-expect-error Load cannot select
+ load.scope('U').where({tags:{only:[]}});
+ // @ts-expect-error Load cannot detach labels
+ load.scope('U').tag('X').remove();
+ // @ts-expect-error Load has no touch
+ load.touch.todo('A');
+ // @ts-expect-error Query has no scope
+ query.scope('U');
+}
+
+function invalidViewerLoaderScope(call: import('./backend.ts').LoaderCall<object, { id: string }>) {
+ // @ts-expect-error viewer Loader has no scope
+ call.scope('U');
+}
+
+// Task 3A: backend exposes only the canonical Scope surface.
+// @ts-expect-error backend Channel facade is retired
+mutationContext.channel('U');
+// @ts-expect-error Model-first membership is retired
+mutationContext.scope('U').todo.add({ id: 'A' });
+// @ts-expect-error tag selectors are not record references
+mutationContext.scope('U').remove({ tag: 'X' });

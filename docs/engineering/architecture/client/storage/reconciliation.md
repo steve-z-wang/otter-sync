@@ -38,7 +38,7 @@ The subscription ledger is one row per followed Scope ([#150](https://github.com
 
 ```sql
 CREATE TABLE axton_subscription (
-  channel           TEXT PRIMARY KEY,  -- the Scope name; renamed by #152
+  scope           TEXT PRIMARY KEY,  -- the Scope name
   subscription_id   INTEGER NOT NULL UNIQUE,
   starting_cursor   INTEGER,           -- the boundary the first initialization committed
   cursor            INTEGER,           -- how far delivery has committed
@@ -131,13 +131,13 @@ Executed 2026-09-16: `cargo test -p axton-core -p axton-client -p axton-sqlite -
 
 **Accepted limitation.** Old files accumulate until the application deletes them; the runtime removes only an abandoned partial rebuild. A direct record in an old file is reported, never carried. A legacy checkpoint-era queue is counted as left behind, not sent.
 
-## Channel membership upgrade
+## Scope membership upgrade
 
-The 0.2 framework upgrade is additive and separate from incompatible application-schema rebuilding. It retains client identity, pending operations, subscriptions/cursors and existing data. The holding ledger records current presence and latest membership cursor per Channel/record; record metadata distinguishes materialized, authoritative absent, legacy and evicted bases. Retained stamp and eviction evidence prevent stale restoration. No client tag table is introduced.
+The 0.2 framework upgrade is additive and separate from incompatible application-schema rebuilding. It retains client identity, pending operations, subscriptions/cursors and existing data. The holding ledger records current presence and latest membership cursor per Scope/record; record metadata distinguishes materialized, authoritative absent, legacy and evicted bases. Retained stamp and eviction evidence prevent stale restoration. No client tag table is introduced.
 
 Clean device-local operations are retained in a bounded internal layer, separate from replication. Release replays pending and local operations over an absent base without sending a write. Legacy stamped cache cannot be promoted to local authorship; old unstamped local creates can survive conservatively. Lost direct-write provenance is not reconstructed.
 
-The opening transaction adds `axton_client.channel_membership_version` and the subscription columns below. An old file receives marker zero, schedules each retained registration once, then commits marker one with the upgrade. A fresh file starts at marker one and keeps ordinary first-subscription semantics. Resubscribing a Channel with retained membership evidence also schedules reconciliation; the upgrade fabricates no holds.
+The opening transaction adds `axton_client.scope_membership_version` and the subscription columns below. An old file receives marker zero, schedules each retained registration once, then commits marker one with the upgrade. A fresh file starts at marker one and keeps ordinary first-subscription semantics. Resubscribing a Scope with retained membership evidence also schedules reconciliation; the upgrade fabricates no holds.
 
 | Subscription column | Meaning |
 | --- | --- |
@@ -152,9 +152,9 @@ A valid acknowledgement, or the first valid current HTTP delta head when no ackn
 
 This lane never rewinds `cursor`, changes `starting_cursor`, or completes the user's separate `bootstrap_*` task or waiters. Hidden failed reconciliation uses the worker's bounded historical retry timer: a new own run clears the failure while keeping bound, progress and barrier. HTTP-only `SyncCycle` cannot report completion with reconciliation pending; a failed cycle requires explicit restart, which reactivates failed work.
 
-New logical requests freeze store epochs; retry/restart and saved legacy responses keep their original token. Migration cannot infer holdings for records absent from both retained membership and log, so unrelated one-shot cache is not wiped. Claims are never fabricated for legacy responses. [Cutover](../../../../../website/docs/backend/deployment.md#channel-membership-cutover) owns deployment sequencing. Source: [framework upgrade](../../../../../crates/client/src/ddl.rs), [reconciliation scheduling](../../../../../crates/client/src/bootstrap.rs) and [ledger](../../../../../crates/client/src/bootstrap_ledger.rs).
+New logical requests freeze store epochs; retry/restart and saved legacy responses keep their original token. Migration cannot infer holdings for records absent from both retained membership and log, so unrelated one-shot cache is not wiped. Claims are never fabricated for legacy responses. [Cutover](../../../../../website/docs/backend/deployment.md#scope-membership-cutover) owns deployment sequencing. Source: [framework upgrade](../../../../../crates/client/src/ddl.rs), [reconciliation scheduling](../../../../../crates/client/src/bootstrap.rs) and [ledger](../../../../../crates/client/src/bootstrap_ledger.rs).
 
-Low-level hosts keep the opaque `BootstrapTask` returned by `bootstrap_schedule` and send its `encode_request(models)` bytes. Apply the response through `Client::apply_channel_bootstrap_task(task, &page) -> Result<BootstrapApply>` so the task routes its own ordinary or reconciliation lane and fences registration, run and progress. `apply_channel_bootstrap_page` remains explicitly ordinary bootstrap only; it is not a replacement for task-aware application.
+Low-level hosts keep the opaque `BootstrapTask` returned by `bootstrap_schedule` and send its `encode_request(models)` bytes. Apply the response through `Client::apply_scope_bootstrap_task(task, &page) -> Result<BootstrapApply>` so the task routes its own ordinary or reconciliation lane and fences registration, run and progress. `apply_scope_bootstrap_page` remains explicitly ordinary bootstrap only; it is not a replacement for task-aware application.
 
 ### Frozen request ownership
 
@@ -170,3 +170,7 @@ Low-level hosts keep the opaque `BootstrapTask` returned by `bootstrap_schedule`
 | Queued Mutation/Query | Durable enqueue row, before push freezing or network; receipt uses that original token |
 
 A receipt contains batch authority without per-call record provenance. Push selection therefore groups only calls with the same epoch (as well as the existing shape grouping), so unrelated old work cannot suppress fresh authority. Mixed-epoch receipts are refused rather than guessed. Legacy durable rows and unknown historical transient IDs use epoch zero. Additive columns on client, queue and Load rows preserve saved IDs, intent and frozen push bytes. Transient tokens are bounded by outstanding owners; manually abandoning a low-level request requires `Client::retire_request(call_id)`, while runtime lifecycle retires them automatically. The unrelated downlink delivery-ownership token is not repurposed.
+
+### Scope metadata rename
+
+The subsequent Scope cutover is a transactional forward rename of `axton_channel_member` to `axton_scope_member`, ownership columns from `channel` to `scope`, and `channel_membership_version` to `scope_membership_version`. These old spellings are migration inputs only. Opening storage rewrites framework membership claims in saved outcomes while preserving application fields, frozen requests, records, subscriptions, cursors and pending work. It commits before network scheduling, is idempotent on reopen, and rolls back an inconsistent layout without parallel old/new tables. This is separate from the earlier 0.2 membership reconciliation and from application-schema rebuilds.

@@ -10,12 +10,6 @@ export class Scopes { readonly #client: Client;
  constructor(client: Client) { this.#client = client; }
  subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }
 }
-/** The retained `channels` spelling of the same registrations; `scopes` is the current one. */
-export class Channels { readonly #client: Client;
- constructor(client: Client) { this.#client = client; }
- subscribe(channel: string): Promise<Subscription> { return this.#client.subscribe(channel); }
- unsubscribe(channel: string): Promise<void> { return this.#client.unsubscribe(channel); }
-}
 export class GeneratedClient {
  /** @internal The runtime handle; application code uses the members below. */
  readonly client: Client;
@@ -26,10 +20,9 @@ export class GeneratedClient {
  /** Direct by default: `await` resolves with the backend result; `queries.enqueue` accepts durably with a `Call`. */
  readonly queries: ReturnType<typeof makeQueries>;
  readonly scopes: Scopes;
- readonly channels: Channels;
  /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */
  readonly fetch: FetchModels;
- private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.scopes = new Scopes(client); this.channels = new Channels(client); this.fetch = fetchModels(client); }
+ private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.scopes = new Scopes(client); this.fetch = fetchModels(client); }
  /** Opens the local database at `path`. With a server, the connection starts immediately and retries on its own. */
  static async open(options: { path: string; server?: ServerOptions; connection?: ConnectionOptions; migration?: { defaults?: RecordValue; replayPull?: boolean }; discardPending?: boolean; onStore?: StoreHooks; prerequisites?: Record<string, PrerequisiteHandler> }): Promise<GeneratedClient> {
   const rawHooks: Record<string, StoreHook> = {};

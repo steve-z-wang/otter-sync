@@ -1,13 +1,13 @@
-//! Shared settlement: one stamp per changed record, persistent tagged Channel
+//! Shared settlement: one stamp per changed record, persistent tagged Scope
 //! membership reduced from ordered declarations to its final state, and at
-//! most one position per affected Channel/record pair, on the Action, legacy
+//! most one position per affected Scope/record pair, on the Action, legacy
 //! and external paths
-//! ([spec §3-§5](../../../docs/superpowers/specs/2026-09-30-channel-tags-removal-design.md)).
+//! ([spec §3-§5](../../../docs/superpowers/specs/2026-09-30-scope-tags-removal-design.md)).
 mod capability;
 mod support;
 use axton_core::RecordKey;
-use axton_server::channel_members::MemberDelta;
 use axton_server::host::HostRequest;
+use axton_server::scope_members::MemberDelta;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use support::*;
@@ -28,10 +28,10 @@ fn publishes(backend: &Backend) -> Vec<(String, String, u64)> {
     backend.publishes()
 }
 
-/// Spec §4's example: a Todo at stamp 7 in Channels A and B changes once. It
-/// advances to 8 exactly once and each Channel gets one new position at 8.
+/// Spec §4's example: a Todo at stamp 7 in Scopes A and B changes once. It
+/// advances to 8 exactly once and each Scope gets one new position at 8.
 #[test]
-fn a_changed_member_advances_once_and_gets_one_new_position_per_channel() {
+fn a_changed_member_advances_once_and_gets_one_new_position_per_scope() {
     let backend = Backend::new();
     backend.seed("Todo", "t", todo_row("t", "old"), Some(7));
     backend.enroll("A", "Todo", "t", 120);
@@ -63,8 +63,8 @@ fn a_changed_member_advances_once_and_gets_one_new_position_per_channel() {
         vec![edit(1, 2, "Edit", "lone", "new")],
     );
     succeeded(&receipt);
-    assert_eq!(backend.count("lockChannels"), 0, "no Channel to lock");
-    assert_eq!(backend.count("applyChannelMembers"), 0);
+    assert_eq!(backend.count("lockScopes"), 0, "no Scope to lock");
+    assert_eq!(backend.count("applyScopeMembers"), 0);
     assert_eq!(backend.stamp("Todo", "lone"), Some(1));
 }
 
@@ -105,7 +105,7 @@ fn a_newly_added_changed_record_gets_one_position_at_its_final_stamp() {
         succeeded(&receipt);
         assert_eq!(backend.count("advanceStamp"), 1, "{label}");
         assert_eq!(backend.count("ensureStamp"), 0, "{label}");
-        assert_eq!(backend.count("applyChannelMembers"), 1, "{label}");
+        assert_eq!(backend.count("applyScopeMembers"), 1, "{label}");
         assert_eq!(backend.deltas().len(), 1, "{label}: one final state");
         assert_eq!(backend.stamp("Todo", "t"), Some(4), "{label}");
         assert_eq!(
@@ -125,7 +125,7 @@ fn a_newly_added_changed_record_gets_one_position_at_its_final_stamp() {
 /// Intents reduce against the membership at settlement start: a non-member
 /// added then removed is untouched, while a member removed then re-added is
 /// a new membership, positioned once as an upsert (never as a removal). No
-/// stamp moves and no Channel is created.
+/// stamp moves and no Scope is created.
 #[test]
 fn a_non_member_added_then_removed_is_untouched_and_a_re_added_member_is_positioned_once() {
     let backend = Backend::new();
@@ -163,12 +163,12 @@ fn a_non_member_added_then_removed_is_untouched_and_a_re_added_member_is_positio
     };
     // p ends added in A with no selector after, so its guard is
     // `ensureStamp`; q's last intent is a removal, so it is only locked, and
-    // has no row to lock. Both Channels lock first.
+    // has no row to lock. Both Scopes lock first.
     assert_eq!(
         backend.settlement_log(),
         [
-            HostRequest::LockChannels {
-                channels: vec!["A".into(), "B".into()]
+            HostRequest::LockScopes {
+                scopes: vec!["A".into(), "B".into()]
             },
             HostRequest::EnsureStamp {
                 model: "Project".into(),
@@ -178,19 +178,21 @@ fn a_non_member_added_then_removed_is_untouched_and_a_re_added_member_is_positio
                 model: "Project".into(),
                 identity_key: r#"{"id":"q"}"#.into()
             },
-            HostRequest::ReadChannelMembers {
-                channel: "A".into(),
+            HostRequest::ReadScopeMembers {
+                scope: "A".into(),
                 explicit_keys: vec![key("p")],
+                all: false,
                 tags: vec![],
             },
-            HostRequest::ReadChannelMembers {
-                channel: "B".into(),
+            HostRequest::ReadScopeMembers {
+                scope: "B".into(),
                 explicit_keys: vec![key("p"), key("q")],
+                all: false,
                 tags: vec![],
             },
-            HostRequest::ApplyChannelMembers {
+            HostRequest::ApplyScopeMembers {
                 deltas: vec![MemberDelta {
-                    channel: "A".into(),
+                    scope: "A".into(),
                     key: key("p"),
                     present: true,
                     tags: BTreeSet::new(),
@@ -203,12 +205,12 @@ fn a_non_member_added_then_removed_is_untouched_and_a_re_added_member_is_positio
     assert_eq!(after.stamps, before.stamps, "no stamp row created or moved");
     assert_eq!(after.memberships, before.memberships);
     assert_eq!(after.heads["A"], before.heads["A"] + 1);
-    assert!(!after.heads.contains_key("B"), "no Channel created");
+    assert!(!after.heads.contains_key("B"), "no Scope created");
     assert_eq!(backend.invalidation("A", "Project", "p"), Some((11, 5)));
 }
 
 /// A removal takes effect only when the record is a member, and a changed
-/// record removed from a Channel in the same settlement gets that Channel's
+/// record removed from a Scope in the same settlement gets that Scope's
 /// removal, not its upsert: the final relationship wins, even for a deletion.
 #[test]
 fn a_removal_is_net_and_a_record_removed_while_changed_is_positioned_as_removed_there() {
@@ -329,7 +331,7 @@ fn output_only_reads_and_unchanged_enrollment_keep_the_existing_stamp() {
     assert_eq!(
         backend.deltas(),
         [MemberDelta {
-            channel: "A".into(),
+            scope: "A".into(),
             key: RecordKey {
                 model: "Project".into(),
                 identity: json!({"id": "p"}),
@@ -390,13 +392,13 @@ fn a_saved_call_replays_without_restamping_republishing_or_re_enrolling() {
     );
 }
 
-/// Every Channel an intent names or a changed record belongs to is locked,
+/// Every Scope an intent names or a changed record belongs to is locked,
 /// in canonical order, before any record guard; guards follow in canonical
 /// record order; the touch recipients are re-read under the locks; then each
-/// Channel's members are read and every final state is written at once, in
-/// Channel then record order.
+/// Scope's members are read and every final state is written at once, in
+/// Scope then record order.
 #[test]
-fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once() {
+fn settlement_locks_scopes_then_guards_records_in_key_order_then_writes_once() {
     let backend = Backend::new();
     for id in ["p1", "p2", "p3"] {
         backend.seed("Project", id, project_row(id), Some(2));
@@ -432,13 +434,14 @@ fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once()
         model: project(),
         identity_key: identity_key("p2"),
     };
-    let read = |channel: &str, ids: &[&str]| HostRequest::ReadChannelMembers {
-        channel: channel.into(),
+    let read = |scope: &str, ids: &[&str]| HostRequest::ReadScopeMembers {
+        scope: scope.into(),
         explicit_keys: ids.iter().map(|id| key(id)).collect(),
+        all: false,
         tags: vec![],
     };
-    let delta = |channel: &str, id: &str, present: bool| MemberDelta {
-        channel: channel.into(),
+    let delta = |scope: &str, id: &str, present: bool| MemberDelta {
+        scope: scope.into(),
         key: key(id),
         present,
         tags: BTreeSet::new(),
@@ -448,8 +451,8 @@ fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once()
         backend.settlement_log(),
         [
             recipients(),
-            HostRequest::LockChannels {
-                channels: vec!["A".into(), "B".into(), "C".into()]
+            HostRequest::LockScopes {
+                scopes: vec!["A".into(), "B".into(), "C".into()]
             },
             HostRequest::EnsureStamp {
                 model: project(),
@@ -467,7 +470,7 @@ fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once()
             read("A", &["p1", "p2", "p3"]),
             read("B", &["p1"]),
             read("C", &["p2"]),
-            HostRequest::ApplyChannelMembers {
+            HostRequest::ApplyScopeMembers {
                 deltas: vec![
                     delta("A", "p1", true),
                     delta("A", "p2", true),
@@ -489,10 +492,10 @@ fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once()
     );
 }
 
-/// A touch with no declaration still takes its recipients' Channel locks
-/// before its record guard, and republishes it once per Channel.
+/// A touch with no declaration still takes its recipients' Scope locks
+/// before its record guard, and republishes it once per Scope.
 #[test]
-fn a_touch_locks_its_recipient_channels_before_its_record() {
+fn a_touch_locks_its_recipient_scopes_before_its_record() {
     let backend = Backend::new();
     backend.seed("Todo", "t", todo_row("t", "old"), Some(1));
     backend.enroll("B", "Todo", "t", 0);
@@ -503,12 +506,12 @@ fn a_touch_locks_its_recipient_channels_before_its_record() {
         backend.ops(),
         [
             "memberships",
-            "lockChannels",
+            "lockScopes",
             "advanceStamp",
             "memberships",
-            "readChannelMembers",
-            "readChannelMembers",
-            "applyChannelMembers"
+            "readScopeMembers",
+            "readScopeMembers",
+            "applyScopeMembers"
         ]
     );
     assert_eq!(
@@ -520,9 +523,9 @@ fn a_touch_locks_its_recipient_channels_before_its_record() {
 /// A competing membership write that commits between resolving the touch
 /// recipients and taking their locks invalidates the lock set: the
 /// settlement fails as a retryable `transaction.conflict` before writing any
-/// member, rather than locking the new Channel out of order. An Action push
+/// member, rather than locking the new Scope out of order. An Action push
 /// does not save it as the call's rejection; the whole transaction retries,
-/// and the retry locks the new Channel too.
+/// and the retry locks the new Scope too.
 #[test]
 fn a_membership_moved_before_the_locks_fails_as_a_retryable_conflict() {
     let backend = Backend::new();
@@ -536,8 +539,8 @@ fn a_membership_moved_before_the_locks_fails_as_a_retryable_conflict() {
     ))
     .unwrap_err();
     assert_eq!(error.code, "transaction.conflict", "{error}");
-    assert!(error.message.contains("Channel B"), "{}", error.message);
-    assert_eq!(backend.count("applyChannelMembers"), 0);
+    assert!(error.message.contains("Scope B"), "{}", error.message);
+    assert_eq!(backend.count("applyScopeMembers"), 0);
     // An Action call through a push: an error, not a saved rejection.
     let backend = Backend::new();
     backend.seed("Todo", "t", todo_row("t", "old"), Some(1));
@@ -567,7 +570,7 @@ fn a_membership_moved_before_the_locks_fails_as_a_retryable_conflict() {
     ));
     assert_eq!(
         backend.log()[..].iter().find_map(|request| match request {
-            HostRequest::LockChannels { channels } => Some(channels.clone()),
+            HostRequest::LockScopes { scopes } => Some(scopes.clone()),
             _ => None,
         }),
         Some(vec!["A".to_string(), "B".to_string()])
@@ -661,7 +664,7 @@ fn legacy_and_external_paths_share_the_settlement() {
 /// valid tag settles as spelled.
 #[test]
 fn a_tag_breaking_the_tag_rules_rejects_only_its_call() {
-    let tagged = |tags: Vec<String>| json!({"kind":"add","channel":"A","record":{"model":"Todo","identity":{"id":"t"}},"tags":tags});
+    let tagged = |tags: Vec<String>| json!({"kind":"add","scope":"A","record":{"model":"Todo","identity":{"id":"t"}},"tags":tags});
     let many: Vec<String> = (0..65).map(|n| format!("t{n}")).collect();
     for (label, intent) in [
         ("blank tag", tagged(vec!["  ".into()])),
@@ -688,7 +691,7 @@ fn a_tag_breaking_the_tag_rules_rejects_only_its_call() {
             json!([{"ordinal":1,"code":"handler.invalid"}]),
             "{label}"
         );
-        assert_eq!(backend.count("lockChannels"), 0, "{label}: refused first");
+        assert_eq!(backend.count("lockScopes"), 0, "{label}: refused first");
         assert_eq!(backend.stamp("Todo", "t"), Some(2), "{label}");
     }
     // The external settlement refuses with the reason.
@@ -718,10 +721,10 @@ fn a_tag_breaking_the_tag_rules_rejects_only_its_call() {
 
 /// A selector selects by the tags a member has, including ones only an
 /// earlier declaration of the same settlement gave it, and removes the whole
-/// membership, other tags included. Members of other Channels and members
+/// membership, other tags included. Members of other Scopes and members
 /// without the tag are untouched; the tag index reads no other member.
 #[test]
-fn a_tag_selector_removes_whole_memberships_in_its_channel_only() {
+fn a_tag_selector_removes_whole_memberships_in_its_scope_only() {
     let backend = Backend::new();
     for id in ["A", "B", "C", "D"] {
         backend.seed("Todo", id, todo_row(id, "v1"), Some(1));
@@ -762,7 +765,7 @@ fn a_tag_selector_removes_whole_memberships_in_its_channel_only() {
     );
     assert_eq!(
         backend.log()[..].iter().find_map(|request| match request {
-            HostRequest::ReadChannelMembers { tags, .. } => Some(tags.clone()),
+            HostRequest::ReadScopeMembers { tags, .. } => Some(tags.clone()),
             _ => None,
         }),
         Some(vec!["X".to_string()])
@@ -776,23 +779,23 @@ fn a_tag_selector_removes_whole_memberships_in_its_channel_only() {
     // Removing a tag nobody carries changes nothing.
     backend.clear_log();
     settle(&backend, vec![], vec![remove_tag("U", "Z")]);
-    assert_eq!(backend.count("applyChannelMembers"), 0);
+    assert_eq!(backend.count("applyScopeMembers"), 0);
     assert_eq!(backend.head("U"), 5);
 }
 
-/// A membership naming a blank Channel or an unregistered Model rejects only
+/// A membership naming a blank Scope or an unregistered Model rejects only
 /// its own call; the next call in the batch still settles.
 #[test]
 fn an_invalid_membership_rejects_only_its_call() {
     for (label, intent, code) in [
         (
-            "blank channel",
-            json!({"kind":"add","channel":" ","record":{"model":"Todo","identity":{"id":"t"}},"tags":[]}),
+            "blank scope",
+            json!({"kind":"add","scope":" ","record":{"model":"Todo","identity":{"id":"t"}},"tags":[]}),
             "publish.invalid",
         ),
         (
             "unknown model",
-            json!({"kind":"add","channel":"A","record":{"model":"Ghost","identity":{"id":"t"}},"tags":[]}),
+            json!({"kind":"add","scope":"A","record":{"model":"Ghost","identity":{"id":"t"}},"tags":[]}),
             "loader.unregistered",
         ),
     ] {
@@ -813,7 +816,7 @@ fn an_invalid_membership_rejects_only_its_call() {
             json!([{"ordinal":1,"code":code}]),
             "{label}"
         );
-        assert_eq!(backend.count("applyChannelMembers"), 0, "{label}");
+        assert_eq!(backend.count("applyScopeMembers"), 0, "{label}");
         assert_eq!(backend.stamp("Todo", "t"), Some(2), "{label}");
     }
 }
@@ -839,25 +842,25 @@ fn delivered(records: &[axton_core::AuthorityRecord]) -> Vec<(String, u64, Value
 fn delivered_ids(records: &[axton_core::AuthorityRecord]) -> Vec<String> {
     delivered(records).into_iter().map(|(id, ..)| id).collect()
 }
-/// `(from, to, head)` of one Channel's range in a delta page.
-fn range(page: &axton_core::PullPage, channel: &str) -> (u64, u64, u64) {
-    let range = &page.cursors[channel];
+/// `(from, to, head)` of one Scope's range in a delta page.
+fn range(page: &axton_core::PullPage, scope: &str) -> (u64, u64, u64) {
+    let range = &page.cursors[scope];
     (range.from, range.to, range.head)
 }
-fn adds(channel: &str, ids: &[String]) -> Vec<Value> {
-    ids.iter().map(|id| add(channel, "Todo", id)).collect()
+fn adds(scope: &str, ids: &[String]) -> Vec<Value> {
+    ids.iter().map(|id| add(scope, "Todo", id)).collect()
 }
-fn removes(channel: &str, ids: &[String]) -> Vec<Value> {
-    ids.iter().map(|id| remove(channel, "Todo", id)).collect()
+fn removes(scope: &str, ids: &[String]) -> Vec<Value> {
+    ids.iter().map(|id| remove(scope, "Todo", id)).collect()
 }
-/// Todo rows `prefix000..`, enrolled in `channel` by one settlement: one
+/// Todo rows `prefix000..`, enrolled in `scope` by one settlement: one
 /// position each, in canonical key order, all at stamp 1.
-fn published(backend: &Backend, channel: &str, prefix: &str, count: usize) -> Vec<String> {
+fn published(backend: &Backend, scope: &str, prefix: &str, count: usize) -> Vec<String> {
     let ids: Vec<String> = (0..count).map(|i| format!("{prefix}{i:03}")).collect();
     for id in &ids {
         backend.seed("Todo", id, todo_row(id, "v1"), None);
     }
-    settle(backend, vec![], adds(channel, &ids));
+    settle(backend, vec![], adds(scope, &ids));
     ids
 }
 
@@ -925,7 +928,7 @@ fn removed_rows_exceeding_a_page_do_not_starve_later_active_rows() {
 }
 
 #[test]
-fn a_record_removed_then_touched_elsewhere_is_not_exposed_through_its_old_channel() {
+fn a_record_removed_then_touched_elsewhere_is_not_exposed_through_its_old_scope() {
     let backend = Backend::new();
     backend.seed("Todo", "t", todo_row("t", "shared"), None);
     settle(
@@ -934,7 +937,7 @@ fn a_record_removed_then_touched_elsewhere_is_not_exposed_through_its_old_channe
         vec![add("A", "Todo", "t"), add("B", "Todo", "t")],
     );
     settle(&backend, vec![], vec![remove("A", "Todo", "t")]);
-    // A later change, published through the Channel it still belongs to.
+    // A later change, published through the Scope it still belongs to.
     backend.seed("Todo", "t", todo_row("t", "after removal"), None);
     settle(&backend, vec![reference("Todo", "t")], vec![]);
     assert_eq!(backend.stamp("Todo", "t"), Some(2));
@@ -1087,7 +1090,7 @@ fn limits_page() -> usize {
     axton_core::limits::PULL_CHANGES
 }
 
-/// One ordered-declaration case against Channel `U`: the members it starts
+/// One ordered-declaration case against Scope `U`: the members it starts
 /// with, the settlement's touched records and ordered intents, the members it
 /// ends with and the positions it allocates.
 struct Reduction {
@@ -1222,13 +1225,13 @@ fn ordered_declarations_reduce_to_the_final_membership_and_its_events() {
     }
 }
 
-/// Settlement holds `readChannelMembers` and `applyChannelMembers` answers to
+/// Settlement holds `readScopeMembers` and `applyScopeMembers` answers to
 /// their requests: a member answered twice or never asked for, a position
-/// for another Channel, record or kind, a duplicated or missing result, a
+/// for another Scope, record or kind, a duplicated or missing result, a
 /// cursor outside one consecutive range, and a row missing a member are all
 /// `host.invalid`, which aborts the delivery instead of becoming a rejection.
 #[test]
-fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
+fn a_scope_answer_that_does_not_match_its_request_is_host_invalid() {
     fn first(answer: &Value) -> Value {
         answer.as_array().unwrap()[0].clone()
     }
@@ -1236,13 +1239,13 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
     let cases: [(&str, &str, Tamper, &str); 9] = [
         (
             "a member answered twice",
-            "readChannelMembers",
+            "readScopeMembers",
             |answer| json!([first(&answer), first(&answer)]),
             "twice",
         ),
         (
             "a member neither named nor selected",
-            "readChannelMembers",
+            "readScopeMembers",
             |answer| {
                 let mut rows = answer.as_array().unwrap().clone();
                 rows.push(json!({"model":"Todo","identityKey":"{\"id\":\"other\"}","tags":[]}));
@@ -1252,7 +1255,7 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
         ),
         (
             "a member missing its tags",
-            "readChannelMembers",
+            "readScopeMembers",
             |answer| {
                 let mut row = first(&answer);
                 row.as_object_mut().unwrap().remove("tags");
@@ -1261,18 +1264,18 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
             "missing field `tags`",
         ),
         (
-            "a position in another Channel",
-            "applyChannelMembers",
+            "a position in another Scope",
+            "applyScopeMembers",
             |answer| {
                 let mut row = first(&answer);
-                row["channel"] = json!("V");
+                row["scope"] = json!("V");
                 json!([row])
             },
-            "in Channel V for",
+            "in Scope V for",
         ),
         (
             "a position of another record",
-            "applyChannelMembers",
+            "applyScopeMembers",
             |answer| {
                 let mut row = first(&answer);
                 row["identityKey"] = json!("{\"id\":\"other\"}");
@@ -1282,7 +1285,7 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
         ),
         (
             "a position of the wrong kind",
-            "applyChannelMembers",
+            "applyScopeMembers",
             |answer| {
                 let mut row = first(&answer);
                 row["kind"] = json!("remove");
@@ -1292,19 +1295,19 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
         ),
         (
             "a duplicated position",
-            "applyChannelMembers",
+            "applyScopeMembers",
             |answer| json!([first(&answer), first(&answer)]),
             "2 positions for 1 deltas",
         ),
         (
             "no position",
-            "applyChannelMembers",
+            "applyScopeMembers",
             |_| json!([]),
             "0 positions for 1 deltas",
         ),
         (
             "a position missing its kind",
-            "applyChannelMembers",
+            "applyScopeMembers",
             |answer| {
                 let mut row = first(&answer);
                 row.as_object_mut().unwrap().remove("kind");
@@ -1335,12 +1338,12 @@ fn a_channel_answer_that_does_not_match_its_request_is_host_invalid() {
         assert!(error.message.contains(op), "{label}: {}", error.message);
         assert!(error.message.contains(detail), "{label}: {}", error.message);
     }
-    // Two published positions of one Channel must be one consecutive range.
+    // Two published positions of one Scope must be one consecutive range.
     let backend = Backend::new();
     for id in ["a", "b"] {
         backend.seed("Todo", id, todo_row(id, "old"), Some(1));
     }
-    backend.tamper("applyChannelMembers", |answer| {
+    backend.tamper("applyScopeMembers", |answer| {
         let mut rows = answer.as_array().unwrap().clone();
         rows[1]["cursor"] = json!(9);
         Value::Array(rows)
@@ -1394,11 +1397,7 @@ fn a_rejected_call_rolls_back_its_members_tags_and_positions() {
         receipt["rejections"],
         json!([{"ordinal":1,"code":"todo.forbidden"}])
     );
-    assert_eq!(
-        backend.count("applyChannelMembers"),
-        3,
-        "both calls settled"
-    );
+    assert_eq!(backend.count("applyScopeMembers"), 3, "both calls settled");
     let after = backend.tables();
     assert_eq!(after.stamps, before.stamps);
     assert_eq!(after.heads, before.heads);
@@ -1408,4 +1407,112 @@ fn a_rejected_call_rolls_back_its_members_tags_and_positions() {
         [("A".to_string(), vec!["W".to_string(), "X".to_string()])],
         "only the second call's tag union survives"
     );
+}
+
+#[test]
+fn scope_selection_and_label_effects_use_complete_ordered_candidates() {
+    let backend = Backend::new();
+    for id in ["A", "B", "C", "D"] {
+        backend.seed("Todo", id, todo_row(id, "v1"), Some(7));
+    }
+    settle(
+        &backend,
+        vec![],
+        vec![
+            add_tagged("U", "Todo", "A", &["X", "Y"]),
+            add_tagged("U", "Todo", "B", &["X"]),
+            add("U", "Todo", "C"),
+            add_tagged("U", "Todo", "D", &["X", "Z"]),
+        ],
+    );
+    backend.clear_log();
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"select","scope":"U","predicate":{"tags":{"only":["X"]}},"action":{"kind":"remove"}}),
+            json!({"kind":"detachTags","scope":"U","tags":["X"]}),
+        ],
+    );
+    assert_eq!(
+        backend.tagged_members("U"),
+        [
+            ("A".into(), vec!["Y".into()]),
+            ("C".into(), vec![]),
+            ("D".into(), vec!["Z".into()])
+        ]
+    );
+    assert_eq!(backend.head("U"), 5);
+    assert_eq!(backend.count("advanceStamp"), 0);
+    assert_eq!(backend.count("load"), 0);
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"select","scope":"U","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":["T"]}}),
+        ],
+    );
+    assert_eq!(backend.head("U"), 5);
+    assert_eq!(
+        backend.tagged_members("U")[1],
+        ("C".into(), vec!["T".into()])
+    );
+    assert!(
+        backend
+            .log()
+            .iter()
+            .any(|r| matches!(r, HostRequest::ReadScopeMembers { all: true, .. }))
+    );
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"tagAdd","scope":"U","record":reference("Todo","C"),"tags":["X"]}),
+            json!({"kind":"select","scope":"U","model":"Todo","predicate":{"tags":{"only":["T","X"]}},"action":{"kind":"remove"}}),
+        ],
+    );
+    assert!(!backend.tagged_members("U").iter().any(|(id, _)| id == "C"));
+}
+
+#[test]
+fn new_label_effects_validate_each_operation_and_model_before_host_effects() {
+    use axton_server::{code, settle_external};
+    let mut config = config();
+    config.loaders.retain(|model| model != "Project");
+    let many: Vec<String> = (0..65).map(|n| format!("t{n}")).collect();
+    for (intent, expected) in [
+        (
+            json!({"kind":"tagAdd","scope":"U","record":reference("Todo","A"),"tags":[]}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"tagRemove","scope":"U","record":reference("Todo","A"),"tags":[" "]}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"detachTags","scope":"U","tags":many}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"select","scope":"U","model":"Project","predicate":{"tags":{"only":[]}},"action":{"kind":"remove"}}),
+            code::LOADER_UNREGISTERED,
+        ),
+        (
+            json!({"kind":"select","scope":"U","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":[]}}),
+            code::HANDLER_INVALID,
+        ),
+    ] {
+        let backend = Backend::new();
+        let error = run(settle_external(
+            &config,
+            &json!({"changes":[], "memberships":[intent]}),
+            &backend,
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(
+            backend.log().is_empty(),
+            "invalid operation made a host call"
+        );
+    }
 }

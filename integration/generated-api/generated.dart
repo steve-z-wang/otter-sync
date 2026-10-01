@@ -915,11 +915,6 @@ class TxModels { final WritePort port; TxModels(this.port);
 class Scopes { final Client client; Scopes(this.client);
  Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);
 }
-/// The retained `channels` spelling of the same registrations; `scopes` is the current one.
-class Channels { final Client client; Channels(this.client);
- Future<Subscription> subscribe(String channel) => client.subscribe(channel);
- Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
-}
 /// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Draft?> draft(DraftIdentity identity, {bool store = true}) => _client.fetchModel('Draft', 1, identity.toRecord(), Draft.fromRecord, store: store);
@@ -944,8 +939,8 @@ class StoreHooks {
  final StoreHandler<CompositionIdentity,Composition>? composition;
  const StoreHooks({this.draft,this.entry,this.placement,this.book,this.comment,this.counter,this.composition});
 }
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
-/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints.
+class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final scopes = transaction.scopes; GeneratedTransaction(this.transaction); }
+/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Scopes, watch or savepoints.
 class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
 /// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
 class TransactionMutations {
@@ -953,13 +948,12 @@ class TransactionMutations {
  Future<Call<PublishEntryOutput>> publishEntry({required EntryCreateInput entry, required String composition, PublishEntryStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'composition': _dartActionEncode(composition)}, (value) { final row = (value as Map).cast<String,dynamic>(); return PublishEntryOutput(published: Entry.fromRecord((row['published'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
  Future<Call<RenameOutput>> rename({required String id, required String title, RenameStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RenameOutput>('Rename', 1, {'id': _dartActionEncode(id), 'title': _dartActionEncode(title)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
 }
-/// The application transaction: local Models and Channels, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+/// The application transaction: local Models and Scopes, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
 class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
  late final Scopes scopes = Scopes(client);
- late final Channels channels = Channels(client);
  /// Each legacy mutation runs in its own local transaction and returns its ordinal.
  late final Mutate mutate = Mutate(client);
  /// Durable by default; `mutations.call` waits for the backend outcome.

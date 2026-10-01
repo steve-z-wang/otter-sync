@@ -1,4 +1,4 @@
-//! Production channel negotiation and additive retained-replica upgrade.
+//! Production scope negotiation and additive retained-replica upgrade.
 mod common;
 use axton_client::*;
 use common::*;
@@ -10,13 +10,13 @@ fn capable(body: &str) {
     assert!(
         read_capabilities(&value)
             .unwrap()
-            .contains(CHANNEL_MEMBERSHIP_CAPABILITY),
+            .contains(SCOPE_MEMBERSHIP_CAPABILITY),
         "missing capability in {body}"
     );
 }
 
 #[test]
-fn production_pull_and_live_advertise_channel_membership_after_encoding() {
+fn production_pull_and_live_advertise_scope_membership_after_encoding() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = open(&dir.path().join("db"));
     let state = client.ensure_subscription("a").unwrap();
@@ -49,7 +49,7 @@ fn production_http_cycle_consumes_membership_removals() {
         .unwrap();
     let mut cycle = SyncCycle::default();
     cycle.next(&mut client).unwrap().unwrap();
-    let body = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"}}]});
+    let body = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"}}]});
     cycle
         .complete(&mut client, body.to_string().as_bytes())
         .unwrap();
@@ -61,7 +61,7 @@ fn production_live_worker_consumes_membership_removals() {
     let dir = tempfile::tempdir().unwrap();
     let mut lane = Lane::new(dir.path());
     let (epoch, _) = lane.streaming("a", 0);
-    let body = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"}}]});
+    let body = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"}}]});
     lane.message(epoch, body.to_string());
     assert_eq!(lane.client.cursor("a").unwrap(), Some(1));
 }
@@ -108,8 +108,8 @@ fn resumed_holding_evidence_schedules_own_fixed_history_bound() {
         &BTreeMap::from([("a".into(), 0)]),
     )
     .unwrap();
-    let p = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]});
-    c.apply_channel_page(ChannelPullPage::decode(p.to_string().as_bytes()).unwrap())
+    let p = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]});
+    c.apply_scope_page(ScopePullPage::decode(p.to_string().as_bytes()).unwrap())
         .unwrap();
     c.remove_subscription("a", s.subscription_id).unwrap();
     assert!(c.read(&key()).unwrap().is_some());
@@ -138,8 +138,8 @@ fn resumed_holding_evidence_schedules_own_fixed_history_bound() {
     );
     assert_eq!(c.cursor("a").unwrap(), Some(20));
     let task = c.bootstrap_schedule(None).unwrap().unwrap();
-    let response = ChannelBootstrapPage::decode(json!({"mode":"bootstrap","channel":"a","from":0,"to":20,"until":20,"head":20,"changes":[{"kind":"remove","channel":"a","cursor":2,"model":"Entry","identity":{"id":"e"}}]}).to_string().as_bytes()).unwrap();
-    let applied = c.apply_channel_bootstrap_task(task, &response).unwrap();
+    let response = ScopeBootstrapPage::decode(json!({"mode":"bootstrap","scope":"a","from":0,"to":20,"until":20,"head":20,"changes":[{"kind":"remove","scope":"a","cursor":2,"model":"Entry","identity":{"id":"e"}}]}).to_string().as_bytes()).unwrap();
+    let applied = c.apply_scope_bootstrap_task(task, &response).unwrap();
     assert!(matches!(applied, BootstrapApply::Applied { .. }));
     assert!(c.read(&key()).unwrap().is_none());
     assert!(c.bootstrap_schedule(None).unwrap().is_none());
@@ -225,7 +225,7 @@ fn legacy_upgrade_preserves_queue_load_and_ordinary_cursor_without_fabricating_h
         ))
         .unwrap();
     }
-    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN channel_membership_version")
+    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN scope_membership_version")
         .unwrap();
     drop(raw);
     let mut c = Client::open(
@@ -240,7 +240,7 @@ fn legacy_upgrade_preserves_queue_load_and_ordinary_cursor_without_fabricating_h
         Some(5)
     );
     assert_eq!(
-        c.read_sql("SELECT count(*) AS n FROM axton_channel_member", &[])
+        c.read_sql("SELECT count(*) AS n FROM axton_scope_member", &[])
             .unwrap()[0]["n"],
         0
     );
@@ -276,7 +276,7 @@ fn http_only_upgrade_reconciles_before_cycle_completion_without_an_ack() {
     c.apply_page(page("a", 5, 12, Some("legacy"))).unwrap();
     drop(c);
     let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
-    raw.execute_batch("UPDATE axton_client SET channel_membership_version=0")
+    raw.execute_batch("UPDATE axton_client SET scope_membership_version=0")
         .unwrap();
     drop(raw);
     let mut c = open(&path);
@@ -303,7 +303,7 @@ fn http_only_upgrade_reconciles_before_cycle_completion_without_an_ack() {
         (request["after"].clone(), request["until"].clone()),
         (json!(0), json!(12))
     );
-    cycle.complete(&mut c,json!({"mode":"bootstrap","channel":"a","from":0,"to":12,"until":12,"head":20,"changes":[{"kind":"remove","channel":"a","cursor":9,"model":"Entry","identity":{"id":"e"}}]}).to_string().as_bytes()).unwrap();
+    cycle.complete(&mut c,json!({"mode":"bootstrap","scope":"a","from":0,"to":12,"until":12,"head":20,"changes":[{"kind":"remove","scope":"a","cursor":9,"model":"Entry","identity":{"id":"e"}}]}).to_string().as_bytes()).unwrap();
     assert_eq!(c.cursor("a").unwrap(), Some(12));
     assert!(c.read(&key()).unwrap().is_none());
     drop(c);
@@ -343,7 +343,7 @@ fn hidden_reconciliation_failure_retries_on_bounded_timer_with_same_fixed_bound(
     .unwrap();
     drop(c);
     let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
-    raw.execute_batch("UPDATE axton_client SET channel_membership_version=0")
+    raw.execute_batch("UPDATE axton_client SET scope_membership_version=0")
         .unwrap();
     drop(raw);
     let mut lane = Lane::of(open(&path));
@@ -360,7 +360,7 @@ fn hidden_reconciliation_failure_retries_on_bounded_timer_with_same_fixed_bound(
         })
         .unwrap();
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["until"], 4);
-    let actions=lane.send(DownlinkEvent::Response { request:history,body:json!({"mode":"bootstrap","channel":"a","from":0,"to":2,"until":4,"head":4,"changes":[{"kind":"upsert","channel":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":99,"note":null}}]}).to_string() });
+    let actions=lane.send(DownlinkEvent::Response { request:history,body:json!({"mode":"bootstrap","scope":"a","from":0,"to":2,"until":4,"head":4,"changes":[{"kind":"upsert","scope":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":99,"note":null}}]}).to_string() });
     assert!(
         actions.iter().any(
             |a| matches!(a,DownlinkAction::Reconciliation(s) if s.state==BootstrapPhase::Failed)
@@ -417,12 +417,12 @@ fn prepared_reconciliation_replacement_keeps_authority_without_completing_new_re
         &BTreeMap::from([("a".into(), 0)]),
     )
     .unwrap();
-    let up = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]});
-    c.apply_channel_page(ChannelPullPage::decode(up.to_string().as_bytes()).unwrap())
+    let up = json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]});
+    c.apply_scope_page(ScopePullPage::decode(up.to_string().as_bytes()).unwrap())
         .unwrap();
     drop(c);
     let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
-    raw.execute_batch("UPDATE axton_client SET channel_membership_version=0")
+    raw.execute_batch("UPDATE axton_client SET scope_membership_version=0")
         .unwrap();
     drop(raw);
     let mut c = open(&path);
@@ -432,10 +432,10 @@ fn prepared_reconciliation_replacement_keeps_authority_without_completing_new_re
     )
     .unwrap();
     let task = c.bootstrap_schedule(None).unwrap().unwrap();
-    let page=ChannelBootstrapPage::decode(json!({"mode":"bootstrap","channel":"a","from":0,"to":4,"until":4,"head":4,"changes":[{"kind":"upsert","channel":"a","cursor":3,"model":"Entry","identity":{"id":"e"},"stamp":3,"state":{"text":"new","note":null}}]}).to_string().as_bytes()).unwrap();
+    let page=ScopeBootstrapPage::decode(json!({"mode":"bootstrap","scope":"a","from":0,"to":4,"until":4,"head":4,"changes":[{"kind":"upsert","scope":"a","cursor":3,"model":"Entry","identity":{"id":"e"},"stamp":3,"state":{"text":"new","note":null}}]}).to_string().as_bytes()).unwrap();
     c.begin_session().unwrap();
     let prepared = c
-        .prepare_store(StoreDelivery::ChannelReconciliation {
+        .prepare_store(StoreDelivery::ScopeReconciliation {
             scope: "a".into(),
             subscription_id: s.subscription_id,
             run: task.state.run,
@@ -444,8 +444,8 @@ fn prepared_reconciliation_replacement_keeps_authority_without_completing_new_re
         })
         .unwrap();
     c.session(|tx| {
-        tx.set_channel("a".into(), false)?;
-        tx.set_channel("a".into(), true)
+        tx.set_scope("a".into(), false)?;
+        tx.set_scope("a".into(), true)
     })
     .unwrap();
     let StoreResult::Bootstrap(result) = c.apply_prepared_store(prepared).unwrap() else {
@@ -479,7 +479,7 @@ fn stale_replaced_http_response_cannot_choose_new_reconciliation_bound() {
         &BTreeMap::from([("a".into(), 0)]),
     )
     .unwrap();
-    c.apply_channel_page(ChannelPullPage::decode(json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]}).to_string().as_bytes()).unwrap()).unwrap();
+    c.apply_scope_page(ScopePullPage::decode(json!({"cursors":{"a":{"from":0,"to":1,"head":1}},"changes":[{"kind":"upsert","scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"held","note":null}}]}).to_string().as_bytes()).unwrap()).unwrap();
     let mut cycle = SyncCycle::default();
     cycle.next(&mut c).unwrap().unwrap();
     c.remove_subscription("a", s.subscription_id).unwrap();
@@ -526,7 +526,7 @@ fn http_cycle_requires_restart_to_retry_failed_hidden_run_at_same_bound() {
     .unwrap();
     drop(c);
     let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
-    raw.execute_batch("UPDATE axton_client SET channel_membership_version=0")
+    raw.execute_batch("UPDATE axton_client SET scope_membership_version=0")
         .unwrap();
     drop(raw);
     let mut c = open(&path);
@@ -541,7 +541,7 @@ fn http_cycle_requires_restart_to_retry_failed_hidden_run_at_same_bound() {
         )
         .unwrap();
     cycle.next(&mut c).unwrap().unwrap();
-    assert!(cycle.complete(&mut c,json!({"mode":"bootstrap","channel":"a","from":0,"to":12,"until":12,"head":12,"changes":[{"kind":"upsert","channel":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":99,"note":null}}]}).to_string().as_bytes()).is_err());
+    assert!(cycle.complete(&mut c,json!({"mode":"bootstrap","scope":"a","from":0,"to":12,"until":12,"head":12,"changes":[{"kind":"upsert","scope":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":99,"note":null}}]}).to_string().as_bytes()).is_err());
     assert!(
         cycle.next(&mut c).is_err(),
         "failed run cannot spin silently"
@@ -553,7 +553,7 @@ fn http_cycle_requires_restart_to_retry_failed_hidden_run_at_same_bound() {
         (request["after"].clone(), request["until"].clone()),
         (json!(0), json!(12))
     );
-    cycle.complete(&mut c,json!({"mode":"bootstrap","channel":"a","from":0,"to":12,"until":12,"head":12,"changes":[]}).to_string().as_bytes()).unwrap();
+    cycle.complete(&mut c,json!({"mode":"bootstrap","scope":"a","from":0,"to":12,"until":12,"head":12,"changes":[]}).to_string().as_bytes()).unwrap();
     assert_eq!(
         c.read_sql(
             "SELECT reconcile_run,reconcile_state,bootstrap_state FROM axton_subscription",
@@ -562,4 +562,206 @@ fn http_cycle_requires_restart_to_retry_failed_hidden_run_at_same_bound() {
         .unwrap()[0],
         json!({"reconcile_run":2,"reconcile_state":"complete","bootstrap_state":"not_requested"})
     );
+}
+
+#[test]
+fn original_v02_layout_reopens_without_parallel_empty_holds_or_queue_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let schema =
+        Schema::from_value(serde_json::from_str(include_str!("fixtures/schema.json")).unwrap())
+            .unwrap();
+    let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+    raw.execute_batch(include_str!("fixtures/v02-framework.sql"))
+        .unwrap();
+    raw.execute_batch(include_str!("fixtures/sqlite-state.sql"))
+        .unwrap();
+    axton_client::schema_store::write_descriptor(&mut raw, &schema).unwrap();
+    drop(raw);
+    let mut c = Client::open(
+        axton_sqlite::SqliteStore::open(&path).unwrap(),
+        schema.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        c.read_sql("SELECT count(*) AS n FROM axton_scope_member", &[])
+            .unwrap()[0]["n"],
+        4
+    );
+    assert_eq!(c.cursor("Channel:business-scope").unwrap(), Some(11));
+    assert_eq!(
+        c.read_sql(
+            "SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'axton_channel%'",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        0
+    );
+    let first = c.freeze().unwrap().unwrap();
+    let mut logical: Value = serde_json::from_slice(&first).unwrap();
+    logical.as_object_mut().unwrap().remove("capabilities");
+    let expected: Value =
+        serde_json::from_str(include_str!("fixtures/frozen-push-logical.json")).unwrap();
+    assert_eq!(logical, expected);
+    assert_eq!(
+        c.read_sql("SELECT channel FROM Todo", &[]).unwrap()[0]["channel"],
+        "second queued Channel"
+    );
+    drop(c);
+    let mut c = Client::open(axton_sqlite::SqliteStore::open(&path).unwrap(), schema).unwrap();
+    assert_eq!(c.freeze().unwrap().unwrap(), first);
+}
+
+fn original_store(path: &std::path::Path, marker: u8) -> (axton_sqlite::SqliteStore, Schema) {
+    let schema =
+        Schema::from_value(serde_json::from_str(include_str!("fixtures/schema.json")).unwrap())
+            .unwrap();
+    let mut raw = axton_sqlite::SqliteStore::open(path).unwrap();
+    raw.execute_batch(include_str!("fixtures/v02-framework.sql"))
+        .unwrap();
+    raw.execute_batch(include_str!("fixtures/sqlite-state.sql"))
+        .unwrap();
+    raw.execute_batch(&format!(
+        "UPDATE axton_client SET channel_membership_version={marker}"
+    ))
+    .unwrap();
+    axton_client::schema_store::write_descriptor(&mut raw, &schema).unwrap();
+    (raw, schema)
+}
+
+#[test]
+fn original_zero_marker_reconciles_once_and_pending_batch_settles_independently() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let (raw, schema) = original_store(&path, 0);
+    drop(raw);
+    let mut c = Client::open(
+        axton_sqlite::SqliteStore::open(&path).unwrap(),
+        schema.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        c.read_sql(
+            "SELECT reconcile_run FROM axton_subscription WHERE scope='Channel:business-scope'",
+            &[]
+        )
+        .unwrap()[0]["reconcile_run"],
+        4
+    );
+    let first = c.freeze().unwrap().unwrap();
+    drop(c);
+    let mut c = Client::open(axton_sqlite::SqliteStore::open(&path).unwrap(), schema).unwrap();
+    assert_eq!(c.freeze().unwrap().unwrap(), first);
+    assert_eq!(
+        c.read_sql(
+            "SELECT reconcile_run FROM axton_subscription WHERE scope='Channel:business-scope'",
+            &[]
+        )
+        .unwrap()[0]["reconcile_run"],
+        4
+    );
+    let receipt=PushReceipt::decode_action_envelope(&serde_json::to_vec(&json!({"clientId":"fixture-client","batchSequence":1,"rejections":[],"completions":[{"callId":"01890f47-1234-7123-8123-000000000001","outcome":{"status":"succeeded","result":null}}],"records":[{"model":"Todo","identity":{"id":"live"},"stamp":8,"state":{"title":"saved snapshot","channel":"queued Channel"}}]})).unwrap()).unwrap();
+    c.acknowledge(1, receipt).unwrap();
+    assert_eq!(c.pending_count().unwrap(), 1);
+    let second: Value = serde_json::from_slice(&c.freeze().unwrap().unwrap()).unwrap();
+    assert_eq!(second["batchSequence"], 2);
+    assert_eq!(
+        second["mutations"][0]["callId"],
+        "01890f47-1234-7123-8123-000000000004"
+    );
+    assert_eq!(
+        c.read_sql("SELECT channel FROM Todo", &[]).unwrap()[0]["channel"],
+        "second queued Channel"
+    );
+}
+
+#[test]
+fn original_layout_conflict_and_late_failure_roll_back_without_rewriting_saved_work() {
+    for extra in [
+        "CREATE TABLE axton_scope_member(scope TEXT)",
+        "ALTER TABLE axton_subscription ADD COLUMN scope TEXT",
+        "CREATE INDEX axton_scope_member_record ON Todo(channel)",
+        "DROP TABLE axton_channel_member",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let (mut raw, schema) = original_store(&path, 1);
+        raw.execute_batch(extra).unwrap();
+        let catalog = raw
+            .query(
+                "SELECT type,name,sql FROM sqlite_master ORDER BY type,name",
+                &[],
+            )
+            .unwrap()
+            .rows;
+        let work = raw
+            .query(
+                "SELECT args,store_epoch FROM axton_mutation ORDER BY ordinal",
+                &[],
+            )
+            .unwrap()
+            .rows;
+        let load = raw
+            .query("SELECT intent,continuation FROM axton_load", &[])
+            .unwrap()
+            .rows;
+        drop(raw);
+        assert!(
+            Client::open(axton_sqlite::SqliteStore::open(&path).unwrap(), schema).is_err(),
+            "{extra}"
+        );
+        let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+        assert_eq!(
+            raw.query(
+                "SELECT type,name,sql FROM sqlite_master ORDER BY type,name",
+                &[]
+            )
+            .unwrap()
+            .rows,
+            catalog,
+            "{extra}"
+        );
+        assert_eq!(
+            raw.query(
+                "SELECT args,store_epoch FROM axton_mutation ORDER BY ordinal",
+                &[]
+            )
+            .unwrap()
+            .rows,
+            work
+        );
+        assert_eq!(
+            raw.query("SELECT intent,continuation FROM axton_load", &[])
+                .unwrap()
+                .rows,
+            load
+        );
+    }
+}
+
+#[test]
+fn original_layout_preserves_raw_work_bytes_and_all_subscription_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let (mut raw, schema) = original_store(&path, 1);
+    let queries = [
+        "SELECT hex(CAST(args AS BLOB)),hex(CAST(store AS BLOB)),store_epoch,call_id,push,ordinal FROM axton_mutation ORDER BY ordinal",
+        "SELECT hex(CAST(intent AS BLOB)),hex(CAST(continuation AS BLOB)),hex(CAST(args AS BLOB)),phase,run,pages,attempts,retry,call_id,load_id,store_epoch FROM axton_load",
+        "SELECT hex(CAST(push_models AS BLOB)),hex(CAST(push_results AS BLOB)),client_id,next_push,next_ordinal,generation,store_epoch,last_completed_push FROM axton_client",
+        "SELECT hex(CAST(channel AS BLOB)),title,id FROM Todo",
+        "SELECT hex(CAST(channel AS BLOB)),title,id FROM axton_before_Todo",
+    ];
+    let before: Vec<_> = queries
+        .iter()
+        .map(|q| raw.query(q, &[]).unwrap().rows)
+        .collect();
+    let states=raw.query("SELECT subscription_id,starting_cursor,cursor,bootstrap_state,bootstrap_run,bootstrap_cursor,bootstrap_barrier,reconcile_state,reconcile_run,reconcile_cursor,reconcile_bound,reconcile_barrier FROM axton_subscription ORDER BY subscription_id",&[]).unwrap().rows;
+    drop(raw);
+    let c = Client::open(axton_sqlite::SqliteStore::open(&path).unwrap(), schema).unwrap();
+    drop(c);
+    let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+    for (q, b) in queries.iter().zip(before) {
+        assert_eq!(raw.query(q, &[]).unwrap().rows, b, "{q}");
+    }
+    assert_eq!(raw.query("SELECT subscription_id,starting_cursor,cursor,bootstrap_state,bootstrap_run,bootstrap_cursor,bootstrap_barrier,reconcile_state,reconcile_run,reconcile_cursor,reconcile_bound,reconcile_barrier FROM axton_subscription ORDER BY subscription_id",&[]).unwrap().rows,states);
 }

@@ -32,7 +32,7 @@ const backend=createBackend({config,native,database:pg(countedPool),authenticate
   loaderCalls++;return ids.map(()=>({title:'fixture'}));}}});
 const query=async(sql,params=[])=>(await pool.query(sql,params)).rows;
 const snapshots=async()=>{
- const counts={};for(const table of ['axton_record','axton_channel','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log','measurement_todo']){
+ const counts={};for(const table of ['axton_record','axton_scope','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log','measurement_todo']){
   counts[table]=Number((await query(`SELECT count(*) AS n FROM ${table}`))[0].n);
  }return counts;};
 try {
@@ -46,32 +46,32 @@ try {
   statementBoundary:'Every successful pg client.query during public backend.transaction removal, including BEGIN SERIALIZABLE and COMMIT. Trigger/internal PostgreSQL substatements are excluded. rowCount is returned/affected rows of each top-level SQL call; cascading trigger rows are separately visible in fixture counts.',
   timingBoundary:'publicMs: performance.now before/after awaited backend.transaction (includes native reduction, pool, serialization and commit); transactionMs: before BEGIN query until COMMIT resolves (includes callback and JS/native work while transaction is open).',
   walBoundary:'pg_wal_lsn_diff(pg_current_wal_insert_lsn after committed removal, before removal), outside timed/count boundary; isolated cluster, physical WAL bytes including commit/triggers/FPI; not per-statement WAL.',
-  responseBoundary:'Exact UTF-8 backend.pull JSON bodies, all <=50-event pages until the returned channel range.to===range.head; no additional client empty probe. No HTTP headers/compression. identityBytes sums UTF-8 JSON.stringify(change.identity), fixed one-field identities; response SHA256 hashes concatenated raw bodies.',samples:[]};
+  responseBoundary:'Exact UTF-8 backend.pull JSON bodies, all <=50-event pages until the returned scope range.to===range.head; no additional client empty probe. No HTTP headers/compression. identityBytes sums UTF-8 JSON.stringify(change.identity), fixed one-field identities; response SHA256 hashes concatenated raw bodies.',samples:[]};
  for(const n of [1,1000,10000])for(let sample=1;sample<=3;sample++){
-  await pool.query('TRUNCATE axton_channel_member_tag,axton_channel_member,axton_channel_tag,axton_channel_log,axton_channel,axton_record,measurement_todo RESTART IDENTITY CASCADE');
-  const channel='Measure:remove';const ids=Array.from({length:n},(_,i)=>`member-${String(i).padStart(5,'0')}`);
+  await pool.query('TRUNCATE axton_scope_member_tag,axton_scope_member,axton_scope_tag,axton_scope_log,axton_scope,axton_record,measurement_todo RESTART IDENTITY CASCADE');
+  const scope='Measure:remove';const ids=Array.from({length:n},(_,i)=>`member-${String(i).padStart(5,'0')}`);
   await pool.query("INSERT INTO measurement_todo SELECT 'member-'||lpad(i::text,5,'0'),'fixture' FROM generate_series(0,$1::int-1) i",[n]);
-  await backend.transaction(({channel:c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}})),{tags:['X','Y']}));
-  const before=await snapshots();assert.equal(before.axton_channel_member,n);assert.equal(before.axton_channel_member_tag,2*n);
+  await backend.transaction(({scope: c})=>c(scope).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','Y']));
+  const before=await snapshots();assert.equal(before.axton_scope_member,n);assert.equal(before.axton_scope_member_tag,2*n);
   const lsn=(await query('SELECT pg_current_wal_insert_lsn() AS lsn'))[0].lsn;
   loaderCalls=0;measured={statements:{},returnedOrAffectedRows:{}};
-  const start=performance.now();await backend.transaction(({channel:c})=>c(channel).remove({tag:'X'}));
+  const start=performance.now();await backend.transaction(({scope: c})=>c(scope).where({ tags: { all: ['X'] } }).remove());
   const publicMs=performance.now()-start;const removal=measured;measured=null;
   const removalLoaderCalls=loaderCalls;assert.equal(removalLoaderCalls,0);
   const walBytes=Number((await query('SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1) AS bytes',[lsn]))[0].bytes);
-  const after=await snapshots();assert.deepEqual(after,{...before,axton_channel_member:0,axton_channel_member_tag:0,axton_channel_tag:0});
-  const log=await query('SELECT kind,count(*)::int AS n,min(cursor)::int AS first,max(cursor)::int AS last FROM axton_channel_log GROUP BY kind');
+  const after=await snapshots();assert.deepEqual(after,{...before,axton_scope_member:0,axton_scope_member_tag:0,axton_scope_tag:0});
+  const log=await query('SELECT kind,count(*)::int AS n,min(cursor)::int AS first,max(cursor)::int AS last FROM axton_scope_log GROUP BY kind');
   assert.deepEqual(log,[{kind:'remove',n,first:n+1,last:2*n}]);
   let cursor=n,wireBytes=0,identityBytes=0,events=0,pages=0;const seen=new Set(),pageEventCounts=[],hash=createHash('sha256');let firstPageRaw,terminalPageRaw;
   const pullStart=performance.now();
   while(pages<Math.ceil(n/50)+2){
-   const raw=await backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{[channel]:cursor},models:{Todo:1}}));
+   const raw=await backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{[scope]:cursor},models:{Todo:1}}));
    const page=JSON.parse(raw);pages++;wireBytes+=Buffer.byteLength(raw);hash.update(raw);pageEventCounts.push(page.changes.length);
-   assert.ok(page.changes.length<=50);assert.equal(page.cursors[channel].from,cursor);
-   for(const change of page.changes){assert.equal(change.kind,'remove');assert.equal(change.channel,channel);assert.equal(change.model,'Todo');assert.ok(!('state' in change));assert.ok(!seen.has(change.identity.id));seen.add(change.identity.id);identityBytes+=Buffer.byteLength(JSON.stringify(change.identity));events++;}
-   cursor=page.cursors[channel].to;if(!firstPageRaw)firstPageRaw=raw;
-   assert.equal(page.cursors[channel].head,2*n);
-   if(cursor===page.cursors[channel].head){terminalPageRaw=raw;break;}
+   assert.ok(page.changes.length<=50);assert.equal(page.cursors[scope].from,cursor);
+   for(const change of page.changes){assert.equal(change.kind,'remove');assert.equal(change.scope,scope);assert.equal(change.model,'Todo');assert.ok(!('state' in change));assert.ok(!seen.has(change.identity.id));seen.add(change.identity.id);identityBytes+=Buffer.byteLength(JSON.stringify(change.identity));events++;}
+   cursor=page.cursors[scope].to;if(!firstPageRaw)firstPageRaw=raw;
+   assert.equal(page.cursors[scope].head,2*n);
+   if(cursor===page.cursors[scope].head){terminalPageRaw=raw;break;}
    assert.ok(page.changes.length>0,'a nonterminal page must progress');
   }
   const pullMs=performance.now()-pullStart;assert.ok(terminalPageRaw,'must fully drain until to===head');assert.equal(events,n);assert.equal(cursor,2*n);assert.deepEqual([...seen].sort(),ids);assert.equal(loaderCalls,0,'removal and all removal pulls invoke no Loader');
@@ -81,5 +81,5 @@ try {
    response:{pages,pageEventCounts,events,wireBytes,identityBytes,pullMs,sha256:hash.digest('hex'),...(sample===1?{firstPageRaw,terminalPageRaw}:{})}});
   console.error(JSON.stringify({members:n,sample,publicMs,transactionMs:removal.transactionMs,statements:Object.values(removal.statements).reduce((a,b)=>a+b,0),walBytes,pages,wireBytes,identityBytes,loaderCalls}));
  }
- await writeFile(process.argv[2]??new URL('evidence.json',import.meta.url),JSON.stringify(metadata,null,2)+'\n');
+ await writeFile(process.argv[2]??'/tmp/scope-removal-evidence.json',JSON.stringify(metadata,null,2)+'\n');
 }finally{await pool.end();}

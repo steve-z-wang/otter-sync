@@ -389,13 +389,12 @@ class Subscriptions {
     _host.unlisten(handle._observerId);
   }
 
-  /// Remove whatever registration a Scope name has - the Scope-named form the
-  /// generated `channels` facade keeps. The runtime ends the handle it had
+  /// Remove whatever registration a Scope name has. The runtime ends the handle it had
   /// before the removal completes.
   Future<void> unsubscribeScope(String scope) async {
     await _host.task({
-      'kind': 'channel',
-      'channel': scope,
+      'kind': 'scope',
+      'scope': scope,
       'subscribed': false,
     });
   }

@@ -77,7 +77,7 @@ pub enum DownlinkAction {
     },
     /// `POST /sync/pull` with `body`; its answer is a `response` event of this
     /// id, a failure is `failed`. An ordinary catch-up carries every subscribed
-    /// channel and belongs to the open session, so the session's cancellation
+    /// scope and belongs to the open session, so the session's cancellation
     /// abandons it and its failure ends the session. A `bootstrap` request is
     /// one Scope's historical page on the same route: it belongs to the lane,
     /// not to a socket, so it outlives the session, its failure ends none, and
@@ -113,7 +113,7 @@ pub enum DownlinkAction {
     Acknowledged {
         scopes: Vec<String>,
     },
-    /// A stored Bootstrap row of `channel` cannot be decoded, so the schedule
+    /// A stored Bootstrap row of `scope` cannot be decoded, so the schedule
     /// and the barrier settlement skip it: the host hands `message`, a bounded
     /// reason, to the application's error handler. The row is kept as stored
     /// and a named read of it still fails. Announced once per defect for the
@@ -122,7 +122,7 @@ pub enum DownlinkAction {
     /// `bootstrap` transition nor a record `report`
     /// ([#163](https://github.com/zanminwang/axton/issues/163)).
     LedgerIssue {
-        channel: String,
+        scope: String,
         message: String,
     },
     /// Nothing to do for `millis`; then pump again.
@@ -147,7 +147,7 @@ pub enum DownlinkAction {
 enum Control {
     /// The acknowledgement, already confirmed against the subscribe frame.
     Acknowledged(SubscriptionAck),
-    /// Frames were lost: recover every channel from its durable cursor.
+    /// Frames were lost: recover every scope from its durable cursor.
     Overflow,
     /// The body the request in flight answered with.
     Response(String),
@@ -192,7 +192,7 @@ impl StoreToken {
     }
 }
 enum StoreSource {
-    Live(ChannelPullPage),
+    Live(ScopePullPage),
     Catchup { request: u64, continues: bool },
     Bootstrap(PendingBootstrap),
 }
@@ -278,7 +278,7 @@ enum Scan {
 }
 
 /// Streamed page frames held in the queue. Beyond this the queue is discarded
-/// whole and every channel recovers from the durable cursor: the server log is
+/// whole and every scope recovers from the durable cursor: the server log is
 /// the durable queue, the cursor the pointer into it. Control work is queued
 /// apart from it and is never dropped for this bound.
 pub const QUEUED_FRAMES: usize = 64;
@@ -293,9 +293,9 @@ pub struct DownlinkWorker {
     /// Control work in arrival order, never dropped for the page bound.
     control: VecDeque<Control>,
     /// Streamed pages not yet applied, in arrival order. The front is applied
-    /// when every channel it names connects to its cursor; a page with a gap
+    /// when every scope it names connects to its cursor; a page with a gap
     /// stays until a pull connects it or covers it.
-    pages: VecDeque<ChannelPullPage>,
+    pages: VecDeque<ScopePullPage>,
     /// The one ordinary catch-up in flight.
     active: Option<Pending>,
     /// The one historical page request in flight, across every Scope. It is a
@@ -325,7 +325,7 @@ pub struct DownlinkWorker {
     /// The replica was rebuilt since the last pump: the next one tells the
     /// host to abandon the old replica's I/O before anything else.
     reset: bool,
-    /// The ledger issue last announced for each channel, by fingerprint: a
+    /// The ledger issue last announced for each scope, by fingerprint: a
     /// scan that finds the same defect again announces nothing
     /// ([`DownlinkWorker::ledger`]).
     reported: BTreeMap<String, String>,
@@ -466,8 +466,8 @@ impl DownlinkWorker {
             }
             StoreSource::Bootstrap(pending) => {
                 if !hook_failed {
-                    let (StoreDelivery::ChannelBootstrap { page, .. }
-                    | StoreDelivery::ChannelReconciliation { page, .. }) = pending_store_delivery
+                    let (StoreDelivery::ScopeBootstrap { page, .. }
+                    | StoreDelivery::ScopeReconciliation { page, .. }) = pending_store_delivery
                     else {
                         unreachable!()
                     };
@@ -491,7 +491,7 @@ impl DownlinkWorker {
         let Some(failure) = &self.bootstrap_failure else {
             return Ok(());
         };
-        let scope = &failure.pending.request.channel;
+        let scope = &failure.pending.request.scope;
         let state = client.fail_history_state(
             failure.pending.reconciliation,
             scope,
@@ -527,11 +527,11 @@ impl DownlinkWorker {
         })
     }
 
-    fn wants_channel_hook(changes: &[ChannelChange], hooks: Option<&BTreeSet<String>>) -> bool {
+    fn wants_scope_hook(changes: &[ScopeChange], hooks: Option<&BTreeSet<String>>) -> bool {
         hooks.is_some_and(|hooks| {
             changes
                 .iter()
-                .filter_map(ChannelChange::record)
+                .filter_map(ScopeChange::record)
                 .any(|record| hooks.contains(&record.model))
         })
     }
@@ -771,18 +771,18 @@ impl DownlinkWorker {
         now: u64,
         entropy: u64,
     ) {
-        let decoded = match ChannelLiveMessage::decode(body.as_bytes()) {
+        let decoded = match ScopeLiveMessage::decode(body.as_bytes()) {
             Ok(decoded) => decoded,
             Err(e) => return self.fail(client, Some(e.to_string()), now, entropy),
         };
         match decoded {
-            ChannelLiveMessage::Acknowledged(ack) => {
+            ScopeLiveMessage::Acknowledged(ack) => {
                 if let Err(e) = self.session.acknowledge(&ack) {
                     return self.fail(client, Some(e.to_string()), now, entropy);
                 }
                 self.control.push_back(Control::Acknowledged(ack));
             }
-            ChannelLiveMessage::Page(page) => {
+            ScopeLiveMessage::Page(page) => {
                 if let Err(e) = self.session.streamed() {
                     return self.fail(client, Some(e.to_string()), now, entropy);
                 }
@@ -795,8 +795,8 @@ impl DownlinkWorker {
     }
 
     /// Frames were lost - the host's buffer or this queue overflowed - and which
-    /// channels they belonged to is unknown: the queue is discarded and every
-    /// channel recovers from its durable cursor. Redundant overflows coalesce
+    /// scopes they belonged to is unknown: the queue is discarded and every
+    /// scope recovers from its durable cursor. Redundant overflows coalesce
     /// into the one recovery still to run.
     fn overflowed(&mut self) {
         self.pages.clear();
@@ -1005,7 +1005,7 @@ impl DownlinkWorker {
     ) -> Result<()> {
         self.flush(actions);
         // A committed subscribe or unsubscribe invalidates the session: the
-        // lane starts over with the new channel set, without backoff.
+        // lane starts over with the new scope set, without backoff.
         if self.stale(client) {
             self.invalidate(now);
             self.flush(actions);
@@ -1140,18 +1140,18 @@ impl DownlinkWorker {
             let Some(front) = self.pages.front().cloned() else {
                 break;
             };
-            if Self::wants_channel_hook(&front.changes, hooks) {
-                let admission = client.admit_channel_downlink(&front, None)?;
+            if Self::wants_scope_hook(&front.changes, hooks) {
+                let admission = client.admit_scope_downlink(&front, None)?;
                 if admission.disposition == "applied" {
                     self.yield_store(
                         client,
-                        StoreDelivery::ChannelPage(front.clone()),
+                        StoreDelivery::ScopePage(front.clone()),
                         StoreSource::Live(front),
                     )?;
                     return Ok(true);
                 }
             }
-            let progress = client.receive_channel_downlink(front, None)?;
+            let progress = client.receive_scope_downlink(front, None)?;
             settle(&progress, actions);
             if progress.disposition == "recover" {
                 // The gap stays at the front until a pull connects or covers it.
@@ -1233,26 +1233,26 @@ impl DownlinkWorker {
 
     /// Announce the rows a ledger scan skipped because they cannot be decoded,
     /// each defect once: an issue whose fingerprint is the one last announced
-    /// for its channel says nothing new, so no pump, wake or delivery that
+    /// for its scope says nothing new, so no pump, wake or delivery that
     /// leaves the defect as it was repeats it. A complete scan saw every active
-    /// row, so a channel it found healthy or absent is forgotten, and the same
+    /// row, so a scope it found healthy or absent is forgotten, and the same
     /// defect coming back after a repair or a removal is announced again. A
     /// candidate scan saw only the rows it was asked about and forgets nothing
     /// ([#163](https://github.com/zanminwang/axton/issues/163)).
     fn ledger(&mut self, issues: Vec<LedgerIssue>, scan: Scan, actions: &mut Vec<DownlinkAction>) {
         if scan == Scan::Complete {
             self.reported
-                .retain(|channel, _| issues.iter().any(|issue| &issue.channel == channel));
+                .retain(|scope, _| issues.iter().any(|issue| &issue.scope == scope));
         }
         for issue in issues {
-            if self.reported.get(&issue.channel) == Some(&issue.fingerprint) {
+            if self.reported.get(&issue.scope) == Some(&issue.fingerprint) {
                 continue;
             }
             actions.push(DownlinkAction::LedgerIssue {
-                channel: issue.channel.clone(),
+                scope: issue.scope.clone(),
                 message: issue.detail,
             });
-            self.reported.insert(issue.channel, issue.fingerprint);
+            self.reported.insert(issue.scope, issue.fingerprint);
         }
     }
 
@@ -1320,7 +1320,7 @@ impl DownlinkWorker {
         pending: PendingBootstrap,
     ) -> Result<bool> {
         let (now, entropy) = timing;
-        let scope = pending.request.channel.clone();
+        let scope = pending.request.scope.clone();
         let body = match loaded {
             Loaded::Failed { status, reason } => {
                 if !status.is_some_and(refused) {
@@ -1349,7 +1349,7 @@ impl DownlinkWorker {
             Loaded::Page(body) => body,
         };
         self.loading.answered(now);
-        let page = match ChannelBootstrapPage::decode(body.as_bytes()) {
+        let page = match ScopeBootstrapPage::decode(body.as_bytes()) {
             Ok(page) if page.answers(&pending.request) => page,
             Ok(page) => {
                 return self.refuse(
@@ -1359,7 +1359,7 @@ impl DownlinkWorker {
                         PROTOCOL_INVALID,
                         format!(
                             "a bootstrap page ({}, {}] of {} does not answer the request ({}, {}] of {scope}",
-                            page.from, page.to, page.channel, pending.request.after,
+                            page.from, page.to, page.scope, pending.request.after,
                             pending.request.until
                         ),
                         vec![],
@@ -1380,11 +1380,11 @@ impl DownlinkWorker {
                 );
             }
         };
-        if Self::wants_channel_hook(&page.changes, hooks) {
+        if Self::wants_scope_hook(&page.changes, hooks) {
             self.yield_store(
                 client,
                 if pending.reconciliation {
-                    StoreDelivery::ChannelReconciliation {
+                    StoreDelivery::ScopeReconciliation {
                         scope: scope.clone(),
                         subscription_id: pending.subscription_id,
                         run: pending.run,
@@ -1392,7 +1392,7 @@ impl DownlinkWorker {
                         page,
                     }
                 } else {
-                    StoreDelivery::ChannelBootstrap {
+                    StoreDelivery::ScopeBootstrap {
                         scope: scope.clone(),
                         subscription_id: pending.subscription_id,
                         run: pending.run,
@@ -1404,7 +1404,7 @@ impl DownlinkWorker {
             )?;
             return Ok(true);
         }
-        let applied = client.apply_channel_history_page(
+        let applied = client.apply_scope_history_page(
             pending.reconciliation,
             &scope,
             pending.subscription_id,
@@ -1449,7 +1449,7 @@ impl DownlinkWorker {
         error: BootstrapError,
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
-        let scope = &pending.request.channel;
+        let scope = &pending.request.scope;
         let held = client
             .subscription_state(scope)?
             .is_some_and(|state| state.subscription_id == pending.subscription_id);
@@ -1555,7 +1555,7 @@ impl DownlinkWorker {
     /// initialized cursor where it is
     /// ([`Client::initialize_subscriptions`]). Status follows that commit and
     /// no queued page is applied before it, so the answer is `true` whenever a
-    /// boundary landed and one pump still holds one commit. A channel behind
+    /// boundary landed and one pump still holds one commit. A scope behind
     /// its acknowledged head catches up over HTTP first; a head below a
     /// committed cursor is a server-state fault that ends the session.
     fn acknowledged<S: ClientStore>(
@@ -1601,7 +1601,7 @@ impl DownlinkWorker {
         Ok(committed)
     }
 
-    /// Recover every channel from its durable cursor after lost frames. A pull
+    /// Recover every scope from its durable cursor after lost frames. A pull
     /// in flight keeps its progress and another follows it.
     fn recover<S: ClientStore>(
         &mut self,
@@ -1638,7 +1638,7 @@ impl DownlinkWorker {
     }
 
     /// Apply the answer to the request in flight; `true` when it committed. The
-    /// round goes on from the durable cursors while any channel continues.
+    /// round goes on from the durable cursors while any scope continues.
     fn response<S: ClientStore>(
         &mut self,
         client: &mut Client<S>,
@@ -1649,11 +1649,11 @@ impl DownlinkWorker {
         actions: &mut Vec<DownlinkAction>,
     ) -> Result<bool> {
         if let Some(pending) = &self.active
-            && let Ok(page) = ChannelPullPage::decode(body.as_bytes())
-            && Self::wants_channel_hook(&page.changes, hooks)
+            && let Ok(page) = ScopePullPage::decode(body.as_bytes())
+            && Self::wants_scope_hook(&page.changes, hooks)
         {
             let pending = pending.clone();
-            let admission = match client.admit_channel_downlink(&page, Some(&pending.request)) {
+            let admission = match client.admit_scope_downlink(&page, Some(&pending.request)) {
                 Ok(admission) => admission,
                 Err(e) if e.to_string() == "response does not match pull request" => {
                     self.fail(client, Some(e.to_string()), now, entropy);
@@ -1665,7 +1665,7 @@ impl DownlinkWorker {
                 let continues = !admission.continues.is_empty();
                 self.yield_store(
                     client,
-                    StoreDelivery::ChannelPage(page),
+                    StoreDelivery::ScopePage(page),
                     StoreSource::Catchup {
                         request: pending.id,
                         continues,
@@ -1679,7 +1679,7 @@ impl DownlinkWorker {
         let Some(pending) = self.active.take() else {
             return Ok(false);
         };
-        let page = match ChannelPullPage::decode(body.as_bytes()) {
+        let page = match ScopePullPage::decode(body.as_bytes()) {
             Ok(page) => page,
             Err(e) => {
                 self.fail(
@@ -1691,7 +1691,7 @@ impl DownlinkWorker {
                 return Ok(false);
             }
         };
-        let progress = match client.receive_channel_downlink(page, Some(pending.request.clone())) {
+        let progress = match client.receive_scope_downlink(page, Some(pending.request.clone())) {
             Ok(progress) => progress,
             Err(e) if e.to_string() == "response does not match pull request" => {
                 self.fail(client, Some(e.to_string()), now, entropy);

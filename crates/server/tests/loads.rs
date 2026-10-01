@@ -11,7 +11,7 @@ use axton_server::{
 };
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
-use support::{Backend, Tables, add, remove, run};
+use support::{Backend, Tables, add, reference, remove, run};
 
 fn field(name: &str) -> Value {
     json!({"name":name,"type":{"kind":"scalar","name":"string"},"nullable":false})
@@ -433,7 +433,7 @@ fn the_load_context_is_read_only_and_a_forged_settlement_is_refused() {
     seed_todos(&backend, 1);
     let mut forged = answer(ids(&["t1"]), json!([]), Value::Null);
     forged["changes"] = json!([{"model":"Todo","identity":{"id":"t1"}}]);
-    forged["memberships"] = json!([{"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]}]);
+    forged["memberships"] = json!([{"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]}]);
     backend.script("ProjectTodos", forged);
     let refused = page(&backend, &item(1, Value::Null));
     assert_eq!(outcome_code(&refused), code::HANDLER_INVALID);
@@ -1032,7 +1032,7 @@ fn the_response_holds_eight_full_pages_within_its_bound_and_an_oversized_page_fa
     );
 }
 
-/// A settled answer whose add-only Channel handles declared `memberships`.
+/// A settled answer whose add-only Scope handles declared `memberships`.
 fn enrolling(todos: Value, projects: Value, memberships: Vec<Value>) -> Value {
     let mut answered = answer(todos, projects, Value::Null);
     answered["memberships"] = Value::Array(memberships);
@@ -1052,9 +1052,9 @@ fn settlement_ops(backend: &Backend) -> Vec<String> {
         "ensureStamp",
         "lockRecord",
         "memberships",
-        "lockChannels",
-        "readChannelMembers",
-        "applyChannelMembers",
+        "lockScopes",
+        "readScopeMembers",
+        "applyScopeMembers",
     ];
     backend
         .ops()
@@ -1092,8 +1092,8 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
     assert_eq!(
         first["memberships"],
         json!([
-            {"channel":"c","cursor":1,"model":"Todo","identity":{"id":"t1"}},
-            {"channel":"c","cursor":2,"model":"Todo","identity":{"id":"t2"}}
+            {"scope":"c","cursor":1,"model":"Todo","identity":{"id":"t1"}},
+            {"scope":"c","cursor":2,"model":"Todo","identity":{"id":"t2"}}
         ])
     );
     assert_eq!(saved(&backend, 1), Some(first.clone()));
@@ -1118,16 +1118,16 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
                 "claimCall",
                 "savepoint",
                 "handleLoad",
-                "lockChannels",
+                "lockScopes",
                 "readStamps",
                 "load"
             ]),
             repeated("ensureStamp", 2),
-            strings(&["readChannelMembers", "applyChannelMembers"]),
+            strings(&["readScopeMembers", "applyScopeMembers"]),
             strings(&["release", "saveCall"]),
         ]
         .concat(),
-        "the Channels lock before the page's reads; settlement runs after them and before its release; nothing advances a stamp"
+        "the Scopes lock before the page's reads; settlement runs after them and before its release; nothing advances a stamp"
     );
 
     // A fresh page re-adding existing members publishes nothing more: each
@@ -1140,20 +1140,20 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
     assert_eq!(
         settlement_ops(&backend),
         [
-            strings(&["lockChannels"]),
+            strings(&["lockScopes"]),
             repeated("ensureStamp", 2),
-            strings(&["readChannelMembers", "applyChannelMembers"]),
+            strings(&["readScopeMembers", "applyScopeMembers"]),
         ]
         .concat()
     );
     assert!(backend.deltas().iter().all(|delta| !delta.publish));
 }
 
-/// An enrolling page locks exactly its Channels, once and in byte order,
+/// An enrolling page locks exactly its Scopes, once and in byte order,
 /// before `readStamps` may insert a record row; a page that enrolls nothing
 /// locks none.
 #[test]
-fn an_enrolling_page_locks_its_channels_before_any_record_row() {
+fn an_enrolling_page_locks_its_scopes_before_any_record_row() {
     let backend = Backend::new();
     seed_todos(&backend, 1);
     backend.script(
@@ -1168,17 +1168,17 @@ fn an_enrolling_page_locks_its_channels_before_any_record_row() {
     assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
     let ops = backend.ops();
     let at = |op: &str| ops.iter().position(|name| name == op).unwrap();
-    assert!(at("lockChannels") < at("readStamps"), "{ops:?}");
-    assert_eq!(backend.count("lockChannels"), 1, "{ops:?}");
-    assert!(backend.log().contains(&HostRequest::LockChannels {
-        channels: vec!["c".into(), "d".into()]
+    assert!(at("lockScopes") < at("readStamps"), "{ops:?}");
+    assert_eq!(backend.count("lockScopes"), 1, "{ops:?}");
+    assert!(backend.log().contains(&HostRequest::LockScopes {
+        scopes: vec!["c".into(), "d".into()]
     }));
 
     backend.clear_log();
     backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
     let quiet = page(&backend, &item(2, Value::Null));
     assert_eq!(quiet["outcome"]["status"], "succeeded", "{quiet}");
-    assert_eq!(backend.count("lockChannels"), 0);
+    assert_eq!(backend.count("lockScopes"), 0);
 }
 
 /// A Load's add carries tags like a Mutation's: a repeated pair unions its
@@ -1235,7 +1235,7 @@ fn valid_load_declarations_can_union_more_than_64_tags_and_replay() {
 }
 
 #[test]
-fn one_record_joins_several_channels_without_republishing_to_its_existing_ones() {
+fn one_record_joins_several_scopes_without_republishing_to_its_existing_ones() {
     let backend = Backend::new();
     backend.seed("Todo", "t1", json!({"id":"t1","title":"T1"}), Some(3));
     backend.enroll("b", "Todo", "t1", 7);
@@ -1253,20 +1253,16 @@ fn one_record_joins_several_channels_without_republishing_to_its_existing_ones()
     assert_eq!(backend.invalidation("a", "Todo", "t1"), Some((1, 3)));
     assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 3)));
     assert_eq!(backend.invalidation("b", "Todo", "t1"), Some((8, 3)));
-    assert_eq!(
-        backend.head("b"),
-        8,
-        "an existing Channel is not republished"
-    );
+    assert_eq!(backend.head("b"), 8, "an existing Scope is not republished");
     assert_eq!(backend.stamp("Todo", "t1"), Some(3));
     assert_eq!(
         settlement_ops(&backend),
         strings(&[
-            "lockChannels",
+            "lockScopes",
             "ensureStamp",
-            "readChannelMembers",
-            "readChannelMembers",
-            "applyChannelMembers"
+            "readScopeMembers",
+            "readScopeMembers",
+            "applyScopeMembers"
         ])
     );
 }
@@ -1300,11 +1296,7 @@ fn repeated_declarations_across_outputs_and_mixed_lists_are_one_effect_per_pair(
     assert_eq!(backend.head("d"), 1);
     assert_eq!(backend.count("ensureStamp"), 3, "one guard per record");
     assert_eq!(backend.count("memberships"), 0, "nothing is touched");
-    assert_eq!(
-        backend.count("readChannelMembers"),
-        2,
-        "one read per Channel"
-    );
+    assert_eq!(backend.count("readScopeMembers"), 2, "one read per Scope");
     assert_eq!(backend.deltas().len(), 4, "one final state per pair");
     assert_eq!(backend.publishes().len(), 4);
     assert_eq!(backend.count("advanceStamp"), 0);
@@ -1326,7 +1318,7 @@ fn refused_before_resolution(backend: &Backend, config: &Config, expected: &str,
 
 #[test]
 fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothing() {
-    let intent = |channel: &str, model: &str, identity: Value| json!({"kind":"add","channel":channel,"record":{"model":model,"identity":identity},"tags":[]});
+    let intent = |scope: &str, model: &str, identity: Value| json!({"kind":"add","scope":scope,"record":{"model":model,"identity":identity},"tags":[]});
     let cases = [
         ("a removal", vec![remove("c", "Todo", "t1")]),
         (
@@ -1342,10 +1334,10 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
         (
             "65 tags in one declaration",
             vec![
-                json!({"kind":"add","channel":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags": (0..65).map(|i| format!("t{i}")).collect::<Vec<_>>()}),
+                json!({"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags": (0..65).map(|i| format!("t{i}")).collect::<Vec<_>>()}),
             ],
         ),
-        ("a blank Channel", vec![add("  ", "Todo", "t1")]),
+        ("a blank Scope", vec![add("  ", "Todo", "t1")]),
         (
             "a mistyped identity",
             vec![intent("c", "Todo", json!({"id":7}))],
@@ -1358,11 +1350,31 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
             "an invalid declaration after a valid one",
             vec![add("c", "Todo", "t1"), add("c", "Todo", "t9")],
         ),
+        (
+            "label add outside output",
+            vec![json!({"kind":"tagAdd","scope":"c","record":reference("Todo","t9"),"tags":["X"]})],
+        ),
+        (
+            "label remove",
+            vec![
+                json!({"kind":"tagRemove","scope":"c","record":reference("Todo","t1"),"tags":["X"]}),
+            ],
+        ),
+        (
+            "bulk label detach",
+            vec![json!({"kind":"detachTags","scope":"c","tags":["X"]})],
+        ),
+        (
+            "selection",
+            vec![
+                json!({"kind":"select","scope":"c","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":["X"]}}),
+            ],
+        ),
         // A Load has no tag selector, and its tags follow the add rules:
         // each is refused before any read, never dropped.
         (
             "a tag selector",
-            vec![json!({"kind":"removeTag","channel":"c","tag":"X"})],
+            vec![json!({"kind":"removeTag","scope":"c","tag":"X"})],
         ),
         (
             "a blank tag",
@@ -1445,16 +1457,16 @@ fn enrolling_a_model_without_a_registered_loader_is_loader_unregistered_before_a
 
 #[test]
 fn enrollment_is_bounded_by_distinct_pairs_after_deduplication() {
-    let channels: Vec<String> = (0..limits::LOAD_ENROLLMENT_PAIRS)
+    let scopes: Vec<String> = (0..limits::LOAD_ENROLLMENT_PAIRS)
         .map(|n| format!("c{n}"))
         .collect();
     // Exactly the bound, each pair declared twice.
     let backend = Backend::new();
     seed_todos(&backend, 1);
-    let twice: Vec<Value> = channels
+    let twice: Vec<Value> = scopes
         .iter()
-        .chain(&channels)
-        .map(|channel| add(channel, "Todo", "t1"))
+        .chain(&scopes)
+        .map(|scope| add(scope, "Todo", "t1"))
         .collect();
     backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), twice));
     let result = page(&backend, &item(1, Value::Null));
@@ -1468,11 +1480,11 @@ fn enrollment_is_bounded_by_distinct_pairs_after_deduplication() {
     // One distinct pair more is a saved size failure that keeps nothing.
     let backend = Backend::new();
     seed_todos(&backend, 1);
-    let over: Vec<Value> = channels
+    let over: Vec<Value> = scopes
         .iter()
         .map(String::as_str)
         .chain(["one-more"])
-        .map(|channel| add(channel, "Todo", "t1"))
+        .map(|scope| add(scope, "Todo", "t1"))
         .collect();
     backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), over));
     refused_before_resolution(
@@ -1483,19 +1495,19 @@ fn enrollment_is_bounded_by_distinct_pairs_after_deduplication() {
     );
 }
 
-/// The encoded bytes of one `t1` enrollment into `channel`, as the shared
+/// The encoded bytes of one `t1` enrollment into `scope`, as the shared
 /// fixture defines them.
-fn pair_bytes(channel: &str) -> usize {
-    canonical_json(&add(channel, "Todo", "t1")).unwrap().len()
+fn pair_bytes(scope: &str) -> usize {
+    canonical_json(&add(scope, "Todo", "t1")).unwrap().len()
 }
 
 #[test]
 fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
-    // 256 distinct Channels whose pairs encode to exactly the bound.
+    // 256 distinct Scopes whose pairs encode to exactly the bound.
     let count = 256;
     let each = limits::LOAD_ENROLLMENT_BYTES / count;
     assert_eq!(each * count, limits::LOAD_ENROLLMENT_BYTES);
-    let channels: Vec<String> = (0..count)
+    let scopes: Vec<String> = (0..count)
         .map(|n| {
             let name = format!("{n:03}");
             let pad = each - pair_bytes(&name);
@@ -1503,13 +1515,13 @@ fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
         })
         .collect();
     assert_eq!(
-        channels.iter().map(|c| pair_bytes(c)).sum::<usize>(),
+        scopes.iter().map(|c| pair_bytes(c)).sum::<usize>(),
         limits::LOAD_ENROLLMENT_BYTES
     );
     let backend = Backend::new();
     seed_todos(&backend, 1);
-    let mut at_bound: Vec<Value> = channels.iter().map(|c| add(c, "Todo", "t1")).collect();
-    at_bound.push(add(&channels[0], "Todo", "t1"));
+    let mut at_bound: Vec<Value> = scopes.iter().map(|c| add(c, "Todo", "t1")).collect();
+    at_bound.push(add(&scopes[0], "Todo", "t1"));
     backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), at_bound));
     let result = page(&backend, &item(1, Value::Null));
     assert_eq!(
@@ -1521,7 +1533,7 @@ fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
     // One byte more is a saved size failure.
     let backend = Backend::new();
     seed_todos(&backend, 1);
-    let mut over = channels.clone();
+    let mut over = scopes.clone();
     over[count - 1].push('x');
     let over = over.iter().map(|c| add(c, "Todo", "t1")).collect();
     backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), over));
@@ -1535,8 +1547,8 @@ fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
     // A repeated pair's unioned tag is measured again: three bytes over.
     let backend = Backend::new();
     seed_todos(&backend, 1);
-    let mut tagged: Vec<Value> = channels.iter().map(|c| add(c, "Todo", "t1")).collect();
-    tagged.push(support::add_tagged(&channels[0], "Todo", "t1", &["y"]));
+    let mut tagged: Vec<Value> = scopes.iter().map(|c| add(c, "Todo", "t1")).collect();
+    tagged.push(support::add_tagged(&scopes[0], "Todo", "t1", &["y"]));
     backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), tagged));
     refused_before_resolution(
         &backend,
@@ -1566,7 +1578,7 @@ fn the_enrollment_bounds_are_the_shared_cross_language_fixture() {
         );
         assert_eq!(json!(encoded.len()), case["bytes"], "{}", case["name"]);
     }
-    assert_eq!(pair_bytes("project:p1"), 96, "the helper measures alike");
+    assert_eq!(pair_bytes("project:p1"), 94, "the helper measures alike");
 }
 
 #[test]
@@ -1650,12 +1662,8 @@ fn a_page_that_fails_after_validation_keeps_no_enrollment_or_initialized_stamp()
             before,
             "{case}: no membership, position or stamp"
         );
-        // Only the Channel locks taken before the reads; no settlement ran.
-        assert_eq!(
-            settlement_ops(&backend),
-            strings(&["lockChannels"]),
-            "{case}"
-        );
+        // Only the Scope locks taken before the reads; no settlement ran.
+        assert_eq!(settlement_ops(&backend), strings(&["lockScopes"]), "{case}");
     }
 }
 
@@ -1668,25 +1676,25 @@ fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrol
             code::HOST,
         ),
         (
-            "lockChannels",
+            "lockScopes",
             Err("connection reset".to_string()),
             code::HOST,
         ),
         (
-            "readChannelMembers",
+            "readScopeMembers",
             Err("serialization failure".to_string()),
             code::HOST,
         ),
         (
-            "applyChannelMembers",
+            "applyScopeMembers",
             Err("deadlock detected".to_string()),
             code::HOST,
         ),
         ("saveCall", Err("connection reset".to_string()), code::HOST),
         (
-            "applyChannelMembers",
+            "applyScopeMembers",
             Ok(
-                json!([{"channel":"c","model":"Todo","identityKey":"{\"id\":\"t1\"}",
+                json!([{"scope":"c","model":"Todo","identityKey":"{\"id\":\"t1\"}",
                 "cursor":1,"kind":"remove"}]),
             ),
             code::HOST_INVALID,
@@ -1733,11 +1741,11 @@ fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrol
             "{op}"
         );
     }
-    // A settlement whose Channel locks went stale, once the carrier's own
+    // A settlement whose Scope locks went stale, once the carrier's own
     // retries ran out, is retryable like a serialization conflict.
     let outcome = load_fault_outcome(&LoadFault::Engine {
         code: code::TRANSACTION_CONFLICT.into(),
-        message: "Todo joined Channel d after settlement locked its Channels".into(),
+        message: "Todo joined Scope d after settlement locked its Scopes".into(),
     });
     assert!(
         matches!(&outcome, axton_core::LoadOutcome::Retryable { error } if error.code == code::TRANSACTION_CONFLICT),
@@ -1756,12 +1764,12 @@ fn a_replayed_page_neither_enrolls_nor_undoes_a_later_removal_and_a_fresh_page_r
     let first = page(&backend, &item(1, Value::Null));
     assert_eq!(
         first["memberships"],
-        json!([{ "channel":"c", "cursor":1, "model":"Todo", "identity":{"id":"t1"} }])
+        json!([{ "scope":"c", "cursor":1, "model":"Todo", "identity":{"id":"t1"} }])
     );
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
     assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 1)));
 
-    // An application later removes the record from the Channel.
+    // An application later removes the record from the Scope.
     support::settle(&backend, vec![], vec![remove("c", "Todo", "t1")]);
     assert!(backend.members("Todo", "t1").is_empty());
     let removed = durable(&backend);
@@ -1813,15 +1821,14 @@ fn batch_siblings_enroll_or_fail_independently() {
 }
 
 #[test]
-fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_the_fixed_page_path()
-{
+fn enrollment_adds_per_record_guards_and_one_read_per_scope_and_one_write_to_the_fixed_page_path() {
     let fixed_page = |settlement: Vec<String>| {
         [
             strings(&[
                 "claimCall",
                 "savepoint",
                 "handleLoad",
-                "lockChannels",
+                "lockScopes",
                 "readStamps",
                 "load",
             ]),
@@ -1834,17 +1841,17 @@ fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_t
     seed_todos(&backend, 1000);
     let all: Vec<String> = (1..=1000).map(todo).collect();
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
-    let into = |channel: &str, ids: &[&str]| -> Vec<Value> {
-        ids.iter().map(|id| add(channel, "Todo", id)).collect()
+    let into = |scope: &str, ids: &[&str]| -> Vec<Value> {
+        ids.iter().map(|id| add(scope, "Todo", id)).collect()
     };
 
-    // 1,000 records newly joining one Channel: per record one ensureStamp,
+    // 1,000 records newly joining one Scope: per record one ensureStamp,
     // then one member read and one write for the whole page.
     let settled = |guards: usize, reads: usize| {
         [
             repeated("ensureStamp", guards),
-            repeated("readChannelMembers", reads),
-            strings(&["applyChannelMembers"]),
+            repeated("readScopeMembers", reads),
+            strings(&["applyScopeMembers"]),
         ]
         .concat()
     };
@@ -1864,7 +1871,7 @@ fn enrollment_adds_per_record_guards_and_one_read_per_channel_and_one_write_to_t
     assert_eq!(backend.ops(), fixed_page(settled(1000, 1)));
     assert_eq!(backend.publishes().len(), 0);
 
-    // 500 records joining two new Channels: the per-record work is shared.
+    // 500 records joining two new Scopes: the per-record work is shared.
     backend.clear_log();
     let half = &all[..500];
     backend.script(
@@ -1903,7 +1910,7 @@ fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cu
     let first = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
     assert_eq!(
         first["memberships"],
-        json!([{ "channel":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
+        json!([{ "scope":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
     );
     support::settle(&backend, vec![], vec![remove("c", "Todo", lower)]);
     let removed = durable(&backend);
@@ -1934,7 +1941,7 @@ fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_c
         let mut state = backend.0.lock().unwrap();
         let saved = state.tables.calls.get_mut(&id(1)).unwrap();
         let mut request: Value = serde_json::from_str(&saved.0).unwrap();
-        request["capabilities"] = json!(["channel-membership-v1"]);
+        request["capabilities"] = json!(["scope-membership-v1"]);
         saved.0 = request.to_string();
         let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
         response.as_object_mut().unwrap().remove("memberships");
@@ -1948,4 +1955,51 @@ fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_c
     assert!(replay.get("memberships").is_none());
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(backend.0.lock().unwrap().tables, before);
+}
+
+#[test]
+fn load_label_add_is_bounded_by_output_and_replay_has_no_effects_or_inferred_claims() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    support::settle(&backend, vec![], vec![add("c", "Todo", "t1")]);
+    let labels = json!({"kind":"tagAdd","scope":"c","record":reference("Todo","t1"),"tags":["X"]});
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&["t1"]), json!([]), vec![labels.clone()]),
+    );
+    let request = item(1, Value::Null);
+    let first = page(&backend, &request);
+    assert_eq!(first["outcome"]["status"], "succeeded", "{first}");
+    assert!(
+        first.get("memberships").is_none(),
+        "labels alone never claim enrollment"
+    );
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
+    );
+    assert_eq!(backend.head("c"), 1);
+    support::settle(&backend, vec![], vec![remove("c", "Todo", "t1")]);
+    backend.clear_log();
+    assert_eq!(page(&backend, &request), first);
+    assert!(settlement_ops(&backend).is_empty());
+    assert!(backend.tagged_members("c").is_empty());
+    let missing = page(&backend, &item(2, Value::Null));
+    assert_eq!(missing["outcome"]["error"]["code"], code::HANDLER_INVALID);
+    assert!(backend.tagged_members("c").is_empty());
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("c", "Todo", "t1"), labels],
+        ),
+    );
+    let fresh = page(&backend, &item(3, Value::Null));
+    assert_eq!(fresh["outcome"]["status"], "succeeded", "{fresh}");
+    assert_eq!(fresh["memberships"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
+    );
 }

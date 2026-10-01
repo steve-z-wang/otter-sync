@@ -48,7 +48,7 @@ The runner creates an isolated PostgreSQL cluster and two per-client proxies. It
 
 Scenarios:
 
-1. Alice and Bob subscribe and exchange live edits through native HTTP/WebSocket. The seeded record is not among those live edits: a subscription starts at the head its first handshake acknowledges ([#150](https://github.com/zanminwang/axton/issues/150)), so each phone asks for the Scope's earlier publications with `subscription.bootstrap()` ([#151](https://github.com/zanminwang/axton/issues/151)). The harness backend republishes nothing; what the SDK delivers here is the channel's history through the bounded historical pages, and live delivery after it.
+1. Alice and Bob subscribe and exchange live edits through native HTTP/WebSocket. The seeded record is not among those live edits: a subscription starts at the head its first handshake acknowledges ([#150](https://github.com/zanminwang/axton/issues/150)), so each phone asks for the Scope's earlier publications with `subscription.bootstrap()` ([#151](https://github.com/zanminwang/axton/issues/151)). The harness backend republishes nothing; what the SDK delivers here is the scope's history through the bounded historical pages, and live delivery after it.
 2. Alice's first successful push response is dropped; retry must reuse its receipt without executing the handler twice.
 3. Alice's proxy disconnects real network traffic. She creates a record and queues a dependent edit locally.
 4. Her process is terminated and relaunched while disconnected; records, queued work, and client ID must survive.

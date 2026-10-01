@@ -77,7 +77,7 @@ test("the mobile host shares the runtime subscription handles and their offline 
       },
     );
     assert.deepEqual(
-      (await client.syncState()).channels,
+      (await client.syncState()).scopes,
       [],
       "the registration is gone",
     );

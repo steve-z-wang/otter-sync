@@ -46,7 +46,7 @@ test("installed client and backend: local writes survive reopening, then sync", 
     const mutations: Mutations<PgClient> = {
       async addNote({ args, ctx }) {
         await ctx.tx.query("INSERT INTO note (id, text) VALUES ($1, $2)", [args.note.id, args.note.text]);
-        ctx.channel("notes").note.add({ id: args.note.id });
+        ctx.scope("notes").add.note({ id: args.note.id });
       },
     };
     const loaders: Loaders<PgClient> = {

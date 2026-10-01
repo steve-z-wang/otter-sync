@@ -10,7 +10,7 @@
 //!
 //! The engine signals the watch through [`Client::watch`] after every commit
 //! that wrote one of its tables, whatever the path: a local write, a
-//! settlement or rejection rollback, an optimistic replay, a Channel page, a
+//! settlement or rejection rollback, an optimistic replay, a Scope page, a
 //! Load page, a Fetch or a rebuild. At the end of a unit with no callback
 //! transaction open, only a signalled watch re-runs, and it publishes only a
 //! result that differs from the last one. A commit that writes none of its

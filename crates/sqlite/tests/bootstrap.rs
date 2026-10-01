@@ -14,13 +14,13 @@ use std::rc::Rc;
 /// at `head` establishes: S = L = `head`, the origin every historical page of
 /// this subscription is bounded by.
 fn origin(c: &mut Client<SqliteStore>, scope: &str, head: u64) -> SubscriptionState {
-    c.transaction(|tx| tx.set_channel(scope.into(), true))
+    c.transaction(|tx| tx.set_scope(scope.into(), true))
         .unwrap();
     acknowledge(c, &[(scope, head)]);
     c.subscription_state(scope).unwrap().expect("a row")
 }
 /// One historical page: `(from, to]` of `scope`, bounded by origin `until`,
-/// observed at channel head `head`.
+/// observed at scope head `head`.
 fn historical(
     scope: &str,
     from: u64,
@@ -30,7 +30,7 @@ fn historical(
     records: Vec<AuthorityRecord>,
 ) -> BootstrapPage {
     BootstrapPage {
-        channel: scope.to_string(),
+        scope: scope.to_string(),
         from,
         to,
         until,
@@ -136,7 +136,7 @@ fn registration_before_initialization_waits_for_its_origin() {
 }
 
 /// Registering a load changes no membership, so it must not make the open live
-/// session stale: the subscription generation and the channel epochs stay put,
+/// session stale: the subscription generation and the scope epochs stay put,
 /// while the commit still names the Scope whose load changed and still notifies
 /// the row's watchers.
 #[test]
@@ -389,7 +389,7 @@ fn a_protocol_invalid_page_writes_nothing_and_fails_visibly() {
     c.request_bootstrap("a", id).unwrap();
     let record = vec![authority_of("k", Some("K"), 4)];
     for page in [
-        // An origin past the channel head.
+        // An origin past the scope head.
         historical("a", 0, 4, 10, 3, record.clone()),
         // A page that reaches past its origin.
         historical("a", 0, 12, 10, 12, record.clone()),
@@ -848,15 +848,15 @@ fn tasks_are_the_initialized_runs_with_work_in_scope_order() {
 fn raw_store(path: &std::path::Path) -> SqliteStore {
     SqliteStore::open(path).unwrap()
 }
-/// Every stored column of `channel`'s row, with each one's SQLite type: what
+/// Every stored column of `scope`'s row, with each one's SQLite type: what
 /// "retained exactly as stored" is checked against.
-fn raw_row(store: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
+fn raw_row(store: &mut SqliteStore, scope: &str) -> Vec<serde_json::Value> {
     let rows = store
         .query_committed(
-            "SELECT channel, subscription_id, starting_cursor, cursor, bootstrap_state, \
+            "SELECT scope, subscription_id, starting_cursor, cursor, bootstrap_state, \
              bootstrap_run, bootstrap_cursor, typeof(bootstrap_cursor), bootstrap_barrier, \
-             bootstrap_error, typeof(bootstrap_error) FROM axton_subscription WHERE channel=?",
-            &[json!(channel)],
+             bootstrap_error, typeof(bootstrap_error) FROM axton_subscription WHERE scope=?",
+            &[json!(scope)],
         )
         .unwrap();
     rows.rows
@@ -867,7 +867,7 @@ fn raw_row(store: &mut SqliteStore, channel: &str) -> Vec<serde_json::Value> {
 
 /// One active row that cannot be decoded is its own registration's problem: a
 /// named read of it still fails, and so does the strict task list, but the
-/// scheduler's scan skips it - wherever it falls in Channel order - and the
+/// scheduler's scan skips it - wherever it falls in Scope order - and the
 /// healthy run beside it keeps its turn. Nothing rewrites the damaged row.
 #[test]
 fn an_undecodable_active_row_does_not_block_the_schedule() {
@@ -875,19 +875,19 @@ fn an_undecodable_active_row_does_not_block_the_schedule() {
     let path = dir.path().join("db");
     let mut c = open(&path);
     let mut ids = std::collections::BTreeMap::new();
-    for channel in ["bad", "good", "worse"] {
-        let id = origin(&mut c, channel, 5).subscription_id;
-        c.request_bootstrap(channel, id).unwrap();
-        ids.insert(channel, id);
+    for scope in ["bad", "good", "worse"] {
+        let id = origin(&mut c, scope, 5).subscription_id;
+        c.request_bootstrap(scope, id).unwrap();
+        ids.insert(scope, id);
     }
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE channel='bad'",
+        "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE scope='bad'",
         &[],
     )
     .unwrap();
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='worse'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='worse'",
         &[],
     )
     .unwrap();
@@ -896,10 +896,10 @@ fn an_undecodable_active_row_does_not_block_the_schedule() {
     assert_eq!(stored[1][10], json!("text"), "{:?}", stored[1]);
 
     // Named reads of a damaged registration never invent a state.
-    for channel in ["bad", "worse"] {
-        c.bootstrap_state(channel, ids[channel])
+    for scope in ["bad", "worse"] {
+        c.bootstrap_state(scope, ids[scope])
             .expect_err("a named read of an undecodable row fails");
-        c.request_bootstrap(channel, ids[channel])
+        c.request_bootstrap(scope, ids[scope])
             .expect_err("so does registering against it");
     }
     c.bootstrap_tasks()
@@ -935,19 +935,19 @@ fn an_undecodable_active_row_does_not_hide_a_reached_barrier() {
     let path = dir.path().join("db");
     let mut c = open(&path);
     let mut ids = std::collections::BTreeMap::new();
-    for channel in ["bad", "good", "waiting"] {
-        let id = origin(&mut c, channel, 5).subscription_id;
-        c.request_bootstrap(channel, id).unwrap();
-        ids.insert(channel, id);
+    for scope in ["bad", "good", "waiting"] {
+        let id = origin(&mut c, scope, 5).subscription_id;
+        c.request_bootstrap(scope, id).unwrap();
+        ids.insert(scope, id);
     }
-    for channel in ["bad", "waiting"] {
-        apply(&mut c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
-        c.apply_page(page(channel, 5, 9, Some("live"))).unwrap();
-        assert_eq!(bootstrap(&mut c, channel).state, BootstrapPhase::CatchingUp);
+    for scope in ["bad", "waiting"] {
+        apply(&mut c, scope, &historical(scope, 0, 5, 5, 9, vec![]));
+        c.apply_page(page(scope, 5, 9, Some("live"))).unwrap();
+        assert_eq!(bootstrap(&mut c, scope).state, BootstrapPhase::CatchingUp);
     }
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='bad'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='bad'",
         &[],
     )
     .unwrap();
@@ -979,23 +979,23 @@ fn an_undecodable_active_row_does_not_hide_a_reached_barrier() {
     );
 }
 
-/// Take `channel` through its whole interval to a barrier ordinary delivery has
+/// Take `scope` through its whole interval to a barrier ordinary delivery has
 /// reached: catching up at H = 9 with L = 9, waiting only for a settlement.
-fn reached(c: &mut Client<SqliteStore>, channel: &str) -> u64 {
-    let id = origin(c, channel, 5).subscription_id;
-    c.request_bootstrap(channel, id).unwrap();
-    apply(c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
-    c.apply_page(page(channel, 5, 9, Some("live"))).unwrap();
-    assert_eq!(bootstrap(c, channel).state, BootstrapPhase::CatchingUp);
+fn reached(c: &mut Client<SqliteStore>, scope: &str) -> u64 {
+    let id = origin(c, scope, 5).subscription_id;
+    c.request_bootstrap(scope, id).unwrap();
+    apply(c, scope, &historical(scope, 0, 5, 5, 9, vec![]));
+    c.apply_page(page(scope, 5, 9, Some("live"))).unwrap();
+    assert_eq!(bootstrap(c, scope).state, BootstrapPhase::CatchingUp);
     id
 }
-/// Take `channel` through its whole interval to a barrier at H = 9 that
+/// Take `scope` through its whole interval to a barrier at H = 9 that
 /// delivery, still at L = 5, has not reached.
-fn behind(c: &mut Client<SqliteStore>, channel: &str) -> u64 {
-    let id = origin(c, channel, 5).subscription_id;
-    c.request_bootstrap(channel, id).unwrap();
-    apply(c, channel, &historical(channel, 0, 5, 5, 9, vec![]));
-    assert_eq!(bootstrap(c, channel).state, BootstrapPhase::CatchingUp);
+fn behind(c: &mut Client<SqliteStore>, scope: &str) -> u64 {
+    let id = origin(c, scope, 5).subscription_id;
+    c.request_bootstrap(scope, id).unwrap();
+    apply(c, scope, &historical(scope, 0, 5, 5, 9, vec![]));
+    assert_eq!(bootstrap(c, scope).state, BootstrapPhase::CatchingUp);
     id
 }
 /// The names a settlement is handed below: the reached runs `a` and `z`, the
@@ -1018,7 +1018,7 @@ fn crowd() -> (Vec<String>, usize) {
 
 /// Settlement takes its names as a set: duplicates are one name, more names
 /// than SQLite's oldest 999-variable floor are fine, each reached run
-/// completes exactly once and in Channel order, a run short of its barrier
+/// completes exactly once and in Scope order, a run short of its barrier
 /// stays catching up (D10), and a second call finds nothing to write.
 #[test]
 fn settlement_takes_its_names_as_a_set_of_any_size() {
@@ -1046,12 +1046,12 @@ fn settlement_takes_its_names_as_a_set_of_any_size() {
             ("z", BootstrapPhase::Complete, Some(9)),
         ]
     );
-    for (channel, id, phase) in [
+    for (scope, id, phase) in [
         ("a", ids[0], BootstrapPhase::Complete),
         ("m", ids[1], BootstrapPhase::CatchingUp),
         ("z", ids[2], BootstrapPhase::Complete),
     ] {
-        assert_eq!(c.bootstrap_state(channel, id).unwrap().state, phase);
+        assert_eq!(c.bootstrap_state(scope, id).unwrap().state, phase);
     }
 
     let generation = c.generation();
@@ -1132,7 +1132,7 @@ fn an_undecodable_candidate_does_not_block_a_healthy_settlement() {
     let good = reached(&mut c, "good");
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE channel='bad'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='bad'",
         &[],
     )
     .unwrap();

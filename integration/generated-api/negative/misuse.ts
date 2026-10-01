@@ -16,7 +16,7 @@ const badHooks:StoreHooks={
   // @ts-expect-error Fetch is unavailable within the onStore transaction
   void tx.fetch;
   // @ts-expect-error onStore subscribes locally; it has no server Channel enrollment
-  tx.channel('c').entry.add({id:'e'});
+  tx.scope('c').add.entry({id:'e'});
  },
  // @ts-expect-error unknown Models cannot register hooks
  unknown:async()=>{},
@@ -115,6 +115,8 @@ export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTra
  void local.mutations;
  // @ts-expect-error the callback modifies no Channel
  void local.channels;
+ // @ts-expect-error companions have no local Scope registration
+ void local.scopes;
  // @ts-expect-error the callback opens no savepoint and exposes no raw port
  void local.transaction.savepoint;
  // @ts-expect-error the callback cannot watch
@@ -128,3 +130,13 @@ export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTra
  const call:PublishEntryOutput|undefined=(await (await tx.mutations.publishEntry({entry:row,composition:id})).wait()).result;
  return [wrong,call];
 }
+
+async function retiredScopeAliases(client:GeneratedClient,tx:GeneratedTransaction):Promise<void>{
+ // @ts-expect-error the generated client exposes scopes only
+ void client.channels;
+ // @ts-expect-error the generated transaction exposes scopes only
+ void tx.channels;
+ await tx.scopes.subscribe('U');
+ await tx.scopes.unsubscribe('U');
+}
+void retiredScopeAliases;

@@ -122,10 +122,10 @@ Future<(Subscriptions, Subscription)> handle(
   return (registry, await subscribing);
 }
 
-/// The acknowledgement: every subscribed channel at `head`.
+/// The acknowledgement: every subscribed scope at `head`.
 String ack(Map sub, int head) => jsonEncode({
   'type': 'subscribed',
-  'cursors': {for (final channel in sub['channels'] as List) channel: head},
+  'cursors': {for (final scope in sub['scopes'] as List) scope: head},
 });
 Map<String, Object?> page(String text, int cursor, int stamp) => {
   'cursors': {
@@ -134,7 +134,7 @@ Map<String, Object?> page(String text, int cursor, int stamp) => {
   'changes': [
     {
       'kind': 'upsert',
-      'channel': 'scope',
+      'scope': 'scope',
       'cursor': cursor + 1,
       'model': 'Entry',
       'identity': {'id': 'live'},
@@ -145,11 +145,11 @@ Map<String, Object?> page(String text, int cursor, int stamp) => {
 };
 
 /// One terminal bootstrap page covering the whole requested interval, with the
-/// channel head it observed - the barrier completion then waits for
+/// scope head it observed - the barrier completion then waits for
 /// ([#151](https://github.com/zanminwang/axton/issues/151)).
 Map<String, Object?> loaded(Map body, int head) => {
   'mode': 'bootstrap',
-  'channel': body['channel'],
+  'scope': body['scope'],
   'from': body['after'],
   'to': body['until'],
   'until': body['until'],
@@ -280,6 +280,54 @@ class FakeServer {
 
 void main() {
   test(
+    'transaction scopes persist only committed registrations on reopen',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'axton-dart-transaction-scopes-',
+      );
+      var client = await Fixture.openClient(directory);
+      try {
+        await client.transaction((tx) async {
+          await tx.scopes.subscribe('U');
+          await tx.scopes.subscribe('discard');
+        });
+        expect((await client.syncState())['scopes'], ['U', 'discard']);
+        await client.transaction((tx) async {
+          await tx.scopes.unsubscribe('discard');
+        });
+        expect((await client.syncState())['scopes'], ['U']);
+        await expectLater(
+          client.transaction((tx) async {
+            await tx.scopes.unsubscribe('U');
+            await tx.scopes.subscribe('discard');
+            await tx.scopes.subscribe('rolled-back');
+            throw StateError('rollback scopes');
+          }),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'rollback scopes',
+            ),
+          ),
+        );
+        expect((await client.syncState())['scopes'], ['U']);
+        await client.close();
+        client = await Fixture.openClient(directory);
+        expect(
+          (await client.syncState())['scopes'],
+          ['U'],
+          reason:
+              'reopen preserves committed registrations before any subscribe call',
+        );
+      } finally {
+        await client.close();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
     'one handle per subscription identity: repeated calls coalesce',
     () async {
       final fixture = await Fixture.open();
@@ -303,7 +351,7 @@ void main() {
           reason: 'registered offline: durable intent with no boundary',
         );
         final state = await client.syncState();
-        expect(state['channels'], ['scope']);
+        expect(state['scopes'], ['scope']);
         expect(
           state['cursors'],
           isEmpty,
@@ -443,7 +491,7 @@ void main() {
                 'the failing observer heard the first snapshot and the commit',
           );
           expect(
-            (await client.syncState())['channels'],
+            (await client.syncState())['scopes'],
             ['scope'],
             reason: 'nothing was rolled back',
           );
@@ -715,7 +763,7 @@ void main() {
         // forget.
         await stale.unsubscribe();
         expect(
-          (await client.syncState())['channels'],
+          (await client.syncState())['scopes'],
           ['scope'],
           reason: 'the current registration stands',
         );
@@ -754,10 +802,10 @@ void main() {
             connection: SubscriptionConnection.stopped,
           ),
         );
-        expect((await client.syncState())['channels'], isEmpty);
+        expect((await client.syncState())['scopes'], isEmpty);
         await first.unsubscribe();
         expect(
-          (await client.syncState())['channels'],
+          (await client.syncState())['scopes'],
           isEmpty,
           reason: 'repeating it on a closed handle is a no-op',
         );
@@ -765,7 +813,7 @@ void main() {
         expect(identical(second, first), isFalse);
         await first.unsubscribe();
         expect(
-          (await client.syncState())['channels'],
+          (await client.syncState())['scopes'],
           ['scope'],
           reason:
               'an old handle must not delete the subscription that replaced it',
@@ -774,7 +822,7 @@ void main() {
         // The Scope-named form removes whatever is registered and closes its
         // handle.
         await client.unsubscribe('scope');
-        expect((await client.syncState())['channels'], isEmpty);
+        expect((await client.syncState())['scopes'], isEmpty);
         expect(second.status.connection, SubscriptionConnection.stopped);
       } finally {
         await fixture.close();
@@ -817,7 +865,7 @@ void main() {
         final reopened = await Fixture.openClient(directory);
         try {
           expect(
-            (await reopened.syncState())['channels'],
+            (await reopened.syncState())['scopes'],
             ['scope'],
             reason: 'closing the client deleted nothing',
           );
@@ -909,7 +957,7 @@ void main() {
             'changes': [
               {
                 'kind': 'upsert',
-                'channel': 'scope',
+                'scope': 'scope',
                 'cursor': 3,
                 'model': 'Entry',
                 'identity': {'id': 'live'},

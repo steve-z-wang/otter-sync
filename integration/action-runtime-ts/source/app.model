@@ -12,7 +12,7 @@ model Moment {
  title String
  @@id(at)
 }
-// A composite identity with a DateTime component, for the generated Channel and Touch types.
+// A composite identity with a DateTime component, for the generated Scope and Touch types.
 model Pin {
  todo String
  at DateTime

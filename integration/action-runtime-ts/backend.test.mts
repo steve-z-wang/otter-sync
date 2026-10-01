@@ -11,11 +11,11 @@ import {
   type Loaders,
   type Loads,
   type PutV1Input,
-  type Channel,
+  type Scope,
   type Touch,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
-import type { ChannelIntent } from "../../packages/server/host-contract.mts";
+import type { ScopeIntent } from "../../packages/server/host-contract.mts";
 
 test("generated backend decodes Date values and declares canonical identities through its handles", async () => {
   const first = "2026-01-01T00:00:00.000Z";
@@ -34,13 +34,13 @@ test("generated backend decodes Date values and declares canonical identities th
     moment.at = new Date(second);
     ctx.touch.moment(moment);
     ctx.touch.moment({ at: new Date(second) });
-    const channel = ctx.channel("todos");
-    channel.todo.add(args.todo);
-    channel.add([
+    const scope = ctx.scope("todos");
+    scope.add.todo(args.todo);
+    scope.add([
       Moment({ at: new Date("2026-01-03T00:00:00.000Z") }),
       Pin({ todo: args.todo.id, at: args.todo.at }),
     ]);
-    channel.pin.remove({ todo: args.todo.id, at: args.todo.at });
+    scope.remove.pin({ todo: args.todo.id, at: args.todo.at });
     return {
       todo: { id: args.todo.id },
       echoed: new Date(args.when.getTime()),
@@ -169,7 +169,7 @@ test("generated backend decodes Date values and declares canonical identities th
   for (const handled of seen.slice(0, 2) as {
     outputs: { todo: { id: string }; echoed: string; status: string };
     changes: { model: string; identity: Record<string, unknown> }[];
-    memberships: ChannelIntent[];
+    memberships: ScopeIntent[];
   }[]) {
     assert.deepEqual(handled.outputs.todo, { id: "one" });
     assert.equal(handled.outputs.echoed, first);
@@ -182,7 +182,7 @@ test("generated backend decodes Date values and declares canonical identities th
     // Only identity fields, in declaration order; the engine reduces them.
     const add = (model: string, identity: object) => ({
       kind: "add",
-      channel: "todos",
+      scope: "todos",
       record: { model, identity },
       tags: [],
     });
@@ -192,7 +192,7 @@ test("generated backend decodes Date values and declares canonical identities th
       add("Pin", { todo: "one", at: first }),
       {
         kind: "remove",
-        channel: "todos",
+        scope: "todos",
         record: { model: "Pin", identity: { todo: "one", at: first } },
       },
     ]);
@@ -318,7 +318,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
           assert.equal(ctx.callId, "Find-2");
           assert.ok(args.at instanceof Date);
           // @ts-expect-error a Query context has no membership writer
-          assert.equal(ctx.channel, undefined);
+          assert.equal(ctx.scope, undefined);
           // @ts-expect-error a Query context has no change declaration
           assert.equal(ctx.touch, undefined);
           return { todo: { id: "one" } };
@@ -331,7 +331,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "channel", "touch", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "scope", "touch", "tx", "userId"] },
     { kind: "query", keys: ["callId", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
@@ -453,7 +453,7 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
 
 test("declaration handles close when the handler or external body settles, even when it throws", async () => {
   const escaped: {
-    channel: (name: string) => Channel;
+    scope: (name: string) => Scope;
     touch: Touch;
   }[] = [];
   const answers: unknown[] = [];
@@ -481,8 +481,8 @@ test("declaration handles close when the handler or external body settles, even 
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx }) => {
-        escaped.push({ channel: ctx.channel, touch: ctx.touch });
-        ctx.channel("found").todo.add({ id: "one" });
+        escaped.push({ scope: ctx.scope, touch: ctx.touch });
+        ctx.scope("found").add.todo({ id: "one" });
         if (ctx.callId === "find-2") throw new Error("after declaring");
         return { todo: null };
       },
@@ -501,7 +501,7 @@ test("declaration handles close when the handler or external body settles, even 
       memberships: [
         {
           kind: "add",
-          channel: "found",
+          scope: "found",
           record: { model: "Todo", identity: { id: "one" } },
           tags: [],
         },
@@ -510,10 +510,10 @@ test("declaration handles close when the handler or external body settles, even 
     { error: "after declaring" },
   ]);
   // The external body answers its own value; its declarations settle after it.
-  const value = await backend.transaction(async ({ channel, touch }) => {
-    escaped.push({ channel, touch });
+  const value = await backend.transaction(async ({ scope: scope, touch }) => {
+    escaped.push({ scope: scope, touch });
     touch.pin({ todo: "one", at: new Date(at) });
-    channel("found").todo.remove({ id: "one" });
+    scope("found").remove.todo({ id: "one" });
     return { arbitrary: [1, 2] };
   });
   assert.deepEqual(value, { arbitrary: [1, 2] });
@@ -522,27 +522,27 @@ test("declaration handles close when the handler or external body settles, even 
     memberships: [
       {
         kind: "remove",
-        channel: "found",
+        scope: "found",
         record: { model: "Todo", identity: { id: "one" } },
       },
     ],
   });
   await assert.rejects(
-    backend.transaction(async ({ channel, touch }) => {
-      escaped.push({ channel, touch });
+    backend.transaction(async ({ scope: scope, touch }) => {
+      escaped.push({ scope: scope, touch });
       throw new Error("body failed");
     }),
     /body failed/,
   );
   assert.equal(settled.length, 1, "a failed body settles nothing");
   assert.equal(escaped.length, 4);
-  for (const { channel, touch } of escaped) {
-    assert.throws(() => channel("late"), /closed/);
+  for (const { scope: scope, touch } of escaped) {
+    assert.throws(() => scope("late"), /closed/);
     assert.throws(() => touch.todo({ id: "late" }), /closed/);
   }
 });
 
-test("Load handlers take decoded args and a context with a channel and no touch, and answer identity pages", async () => {
+test("Load handlers take decoded args and a context with a scope and no touch, and answer identity pages", async () => {
   const at = "2026-01-01T00:00:00.000Z";
   const seen: Record<string, unknown>[] = [];
   const answers: unknown[] = [];
@@ -625,7 +625,7 @@ test("Load handlers take decoded args and a context with a channel and no touch,
       userId,
     })),
     requests.map(() => ({
-      keys: ["callId", "channel", "loadId", "tx", "userId"],
+      keys: ["callId", "loadId", "scope", "tx", "userId"],
       since: at,
       statuses: ["open", "closed"],
       loadId: "load-1",
@@ -741,7 +741,7 @@ test("the native engine refuses a full Model value that type-checks as an identi
     await backend.loads(
       "alice",
       JSON.stringify({
-        capabilities: ["channel-membership-v1"],
+        capabilities: ["scope-membership-v1"],
         loads: [item(1, null), item(2, { state: "ids" })],
       }),
     ),

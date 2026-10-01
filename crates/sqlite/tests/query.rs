@@ -173,7 +173,7 @@ fn sql_tables_are_the_model_tables_a_select_reads() {
 }
 
 #[test]
-fn transport_pulls_only_subscribed_channels_and_the_receipt_completes_the_push() {
+fn transport_pulls_only_subscribed_scopes_and_the_receipt_completes_the_push() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "book");
@@ -191,7 +191,7 @@ fn transport_pulls_only_subscribed_channels_and_the_receipt_completes_the_push()
     assert_eq!(
         c.pending_count().unwrap(),
         0,
-        "the receipt's authority completes the push; no channel is awaited"
+        "the receipt's authority completes the push; no scope is awaited"
     );
     let first = cycle.next(&mut c).unwrap().unwrap();
     assert_eq!(first.kind, "pull");
@@ -205,7 +205,7 @@ fn transport_pulls_only_subscribed_channels_and_the_receipt_completes_the_push()
         .unwrap();
     assert!(
         cycle.next(&mut c).unwrap().is_none(),
-        "only subscribed channels are pulled"
+        "only subscribed scopes are pulled"
     );
 }
 

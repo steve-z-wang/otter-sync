@@ -6,7 +6,7 @@ The README, guides and documentation website are maintained in English. Keep API
 
 - Update affected guides and examples in the same PR as a behavior change.
 - Preserve working commands, relative links, code examples and explicit platform limitations.
-- Use consistent concept names: Model, Record, Identity, Mutation, Handler, Loader, Channel, Publish, Receipt, Stamp, Client, Persistence, Push/Pull and Cursor.
+- Use consistent concept names: Model, Record, Identity, Mutation, Handler, Loader, Scope, Publish, Receipt, Stamp, Client, Persistence, Push/Pull and Cursor.
 - Describe current behavior and verify it against the implementation. Keep internal design discussions and development history out of user documentation.
 - Check local links, heading fragments and Markdown formatting when moving or renaming pages.
 

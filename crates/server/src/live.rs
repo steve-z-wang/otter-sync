@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Serialize)]
 pub struct Negotiation {
-    /// The acknowledgement frame: every channel's head.
+    /// The acknowledgement frame: every scope's head.
     pub response: String,
-    /// The accepted channels with their heads at negotiation.
+    /// The accepted scopes with their heads at negotiation.
     pub heads: BTreeMap<String, u64>,
     /// The read contracts the client declared; every page of the session is
     /// pulled at these versions.
@@ -24,7 +24,7 @@ pub struct PageProgress {
     pub cursors: BTreeMap<String, CursorRange>,
 }
 
-/// The subscribe frame's shape and channel normalization are protocol rules
+/// The subscribe frame's shape and scope normalization are protocol rules
 /// ([`SubscribeRequest`]); this maps their refusal to the request code.
 pub fn decode_subscribe(bytes: &[u8]) -> Result<SubscribeRequest> {
     SubscribeRequest::decode(bytes).map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))
@@ -41,8 +41,8 @@ pub async fn negotiate(
     let request = decode_subscribe(bytes)?;
     config.check_declared(&request.models)?;
     let mut heads = BTreeMap::new();
-    for channel in &request.channels {
-        heads.insert(channel.clone(), head(host, channel).await?);
+    for scope in &request.scopes {
+        heads.insert(scope.clone(), head(host, scope).await?);
     }
     let ack = SubscriptionAck::new(heads.clone())
         .and_then(|ack| ack.encode())
@@ -57,9 +57,9 @@ pub async fn negotiate(
 }
 
 /// A page the host pulled must answer exactly the cursors that were asked:
-/// the same channels, each starting at its requested cursor.
+/// the same scopes, each starting at its requested cursor.
 pub fn page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
-    channel_page_progress(page, expected)
+    scope_page_progress(page, expected)
 }
 
 pub async fn pull(
@@ -69,7 +69,7 @@ pub async fn pull(
     models: &BTreeMap<String, u64>,
     host: &impl Host,
 ) -> Result<PageProgress> {
-    channel_pull(config, owner, cursors, models, host).await
+    scope_pull(config, owner, cursors, models, host).await
 }
 
 /// What the host reports to a socket's [`Subscriptions`].
@@ -181,8 +181,8 @@ impl Subscriptions {
         self.handle_page(event)
     }
 
-    /// Apply a channel-aware live page without projecting away removals.
-    pub fn handle_channel(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
+    /// Apply a scope-aware live page without projecting away removals.
+    pub fn handle_scope(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
         self.handle_page(event)
     }
 
@@ -205,7 +205,7 @@ impl Subscriptions {
                 if self.closed {
                     return Ok(vec![]);
                 }
-                let progress = channel_page_progress(&page, &asked)?;
+                let progress = scope_page_progress(&page, &asked)?;
                 let mut actions = vec![];
                 let advanced = progress.cursors.values().any(|range| range.to > range.from);
                 if advanced {
@@ -287,16 +287,16 @@ impl Subscriptions {
     }
 }
 
-/// Validate channel-aware live progress, preserving the complete frame.
-pub fn channel_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
+/// Validate scope-aware live progress, preserving the complete frame.
+pub fn scope_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
     let invalid = |m| Error::new(code::LIVE_INVALID_PAGE, m);
     let decoded =
-        axton_core::ChannelPullPage::decode(page.as_bytes()).map_err(|e| invalid(e.to_string()))?;
+        axton_core::ScopePullPage::decode(page.as_bytes()).map_err(|e| invalid(e.to_string()))?;
     if !decoded.cursors.keys().eq(expected.keys())
         || decoded
             .cursors
             .iter()
-            .any(|(channel, range)| range.from != expected[channel])
+            .any(|(scope, range)| range.from != expected[scope])
     {
         return Err(invalid("invalid live page progression".into()));
     }
@@ -306,8 +306,8 @@ pub fn channel_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Re
     })
 }
 
-/// Pull channel membership events for a live session in the host transaction.
-pub async fn channel_pull(
+/// Pull scope membership events for a live session in the host transaction.
+pub async fn scope_pull(
     config: &crate::Config,
     owner: &str,
     cursors: &BTreeMap<String, u64>,
@@ -321,8 +321,8 @@ pub async fn channel_pull(
     .encode()
     .map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))?;
     let request =
-        axton_core::with_capabilities(&request, &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY])
+        axton_core::with_capabilities(&request, &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY])
             .map_err(crate::internal)?;
-    let page = crate::process_channel_pull(config, owner, &request, host).await?;
-    channel_page_progress(&page, cursors)
+    let page = crate::process_scope_pull(config, owner, &request, host).await?;
+    scope_page_progress(&page, cursors)
 }

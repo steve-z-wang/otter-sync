@@ -35,7 +35,24 @@ test('live subscribe refuses unsupported capability before acknowledgement',asyn
   const socket=new WebSocket(listening.url.replace('http:','ws:')+'/sync/live');const frames=[];
   socket.on('message',frame=>frames.push(String(frame)));
   try {
-    const closed=await new Promise((resolve,reject)=>{socket.on('error',reject);socket.on('open',()=>socket.send(JSON.stringify({type:'subscribe',channels:['room'],models:{Entry:1}})));socket.on('close',(code,reason)=>resolve({code,reason:String(reason)}));});
+    const closed=await new Promise((resolve,reject)=>{socket.on('error',reject);socket.on('open',()=>socket.send(JSON.stringify({type:'subscribe',scopes:['room'],models:{Entry:1}})));socket.on('close',(code,reason)=>resolve({code,reason:String(reason)}));});
     assert.deepEqual(closed,{code:1002,reason:'protocol.unsupported'});assert.deepEqual(frames,[]);assert.deepEqual(effects,[]);assert.deepEqual(errors,[]);
   }finally{socket.close();await listening.close();}
+});
+
+test('new capability with retired immediate wire fields is refused before host effects',async()=>{
+ const {backend,effects}=app();const listening=await backend.listen({port:0});
+ try{
+  for(const old of ['channel','channels']){
+   const request={mode:'bootstrap',scope:'room',after:0,until:1,models:{Entry:1},capabilities:['scope-membership-v1'],[old]:'room'};
+   const response=await fetch(listening.url+'/sync/pull',{method:'POST',body:JSON.stringify(request)});
+   assert.equal(response.status,400);assert.deepEqual(await response.json(),{code:'request.invalid'});
+   await assert.rejects(()=>native.negotiateLive(JSON.stringify(config),'alice',JSON.stringify({type:'subscribe',scopes:['room'],models:{Entry:1},capabilities:['scope-membership-v1'],[old]:['room']}),async()=>{effects.push('host');}),error=>JSON.parse(error.message).code==='request.invalid');
+  }
+  for(const route of routes){
+   const response=await fetch(listening.url+route,{method:'POST',body:JSON.stringify({capabilities:['channel-membership-v1']})});
+   assert.equal(response.status,426);
+  }
+  assert.deepEqual(effects,[]);
+ }finally{await listening.close();}
 });

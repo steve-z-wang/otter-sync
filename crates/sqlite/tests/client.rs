@@ -95,7 +95,7 @@ fn watch_fires_only_for_declared_tables() {
     seed(&mut c, "A");
     assert!(entry.try_recv().is_ok());
     assert!(queue.try_recv().is_err());
-    c.transaction(|tx| tx.set_channel("book".into(), true))
+    c.transaction(|tx| tx.set_scope("book".into(), true))
         .unwrap();
     assert!(entry.try_recv().is_err());
     assert_eq!(
@@ -264,8 +264,8 @@ fn creating_then_editing_a_record_automatically_has_lifecycle_dependency() {
     assert_eq!(batch.mutations.len(), 1);
 }
 
-/// Unsubscribing restarts the channel's cursor and keeps every record it
-/// delivered, whether or not another channel also provides it.
+/// Unsubscribing restarts the scope's cursor and keeps every record it
+/// delivered, whether or not another scope also provides it.
 #[test]
 fn unsubscribe_retains_records_and_restarts_from_zero() {
     let dir = tempfile::tempdir().unwrap();
@@ -279,12 +279,11 @@ fn unsubscribe_retains_records_and_restarts_from_zero() {
     let mut other = page("a", 1, 2, Some("O"));
     other.changes[0].identity = json!({"id":"only-a"});
     c.apply_page(other).unwrap();
-    c.transaction(|tx| tx.set_channel("a".into(), false))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
     assert_eq!(
         c.cursor("a").unwrap(),
         None,
-        "an unsubscribed channel has no delivery position"
+        "an unsubscribed scope has no delivery position"
     );
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "B");
     let only_a = schema()
@@ -293,7 +292,7 @@ fn unsubscribe_retains_records_and_restarts_from_zero() {
     assert_eq!(
         c.read(&only_a).unwrap().unwrap()["text"],
         "O",
-        "a record only the unsubscribed channel delivered is retained"
+        "a record only the unsubscribed scope delivered is retained"
     );
     assert_eq!(table_count(&mut c, "axton_record"), 2);
     assert_eq!(c.record_stamp(&only_a).unwrap(), 2);

@@ -62,7 +62,7 @@ export async function createFixture() {
   const mutations: Mutations<PgClient> = {
     async addItem({ ctx, args }) {
       await ctx.tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [args.item.id, args.item.project, args.item.title]);
-      ctx.channel(`items:${args.item.project}`).item.add(args.item);
+      ctx.scope(`items:${args.item.project}`).add.item(args.item);
     },
     async renameItem({ ctx, args }) {
       const changed = await ctx.tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1 RETURNING id", [args.item.id, args.item.title]);
@@ -92,12 +92,15 @@ export async function createFixture() {
       const pageTags = pageNumber === 1 ? tags : [];
       if (enrolling.has(args.project)) {
         // Only what this page returns, in both forms; an Item declared twice is one addition.
-        const channel = ctx.channel(`items:${args.project}`);
-        for (const item of items) channel.item.add(item);
-        channel.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
+        const scope = ctx.scope(`items:${args.project}`);
+        for (const item of items) scope.add.item(item);
+        scope.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
       }
-      for (const tags of enrollmentTags.get(args.project) ?? [])
-        for (const item of items) ctx.channel(`items:${args.project}`).item.add(item, { tags });
+      const labelGroups = enrollmentTags.get(args.project);
+      if (labelGroups) for (const item of items) {
+        const added = ctx.scope(`items:${args.project}`).add.item(item);
+        for (const labels of labelGroups) if (labels.length) added.tag(labels);
+      }
       return {
         data: { items, tags: pageTags },
         next: { state: { after: items.at(-1)!.id, page: pageNumber, trail: [...(state?.trail ?? []), ...items.map((item) => item.id)], meta: { size: PAGE, nested: { flags: [true, false, null], label: `p${pageNumber}` } } } },
@@ -147,11 +150,11 @@ export async function createFixture() {
     pings,
     /** Projects whose ProjectItems pages reject with `project.closed`. */
     failing,
-    /** Projects whose ProjectItems pages add what they return to Channel `items:${project}`. */
+    /** Projects whose ProjectItems pages add what they return to Scope `items:${project}`. */
     enrolling,
     enrollmentTags,
-    async taggedMembers(channel: string) {
-      return (await pool.query("SELECT m.id::text, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_channel_member m LEFT JOIN axton_channel_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_channel_tag t ON t.id=mt.tag_id WHERE m.channel=$1 GROUP BY m.id", [channel])).rows;
+    async taggedMembers(scope: string) {
+      return (await pool.query("SELECT m.id::text, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_scope_member m LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 GROUP BY m.id", [scope])).rows;
     },
     /** Pause a handler at its first matching page, before it reads. */
     holdHandler: (match: (page: Handled) => boolean) => handlerHolds.arm(match),
@@ -177,7 +180,7 @@ export async function createFixture() {
       for (const [n, id] of ids.entries()) await pool.query("INSERT INTO load_e2e_tag(id,project,label) VALUES($1,$2,$3)", [id, project, labels[n]]);
       return ids;
     },
-    /** Retitle an Item in a backend transaction that `touch`es it: no Mutation and no Channel declaration. */
+    /** Retitle an Item in a backend transaction that `touch`es it: no Mutation and no Scope declaration. */
     async retitle(id: string, title: string) {
       await backend.transaction(async ({ tx, touch }) => {
         await tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1", [id, title]);
@@ -191,23 +194,23 @@ export async function createFixture() {
         touch.tag({ id });
       });
     },
-    /** Create an Item in a backend transaction, adding it to `channel` only when one is named. */
-    async create(id: string, project: string, channel?: string) {
-      await backend.transaction(async ({ tx, touch, channel: join }) => {
+    /** Create an Item in a backend transaction, adding it to `scope` only when one is named. */
+    async create(id: string, project: string, scope?: string) {
+      await backend.transaction(async ({ tx, touch, scope: join }) => {
         await tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [id, project, `${id} title`]);
         touch.item({ id });
-        if (channel !== undefined) join(channel).item.add({ id });
+        if (scope !== undefined) join(scope).add.item({ id });
       });
     },
-    async membership(id: string, channelName: string, present: boolean) {
-      await backend.transaction(async ({ channel }) => {
-        const member = channel(channelName).item;
-        if (present) member.add({ id }); else member.remove({ id });
+    async membership(id: string, scopeName: string, present: boolean) {
+      await backend.transaction(async ({ scope: scope }) => {
+        const membership = scope(scopeName);
+        if (present) membership.add.item({ id }); else membership.remove.item({ id });
       });
     },
-    /** A Channel's head: it moves only when something is published to it. */
-    async head(channel: string) {
-      return Number((await pool.query("SELECT head FROM axton_channel WHERE channel=$1", [channel])).rows[0]?.head ?? 0);
+    /** A Scope's head: it moves only when something is published to it. */
+    async head(scope: string) {
+      return Number((await pool.query("SELECT head FROM axton_scope WHERE scope=$1", [scope])).rows[0]?.head ?? 0);
     },
     async listen() {
       listener = await backend.listen({ port: 0 });

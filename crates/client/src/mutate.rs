@@ -578,11 +578,11 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(())
     }
-    /// Stop following a channel, whichever subscription it holds; whether one
-    /// was removed. Records it delivered stay: a channel is a delivery path,
+    /// Stop following a scope, whichever subscription it holds; whether one
+    /// was removed. Records it delivered stay: a scope is a delivery path,
     /// not an owner, so local content, stamps, before images and pending
     /// operations are all retained.
-    pub fn unsubscribe(&mut self, channel: &str) -> Result<bool> {
-        self.remove_subscription(channel, None)
+    pub fn unsubscribe(&mut self, scope: &str) -> Result<bool> {
+        self.remove_subscription(scope, None)
     }
 }

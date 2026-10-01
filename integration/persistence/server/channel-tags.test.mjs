@@ -42,9 +42,9 @@ const backend=make(database);
 const watched=seen=>make(persistence({transaction:body=>driver.transaction(body),query:(tx,sql,params)=>{seen(sql);return driver.query(tx,sql,params);}}));
 const key=id=>JSON.stringify({id});
 const write=(tx,id,title)=>driver.query(tx,'INSERT INTO tag_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
-const add=(channel,id,tags)=>backend.transaction(({channel:c})=>{c(channel).todo.add({id},tags?{tags}:undefined);});
-const removeTag=(channel,tag)=>backend.transaction(({channel:c})=>{c(channel).remove({tag});});
-const remove=(channel,id)=>backend.transaction(({channel:c})=>{c(channel).todo.remove({id});});
+const add=(channel,id,tags)=>backend.transaction(({scope: c})=>{const added=c(channel).add.todo({id});if(tags?.length)added.tag(tags);});
+const removeTag=(channel,tag)=>backend.transaction(({scope: c})=>{c(channel).where({ tags: { all: [tag] } }).remove();});
+const remove=(channel,id)=>backend.transaction(({scope: c})=>{c(channel).remove.todo({id});});
 const touch=(id,title)=>backend.transaction(async({tx,touch})=>{await write(tx,id,title);touch.todo({id});});
 /** The adapter itself, in one transaction: `call` answers a host request. */
 const adapter=body=>driver.transaction(tx=>body(request=>answer(driver,tx,request),(sql,params=[])=>driver.query(tx,sql,params)));
@@ -76,7 +76,7 @@ after(async()=>{await pool.end();await check.end();});
 test('a pair is one member whose adds union their tags; a tag-only change publishes nothing; same-named tags of two Channels are distinct rows',async()=>{
  await add('u-C','u-a',['X']);
  await add('u-C','u-a',['Y']);
- await backend.transaction(({channel})=>{channel('u-C').todo.add({id:'u-a'},{tags:['X']});channel('u-C').todo.add({id:'u-a'});});
+ await backend.transaction(({scope: channel})=>{channel('u-C').add.todo({id:'u-a'}).tag(['X']);channel('u-C').add.todo({id:'u-a'});});
  assert.deepEqual(await state('u-C'),{members:[['u-a',['X','Y']]],log:[['u-a',1,'upsert']],head:1,tags:['X','Y']});
  assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_channel_member WHERE channel=$1',['u-C']),[{n:1}],'membership is unique per pair');
  await add('u-D','u-a',['X']);
@@ -90,7 +90,7 @@ test('a pair is one member whose adds union their tags; a tag-only change publis
 test('removing X from A (X, Y) and B (X) removes both whole memberships: no member, no association, two remove rows and no Loader call',async()=>{
  const channel='x-bob';
  for(const id of ['x-A','x-B'])await seed(id);
- await backend.transaction(({channel:c})=>{c(channel).todo.add({id:'x-A'},{tags:['X','Y']});c(channel).todo.add({id:'x-B'},{tags:['X']});});
+ await backend.transaction(({scope: c})=>{c(channel).add.todo({id:'x-A'}).tag(['X','Y']);c(channel).add.todo({id:'x-B'}).tag(['X']);});
  const before=await stamps(['x-A','x-B']);
  loaderCalls=0;
  await removeTag(channel,'X');
@@ -107,8 +107,8 @@ test('removing X from A (X, Y) and B (X) removes both whole memberships: no memb
 
 test('the specification example: removing X keeps C (Y) at its old position; A goes despite its Y label',async()=>{
  const channel='User:bob';
- await backend.transaction(({channel:c})=>{
-  c(channel).todo.add({id:'ex-A'},{tags:['X','Y']});c(channel).todo.add({id:'ex-B'},{tags:['X']});c(channel).todo.add({id:'ex-C'},{tags:['Y']});
+ await backend.transaction(({scope: c})=>{
+  c(channel).add.todo({id:'ex-A'}).tag(['X','Y']);c(channel).add.todo({id:'ex-B'}).tag(['X']);c(channel).add.todo({id:'ex-C'}).tag(['Y']);
  });
  await removeTag(channel,'X');
  assert.deepEqual(await state(channel),{members:[['ex-C',['Y']]],log:[['ex-C',3,'upsert'],['ex-A',4,'remove'],['ex-B',5,'remove']],head:5,tags:['Y']});
@@ -144,12 +144,12 @@ test('a whole-member removal discards every tag; a later add starts with only it
 
 test('declarations reduce in order inside one transaction: a selector sees earlier adds, a removed and re-added member publishes one upsert',async()=>{
  await add('ord','ord-E',['X','Y']);
- await backend.transaction(({channel})=>{
+ await backend.transaction(({scope: channel})=>{
   const c=channel('ord');
-  c.todo.add({id:'ord-A'},{tags:['X']});
-  c.remove({tag:'X'});
-  c.todo.add({id:'ord-B'},{tags:['X']});
-  c.todo.add({id:'ord-E'},{tags:['Z']});
+  c.add.todo({id:'ord-A'}).tag(['X']);
+  c.where({ tags: { all: ['X'] } }).remove();
+  c.add.todo({id:'ord-B'}).tag(['X']);
+  c.add.todo({id:'ord-E'}).tag(['Z']);
  });
  assert.deepEqual(await state('ord'),{members:[['ord-B',['X']],['ord-E',['Z']]],log:[['ord-B',2,'upsert'],['ord-E',3,'upsert']],head:3,tags:['X','Z']},
   'A was never a lasting member and got no position; E was released and re-added with only Z');
@@ -157,7 +157,7 @@ test('declarations reduce in order inside one transaction: a selector sees earli
 
 test('the reverse lookup answers every Channel of a record, and a touch reaches exactly those, keeping their tags',async()=>{
  await seed('rev-a');
- await backend.transaction(({channel})=>{channel('rev-1').todo.add({id:'rev-a'},{tags:['X']});channel('rev-2').todo.add({id:'rev-a'});});
+ await backend.transaction(({scope: channel})=>{channel('rev-1').add.todo({id:'rev-a'}).tag(['X']);channel('rev-2').add.todo({id:'rev-a'});});
  assert.deepEqual(await adapter(call=>call({op:'memberships',model:'Todo',identityKey:key('rev-a')})),['rev-1','rev-2']);
  await touch('rev-a','v2');
  assert.deepEqual([await log('rev-1'),await log('rev-2')],[[['rev-a',2,'upsert']],[['rev-a',2,'upsert']]]);
@@ -172,8 +172,8 @@ test('the reverse lookup answers every Channel of a record, and a touch reaches 
 test('a rolled-back transaction leaves every member, tag, association, log row and head as it was',async()=>{
  await add('rb','rb-a',['X']);
  const before=await state('rb');
- await assert.rejects(()=>backend.transaction(async({tx,channel})=>{await write(tx,'rb-b','never');channel('rb').todo.add({id:'rb-b'},{tags:['X','N']});throw new Error('cancel add');}),/cancel add/);
- await assert.rejects(()=>backend.transaction(async({channel})=>{channel('rb').remove({tag:'X'});channel('rb-new').todo.add({id:'rb-a'});throw new Error('cancel removal');}),/cancel removal/);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: channel})=>{await write(tx,'rb-b','never');channel('rb').add.todo({id:'rb-b'}).tag(['X','N']);throw new Error('cancel add');}),/cancel add/);
+ await assert.rejects(()=>backend.transaction(async({scope: channel})=>{channel('rb').where({ tags: { all: ['X'] } }).remove();channel('rb-new').add.todo({id:'rb-a'});throw new Error('cancel removal');}),/cancel removal/);
  assert.deepEqual(await state('rb'),before);
  assert.deepEqual(await q("SELECT channel FROM axton_channel WHERE channel='rb-new'"),[]);
  assert.deepEqual(await q("SELECT id FROM tag_todo WHERE id='rb-b'"),[]);
@@ -230,7 +230,7 @@ test('applyChannelMembers reserves one range per Channel, keeps unpublished delt
 });
 
 test('readChannelMembers answers named and tagged members once with complete tags, whatever the order or repetition of its keys',async()=>{
- await backend.transaction(({channel})=>{const c=channel('read');c.todo.add({id:'read-a'},{tags:['X','Y']});c.todo.add({id:'read-b'},{tags:['X']});c.todo.add({id:'read-c'});});
+ await backend.transaction(({scope: channel})=>{const c=channel('read');c.add.todo({id:'read-a'}).tag(['X','Y']);c.add.todo({id:'read-b'}).tag(['X']);c.add.todo({id:'read-c'});});
  const read=(explicitKeys,tags)=>adapter(call=>call({op:'readChannelMembers',channel:'read',explicitKeys:explicitKeys.map(id=>({model:'Todo',identityKey:key(id)})),tags}));
  const sorted=rows=>rows.map(r=>[JSON.parse(r.identityKey).id,[...r.tags].sort()]).sort((a,b)=>a[0]<b[0]?-1:1);
  assert.deepEqual(sorted(await read(['read-c','read-a','read-c','read-z'],['X'])),[['read-a',['X','Y']],['read-b',['X']],['read-c',[]]]);
@@ -442,9 +442,9 @@ test('add versus tag removal: one serial outcome, and the retried transaction ad
  const orders=[];
  for(let trial=0;trial<3;trial++){
   const channel=`cc-add-${trial}`;
-  await backend.transaction(({channel:c})=>{c(channel).todo.add({id:`${channel}-A`},{tags:['X']});c(channel).todo.add({id:`${channel}-B`},{tags:['X']});});
+  await backend.transaction(({scope: c})=>{c(channel).add.todo({id:`${channel}-A`}).tag(['X']);c(channel).add.todo({id:`${channel}-B`}).tag(['X']);});
   const [A,B,N]=['A','B','N'].map(s=>`${channel}-${s}`);
-  const runs=await together(({channel:c})=>{c(channel).todo.add({id:N},{tags:['X']});},({channel:c})=>{c(channel).remove({tag:'X'});});
+  const runs=await together(({scope: c})=>{c(channel).add.todo({id:N}).tag(['X']);},({scope: c})=>{c(channel).where({ tags: { all: ['X'] } }).remove();});
   const {order,expected}=serial(runs,[
    {members:[],log:[[A,4,'remove'],[B,5,'remove'],[N,6,'remove']],head:6,tags:[]},
    {members:[[N,['X']]],log:[[A,3,'remove'],[B,4,'remove'],[N,5,'upsert']],head:5,tags:['X']},
@@ -459,7 +459,7 @@ test('a tag union versus an empty selector: one serial outcome',async()=>{
  for(let trial=0;trial<3;trial++){
   const channel=`cc-union-${trial}`,A=`${channel}-A`;
   await add(channel,A,['X']);
-  const runs=await together(({channel:c})=>{c(channel).todo.add({id:A},{tags:['Y']});},({channel:c})=>{c(channel).remove({tag:'Y'});});
+  const runs=await together(({scope: c})=>{c(channel).add.todo({id:A}).tag(['Y']);},({scope: c})=>{c(channel).where({ tags: { all: ['Y'] } }).remove();});
   const {order,expected}=serial(runs,[
    {members:[],log:[[A,2,'remove']],head:2,tags:[]},
    {members:[[A,['X','Y']]],log:[[A,1,'upsert']],head:1,tags:['X','Y']},
@@ -472,8 +472,8 @@ test('a touch versus a tag removal: one serial outcome, never an upsert of an ab
  for(let trial=0;trial<3;trial++){
   const K=`cc-touch-K-${trial}`,L=`cc-touch-L-${trial}`,A=`cc-touch-${trial}`;
   await seed(A);
-  await backend.transaction(({channel})=>{channel(K).todo.add({id:A},{tags:['X']});channel(L).todo.add({id:A});});
-  const runs=await together(async({tx,touch})=>{await write(tx,A,'touched');touch.todo({id:A});},({channel})=>{channel(K).remove({tag:'X'});});
+  await backend.transaction(({scope: channel})=>{channel(K).add.todo({id:A}).tag(['X']);channel(L).add.todo({id:A});});
+  const runs=await together(async({tx,touch})=>{await write(tx,A,'touched');touch.todo({id:A});},({scope: channel})=>{channel(K).where({ tags: { all: ['X'] } }).remove();});
   const {order,expected}=serial(runs,[
    {K:{members:[],log:[[A,3,'remove']],head:3,tags:[]},L:[[A,2,'upsert']],stamp:2},
    {K:{members:[],log:[[A,2,'remove']],head:2,tags:[]},L:[[A,2,'upsert']],stamp:2},
@@ -487,14 +487,14 @@ test('a touch versus a tag removal: one serial outcome, never an upsert of an ab
 test('two first writers to a Channel with no row serialize on its insert: distinct consecutive cursors, or one member with both tags',async()=>{
  for(let trial=0;trial<3;trial++){
   const channel=`cc-new-${trial}`,[A,B]=[`${channel}-A`,`${channel}-B`];
-  const runs=await together(({channel:c})=>{c(channel).todo.add({id:A},{tags:['X']});},({channel:c})=>{c(channel).todo.add({id:B},{tags:['X']});});
+  const runs=await together(({scope: c})=>{c(channel).add.todo({id:A}).tag(['X']);},({scope: c})=>{c(channel).add.todo({id:B}).tag(['X']);});
   const {expected}=serial(runs,[
    {members:[[A,['X']],[B,['X']]],log:[[A,1,'upsert'],[B,2,'upsert']],head:2,tags:['X']},
    {members:[[A,['X']],[B,['X']]],log:[[B,1,'upsert'],[A,2,'upsert']],head:2,tags:['X']},
   ]);
   assert.deepEqual(await state(channel),expected,`trial ${trial}`);
   const same=`cc-same-${trial}`,S=`${same}-S`;
-  const again=await together(({channel:c})=>{c(same).todo.add({id:S},{tags:['X']});},({channel:c})=>{c(same).todo.add({id:S},{tags:['Y']});});
+  const again=await together(({scope: c})=>{c(same).add.todo({id:S}).tag(['X']);},({scope: c})=>{c(same).add.todo({id:S}).tag(['Y']);});
   const {expected:joined}=serial(again,[
    {members:[[S,['X','Y']]],log:[[S,1,'upsert']],head:1,tags:['X','Y']},
    {members:[[S,['X','Y']]],log:[[S,1,'upsert']],head:1,tags:['X','Y']},
@@ -512,7 +512,7 @@ test('removing 10,000 tagged members: a failure after the log writes rolls every
  const named=seen=>Object.fromEntries([...seen].map(([sql,n])=>[Object.entries(SQL).find(([,text])=>text===sql)?.[0]??sql.slice(0,40),n]));
  const adding=counted();
  let started=performance.now();
- await watched(adding.hook).transaction(({channel:c})=>{c(channel).add(ids.map(id=>({model:'Todo',identity:{id}})),{tags:['X','keep']});});
+ await watched(adding.hook).transaction(({scope: c})=>{c(channel).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','keep']);});
  const addMs=performance.now()-started;
  assert.equal(await head(channel),N);
  const snapshot=async()=>({
@@ -528,13 +528,13 @@ test('removing 10,000 tagged members: a failure after the log writes rolls every
  // Fail after the log statements ran and before the members are deleted.
  const failing=counted();let logged=false;
  const injected=watched(sql=>{failing.hook(sql);if(sql===SQL.WRITE_CHANNEL_LOG)logged=true;if(sql===SQL.DELETE_CHANNEL_MEMBERS)throw new Error('injected before member deletion');});
- await assert.rejects(()=>injected.transaction(async({tx,channel:c})=>{await write(tx,'bulk-domain','never');c(channel).remove({tag:'X'});}),/injected before member deletion/);
+ await assert.rejects(()=>injected.transaction(async({tx,scope: c})=>{await write(tx,'bulk-domain','never');c(channel).where({ tags: { all: ['X'] } }).remove();}),/injected before member deletion/);
  assert.equal(logged,true,'the log writes had run');
  assert.deepEqual(await snapshot(),before,'no partial domain, member, tag, log or head change');
  // The committed removal.
  const removing=counted();loaderCalls=0;
  started=performance.now();
- await watched(removing.hook).transaction(({channel:c})=>{c(channel).remove({tag:'X'});});
+ await watched(removing.hook).transaction(({scope: c})=>{c(channel).where({ tags: { all: ['X'] } }).remove();});
  const removeMs=performance.now()-started;
  assert.equal(loaderCalls,0,'zero Loader calls');
  assert.deepEqual(await snapshot(),{members:0,associations:0,tags:[],log:[{kind:'remove',n:N,sum:String((N+1+2*N)*N/2)}],head:2*N,business:0});
@@ -636,7 +636,7 @@ test('detachment racing selection commits one ordered serial outcome without all
 test('bulk selection label edits reuse final snapshot batches rather than per-association SQL',async()=>{
  const channel='scope-bulk-labels',N=1100;
  const ids=Array.from({length:N},(_,i)=>`scope-bulk-labels-${i}`);
- await backend.transaction(({channel:c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}})),{tags:['X']}));
+ await backend.transaction(({scope: c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X']));
  const statements=[];
  const observing={...driver,query:async(tx,sql,params)=>{statements.push(sql);return driver.query(tx,sql,params);}};
  await driver.transaction(tx=>native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships:[select(channel,{tags:{all:['X']}},{kind:'tagAdd',tags:['Y']})]}),async request=>JSON.stringify(await answer(observing,tx,JSON.parse(request)))));

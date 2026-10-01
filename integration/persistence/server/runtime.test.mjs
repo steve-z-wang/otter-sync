@@ -15,7 +15,7 @@ const db=new PrismaClient();
 const database=()=>prisma(db);
 const store=tx=>prisma(db).persistence(tx);
 /** A business change made outside a handler: touch the records and add each to one Channel. */
-const external=(backendLike,name,records)=>backendLike.transaction(({channel,touch})=>{channel(name).add(records);for(const {model,identity} of records)touch[model.charAt(0).toLowerCase()+model.slice(1)](identity);});
+const external=(backendLike,name,records)=>backendLike.transaction(({scope: channel,touch})=>{channel(name).add(records);for(const {model,identity} of records)touch[model.charAt(0).toLowerCase()+model.slice(1)](identity);});
 const run=prismaDriver(db).transaction;
 const schema={enums:[],models:[{name:'Task',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false},{name:'title',type:{kind:'scalar',name:'string'},nullable:false}]}]};
 const config={schema,mutations:[{name:'edit',version:1,slots:[{name:'task',model:'Task',operation:'update',cardinality:'single',allowedPatchFields:['title']}]}]};
@@ -26,18 +26,18 @@ const write=(tx,id,title)=>tx.$executeRawUnsafe('INSERT INTO business_task(id,ti
 const readTasks=({ids,tx})=>Promise.all(ids.map(async identity=>{const rows=await tx.$queryRawUnsafe('SELECT title FROM business_task WHERE id=$1',identity.id);return rows[0]??null;}));
 // The patch title steers the handler: every mutation writes its row and, unless told to stay quiet, adds its record to `shared`.
 const backend=createBackend({config,database:database(),authenticate,handlers:{
- async edit({input,tx,channel,touch}){
-  called++;lastInput=input;lastHandles={channel,touch};const {identity,patch}=input.task;
+ async edit({input,tx,scope: channel,touch}){
+  called++;lastInput=input;lastHandles={scope:channel,touch};const {identity,patch}=input.task;
   await write(tx,identity.id,patch.title);
   if(patch.title==='empty-channel')channel('');
   if(patch.title==='bad-records')channel('shared').add('x');
   if(patch.title==='bogus-record')channel('shared').add([{bogus:true}]);
   if(patch.title==='quiet')return;
-  const shared=channel('shared');shared.task.add(identity);
+  const shared=channel('shared');shared.add.task(identity);
   if(patch.title==='refuse')throw new MutationRejected('task.refused');if(patch.title==='crash')throw new Error('business crash');
-  if(patch.title==='two')channel('other').task.add(identity);
-  if(patch.title==='extra'){const extra={id:`${identity.id}-extra`};await write(tx,extra.id,'extra too');touch.task(extra);shared.task.add(extra);}
-  if(patch.title==='publish-only')channel('other').task.add({id:'pub-only'});
+  if(patch.title==='two')channel('other').add.task(identity);
+  if(patch.title==='extra'){const extra={id:`${identity.id}-extra`};await write(tx,extra.id,'extra too');touch.task(extra);shared.add.task(extra);}
+  if(patch.title==='publish-only')channel('other').add.task({id:'pub-only'});
  }},
  loaders:{async task(call){loaderCalls.push(Object.keys(call));return readTasks(call);}},
  loaderHooks:{task:{async prepareForViewer(){prepared++}}},
@@ -74,7 +74,7 @@ test('backend validates config and complete registrations at startup',()=>{
  assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
  // A hand-written config gets the compiler's accessor rules: unique, and neither add nor remove.
  const withModel=name=>({...base,schema:{...base.schema,models:[...base.schema.models,{...base.schema.models[0],name}]}});
- assert.throws(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}),/Model Add generates the accessor add, which a Channel reserves/);
+ assert.doesNotThrow(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}));
  assert.throws(()=>createBackend({config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
 });
 test('loader registration names every retained model version and a function means v1 only',()=>{
@@ -238,16 +238,16 @@ test('a pull reaches the loader of the declared model version and normalizes row
 });
 test('compaction materializes latest state; deletion is aligned null',async()=>{
  await backend.push('alice',push('dedup',2,[mutation(1,'updated')]));await assert.rejects(()=>backend.push('alice',push('dedup',1,[mutation(1,'first')])),/overlap/);
- await backend.transaction(async({tx,channel,touch})=>{await tx.$executeRawUnsafe("DELETE FROM business_task WHERE id='a'");touch.task({id:'a'});channel('shared').task.add({id:'a'});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await tx.$executeRawUnsafe("DELETE FROM business_task WHERE id='a'");touch.task({id:'a'});channel('shared').add.task({id:'a'});});
  const page=await pull();assert.equal(page.changes.length,4);assert.deepEqual(page.changes.find(c=>c.identity.id==='a').state,null);assert.equal(to(page),6);
  await assert.rejects(()=>pull('shared',999),/cursor ahead/);
 });
 test('50-row pages retain original cursor progression and remainder reaches head',async()=>{
- await backend.transaction(async({tx,channel,touch})=>{const shared=channel('shared');for(let i=0;i<51;i++){const id={id:`page-${i}`};await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id.id,'page');touch.task(id);shared.task.add(id);}});
+ await backend.transaction(async({tx,scope: channel,touch})=>{const shared=channel('shared');for(let i=0;i<51;i++){const id={id:`page-${i}`};await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id.id,'page');touch.task(id);shared.add.task(id);}});
  const first=await pull('shared',6);assert.equal(first.changes.length,50);assert.equal(to(first),56);assert.equal(first.cursors.shared.head,57);const last=await pull('shared',56);assert.equal(last.changes.length,1);assert.equal(to(last),57);assert.equal(last.cursors.shared.head,57);
 });
 test('concurrent same-client retry executes once under PostgreSQL lock',async()=>{const before=called;const request=push('race',1,[mutation(1,'race','race')]);const receipts=await Promise.all([backend.push('alice',request),backend.push('alice',request)]);assert.equal(receipts[0],receipts[1]);assert.equal(called,before+1);});
-test('declarations roll back with the user transaction, and an unknown Model is refused at the declaration',async()=>{const before=to(await pull('shared',56));await assert.rejects(()=>backend.transaction(async({channel,touch})=>{touch.task({id:'rollback'});channel('shared').task.add({id:'rollback'});throw new Error('cancel');}),/cancel/);assert.equal(to(await pull('shared',56)),before);await assert.rejects(()=>external(backend,'shared',[{model:'Unknown',identity:{id:'x'}}]),/unknown Model Unknown/);});
+test('declarations roll back with the user transaction, and an unknown Model is refused at the declaration',async()=>{const before=to(await pull('shared',56));await assert.rejects(()=>backend.transaction(async({scope: channel,touch})=>{touch.task({id:'rollback'});channel('shared').add.task({id:'rollback'});throw new Error('cancel');}),/cancel/);assert.equal(to(await pull('shared',56)),before);await assert.rejects(()=>external(backend,'shared',[{model:'Unknown',identity:{id:'x'}}]),/unknown Model Unknown/);});
 test('loader defects fail only their records; the page is served and the cursor advances',async()=>{
  const make=load=>createBackend({config:{...config,mutations:[]},database:database(),authenticate,handlers:{},loaders:{task:load}});
  const misaligned=JSON.parse(await make(async()=>[]).pull('alice',pullBody({shared:0})));
@@ -286,7 +286,7 @@ test('an undefined loader entry fails only its record, reaches onError and never
 });
 test('a declaration naming an unknown Model fails its handler: only that mutation and its write roll back',async()=>{
  const errors=[];
- const broken=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({tx,channel}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('caught','bad')");channel('shared').add([{model:'Unknown',identity:{id:'caught'}}]);}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const broken=createBackend({config,database:database(),authenticate,onError:e=>errors.push(e.message),handlers:{async edit({tx,scope: channel}){await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('caught','bad')");channel('shared').add([{model:'Unknown',identity:{id:'caught'}}]);}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  const receipt=JSON.parse(await broken.push('alice',push('caught',1,[mutation(1,'x')])));
  assert.deepEqual(receipt.rejections,[{ordinal:1,code:'handler.failed'}]);assert.match(errors[0],/unknown Model Unknown/);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='caught'")).length,0);assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_client WHERE client_id='caught'")).length,1,'the batch still commits');
@@ -301,7 +301,7 @@ test('a nonfinite loader value fails its record rather than clearing to null',as
  assert.ok(errors.some(m=>/nonfinite/.test(m)),errors.join('; '));
 });
 test('backend.transaction rolls the business write back when a declaration is refused',async()=>{
- await assert.rejects(()=>backend.transaction(async({tx,channel})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");channel('shared').add([{model:'Unknown',identity:{id:'x'}}]);}),/unknown Model Unknown/);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: channel})=>{await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('external','bad')");channel('shared').add([{model:'Unknown',identity:{id:'x'}}]);}),/unknown Model Unknown/);
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id='external'")).length,0);
  // A malformed UUID is refused at the declaration, by the engine's own rule, before anything settles.
  const tickets=createBackend({config:{mutations:[],schema:{enums:[],models:[ticketModel]}},database:database(),authenticate,handlers:{},loaders:{async ticket({ids}){return ids.map(()=>null)}}});
@@ -359,20 +359,20 @@ test('live transport negotiates, wakes only after commit, reconnects, and cleans
  assert.equal(frames[0].type,'subscribed');assert.deepEqual(Object.keys(frames[0].cursors),['bob','shared']);assert.equal(frames[0].cursors.bob,0,'a fresh channel is at head 0');assert.ok(frames[0].cursors.shared>0,'the acknowledgement carries the current head');
 
  let release,ready;const held=new Promise(resolve=>{release=resolve;});const started=new Promise(resolve=>{ready=resolve;});
- const committing=backend.transaction(async({tx,channel,touch})=>{
+ const committing=backend.transaction(async({tx,scope: channel,touch})=>{
    await tx.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('live-external','committed')");
-   touch.task({id:'live-external'});channel('shared').task.add({id:'live-external'});ready();await held;
+   touch.task({id:'live-external'});channel('shared').add.task({id:'live-external'});ready();await held;
  });
  await started;await delay(80);assert.equal(frames.length,1,'uncommitted publication must stay silent');release();await committing;
  while(frames.length<2)await delay(5);
  assert.deepEqual(frames[1].changes.at(-1),{channel:'shared',cursor:frames[1].cursors.shared.to,kind:'upsert',model:'Task',identity:{id:'live-external'},stamp:1,state:{title:'committed'}});assert.deepEqual(Object.keys(frames[1].cursors),['shared'],'a frame names only the channels that moved');assert.equal(frames[1].cursors.shared.from,frames[0].cursors.shared);
 
  const pageStart=frames.length;
- await backend.transaction(async({tx,channel,touch})=>{const shared=channel('shared');for(let i=0;i<51;i++){const id=`live-page-${i}`;await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id,'paged');touch.task({id});shared.task.add({id});}});
+ await backend.transaction(async({tx,scope: channel,touch})=>{const shared=channel('shared');for(let i=0;i<51;i++){const id=`live-page-${i}`;await tx.$executeRawUnsafe('INSERT INTO business_task(id,title) VALUES($1,$2)',id,'paged');touch.task({id});shared.add.task({id});}});
  while(frames.length<pageStart+2)await delay(5);assert.equal(frames[pageStart].changes.length,50);assert.equal(frames[pageStart+1].changes.length,1);assert.equal(frames[pageStart+1].cursors.shared.from,frames[pageStart].cursors.shared.to);assert.ok(frames[pageStart].cursors.shared.to<frames[pageStart].cursors.shared.head,'a full frame says the channel continues');
 
  const beforeRollback=frames.length;
- await assert.rejects(()=>backend.transaction(async({channel,touch})=>{touch.task({id:'live-rollback'});channel('shared').task.add({id:'live-rollback'});throw new Error('rollback live');}),/rollback live/);
+ await assert.rejects(()=>backend.transaction(async({scope: channel,touch})=>{touch.task({id:'live-rollback'});channel('shared').add.task({id:'live-rollback'});throw new Error('rollback live');}),/rollback live/);
  await delay(80);assert.equal(frames.length,beforeRollback);
 
  socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));
@@ -392,7 +392,7 @@ test('a publication committed between negotiation and the acknowledgement is del
  // gate; a push commits meanwhile, before any listener exists for the socket.
  const base=prisma(db);let hold;
  const gated={transaction:async body=>{const result=await base.transaction(body);const gate=hold;hold=undefined;if(gate)await gate;return result;},persistence:base.persistence};
- const gatedBackend=createBackend({config,database:gated,authenticate,handlers:{async edit({input,tx,channel}){const {identity,patch}=input.task;await write(tx,identity.id,patch.title);channel('shared').task.add(identity);}},loaders:{task:readTasks}});
+ const gatedBackend=createBackend({config,database:gated,authenticate,handlers:{async edit({input,tx,scope: channel}){const {identity,patch}=input.task;await write(tx,identity.id,patch.title);channel('shared').add.task(identity);}},loaders:{task:readTasks}});
  const server=await gatedBackend.listen({port:0});const port=Number(new URL(server.url).port);
  try{
   const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
@@ -507,7 +507,7 @@ test('slot arguments are plain data; a handler declares with their identity, and
  assert.deepEqual(Object.keys(lastInput.task),['identity','patch']);
  assert.deepEqual(Object.getOwnPropertySymbols(lastInput.task),[],'no hidden record tag');
  assert.deepEqual((await positions('plain-a')).map(([channel,,stamp])=>[channel,stamp]),[['shared',1]]);
- assert.throws(()=>lastHandles.channel('shared'),/closed/);assert.throws(()=>lastHandles.touch.task({id:'plain-a'}),/closed/);
+ assert.throws(()=>lastHandles.scope('shared'),/closed/);assert.throws(()=>lastHandles.touch.task({id:'plain-a'}),/closed/);
 });
 test('a handler that declares no membership still returns readback records and touches no channel',async()=>{
  const channels=await count('axton_channel');
@@ -533,7 +533,7 @@ test('an added record is not a changed one: it is initialised at stamp 1 once, a
  assert.equal(page.changes.some(c=>c.identity.id.startsWith('pub-only-')),false,'the changed records went to shared only');
 });
 test('a loader refusal during push rejects only that mutation; so does a thrown loader error',async()=>{
- const make=load=>createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,channel}){await write(tx,input.task.identity.id,input.task.patch.title);channel('shared').task.add(input.task.identity);}},loaders:{task:load}});
+ const make=load=>createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,scope: channel}){await write(tx,input.task.identity.id,input.task.patch.title);channel('shared').add.task(input.task.identity);}},loaders:{task:load}});
  const refusing=make(async call=>{if(call.ids.some(id=>id.id==='ld-forbidden'))throw new MutationRejected('task.forbidden');return readTasks(call);});
  const receipt=JSON.parse(await refusing.push('alice',push('loader-refuse',1,[mutation(1,'ok','ld-ok'),mutation(2,'hidden','ld-forbidden'),mutation(3,'ok','ld-last')])));
  assert.deepEqual(receipt.rejections,[{ordinal:2,code:'task.forbidden'}]);assert.deepEqual(receipt.records,[authority('ld-last',1,{title:'ok'}),authority('ld-ok',1,{title:'ok'})]);
@@ -551,9 +551,9 @@ test('a declaration validates its Channel and records at the call; the invalid c
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM business_task WHERE id IN ('bad-a','bad-b','bad-c')")).length,0,'the failed mutations rolled back their writes');
 });
 test('a handler may keep using the transaction after a declaration; the membership settles with the commit',async()=>{
- const deferredBackend=createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,channel}){
+ const deferredBackend=createBackend({config,database:database(),authenticate,handlers:{async edit({input,tx,scope: channel}){
   const {identity,patch}=input.task;
-  channel('deferred').task.add(identity);
+  channel('deferred').add.task(identity);
   await write(tx,identity.id,patch.title);
   await tx.$queryRawUnsafe('SELECT 1');
  }},loaders:{task:readTasks}});
@@ -780,7 +780,7 @@ test('an upgrade whose authentication completes after close begins is refused wi
 
 test('a version dispatches only to its own handler and a function registers v1',async()=>{
  const seen=[];
- const record=tag=>async({input,channel})=>{seen.push([tag,input.task.patch.title]);channel('registration').task.add(input.task.identity);};
+ const record=tag=>async({input,scope: channel})=>{seen.push([tag,input.task.patch.title]);channel('registration').add.task(input.task.identity);};
  const make=(handlers,mutations=config.mutations)=>createBackend({config:{...config,schema:structuredClone(schema),mutations},database:database(),authenticate,handlers,loaders:{async task({ids}){return ids.map(()=>null)}}});
  const shorthand=JSON.parse(await make({edit:record('function')}).push('alice',push('register-function',1,[mutation(1,'same','reg-a')])));
  const explicit=JSON.parse(await make({edit:{v1:record('v1 key')}}).push('alice',push('register-v1-key',1,[mutation(1,'same','reg-a')])));
@@ -859,7 +859,7 @@ test('the live stream serves the declared model version and refuses an unretaine
 test('backend.transaction publishes in the application transaction and wakes after commit',async()=>{
  let woke=0;const unsubscribe=backend.onCommitted('shared',()=>{woke++;});
  const from=await head('shared');
- const result=await backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-1','via transaction');touch.task({id:'tx-1'});channel('shared').task.add({id:'tx-1'});return 'done';});
+ const result=await backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'tx-1','via transaction');touch.task({id:'tx-1'});channel('shared').add.task({id:'tx-1'});return 'done';});
  assert.equal(result,'done');await delay(0);assert.equal(woke,1,'one wake after commit');
  const page=await pull('shared',from);assert.ok(page.changes.some(c=>c.identity.id==='tx-1'&&c.state.title==='via transaction'),JSON.stringify(page));
  unsubscribe();
@@ -867,7 +867,7 @@ test('backend.transaction publishes in the application transaction and wakes aft
 test('backend.transaction rolls back a failing body and wakes nobody',async()=>{
  let woke=0;const unsubscribe=backend.onCommitted('shared',()=>{woke++;});
  const before=await head('shared');
- await assert.rejects(()=>backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-rollback','never');touch.task({id:'tx-rollback'});channel('shared').task.add({id:'tx-rollback'});throw new Error('cancel');}),/cancel/);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'tx-rollback','never');touch.task({id:'tx-rollback'});channel('shared').add.task({id:'tx-rollback'});throw new Error('cancel');}),/cancel/);
  await delay(0);assert.equal(woke,0);assert.equal(await head('shared'),before);
  assert.equal((await db.$queryRawUnsafe("SELECT count(*) AS count FROM business_task WHERE id='tx-rollback'"))[0].count,0n);
  unsubscribe();
@@ -876,7 +876,7 @@ test('backend.transaction wakes a connected live subscriber without reconnect',a
  const server=await backend.listen({port:0});const port=Number(new URL(server.url).port);
  const socket=await openSocket(port);const frames=[];socket.addEventListener('message',event=>frames.push(JSON.parse(String(event.data))));
  socket.send(JSON.stringify({capabilities:['channel-membership-v1'],type:'subscribe',channels:['shared'],models:{Task:1}}));while(frames.length<1)await delay(5);
- await backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-live','live via transaction');touch.task({id:'tx-live'});channel('shared').task.add({id:'tx-live'});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'tx-live','live via transaction');touch.task({id:'tx-live'});channel('shared').add.task({id:'tx-live'});});
  while(frames.length<2)await delay(5);
  assert.deepEqual(frames[1].changes.at(-1).identity,{id:'tx-live'});assert.deepEqual(frames[1].changes.at(-1).state,{title:'live via transaction'});
  socket.close();await new Promise(resolve=>socket.addEventListener('close',resolve,{once:true}));await server.close();
@@ -884,7 +884,7 @@ test('backend.transaction wakes a connected live subscriber without reconnect',a
 test('notify and bindTransaction are gone; backend.transaction is the only external write path',async()=>{
  assert.equal(backend.notify,undefined);assert.equal(backend.bindTransaction,undefined);
  const before=await head('shared');
- await backend.transaction(async({tx,channel,touch})=>{await write(tx,'tx-only-path','only path');touch.task({id:'tx-only-path'});channel('shared').task.add({id:'tx-only-path'});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'tx-only-path','only path');touch.task({id:'tx-only-path'});channel('shared').add.task({id:'tx-only-path'});});
  assert.equal(await head('shared'),before+1);
 });
 // #180: a transaction the application opened and owns. `owned` is the caller's
@@ -899,7 +899,7 @@ test('backend.publish settles in a caller-owned transaction; its wake, called af
  const from=await head('owned');
  const wake=await owned(async tx=>{
   await write(tx,'owned-1','owned write');
-  const wake=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-1'});channel('owned').task.add({id:'owned-1'});});
+  const wake=await backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-1'});channel('owned').add.task({id:'owned-1'});});
   assert.equal(typeof wake,'function');
   assert.equal(await recordStamp('owned-1'),null,'nothing is visible outside the caller transaction before it commits');
   return wake;
@@ -920,7 +920,7 @@ test('a throw after backend.publish rolls back the business row with every AXTON
  const before=await head('owned');
  await assert.rejects(()=>owned(async tx=>{
   await write(tx,'owned-rollback','never');
-  await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-rollback'});channel('owned').task.add({id:'owned-rollback'});});
+  await backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-rollback'});channel('owned').add.task({id:'owned-rollback'});});
   throw new Error('after publication');
  }),/after publication/);
  await delay(20);assert.equal(woke,0);
@@ -934,10 +934,10 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  const wakes=await owned(async tx=>{
   await tx.$executeRawUnsafe('SAVEPOINT caller_act');
   await write(tx,'owned-savepoint','rejected act');
-  const undone=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-savepoint'});channel('owned').task.add({id:'owned-savepoint'});});
+  const undone=await backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-savepoint'});channel('owned').add.task({id:'owned-savepoint'});});
   await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT caller_act');
   await write(tx,'owned-kept','kept act');
-  const kept=await backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-kept'});channel('owned').task.add({id:'owned-kept'});});
+  const kept=await backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-kept'});channel('owned').add.task({id:'owned-kept'});});
   return [undone,kept];
  });
  for(const wake of wakes)wake();
@@ -945,7 +945,7 @@ test('a publication inside a caller savepoint rolls back with that savepoint; th
  assert.deepEqual(await positions('owned-kept'),[['owned',before+1,1]],'the head the rolled-back publication took is free again');
 });
 test('a conflicted caller transaction retries and its publication commits once',async()=>{
- await backend.transaction(async({tx,channel,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});channel('owned').task.add({id:'owned-race'});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'owned-race','v1');touch.task({id:'owned-race'});channel('owned').add.task({id:'owned-race'});});
  const from=await head('owned');assert.equal(await recordStamp('owned-race'),1);
  let woke=0;const unsubscribe=backend.onCommitted('owned',()=>{woke++;});
  let bodies=0,entered,release;const inside=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});const failures=[];
@@ -976,7 +976,7 @@ test('backend.publish settles the same way in a caller-owned Serializable transa
  const from=await head('owned');
  const wake=await db.$transaction(async tx=>{
   await write(tx,'owned-serializable','serializable write');
-  return backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-serializable'});channel('owned').task.add({id:'owned-serializable'});});
+  return backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-serializable'});channel('owned').add.task({id:'owned-serializable'});});
  },{isolationLevel:'Serializable'});
  wake();
  assert.equal(await recordStamp('owned-serializable'),1);
@@ -991,8 +991,8 @@ test('a throw inside the backend.publish body settles nothing and releases the c
  const before=await head('owned');const refused=new Error('body refused');
  const wake=await owned(async tx=>{
   await write(tx,'owned-body-throw','kept business row');
-  await assert.rejects(()=>backend.publish(tx,({channel,touch})=>{touch.task({id:'owned-body-throw'});channel('owned').task.add({id:'owned-body-throw'});throw refused;}),error=>error===refused,'the body error is the original one');
-  await assert.rejects(()=>backend.publish(tx,({channel})=>{channel(' ').task.add({id:'owned-body-throw'});}),/nonblank/,'a refused declaration rejects the same way');
+  await assert.rejects(()=>backend.publish(tx,({scope: channel,touch})=>{touch.task({id:'owned-body-throw'});channel('owned').add.task({id:'owned-body-throw'});throw refused;}),error=>error===refused,'the body error is the original one');
+  await assert.rejects(()=>backend.publish(tx,({scope: channel})=>{channel(' ').add.task({id:'owned-body-throw'});}),/nonblank/,'a refused declaration rejects the same way');
   return backend.publish(tx,({touch})=>{touch.task({id:'owned-body-throw'});});
  });
  wake();
@@ -1006,14 +1006,14 @@ test('re-adding an unchanged member keeps its stamp and publishes nothing; a lat
  const stampOf=()=>recordStamp('stamp-probe');
  const first=await stampOf();
  const headBefore=await head('shared');
- await backend.transaction(async({channel})=>{channel('shared').task.add({id:'stamp-probe'});});
+ await backend.transaction(async({scope: channel})=>{channel('shared').add.task({id:'stamp-probe'});});
  assert.equal(await stampOf(),first,'membership-only records keep their stamp');assert.equal(await head('shared'),headBefore,'and an existing member is not published again');
  await backend.transaction(async({touch})=>{touch.task({id:'stamp-probe'});});
  assert.equal(await stampOf(),first+1,'a touch advances the stamp without a membership declaration');assert.equal(await head('shared'),headBefore+1,'and reach the Channel the record is a member of');
 });
 test('a pull covers every channel in one request and preserves both memberships of a shared record',async()=>{
  await db.$executeRawUnsafe("INSERT INTO business_task(id,title) VALUES('multi-a','A'),('multi-b','B') ON CONFLICT(id) DO NOTHING");
- await backend.transaction(async({channel,touch})=>{touch.task({id:'multi-a'});touch.task({id:'multi-b'});channel('multi-x').task.add({id:'multi-a'});channel('multi-x').task.add({id:'multi-b'});channel('multi-y').task.add({id:'multi-a'});});
+ await backend.transaction(async({scope: channel,touch})=>{touch.task({id:'multi-a'});touch.task({id:'multi-b'});channel('multi-x').add.task({id:'multi-a'});channel('multi-x').add.task({id:'multi-b'});channel('multi-y').add.task({id:'multi-a'});});
  const page=JSON.parse(await backend.pull('alice',pullBody({'multi-x':0,'multi-y':0})));
  assert.deepEqual(Object.keys(page.cursors),['multi-x','multi-y']);
  assert.deepEqual(page.cursors['multi-x'],{from:0,to:2,head:2});assert.deepEqual(page.cursors['multi-y'],{from:0,to:1,head:1});
@@ -1052,9 +1052,9 @@ test('onError defaults to console.error so nothing is dropped silently',async()=
 const bootstrapBody=(channel,after,until,models={Task:1})=>JSON.stringify({capabilities:['channel-membership-v1'],mode:'bootstrap',channel,models,after,until});
 const bootstrap=(channel,after,until)=>backend.pull('alice',bootstrapBody(channel,after,until)).then(JSON.parse);
 /** Publish `count` fresh records to one channel, one cursor each. */
-const fill=(name,prefix,count)=>backend.transaction(async({tx,channel,touch})=>{
+const fill=(name,prefix,count)=>backend.transaction(async({tx,scope: channel,touch})=>{
  const target=channel(name);
- for(let i=0;i<count;i++){const id={id:`${prefix}-${i}`};await write(tx,id.id,`title ${i}`);touch.task(id);target.task.add(id);}
+ for(let i=0;i<count;i++){const id={id:`${prefix}-${i}`};await write(tx,id.id,`title ${i}`);touch.task(id);target.add.task(id);}
 });
 test('a bounded bootstrap request pages the historical interval and stops at the fixed origin',async()=>{
  await fill('boot','boot',60);
@@ -1099,7 +1099,7 @@ test('a record republished above the origin leaves the historical interval betwe
  assert.ok(!second.changes.some(r=>r.identity.id==='moved-55'),'the republished record is no longer historical');
 });
 test('a bootstrap page reads content and stamps at its own transaction snapshot',async()=>{
- await backend.transaction(async({tx,channel,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});channel('coherent').task.add({id:'coherent'});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await write(tx,'coherent','first');touch.task({id:'coherent'});channel('coherent').add.task({id:'coherent'});});
  const origin=await head('coherent');const before=await recordStamp('coherent');
  // A concurrent transaction rewrites and republishes the record after the page
  // transaction has read its head; the page must still answer its own snapshot.
@@ -1168,11 +1168,11 @@ test('a backend omitting the Loader of a device-only Model starts; a Mutation wr
 });
 test('touching or publishing a device-only Model is refused at the call, naming the Model; nothing is published',async()=>{
  const errors=[];
- const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx,channel,touch}){
+ const deviceOnly=createBackend({config:withDraft,database:database(),authenticate,onError:e=>errors.push(e),handlers:{async edit({input,tx,scope: channel,touch}){
   await write(tx,input.task.identity.id,input.task.patch.title);
   if(input.task.patch.title==='touch')touch.draft({id:'d'});
-  if(input.task.patch.title==='add')channel('drafts').draft.add({id:'d'});
-  if(input.task.patch.title==='remove')channel('drafts').draft.remove({id:'d'});
+  if(input.task.patch.title==='add')channel('drafts').add.draft({id:'d'});
+  if(input.task.patch.title==='remove')channel('drafts').remove.draft({id:'d'});
   if(input.task.patch.title==='mixed')channel('drafts').add([{model:'Task',identity:{id:'x'}},{model:'Draft',identity:{id:'d'}}]);
  }},loaders:{task:readTasks}});
  const headBefore=await head('drafts');
@@ -1181,15 +1181,15 @@ test('touching or publishing a device-only Model is refused at the call, naming 
  assert.deepEqual(result.records,[authority('do-5',1,{title:'fine'})]);
  assert.deepEqual(errors.map(e=>e.message),[
   'touch.draft: Model Draft has no Loader, so it is device-only and cannot be published',
-  'channel("drafts").draft.add: Model Draft has no Loader, so it is device-only and cannot be published',
-  'channel("drafts").draft.remove: Model Draft has no Loader, so it is device-only and cannot be published',
-  'channel("drafts").add: Model Draft has no Loader, so it is device-only and cannot be published',
+  'scope.add.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'scope.remove.draft: Model Draft has no Loader, so it is device-only and cannot be published',
+  'scope.add: Model Draft has no Loader, so it is device-only and cannot be published',
  ]);
  assert.equal(await head('drafts'),headBefore,'nothing reached the Channel');
  assert.equal((await db.$queryRawUnsafe("SELECT * FROM axton_record WHERE model='Draft'")).length,0,'no Draft was stamped');
  // backend.transaction refuses the same declaration and rolls its business write back.
  await assert.rejects(()=>deviceOnly.transaction(async({tx,touch})=>{await write(tx,'do-external','never');touch.draft({id:'d'});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
- await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/channel\("drafts"\)\.add: Model Draft has no Loader/);
+ await assert.rejects(()=>external(deviceOnly,'drafts',[{model:'Draft',identity:{id:'d'}}]),/scope.add: Model Draft has no Loader/);
  // backend.publish in a caller-owned transaction refuses it the same way; the caller's transaction rolls back.
  await assert.rejects(()=>owned(async tx=>{await write(tx,'do-owned','never');await deviceOnly.publish(tx,({touch})=>{touch.draft({id:'d'});});}),/touch\.draft: Model Draft has no Loader, so it is device-only and cannot be published/);
  for(const id of ['do-external','do-owned'])assert.equal((await db.$queryRawUnsafe('SELECT * FROM business_task WHERE id=$1',id)).length,0,id);
@@ -1197,7 +1197,7 @@ test('touching or publishing a device-only Model is refused at the call, naming 
 });
 test('an always-null Loader for a device-only Model keeps the registered behavior',async()=>{
  // Before #187 every Model needed a Loader, so device-only Models registered one answering null.
- const nulls=createBackend({config:withDraft,database:database(),authenticate,handlers:{async edit({input,tx,touch,channel}){await write(tx,input.task.identity.id,input.task.patch.title);touch.draft({id:'null-d'});channel('null-drafts').draft.add({id:'null-d'});}},loaders:{task:readTasks,async draft({ids}){return ids.map(()=>null);}}});
+ const nulls=createBackend({config:withDraft,database:database(),authenticate,handlers:{async edit({input,tx,touch,scope: channel}){await write(tx,input.task.identity.id,input.task.patch.title);touch.draft({id:'null-d'});channel('null-drafts').add.draft({id:'null-d'});}},loaders:{task:readTasks,async draft({ids}){return ids.map(()=>null);}}});
  const result=JSON.parse(await nulls.push('alice',push('always-null',1,[mutation(1,'with draft','null-a')])));
  assert.deepEqual(result.rejections,[]);
  const page=JSON.parse(await nulls.pull('alice',pullBody({'null-drafts':0},{Task:1,Draft:1})));

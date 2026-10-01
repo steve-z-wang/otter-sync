@@ -7,9 +7,7 @@ import {
 } from "./scope.mts";
 /**
  * The declarations one handler, legacy handler or `backend.transaction` body
- * makes while it runs: changed records (`touch`) and ordered Channel intents
- * (`channel(name).todo.add/remove`, `channel(name).add/remove`, and
- * `channel(name).remove({ tag })`).
+ * makes while it runs: changed records (`touch`) and ordered Scope intents through membership, label and selection handles.
  *
  * Declarations are synchronous and owned: each call validates its identity
  * against the Model's identity fields, and its tags against the tag rules,
@@ -19,7 +17,7 @@ import {
  * engine owns what the declarations mean: it infers input targets, reduces
  * the intents in order to their final state and settles them.
  *
- * A Load page declares through a narrower collector: add-only Channel
+ * A Load page declares through a narrower collector: add-only Scope
  * handles, with a repeated pair stored once (its tags unioned) and the page's
  * enrollment bounded like the engine bounds it.
  */
@@ -38,57 +36,16 @@ export interface RecordRef {
   readonly model: string;
   readonly identity: object;
 }
-/**
- * The labels an add attaches to its memberships. Omitted tags and `[]` add
- * none. Each tag is a nonblank string of at most 256 UTF-8 bytes, kept as
- * spelled; an add declares at most 64 distinct tags.
- */
-export type MembershipOptions = { readonly tags?: readonly string[] };
-/** Selects every member of one Channel that carries this tag: `remove({ tag })`. */
-export type TagSelector = { readonly tag: string };
-/** One Model's membership writer on a Channel: `channel(name).todo`. */
-export interface RuntimeModelMembership {
-  add(identity: object, options?: MembershipOptions): void;
-  remove(identity: object): void;
-}
-/**
- * A Channel handle: one membership writer per Model under its lower-first
- * accessor, plus `add` and `remove` for mixed lists of record references, and
- * `remove({ tag })` for every member carrying a tag.
- */
-export type RuntimeChannel = {
-  readonly [model: string]: RuntimeModelMembership;
-} & {
-  add(records: readonly RecordRef[], options?: MembershipOptions): void;
-  remove(records: readonly RecordRef[]): void;
-  remove(selector: TagSelector): void;
-};
 /** One change declaration per Model under its lower-first accessor: `touch.todo(identity)`. */
 export type RuntimeTouch = RuntimeScopeTouch;
 export interface EffectCollector {
-  readonly touch: RuntimeTouch & RuntimeScopeTouch;
+  readonly touch: RuntimeTouch;
   scope(name: string): RuntimeScope;
-  /** Selects a Channel by name. Creates nothing: the name is only validated. */
-  channel(name: string): RuntimeChannel;
   /** Owned copies of the declarations, readable after `close`. */
   settlement(): SettlementEffects;
   /** Refuses every later declaration, through any handle. Idempotent. */
   close(): void;
 }
-/** One Model's add-only membership writer on a Load's Channel: `channel(name).todo`. */
-export interface RuntimeLoadModelMembership {
-  add(identity: object, options?: MembershipOptions): void;
-}
-/**
- * A Load's Channel handle: one add-only writer per Model under its
- * lower-first accessor, plus `add` for mixed lists of record references. Adds
- * take the same tags as a Mutation's; no `remove` exists on it at runtime.
- */
-export type RuntimeLoadChannel = {
-  readonly [model: string]: RuntimeLoadModelMembership;
-} & {
-  add(records: readonly RecordRef[], options?: MembershipOptions): void;
-};
 /**
  * Why a Load's declarations cannot settle: its enrollment passed a bound
  * (`overflow`), or a declaration was refused (`invalid`). Kept even when the
@@ -101,8 +58,6 @@ export type LoadEffectFailure = {
 };
 export interface LoadEffectCollector {
   scope(name: string): RuntimeLoadScope;
-  /** Selects a Channel by name. Creates nothing: the name is only validated. */
-  channel(name: string): RuntimeLoadChannel;
   /** Owned copies of the distinct additions, in first-declaration order. */
   memberships(): readonly ChannelIntent[];
   /** The first overflow, else the first refused declaration; `undefined` when neither happened. */
@@ -289,8 +244,7 @@ function define(target: object, key: string, value: unknown): void {
 
 /**
  * Validates the configured Models once: every Model needs identity fields
- * with supported types, and its lower-first accessor must be unique and
- * neither `add` nor `remove`, which a Channel reserves for mixed lists.
+ * with supported types, and its lower-first accessor must be unique.
  */
 function entriesOf(
   models: readonly EffectModel[],
@@ -303,10 +257,6 @@ function entriesOf(
     if (typeof name !== "string" || name === "")
       throw new Error("every Model descriptor needs a name");
     const key = lowerFirst(name);
-    if (key === "add" || key === "remove")
-      throw new Error(
-        `Model ${name} generates the accessor ${key}, which a Channel reserves for mixed record lists; rename the Model`,
-      );
     const other = owners.get(key);
     if (other !== undefined)
       throw new Error(
@@ -363,77 +313,7 @@ function entriesOf(
 /** A resolved declaration: the Model's entry and the owned identity. */
 type Declared = { entry: Entry; identity: Identity };
 
-/** The spec's tag bounds: UTF-8 bytes per tag, distinct tags per add. */
-const TAG_BYTES = 256;
-const TAGS_PER_ADD = 64;
-const NO_TAGS: readonly string[] = Object.freeze([]);
-/**
- * A lone UTF-16 surrogate is not Unicode text: `JSON.stringify` escapes it,
- * and the engine then refuses the whole answer.
- */
 const LONE_SURROGATE = /\p{Surrogate}/u;
-
-/**
- * Refuses a tag that is not a nonblank string (after JS `trim()`, as a
- * Channel name), is not Unicode text, or passes `TAG_BYTES`. An accepted tag
- * is kept as spelled: never trimmed or case-folded.
- */
-function tagName(tag: unknown, caller: string): string {
-  if (typeof tag !== "string" || tag.trim() === "")
-    throw new Error(`${caller}: a tag must be a nonblank string`);
-  if (LONE_SURROGATE.test(tag))
-    throw new Error(
-      `${caller}: a tag must be Unicode text, without a lone surrogate`,
-    );
-  if (Buffer.byteLength(tag, "utf8") > TAG_BYTES)
-    throw new Error(
-      `${caller}: a tag must be at most ${TAG_BYTES} UTF-8 bytes`,
-    );
-  return tag;
-}
-
-/**
- * An add's `MembershipOptions` as an owned, frozen list of distinct tags in
- * first-seen order. The caller's object and array are each read once.
- */
-function tagsOf(options: unknown, caller: string): readonly string[] {
-  if (options === undefined) return NO_TAGS;
-  if (options === null || typeof options !== "object" || Array.isArray(options))
-    throw new Error(
-      `${caller}: options must be an object such as { tags: ["label"] }`,
-    );
-  for (const key of Object.keys(options))
-    if (key !== "tags")
-      throw new Error(`${caller}: options accept only tags, not ${key}`);
-  const tags = (options as { tags?: unknown }).tags;
-  if (tags === undefined) return NO_TAGS;
-  if (!Array.isArray(tags))
-    throw new Error(`${caller}: options.tags must be an array of tags`);
-  const distinct = new Set<string>();
-  for (let index = 0; index < tags.length; index++) {
-    distinct.add(tagName(tags[index], caller));
-    if (distinct.size > TAGS_PER_ADD)
-      throw new Error(
-        `${caller}: an add declares more than ${TAGS_PER_ADD} distinct tags`,
-      );
-  }
-  return distinct.size === 0 ? NO_TAGS : Object.freeze([...distinct]);
-}
-
-/** The tag of an exact `{ tag }` selector: one own enumerable member, nothing else. */
-function selectorTag(selector: unknown, caller: string): string {
-  if (
-    selector === null ||
-    typeof selector !== "object" ||
-    Object.keys(selector).length !== 1 ||
-    !Object.hasOwn(selector, "tag")
-  )
-    throw new Error(
-      `${caller}: expected an array of record references or one { tag } selector`,
-    );
-  return tagName((selector as { tag: unknown }).tag, caller);
-}
-
 type AddIntent = Extract<ChannelIntent, { kind: "add" }>;
 /** An owned add intent: the record and tags frozen with it. */
 function addIntent(
@@ -509,7 +389,7 @@ function declarationsOf(
       // (`check_channel`, Rust `trim()`) at settlement; the two trims differ
       // on a few code points such as U+FEFF and U+0085.
       if (typeof name !== "string" || name.trim() === "")
-        throw new Error("channel: a Channel name must be a nonblank string");
+        throw new Error("scope: a Scope name must be a nonblank string");
     },
   };
 }
@@ -552,20 +432,6 @@ export function effectsFor(
       changed.add(key);
       changes.push(Object.freeze({ model, identity }) as HostRecordRef);
     };
-    const add = (
-      channel: string,
-      model: string,
-      identity: Identity,
-      tags: readonly string[],
-    ) => memberships.push(addIntent(channel, model, identity, tags));
-    const remove = (channel: string, model: string, identity: Identity) =>
-      memberships.push(
-        Object.freeze({
-          kind: "remove",
-          channel,
-          record: Object.freeze({ model, identity }) as HostRecordRef,
-        }),
-      );
     const canonical = {
       guard: <T,>(body: () => T) => body(),
       entries,
@@ -580,60 +446,9 @@ export function effectsFor(
     const touch = scopeTouch(canonical, (record) =>
       change(record.model, record.identity),
     );
-    const channel = (name: string): RuntimeChannel => {
-      assertOpen("channel");
-      channelName(name);
-      const label = `channel(${JSON.stringify(name)})`;
-      const handle = Object.create(null);
-      for (const entry of entries) {
-        const membership = Object.create(null);
-        define(membership, "add", (identity: object, options?: unknown) => {
-          const caller = `${label}.${entry.key}.add`;
-          assertOpen(caller);
-          publishable(entry.name, caller);
-          const owned = entry.snapshot(identity, caller);
-          add(name, entry.name, owned, tagsOf(options, caller));
-        });
-        define(membership, "remove", (identity: object) => {
-          const caller = `${label}.${entry.key}.remove`;
-          assertOpen(caller);
-          publishable(entry.name, caller);
-          remove(name, entry.name, entry.snapshot(identity, caller));
-        });
-        define(handle, entry.key, Object.freeze(membership));
-      }
-      define(
-        handle,
-        "add",
-        (records: readonly RecordRef[], options?: unknown) => {
-          const caller = `${label}.add`;
-          assertOpen(caller);
-          const declared = list(records, caller);
-          const tags = tagsOf(options, caller);
-          for (const { entry, identity } of declared)
-            add(name, entry.name, identity, tags);
-        },
-      );
-      // A list removes those records; an exact `{ tag }` object selects by tag.
-      define(handle, "remove", (argument: unknown) => {
-        const caller = `${label}.remove`;
-        assertOpen(caller);
-        if (Array.isArray(argument)) {
-          for (const { entry, identity } of list(argument, caller))
-            remove(name, entry.name, identity);
-          return;
-        }
-        const tag = selectorTag(argument, caller);
-        memberships.push(
-          Object.freeze({ kind: "removeTag", channel: name, tag }),
-        );
-      });
-      return Object.freeze(handle) as RuntimeChannel;
-    };
     return Object.freeze({
-      touch: touch as RuntimeTouch & RuntimeScopeTouch,
+      touch: touch as RuntimeTouch,
       scope: (name: string) => scopeHandle(canonical, name) as RuntimeScope,
-      channel,
       settlement: (): SettlementEffects => ({
         changes: [...changes],
         memberships: [...memberships],
@@ -818,51 +633,9 @@ export function loadEffectsFor(
           enroll(first.channel, declared, first.tags, caller, first.kind);
         }),
     };
-    const channel = (name: string): RuntimeLoadChannel =>
-      declare(() => {
-        assertOpen("channel");
-        channelName(name);
-        if (LONE_SURROGATE.test(name))
-          throw new Error(
-            "channel: a Channel name must be Unicode text, without a lone surrogate",
-          );
-        const label = `channel(${JSON.stringify(name)})`;
-        const handle = Object.create(null);
-        for (const entry of entries) {
-          const membership = Object.create(null);
-          define(membership, "add", (identity: object, options?: unknown) =>
-            declare(() => {
-              const caller = `${label}.${entry.key}.add`;
-              assertOpen(caller);
-              publishable(entry.name, caller);
-              const owned = entry.snapshot(identity, caller);
-              enroll(
-                name,
-                [{ entry, identity: owned }],
-                tagsOf(options, caller),
-                caller,
-              );
-            }),
-          );
-          define(handle, entry.key, Object.freeze(membership));
-        }
-        define(
-          handle,
-          "add",
-          (records: readonly RecordRef[], options?: unknown) =>
-            declare(() => {
-              const caller = `${label}.add`;
-              assertOpen(caller);
-              const declared = list(records, caller);
-              enroll(name, declared, tagsOf(options, caller), caller);
-            }),
-        );
-        return Object.freeze(handle) as RuntimeLoadChannel;
-      });
     return Object.freeze({
       scope: (name: string) =>
         declare(() => scopeHandle(canonical, name, true) as RuntimeLoadScope),
-      channel,
       memberships: (): readonly ChannelIntent[] => [...declarations],
       failure: () => failed,
       close() {

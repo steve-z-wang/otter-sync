@@ -93,45 +93,45 @@ if(false){
  const bad:Entry={...row,status:'typo'};
 
  type Tx={rows:Map<string,object>};
- const shorthand:Handlers<Tx>['addBook']=async({input,tx,channel,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);channel('c').book.add(input.book)};
+ const shorthand:Handlers<Tx>['addBook']=async({input,tx,scope: channel,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);channel('c').add.book(input.book)};
  const grouped:Handlers<Tx>['editEntry']={
-  async v1({input,channel}){channel('c').entry.add(input.target.identity)},
+  async v1({input,scope: channel}){channel('c').add.entry(input.target.identity)},
   // Legacy slot handlers declare through the same handles; mixed lists take explicit references and may be empty.
-  async v2({input,channel,touch}){touch.entry(input.entry.identity);channel('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);channel('audit').remove([])},
+  async v2({input,scope: channel,touch}){touch.entry(input.entry.identity);channel('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);channel('audit').remove([])},
   // @ts-expect-error v3 is not a retained version of EditEntry
   async v3(){},
  };
  // @ts-expect-error a mutation with two retained versions cannot register a bare function
  const bare:Handlers<Tx>['editEntry']=async()=>{};
  // @ts-expect-error every retained version must be registered
- const partial:Handlers<Tx>['editEntry']={v2:async({input,channel})=>{channel('c').entry.add(input.entry.identity)}};
- // @ts-expect-error handlers declare through `channel` and `touch`; there is no notify and no return value
+ const partial:Handlers<Tx>['editEntry']={v2:async({input,scope: channel})=>{channel('c').add.entry(input.entry.identity)}};
+ // @ts-expect-error handlers declare through `scope` and `touch`; there is no notify and no return value
  const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({channel:'c',records:[]})};
  // @ts-expect-error the old publish API is gone
  const published:Handlers<Tx>['addBook']=async({publish})=>{publish({channel:'c'})};
  // @ts-expect-error the old changes collector is gone
  const changed:Handlers<Tx>['addBook']=async({changes})=>{changes.add({model:'Book',identity:{id:'b'}})};
 
- // The generated declaration API, per schema: resource before verb.
+ // The generated declaration API, per schema: operation before Model.
  const declare=(ctx:MutationContext<Tx>,queryCtx:QueryContext<Tx>,call:HandlerCall<Tx,AddBookInput>,external:TransactionCall<Tx>)=>{
-  ctx.channel('project:1').book.add({id:'A'});
-  ctx.channel('project:1').book.remove({id:'A'});
+  ctx.scope('project:1').add.book({id:'A'});
+  ctx.scope('project:1').remove.book({id:'A'});
   ctx.touch.book({id:'A'});
   // @ts-expect-error missing identity
-  ctx.channel('project:1').book.add({});
+  ctx.scope('project:1').add.book({});
   // @ts-expect-error old API is gone
   ctx.publish({channel:'project:1'});
   // @ts-expect-error Query has no membership writer
-  queryCtx.channel('project:1').book.add({id:'A'});
+  queryCtx.scope('project:1').add.book({id:'A'});
   // @ts-expect-error Query has no change declaration
   queryCtx.touch.book({id:'A'});
-  // A Channel handle is an ordinary value; every Model is a property beside add and remove.
-  const project=ctx.channel('project:1');
+  // A Scope handle exposes each Model under its operation namespaces.
+  const project=ctx.scope('project:1');
   project.add([Book({id:'A'}),Comment({id:'c'}),EntryRef({id:row.id})]);
-  project.comment.remove({id:'c'});
-  call.channel('project:1').entry.add({id:row.id});
+  project.remove.comment({id:'c'});
+  call.scope('project:1').add.entry({id:row.id});
   call.touch.counter({id:'n'});
-  external.channel('project:1').remove([Book({id:'A'})]);
+  external.scope('project:1').remove([Book({id:'A'})]);
   external.touch.draft({id:row.id});
   // @ts-expect-error a raw identity names no Model
   project.add([{id:'A'}]);
@@ -139,38 +139,37 @@ if(false){
   external.touch.entry({id:1});
   // @ts-expect-error the Channel's mixed verbs take references, not identities
   project.remove({id:'A'});
-  // Tags label an add, by Model or as a mixed list; `remove({tag})` selects every member carrying one.
-  ctx.channel('project:1').entry.add({id:row.id},{tags:['X']});
-  project.add([Book({id:'A'}),EntryRef({id:row.id})],{tags:['X','Y']});
-  project.book.add({id:'A'},{});
-  project.add([Comment({id:'c'})],{tags:[]});
-  project.remove({tag:'X'});
-  external.channel('project:1').remove({tag:'X'});
-  call.channel('project:1').add([Book({id:'A'})],{tags:['X']});
+  // Chained labels and explicit selections support typed and mixed record declarations.
+  ctx.scope('project:1').add.entry({id:row.id}).tag(['X']);
+  project.add([Book({id:'A'}),EntryRef({id:row.id})]).tag(['X','Y']);
+  project.add.book({id:'A'});
+  project.add([Comment({id:'c'})]);
+  project.where({ tags: { all: ['X'] } }).remove();
+  external.scope('project:1').where({ tags: { all: ['X'] } }).remove();
+  call.scope('project:1').add([Book({id:'A'})]).tag(['X']);
   // @ts-expect-error a tagged add still names the Model's identity: a Book id is a string
-  project.book.add({id:1},{tags:['X']});
+  project.add.book({id:1}).tag(['X']);
   // @ts-expect-error an Entry identity is not a Book identity
-  project.entry.add({title:'t'},{tags:['X']});
-  // @ts-expect-error tags are a list of strings
-  project.book.add({id:'A'},{tags:'X'});
-  // @ts-expect-error the option is `tags`
-  project.book.add({id:'A'},{tag:'X'});
+  project.add.entry({title:'t'}).tag(['X']);
+  // @ts-expect-error labels are strings or lists of strings
+  project.add.book({id:'A'}).tag(3);
+  // @ts-expect-error label options are retired
+  project.add.book({id:'A'}, {tag:'X'});
   // @ts-expect-error a Model's remove takes an identity, not a tag selector
-  project.book.remove({tag:'X'});
+  project.remove.book({tag:'X'});
   // @ts-expect-error a remove carries no tags
-  project.remove([Book({id:'A'})],{tags:['X']});
-  // @ts-expect-error a tag selector names exactly one tag
-  project.remove({tag:'X',tags:['Y']});
-  // @ts-expect-error there is no Model-array overload
-  project.book.add([{id:'A'}]);
+  project.remove([Book({id:'A'})]).tag(['X']);
+  // @ts-expect-error a tag selector is not a record reference
+  project.remove({tag:'X'});
+  project.add.book([{id:'A'}]);
  };
  // @ts-expect-error a handler has no return value to select a channel with
  const returned:Handlers<Tx>['addBook']=async()=>({channel:'c'});
  // @ts-expect-error loaders receive no channel
- const channelled:Loaders<Tx>['book']=async({ids,channel})=>ids.map(id=>({...id,title:String(channel)}));
+ const channelled:Loaders<Tx>['book']=async({ids,scope: channel})=>ids.map(id=>({...id,title:String(channel)}));
  // A schema without Loads declares no Load context or its add-only Channel.
- // @ts-expect-error no Load is declared, so the backend declares no LoadChannel
- type NoLoadChannel=import('./backend.ts').LoadChannel;
+ // @ts-expect-error legacy LoadChannel is never declared
+ type NoLoadScope=import('./backend.ts').LoadChannel;
  // @ts-expect-error no Load is declared, so the backend declares no LoadContext
  type NoLoadContext=import('./backend.ts').LoadContext<Tx>;
 

@@ -1461,8 +1461,8 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
     o
 }
 /// The generated declaration API ([#140](https://github.com/zanminwang/axton/issues/140)):
-/// a discriminated `RecordRef`, one `touch` method and one Channel membership
-/// writer per Model under its lower-first accessor, and the concrete contexts
+/// a discriminated `RecordRef`, typed Scope operations and touch
+/// under each Model's lower-first accessor, and the concrete contexts
 /// that carry them. A Query context carries neither.
 fn ts_declarations(models: &[Value], o: &mut String) {
     let refs: Vec<String> = models
@@ -1482,21 +1482,13 @@ fn ts_declarations(models: &[Value], o: &mut String) {
         }
     )
     .unwrap();
-    o.push_str("/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */\nexport type MembershipOptions = { readonly tags?: readonly string[] };\n/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */\nexport type TagSelector = { readonly tag: string };\n");
-    o.push_str("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n");
-    o.push_str("export interface Channel {\n");
-    for m in models {
-        let n = s(m, "name");
-        writeln!(o, " {}: ModelMembership<{n}Identity>;", lower(n)).unwrap();
-    }
-    o.push_str(" add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n");
     crate::emit_scope::backend(models, o);
-    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
+    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
     o.push_str(
         "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n",
     );
-    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
-    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
+    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
+    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
 }
 fn dart_action_type(ty_value: &Value) -> String {
     ty(ty_value, true)

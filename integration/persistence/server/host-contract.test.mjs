@@ -86,12 +86,12 @@ async function replay(requests,{reject=false,fail=false,onError,page,options={},
    if(fail)throw new Error('boom');
    return page?page(call):response('handleLoad','settled');
   }},
-  handlers:{async edit({input,channel,touch}){
+  handlers:{async edit({input,scope: channel,touch}){
    handled.push(input);
    touch.task(input.task.identity);
    touch.task({id:'t-2'});
    channel('shared').add([{model:'Task',identity:input.task.identity},{model:'Task',identity:{id:'t-2'}}]);
-   channel('other').task.add(input.task.identity);
+   channel('other').add.task(input.task.identity);
    if(reject)throw new MutationRejected('task.refused');
    if(fail)throw new Error('boom');
   }},
@@ -134,11 +134,11 @@ test('every fixture request replays through the TypeScript host to the fixture a
  assert.equal(paged.length,1);
  assert.deepEqual(paged[0].continuation,loadRequest.continuation);
  assert.deepEqual(paged[0].args,loadRequest.arguments);
- assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','channel','loadId','scope','tx','userId'],'a Load context adds to Channels and declares no change: no touch');
- assert.equal(typeof paged[0].ctx.channel,'function');
+ assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','loadId','scope','tx','userId'],'a Load context adds to Channels and declares no change: no touch');
+ assert.equal(typeof paged[0].ctx.scope,'function');
  // A Mutation keeps its full declaration handles.
  assert.equal(sent.length,1);
- assert.deepEqual(Object.keys(sent[0]).sort(),['callId','channel','scope','touch','tx','userId']);
+ assert.deepEqual(Object.keys(sent[0]).sort(),['callId','scope','touch','tx','userId']);
  assert.equal(typeof sent[0].touch.task,'function');
  assert.deepEqual([paged[0].ctx.userId,paged[0].ctx.callId,paged[0].ctx.loadId],[loadRequest.owner,loadRequest.callId,loadRequest.loadId]);
 });
@@ -338,11 +338,11 @@ const enrolledPage=()=>{const {memberships,...page}=response('handleLoad','enrol
 test('a Load declares its enrollment through ctx.channel and the host attaches it to the fixture answer',async()=>{
  const request=entry('handleLoad').request;
  const {answers}=await replay([request],{page:({ctx})=>{
-  const shared=ctx.channel('shared');
-  shared.task.add({id:'t-1'});
-  ctx.channel('other').add([{model:'Task',identity:{id:'t-1'}}]);
+  const shared=ctx.scope('shared');
+  shared.add.task({id:'t-1'});
+  ctx.scope('other').add([{model:'Task',identity:{id:'t-1'}}]);
   // Repeats are one pair: the answer lists each pair once, in first-declaration order.
-  shared.task.add({id:'t-1',title:'not identity'});
+  shared.add.task({id:'t-1',title:'not identity'});
   shared.add([{model:'Task',identity:{id:'t-1'}}]);
   return enrolledPage();
  }});
@@ -354,24 +354,25 @@ test('the Load Channel handle adds only and closes when the handler settles',asy
  const request=entry('handleLoad').request;
  let escaped,handle;
  const {answers}=await replay([request],{page:({ctx})=>{
-  handle=ctx.channel('shared');
-  escaped=handle.task;
-  escaped.add({id:'t-1'});
+  handle=ctx.scope('shared');
+  escaped=handle.add.task;
+  escaped({id:'t-1'});
   return enrolledPage();
  }});
  assert.deepEqual(answers[0][1].memberships,[{kind:'add',channel:'shared',record:{model:'Task',identity:{id:'t-1'}},tags:[]}]);
- assert.deepEqual(Object.keys(handle),['task','add']);
- assert.deepEqual(Object.keys(escaped),['add']);
+ assert.deepEqual(Object.keys(handle),['add','tag']);
+ assert.deepEqual(Object.keys(handle.add),['task']);
+ assert.deepEqual(Object.keys(escaped),[]);
  for(const absent of ['remove','touch'])assert.equal(absent in handle,false,absent);
  assert.equal('remove' in escaped,false);
- assert.ok(Object.isFrozen(handle)&&Object.isFrozen(escaped));
- assert.throws(()=>escaped.add({id:'t-2'}),/closed/);
+ assert.ok(Object.isFrozen(handle)&&Object.isFrozen(handle.add));
+ assert.throws(()=>escaped({id:'t-2'}),/closed/);
  assert.throws(()=>handle.add([{model:'Task',identity:{id:'t-2'}}]),/closed/);
  // Reading the answer happens after the handles closed: a getter cannot declare.
  const errors=[];
  const getter=await replay([request],{onError:e=>errors.push(e),page:({ctx})=>{
-  const late=ctx.channel('late');
-  return {get data(){late.task.add({id:'t-1'});return {tasks:[{id:'t-1'}]};},next:null};
+  const late=ctx.scope('late');
+  return {get data(){late.add.task({id:'t-1'});return {tasks:[{id:'t-1'}]};},next:null};
  }});
  assert.equal(getter.answers[0][1].memberships,undefined);
  assert.match(getter.answers[0][1].error,/closed/);
@@ -383,19 +384,19 @@ test('only declarations feed the enrollment: a returned memberships property is 
  const {answers}=await replay([request],{page:()=>({...response('handleLoad','settled'),memberships:forged})});
  assert.deepEqual(answers[0][1],response('handleLoad','settled'));
  assert.equal('memberships' in answers[0][1],false);
- const selected=await replay([request],{page:({ctx})=>{ctx.channel('selected');return response('handleLoad','settled');}});
+ const selected=await replay([request],{page:({ctx})=>{ctx.scope('selected');return response('handleLoad','settled');}});
  assert.equal('memberships' in selected.answers[0][1],false,'selecting a Channel enrolls nothing');
 });
 
 test('an enrollment past its bound fails the page as load.page_too_large, even when the handler caught it',async()=>{
  const request=entry('handleLoad').request;
- const overflow=ctx=>{for(let n=0;n<=1000;n++)ctx.channel(`c${n}`).task.add({id:'t-1'});};
+ const overflow=ctx=>{for(let n=0;n<=1000;n++)ctx.scope(`c${n}`).add.task({id:'t-1'});};
  const outcomes=[
   ['caught, then a normal answer',({ctx})=>{try{overflow(ctx);}catch{}return enrolledPage();}],
   ['thrown out of the handler',({ctx})=>{overflow(ctx);return enrolledPage();}],
   ['caught, then a rejection',({ctx})=>{try{overflow(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
   ['caught, then an invalid continuation',({ctx})=>{try{overflow(ctx);}catch{}return {data:{tasks:[]},next:{state:NaN}};}],
-  ['after a caught invalid declaration',({ctx})=>{try{ctx.channel('c').task.add({});}catch{}try{overflow(ctx);}catch{}return enrolledPage();}],
+  ['after a caught invalid declaration',({ctx})=>{try{ctx.scope('c').add.task({});}catch{}try{overflow(ctx);}catch{}return enrolledPage();}],
  ];
  for(const [label,page] of outcomes){
   const errors=[];
@@ -409,17 +410,17 @@ test('an enrollment past its bound fails the page as load.page_too_large, even w
 test('a refused declaration fails the page with its message, even when the handler caught it',async()=>{
  const request=entry('handleLoad').request;
  const invalid=[
-  ['blank Channel',ctx=>ctx.channel(' '),/Channel name/],
-  ['missing identity',ctx=>ctx.channel('c').task.add({}),/Task identity field id is missing/],
+  ['blank Channel',ctx=>ctx.scope(' '),/Scope name/],
+  ['missing identity',ctx=>ctx.scope('c').add.task({}),/Task identity field id is missing/],
   // Not a host fault: an identity the bridge could not send fails the page as the handler's.
-  ['lone surrogate identity',ctx=>ctx.channel('c').task.add({id:'t-\ud800'}),/Task identity field id must be Unicode text/],
-  ['lone surrogate identity in a list',ctx=>ctx.channel('c').add([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/Task identity field id must be Unicode text/],
-  ['raw identity in a list',ctx=>ctx.channel('c').add([{id:'t-1'}]),/record reference/],
-  ['unknown Model',ctx=>ctx.channel('c').add([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
+  ['lone surrogate identity',ctx=>ctx.scope('c').add.task({id:'t-\ud800'}),/Task identity field id must be Unicode text/],
+  ['lone surrogate identity in a list',ctx=>ctx.scope('c').add([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/Task identity field id must be Unicode text/],
+  ['raw identity in a list',ctx=>ctx.scope('c').add([{id:'t-1'}]),/record reference/],
+  ['unknown Model',ctx=>ctx.scope('c').add([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
  ];
  for(const [label,declare,pattern] of invalid)
   for(const [how,page] of [
-   ['caught, then a normal answer',({ctx})=>{ctx.channel('shared').task.add({id:'t-1'});try{declare(ctx);}catch{}return enrolledPage();}],
+   ['caught, then a normal answer',({ctx})=>{ctx.scope('shared').add.task({id:'t-1'});try{declare(ctx);}catch{}return enrolledPage();}],
    ['caught, then a rejection',({ctx})=>{try{declare(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
    ['thrown out of the handler',({ctx})=>{declare(ctx);return enrolledPage();}],
   ]){
@@ -447,9 +448,9 @@ test('a Query context and a Loader call carry no channel or touch; an external t
   handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
   loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
  await backend.transaction(async call=>{
-  assert.deepEqual(Object.keys(call).sort(),['channel','scope','touch','tx']);
-  assert.equal(typeof call.channel('c').remove,'function');
-  assert.equal(typeof call.channel('c').task.remove,'function');
+  assert.deepEqual(Object.keys(call).sort(),['scope','touch','tx']);
+  assert.equal(typeof call.scope('c').remove,'function');
+  assert.equal(typeof call.scope('c').remove.task,'function');
   assert.equal(typeof call.touch.task,'function');
  });
 });

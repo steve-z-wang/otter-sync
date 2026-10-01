@@ -69,14 +69,14 @@ export async function createExample() {
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );
-      await backend.transaction(async ({ tx, channel, touch }) => {
+      await backend.transaction(async ({ tx, scope: channel, touch }) => {
         await tx.entry.upsert({
           where: { id: "entry-1" },
           create: { id: "entry-1", text: "Hello from the server" },
           update: {},
         });
         touch.entry({ id: "entry-1" });
-        channel("book:demo").entry.add({ id: "entry-1" });
+        channel("book:demo").add.entry({ id: "entry-1" });
       });
     },
     /**
@@ -90,10 +90,10 @@ export async function createExample() {
      * the version that moves a position without touching the stamp.
      */
     async notify(ids: string[] = ["entry-1"], name = "book:demo") {
-      await backend.transaction(async ({ channel, touch }) => {
+      await backend.transaction(async ({ scope: channel, touch }) => {
         for (const id of ids) {
           touch.entry({ id });
-          channel(name).entry.add({ id });
+          channel(name).add.entry({ id });
         }
       });
     },
@@ -112,7 +112,7 @@ export async function createExample() {
       const ids = Array.from({ length: count }, (_, i) => `${options.prefix}-${from + i}`);
       for (let start = 0; start < ids.length; start += size) {
         const batch = ids.slice(start, start + size);
-        await backend.transaction(async ({ tx, channel, touch }) => {
+        await backend.transaction(async ({ tx, scope: channel, touch }) => {
           for (const id of batch) {
             await tx.entry.upsert({
               where: { id },
@@ -120,7 +120,7 @@ export async function createExample() {
               update: { text: `${id} text` },
             });
             touch.entry({ id });
-            channel(options.channel).entry.add({ id });
+            channel(options.channel).add.entry({ id });
           }
         });
       }
@@ -128,10 +128,10 @@ export async function createExample() {
     },
     /** Write one `Entry` and enroll it on every named Channel: one stamp, one position on each. */
     async publishOne(id: string, text: string, channels: string[]): Promise<void> {
-      await backend.transaction(async ({ tx, channel, touch }) => {
+      await backend.transaction(async ({ tx, scope: channel, touch }) => {
         await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
         touch.entry({ id });
-        for (const name of channels) channel(name).entry.add({ id });
+        for (const name of channels) channel(name).add.entry({ id });
       });
     },
     /**
@@ -143,10 +143,10 @@ export async function createExample() {
      * subscription's own delivery ([#151](https://github.com/zanminwang/axton/issues/151)).
      */
     async readd(ids: string[], name: string): Promise<void> {
-      await backend.transaction(async ({ channel }) => {
+      await backend.transaction(async ({ scope: channel }) => {
         channel(name).remove(ids.map((id) => Entry({ id })));
       });
-      await backend.transaction(async ({ channel }) => {
+      await backend.transaction(async ({ scope: channel }) => {
         channel(name).add(ids.map((id) => Entry({ id })));
       });
     },

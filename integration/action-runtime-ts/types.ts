@@ -4,7 +4,7 @@ import {
   Moment,
   Pin,
   Todo as TodoRef,
-  type Channel,
+  type Scope,
   type MutationContext,
   type MutationHandlerCall,
   type QueryContext,
@@ -74,36 +74,36 @@ void [
   removed,
 ];
 ctx.tx.rows.set(todo.id, todo);
-ctx.channel("project:1").todo.add({ id: "A" });
-ctx.channel("project:1").todo.remove({ id: "A" });
+ctx.scope("project:1").add.todo({ id: "A" });
+ctx.scope("project:1").remove.todo({ id: "A" });
 ctx.touch.todo({ id: "A" });
 // @ts-expect-error missing identity
-ctx.channel("project:1").todo.add({});
+ctx.scope("project:1").add.todo({});
 // @ts-expect-error old API is gone
 ctx.publish({ channel: "project:1" });
 // @ts-expect-error old API is gone
 ctx.changes.add(todo);
 // @ts-expect-error Query has no membership writer
-queryCtx.channel("project:1").todo.add({ id: "A" });
+queryCtx.scope("project:1").add.todo({ id: "A" });
 // @ts-expect-error Query has no change declaration
 queryCtx.touch.todo({ id: "A" });
 queryCtx.tx.rows.get(todo.id);
 void queryCtx.callId;
 // A structurally compatible record is accepted; only its identity is copied.
-ctx.channel("project:1").todo.add(todo);
+ctx.scope("project:1").add.todo(todo);
 const at = new Date();
 // A DateTime identity is a Date, and a composite identity names every component.
 ctx.touch.moment({ at });
-ctx.channel("project:1").pin.add({ todo: "A", at });
+ctx.scope("project:1").add.pin({ todo: "A", at });
 ctx.touch.pin({ todo: "A", at });
 // @ts-expect-error a DateTime identity is a Date, not its wire string
 ctx.touch.moment({ at: "2026-01-01T00:00:00.000Z" });
 // @ts-expect-error a composite identity needs every component
-ctx.channel("project:1").pin.remove({ todo: "A" });
+ctx.scope("project:1").remove.pin({ todo: "A" });
 // @ts-expect-error touch has one method per Model
 ctx.touch.nope({ id: "A" });
 // Mixed sets take the generated, explicitly typed references.
-const channel: Channel = ctx.channel("project:1");
+const channel: Scope = ctx.scope("project:1");
 channel.add([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
 channel.remove([TodoRef({ id: "B" })]);
 channel.add([{ model: "Todo", identity: { id: "C" } }]);
@@ -112,7 +112,6 @@ channel.add([]);
 channel.add([{ id: "A" }]);
 // @ts-expect-error a reference's identity is its own Model's
 channel.add([{ model: "Todo", identity: { at } }]);
-// @ts-expect-error mixed methods take a list
 channel.remove(TodoRef({ id: "A" }));
 // @ts-expect-error a constructor takes its own Model's identity
 Moment({ id: "A" });
@@ -146,7 +145,7 @@ const handlers: Mutations<Tx> = {
   put: {
     async v1({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.channel("todos").todo.add(args.todo);
+      ctx.scope("todos").add.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -155,7 +154,7 @@ const handlers: Mutations<Tx> = {
     },
     async v2({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.channel("todos").todo.add(args.todo);
+      ctx.scope("todos").add.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -192,12 +191,10 @@ void [handlers, loaders];
 declare const loadCtx: LoadContext<Tx>;
 void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
 // A Load context adds page records to Channels, and only adds.
-loadCtx.channel("project:1").todo.add({ id: "A" });
-loadCtx
-  .channel("project:1")
-  .add([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
+loadCtx.scope("project:1").add.todo({ id: "A" });
+loadCtx.scope("project:1").add([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
 // @ts-expect-error a Load Channel cannot remove
-loadCtx.channel("project:1").todo.remove({ id: "A" });
+loadCtx.scope("project:1").remove.todo({ id: "A" });
 // @ts-expect-error a Load context has no change declaration
 loadCtx.touch.todo({ id: "A" });
 const loads: Loads<Tx> = {
@@ -264,10 +261,10 @@ if (false) {
   // The external transaction hands its body the same generated handles and
   // answers the body's own value.
   const external: Promise<number> = backend.transaction(
-    async ({ tx, channel, touch }) => {
+    async ({ tx, scope: channel, touch }) => {
       tx.rows.set(todo.id, todo);
       touch.todo({ id: todo.id });
-      channel("project:1").todo.add({ id: todo.id });
+      channel("project:1").add.todo({ id: todo.id });
       channel("project:1").add([Pin({ todo: todo.id, at })]);
       return tx.rows.size;
     },
@@ -275,9 +272,9 @@ if (false) {
   void external;
   // @ts-expect-error the external body has no changes collector
   void backend.transaction(async ({ changes }) => changes);
-  void backend.transaction(async ({ channel }) => {
+  void backend.transaction(async ({ scope: channel }) => {
     // @ts-expect-error missing identity
-    channel("project:1").todo.add({});
+    channel("project:1").add.todo({});
   });
   // @ts-expect-error a schema that retains Queries requires the queries map
   createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, loads });

@@ -898,14 +898,10 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
     "ScopeTagRemoval",
     "ScopePredicate",
     "AddDeclaration",
-    "Channel",
     "HandlerCall",
-    "MembershipOptions",
-    "ModelMembership",
     "MutationContext",
     "QueryContext",
     "RecordRef",
-    "TagSelector",
     "Touch",
     "TransactionCall",
 ];
@@ -1005,20 +1001,10 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
     }
     // The generated backend addresses a Model by its lower-first accessor in
-    // `touch` and in every Channel handle, beside the Channel's own `add` and
-    // `remove` for mixed record lists ([#140](https://github.com/zanminwang/axton/issues/140)).
+    // `touch` and each Scope operation namespace.
     let mut accessors: BTreeMap<String, &str> = BTreeMap::new();
     for m in &d.models {
         let accessor = format!("{}{}", m.name[..1].to_ascii_lowercase(), &m.name[1..]);
-        if accessor == "add" || accessor == "remove" {
-            return Err(at(
-                m.pos,
-                format!(
-                    "model {} generates the accessor {accessor}, which a Channel reserves for mixed record lists; rename the model",
-                    m.name
-                ),
-            ));
-        }
         if let Some(other) = accessors.insert(accessor.clone(), &m.name) {
             return Err(at(
                 m.pos,

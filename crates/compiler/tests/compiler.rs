@@ -511,28 +511,28 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     assert!(ts.contains("export type RecordRef = { readonly model: \"Todo\"; readonly identity: TodoIdentity } | { readonly model: \"Pin\"; readonly identity: PinIdentity };\n"), "{ts}");
     assert!(ts.contains("export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: \"Todo\" }> { return { model: \"Todo\", identity }; }"), "{ts}");
     assert!(ts.contains("export function Pin(identity: PinIdentity): Extract<RecordRef, { model: \"Pin\" }> { return { model: \"Pin\", identity }; }"), "{ts}");
-    assert!(
-        ts.contains("export type MembershipOptions = { readonly tags?: readonly string[] };\n"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("export type TagSelector = { readonly tag: string };\n"),
-        "{ts}"
-    );
-    assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
+    for retired in [
+        "interface Channel",
+        "interface ModelMembership",
+        "type MembershipOptions",
+        "type TagSelector",
+        "channel(name:",
+    ] {
+        assert!(!ts.contains(retired), "{retired}: {ts}");
+    }
+    assert!(ts.contains("export interface Scope {"), "{ts}");
     assert!(ts.contains("export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     assert!(
         ts.contains(
             "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
         ),
         "{ts}"
     );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     // `backend.transaction` hands its body the same generated handles.
     assert!(
         ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
@@ -558,7 +558,7 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{empty}");
+    assert!(empty.contains("export interface Scope {"), "{empty}");
     assert!(
         empty.contains(
             "export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
@@ -994,11 +994,7 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
     for name in [
         "MutationContext",
         "QueryContext",
-        "Channel",
         "Touch",
-        "ModelMembership",
-        "MembershipOptions",
-        "TagSelector",
         "RecordRef",
         "HandlerCall",
         "TransactionCall",
@@ -1045,20 +1041,18 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "{e}"
     );
     assert_eq!(line_of(&e), 3, "{e}");
-    // A Channel keeps `add` and `remove` for mixed record lists.
-    for name in ["Add", "add", "Remove", "remove"] {
-        let e = compile(&format!(
-            "model Other {{ id UUID @@id(id) }}\n\nmodel {name} {{ id UUID @@id(id) }}\n\n"
-        ))
-        .unwrap_err();
-        assert!(
-            e.contains(&format!(
-                "model {name} generates the accessor {}, which a Channel reserves for mixed record lists",
-                name.to_ascii_lowercase()
-            )),
-            "{name}: {e}"
-        );
-        assert_eq!(line_of(&e), 3, "{name}: {e}");
+    for name in [
+        "Add",
+        "add",
+        "Remove",
+        "remove",
+        "Channel",
+        "ModelMembership",
+        "MembershipOptions",
+        "TagSelector",
+        "LoadChannel",
+    ] {
+        compile(&format!("model {name} {{ id UUID @@id(id) }}")).unwrap();
     }
     // No other accessor is reserved: dictionary keys are own properties.
     for name in [

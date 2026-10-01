@@ -6,20 +6,6 @@ export type Entry = EntryRecord;
 export type { EntryIdentity, EntryPatch };
 export function Entry(identity: EntryIdentity): Extract<RecordRef, { model: "Entry" }> { return { model: "Entry", identity }; }
 export type RecordRef = { readonly model: "Entry"; readonly identity: EntryIdentity };
-/** Labels an add attaches: omitted or `[]` adds none; each tag is a nonblank string of at most 256 UTF-8 bytes, at most 64 distinct per add. */
-export type MembershipOptions = { readonly tags?: readonly string[] };
-/** Selects every member of one Channel carrying this tag: `channel(name).remove({ tag })`. */
-export type TagSelector = { readonly tag: string };
-export interface ModelMembership<Identity> {
- add(identity: Identity, options?: MembershipOptions): void;
- remove(identity: Identity): void;
-}
-export interface Channel {
- entry: ModelMembership<EntryIdentity>;
- add(records: readonly RecordRef[], options?: MembershipOptions): void;
- remove(records: readonly RecordRef[]): void;
- remove(selector: TagSelector): void;
-}
 export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
 export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
 export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
@@ -46,7 +32,6 @@ export interface MutationContext<Tx> {
  userId: string;
  callId: string;
  scope(name: string): Scope;
- channel(name: string): Channel;
  touch: Touch;
 }
 export interface QueryContext<Tx> {
@@ -59,13 +44,11 @@ export interface HandlerCall<Tx, Input> {
  tx: Tx;
  userId: string;
  scope(name: string): Scope;
- channel(name: string): Channel;
  touch: Touch;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
  scope(name: string): Scope;
- channel(name: string): Channel;
  touch: Touch;
 }
 const schema = {"actions":[],"deprecations":[],"inverses":[],"loaders":["Entry"],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}],"mutations":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"prerequisites":[],"requirements":[],"schema":{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]},"uniqueConstraints":[]} as const;

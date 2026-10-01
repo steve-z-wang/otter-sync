@@ -621,7 +621,7 @@ test("a touch of a Model the caller never declared commits and reaches a differe
     const subscription = await reader.scopes.subscribe("notes:demo");
     await wait(async () => subscription.status.initialization === "ready", "the reader's origin");
     // Enrollment outside any handler: adding an absent member delivers its current state.
-    await fixture.backend.transaction(async ({ channel }) => { channel("notes:demo").note.add({ id: note }); });
+    await fixture.backend.transaction(async ({ scope: channel }) => { channel("notes:demo").add.note({ id: note }); });
     await wait(async () => (await reader!.models.note.get({ id: note }))?.body === "before", "the enrolled Note");
     const noteStamp = await serverStamp(note, "Note");
 

@@ -4,16 +4,16 @@ export const handlers: Handlers<Tx> = {
   // An ordinary write: the target record is stamped and read back without any Channel membership.
   async createEntry({ input, tx }) { tx.rows.set(input.entry.id, input.entry); },
   editEntry: {
-    async v1({ input, channel }) { channel("c").entry.add(input.target.identity); },
+    async v1({ input, scope: channel }) { channel("c").add.entry(input.target.identity); },
     // A touch declares a changed record; membership is added or removed per Channel.
-    async v2({ input, channel, touch }) { touch.entry(input.entry.identity); channel("c").entry.add(input.entry.identity); channel("audit").entry.remove(input.entry.identity); },
+    async v2({ input, scope: channel, touch }) { touch.entry(input.entry.identity); channel("c").add.entry(input.entry.identity); channel("audit").remove.entry(input.entry.identity); },
   },
   removeEntries: {
-    async v1({ input, channel }) { channel("c").add(input.entries.map(({ identity }) => Entry(identity))); },
-    async v2({ input, channel }) { channel("c").remove(input.entries.map(({ identity }) => Entry(identity))); },
+    async v1({ input, scope: channel }) { channel("c").add(input.entries.map(({ identity }) => Entry(identity))); },
+    async v2({ input, scope: channel }) { channel("c").remove(input.entries.map(({ identity }) => Entry(identity))); },
   },
-  async addBook({ input, channel, touch }) { touch.book({ id: input.book.id }); channel("c").add([]); channel("c").add([Book(input.book)]); },
-  async addComment({ input, channel }) { channel("c").comment.add(input.comment); },
+  async addBook({ input, scope: channel, touch }) { touch.book({ id: input.book.id }); channel("c").add([]); channel("c").add([Book(input.book)]); },
+  async addComment({ input, scope: channel }) { channel("c").add.comment(input.comment); },
   // Handlers receive the client-expanded create: defaulted fields are present and required (#27).
   async addDraft({ input, tx }) { const { id, created, body }: { id: string; created: Date; body: string } = input.draft; tx.rows.set(id, { created, body }); },
 };
@@ -45,6 +45,6 @@ export const backend = createBackend<Tx>({
   native: { validateConfig() {}, processPush: async () => "", processAction: async () => "", processFetch: async () => "", processPull: async () => "", validateLoadBatch: () => [], encodeLoadBatch: () => "", processLoad: async () => "", settleExternal: async () => "", negotiateLive: async () => "", pullLive: async () => "", liveEvent: () => "[]", liveClose() {} },
 });
 // An external write declares through the same handles and answers its own value.
-export const external: Promise<number> = backend.transaction(async ({ tx, channel, touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); channel("c").book.add({ id: "b" }); return tx.rows.size; });
+export const external: Promise<number> = backend.transaction(async ({ tx, scope: channel, touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); channel("c").add.book({ id: "b" }); return tx.rows.size; });
 // A write in a transaction the application owns declares through the same handles; the wake is called after that transaction commits.
-export const owned: Promise<() => void> = backend.publish({ rows: new Map() }, ({ touch, channel }) => { touch.book({ id: "b" }); channel("c").book.add({ id: "b" }); });
+export const owned: Promise<() => void> = backend.publish({ rows: new Map() }, ({ touch, scope: channel }) => { touch.book({ id: "b" }); channel("c").add.book({ id: "b" }); });

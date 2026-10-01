@@ -26,7 +26,7 @@ export async function createFixture() {
       handlerCalls++;
       await ctx.tx.query("INSERT INTO action_e2e_todo(id,title) VALUES($1,$2)", [args.todo.id, args.todo.title.trim()]);
       // Joins its Channel once: this change and every later one reach its subscribers.
-      ctx.channel("todos:demo").todo.add(args.todo);
+      ctx.scope("todos:demo").add.todo(args.todo);
     },
     async updateTodo({ ctx, args }) {
       handlerCalls++;

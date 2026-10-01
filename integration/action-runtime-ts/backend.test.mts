@@ -11,7 +11,7 @@ import {
   type Loaders,
   type Loads,
   type PutV1Input,
-  type Channel,
+  type Scope,
   type Touch,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
@@ -331,7 +331,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "channel", "scope", "touch", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "scope", "touch", "tx", "userId"] },
     { kind: "query", keys: ["callId", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
@@ -453,7 +453,7 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
 
 test("declaration handles close when the handler or external body settles, even when it throws", async () => {
   const escaped: {
-    channel: (name: string) => Channel;
+    scope: (name: string) => Scope;
     touch: Touch;
   }[] = [];
   const answers: unknown[] = [];
@@ -481,8 +481,8 @@ test("declaration handles close when the handler or external body settles, even 
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx }) => {
-        escaped.push({ channel: ctx.channel, touch: ctx.touch });
-        ctx.channel("found").todo.add({ id: "one" });
+        escaped.push({ scope: ctx.scope, touch: ctx.touch });
+        ctx.scope("found").add.todo({ id: "one" });
         if (ctx.callId === "find-2") throw new Error("after declaring");
         return { todo: null };
       },
@@ -510,10 +510,10 @@ test("declaration handles close when the handler or external body settles, even 
     { error: "after declaring" },
   ]);
   // The external body answers its own value; its declarations settle after it.
-  const value = await backend.transaction(async ({ channel, touch }) => {
-    escaped.push({ channel, touch });
+  const value = await backend.transaction(async ({ scope: channel, touch }) => {
+    escaped.push({ scope: channel, touch });
     touch.pin({ todo: "one", at: new Date(at) });
-    channel("found").todo.remove({ id: "one" });
+    channel("found").remove.todo({ id: "one" });
     return { arbitrary: [1, 2] };
   });
   assert.deepEqual(value, { arbitrary: [1, 2] });
@@ -528,15 +528,15 @@ test("declaration handles close when the handler or external body settles, even 
     ],
   });
   await assert.rejects(
-    backend.transaction(async ({ channel, touch }) => {
-      escaped.push({ channel, touch });
+    backend.transaction(async ({ scope: channel, touch }) => {
+      escaped.push({ scope: channel, touch });
       throw new Error("body failed");
     }),
     /body failed/,
   );
   assert.equal(settled.length, 1, "a failed body settles nothing");
   assert.equal(escaped.length, 4);
-  for (const { channel, touch } of escaped) {
+  for (const { scope: channel, touch } of escaped) {
     assert.throws(() => channel("late"), /closed/);
     assert.throws(() => touch.todo({ id: "late" }), /closed/);
   }
@@ -625,7 +625,7 @@ test("Load handlers take decoded args and a context with a channel and no touch,
       userId,
     })),
     requests.map(() => ({
-      keys: ["callId", "channel", "loadId", "scope", "tx", "userId"],
+      keys: ["callId", "loadId", "scope", "tx", "userId"],
       since: at,
       statuses: ["open", "closed"],
       loadId: "load-1",

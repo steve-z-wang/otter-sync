@@ -56,10 +56,10 @@ test('a new subscription starts at the acknowledged head and keeps that origin a
  let client;
  let server;
  /** Publish one Entry on the Scope, the way a background job does. */
- const publish = (id, text) => app.backend.transaction(async ({ tx, channel, touch }) => {
+ const publish = (id, text) => app.backend.transaction(async ({ tx, scope: channel, touch }) => {
   await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
   touch.entry({ id });
-  channel(CHANNEL).entry.add({ id });
+  channel(CHANNEL).add.entry({ id });
  });
  const onError = { onError: error => errors.push(error) };
  try {

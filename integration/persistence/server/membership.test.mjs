@@ -54,8 +54,8 @@ const position=async(channel,id)=>{const [row]=await q('SELECT l.cursor,l.kind F
 const members=async id=>(await q('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel',['Todo',key(id)])).map(r=>r.channel);
 const delivered=page=>page.changes.filter(c=>c.kind==='upsert').map(c=>[c.identity.id,c.stamp,c.state]);
 const range=(page,channel)=>page.cursors[channel];
-const add=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.channel(channel).todo.add({id});});
-const remove=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.channel(channel).todo.remove({id});});
+const add=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(channel).add.todo({id});});
+const remove=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(channel).remove.todo({id});});
 const touch=(id,title)=>backend.transaction(async({tx,touch})=>{if(title===null)await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);else await write(tx,id,title);touch.todo({id});});
 const ids=(prefix,count)=>Array.from({length:count},(_,i)=>`${prefix}-${String(i).padStart(3,'0')}`);
 const settled=()=>new Promise(resolve=>setImmediate(resolve));
@@ -106,7 +106,7 @@ test('removed rows exceeding a page do not starve the active rows after them',as
 test('a record removed and then touched elsewhere is not exposed through its old channel',async()=>{
  const id='exposed';
  await seed(id,'shared');
- await backend.transaction(async({channel})=>{channel('exposed-a').todo.add({id});channel('exposed-b').todo.add({id});});
+ await backend.transaction(async({scope: channel})=>{channel('exposed-a').add.todo({id});channel('exposed-b').add.todo({id});});
  await remove('exposed-a',[id]);
  await touch(id,'after removal');
  assert.equal(await stamp(id),2);
@@ -162,7 +162,7 @@ test('a deleted record stays enrolled and yields null; recreating the identity d
  assert.deepEqual(delivered(await pull({deleted:1})),[[id,2,null]]);
  await touch(id,'again');
  assert.deepEqual(delivered(await pull({deleted:2})),[[id,3,{title:'again'}]],'the same membership receives the recreated record');
- await backend.transaction(async({tx,channel,touch})=>{await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);touch.todo({id});channel('deleted').todo.remove({id});});
+ await backend.transaction(async({tx,scope: channel,touch})=>{await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);touch.todo({id});channel('deleted').remove.todo({id});});
  assert.equal(await stamp(id),4);
  assert.deepEqual([await head('deleted'),await position('deleted',id)],[4,[4,'remove']],'the final relationship wins: a removal, not a deletion, is published');
  const page=await pull({deleted:0});
@@ -213,8 +213,8 @@ const together=async(id,first,second)=>{
  return views;
 };
 const touchBody=(id,title)=>async({tx,touch})=>{await write(tx,id,title);touch.todo({id});};
-const addBody=(channel,id)=>async({channel:c})=>{c(channel).todo.add({id});};
-const removeBody=(channel,id)=>async({channel:c})=>{c(channel).todo.remove({id});};
+const addBody=(channel,id)=>async({scope: c})=>{c(channel).add.todo({id});};
+const removeBody=(channel,id)=>async({scope: c})=>{c(channel).remove.todo({id});};
 const outcome=async(id,channels)=>({stamp:await stamp(id),members:await members(id),
  ...Object.fromEntries(await Promise.all(channels.map(async c=>[c,{head:await head(c),position:await position(c,id)}])))});
 /** Which body the driver retried: the one serialized second. */
@@ -265,7 +265,7 @@ test('touch and add serialize in either order: the enrolled Channel always holds
 
 test('touch and remove serialize in either order; the stale touch retries and publishes nothing to the removed Channel',async t=>{
  const orders=[];
- const prepare=async id=>{await seed(id,'v1');await backend.transaction(async({channel})=>{channel(`${id}-B`).todo.add({id});channel(`${id}-C`).todo.add({id});});return `${id}-C`;};
+ const prepare=async id=>{await seed(id,'v1');await backend.transaction(async({scope: channel})=>{channel(`${id}-B`).add.todo({id});channel(`${id}-C`).add.todo({id});});return `${id}-C`;};
  // Either way C ends with the pair's removal; touching first published one more position before it.
  const expected={touchFirst:{head:3,position:[3,'remove']},removeFirst:{head:2,position:[2,'remove']}};
  const verify=async(id,order,label)=>{
@@ -349,13 +349,13 @@ const listen=channels=>{const woken=[];const stops=channels.map(c=>backend.onCom
 test('a call rejected after settlement rolls back its writes, relationships, stamps, heads and wake; the batch continues',async()=>{
  const channels=['rb-kept','rb-rolled','rb-old'],untouched=['rb-refused','rb-other','rb-old'];
  await seed('rb-other','v1');await seed('rb-old','v1');await add('rb-old',['rb-old','rb-other']);
- plans.set('rb-keep',ctx=>{ctx.channel('rb-kept').todo.add({id:'rb-kept'});});
+ plans.set('rb-keep',ctx=>{ctx.scope('rb-kept').add.todo({id:'rb-kept'});});
  plans.set('rb-declare',async ctx=>{
   await write(ctx.tx,'rb-other','changed by the rejected call');
   ctx.touch.todo({id:'rb-other'});
-  ctx.channel('rb-rolled').todo.add({id:'rb-refused'});
-  ctx.channel('rb-rolled').add([{model:'Todo',identity:{id:'rb-other'}}]);
-  ctx.channel('rb-old').todo.remove({id:'rb-old'});
+  ctx.scope('rb-rolled').add.todo({id:'rb-refused'});
+  ctx.scope('rb-rolled').add([{model:'Todo',identity:{id:'rb-other'}}]);
+  ctx.scope('rb-old').remove.todo({id:'rb-old'});
  });
  refuse=new Set(['rb-refused']);
  const before=await snapshotOf(untouched,['rb-rolled','rb-old']);
@@ -379,11 +379,11 @@ test('a failed transaction rolls back every table, the saved outcome and the wak
  const records=['tx-a','tx-b'],channels=['tx-new','tx-old'];
  await seed('tx-b','v1');await add('tx-old',['tx-b']);
  plans.set('tx-declare',async ctx=>{
-  ctx.channel('tx-new').todo.add({id:'tx-a'});
+  ctx.scope('tx-new').add.todo({id:'tx-a'});
   await write(ctx.tx,'tx-b','changed');
   ctx.touch.todo({id:'tx-b'});
-  ctx.channel('tx-old').todo.remove({id:'tx-b'});
-  ctx.channel('tx-new').todo.add({id:'tx-b'});
+  ctx.scope('tx-old').remove.todo({id:'tx-b'});
+  ctx.scope('tx-new').add.todo({id:'tx-b'});
  });
  const normal=database;
  const broken={driver,transaction:normal.transaction,persistence:tx=>({call:async request=>{if(request.op==='saveReceipt')throw new Error('forced saveReceipt fault');return normal.persistence(tx).call(request);}})};
@@ -409,7 +409,7 @@ test('a failed transaction rolls back every table, the saved outcome and the wak
 });
 
 test('a later subscriber read failure is isolated from the committed mutation',async()=>{
- plans.set('iso-declare',ctx=>{ctx.channel('iso').todo.add({id:'iso'});});
+ plans.set('iso-declare',ctx=>{ctx.scope('iso').add.todo({id:'iso'});});
  const receipt=await push(backend,'iso',[[callId(0x701),'iso','iso-declare']]);
  assert.equal(receipt.completions[0].outcome.status,'succeeded');
  const committed=await snapshotOf(['iso'],['iso']);

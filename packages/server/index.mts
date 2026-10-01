@@ -14,8 +14,6 @@ import {
   effectsFor,
   loadEffectsFor,
   lowerFirst,
-  type RuntimeChannel,
-  type RuntimeLoadChannel,
   type RuntimeTouch,
 } from "./effects.mts";
 import type {
@@ -26,16 +24,7 @@ import type {
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
-export type {
-  MembershipOptions,
-  RecordRef,
-  RuntimeChannel,
-  RuntimeLoadChannel,
-  RuntimeLoadModelMembership,
-  RuntimeModelMembership,
-  RuntimeTouch,
-  TagSelector,
-} from "./effects.mts";
+export type { RecordRef, RuntimeTouch } from "./effects.mts";
 export type {
   Acknowledged,
   Claimed,
@@ -321,14 +310,13 @@ export { MutationRejected as CallRejected };
 /**
  * What `backend.transaction` hands its body: the application transaction and
  * the same declaration handles a Mutation receives. `touch` declares a record
- * the body changed; `channel(name)` adds or removes Channel members. The
+ * the body changed; `scope(name)` adds or removes Scope members. The
  * engine settles them after the body returns, inside the same transaction.
  * A generated backend narrows both to its schema's Models.
  */
 export interface TransactionCall<Tx> {
   tx: Tx;
   scope(name: string): RuntimeScope;
-  channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
 /** A legacy slot handler's call: its decoded input and the same declaration handles. */
@@ -337,7 +325,6 @@ export interface HandlerCall<Tx, Input> {
   tx: Tx;
   userId: string;
   scope(name: string): RuntimeScope;
-  channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
 /** Loads name no channel: the same identity, version and stamp describe the same content on every delivery path. */
@@ -358,7 +345,7 @@ export type HandlerRegistration<Tx> =
 /**
  * Trusted framework context of a Mutation: it may change business state,
  * declare records it changed beyond its inputs (`touch`) and add or remove
- * Channel members (`channel(name)`). The handles close when the handler
+ * Scope members (`scope(name)`). The handles close when the handler
  * settles.
  */
 export interface MutationContext<Tx> {
@@ -366,7 +353,6 @@ export interface MutationContext<Tx> {
   userId: string;
   callId: string;
   scope(name: string): RuntimeScope;
-  channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
 /**
@@ -383,8 +369,8 @@ export interface QueryContext<Tx> {
 /**
  * Trusted framework context of one Load page. A Load reads without business
  * side effects, so it carries no `touch`, and the framework cannot inspect
- * arbitrary SQL on `tx`. `channel(name)` only adds: it enrolls records this
- * page returns into a Channel, which the engine settles with the page. Its
+ * arbitrary SQL on `tx`. `scope(name)` only adds: it enrolls records this
+ * page returns into a Scope, which the engine settles with the page. Its
  * handles close when the handler settles. `callId` is the page's durable
  * call ID and `loadId` its job.
  */
@@ -394,7 +380,6 @@ export interface LoadContext<Tx> {
   callId: string;
   loadId: string;
   scope(name: string): RuntimeLoadScope;
-  channel(name: string): RuntimeLoadChannel;
 }
 /**
  * One page of a Load: `continuation` is `null` on the first page and the
@@ -806,7 +791,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     loaders: loadedModels,
   });
   native.validateConfig(config);
-  // Refuses Models whose accessors collide or take a Channel's add/remove,
+  // Refuses Models whose generated accessors collide,
   // and declarations naming a device-only Model.
   const createEffects = effectsFor(
     schemaModels,
@@ -1061,7 +1046,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               tx,
               userId: req.owner,
               scope: effects.scope,
-              channel: effects.channel,
               touch: effects.touch,
             });
             result = effects.settlement();
@@ -1116,7 +1100,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                     userId: req.owner,
                     callId: req.callId,
                     scope: effects.scope,
-                    channel: effects.channel,
                     touch: effects.touch,
                   }
                 : { tx, userId: req.owner, callId: req.callId },
@@ -1178,7 +1161,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                   callId: req.callId,
                   loadId: req.loadId,
                   scope: effects.scope,
-                  channel: effects.channel,
                 },
                 args,
                 continuation: req.continuation,
@@ -1399,7 +1381,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       const call: TransactionCall<T> = {
         tx,
         scope: effects.scope,
-        channel: effects.channel,
         touch: effects.touch,
       };
       result = await body(call as unknown as External);

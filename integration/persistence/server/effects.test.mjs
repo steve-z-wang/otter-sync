@@ -12,13 +12,14 @@ const fresh=()=>createEffects(models);
 const empty={changes:[],memberships:[]};
 const add=(channel,model,identity,tags=[])=>({kind:'add',channel,record:{model,identity},tags});
 const remove=(channel,model,identity)=>({kind:'remove',channel,record:{model,identity}});
-const removeTag=(channel,tag)=>({kind:'removeTag',channel,tag});
+const removeTag=(channel,tag)=>({kind:'select',channel,predicate:{tags:{all:[tag]}},action:{kind:'remove'}});
+const tagAdd=(channel,model,identity,tags)=>({...add(channel,model,identity,tags),kind:'tagAdd'});
 
 test('declarations snapshot identities at the call, in declaration order',()=>{
  const effects=fresh();
  const identity={id:'A'};
- const channel=effects.channel('project:1');
- channel.todo.add(identity);
+ const channel=effects.scope('project:1');
+ channel.add.todo(identity);
  identity.id='B';
  effects.touch.todo({id:'A'});
  assert.deepEqual(effects.settlement(),{
@@ -29,12 +30,12 @@ test('declarations snapshot identities at the call, in declaration order',()=>{
 
 test('membership declarations keep their order and repeats; the engine reduces them',()=>{
  const effects=fresh();
- const a=effects.channel('a'),b=effects.channel('b');
- a.todo.add({id:'1'});
- b.todo.remove({id:'2'});
- a.todo.add({id:'1'});
- a.todo.remove({id:'1'});
- effects.channel('a').todo.add({id:'1'});
+ const a=effects.scope('a'),b=effects.scope('b');
+ a.add.todo({id:'1'});
+ b.remove.todo({id:'2'});
+ a.add.todo({id:'1'});
+ a.remove.todo({id:'1'});
+ effects.scope('a').add.todo({id:'1'});
  assert.deepEqual(effects.settlement().memberships,[
   add('a','Todo',{id:'1'}),remove('b','Todo',{id:'2'}),add('a','Todo',{id:'1'}),
   remove('a','Todo',{id:'1'}),add('a','Todo',{id:'1'}),
@@ -57,12 +58,12 @@ test('only identity fields are copied, and Date components are encoded at the ca
  const effects=fresh();
  const at=new Date('2026-01-01T00:00:00.000Z');
  const record={at,title:'whole record'};
- effects.channel('c').moment.add(record);
+ effects.scope('c').add.moment(record);
  effects.touch.moment(record);
  at.setUTCFullYear(2030);
  record.title='changed';
  const pin={todo:'t',at:new Date('2026-02-01T00:00:00.000Z'),label:'x'};
- effects.channel('c').pin.remove(pin);
+ effects.scope('c').remove.pin(pin);
  effects.touch.pin(pin);
  pin.todo='other';
  pin.at.setUTCFullYear(2031);
@@ -85,11 +86,11 @@ test('mixed calls take explicit references, including the generated constructors
  const effects=fresh();
  const at=new Date('2026-01-01T00:00:00.000Z');
  const refs=[Todo({id:'A'}),Moment({at}),Pin({todo:'t',at}),{model:'Todo',identity:{id:'B',title:'extra'}}];
- effects.channel('mixed').add(refs);
+ effects.scope('mixed').add(refs);
  at.setUTCFullYear(2040);
- effects.channel('mixed').remove([Todo({id:'A'})]);
- effects.channel('mixed').add([]);
- effects.channel('mixed').remove([]);
+ effects.scope('mixed').remove([Todo({id:'A'})]);
+ effects.scope('mixed').add([]);
+ effects.scope('mixed').remove([]);
  assert.deepEqual(effects.settlement(),{changes:[],memberships:[
   add('mixed','Todo',{id:'A'}),add('mixed','Moment',{at:'2026-01-01T00:00:00.000Z'}),
   add('mixed','Pin',{todo:'t',at:'2026-01-01T00:00:00.000Z'}),add('mixed','Todo',{id:'B'}),
@@ -99,15 +100,15 @@ test('mixed calls take explicit references, including the generated constructors
 
 test('missing, null, malformed and unknown references fail at the call',()=>{
  const effects=fresh();
- const channel=effects.channel('c');
- for(const identity of [undefined,null,'A',{},{id:null},{id:1},{title:'no id'}])
-  assert.throws(()=>channel.todo.add(identity),/Todo/,JSON.stringify(identity));
+ const channel=effects.scope('c');
+ for(const identity of [undefined,null,{},{id:null},{id:1},{title:'no id'}])
+  assert.throws(()=>channel.add.todo(identity),/Todo/,JSON.stringify(identity));
  assert.throws(()=>effects.touch.todo({}),/Todo identity field id/);
  assert.throws(()=>effects.touch.moment({at:new Date('nope')}),/Moment identity field at/);
  assert.throws(()=>effects.touch.moment({at:'yesterday'}),/Moment identity field at/);
  assert.throws(()=>effects.touch.pin({todo:'t'}),/Pin identity field at/);
- assert.throws(()=>channel.add('x'),/array of record references/);
- assert.throws(()=>channel.add(Todo({id:'A'})),/array of record references/);
+ assert.throws(()=>channel.add('x'),/record reference/);
+ assert.throws(()=>channel.add({id:'A'}),/record reference/);
  assert.throws(()=>channel.add([null]),/record reference/);
  assert.throws(()=>channel.add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/);
  assert.throws(()=>channel.add([{model:'Todo'}]),/Todo identity/);
@@ -124,16 +125,16 @@ test('UUID, enum and date-time components follow the engine rules at the declara
   {name:'Ticket',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'uuid'},nullable:false}]},
   {name:'Tag',identity:['kind'],fields:[{name:'kind',type:{kind:'enum',name:'Kind'},nullable:false}]},
  ],[{name:'Kind',values:['a','b']}]);
- const channel=effects.channel('c');
+ const channel=effects.scope('c');
  // 36 characters, hyphenated, RFC 4122 variant, version 1 to 8.
  for(const id of ['not-a-uuid','123e4567e89b42d3a456426614174000','{123e4567-e89b-42d3-a456-426614174000}','urn:uuid:123e4567-e89b-42d3-a456-426614174000','123e4567-e89b-02d3-a456-426614174000','123e4567-e89b-92d3-a456-426614174000','123e4567-e89b-42d3-c456-426614174000','123e4567-e89b-42d3-a456-42661417400g']){
   assert.throws(()=>effects.touch.ticket({id}),/Ticket identity field id must be a UUID/,id);
-  assert.throws(()=>channel.ticket.add({id}),/Ticket identity field id must be a UUID/,id);
+  assert.throws(()=>channel.add.ticket({id}),/Ticket identity field id must be a UUID/,id);
   assert.throws(()=>channel.add([{model:'Ticket',identity:{id}}]),/Ticket identity field id must be a UUID/,id);
  }
  // An enum component is one of its enum's values, exactly.
  for(const kind of ['c','A',''])assert.throws(()=>effects.touch.tag({kind}),/Tag identity field kind must be one of a, b/,kind);
- assert.throws(()=>channel.tag.remove({kind:'c'}),/one of a, b/);
+ assert.throws(()=>channel.remove.tag({kind:'c'}),/one of a, b/);
  // A date-time string is zoned RFC 3339 with real calendar fields; a Date must encode to one.
  for(const at of ['2026-01-01T00:00:00','2026-01-01 00:00:00Z','2026-01-01t00:00:00Z','2026-13-01T00:00:00Z','2026-02-29T00:00:00Z','2026-04-31T00:00:00Z','2026-01-01T24:00:00Z','2026-01-01T00:60:00Z','2026-01-01T00:00:00+0100','2026-01-01T00:00:00+24:00','2026-01-01T00:00:00.1234567890Z','26-01-01T00:00:00Z',new Date('+010000-01-01T00:00:00Z')])
   assert.throws(()=>effects.touch.moment({at}),/Moment identity field at must be a valid Date or a zoned RFC 3339 date-time string/,String(at));
@@ -147,7 +148,7 @@ test('UUID, enum and date-time components follow the engine rules at the declara
 
 test('a mixed call with a later invalid element appends nothing, even when caught',()=>{
  const effects=fresh();
- const channel=effects.channel('c');
+ const channel=effects.scope('c');
  assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B'}),{id:'C'}]),/record reference/);
  try{channel.remove([Todo({id:'A'}),{model:'Todo',identity:{}}]);}catch{}
  assert.deepEqual(effects.settlement(),empty);
@@ -158,8 +159,8 @@ test('a mixed call with a later invalid element appends nothing, even when caugh
 test('a Channel name must be a nonblank string; selecting one declares nothing',()=>{
  const effects=fresh();
  for(const name of ['','  ','\n',undefined,null,1,{}])
-  assert.throws(()=>effects.channel(name),/Channel name/,String(name));
- effects.channel('selected');
+  assert.throws(()=>effects.scope(name),/name/,String(name));
+ effects.scope('selected');
  assert.deepEqual(effects.settlement(),empty);
 });
 
@@ -175,15 +176,17 @@ test('handles are null-prototype dictionaries; __proto__, constructor and functi
  assert.equal(Object.getPrototypeOf(effects.touch),null);
  const keys=['__proto__','constructor','toString','name','length','bind','apply','call'];
  assert.deepEqual(Object.keys(effects.touch),keys);
- const channel=effects.channel('c');
- assert.equal(Object.getPrototypeOf(channel),null);
- assert.deepEqual(Object.keys(channel),[...keys,'add','remove']);
+ const channel=effects.scope('c');
+ assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(channel)),null);
+ assert.deepEqual(Object.keys(channel.add),keys);
+ assert.deepEqual(Object.keys(channel.remove),keys);
+ assert.deepEqual(Object.keys(channel),['add','remove','tag','where']);
  assert.equal(typeof channel,'object');
- channel.name.add({id:'n'});
- channel.length.remove({id:'l'});
+ channel.add.name({id:'n'});
+ channel.remove.length({id:'l'});
  effects.touch.call({id:'k'});
- channel.__proto__.add({id:'p'});
- channel.constructor.remove({['__proto__']:'c'});
+ channel.add.__proto__({id:'p'});
+ channel.remove.constructor({['__proto__']:'c'});
  effects.touch.toString({id:'s'});
  effects.touch.__proto__({id:'p'});
  const identity=Object.defineProperty({},'__proto__',{value:'c',enumerable:true});
@@ -196,11 +199,11 @@ test('handles are null-prototype dictionaries; __proto__, constructor and functi
  assert.equal(Object.getPrototypeOf(fresh().touch),null);
 });
 
-test('a malformed runtime config is refused: duplicate accessors and the reserved Channel keys',()=>{
+test('runtime configuration refuses duplicate accessors and allows operation names as Models',()=>{
  const model=name=>({name,identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'},nullable:false}]});
  assert.throws(()=>createEffects([model('Todo'),model('todo')]),/Models Todo and todo both generate the accessor todo/);
- assert.throws(()=>createEffects([model('Add')]),/Model Add generates the accessor add, which a Channel reserves/);
- assert.throws(()=>createEffects([model('remove')]),/Model remove generates the accessor remove, which a Channel reserves/);
+ createEffects([model('Add')]).scope('U').add.add('A');
+ createEffects([model('remove')]).scope('U').remove.remove('A');
  assert.throws(()=>createEffects([{name:'Todo',fields:[]}]),/Model Todo/);
  assert.throws(()=>createEffects([{name:'Todo',identity:['id'],fields:[]}]),/Todo identity field id/);
  assert.throws(()=>createEffects([{name:'Tag',identity:['kind'],fields:[{name:'kind',type:{kind:'enum',name:'Kind'}}]}]),/Tag identity field kind names an enum the configuration does not declare/);
@@ -208,23 +211,23 @@ test('a malformed runtime config is refused: duplicate accessors and the reserve
 
 test('closing refuses every later declaration, including through escaped handles; settlement stays readable',()=>{
  const effects=fresh();
- const channel=effects.channel('c');
- const todo=channel.todo;
+ const channel=effects.scope('c');
+ const todo={add: channel.add.todo};
  const touch=effects.touch;
- channel.todo.add({id:'A'});
+ channel.add.todo({id:'A'});
  touch.todo({id:'A'});
  effects.close();
  const closed=/closed/;
- assert.throws(()=>todo.add({id:'B'}),closed);
- assert.throws(()=>channel.todo.remove({id:'B'}),closed);
+ assert.throws(()=>channel.add.todo({id:'B'}),closed);
+ assert.throws(()=>channel.remove.todo({id:'B'}),closed);
  assert.throws(()=>channel.add([]),closed);
  assert.throws(()=>channel.remove([Todo({id:'B'})]),closed);
  assert.throws(()=>touch.todo({id:'B'}),closed);
- assert.throws(()=>effects.channel('c'),closed);
+ assert.throws(()=>effects.scope('c'),closed);
  // Tagged adds and tag selectors are declarations too.
- assert.throws(()=>todo.add({id:'B'},{tags:['X']}),closed);
- assert.throws(()=>channel.add([Todo({id:'B'})],{tags:['X']}),closed);
- assert.throws(()=>channel.remove({tag:'X'}),closed);
+ assert.throws(()=>channel.add.todo({id:'B'}).tag(['X']),closed);
+ assert.throws(()=>channel.add([Todo({id:'B'})]).tag(['X']),closed);
+ assert.throws(()=>channel.where({ tags: { all: ['X'] } }).remove(),closed);
  const expected={changes:[{model:'Todo',identity:{id:'A'}}],memberships:[add('c','Todo',{id:'A'})]};
  const settled=effects.settlement();
  assert.deepEqual(settled,expected);
@@ -243,13 +246,13 @@ test('a Model outside the loaded set is device-only: every declaration naming it
  const refused=caller=>({message:`${caller}: Model Moment has no Loader, so it is device-only and cannot be published`});
  const at=new Date(0);
  assert.throws(()=>effects.touch.moment({at}),refused('touch.moment'));
- assert.throws(()=>effects.channel('c').moment.add({at}),refused('channel("c").moment.add'));
- assert.throws(()=>effects.channel('c').moment.remove({at}),refused('channel("c").moment.remove'));
- assert.throws(()=>effects.channel('c').add([Todo({id:'t'}),Moment({at})]),refused('channel("c").add'));
- assert.throws(()=>effects.channel('c').remove([Moment({at})]),refused('channel("c").remove'));
+ assert.throws(()=>effects.scope('c').add.moment({at}),refused('scope.add.moment'));
+ assert.throws(()=>effects.scope('c').remove.moment({at}),refused('scope.remove.moment'));
+ assert.throws(()=>effects.scope('c').add([Todo({id:'t'}),Moment({at})]),refused('scope.add'));
+ assert.throws(()=>effects.scope('c').remove([Moment({at})]),refused('scope.remove'));
  // Loaded Models declare as before; the refused mixed call appended nothing.
  effects.touch.todo({id:'t'});
- effects.channel('c').todo.add({id:'t'});
+ effects.scope('c').add.todo({id:'t'});
  assert.deepEqual(effects.settlement(),{changes:[{model:'Todo',identity:{id:'t'}}],memberships:[add('c','Todo',{id:'t'})]});
  // Without a loaded set every Model declares, as a collector always did.
  fresh().touch.moment({at});
@@ -261,26 +264,26 @@ const entries=()=>createEffects([scalarModel('Entry')]);
 
 test('an add without tags, with {} or with an empty list adds no label',()=>{
  const effects=fresh();
- const c=effects.channel('c');
- c.todo.add({id:'1'});
- c.todo.add({id:'2'},undefined);
- c.todo.add({id:'3'},{});
- c.todo.add({id:'4'},{tags:[]});
- c.todo.add({id:'5'},{tags:undefined});
+ const c=effects.scope('c');
+ c.add.todo({id:'1'});
+ c.add.todo({id:'2'});
+ c.add.todo({id:'3'});
+ c.add.todo({id:'4'});
+ c.add.todo({id:'5'});
  c.add([Todo({id:'6'})]);
- c.add([Todo({id:'7'})],{tags:[]});
+ c.add([Todo({id:'7'})]);
  assert.deepEqual(effects.settlement().memberships,['1','2','3','4','5','6','7'].map(id=>add('c','Todo',{id})));
 });
 
 test('tags are copied once per declaration, deduplicated in first-seen order and kept as spelled',()=>{
  const effects=fresh();
- const c=effects.channel('c');
- c.todo.add({id:'A'},{tags:['X','Y','X','x',' X','Y']});
- c.add([Todo({id:'B'}),Moment({at:new Date(0)})],{tags:['Journal:1','Journal:1']});
+ const c=effects.scope('c');
+ c.add.todo({id:'A'}).tag(['X','Y','X','x',' X','Y']);
+ c.add([Todo({id:'B'}),Moment({at:new Date(0)})]).tag(['Journal:1','Journal:1']);
  assert.deepEqual(effects.settlement().memberships,[
-  add('c','Todo',{id:'A'},['X','Y','x',' X']),
-  add('c','Todo',{id:'B'},['Journal:1']),
-  add('c','Moment',{at:'1970-01-01T00:00:00.000Z'},['Journal:1']),
+  add('c','Todo',{id:'A'}),tagAdd('c','Todo',{id:'A'},['X','Y','x',' X']),
+  add('c','Todo',{id:'B'}),add('c','Moment',{at:'1970-01-01T00:00:00.000Z'}),
+  tagAdd('c','Todo',{id:'B'},['Journal:1']),tagAdd('c','Moment',{at:'1970-01-01T00:00:00.000Z'},['Journal:1']),
  ]);
 });
 
@@ -288,94 +291,88 @@ test('a later change to the caller array or options cannot alter a collected int
  const effects=entries();
  const tags=['X'];
  const options={tags};
- const u=effects.channel('U');
- u.entry.add({id:'a'},options);
- u.remove({tag:'X'});
+ const u=effects.scope('U');
+ u.add.entry({id:'a'}).tag(options.tags);
+ u.where({ tags: { all: ['X'] } }).remove();
  tags.push('Y');
  tags[0]='Z';
  options.tags=['W'];
- const expected=JSON.parse('[{"kind":"add","channel":"U","record":{"model":"Entry","identity":{"id":"a"}},"tags":["X"]},{"kind":"removeTag","channel":"U","tag":"X"}]');
+ const expected=[add('U','Entry',{id:'a'}),tagAdd('U','Entry',{id:'a'},['X']),removeTag('U','X')];
  const settled=effects.settlement().memberships;
  assert.deepEqual(settled,expected);
- assert.ok(Object.isFrozen(settled[0].tags),'the collected tags are frozen');
+ assert.ok(Object.isFrozen(settled[1].tags),'the collected tags are frozen');
  assert.ok(Object.isFrozen(settled[0].record)&&Object.isFrozen(settled[1]),'each intent is frozen');
- assert.throws(()=>{settled[0].tags.push('forged');},TypeError);
- assert.throws(()=>{settled[1].tag='forged';},TypeError);
+ assert.throws(()=>{settled[1].tags.push('forged');},TypeError);
+ assert.throws(()=>{settled[2].action.kind='forged';},TypeError);
  assert.deepEqual(effects.settlement().memberships,expected);
 });
 
 test('declarations keep their order across adds, removals and tag selectors',()=>{
  const effects=fresh();
- const u=effects.channel('U');
- u.todo.add({id:'A'},{tags:['X']});
- u.remove({tag:'X'});
- u.todo.add({id:'B'},{tags:['X']});
- effects.channel('V').remove([Todo({id:'A'})]);
- u.remove({tag:'Y'});
- u.todo.remove({id:'B'});
+ const u=effects.scope('U');
+ u.add.todo({id:'A'}).tag(['X']);
+ u.where({ tags: { all: ['X'] } }).remove();
+ u.add.todo({id:'B'}).tag(['X']);
+ effects.scope('V').remove([Todo({id:'A'})]);
+ u.where({ tags: { all: ['Y'] } }).remove();
+ u.remove.todo({id:'B'});
  assert.deepEqual(effects.settlement(),{changes:[],memberships:[
-  add('U','Todo',{id:'A'},['X']),removeTag('U','X'),add('U','Todo',{id:'B'},['X']),
+  add('U','Todo',{id:'A'}),tagAdd('U','Todo',{id:'A'},['X']),removeTag('U','X'),add('U','Todo',{id:'B'}),tagAdd('U','Todo',{id:'B'},['X']),
   remove('V','Todo',{id:'A'}),removeTag('U','Y'),remove('U','Todo',{id:'B'}),
  ]});
 });
 
 test('an invalid or oversized label refuses the whole declaration',()=>{
  const effects=fresh();
- const c=effects.channel('c');
+ const c=effects.scope('c');
  // 256 UTF-8 bytes is the bound, however many characters spell it.
  const longest='é'.repeat(128);
  assert.equal(Buffer.byteLength(longest,'utf8'),256);
- c.todo.add({id:'ok'},{tags:[longest,'x'.repeat(256),'😀'.repeat(64)]});
+ c.add.todo({id:'ok'}).tag([longest,'x'.repeat(256),'😀'.repeat(64)]);
  const refused=[
-  [[''],/tag must be a nonblank string/],
-  [['  '],/tag must be a nonblank string/],
-  [['\n\t'],/tag must be a nonblank string/],
-  [[1],/tag must be a nonblank string/],
-  [[null],/tag must be a nonblank string/],
-  [[undefined],/tag must be a nonblank string/],
-  [['X',{}],/tag must be a nonblank string/],
-  [[longest+'a'],/at most 256 UTF-8 bytes/],
-  [['x'.repeat(257)],/at most 256 UTF-8 bytes/],
-  [['a\ud800'],/Unicode text/],
+  [[''],/invalid label/],
+  [['  '],/invalid label/],
+  [['\n\t'],/invalid label/],
+  [[1],/invalid label/],
+  [[null],/invalid label/],
+  [[undefined],/invalid label/],
+  [['X',{}],/invalid label/],
+  [[longest+'a'],/invalid label/],
+  [['x'.repeat(257)],/invalid label/],
+  [['a\ud800'],/invalid label/],
  ];
  for(const [tags,pattern] of refused){
-  assert.throws(()=>c.todo.add({id:'A'},{tags}),pattern,JSON.stringify(tags));
-  assert.throws(()=>c.add([Todo({id:'A'})],{tags}),pattern,JSON.stringify(tags));
+  assert.throws(()=>c.tag(tags).add.todo({id:'A'}),pattern,JSON.stringify(tags));
+  assert.throws(()=>c.tag(tags).add([Todo({id:'A'})]),pattern,JSON.stringify(tags));
  }
- for(const options of [null,'X',['X'],{tags:'X'},{tags:null},{tags:{0:'X',length:1}},{tag:'X'},{tags:['X'],extra:true}])
-  assert.throws(()=>c.todo.add({id:'A'},options),/options/,JSON.stringify(options));
- assert.throws(()=>c.add([Todo({id:'A'})],{tags:'X'}),/options/);
- assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'ok'},[longest,'x'.repeat(256),'😀'.repeat(64)])],'no refused declaration appended an intent');
+ for(const labels of [null,[],{tags:['X']},{0:'X',length:1}])
+  assert.throws(()=>c.tag(labels).add.todo('A'),/labels/,JSON.stringify(labels));
+ assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'ok'}),tagAdd('c','Todo',{id:'ok'},[longest,'x'.repeat(256),'😀'.repeat(64)])],'no refused declaration appended an intent');
 });
 
 test('an add declares at most 64 distinct labels; repeats do not count',()=>{
  const effects=fresh();
- const c=effects.channel('c');
+ const c=effects.scope('c');
  const tags=Array.from({length:64},(_,n)=>`t${n}`);
- c.todo.add({id:'A'},{tags:[...tags,...tags]});
- assert.throws(()=>c.todo.add({id:'B'},{tags:[...tags,'t64']}),/more than 64 distinct tags/);
- assert.throws(()=>c.add([Todo({id:'B'})],{tags:[...tags,'t64']}),/more than 64 distinct tags/);
- assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'A'},tags)]);
+ c.add.todo({id:'A'}).tag([...tags,...tags]);
+ assert.throws(()=>c.tag([...tags,'t64']).add.todo({id:'B'}),/1 to 64 distinct labels/);
+ assert.throws(()=>c.tag([...tags,'t64']).add([Todo({id:'B'})]),/1 to 64 distinct labels/);
+ assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'A'}),tagAdd('c','Todo',{id:'A'},tags)]);
 });
 
-test('a mixed remove takes a record list or exactly one {tag} selector; any other shape is refused',()=>{
- const effects=fresh();
- const c=effects.channel('c');
- for(const selector of [{},{tag:''},{tag:'  '},{tag:1},{tag:'X',extra:1},{tags:['X']},{tag:'a\ud800'},{tag:'x'.repeat(257)},null,undefined,'X',Todo({id:'A'})])
-  assert.throws(()=>c.remove(selector),/c"\)\.remove: /,JSON.stringify(selector));
- // A Model's remove takes an identity, never a selector.
- assert.throws(()=>c.todo.remove({tag:'X'}),/Todo identity field id is missing/);
- // Nor does a mixed add take one.
- assert.throws(()=>c.add({tag:'X'}),/array of record references/);
+test('mixed remove refuses legacy tag selectors and malformed references; selection is explicit',()=>{
+ const effects=fresh(), c=effects.scope('c');
+ for(const selector of [{},{tag:''},{tag:'X'},{tag:'X',extra:1},{tags:['X']},null,undefined,'X'])
+  assert.throws(()=>c.remove(selector),/record reference/);
+ assert.throws(()=>c.remove.todo({tag:'X'}),/Todo identity field id is missing/);
+ assert.throws(()=>c.add({tag:'X'}),/record reference/);
  assert.deepEqual(effects.settlement().memberships,[]);
- // An inherited or non-enumerable member is not an exact {tag} selector.
- assert.throws(()=>c.remove(Object.create({tag:'X'})),/selector/);
- c.remove({tag:'X'});
- c.remove({tag:' spaced '});
+ c.where({tags:{all:['X']}}).remove();
+ c.where({tags:{all:[' spaced ']}}).remove();
  assert.deepEqual(effects.settlement().memberships,[removeTag('c','X'),removeTag('c',' spaced ')]);
 });
 
-// The add-only collector a Load handler declares through: `ctx.channel(name)`.
+// The add-only collector a Load handler declares through: `ctx.scope(name)`.
 const limits=JSON.parse(await readFile(new URL('../../../fixtures/protocol/load-enrollment-limits.json',import.meta.url),'utf8'));
 const scalar=name=>({kind:'scalar',name});
 const ticket={name:'Ticket',identity:['id'],fields:[{name:'id',type:scalar('uuid'),nullable:false}]};
@@ -383,16 +380,11 @@ const freshLoad=(loaded)=>createLoadEffects([...models,ticket],[],loaded);
 
 test('a Load Channel handle adds only: no remove or touch exists on any runtime object',()=>{
  const effects=freshLoad();
- const channel=effects.channel('c');
- assert.equal(Object.getPrototypeOf(channel),null);
+ const channel=effects.scope('c');
+ assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(channel)),null);
  assert.ok(Object.isFrozen(channel));
- assert.deepEqual(Object.keys(channel),['todo','moment','pin','ticket','add']);
- for(const key of ['todo','moment','pin','ticket']){
-  assert.equal(Object.getPrototypeOf(channel[key]),null);
-  assert.ok(Object.isFrozen(channel[key]),key);
-  assert.deepEqual(Object.keys(channel[key]),['add'],key);
-  assert.equal('remove' in channel[key],false,key);
- }
+ assert.deepEqual(Object.keys(channel),['add','tag']);
+ assert.deepEqual(Object.keys(channel.add),['todo','moment','pin','ticket']);
  assert.equal('remove' in channel,false);
  assert.equal('touch' in channel,false);
  assert.equal('touch' in effects,false,'the collector has no touch to hand out');
@@ -400,7 +392,7 @@ test('a Load Channel handle adds only: no remove or touch exists on any runtime 
  assert.ok(Object.isFrozen(effects));
  // The facade cannot be widened after the fact.
  assert.throws(()=>{channel.remove=()=>{};},TypeError);
- assert.throws(()=>{channel.todo.remove=()=>{};},TypeError);
+ assert.throws(()=>{channel.add.todo=()=>{};},TypeError);
 });
 
 test('Load declarations snapshot typed identities at the call, in first-declaration order',()=>{
@@ -408,11 +400,11 @@ test('Load declarations snapshot typed identities at the call, in first-declarat
  const identity={id:'A',title:'not identity'};
  const at=new Date('2026-01-01T00:00:00.000Z');
  const pin={todo:'t',at:new Date('2026-02-01T00:00:00.000Z'),label:'x'};
- const channel=effects.channel('project:1');
- channel.todo.add(identity);
- channel.moment.add({at});
- channel.pin.add(pin);
- channel.ticket.add({id:'123e4567-e89b-42d3-a456-426614174000'});
+ const channel=effects.scope('project:1');
+ channel.add.todo(identity);
+ channel.add.moment({at});
+ channel.add.pin(pin);
+ channel.add.ticket({id:'123e4567-e89b-42d3-a456-426614174000'});
  identity.id='B';at.setUTCFullYear(2030);pin.todo='other';pin.at.setUTCFullYear(2031);
  assert.deepEqual(effects.memberships(),[
   add('project:1','Todo',{id:'A'}),
@@ -430,18 +422,18 @@ test('Load declarations snapshot typed identities at the call, in first-declarat
 
 test('a repeated Channel/record pair is one intent, however it is spelled; another Channel is another pair',()=>{
  const effects=freshLoad();
- const a=effects.channel('a');
- a.todo.add({id:'1'});
+ const a=effects.scope('a');
+ a.add.todo({id:'1'});
  a.add([Todo({id:'1'}),Todo({id:'1'})]);
- effects.channel('a').todo.add({id:'1'});
- effects.channel('b').todo.add({id:'1'});
+ effects.scope('a').add.todo({id:'1'});
+ effects.scope('b').add.todo({id:'1'});
  // The engine canonicalizes a UUID to lower case and a date-time to UTC
  // milliseconds; the collector deduplicates by the same canonical record.
- a.ticket.add({id:'123E4567-E89B-42D3-A456-426614174000'});
- a.ticket.add({id:'123e4567-e89b-42d3-a456-426614174000'});
- a.moment.add({at:new Date('2026-01-01T00:00:00.000Z')});
- a.moment.add({at:'2026-01-01T05:30:00.000999+05:30'});
- a.moment.add({at:'2026-01-01T00:00:00z'});
+ a.add.ticket({id:'123E4567-E89B-42D3-A456-426614174000'});
+ a.add.ticket({id:'123e4567-e89b-42d3-a456-426614174000'});
+ a.add.moment({at:new Date('2026-01-01T00:00:00.000Z')});
+ a.add.moment({at:'2026-01-01T05:30:00.000999+05:30'});
+ a.add.moment({at:'2026-01-01T00:00:00z'});
  a.add([Pin({todo:'t',at:new Date(0)}),Pin({todo:'t',at:'1970-01-01T00:00:00Z'})]);
  assert.deepEqual(effects.memberships(),[
   add('a','Todo',{id:'1'}),add('b','Todo',{id:'1'}),
@@ -454,7 +446,7 @@ test('a repeated Channel/record pair is one intent, however it is spelled; anoth
 test('a mixed Load list takes explicit references and appends nothing when any element fails',()=>{
  const effects=freshLoad();
  const at=new Date('2026-01-01T00:00:00.000Z');
- const channel=effects.channel('mixed');
+ const channel=effects.scope('mixed');
  channel.add([Todo({id:'A'}),Moment({at}),Pin({todo:'t',at}),{model:'Todo',identity:{id:'B',title:'extra'}}]);
  channel.add([]);
  assert.deepEqual(effects.memberships(),[
@@ -468,46 +460,46 @@ test('a mixed Load list takes explicit references and appends nothing when any e
 
 test('a Load identity with a lone surrogate is refused at the declaration; a mixed list appends none of its pairs',()=>{
  const effects=freshLoad();
- const channel=effects.channel('c');
+ const channel=effects.scope('c');
  // A well-formed pair of surrogates is Unicode text and declares as usual.
- channel.todo.add({id:'emoji \ud83d\ude00'});
- assert.throws(()=>channel.todo.add({id:'\ud800'}),{message:'channel("c").todo.add: Todo identity field id must be Unicode text, without a lone surrogate'});
- assert.throws(()=>channel.pin.add({todo:'t\udfff',at:new Date(0)}),{message:'channel("c").pin.add: Pin identity field todo must be Unicode text, without a lone surrogate'});
- assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B\ud800'}),Todo({id:'C'})]),{message:'channel("c").add: Todo identity field id must be Unicode text, without a lone surrogate'});
+ channel.add.todo({id:'emoji \ud83d\ude00'});
+ assert.throws(()=>channel.add.todo({id:'\ud800'}),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>channel.add.pin({todo:'t\udfff',at:new Date(0)}),{message:'scope: Pin identity field todo must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B\ud800'}),Todo({id:'C'})]),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'emoji \ud83d\ude00'})],'no refused pair, and nothing from the refused list');
  assert.equal(effects.failure().kind,'invalid','the caught refusal leaves the collector failed');
- assert.match(effects.failure().error.message,/todo\.add: Todo identity field id must be Unicode text/,'the first refusal wins');
+ assert.match(effects.failure().error.message,/scope: Todo identity field id must be Unicode text/,'the first refusal wins');
 });
 
 test('every refused Load declaration leaves the collector failed with its first error, even when caught',()=>{
  const cases=[
-  ['blank Channel',e=>e.channel('  '),/Channel name/],
-  ['non-string Channel',e=>e.channel(7),/Channel name/],
+  ['blank Channel',e=>e.scope('  '),/name/],
+  ['non-string Channel',e=>e.scope(7),/name/],
   // A lone surrogate is not Unicode text: the engine could not decode the answer.
-  ['lone surrogate Channel',e=>e.channel('a\ud800'),/Channel name/],
+  ['lone surrogate Channel',e=>e.scope('a\ud800'),/name/],
   // Nor in a string identity component: the host could not send the answer.
-  ['lone surrogate identity',e=>e.channel('c').todo.add({id:'a\udc00'}),/Todo identity field id must be Unicode text/],
-  ['lone surrogate identity in a list',e=>e.channel('c').add([Todo({id:'A'}),Pin({todo:'\ud800b',at:new Date(0)})]),/Pin identity field todo must be Unicode text/],
-  ['missing identity',e=>e.channel('c').todo.add({}),/Todo identity field id is missing/],
-  ['malformed identity',e=>e.channel('c').todo.add({id:1}),/Todo identity field id must be a string/],
-  ['bad UUID',e=>e.channel('c').ticket.add({id:'nope'}),/UUID/],
-  ['invalid Date',e=>e.channel('c').moment.add({at:new Date('nope')}),/Moment identity field at/],
-  ['not a list',e=>e.channel('c').add(Todo({id:'A'})),/array of record references/],
-  ['raw identity in a list',e=>e.channel('c').add([{id:'A'}]),/record reference/],
-  ['unknown Model',e=>e.channel('c').add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/],
+  ['lone surrogate identity',e=>e.scope('c').add.todo({id:'a\udc00'}),/Todo identity field id must be Unicode text/],
+  ['lone surrogate identity in a list',e=>e.scope('c').add([Todo({id:'A'}),Pin({todo:'\ud800b',at:new Date(0)})]),/Pin identity field todo must be Unicode text/],
+  ['missing identity',e=>e.scope('c').add.todo({}),/Todo identity field id is missing/],
+  ['malformed identity',e=>e.scope('c').add.todo({id:1}),/Todo identity field id must be a string/],
+  ['bad UUID',e=>e.scope('c').add.ticket({id:'nope'}),/UUID/],
+  ['invalid Date',e=>e.scope('c').add.moment({at:new Date('nope')}),/Moment identity field at/],
+  ['not a reference',e=>e.scope('c').add({id:'A'}),/record reference/],
+  ['raw identity in a list',e=>e.scope('c').add([{id:'A'}]),/record reference/],
+  ['unknown Model',e=>e.scope('c').add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/],
  ];
  for(const [label,declare,pattern] of cases){
   const effects=freshLoad();
-  effects.channel('ok').todo.add({id:'kept'});
+  effects.scope('ok').add.todo({id:'kept'});
   let thrown;
   try{declare(effects);}catch(error){thrown=error;}
   assert.match(thrown?.message??'',pattern,label);
   // Later valid declarations still record, but cannot clear the failure.
-  effects.channel('ok').todo.add({id:'later'});
+  effects.scope('ok').add.todo({id:'later'});
   const failure=effects.failure();
   assert.equal(failure?.kind,'invalid',label);
   assert.equal(failure.error,thrown,`${label}: the first refused declaration`);
-  try{effects.channel('').todo;}catch{}
+  try{effects.scope('').todo;}catch{}
   assert.equal(effects.failure().error,thrown,`${label}: the first failure wins`);
  }
 });
@@ -516,22 +508,22 @@ test('a device-only Model is refused at every Load declaration naming it',()=>{
  const effects=freshLoad(new Set(['Todo','Pin']));
  const at=new Date(0);
  const refused=caller=>({message:`${caller}: Model Moment has no Loader, so it is device-only and cannot be published`});
- assert.throws(()=>effects.channel('c').moment.add({at}),refused('channel("c").moment.add'));
- assert.throws(()=>effects.channel('c').add([Todo({id:'t'}),Moment({at})]),refused('channel("c").add'));
+ assert.throws(()=>effects.scope('c').add.moment({at}),refused('scope.add.moment'));
+ assert.throws(()=>effects.scope('c').add([Todo({id:'t'}),Moment({at})]),refused('scope.add'));
  assert.equal(effects.failure().kind,'invalid');
- effects.channel('c').todo.add({id:'t'});
+ effects.scope('c').add.todo({id:'t'});
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'t'})]);
 });
 
 test('closing refuses every later Load declaration, including through escaped handles',()=>{
  const effects=freshLoad();
- const channel=effects.channel('c');
- const todo=channel.todo;
- todo.add({id:'A'});
+ const channel=effects.scope('c');
+ const todo={add: channel.add.todo};
+ channel.add.todo({id:'A'});
  effects.close();
- assert.throws(()=>todo.add({id:'B'}),/closed/);
+ assert.throws(()=>channel.add.todo({id:'B'}),/closed/);
  assert.throws(()=>channel.add([Todo({id:'B'})]),/closed/);
- assert.throws(()=>effects.channel('c'),/closed/);
+ assert.throws(()=>effects.scope('c'),/closed/);
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'A'})],'still readable after close');
  effects.close();
 });
@@ -551,16 +543,16 @@ const pairBytes=channel=>enrollmentBytes(add(channel,'Todo',{id:'t1'}));
 test('Load enrollment is bounded by distinct pairs after deduplication; the pair past the bound throws and stays failed',()=>{
  const channels=Array.from({length:LOAD_ENROLLMENT_PAIRS},(_,n)=>`c${n}`);
  const effects=freshLoad();
- for(const name of [...channels,...channels])effects.channel(name).todo.add({id:'t1'});
+ for(const name of [...channels,...channels])effects.scope(name).add.todo({id:'t1'});
  assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'exactly the bound, each pair declared twice');
  assert.equal(effects.failure(),undefined);
  let thrown;
- try{effects.channel('one-more').todo.add({id:'t1'});}catch(error){thrown=error;}
+ try{effects.scope('one-more').add.todo({id:'t1'});}catch(error){thrown=error;}
  assert.match(thrown?.message??'',/more than 1000 Channel\/record pairs/);
  assert.deepEqual(effects.failure(),{kind:'overflow',error:thrown});
  assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'the crossing pair is not stored');
  // A repeat of a counted pair is still no new pair.
- effects.channel('c0').todo.add({id:'t1'});
+ effects.scope('c0').add.todo({id:'t1'});
  assert.equal(effects.failure().kind,'overflow','the overflow is kept');
 });
 
@@ -569,28 +561,28 @@ test('Load enrollment is bounded by encoded bytes after deduplication, one byte 
  const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
  assert.equal(channels.reduce((sum,c)=>sum+pairBytes(c),0),LOAD_ENROLLMENT_BYTES);
  const effects=freshLoad();
- for(const name of channels)effects.channel(name).todo.add({id:'t1'});
- effects.channel(channels[0]).add([Todo({id:'t1'})]);
+ for(const name of channels)effects.scope(name).add.todo({id:'t1'});
+ effects.scope(channels[0]).add([Todo({id:'t1'})]);
  assert.equal(effects.failure(),undefined,'a repeated pair counts once');
  assert.equal(effects.memberships().length,count);
  const over=freshLoad();
- for(const name of channels.slice(0,-1))over.channel(name).todo.add({id:'t1'});
- assert.throws(()=>over.channel(channels.at(-1)+'x').todo.add({id:'t1'}),/more than 1048576 bytes/);
+ for(const name of channels.slice(0,-1))over.scope(name).add.todo({id:'t1'});
+ assert.throws(()=>over.scope(channels.at(-1)+'x').add.todo({id:'t1'}),/more than 1048576 bytes/);
  assert.equal(over.failure().kind,'overflow');
 });
 
 test('a mixed list that crosses the bound appends none of its pairs; overflow outranks an earlier invalid declaration',()=>{
  const effects=freshLoad();
- try{effects.channel('c').todo.add({});}catch{}
+ try{effects.scope('c').add.todo({});}catch{}
  assert.equal(effects.failure().kind,'invalid');
- for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)effects.channel('c').todo.add({id:`t${n}`});
- assert.throws(()=>effects.channel('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'}),Todo({id:'new-2'})]),/more than 1000/);
+ for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)effects.scope('c').add.todo({id:`t${n}`});
+ assert.throws(()=>effects.scope('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'}),Todo({id:'new-2'})]),/more than 1000/);
  assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS-1,'nothing from the crossing list');
  assert.equal(effects.failure().kind,'overflow');
  // Duplicates within a list count once: exactly one new pair fits.
  const fits=freshLoad();
- for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)fits.channel('c').todo.add({id:`t${n}`});
- fits.channel('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'})]);
+ for(let n=0;n<LOAD_ENROLLMENT_PAIRS-1;n++)fits.scope('c').add.todo({id:`t${n}`});
+ fits.scope('c').add([Todo({id:'t0'}),Todo({id:'new-1'}),Todo({id:'new-1'})]);
  assert.equal(fits.memberships().length,LOAD_ENROLLMENT_PAIRS);
  assert.equal(fits.failure(),undefined);
 });
@@ -598,23 +590,23 @@ test('a mixed list that crosses the bound appends none of its pairs; overflow ou
 test('a Load add takes the same tags: copied, deduplicated, with validated add boundaries preserved',()=>{
  const effects=freshLoad();
  const tags=['X','X','Y'];
- const c=effects.channel('c');
- c.todo.add({id:'1'},{tags});
+ const c=effects.scope('c');
+ c.add.todo({id:'1'}).tag(tags);
  c.add([Todo({id:'2'})]);
- c.add([Todo({id:'1'}),Todo({id:'2'})],{tags:['Z','X']});
- c.todo.add({id:'1'},{tags:[]});
+ c.add([Todo({id:'1'}),Todo({id:'2'})]).tag(['Z','X']);
+ c.add.todo({id:'1'});
  tags.push('W');
- assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},['X','Y']),add('c','Todo',{id:'2'}),add('c','Todo',{id:'1'},['Z']),add('c','Todo',{id:'2'},['Z','X'])]);
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'}),tagAdd('c','Todo',{id:'1'},['X','Y']),add('c','Todo',{id:'2'}),tagAdd('c','Todo',{id:'1'},['Z']),tagAdd('c','Todo',{id:'2'},['Z','X'])]);
  assert.equal(effects.failure(),undefined);
  assert.ok(Object.isFrozen(effects.memberships()[0].tags));
 });
 
 test('an invalid Load label or options leave the collector failed and append nothing',()=>{
  for(const [label,declare,pattern] of [
-  ['blank tag',e=>e.channel('c').todo.add({id:'A'},{tags:[' ']}),/tag must be a nonblank string/],
-  ['oversized tag',e=>e.channel('c').add([Todo({id:'A'})],{tags:['x'.repeat(257)]}),/at most 256 UTF-8 bytes/],
-  ['65 tags',e=>e.channel('c').todo.add({id:'A'},{tags:Array.from({length:65},(_,n)=>`t${n}`)}),/more than 64 distinct tags/],
-  ['bad options',e=>e.channel('c').todo.add({id:'A'},{tags:'X'}),/options/],
+  ['blank tag',e=>e.scope('c').tag([' ']),/invalid label/],
+  ['oversized tag',e=>e.scope('c').tag(['x'.repeat(257)]),/invalid label/],
+  ['65 tags',e=>e.scope('c').tag(Array.from({length:65},(_,n)=>`t${n}`)),/1 to 64 distinct labels/],
+  ['bad labels',e=>e.scope('c').tag({tags:['X']}),/labels/],
  ]){
   const effects=freshLoad();
   let thrown;
@@ -627,10 +619,10 @@ test('an invalid Load label or options leave the collector failed and append not
 
 test('an escaped Load handle refuses tagged adds after close',()=>{
  const effects=freshLoad();
- const channel=effects.channel('c');
+ const channel=effects.scope('c');
  effects.close();
- assert.throws(()=>channel.todo.add({id:'A'},{tags:['X']}),/closed/);
- assert.throws(()=>channel.add([Todo({id:'A'})],{tags:['X']}),/closed/);
+ assert.throws(()=>channel.add.todo({id:'A'}).tag(['X']),/closed/);
+ assert.throws(()=>channel.add([Todo({id:'A'})]).tag(['X']),/closed/);
  assert.equal('remove' in channel,false,'a Load handle has no selector either');
 });
 
@@ -639,10 +631,10 @@ test('Load enrollment bytes count tags, including tags merged into a repeated pa
  const count=256,each=LOAD_ENROLLMENT_BYTES/count;
  const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
  const effects=freshLoad();
- for(const name of channels)effects.channel(name).todo.add({id:'t1'});
+ for(const name of channels)effects.scope(name).add.todo({id:'t1'});
  assert.equal(effects.failure(),undefined,'exactly the bound');
  // A repeated pair adds no pair, but its new label adds bytes past the bound.
- assert.throws(()=>effects.channel(channels[0]).todo.add({id:'t1'},{tags:['X']}),/more than 1048576 bytes/);
+ assert.throws(()=>effects.scope(channels[0]).add.todo({id:'t1'}).tag(['X']),/more than 1048576 bytes/);
  assert.equal(effects.failure().kind,'overflow');
  assert.deepEqual(effects.memberships()[0],add(channels[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
 });
@@ -650,10 +642,10 @@ test('Load enrollment bytes count tags, including tags merged into a repeated pa
 test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-tag declaration',()=>{
  const effects=freshLoad();
  const tags=Array.from({length:65},(_,i)=>`t${i}`);
- const c=effects.channel('c');
- c.todo.add({id:'1'},{tags:tags.slice(0,64)});
- c.todo.add({id:'1'},{tags:[tags[0],tags[64]]});
- assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},tags.slice(0,64)),add('c','Todo',{id:'1'},[tags[64]])]);
+ const c=effects.scope('c');
+ c.add.todo({id:'1'}).tag(tags.slice(0,64));
+ c.add.todo({id:'1'}).tag([tags[0],tags[64]]);
+ assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'}),tagAdd('c','Todo',{id:'1'},tags.slice(0,64)),tagAdd('c','Todo',{id:'1'},[tags[64]])]);
  assert.equal(effects.failure(),undefined);
 });
 
@@ -781,4 +773,10 @@ test('canonical empty operand arrays retain no-effect semantics',()=>{
  const load=freshLoad();
  load.scope('U').add.todo([]).tag('X');load.scope('U').tag('X').add.todo([]);
  assert.deepEqual(load.memberships(),[]);assert.equal(load.failure(),undefined);
+});
+
+test('collectors expose only canonical Scope contexts',()=>{
+ assert.equal(fresh().channel,undefined);
+ assert.equal(createLoadEffects(models).channel,undefined);
+ assert.equal(fresh().scope('U').todo,undefined);
 });

@@ -51,11 +51,11 @@ try {
   await pool.query('TRUNCATE axton_channel_member_tag,axton_channel_member,axton_channel_tag,axton_channel_log,axton_channel,axton_record,measurement_todo RESTART IDENTITY CASCADE');
   const channel='Measure:remove';const ids=Array.from({length:n},(_,i)=>`member-${String(i).padStart(5,'0')}`);
   await pool.query("INSERT INTO measurement_todo SELECT 'member-'||lpad(i::text,5,'0'),'fixture' FROM generate_series(0,$1::int-1) i",[n]);
-  await backend.transaction(({channel:c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}})),{tags:['X','Y']}));
+  await backend.transaction(({scope: c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','Y']));
   const before=await snapshots();assert.equal(before.axton_channel_member,n);assert.equal(before.axton_channel_member_tag,2*n);
   const lsn=(await query('SELECT pg_current_wal_insert_lsn() AS lsn'))[0].lsn;
   loaderCalls=0;measured={statements:{},returnedOrAffectedRows:{}};
-  const start=performance.now();await backend.transaction(({channel:c})=>c(channel).remove({tag:'X'}));
+  const start=performance.now();await backend.transaction(({scope: c})=>c(channel).where({ tags: { all: ['X'] } }).remove());
   const publicMs=performance.now()-start;const removal=measured;measured=null;
   const removalLoaderCalls=loaderCalls;assert.equal(removalLoaderCalls,0);
   const walBytes=Number((await query('SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1) AS bytes',[lsn]))[0].bytes);

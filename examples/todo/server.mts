@@ -76,7 +76,7 @@ export async function createExample() {
       // The created input is already a change the caller receives authority for.
       // Joining the demo Channel once is what distributes it, and every later
       // change to it, to the other subscribers.
-      ctx.channel(CHANNEL).todo.add({ id: todo.id });
+      ctx.scope(CHANNEL).add.todo({ id: todo.id });
     },
     async setTodoDone({ args, ctx }) {
       const { tx } = ctx;

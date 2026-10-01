@@ -546,3 +546,103 @@ test('removing 10,000 tagged members: a failure after the log writes rolls every
  t.diagnostic(`add ${N}: ${adding.total} statements, ${Math.round(addMs)} ms: ${JSON.stringify(named(adding.seen))}`);
  t.diagnostic(`remove ${N}: ${removing.total} statements, ${Math.round(removeMs)} ms: ${JSON.stringify(named(removing.seen))}`);
 });
+
+// Task 1 exercises raw host effects; generated Scope collectors arrive later.
+const rawEffects=(memberships,body=async()=>{})=>driver.transaction(async tx=>{
+ await body(tx);
+ // The native callback transports only text. Preserve the original SQLSTATE
+ // for the driver's retry loop, as the production host's Session does.
+ let hostError;
+ try {
+  return await native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships}),async request=>{
+   try{return JSON.stringify(await answer(driver,tx,JSON.parse(request)));}
+   catch(error){hostError=error;throw error;}
+  });
+ } catch(error){throw hostError??error;}
+});
+const label=(kind,channel,id,tags)=>({kind,channel,record:{model:'Todo',identity:{id}},tags});
+const select=(channel,predicate,action,model)=>({kind:'select',channel,predicate,action,...(model?{model}:{})});
+
+test('exact-only-X removal preserves X/Y and X/Z, detaches labels without stamps, and all-mode selects untagged members',async()=>{
+ const channel='scope-effects';
+ for(const [id,tags] of [['scope-A',['X','Y']],['scope-B',['X']],['scope-C',[]],['scope-D',['X','Z']]])await add(channel,id,tags);
+ const before=await stamps(['scope-A','scope-B','scope-C','scope-D']);
+ const logs=await log(channel);
+ loaderCalls=0;
+ await rawEffects([select(channel,{tags:{only:['X']}},{kind:'remove'}),{kind:'detachTags',channel,tags:['X']}]);
+ assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',[]],['scope-D',['Z']]]);
+ assert.equal(await head(channel),5);
+ assert.deepEqual(await stamps(['scope-A','scope-B','scope-C','scope-D']),before);
+ assert.equal(loaderCalls,0);
+ assert.deepEqual((await log(channel)).filter(r=>r[2]==='upsert'),logs.filter(r=>r[0]!=='scope-B'));
+ const stable=await log(channel);
+ await rawEffects([select(channel,{tags:{only:[]}},{kind:'tagAdd',tags:['T']})]);
+ assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',['T']],['scope-D',['Z']]]);
+ assert.deepEqual(await log(channel),stable);
+ assert.equal(await head(channel),5);
+ await rawEffects([label('tagAdd',channel,'scope-C',['X']),select(channel,{tags:{only:['T','X']}},{kind:'remove'},'Todo')]);
+ assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-D',['Z']]]);
+});
+
+test('last label removal retains membership and a missing-member label add rolls back business and membership effects',async()=>{
+ const channel='scope-rollback';
+ await seed('scope-kept');
+ await add(channel,'scope-kept',['X']);
+ const before=await state(channel);
+ const beforeStamps=await stamps(['scope-kept']);
+ await assert.rejects(()=>rawEffects([label('tagRemove',channel,'scope-kept',['X']),label('tagAdd',channel,'scope-missing',['Y'])],tx=>write(tx,'scope-kept','rolled back')),/absent member/);
+ assert.deepEqual(await state(channel),before);
+ assert.deepEqual(await q('SELECT title FROM tag_todo WHERE id=$1',['scope-kept']),[{title:'v1'}]);
+ assert.deepEqual(await stamps(['scope-kept']),beforeStamps);
+ await rawEffects([label('tagRemove',channel,'scope-kept',['X'])]);
+ assert.deepEqual(await members(channel),[['scope-kept',[]]]);
+ assert.deepEqual(await log(channel),before.log);
+ assert.equal(await head(channel),before.head);
+ const untagged=await state(channel);
+ await rawEffects([label('tagRemove',channel,'scope-kept',['missing']),label('tagRemove',channel,'scope-missing',['X'])]);
+ assert.deepEqual(await state(channel),untagged);
+});
+
+test('reversing detachment and selection changes their result, and reads union all-mode with explicit and tagged candidates',async()=>{
+ const channel='scope-order';
+ await add(channel,'scope-order-A',['X']);
+ await add(channel,'scope-order-B',[]);
+ await rawEffects([{kind:'detachTags',channel,tags:['X']},select(channel,{tags:{only:['X']}},{kind:'remove'})]);
+ assert.deepEqual(await members(channel),[['scope-order-A',[]],['scope-order-B',[]]]);
+ const request={op:'readChannelMembers',channel,explicitKeys:[{model:'Todo',identityKey:key('scope-order-A')}],tags:[]};
+ await adapter(async call=>{
+  assert.equal((await call(request)).length,1,'absent all flag defaults false');
+  assert.equal((await call({...request,all:true})).length,2,'all includes untagged members');
+ });
+});
+
+test('detachment racing selection commits one ordered serial outcome without allocating a content stamp or cursor',async()=>{
+ const channel='scope-race',id='scope-race-A';
+ await add(channel,id,['X']);
+ const runs=[0,0];let arrived=0,open;const both=new Promise(resolve=>{open=resolve;});
+ const run=(n,intents)=>rawEffects(intents,async tx=>{
+  runs[n]++;
+  await driver.query(tx,'SELECT 1',[]);
+  if(runs[n]===1){if(++arrived===2)open();await both;}
+ });
+ await Promise.all([run(0,[{kind:'detachTags',channel,tags:['X']}]),run(1,[select(channel,{tags:{only:['X']}},{kind:'tagAdd',tags:['Y']})])]);
+ const {expected}=serial(runs,[[[id,[]]],[[id,['Y']]]]);
+ assert.deepEqual(await members(channel),expected);
+ assert.equal(await head(channel),1);
+ assert.deepEqual(await log(channel),[[id,1,'upsert']]);
+ assert.deepEqual(await stamps([id]),[{identity_key:key(id),stamp:1}]);
+});
+
+test('bulk selection label edits reuse final snapshot batches rather than per-association SQL',async()=>{
+ const channel='scope-bulk-labels',N=1100;
+ const ids=Array.from({length:N},(_,i)=>`scope-bulk-labels-${i}`);
+ await backend.transaction(({channel:c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}})),{tags:['X']}));
+ const statements=[];
+ const observing={...driver,query:async(tx,sql,params)=>{statements.push(sql);return driver.query(tx,sql,params);}};
+ await driver.transaction(tx=>native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships:[select(channel,{tags:{all:['X']}},{kind:'tagAdd',tags:['Y']})]}),async request=>JSON.stringify(await answer(observing,tx,JSON.parse(request)))));
+ assert.equal((await members(channel)).length,N);
+ assert.ok((await members(channel)).every(([,tags])=>JSON.stringify(tags)===JSON.stringify(['X','Y'])));
+ assert.equal(await head(channel),N);
+ assert.equal(statements.filter(sql=>sql===SQL.READ_CHANNEL_MEMBERS).length,1);
+ assert.ok(statements.length<=3+6*Math.ceil(N/SQL.CHANNEL_BATCH),`${statements.length} statements for ${N} members`);
+});

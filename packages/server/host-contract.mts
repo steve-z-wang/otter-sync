@@ -157,13 +157,15 @@ export type MemberKey = { model: string; identityKey: string };
 /**
  * The live members of the locked `channel` that `explicitKeys` names or that
  * carry one of `tags` (distinct, canonical byte order), each once, with its
- * complete current tags. Reads only.
+ * complete current tags. `all: true` additionally selects every present
+ * member; absent `all` defaults to false. Reads only.
  */
 export type ReadChannelMembersRequest = {
   op: "readChannelMembers";
   channel: string;
   explicitKeys: MemberKey[];
   tags: string[];
+  all?: boolean;
 };
 /**
  * One pair's final state. Present with exactly `tags`, or absent with none.
@@ -292,7 +294,35 @@ export type ChannelIntent =
       tags: readonly string[];
     }
   | { kind: "remove"; channel: string; record: HostRecordRef }
-  | { kind: "removeTag"; channel: string; tag: string };
+  | { kind: "removeTag"; channel: string; tag: string }
+  | {
+      kind: "tagAdd" | "tagRemove";
+      channel: string;
+      record: HostRecordRef;
+      tags: readonly string[];
+    }
+  | { kind: "detachTags"; channel: string; tags: readonly string[] }
+  | {
+      kind: "select";
+      channel: string;
+      model?: string;
+      predicate: ScopePredicate;
+      action: SelectionAction;
+    };
+export type ScopePredicate = {
+  tags?: {
+    all?: readonly string[];
+    any?: readonly string[];
+    none?: readonly string[];
+    only?: readonly string[];
+  };
+  and?: readonly ScopePredicate[];
+  or?: readonly ScopePredicate[];
+  not?: ScopePredicate;
+};
+export type SelectionAction =
+  | { kind: "remove" }
+  | { kind: "tagAdd" | "tagRemove"; tags: readonly string[] };
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input

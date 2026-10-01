@@ -343,17 +343,29 @@ fn validate_enrollment(
     let mut bytes = 0;
     let mut declarations = vec![];
     for intent in memberships {
-        let (channel, record, tags) = match intent {
+        let (channel, record, tags, label_only) = match intent {
             ChannelIntent::Add {
                 channel,
                 record,
                 tags,
-            } => (channel, record, tags),
+            } => (channel, record, tags, false),
+            ChannelIntent::TagAdd {
+                channel,
+                record,
+                tags,
+            } => (channel, record, tags, true),
             ChannelIntent::Remove { channel, record } => {
                 return Err(invalid(format!(
                     "a Load only adds records to Channels; it removes {} from {channel}",
                     record.model
                 )));
+            }
+            ChannelIntent::TagRemove { .. }
+            | ChannelIntent::DetachTags { .. }
+            | ChannelIntent::Select { .. } => {
+                return Err(invalid(
+                    "a Load only adds membership or labels for returned records".into(),
+                ));
             }
             ChannelIntent::RemoveTag { channel, tag } => {
                 return Err(invalid(format!(
@@ -378,6 +390,9 @@ fn validate_enrollment(
                 key.model, key.identity
             )));
         }
+        if label_only && tags.is_empty() {
+            return Err(invalid("label operation must name at least one tag".into()));
+        }
         declared_tags(&tags).map_err(|reason| invalid_tags(&channel, reason))?;
         // Distinct, in first-declaration order, as the collector measures them.
         let mut distinct: Vec<String> = vec![];
@@ -387,13 +402,22 @@ fn validate_enrollment(
             }
         }
         // Settlement must see validated declarations, never their larger union.
-        declarations.push(ChannelIntent::Add {
-            channel: channel.clone(),
-            record: RecordRef {
-                model: key.model.clone(),
-                identity: key.identity.clone(),
-            },
-            tags: distinct.clone(),
+        let record = RecordRef {
+            model: key.model.clone(),
+            identity: key.identity.clone(),
+        };
+        declarations.push(if label_only {
+            ChannelIntent::TagAdd {
+                channel: channel.clone(),
+                record,
+                tags: distinct.clone(),
+            }
+        } else {
+            ChannelIntent::Add {
+                channel: channel.clone(),
+                record,
+                tags: distinct.clone(),
+            }
         });
         let measure = |intent: &ChannelIntent| -> Result<usize> {
             Ok(

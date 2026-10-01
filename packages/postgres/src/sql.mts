@@ -94,7 +94,8 @@ export const LOCK_CHANNELS =
 /**
  * The live members of Channel `$1` that `$2` names (a JSON array of
  * `{model, identityKey}`, in any order, repeats allowed) or that carry a tag
- * in `$3` (a JSON array), each once with its complete tags.
+ * in `$3` (a JSON array), or all present members when `$4` is true,
+ * each once with its complete tags.
  */
 export const READ_CHANNEL_MEMBERS =
   "WITH keys AS (SELECT k->>'model' AS model, k->>'identityKey' AS identity_key FROM jsonb_array_elements($2::jsonb) k), " +
@@ -102,7 +103,8 @@ export const READ_CHANNEL_MEMBERS =
   "SELECT m.id FROM keys JOIN axton_record r ON r.model=keys.model AND r.identity_key=keys.identity_key " +
   "JOIN axton_channel_member m ON m.channel=$1::text AND m.record_id=r.id " +
   "UNION SELECT mt.member_id FROM axton_channel_tag t JOIN axton_channel_member_tag mt ON mt.tag_id=t.id " +
-  "WHERE t.channel=$1::text AND t.name IN (SELECT jsonb_array_elements_text($3::jsonb))) " +
+  "WHERE t.channel=$1::text AND t.name IN (SELECT jsonb_array_elements_text($3::jsonb)) " +
+  "UNION SELECT m.id FROM axton_channel_member m WHERE m.channel=$1::text AND $4::boolean) " +
   "SELECT m.id::text AS member_id, r.model, r.identity_key, " +
   "COALESCE((SELECT jsonb_agg(t.name) FROM axton_channel_member_tag mt JOIN axton_channel_tag t ON t.id=mt.tag_id WHERE mt.member_id=m.id), '[]'::jsonb) AS tags " +
   "FROM selected s JOIN axton_channel_member m ON m.id=s.id JOIN axton_record r ON r.id=m.record_id";

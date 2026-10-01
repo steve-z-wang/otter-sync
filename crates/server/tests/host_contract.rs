@@ -524,6 +524,7 @@ fn an_unusable_response_names_its_operation_and_ordinal() {
         HostRequest::ReadChannelMembers {
             channel: "shared".into(),
             explicit_keys: vec![],
+            all: false,
             tags: vec![],
         },
         HostRequest::ApplyChannelMembers { deltas: vec![] },
@@ -960,4 +961,42 @@ fn a_legacy_scan_row_without_kind_decodes_as_upsert() {
         row.kind,
         axton_server::channel_members::PositionKind::Upsert
     );
+}
+
+#[test]
+fn scope_intents_and_all_candidate_mode_round_trip_strictly() {
+    use axton_server::host::ChannelIntent;
+    for value in [
+        json!({"kind":"tagAdd","channel":"U","record":{"model":"Task","identity":{"id":"A"}},"tags":["X"]}),
+        json!({"kind":"tagRemove","channel":"U","record":{"model":"Task","identity":{"id":"A"}},"tags":["X"]}),
+        json!({"kind":"detachTags","channel":"U","tags":["X"]}),
+        json!({"kind":"select","channel":"U","model":"Task","predicate":{"tags":{"only":[]}},"action":{"kind":"remove"}}),
+    ] {
+        let intent: ChannelIntent = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(intent).unwrap(), value);
+    }
+    let baseline = json!({"op":"readChannelMembers","channel":"U","explicitKeys":[],"tags":[]});
+    let request: HostRequest = serde_json::from_value(baseline.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), baseline);
+    let mut all = baseline.clone();
+    all["all"] = json!(true);
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<HostRequest>(all.clone()).unwrap()).unwrap(),
+        all
+    );
+    for value in [json!(null), json!("true"), json!(1)] {
+        let mut bad = baseline.clone();
+        bad["all"] = value;
+        assert!(serde_json::from_value::<HostRequest>(bad).is_err());
+    }
+    for predicate in [
+        json!({"tags":null}),
+        json!({"and":null}),
+        json!({"or":null}),
+        json!({"not":null}),
+        json!({"tags":{"all":null}}),
+        json!({"unknown":true}),
+    ] {
+        assert!(serde_json::from_value::<ChannelIntent>(json!({"kind":"select","channel":"U","predicate":predicate,"action":{"kind":"remove"}})).is_err());
+    }
 }

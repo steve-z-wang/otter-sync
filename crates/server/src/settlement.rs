@@ -4,8 +4,8 @@
 //! positions ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
 //! Every step is a host operation; no application SQL lives here.
 use crate::channel_members::{
-    Declaration, MemberDelta, MemberPosition, MemberState, PositionKind, check_tag, declared_tags,
-    reduce,
+    Declaration, MemberDelta, MemberPosition, MemberState, PositionKind, SelectionAction,
+    check_tag, declared_tags, reduce,
 };
 use crate::host::{
     Acknowledged, ChannelIntent, ChannelMembers, HostExt, HostRequest, Locked, Memberships,
@@ -97,6 +97,16 @@ pub(crate) fn invalid_tags(channel: &str, reason: impl std::fmt::Display) -> Err
         code::HANDLER_INVALID,
         format!("Channel {channel}: {reason}"),
     )
+}
+
+fn label_tags(channel: &str, tags: &[String]) -> Result<BTreeSet<String>> {
+    if tags.is_empty() {
+        return Err(invalid_tags(
+            channel,
+            "label operation must name at least one tag",
+        ));
+    }
+    declared_tags(tags).map_err(|reason| invalid_tags(channel, reason))
 }
 
 pub(crate) fn insert(changes: &mut Changes, key: RecordKey) -> Result<()> {
@@ -197,6 +207,52 @@ pub(crate) async fn settle_locked(
             ChannelIntent::Remove { record, .. } => Declaration::Remove {
                 key: resolve(config, record)?,
             },
+            ChannelIntent::TagAdd {
+                channel,
+                record,
+                tags,
+            } => Declaration::TagAdd {
+                key: resolve(config, record)?,
+                tags: label_tags(channel, tags)?,
+            },
+            ChannelIntent::TagRemove {
+                channel,
+                record,
+                tags,
+            } => Declaration::TagRemove {
+                key: resolve(config, record)?,
+                tags: label_tags(channel, tags)?,
+            },
+            ChannelIntent::DetachTags { channel, tags } => Declaration::DetachTags {
+                tags: label_tags(channel, tags)?,
+            },
+            ChannelIntent::Select {
+                channel,
+                model,
+                predicate,
+                action,
+            } => {
+                if let Some(model) = model {
+                    if !config.loaders.contains(model) {
+                        return Err(unregistered(model));
+                    }
+                    config
+                        .schema
+                        .model(model)
+                        .map_err(|e| invalid_tags(channel, e))?;
+                }
+                match action {
+                    SelectionAction::TagAdd { tags } | SelectionAction::TagRemove { tags } => {
+                        label_tags(channel, &tags.iter().cloned().collect::<Vec<_>>())?;
+                    }
+                    SelectionAction::Remove => {}
+                }
+                Declaration::Select {
+                    model: model.clone(),
+                    predicate: predicate.clone(),
+                    action: action.clone(),
+                }
+            }
             ChannelIntent::RemoveTag { channel, tag } => {
                 check_tag(tag).map_err(|reason| invalid_tags(channel, reason))?;
                 Declaration::RemoveTag { tag: tag.clone() }
@@ -281,10 +337,21 @@ pub(crate) async fn settle_locked(
         let declarations = channels.get(channel).map(Vec::as_slice).unwrap_or(&[]);
         let mut explicit: BTreeMap<String, RecordKey> = BTreeMap::new();
         let mut tags: BTreeSet<String> = BTreeSet::new();
+        let mut all = false;
         for declaration in declarations {
             match declaration {
-                Declaration::Add { key, .. } | Declaration::Remove { key } => {
+                Declaration::Add { key, .. }
+                | Declaration::Remove { key }
+                | Declaration::TagAdd { key, .. }
+                | Declaration::TagRemove { key, .. } => {
                     insert(&mut explicit, key.clone())?;
+                }
+                Declaration::DetachTags { tags: labels } => {
+                    tags.extend(labels.iter().cloned());
+                }
+                Declaration::Select { predicate, .. } => {
+                    tags.extend(predicate.labels());
+                    all |= predicate.requires_all();
                 }
                 Declaration::RemoveTag { tag } => {
                     tags.insert(tag.clone());
@@ -296,12 +363,13 @@ pub(crate) async fn settle_locked(
                 explicit.insert((*encoded).clone(), changed[*encoded].clone());
             }
         }
-        if explicit.is_empty() && tags.is_empty() {
+        if !all && explicit.is_empty() && tags.is_empty() {
             continue;
         }
         let request = HostRequest::ReadChannelMembers {
             channel: channel.clone(),
             explicit_keys: explicit.into_values().collect(),
+            all,
             tags: tags.into_iter().collect(),
         };
         let members: ChannelMembers = host.call_typed(request.clone()).await?;
@@ -361,9 +429,16 @@ fn memberships_of(key: &RecordKey) -> Result<HostRequest> {
 fn certainly_present(channels: &BTreeMap<String, Vec<Declaration>>) -> Result<BTreeSet<String>> {
     let mut certain = BTreeSet::new();
     for declarations in channels.values() {
-        let selector = declarations
-            .iter()
-            .rposition(|declaration| matches!(declaration, Declaration::RemoveTag { .. }));
+        let selector = declarations.iter().rposition(|declaration| {
+            matches!(
+                declaration,
+                Declaration::RemoveTag { .. }
+                    | Declaration::Select {
+                        action: SelectionAction::Remove,
+                        ..
+                    }
+            )
+        });
         let mut last: BTreeMap<String, (usize, bool)> = BTreeMap::new();
         for (index, declaration) in declarations.iter().enumerate() {
             match declaration {
@@ -373,7 +448,11 @@ fn certainly_present(channels: &BTreeMap<String, Vec<Declaration>>) -> Result<BT
                 Declaration::Remove { key } => {
                     last.insert(key.encoded().map_err(internal)?, (index, false));
                 }
-                Declaration::RemoveTag { .. } => {}
+                Declaration::RemoveTag { .. }
+                | Declaration::TagAdd { .. }
+                | Declaration::TagRemove { .. }
+                | Declaration::DetachTags { .. }
+                | Declaration::Select { .. } => {}
             }
         }
         certain.extend(
@@ -391,6 +470,7 @@ fn check_members(request: &HostRequest, members: &[MemberState]) -> Result<()> {
     let HostRequest::ReadChannelMembers {
         explicit_keys,
         tags,
+        all,
         ..
     } = request
     else {
@@ -406,7 +486,8 @@ fn check_members(request: &HostRequest, members: &[MemberState]) -> Result<()> {
         if !seen.insert(encoded.clone()) {
             return Err(request.invalid_response(format!("answers {encoded} twice")));
         }
-        if !explicit.contains(&encoded) && !tags.iter().any(|tag| member.tags.contains(tag)) {
+        if !all && !explicit.contains(&encoded) && !tags.iter().any(|tag| member.tags.contains(tag))
+        {
             return Err(request.invalid_response(format!(
                 "answers {encoded}, which the request neither names nor selects by tag"
             )));

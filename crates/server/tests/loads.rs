@@ -11,7 +11,7 @@ use axton_server::{
 };
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
-use support::{Backend, Tables, add, remove, run};
+use support::{Backend, Tables, add, reference, remove, run};
 
 fn field(name: &str) -> Value {
     json!({"name":name,"type":{"kind":"scalar","name":"string"},"nullable":false})
@@ -1358,6 +1358,28 @@ fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothi
             "an invalid declaration after a valid one",
             vec![add("c", "Todo", "t1"), add("c", "Todo", "t9")],
         ),
+        (
+            "label add outside output",
+            vec![
+                json!({"kind":"tagAdd","channel":"c","record":reference("Todo","t9"),"tags":["X"]}),
+            ],
+        ),
+        (
+            "label remove",
+            vec![
+                json!({"kind":"tagRemove","channel":"c","record":reference("Todo","t1"),"tags":["X"]}),
+            ],
+        ),
+        (
+            "bulk label detach",
+            vec![json!({"kind":"detachTags","channel":"c","tags":["X"]})],
+        ),
+        (
+            "selection",
+            vec![
+                json!({"kind":"select","channel":"c","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":["X"]}}),
+            ],
+        ),
         // A Load has no tag selector, and its tags follow the add rules:
         // each is refused before any read, never dropped.
         (
@@ -1948,4 +1970,52 @@ fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_c
     assert!(replay.get("memberships").is_none());
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(backend.0.lock().unwrap().tables, before);
+}
+
+#[test]
+fn load_label_add_is_bounded_by_output_and_replay_has_no_effects_or_inferred_claims() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    support::settle(&backend, vec![], vec![add("c", "Todo", "t1")]);
+    let labels =
+        json!({"kind":"tagAdd","channel":"c","record":reference("Todo","t1"),"tags":["X"]});
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&["t1"]), json!([]), vec![labels.clone()]),
+    );
+    let request = item(1, Value::Null);
+    let first = page(&backend, &request);
+    assert_eq!(first["outcome"]["status"], "succeeded", "{first}");
+    assert!(
+        first.get("memberships").is_none(),
+        "labels alone never claim enrollment"
+    );
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
+    );
+    assert_eq!(backend.head("c"), 1);
+    support::settle(&backend, vec![], vec![remove("c", "Todo", "t1")]);
+    backend.clear_log();
+    assert_eq!(page(&backend, &request), first);
+    assert!(settlement_ops(&backend).is_empty());
+    assert!(backend.tagged_members("c").is_empty());
+    let missing = page(&backend, &item(2, Value::Null));
+    assert_eq!(missing["outcome"]["error"]["code"], code::HANDLER_INVALID);
+    assert!(backend.tagged_members("c").is_empty());
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("c", "Todo", "t1"), labels],
+        ),
+    );
+    let fresh = page(&backend, &item(3, Value::Null));
+    assert_eq!(fresh["outcome"]["status"], "succeeded", "{fresh}");
+    assert_eq!(fresh["memberships"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
+    );
 }

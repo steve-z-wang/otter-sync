@@ -381,6 +381,7 @@ impl Scripted {
                 channel,
                 explicit_keys,
                 tags,
+                all,
             } => {
                 let named: BTreeSet<String> = explicit_keys
                     .iter()
@@ -389,7 +390,7 @@ impl Scripted {
                 let mut rows = vec![];
                 for ((record, c), held) in &s.store.members {
                     if *c == channel
-                        && (named.contains(record) || tags.iter().any(|t| held.contains(t)))
+                        && (all || named.contains(record) || tags.iter().any(|t| held.contains(t)))
                     {
                         let (model, identity_key) = record.split_once(' ').unwrap();
                         rows.push(json!({"model":model,"identityKey":identity_key,"tags":held}));

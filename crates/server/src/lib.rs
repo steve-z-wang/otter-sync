@@ -10,6 +10,7 @@ pub mod live;
 mod loading;
 mod loads;
 mod readback;
+pub mod scope_predicate;
 mod settlement;
 pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
 use axton_core::{PushReceipt, PushRequest, RecordKey, Rejection, Schema, read_counter};

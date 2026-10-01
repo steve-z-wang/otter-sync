@@ -550,6 +550,7 @@ impl Backend {
                 channel,
                 explicit_keys,
                 tags,
+                all,
             } => {
                 let named: BTreeSet<(String, String)> = explicit_keys
                     .iter()
@@ -561,7 +562,7 @@ impl Backend {
                         .iter()
                         .filter(|((model, key, c), held)| {
                             *c == channel
-                                && (named.contains(&(model.clone(), key.clone()))
+                                && (all || named.contains(&(model.clone(), key.clone()))
                                     || tags.iter().any(|tag| held.contains(tag)))
                         })
                         .map(|((model, key, _), held)| {

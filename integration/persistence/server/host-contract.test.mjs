@@ -453,3 +453,22 @@ test('a Query context and a Loader call carry no channel or touch; an external t
   assert.equal(typeof call.touch.task,'function');
  });
 });
+
+test('candidate all flag defaults false, enables an empty-key read, and validates before SQL',async()=>{
+ const driverAnswering=rows=>{const seen=[];return {seen,driver:{transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push([sql,params]);return rows(sql);}}};};
+ const request={op:'readChannelMembers',channel:'shared',explicitKeys:[{model:'Task',identityKey:'{"id":"t-1"}'}],tags:[]};
+ for(const flag of [undefined,false,true]){
+  const {driver,seen}=driverAnswering(()=>[]);
+  await answer(driver,'tx',{...request,...(flag===undefined?{}:{all:flag})});
+  assert.equal(seen.length,1);
+  assert.equal(seen[0][1][3],flag??false);
+ }
+ const {driver,seen}=driverAnswering(()=>[]);
+ await answer(driver,'tx',{...request,explicitKeys:[],all:true});
+ assert.equal(seen.length,1);
+ for(const all of [null,'true',1]){
+  const {driver,seen}=driverAnswering(()=>[]);
+  await assert.rejects(()=>answer(driver,'tx',{...request,all}),/all must be a boolean/);
+  assert.deepEqual(seen,[]);
+ }
+});

@@ -6,6 +6,7 @@
 //! transaction-local view in order, and the [`MemberDelta`]s it answers are
 //! what `applyChannelMembers` persists. The wire shapes of the three types
 //! belong to the host contract ([`crate::host`]).
+use crate::scope_predicate::ScopePredicate;
 use crate::{Result, internal};
 use axton_core::RecordKey;
 use serde::{Deserialize, Serialize};
@@ -117,19 +118,51 @@ pub enum Declaration {
         tags: BTreeSet<String>,
     },
     /// Release the record's whole membership.
-    Remove { key: RecordKey },
+    Remove {
+        key: RecordKey,
+    },
     /// Release every member carrying `tag` as the preceding declarations left it.
-    RemoveTag { tag: String },
+    RemoveTag {
+        tag: String,
+    },
+    TagAdd {
+        key: RecordKey,
+        tags: BTreeSet<String>,
+    },
+    TagRemove {
+        key: RecordKey,
+        tags: BTreeSet<String>,
+    },
+    DetachTags {
+        tags: BTreeSet<String>,
+    },
+    Select {
+        model: Option<String>,
+        predicate: ScopePredicate,
+        action: SelectionAction,
+    },
 }
 
 impl Declaration {
     /// The record an add or remove names; a selector names none.
     pub fn key(&self) -> Option<&RecordKey> {
         match self {
-            Self::Add { key, .. } | Self::Remove { key } => Some(key),
-            Self::RemoveTag { .. } => None,
+            Self::Add { key, .. }
+            | Self::Remove { key }
+            | Self::TagAdd { key, .. }
+            | Self::TagRemove { key, .. } => Some(key),
+            Self::RemoveTag { .. } | Self::DetachTags { .. } | Self::Select { .. } => None,
         }
     }
+}
+
+/// An action applies to a selection's current members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SelectionAction {
+    Remove,
+    TagAdd { tags: BTreeSet<String> },
+    TagRemove { tags: BTreeSet<String> },
 }
 
 /// One pair's life inside the settlement.
@@ -201,6 +234,62 @@ pub fn reduce(
             Declaration::Remove { key } => {
                 if let Some(pair) = pairs.get_mut(&key.encoded().map_err(internal)?) {
                     pair.release();
+                }
+            }
+            Declaration::TagAdd { key, tags } => {
+                let pair = pairs
+                    .get_mut(&key.encoded().map_err(internal)?)
+                    .filter(|pair| pair.current.is_some())
+                    .ok_or_else(|| {
+                        crate::settlement::invalid_tags(
+                            channel,
+                            format!(
+                                "cannot add labels to absent member {} {}",
+                                key.model, key.identity
+                            ),
+                        )
+                    })?;
+                pair.current.as_mut().unwrap().extend(tags.iter().cloned());
+            }
+            Declaration::TagRemove { key, tags } => {
+                if let Some(current) = pairs
+                    .get_mut(&key.encoded().map_err(internal)?)
+                    .and_then(|pair| pair.current.as_mut())
+                {
+                    current.retain(|tag| !tags.contains(tag));
+                }
+            }
+            Declaration::DetachTags { tags } => {
+                for pair in pairs.values_mut() {
+                    if let Some(current) = &mut pair.current {
+                        current.retain(|tag| !tags.contains(tag));
+                    }
+                }
+            }
+            Declaration::Select {
+                model,
+                predicate,
+                action,
+            } => {
+                for pair in pairs.values_mut() {
+                    if model.as_ref().is_none_or(|model| *model == pair.key.model)
+                        && pair
+                            .current
+                            .as_ref()
+                            .is_some_and(|tags| predicate.matches(tags))
+                    {
+                        match action {
+                            SelectionAction::Remove => pair.release(),
+                            SelectionAction::TagAdd { tags } => {
+                                pair.current.as_mut().unwrap().extend(tags.iter().cloned())
+                            }
+                            SelectionAction::TagRemove { tags } => pair
+                                .current
+                                .as_mut()
+                                .unwrap()
+                                .retain(|tag| !tags.contains(tag)),
+                        }
+                    }
                 }
             }
             Declaration::RemoveTag { tag } => {
@@ -433,5 +522,129 @@ mod tests {
         let mut past = many;
         past.push("t64".into());
         assert!(declared_tags(&past).unwrap_err().contains("64"));
+    }
+    #[test]
+    fn exact_selection_and_detachment_preserve_overlapping_members() {
+        let predicate = serde_json::from_value(json!({"tags":{"only":["X"]}})).unwrap();
+        let declarations = vec![
+            Declaration::Select {
+                model: None,
+                predicate,
+                action: SelectionAction::Remove,
+            },
+            Declaration::DetachTags { tags: tags(&["X"]) },
+        ];
+        assert_eq!(
+            reduce(
+                "U",
+                vec![
+                    member("A", &["X", "Y"]),
+                    member("B", &["X"]),
+                    member("C", &["Y"]),
+                    member("D", &["X", "Z"])
+                ],
+                &declarations,
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![
+                delta("A", true, &["Y"], false),
+                delta("B", false, &[], true),
+                delta("D", true, &["Z"], false)
+            ]
+        );
+    }
+    #[test]
+    fn label_edits_require_membership_and_never_remove_it() {
+        let add = Declaration::TagAdd {
+            key: key("A"),
+            tags: tags(&["X"]),
+        };
+        assert_eq!(
+            reduce("U", vec![], &[add.clone()], &BTreeSet::new())
+                .unwrap_err()
+                .code,
+            crate::code::HANDLER_INVALID
+        );
+        assert_eq!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    add,
+                    Declaration::TagRemove {
+                        key: key("A"),
+                        tags: tags(&["X"])
+                    }
+                ],
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![delta("A", true, &[], false)]
+        );
+        assert!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[Declaration::TagRemove {
+                    key: key("A"),
+                    tags: tags(&["Z"])
+                }],
+                &BTreeSet::new()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    remove("A"),
+                    Declaration::TagAdd {
+                        key: key("A"),
+                        tags: tags(&["Y"])
+                    }
+                ],
+                &BTreeSet::new()
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn selection_uses_current_labels_and_model() {
+        let select = Declaration::Select {
+            model: Some("Other".into()),
+            predicate: serde_json::from_value(json!({"tags":{"only":[]}})).unwrap(),
+            action: SelectionAction::Remove,
+        };
+        assert!(
+            reduce("U", vec![member("A", &[])], &[select], &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        let select = Declaration::Select {
+            model: None,
+            predicate: serde_json::from_value(json!({"tags":{"all":["Y"]}})).unwrap(),
+            action: SelectionAction::TagRemove {
+                tags: tags(&["X", "Y"]),
+            },
+        };
+        assert_eq!(
+            reduce(
+                "U",
+                vec![member("A", &["X"])],
+                &[
+                    Declaration::TagAdd {
+                        key: key("A"),
+                        tags: tags(&["Y"])
+                    },
+                    select
+                ],
+                &BTreeSet::new()
+            )
+            .unwrap(),
+            vec![delta("A", true, &[], false)]
+        );
     }
 }

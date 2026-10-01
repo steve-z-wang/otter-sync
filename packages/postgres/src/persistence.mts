@@ -136,7 +136,7 @@ async function readChannelMembers(
 ): Promise<MemberState[]> {
   const request = fieldsOf(
     r,
-    ["op", "channel", "explicitKeys", "tags"],
+    ["op", "channel", "explicitKeys", "tags", "all"],
     "readChannelMembers",
   );
   const channel = channelName(request.channel);
@@ -150,16 +150,20 @@ async function readChannelMembers(
     };
   });
   const tags = strings(request.tags, "readChannelMembers tags");
+  if (request.all !== undefined && typeof request.all !== "boolean")
+    throw new Error("readChannelMembers all must be a boolean");
+  const all = request.all ?? false;
   // The tags are selected once, with the first group of keys; a member
   // reached twice is answered once.
   const members = new Map<string, MemberState>();
-  const groups = keys.length ? batches(keys) : tags.length ? [[]] : [];
+  const groups = keys.length ? batches(keys) : tags.length || all ? [[]] : [];
   for (const [index, group] of groups.entries())
     for (const row of await q(
       SQL.READ_CHANNEL_MEMBERS,
       channel,
       JSON.stringify(group),
       JSON.stringify(index === 0 ? tags : []),
+      index === 0 && all,
     ))
       members.set(String(row.member_id), {
         model: String(row.model),

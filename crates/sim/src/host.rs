@@ -1000,6 +1000,7 @@ impl Host for MemHost {
                     channel,
                     explicit_keys,
                     tags,
+                    all,
                 } => {
                     let named: BTreeSet<String> = explicit_keys
                         .iter()
@@ -1011,7 +1012,8 @@ impl Host for MemHost {
                         .iter()
                         .filter(|((record, c), held)| {
                             *c == channel
-                                && (named.contains(record)
+                                && (all
+                                    || named.contains(record)
                                     || tags.iter().any(|tag| held.contains(tag)))
                         })
                         .map(|((record, _), held)| {

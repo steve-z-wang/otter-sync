@@ -429,13 +429,15 @@ pub enum HostRequest {
         channels: Vec<String>,
     },
     /// The live members of the locked `channel` that `explicitKeys` names or
-    /// that carry one of `tags`, each once, with its complete current tags.
-    /// Reads only.
+    /// that carry one of `tags`, or all present members when `all` is true,
+    /// each once with its complete current tags. Reads only.
     ReadChannelMembers {
         #[serde(deserialize_with = "channel_name")]
         channel: String,
         #[serde(with = "record_keys")]
         explicit_keys: Vec<RecordKey>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
         #[serde(deserialize_with = "tag_order")]
         tags: Vec<String>,
     },
@@ -689,6 +691,27 @@ pub enum ChannelIntent {
         channel: String,
         tag: String,
     },
+    TagAdd {
+        channel: String,
+        record: RecordRef,
+        tags: Vec<String>,
+    },
+    TagRemove {
+        channel: String,
+        record: RecordRef,
+        tags: Vec<String>,
+    },
+    DetachTags {
+        channel: String,
+        tags: Vec<String>,
+    },
+    Select {
+        channel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        predicate: crate::scope_predicate::ScopePredicate,
+        action: crate::channel_members::SelectionAction,
+    },
 }
 
 impl ChannelIntent {
@@ -697,14 +720,21 @@ impl ChannelIntent {
         match self {
             Self::Add { channel, .. }
             | Self::Remove { channel, .. }
-            | Self::RemoveTag { channel, .. } => channel,
+            | Self::RemoveTag { channel, .. }
+            | Self::TagAdd { channel, .. }
+            | Self::TagRemove { channel, .. }
+            | Self::DetachTags { channel, .. }
+            | Self::Select { channel, .. } => channel,
         }
     }
-    /// The record an `add` or `remove` names; a `removeTag` names none.
+    /// Record membership and label edits name one identity; selectors name none.
     pub fn record(&self) -> Option<&RecordRef> {
         match self {
-            Self::Add { record, .. } | Self::Remove { record, .. } => Some(record),
-            Self::RemoveTag { .. } => None,
+            Self::Add { record, .. }
+            | Self::Remove { record, .. }
+            | Self::TagAdd { record, .. }
+            | Self::TagRemove { record, .. } => Some(record),
+            Self::RemoveTag { .. } | Self::DetachTags { .. } | Self::Select { .. } => None,
         }
     }
 }

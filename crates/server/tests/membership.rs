@@ -181,11 +181,13 @@ fn a_non_member_added_then_removed_is_untouched_and_a_re_added_member_is_positio
             HostRequest::ReadChannelMembers {
                 channel: "A".into(),
                 explicit_keys: vec![key("p")],
+                all: false,
                 tags: vec![],
             },
             HostRequest::ReadChannelMembers {
                 channel: "B".into(),
                 explicit_keys: vec![key("p"), key("q")],
+                all: false,
                 tags: vec![],
             },
             HostRequest::ApplyChannelMembers {
@@ -435,6 +437,7 @@ fn settlement_locks_channels_then_guards_records_in_key_order_then_writes_once()
     let read = |channel: &str, ids: &[&str]| HostRequest::ReadChannelMembers {
         channel: channel.into(),
         explicit_keys: ids.iter().map(|id| key(id)).collect(),
+        all: false,
         tags: vec![],
     };
     let delta = |channel: &str, id: &str, present: bool| MemberDelta {
@@ -1408,4 +1411,112 @@ fn a_rejected_call_rolls_back_its_members_tags_and_positions() {
         [("A".to_string(), vec!["W".to_string(), "X".to_string()])],
         "only the second call's tag union survives"
     );
+}
+
+#[test]
+fn scope_selection_and_label_effects_use_complete_ordered_candidates() {
+    let backend = Backend::new();
+    for id in ["A", "B", "C", "D"] {
+        backend.seed("Todo", id, todo_row(id, "v1"), Some(7));
+    }
+    settle(
+        &backend,
+        vec![],
+        vec![
+            add_tagged("U", "Todo", "A", &["X", "Y"]),
+            add_tagged("U", "Todo", "B", &["X"]),
+            add("U", "Todo", "C"),
+            add_tagged("U", "Todo", "D", &["X", "Z"]),
+        ],
+    );
+    backend.clear_log();
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"select","channel":"U","predicate":{"tags":{"only":["X"]}},"action":{"kind":"remove"}}),
+            json!({"kind":"detachTags","channel":"U","tags":["X"]}),
+        ],
+    );
+    assert_eq!(
+        backend.tagged_members("U"),
+        [
+            ("A".into(), vec!["Y".into()]),
+            ("C".into(), vec![]),
+            ("D".into(), vec!["Z".into()])
+        ]
+    );
+    assert_eq!(backend.head("U"), 5);
+    assert_eq!(backend.count("advanceStamp"), 0);
+    assert_eq!(backend.count("load"), 0);
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"select","channel":"U","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":["T"]}}),
+        ],
+    );
+    assert_eq!(backend.head("U"), 5);
+    assert_eq!(
+        backend.tagged_members("U")[1],
+        ("C".into(), vec!["T".into()])
+    );
+    assert!(
+        backend
+            .log()
+            .iter()
+            .any(|r| matches!(r, HostRequest::ReadChannelMembers { all: true, .. }))
+    );
+    settle(
+        &backend,
+        vec![],
+        vec![
+            json!({"kind":"tagAdd","channel":"U","record":reference("Todo","C"),"tags":["X"]}),
+            json!({"kind":"select","channel":"U","model":"Todo","predicate":{"tags":{"only":["T","X"]}},"action":{"kind":"remove"}}),
+        ],
+    );
+    assert!(!backend.tagged_members("U").iter().any(|(id, _)| id == "C"));
+}
+
+#[test]
+fn new_label_effects_validate_each_operation_and_model_before_host_effects() {
+    use axton_server::{code, settle_external};
+    let mut config = config();
+    config.loaders.retain(|model| model != "Project");
+    let many: Vec<String> = (0..65).map(|n| format!("t{n}")).collect();
+    for (intent, expected) in [
+        (
+            json!({"kind":"tagAdd","channel":"U","record":reference("Todo","A"),"tags":[]}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"tagRemove","channel":"U","record":reference("Todo","A"),"tags":[" "]}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"detachTags","channel":"U","tags":many}),
+            code::HANDLER_INVALID,
+        ),
+        (
+            json!({"kind":"select","channel":"U","model":"Project","predicate":{"tags":{"only":[]}},"action":{"kind":"remove"}}),
+            code::LOADER_UNREGISTERED,
+        ),
+        (
+            json!({"kind":"select","channel":"U","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":[]}}),
+            code::HANDLER_INVALID,
+        ),
+    ] {
+        let backend = Backend::new();
+        let error = run(settle_external(
+            &config,
+            &json!({"changes":[], "memberships":[intent]}),
+            &backend,
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(
+            backend.log().is_empty(),
+            "invalid operation made a host call"
+        );
+    }
 }

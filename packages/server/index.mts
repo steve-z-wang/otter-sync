@@ -1,10 +1,5 @@
-import type { RuntimeScope, RuntimeLoadScope } from "./scope.mts";
-export type {
-  RuntimeScope,
-  RuntimeLoadScope,
-  AddDeclaration,
-  ScopePredicate,
-} from "./scope.mts";
+import type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
+export type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
 import { createRequire } from "node:module";
 import { createServer, STATUS_CODES } from "node:http";
 import type { IncomingMessage, RequestListener, Server } from "node:http";
@@ -14,7 +9,7 @@ import {
   effectsFor,
   loadEffectsFor,
   lowerFirst,
-  type RuntimeTouch,
+  type RuntimeInvalidate,
 } from "./effects.mts";
 import type {
   HostRequest,
@@ -24,7 +19,7 @@ import type {
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
-export type { RecordRef, RuntimeTouch } from "./effects.mts";
+export type { RecordRef, RuntimeInvalidate } from "./effects.mts";
 export type {
   Acknowledged,
   Claimed,
@@ -35,11 +30,10 @@ export type {
   JsonValue,
   LoadNext,
   Locked,
-  MemberDelta,
+  TrackingDelta,
+  TrackingPair,
   MemberKey,
   MemberPosition,
-  MemberState,
-  Memberships,
   Stamped,
   Stamps,
 } from "./host-contract.mts";
@@ -93,7 +87,7 @@ export type Native = {
     item: string,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
-  /** Settles a business change made outside a handler: the same `{changes, memberships}` a handler answers with. */
+  /** Settles a business change made outside a handler: the same `{changes, declarations}` a handler answers with. */
   settleExternal(
     config: string,
     settlement: string,
@@ -118,20 +112,20 @@ export type Native = {
   /** Forgets the session; idempotent. */
   liveClose(handle: number): void;
 };
-/** One scope's progress in a page: after `from`, up to `to`, of a scope at `head`. */
+/** One stream's progress in a page: after `from`, up to `to`, of a stream at `head`. */
 export type CursorRange = { from: number; to: number; head: number };
 /** What the executor reports to the Rust `Subscriptions` controller. */
 export type LiveEvent =
-  | { type: "committed"; scope: string }
+  | { type: "committed"; stream: string }
   | { type: "pulled"; page: string }
   | { type: "closed" };
 /** What the controller asks the executor to do, in order. */
 export type LiveAction =
-  | { type: "listen"; scope: string }
+  | { type: "listen"; stream: string }
   | { type: "send"; frame: string }
   | {
       type: "pull";
-      /** The cursor to pull after, per scope: one pull covers them all. */
+      /** The cursor to pull after, per stream: one pull covers them all. */
       cursors: Record<string, number>;
       /** The read contracts the session declared: model name to version. */
       models: Record<string, number>;
@@ -309,25 +303,25 @@ export class MutationRejected extends Error {
 export { MutationRejected as CallRejected };
 /**
  * What `backend.transaction` hands its body: the application transaction and
- * the same declaration handles a Mutation receives. `touch` declares a record
- * the body changed; `scope(name)` adds or removes Scope members. The
+ * the same declaration handles a Mutation receives. `invalidate` declares a record
+ * the body changed; `stream(names)` tracks records or targets invalidation. The
  * engine settles them after the body returns, inside the same transaction.
  * A generated backend narrows both to its schema's Models.
  */
 export interface TransactionCall<Tx> {
   tx: Tx;
-  scope(name: string): RuntimeScope;
-  touch: RuntimeTouch;
+  stream(names: string | readonly string[]): RuntimeStream;
+  invalidate: RuntimeInvalidate;
 }
 /** A legacy slot handler's call: its decoded input and the same declaration handles. */
 export interface HandlerCall<Tx, Input> {
   input: Input;
   tx: Tx;
   userId: string;
-  scope(name: string): RuntimeScope;
-  touch: RuntimeTouch;
+  stream(names: string | readonly string[]): RuntimeStream;
+  invalidate: RuntimeInvalidate;
 }
-/** Loads name no scope: the same identity, version and stamp describe the same content on every delivery path. */
+/** Loads name no stream: the same identity, version and stamp describe the same content on every delivery path. */
 export interface LoaderCall<Tx, Identity> {
   ids: readonly Identity[];
   tx: Tx;
@@ -344,19 +338,19 @@ export type HandlerRegistration<Tx> =
   Handler<Tx> | { [version: `v${number}`]: Handler<Tx> };
 /**
  * Trusted framework context of a Mutation: it may change business state,
- * declare records it changed beyond its inputs (`touch`) and add or remove
- * Scope members (`scope(name)`). The handles close when the handler
+ * declare records it changed beyond its inputs (`invalidate`) and track records or target invalidation
+ * through `stream(names)`. The handles close when the handler
  * settles.
  */
 export interface MutationContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
-  scope(name: string): RuntimeScope;
-  touch: RuntimeTouch;
+  stream(names: string | readonly string[]): RuntimeStream;
+  invalidate: RuntimeInvalidate;
 }
 /**
- * Trusted framework context of a Query. It carries no `scope` or `touch`:
+ * Trusted framework context of a Query. It carries no `stream` or `invalidate`:
  * a Query reads without business side effects. `tx` is still the
  * application's own transaction; the framework cannot inspect arbitrary SQL,
  * so honoring the read-only contract is the handler's responsibility.
@@ -368,9 +362,9 @@ export interface QueryContext<Tx> {
 }
 /**
  * Trusted framework context of one Load page. A Load reads without business
- * side effects, so it carries no `touch`, and the framework cannot inspect
- * arbitrary SQL on `tx`. `scope(name)` only adds: it enrolls records this
- * page returns into a Scope, which the engine settles with the page. Its
+ * side effects, so it carries no `invalidate`, and the framework cannot inspect
+ * arbitrary SQL on `tx`. `stream(names).track` records interest in records this
+ * page returns into a Stream, which the engine settles with the page. Its
  * handles close when the handler settles. `callId` is the page's durable
  * call ID and `loadId` its job.
  */
@@ -379,7 +373,7 @@ export interface LoadContext<Tx> {
   userId: string;
   callId: string;
   loadId: string;
-  scope(name: string): RuntimeLoadScope;
+  stream(names: string | readonly string[]): RuntimeLoadStream;
 }
 /**
  * One page of a Load: `continuation` is `null` on the first page and the
@@ -631,18 +625,18 @@ function inspectContinuation(next: unknown): string | undefined {
 const LOAD_ITEM_TRANSACTIONS = 4;
 class WakeHub {
   private listeners = new Map<string, Set<() => void>>();
-  subscribe(scope: string, wake: () => void): () => void {
-    const listeners = this.listeners.get(scope) ?? new Set();
+  subscribe(stream: string, wake: () => void): () => void {
+    const listeners = this.listeners.get(stream) ?? new Set();
     listeners.add(wake);
-    this.listeners.set(scope, listeners);
+    this.listeners.set(stream, listeners);
     return () => {
       listeners.delete(wake);
-      if (!listeners.size) this.listeners.delete(scope);
+      if (!listeners.size) this.listeners.delete(stream);
     };
   }
-  notify(scopes: Iterable<string>): void {
-    for (const scope of new Set(scopes))
-      for (const wake of [...(this.listeners.get(scope) ?? [])])
+  notify(streams: Iterable<string>): void {
+    for (const stream of new Set(streams))
+      for (const wake of [...(this.listeners.get(stream) ?? [])])
         queueMicrotask(wake);
   }
   clear(): void {
@@ -1038,15 +1032,15 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           }
           // The engine derives the records the operations target and adds
           // them to the change set itself; `changes` carries only the
-          // handler's own `touch` declarations.
+          // handler's own `invalidate` declarations.
           const effects = createEffects();
           try {
             await entry.handler({
               input,
               tx,
               userId: req.owner,
-              scope: effects.scope,
-              touch: effects.touch,
+              stream: effects.stream,
+              invalidate: effects.invalidate,
             });
             result = effects.settlement();
           } catch (error) {
@@ -1099,8 +1093,8 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                     tx,
                     userId: req.owner,
                     callId: req.callId,
-                    scope: effects.scope,
-                    touch: effects.touch,
+                    stream: effects.stream,
+                    invalidate: effects.invalidate,
                   }
                 : { tx, userId: req.owner, callId: req.callId },
               args,
@@ -1109,7 +1103,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               outputs: outputs === undefined ? {} : outputs,
               ...(effects
                 ? effects.settlement()
-                : { changes: [], memberships: [] }),
+                : { changes: [], declarations: [] }),
             };
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
@@ -1137,7 +1131,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             onError(error);
             return callbackJson({ error: error.message });
           };
-          // One fresh add-only collector per attempt: a retried transaction
+          // One fresh tracking-only collector per attempt: a retried transaction
           // runs the handler again and never inherits these declarations.
           // They close when the handler settles, before its answer is read,
           // so neither an escaped handle nor a getter declares later.
@@ -1148,7 +1142,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           // fault. A continuation that is not portable JSON is refused
           // before `callbackJson` could coerce it; any other unencodable
           // answer is a failure. Only `data` and `next` are read from it:
-          // the page's memberships are its declarations, never a returned
+          // the page's tracking is its declarations, never a returned
           // property, and are attached only when there are some.
           try {
             let page: unknown;
@@ -1160,7 +1154,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                   userId: req.owner,
                   callId: req.callId,
                   loadId: req.loadId,
-                  scope: effects.scope,
+                  stream: effects.stream,
                 },
                 args,
                 continuation: req.continuation,
@@ -1204,13 +1198,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               );
               return callbackJson({ rejection: "load.invalid_continuation" });
             }
-            const memberships = effects.memberships();
+            const tracking = effects.tracking();
             let answer: string;
             try {
               answer = callbackJson(
-                memberships.length
-                  ? { data, next, memberships }
-                  : { data, next },
+                tracking.length ? { data, next, tracking } : { data, next },
               );
             } catch (error) {
               return invalid(
@@ -1298,10 +1290,10 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             case "ensureStamp":
             case "readStamps":
             case "lockRecord":
-            case "memberships":
-            case "lockScopes":
-            case "readScopeMembers":
-            case "applyScopeMembers":
+            case "readTracking":
+            case "guardRecords":
+            case "lockStreams":
+            case "applyStreamMembers":
               break;
             default: {
               const unreachable: never = req;
@@ -1309,11 +1301,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             }
           }
           result = await storage.call(req);
-          // Every position that survives its savepoint wakes the scope's
+          // Every position that survives its savepoint wakes the stream's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "applyScopeMembers")
+          if (req.op === "applyStreamMembers")
             for (const delta of req.deltas)
-              if (delta.publish) session.touched.add(delta.scope);
+              if (delta.publish) session.touched.add(delta.stream);
         }
         return callbackJson(result);
       });
@@ -1321,7 +1313,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   /**
    * Runs `operation` under one session bound to `tx`: every host callback is
    * tracked, and the operation completes only once none is unfinished or
-   * failed. Answers its value and the Scopes it published to, which the
+   * failed. Answers its value and the Streams it published to, which the
    * caller wakes after `tx` commits. A transaction holds one session at a
    * time, so AXTON never settles into a transaction it is already serving.
    */
@@ -1364,10 +1356,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     return result;
   };
   /**
-   * Runs `body` with a Mutation's `scope` and `touch`, then settles what it
-   * declared in `tx`: one new stamp per touched record, published at that
-   * stamp to each Scope it is a member of, and each newly added member
-   * published once. The handles close when the body settles, whether it
+   * Runs `body` with a Mutation's `stream` and `invalidate`, then settles what it
+   * declared in `tx`: one new stamp per invalidated record, delivered to its selected
+   * tracking streams, and each newly tracked pair delivered once. The handles close when the body settles, whether it
    * returns or throws.
    */
   const settle = async <R,>(
@@ -1380,8 +1371,8 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     try {
       const call: TransactionCall<T> = {
         tx,
-        scope: effects.scope,
-        touch: effects.touch,
+        stream: effects.stream,
+        invalidate: effects.invalidate,
       };
       result = await body(call as unknown as External);
     } finally {
@@ -1399,7 +1390,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   /**
    * Runs `body` in one application transaction the framework opens, and
    * settles its declarations there. After the driver commits, the live
-   * subscribers of every scope published to are woken; a failure rolls
+   * subscribers of every stream published to are woken; a failure rolls
    * back and wakes nobody. Answers the body's own value. Not for use inside
    * a handler, which already has a transaction.
    */
@@ -1570,9 +1561,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     liveEvent: (handle: number, event: LiveEvent): LiveAction[] =>
       JSON.parse(native.liveEvent(handle, JSON.stringify(event))),
     liveClose: (handle: number): void => native.liveClose(handle),
-    onCommitted: (scope: string, wake: () => void) =>
-      wakes.subscribe(scope, wake),
-    notifyCommitted: (scopes: readonly string[]) => wakes.notify(scopes),
+    onCommitted: (stream: string, wake: () => void) =>
+      wakes.subscribe(stream, wake),
+    notifyCommitted: (streams: readonly string[]) => wakes.notify(streams),
     closeLive: () => wakes.clear(),
     transaction,
     publish,
@@ -1792,7 +1783,7 @@ interface LiveBackend {
   ): Promise<{ page: string; cursors: Record<string, CursorRange> }>;
   liveEvent(handle: number, event: LiveEvent): LiveAction[];
   liveClose(handle: number): void;
-  onCommitted(scope: string, wake: () => void): () => void;
+  onCommitted(stream: string, wake: () => void): () => void;
 }
 
 function attachLive(
@@ -1872,7 +1863,7 @@ function attachLive(
  * Executes the Rust controller's actions for one socket. Every sync decision
  * (what to pull, when, what to send) is the controller's; this only carries
  * events in and performs actions out. The controller keeps at most one pull
- * outstanding per session; it covers every scope with a pending commit.
+ * outstanding per session; it covers every stream with a pending commit.
  */
 async function serveLive(
   connection: WebSocket,
@@ -1909,10 +1900,10 @@ async function serveLive(
   const execute = (actions: LiveAction[]) => {
     for (const action of actions) {
       if (action.type === "listen") {
-        const { scope } = action;
+        const { stream } = action;
         cleanups.push(
-          backend.onCommitted(scope, () =>
-            dispatch({ type: "committed", scope }),
+          backend.onCommitted(stream, () =>
+            dispatch({ type: "committed", stream }),
           ),
         );
       } else if (action.type === "send") {

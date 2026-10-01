@@ -520,19 +520,19 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    assert!(ts.contains("export interface Scope {"), "{ts}");
-    assert!(ts.contains("export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface Stream {"), "{ts}");
+    assert!(ts.contains("export interface RecordDeclaration {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
     assert!(
         ts.contains(
             "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
         ),
         "{ts}"
     );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
     // `backend.transaction` hands its body the same generated handles.
     assert!(
         ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
@@ -551,17 +551,17 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    // Without Models, a Scope has only its mixed verbs and nothing to name.
+    // Without Models, a Stream has only its mixed verbs and nothing to name.
     let empty =
         axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axtonjs/server");
     assert!(
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Scope {"), "{empty}");
+    assert!(empty.contains("export interface Stream {"), "{empty}");
     assert!(
         empty.contains(
-            "export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
+            "export interface RecordDeclaration {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
         ),
         "{empty}"
     );
@@ -805,7 +805,7 @@ fn generated_store_hooks_are_typed_and_decode_incoming_records() {
         ts.contains("id: row.id as string"),
         "composite identity decoder: {ts}"
     );
-    assert!(ts.contains("readonly scopes:"), "{ts}");
+    assert!(ts.contains("readonly streams:"), "{ts}");
     assert!(client.contains("onStore?: StoreHooks"), "{client}");
     assert!(
         client.contains("decodeEntryIdentity(change.identity)"),
@@ -971,9 +971,9 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "CallSuccess",
         "CallFailure",
         "Transaction",
-        // The Scope facade and the handle types it re-exports
+        // The Stream facade and the handle types it re-exports
         // ([#150](https://github.com/zanminwang/axton/issues/150)).
-        "Scopes",
+        "Streams",
         "Subscription",
         "SubscriptionStatus",
         "SubscriptionInitialization",
@@ -994,7 +994,7 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
     for name in [
         "MutationContext",
         "QueryContext",
-        "Touch",
+        "RecordDeclaration",
         "RecordRef",
         "HandlerCall",
         "TransactionCall",
@@ -1032,7 +1032,7 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
 
 #[test]
 fn model_accessors_are_unique_and_leave_the_scope_verbs_free() {
-    // `ctx.touch.todo` and `ctx.scope(name).todo` use the lower-first
+    // `ctx.invalidate.todo` and `ctx.stream(name).todo` use the lower-first
     // accessor, so two Models must not share one.
     let e = compile("model Todo { id String @@id(id) }\n\nmodel todo { id String @@id(id) }\n\n")
         .unwrap_err();
@@ -1062,7 +1062,7 @@ fn model_accessors_are_unique_and_leave_the_scope_verbs_free() {
         "__proto__",
         "ToString",
         "Publish",
-        // A Scope handle is no function, so function members stay free too.
+        // A Stream handle is no function, so function members stay free too.
         "Name",
         "Length",
         "Bind",
@@ -1768,7 +1768,7 @@ fn action_only_and_model_only_clients_have_no_legacy_mutate_facade() {
     }
 }
 
-/// The Scope facade is the public spelling the generated client carries: a thin
+/// The Stream facade is the public spelling the generated client carries: a thin
 /// delegate to the runtime, with the handle types named through the generated
 /// module and no get-only accessor
 /// ([#150](https://github.com/zanminwang/axton/issues/150)).
@@ -1778,27 +1778,27 @@ fn generated_clients_expose_the_scope_facade() {
     let ts = axton_compiler::client_typescript(&schema, "@example/custom-runtime");
     for line in [
         "type Subscription, type SubscriptionStatus",
-        " subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }",
-        " readonly scopes: Scopes;",
-        "this.scopes = new Scopes(client);",
+        " subscribe(stream: string): Promise<Subscription> { return this.#client.subscribeStream(stream); }",
+        " readonly streams: Streams;",
+        "this.streams = new Streams(client);",
     ] {
         assert!(ts.contains(line), "{line} missing from {ts}");
     }
     assert!(
-        !ts.contains("get(scope"),
+        !ts.contains("get(stream"),
         "a get-only accessor is deliberately omitted: {ts}"
     );
     let dart = axton_compiler::dart(&schema);
     for line in [
         "Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection",
-        "class Scopes { final Client client; Scopes(this.client);",
-        " Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);",
-        " late final Scopes scopes = Scopes(client);",
+        "class Streams { final Client client; Streams(this.client);",
+        " Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);",
+        " late final Streams streams = Streams(client);",
     ] {
         assert!(dart.contains(line), "{line} missing from {dart}");
     }
     assert!(
-        !dart.contains("get(String scope"),
+        !dart.contains("get(String stream"),
         "a get-only accessor is deliberately omitted: {dart}"
     );
 }
@@ -2434,17 +2434,7 @@ fn dotted_argument_names_are_refused_outside_a_sequence() {
 
 #[test]
 fn canonical_scope_type_names_refuse_model_and_enum_collisions() {
-    for name in [
-        "Scope",
-        "LoadScope",
-        "ScopeAdd",
-        "ScopeRecords",
-        "ScopeWhere",
-        "ScopeSelection",
-        "ScopeTagRemoval",
-        "ScopePredicate",
-        "AddDeclaration",
-    ] {
+    for name in ["Stream", "LoadStream", "RecordDeclaration"] {
         for source in [
             format!("model {name} {{ id String @@id(id) }}"),
             format!("enum {name} {{ A B }}"),

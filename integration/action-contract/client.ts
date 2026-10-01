@@ -9,10 +9,10 @@ import { decodeProject, decodeProjectIdentity, type Project, type ProjectIdentit
 import { decodeNote, decodeNoteIdentity, type Note, type NoteIdentity } from "./generated.ts";
 import { fetchModels, type FetchModels } from "./generated.ts";
 export * from "./generated.ts";
-/** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
-export class Scopes { readonly #client: Client;
+/** The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */
+export class Streams { readonly #client: Client;
  constructor(client: Client) { this.#client = client; }
- subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }
+ subscribe(stream: string): Promise<Subscription> { return this.#client.subscribeStream(stream); }
 }
 export class GeneratedClient {
  /** @internal The runtime handle; application code uses the members below. */
@@ -23,12 +23,12 @@ export class GeneratedClient {
  readonly mutations: ReturnType<typeof makeMutations>;
  /** Direct by default: `await` resolves with the backend result; `queries.enqueue` accepts durably with a `Call`. */
  readonly queries: ReturnType<typeof makeQueries>;
- readonly scopes: Scopes;
+ readonly streams: Streams;
  /** Native Loads: `await` resolves after durable local acceptance with a `Load` handle; `once` reuses a registered job and `invalidate` removes that registration. */
  readonly loads: ReturnType<typeof makeLoads>;
  /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */
  readonly fetch: FetchModels;
- private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.loads = makeLoads(client); this.scopes = new Scopes(client); this.fetch = fetchModels(client); }
+ private constructor(client: Client, connection: Connection | undefined) { this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); this.loads = makeLoads(client); this.streams = new Streams(client); this.fetch = fetchModels(client); }
  /** Opens the local database at `path`. With a server, the connection starts immediately and retries on its own. */
  static async open(options: { path: string; server?: ServerOptions; connection?: ConnectionOptions; migration?: { defaults?: RecordValue; replayPull?: boolean }; discardPending?: boolean; onStore?: StoreHooks; prerequisites?: Record<string, PrerequisiteHandler> }): Promise<GeneratedClient> {
   const rawHooks: Record<string, StoreHook> = {};

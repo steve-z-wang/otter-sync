@@ -483,7 +483,7 @@ pub fn typescript(v: &Value) -> String {
         )
         .unwrap();
     }
-    o.push_str("}\nexport class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly scopes:{subscribe(scope:string):Promise<void>;unsubscribe(scope:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.scopes=(transaction as WritePort & {scopes:GeneratedTransaction['scopes']}).scopes; } }\n");
+    o.push_str("}\nexport class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly streams:{subscribe(stream:string):Promise<void>;unsubscribe(stream:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.streams=(transaction as WritePort & {streams:GeneratedTransaction['streams']}).streams; } }\n");
     crate::emit_transactions::ts_generated(v, &mut o);
     o
 }
@@ -1023,9 +1023,9 @@ pub fn client_typescript(v: &Value, runtime: &str) -> String {
         o.push_str("import { fetchModels, type FetchModels } from \"./generated.ts\";\n");
     }
     o.push_str("export * from \"./generated.ts\";\n");
-    o.push_str("/** The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */\nexport class Scopes { readonly #client: Client;\n constructor(client: Client) { this.#client = client; }\n subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }\n}\n");
+    o.push_str("/** The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration. */\nexport class Streams { readonly #client: Client;\n constructor(client: Client) { this.#client = client; }\n subscribe(stream: string): Promise<Subscription> { return this.#client.subscribeStream(stream); }\n}\n");
     o.push_str("export class GeneratedClient {\n");
-    o.push_str(" /** @internal The runtime handle; application code uses the members below. */\n readonly client: Client;\n connection: Connection | undefined;\n readonly models: LiveModels;\n /** Durable by default: `await` resolves after local acceptance with a `Call`; `mutations.call` waits for the backend outcome. */\n readonly mutations: ReturnType<typeof makeMutations>;\n /** Direct by default: `await` resolves with the backend result; `queries.enqueue` accepts durably with a `Call`. */\n readonly queries: ReturnType<typeof makeQueries>;\n readonly scopes: Scopes;\n");
+    o.push_str(" /** @internal The runtime handle; application code uses the members below. */\n readonly client: Client;\n connection: Connection | undefined;\n readonly models: LiveModels;\n /** Durable by default: `await` resolves after local acceptance with a `Call`; `mutations.call` waits for the backend outcome. */\n readonly mutations: ReturnType<typeof makeMutations>;\n /** Direct by default: `await` resolves with the backend result; `queries.enqueue` accepts durably with a `Call`. */\n readonly queries: ReturnType<typeof makeQueries>;\n readonly streams: Streams;\n");
     let has_loads = crate::emit_loads::has_loads(v);
     if has_loads {
         o.push_str(" /** Native Loads: `await` resolves after durable local acceptance with a `Load` handle; `once` reuses a registered job and `invalidate` removes that registration. */\n readonly loads: ReturnType<typeof makeLoads>;\n");
@@ -1033,7 +1033,7 @@ pub fn client_typescript(v: &Value, runtime: &str) -> String {
     if fetch {
         o.push_str(" /** One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`. */\n readonly fetch: FetchModels;\n");
     }
-    writeln!(o, " private constructor(client: Client, connection: Connection | undefined) {{ this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); {}{}this.scopes = new Scopes(client); {}}}", if has_mutations { "this.mutate = new Mutate(client); " } else { "" }, if has_loads { "this.loads = makeLoads(client); " } else { "" }, if fetch { "this.fetch = fetchModels(client); " } else { "" }).unwrap();
+    writeln!(o, " private constructor(client: Client, connection: Connection | undefined) {{ this.client = client; this.connection = connection; this.models = liveModels(client); this.mutations = makeMutations(client); this.queries = makeQueries(client); {}{}this.streams = new Streams(client); {}}}", if has_mutations { "this.mutate = new Mutate(client); " } else { "" }, if has_loads { "this.loads = makeLoads(client); " } else { "" }, if fetch { "this.fetch = fetchModels(client); " } else { "" }).unwrap();
     if has_mutations {
         o.push_str(" /** Each legacy mutation runs in its own local transaction and returns its ordinal. */\n readonly mutate: Mutate;\n");
     }
@@ -1166,7 +1166,7 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
             .or_insert(action["version"].as_u64().unwrap());
     }
     if has_actions {
-        o.push_str("/** Trusted framework context and caller-supplied arguments of a Mutation. */\nexport type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };\n/** A Query's context has no `scope` or `touch`: it reads without business side effects. */\nexport type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };\n");
+        o.push_str("/** Trusted framework context and caller-supplied arguments of a Mutation. */\nexport type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };\n/** A Query's context has no `stream` or `invalidate`: it reads without business side effects. */\nexport type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };\n");
         for action in actions {
             let latest = action_latest[s(action, "name")];
             if action["version"].as_u64() != Some(latest) {
@@ -1460,7 +1460,7 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
     o
 }
 /// The generated declaration API ([#140](https://github.com/zanminwang/axton/issues/140)):
-/// a discriminated `RecordRef`, typed Scope operations and touch
+/// a discriminated `RecordRef`, typed Stream tracking and invalidation
 /// under each Model's lower-first accessor, and the concrete contexts
 /// that carry them. A Query context carries neither.
 fn ts_declarations(models: &[Value], o: &mut String) {
@@ -1481,13 +1481,13 @@ fn ts_declarations(models: &[Value], o: &mut String) {
         }
     )
     .unwrap();
-    crate::emit_scope::backend(models, o);
-    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
+    crate::emit_stream::backend(models, o);
+    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n");
     o.push_str(
         "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n",
     );
-    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
-    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n");
+    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n");
+    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n");
 }
 fn dart_action_type(ty_value: &Value) -> String {
     ty(ty_value, true)
@@ -2453,7 +2453,7 @@ pub fn dart(v: &Value) -> String {
         )
         .unwrap();
     }
-    o.push_str("/// The Scopes this client follows; `subscribe` answers with the runtime's handle for one persistent registration.\nclass Scopes { final Client client; Scopes(this.client);\n Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);\n}\n");
+    o.push_str("/// The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration.\nclass Streams { final Client client; Streams(this.client);\n Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);\n}\n");
     dart_fetch(v, &mut o);
     o.push_str("sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }\nfinal class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }\nfinal class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }\ntypedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);\nclass StoreHooks {\n");
     for model in arr(&v["schema"], "models") {
@@ -2470,9 +2470,9 @@ pub fn dart(v: &Value) -> String {
     } else {
         writeln!(o, " const StoreHooks({{{hook_parameters}}});\n}}").unwrap();
     }
-    o.push_str("class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final scopes = transaction.scopes; GeneratedTransaction(this.transaction); }\n");
+    o.push_str("class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final streams = transaction.streams; GeneratedTransaction(this.transaction); }\n");
     crate::emit_transactions::dart_generated(v, &mut o);
-    o.push_str("class GeneratedClient {\n /// The runtime handle (internal); application code uses the members below.\n final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);\n late final Scopes scopes = Scopes(client);\n");
+    o.push_str("class GeneratedClient {\n /// The runtime handle (internal); application code uses the members below.\n final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);\n late final Streams streams = Streams(client);\n");
     if !mutate_methods.is_empty() {
         o.push_str(" /// Each legacy mutation runs in its own local transaction and returns its ordinal.\n late final Mutate mutate = Mutate(client);\n");
     }

@@ -534,6 +534,7 @@ fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
         }],
     })
     .unwrap();
+    legacy_eviction(&mut c, &path, &key());
     let retry = c
         .record_load_failure(
             &fence,

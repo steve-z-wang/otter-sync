@@ -424,7 +424,10 @@ fn the_ledger_tables_are_added_beside_existing_work() {
     let frozen = c.freeze().unwrap().unwrap();
     drop(c);
     // A database written before the Load ledger existed.
-    raw(&path, "DROP TABLE axton_load; DROP TABLE axton_load_once");
+    raw(
+        &path,
+        "DROP TABLE axton_load; DROP TABLE axton_load_once; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version",
+    );
     let mut c = open_db(&path);
     assert!(!c.schema_state().rebuilt);
     assert_eq!(c.pending_count().unwrap(), 1);

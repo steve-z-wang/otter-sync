@@ -1186,7 +1186,7 @@ fn a_file_without_the_local_write_journal_gains_it_in_place() {
         drop(c);
         axton_sqlite::SqliteStore::open(&path)
             .unwrap()
-            .execute_batch("DROP TABLE axton_local_write")
+            .execute_batch("DROP TABLE axton_local_write; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
             .unwrap();
         let mut c = Client::open_at(
             &path,
@@ -1413,7 +1413,7 @@ fn an_old_queued_companion_cascade_stored_as_an_effect_settles_with_its_companio
                ({owner}, 0, 'wire', 'Book', '{{\"id\":\"other\"}}', 'update', '{{\"title\":\"O2\"}}'),
                ({owner}, 1, 'companion', 'Book', '{{\"id\":\"b\"}}', 'delete', NULL),
                ({owner}, 2, 'effect', 'Comment', '{{\"id\":\"c\"}}', 'delete', NULL);
-             DROP TABLE axton_local_write;"
+             DROP TABLE axton_local_write; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version;"
         ))
         .unwrap();
         drop(raw);

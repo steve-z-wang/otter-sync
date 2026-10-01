@@ -683,5 +683,12 @@ fn scope_membership_page_ignores_unsubscribed_changes_without_progress() {
     assert_eq!(c.cursor("a").unwrap(), None);
     assert_eq!(c.cursor("b").unwrap(), Some(1));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "cached");
-    assert_eq!(table_count(&mut c, "axton_stream_member"), 0);
+    assert_eq!(
+        c.read_sql(
+            "SELECT count(*) AS n FROM sqlite_master WHERE name='axton_stream_member'",
+            &[]
+        )
+        .unwrap()[0]["n"],
+        0
+    );
 }

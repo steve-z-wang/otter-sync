@@ -453,7 +453,7 @@ impl<S: ClientStore> Client<S> {
                 ),
                 None => {
                     let id = uuid::Uuid::new_v4().to_string();
-                    store.execute("INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES (?,1,1,1,1)", &[Value::from(id.clone())])?;
+                    store.execute("INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription, local_authority_version) VALUES (?,1,1,1,1,1)", &[Value::from(id.clone())])?;
                     (id, 1)
                 }
             };

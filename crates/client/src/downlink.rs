@@ -145,7 +145,7 @@ impl<S: ClientStore> Engine<'_, S> {
 }
 
 impl<S: ClientStore> Client<S> {
-    /// Apply stream membership and authority atomically, retaining provenance.
+    /// Apply canonical Stream authority and delivery progress atomically.
     pub fn apply_stream_page(&mut self, page: axton_core::StreamPullPage) -> Result<ApplyReport> {
         page.validate()?;
         let legacy = PullPage {
@@ -162,39 +162,12 @@ impl<S: ClientStore> Client<S> {
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
-    pub(crate) fn observe_stream_heads(
-        &mut self,
-        page: &axton_core::StreamPullPage,
-        guards: Option<&[(String, u64, u64)]>,
-    ) -> Result<()> {
-        for (stream, range) in &page.cursors {
-            let Some(state) = self.subscription(stream)? else {
-                continue;
-            };
-            let Some(current) = state.cursor else {
-                continue;
-            };
-            if range.head < current || range.from > current {
-                continue;
-            }
-            if guards.is_some_and(|guards| {
-                !guards
-                    .iter()
-                    .any(|(name, id, _)| name == stream && *id == state.subscription_id)
-            }) {
-                continue;
-            }
-            if self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE stream=? AND subscription_id=? AND reconcile_state='requested' AND reconcile_bound IS NULL", &[serde_json::json!(range.head),serde_json::json!(stream),serde_json::json!(state.subscription_id)])? > 0 { self.mark_bootstrap(stream); }
-        }
-        Ok(())
-    }
     pub(crate) fn apply_stream_page_body(
         &mut self,
         page: &axton_core::StreamPullPage,
         guards: Option<&[(String, u64, u64)]>,
     ) -> Result<ApplyReport> {
         page.validate()?;
-        self.observe_stream_heads(page, guards)?;
         let mut advances = Vec::new();
         for (stream, range) in &page.cursors {
             let Some(state) = self.subscription(stream)? else {

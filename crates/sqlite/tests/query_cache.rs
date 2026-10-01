@@ -1,5 +1,6 @@
 //! Query once result snapshots (#158): canonical keys, additive storage,
 //! generation fencing and the Rust coordinator, against real SQLite.
+mod common;
 use axton_client::query_cache::QueryCacheKey;
 use axton_client::*;
 use axton_sqlite::SqliteStore;
@@ -278,7 +279,7 @@ fn an_existing_database_gains_the_cache_table_without_touching_its_queue() {
     // A database written before this table existed.
     SqliteStore::open(&path)
         .unwrap()
-        .execute_batch("DROP TABLE axton_query_cache")
+        .execute_batch("DROP TABLE axton_query_cache; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
         .unwrap();
     let mut client = open(&path);
     assert_eq!(count(&mut client), 0);
@@ -919,7 +920,7 @@ fn a_malformed_snapshot_is_invalidated_and_missed_but_read_errors_surface() {
     let mut client = open(&path);
     SqliteStore::open(&path)
         .unwrap()
-        .execute_batch("DROP TABLE axton_query_cache")
+        .execute_batch("DROP TABLE axton_query_cache; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
         .unwrap();
     assert!(
         client
@@ -1040,6 +1041,7 @@ fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_st
         }],
     })
     .unwrap();
+    common::legacy_eviction(&mut c, &dir.path().join("db"), &todo);
     let report = c
         .finish_query_once(&flight, &succeeded(&request, "late", 99))
         .unwrap();
@@ -1060,7 +1062,7 @@ fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_st
 }
 
 #[test]
-fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoch() {
+fn legacy_direct_query_uses_frozen_epoch_and_fresh_claims_do_not_gate_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     let sub = c.ensure_subscription("a").unwrap();
@@ -1114,6 +1116,7 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
         }],
     })
     .unwrap();
+    common::legacy_eviction(&mut c, &dir.path().join("db"), &todo);
     let report = c
         .apply_action_response(&old, &succeeded(&old, "late", 99))
         .unwrap();
@@ -1122,16 +1125,16 @@ fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoc
     assert!(c.read(&todo).unwrap().is_none());
     let fresh = c.prepare_action("GetTodos", 1, args()).unwrap();
     let mut response: Value =
-        serde_json::from_slice(&succeeded(&fresh, "stale enrollment", 99)).unwrap();
+        serde_json::from_slice(&succeeded(&fresh, "stale enrollment", 8)).unwrap();
     response["memberships"] =
         json!([{"stream":"a","cursor":1,"model":"Todo","identity":{"id":"a"}}]);
     let report = c
         .apply_action_response(&fresh, &serde_json::to_vec(&response).unwrap())
         .unwrap();
-    assert_eq!(report.applied, 0);
-    assert!(c.read(&todo).unwrap().is_none());
+    assert_eq!(report.applied, 1);
+    assert_eq!(c.read(&todo).unwrap().unwrap()["title"], "stale enrollment");
     let fresh = c.prepare_action("GetTodos", 1, args()).unwrap();
-    let mut response: Value = serde_json::from_slice(&succeeded(&fresh, "restored", 7)).unwrap();
+    let mut response: Value = serde_json::from_slice(&succeeded(&fresh, "restored", 9)).unwrap();
     response["memberships"] =
         json!([{"stream":"a","cursor":3,"model":"Todo","identity":{"id":"a"}}]);
     assert_eq!(

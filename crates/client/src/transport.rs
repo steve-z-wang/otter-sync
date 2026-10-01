@@ -10,8 +10,6 @@ pub struct SyncCycle {
     /// Every subscribed stream reached its head in this cycle.
     completed: bool,
     active: Option<TransportAction>,
-    history: Option<BootstrapTask>,
-    retry_reconciliation: bool,
 }
 impl Default for SyncCycle {
     fn default() -> Self {
@@ -19,8 +17,6 @@ impl Default for SyncCycle {
             push_only: false,
             completed: false,
             active: None,
-            history: None,
-            retry_reconciliation: true,
         }
     }
 }
@@ -68,8 +64,6 @@ impl SyncCycle {
     pub fn restart(&mut self) {
         self.completed = false;
         self.active = None;
-        self.history = None;
-        self.retry_reconciliation = true;
         self.push_only = false;
     }
     /// Use HTTP only for queued writes; authoritative pages arrive through the live stream.
@@ -96,25 +90,7 @@ impl SyncCycle {
         if self.push_only {
             return Ok(None);
         }
-        if std::mem::take(&mut self.retry_reconciliation) {
-            client.retry_reconciliation_failures()?;
-        }
-        if client.reconciliation_failed()? {
-            return Err(invalid(
-                "stream reconciliation failed; restart the cycle to retry",
-            ));
-        }
-        if let Some(task) = client.reconciliation_schedule()? {
-            let action = TransportAction {
-                kind: "pull".into(),
-                body: String::from_utf8(task.encode_request(client.declared_models())?)
-                    .map_err(|_| invalid("utf8"))?,
-            };
-            self.history = Some(task);
-            self.active = Some(action.clone());
-            return Ok(Some(action));
-        }
-        if self.completed && !client.any_reconciliation_pending()? {
+        if self.completed {
             return Ok(None);
         }
         // One pull covers every subscribed stream; a pull on any other stream
@@ -146,28 +122,6 @@ impl SyncCycle {
             let report = client.acknowledge(sequence, receipt)?;
             self.completed = false;
             report
-        } else if let Some(task) = &self.history {
-            let page = StreamBootstrapPage::decode(bytes)?;
-            let applied = client.apply_stream_history_page(
-                true,
-                &task.state.stream,
-                task.state.subscription_id,
-                task.state.run,
-                task.state.cursor,
-                &page,
-            )?;
-            self.completed = false;
-            match applied {
-                BootstrapApply::Failed { .. } => {
-                    self.active = None;
-                    self.history = None;
-                    return Err(invalid("stream reconciliation records failed"));
-                }
-                BootstrapApply::Applied { report, .. } | BootstrapApply::Detached { report } => {
-                    report
-                }
-                BootstrapApply::Stale => ApplyReport::default(),
-            }
         } else {
             let request = PullRequest::decode(action.body.as_bytes())?;
             let page = StreamPullPage::decode(bytes)?;
@@ -179,12 +133,11 @@ impl SyncCycle {
             let report = client.apply_stream_page(page)?;
             client.settle_bootstrap_barriers(&page_streams)?;
             if end {
-                self.completed = !client.any_reconciliation_pending()?;
+                self.completed = true;
             }
             report
         };
         self.active = None;
-        self.history = None;
         Ok(report)
     }
 }
@@ -266,9 +219,8 @@ impl<S: ClientStore> Client<S> {
         )?;
         if progress.disposition == "applied" {
             progress.report = self.apply_stream_page(page)?;
-        } else if !progress.report.stale && progress.disposition != "recover" && self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state='requested' AND reconcile_bound IS NULL LIMIT 1", &[])?.is_some()))? {
-            self.write(|e| e.observe_stream_heads(&page, None))?;
         }
+
         Ok(progress)
     }
 

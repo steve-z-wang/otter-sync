@@ -362,28 +362,15 @@ impl<S: ClientStore> Engine<'_, S> {
         // apply is reported and never holds the receipt, and so the queue,
         // back.
         axton_core::validate_memberships(&receipt.memberships, &receipt.records)?;
-        self.merge_memberships(&receipt.memberships)?;
         // A receipt has no per-record call provenance. Freeze homogeneous
         // epochs so every body has the exact original call token.
         let token = mutations.first().map(|q| q.store_token).unwrap_or_default();
         if mutations.iter().any(|q| q.store_token != token) {
             return Err(invalid("push contains mixed store epochs"));
         }
-        let enrolled: BTreeSet<_> = receipt
-            .memberships
-            .iter()
-            .map(|claim| {
-                self.schema
-                    .record_key(&claim.model, &claim.identity)?
-                    .encoded()
-            })
-            .collect::<Result<_>>()?;
         for record in &receipt.records {
             let key = self.schema.record_key(&record.model, &record.identity)?;
-            if !record.state.is_null()
-                && ((enrolled.contains(&key.encoded()?) && !self.held(&key)?)
-                    || !self.admit_positive_body(&key, token)?)
-            {
+            if !record.state.is_null() && !self.admit_positive_body(&key, token)? {
                 self.skip_authority_occurrence()?;
                 continue;
             }

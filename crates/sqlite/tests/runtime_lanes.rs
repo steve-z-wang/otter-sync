@@ -2817,20 +2817,9 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     let events = h.run();
     assert_eq!(
         snapshots(&events, &renewed).last().unwrap()["status"],
-        status("ready", "connecting", "not-requested")
-    );
-    let (history, body) = h.http("pull");
-    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["until"], 6);
-    h.ok(
-        &history,
-        &json!({"mode":"bootstrap","stream":"book","from":0,"to":6,"until":6,"head":6,"changes":[]})
-            .to_string(),
-    );
-    let events = h.run();
-    assert_eq!(
-        snapshots(&events, &renewed).last().unwrap()["status"],
         status("ready", "live", "not-requested")
     );
+    assert!(h.client().bootstrap_schedule(None).unwrap().is_none());
     // Stopping the connection takes every live handle offline.
     h.task("stop", json!({"kind":"connection","event":"stop"}));
     assert_eq!(connections(&h.run()), ["offline"]);
@@ -5519,7 +5508,7 @@ fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registe
 }
 
 #[test]
-fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks() {
+fn legacy_frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks() {
     for hooked in [false, true] {
         let mut h = if hooked { hooked_host() } else { host() };
         h.connect(false);
@@ -5563,6 +5552,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                 }],
             })
             .unwrap();
+        let path = h._dir.as_ref().unwrap().path().join("db");
+        common::legacy_eviction(h.client(), &path, &common::key());
         // A caller joining after release still joins the older logical request.
         h.task("joined", fetch("e"));
         h.run();

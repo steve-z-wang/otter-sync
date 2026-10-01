@@ -28,7 +28,7 @@ fn deliver(c: &mut Client<axton_sqlite::SqliteStore>, scope: &str, to: u64, chan
 }
 fn holds(c: &mut Client<axton_sqlite::SqliteStore>) -> u64 {
     c.read_sql(
-        "SELECT COUNT(*) AS n FROM axton_stream_member WHERE present=1",
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE name='axton_stream_member'",
         &[],
     )
     .unwrap()[0]["n"]
@@ -36,24 +36,24 @@ fn holds(c: &mut Client<axton_sqlite::SqliteStore>) -> u64 {
         .unwrap()
 }
 #[test]
-fn two_scopes_release_only_last_replica_and_restore_same_stamp() {
+fn two_streams_keep_one_record_after_both_removals() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("A")));
     deliver(&mut c, "b", 4, up("b", 4, 7, Some("A")));
-    assert_eq!(holds(&mut c), 2);
+    assert_eq!(holds(&mut c), 0);
     deliver(&mut c, "a", 2, remove("a", 2));
     assert!(c.read(&key()).unwrap().is_some());
-    assert_eq!(holds(&mut c), 1);
+    assert_eq!(holds(&mut c), 0);
     deliver(&mut c, "b", 5, remove("b", 5));
-    assert!(c.read(&key()).unwrap().is_none());
+    assert!(c.read(&key()).unwrap().is_some());
     assert_eq!(holds(&mut c), 0);
     assert_eq!(c.record_stamp(&key()).unwrap(), 7);
     deliver(&mut c, "a", 3, up("a", 3, 7, Some("A")));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "A");
-    assert_eq!(holds(&mut c), 1);
+    assert_eq!(holds(&mut c), 0);
     let conflict = c
         .apply_stream_page(StreamPullPage {
             cursors: BTreeMap::from([(
@@ -72,7 +72,7 @@ fn two_scopes_release_only_last_replica_and_restore_same_stamp() {
 }
 
 #[test]
-fn cached_untracked_authority_is_released_and_stamped_null_stays_global() {
+fn cached_untracked_authority_is_retained_and_stamped_null_stays_global() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -80,7 +80,7 @@ fn cached_untracked_authority_is_released_and_stamped_null_stays_global() {
     c.apply_page(page("a", 0, 1, Some("cache"))).unwrap();
     assert_eq!(holds(&mut c), 0);
     deliver(&mut c, "a", 2, remove("a", 2));
-    assert!(c.read(&key()).unwrap().is_none());
+    assert!(c.read(&key()).unwrap().is_some());
     deliver(&mut c, "a", 3, up("a", 3, 2, Some("again")));
     deliver(&mut c, "b", 1, up("b", 1, 3, None));
     assert!(c.read(&key()).unwrap().is_none());
@@ -135,10 +135,10 @@ fn removal_and_other_scope_upsert_fold_before_release() {
         .unwrap();
     assert_eq!(report.conflicts(), 0);
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "base");
-    assert_eq!(holds(&mut c), 1);
+    assert_eq!(holds(&mut c), 0);
 }
 #[test]
-fn clean_local_create_survives_but_patch_does_not_keep_unrelated_replica_fields() {
+fn removal_preserves_local_create_and_patch_until_newer_authority() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut c = open(&path);
@@ -152,14 +152,14 @@ fn clean_local_create_survives_but_patch_does_not_keep_unrelated_replica_fields(
     deliver(&mut c, "a", 2, up("a", 2, 1, Some("server")));
     c.transaction(|tx| tx.direct(update("patch"))).unwrap();
     deliver(&mut c, "a", 3, remove("a", 3));
-    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "patch");
     assert_eq!(table_count(&mut c, "axton_local_replica_layer"), 1);
-    deliver(&mut c, "a", 4, up("a", 4, 1, Some("server")));
+    deliver(&mut c, "a", 4, up("a", 4, 2, Some("server")));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "server");
     assert_eq!(table_count(&mut c, "axton_local_replica_layer"), 0);
 }
 #[test]
-fn pending_update_and_accepted_or_rejected_receipt_survive_release() {
+fn pending_update_and_accepted_or_rejected_receipt_survive_removal() {
     for rejected in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut c = open(&dir.path().join("db"));
@@ -168,7 +168,7 @@ fn pending_update_and_accepted_or_rejected_receipt_survive_release() {
         let ordinal = c.transaction(|tx| tx.enqueue(mutation("pending"))).unwrap();
         c.freeze().unwrap();
         deliver(&mut c, "a", 2, remove("a", 2));
-        assert!(c.read(&key()).unwrap().is_none());
+        assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "pending");
         assert_eq!(table_count(&mut c, "axton_mutation"), 1);
         let r = if rejected {
             rejecting(&mut c, 1, &[ordinal], "no", vec![authority(Some("old"), 8)])
@@ -176,14 +176,17 @@ fn pending_update_and_accepted_or_rejected_receipt_survive_release() {
             receipt(&mut c, 1, vec![authority(Some("accepted"), 8)])
         };
         c.acknowledge(1, r).unwrap();
-        assert!(c.read(&key()).unwrap().is_none());
+        assert_eq!(
+            c.read(&key()).unwrap().unwrap()["text"],
+            if rejected { "old" } else { "accepted" }
+        );
         assert_eq!(table_count(&mut c, "axton_mutation"), 0);
-        assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+        assert_eq!(c.record_stamp(&key()).unwrap(), 8);
         assert_eq!(table_count(&mut c, "axton_rejection"), u64::from(rejected));
     }
 }
 #[test]
-fn prepared_removal_rolls_back_members_and_cursor_and_runs_no_store_hook() {
+fn prepared_removal_preserves_state_and_cursor_and_runs_no_store_hook() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -203,16 +206,12 @@ fn prepared_removal_rolls_back_members_and_cursor_and_runs_no_store_hook() {
         }))
         .unwrap();
     assert!(prepared.changes().is_empty());
-    assert_eq!(
-        c.session_sql("SELECT present FROM axton_stream_member", &[])
-            .unwrap()[0]["present"],
-        1
-    );
+
     assert!(c.session(|tx| tx.read(&key())).unwrap().is_some());
     assert_eq!(c.cursor("a").unwrap(), Some(1));
     c.apply_prepared_store(prepared).unwrap();
     c.commit_session().unwrap();
-    assert!(c.read(&key()).unwrap().is_none());
+    assert!(c.read(&key()).unwrap().is_some());
     assert_eq!(c.cursor("a").unwrap(), Some(2));
 }
 
@@ -255,7 +254,7 @@ fn claim(scope: &str, cursor: u64) -> MembershipClaim {
     }
 }
 #[test]
-fn stale_claim_and_bootstrap_cannot_restore_removal_even_with_newer_body() {
+fn historical_claims_do_not_gate_newer_direct_or_bootstrap_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
@@ -265,8 +264,8 @@ fn stale_claim_and_bootstrap_cannot_restore_removal_even_with_newer_body() {
     store_enrolled(&mut c, vec![claim("a", 8)], "base", 7).unwrap();
     deliver(&mut c, "a", 11, remove("a", 11));
     store_enrolled(&mut c, vec![claim("a", 8)], "delayed", 99).unwrap();
-    assert!(c.read(&key()).unwrap().is_none());
-    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "delayed");
+    assert_eq!(c.record_stamp(&key()).unwrap(), 99);
     let result = c
         .apply_stream_bootstrap_page(
             "a",
@@ -279,16 +278,16 @@ fn stale_claim_and_bootstrap_cannot_restore_removal_even_with_newer_body() {
                 to: 10,
                 until: 10,
                 head: 11,
-                changes: vec![up("a", 8, 99, Some("old bootstrap"))],
+                changes: vec![up("a", 8, 99, Some("delayed"))],
             },
         )
         .unwrap();
     assert!(matches!(result, BootstrapApply::Applied { .. }));
-    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "delayed");
     assert_eq!(holds(&mut c), 0);
 }
 #[test]
-fn equal_cursor_conflict_rolls_back_whole_delivery() {
+fn historical_claim_cursor_does_not_conflict_with_stream_removal() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -315,14 +314,14 @@ fn equal_cursor_conflict_rolls_back_whole_delivery() {
         ]),
         changes: vec![up("b", 1, 8, Some("new")), remove("a", 2)],
     });
-    assert!(result.is_err());
-    assert_eq!(holds(&mut c), 1);
-    assert_eq!(c.cursor("a").unwrap(), Some(0));
-    assert_eq!(c.cursor("b").unwrap(), Some(0));
-    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "base");
+    assert!(result.is_ok());
+    assert_eq!(holds(&mut c), 0);
+    assert_eq!(c.cursor("a").unwrap(), Some(2));
+    assert_eq!(c.cursor("b").unwrap(), Some(1));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "new");
 }
 #[test]
-fn parent_release_leaves_independently_held_child() {
+fn parent_removal_preserves_parent_and_child() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = Client::open(
         axton_sqlite::SqliteStore::open(dir.path().join("db")).unwrap(),
@@ -400,7 +399,7 @@ fn parent_release_leaves_independently_held_child() {
         }],
     })
     .unwrap();
-    assert!(c.read(&parent).unwrap().is_none());
+    assert!(c.read(&parent).unwrap().is_some());
     assert!(c.read(&child).unwrap().is_some());
 }
 #[test]
@@ -519,11 +518,12 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
             })
             .unwrap();
             c.transaction(|tx| {
-                tx.direct(create(
-                    "Comment",
-                    "c",
-                    json!({"bookId":"p","text":"local child"}),
-                ))
+                tx.direct(Operation {
+                    model: "Comment".into(),
+                    identity: json!({"id":"c"}),
+                    op: OperationKind::Update,
+                    values: Some(json!({"text":"local child"})),
+                })
             })
             .unwrap();
         }
@@ -592,7 +592,7 @@ fn cascading_authoritative_null_cannot_be_restored_at_childs_old_stamp_after_rel
 }
 
 #[test]
-fn prepared_bootstrap_rollback_retains_no_members_or_run_progress() {
+fn prepared_bootstrap_rollback_retains_no_authority_or_run_progress() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
@@ -617,11 +617,7 @@ fn prepared_bootstrap_rollback_retains_no_members_or_run_progress() {
         })
         .unwrap();
     assert_eq!(prepared.accepted(), &[0]);
-    assert_eq!(
-        c.session_sql("SELECT COUNT(*) AS n FROM axton_stream_member", &[])
-            .unwrap()[0]["n"],
-        0
-    );
+
     c.rollback_session().unwrap();
     assert_eq!(holds(&mut c), 0);
     assert_eq!(c.bootstrap_state("a", id).unwrap().cursor, 0);
@@ -632,7 +628,7 @@ fn prepared_bootstrap_rollback_retains_no_members_or_run_progress() {
     assert!(c.read(&key()).unwrap().is_none());
 }
 #[test]
-fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
+fn invalid_controls_roll_back_and_bad_bodies_keep_no_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -670,13 +666,13 @@ fn invalid_controls_roll_back_and_bad_bodies_keep_positive_evidence() {
         })
         .unwrap();
     assert_eq!(report.skipped(), 1);
-    assert_eq!(holds(&mut c), 1);
+    assert_eq!(holds(&mut c), 0);
     assert_eq!(c.record_stamp(&key()).unwrap(), 0);
     assert_eq!(c.cursor("a").unwrap(), Some(1));
     assert!(StreamPullPage::decode(&serde_json::to_vec(&json!({"cursors":{"a":{"from":1,"to":2,"head":2}},"changes":[{"kind":"remove","stream":"a","cursor":2,"model":"Entry","identity":{"id":"e"},"stamp":9,"state":null}]})).unwrap()).is_err());
 }
 #[test]
-fn dirty_direct_create_survives_release_and_settlement_then_reopen() {
+fn removal_keeps_direct_create_until_newer_receipt_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut c = open(&path);
@@ -700,15 +696,15 @@ fn dirty_direct_create_survives_release_and_settlement_then_reopen() {
     c.freeze().unwrap();
     deliver(&mut c, "a", 2, remove("a", 2));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "local recreated");
-    let r = receipt(&mut c, 1, vec![authority(Some("stale receipt"), 8)]);
+    let r = receipt(&mut c, 1, vec![authority(Some("newer receipt"), 8)]);
     c.acknowledge(1, r).unwrap();
-    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "local recreated");
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "newer receipt");
     drop(c);
     let mut c = open(&path);
-    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "local recreated");
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "newer receipt");
     deliver(&mut c, "a", 3, remove("a", 3));
-    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "local recreated");
-    deliver(&mut c, "a", 4, up("a", 4, 7, Some("base")));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "newer receipt");
+    deliver(&mut c, "a", 4, up("a", 4, 9, Some("base")));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "base");
 }
 #[test]
@@ -764,7 +760,7 @@ fn legacy_unstamped_direct_create_survives_upgrade_and_release() {
     drop(c);
     {
         let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute("DROP TABLE axton_local_replica_layer", [])
+        db.execute_batch("DROP TABLE axton_local_replica_layer; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
             .unwrap();
     }
     let mut c = open(&path);
@@ -778,7 +774,7 @@ fn legacy_unstamped_direct_create_survives_upgrade_and_release() {
 }
 
 #[test]
-fn receipt_cannot_repopulate_released_authoritative_absence() {
+fn equal_stamp_receipt_cannot_repopulate_absence_after_removal() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -787,7 +783,7 @@ fn receipt_cannot_repopulate_released_authoritative_absence() {
     c.freeze().unwrap();
     deliver(&mut c, "a", 2, up("a", 2, 8, None));
     deliver(&mut c, "a", 3, remove("a", 3));
-    let r = receipt(&mut c, 1, vec![authority(Some("late body"), 9)]);
+    let r = receipt(&mut c, 1, vec![authority(Some("late body"), 8)]);
     c.acknowledge(1, r).unwrap();
     assert!(c.read(&key()).unwrap().is_none());
     assert_eq!(c.record_stamp(&key()).unwrap(), 8);
@@ -795,7 +791,7 @@ fn receipt_cannot_repopulate_released_authoritative_absence() {
 }
 
 #[test]
-fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
+fn uppercase_uuid_historical_claims_do_not_gate_normalized_authority() {
     for stamp in [7, 99] {
         let dir = tempfile::tempdir().unwrap();
         let schema=Schema::from_value(json!({"enums":[],"models":[{"name":"Entry","identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}]}]})).unwrap();
@@ -882,11 +878,11 @@ fn uppercase_uuid_stale_enrollment_cannot_restore_normalized_removal() {
             panic!("expected direct completion")
         };
         assert_eq!(report.completions[0].call_id, "old-enrolled-read");
-        assert!(
-            c.read(&key).unwrap().is_none(),
-            "stale uppercase claim admitted stamp {stamp}"
+        assert_eq!(
+            c.read(&key).unwrap().unwrap()["text"],
+            if stamp > 7 { "delayed" } else { "base" }
         );
-        assert_eq!(c.record_stamp(&key).unwrap(), 7);
+        assert_eq!(c.record_stamp(&key).unwrap(), stamp);
         assert_eq!(holds(&mut c), 0);
     }
 }
@@ -910,7 +906,7 @@ fn frozen_fetch_body_is_suppressed_but_fresh_fetch_and_null_are_admitted() {
     subscribe(&mut c, "a");
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
     let old = c.prepare_fetch("Entry", 1, &key().identity, true).unwrap();
-    deliver(&mut c, "a", 2, remove("a", 2));
+    legacy_eviction(&mut c, &dir.path().join("db"), &key());
     let report = c
         .apply_fetch_response(&fetched(&old.call_id, Some("old"), 99))
         .unwrap();
@@ -943,7 +939,7 @@ fn fresh_queued_receipt_after_release_is_admitted_across_reopen() {
     let mut c = open(&path);
     subscribe(&mut c, "a");
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
-    deliver(&mut c, "a", 2, remove("a", 2));
+    legacy_eviction(&mut c, &dir.path().join("db"), &key());
     c.transaction(|tx| {
         tx.enqueue(Mutation::new(
             "Create",
@@ -988,7 +984,7 @@ fn mixed_epoch_queue_freezes_separate_receipts_and_keeps_tokens_after_restart() 
         ))
     })
     .unwrap();
-    deliver(&mut c, "a", 2, remove("a", 2));
+    legacy_eviction(&mut c, &dir.path().join("db"), &key());
     c.transaction(|tx| {
         tx.enqueue(Mutation::new(
             "Create",
@@ -1018,7 +1014,7 @@ fn mixed_epoch_queue_freezes_separate_receipts_and_keeps_tokens_after_restart() 
 }
 
 #[test]
-fn fresh_receipt_with_stale_enrollment_claim_still_cannot_restore() {
+fn fresh_receipt_ignores_historical_enrollment_for_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -1053,10 +1049,13 @@ fn fresh_receipt_with_stale_enrollment_claim_still_cannot_restore() {
     }];
     let report = c.acknowledge(1, r).unwrap();
     assert_eq!(
-        report.applied, 1,
-        "only the unrelated record may be admitted"
+        report.applied, 2,
+        "historical claims do not suppress canonical records"
     );
-    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(
+        c.read(&key()).unwrap().unwrap()["text"],
+        "old saved enrollment"
+    );
     assert_eq!(c.pending_count().unwrap(), 0);
 }
 
@@ -1066,7 +1065,7 @@ fn prepared_fetch_owns_frozen_token_even_when_request_owner_retires() {
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
-    deliver(&mut c, "a", 2, remove("a", 2));
+    legacy_eviction(&mut c, &dir.path().join("db"), &key());
     let fresh = c.prepare_fetch("Entry", 1, &key().identity, true).unwrap();
     c.begin_session().unwrap();
     let prepared = c
@@ -1088,7 +1087,7 @@ fn prepared_fetch_owns_frozen_token_even_when_request_owner_retires() {
 }
 
 #[test]
-fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflight() {
+fn stream_removal_never_allocates_eviction_epochs_or_record_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -1125,11 +1124,11 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
     );
     c.apply_prepared_store(prepared).unwrap();
     c.commit_session().unwrap();
-    assert_eq!(epoch(&mut c), 1);
+    assert_eq!(epoch(&mut c), 0);
     assert_eq!(
         c.read_sql("SELECT evicted_at FROM axton_record", &[])
             .unwrap()[0]["evicted_at"],
-        1
+        0
     );
     // Identical and stale scope evidence cannot mint another eviction.
     c.apply_stream_page(StreamPullPage {
@@ -1145,7 +1144,7 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
         changes: vec![remove("b", 2)],
     })
     .unwrap();
-    assert_eq!(epoch(&mut c), 1);
+    assert_eq!(epoch(&mut c), 0);
     c.apply_stream_page(StreamPullPage {
         cursors: [(
             "b".into(),
@@ -1159,7 +1158,7 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
         changes: vec![remove("b", 1)],
     })
     .unwrap();
-    assert_eq!(epoch(&mut c), 1);
+    assert_eq!(epoch(&mut c), 0);
     // New untracked cache identity is still fenced by its removal.
     let other = RecordKey {
         model: "Entry".into(),
@@ -1182,14 +1181,14 @@ fn store_epoch_tracks_only_newly_accepted_unheld_removals_and_rolls_back_preflig
         }],
     })
     .unwrap();
-    assert_eq!(epoch(&mut c), 2);
-    assert_eq!(
+    assert_eq!(epoch(&mut c), 0);
+    assert!(
         c.read_sql(
             "SELECT evicted_at FROM axton_record WHERE identity=?",
             &[json!(other.encoded_identity().unwrap())]
         )
-        .unwrap()[0]["evicted_at"],
-        2
+        .unwrap()
+        .is_empty()
     );
 }
 
@@ -1202,7 +1201,7 @@ fn old_queued_write_keeps_epoch_and_frozen_bytes_across_release_and_restart() {
     deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
     c.transaction(|tx| tx.enqueue(mutation("pending"))).unwrap();
     let frozen = c.freeze().unwrap().unwrap();
-    deliver(&mut c, "a", 2, remove("a", 2));
+    legacy_eviction(&mut c, &dir.path().join("db"), &key());
     drop(c);
     let mut c = open(&path);
     assert_eq!(c.freeze().unwrap().unwrap(), frozen);
@@ -1220,7 +1219,7 @@ fn old_queued_write_keeps_epoch_and_frozen_bytes_across_release_and_restart() {
 }
 
 #[test]
-fn fresh_framework_catalog_uses_only_stream_ownership() {
+fn fresh_framework_catalog_has_authority_marker_without_ownership() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut c = open(&path);
@@ -1232,7 +1231,7 @@ fn fresh_framework_catalog_uses_only_stream_ownership() {
         .unwrap();
     let catalog = serde_json::to_string(&objects).unwrap();
     assert!(!catalog.contains("channel"), "{catalog}");
-    for table in ["axton_stream_member", "axton_subscription", "axton_client"] {
+    for table in ["axton_subscription", "axton_client"] {
         let columns = c
             .read_sql(
                 &format!("SELECT name FROM pragma_table_info('{table}')"),
@@ -1245,7 +1244,7 @@ fn fresh_framework_catalog_uses_only_stream_ownership() {
             .collect();
         assert!(
             names.contains(&if table == "axton_client" {
-                "stream_membership_version"
+                "local_authority_version"
             } else {
                 "stream"
             }),
@@ -1253,4 +1252,23 @@ fn fresh_framework_catalog_uses_only_stream_ownership() {
         );
         assert!(!names.iter().any(|name| name.contains("channel")));
     }
+}
+
+#[test]
+fn stream_removal_and_unsubscribe_preserve_canonical_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    subscribe(&mut c, "b");
+    deliver(&mut c, "a", 1, up("a", 1, 7, Some("base")));
+    deliver(&mut c, "b", 1, up("b", 1, 7, Some("base")));
+    deliver(&mut c, "a", 2, remove("a", 2));
+    deliver(&mut c, "b", 2, remove("b", 2));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "base");
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+    let a = c.ensure_subscription("a").unwrap().subscription_id;
+    c.remove_subscription("a", a).unwrap();
+    let b = c.ensure_subscription("b").unwrap().subscription_id;
+    c.remove_subscription("b", b).unwrap();
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "base");
 }

@@ -696,7 +696,7 @@ fn an_incompatible_open_without_unsent_work_abandons_every_load() {
     drop(c);
     SqliteStore::open(&other)
         .unwrap()
-        .execute_batch("DROP TABLE axton_load; DROP TABLE axton_load_once")
+        .execute_batch("DROP TABLE axton_load; DROP TABLE axton_load_once; ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
         .unwrap();
     let c = open_at(&other, breaking());
     assert!(

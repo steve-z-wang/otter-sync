@@ -121,15 +121,6 @@ impl<S: ClientStore> Engine<'_, S> {
             &format!("INSERT INTO axton_subscription ({COLUMNS}) VALUES (?,?,NULL,NULL)"),
             &[json!(stream), json!(subscription_id)],
         )?;
-        if self
-            .scalar(
-                "SELECT 1 FROM axton_stream_member WHERE stream=? LIMIT 1",
-                &[json!(stream)],
-            )?
-            .is_some()
-        {
-            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE stream=? AND subscription_id=?", &[json!(stream), json!(subscription_id)])?;
-        }
         Ok((state, true))
     }
     /// Commit the first delivery boundary of an uninitialized subscription:
@@ -204,11 +195,6 @@ impl<S: ClientStore> Engine<'_, S> {
                         outcome.catch_up.push(stream.clone());
                     }
                 }
-            }
-        }
-        for (stream, head) in heads {
-            if let Some(id) = expected.get(stream) {
-                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE stream=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(stream),json!(id)])?;
             }
         }
         for (stream, subscription_id, head) in boundaries {

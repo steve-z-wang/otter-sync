@@ -18,7 +18,7 @@ model Seen {
  hits Int
  @@id(id)
 }
-// Item writes join the Item's project Channel, so later changes reach live
+// Item writes join the Item's project Scope, so later changes reach live
 // subscribers.
 mutation AddItem(item Item.create)
 mutation RenameItem(item Item.update<title>)

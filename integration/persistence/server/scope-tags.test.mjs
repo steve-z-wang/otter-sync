@@ -702,7 +702,21 @@ test('original v0.2 Scope cutover preserves saved work, memberships and opaque a
   const responses=(await c.query('SELECT call_id,response FROM axton_call ORDER BY call_id')).rows;
   await scopeUpgrade(c);
   assert.equal((await c.query("SELECT to_regclass('axton_channel_member') AS t")).rows[0].t,null);
-  const migrated=await frameworkSnapshot(c);for(const t of owned)assert.deepEqual(migrated.rows[t]?.sort((a,b)=>JSON.stringify(Object.entries(a.row).sort()).localeCompare(JSON.stringify(Object.entries(b.row).sort()))),expectedRows[t]?.sort((a,b)=>JSON.stringify(Object.entries(a.row).sort()).localeCompare(JSON.stringify(Object.entries(b.row).sort()))),`${t}: identities, associations and evidence preserved`);
+  const migrated = await frameworkSnapshot(c);
+  for (const t of owned)
+    assert.deepEqual(
+      migrated.rows[t]?.sort((a, b) =>
+        JSON.stringify(Object.entries(a.row).sort()).localeCompare(
+          JSON.stringify(Object.entries(b.row).sort())
+        )
+      ),
+      expectedRows[t]?.sort((a, b) =>
+        JSON.stringify(Object.entries(a.row).sort()).localeCompare(
+          JSON.stringify(Object.entries(b.row).sort())
+        )
+      ),
+      `${t}: identities, associations and evidence preserved`
+    );
   assert.equal(migrated.catalog.filter(r=>r.relname.includes('channel')||r.attname==='channel').length,0);
   assert.equal(migrated.functions.some(r=>r.proname.includes('channel')||r.prosrc.includes('axton_channel')||r.prosrc.includes('OLD.channel')),false);
   const fresh=await scratch('axton_scope_catalog');try{await fresh.query(await source('migration.sql'));assert.deepEqual(await catalog(c),await catalog(fresh));}finally{await fresh.end();}
@@ -857,7 +871,40 @@ test('original frozen device batch settles migrated saved receipt and younger wo
   assert.deepEqual(logical,JSON.parse(await readFile(new URL('../../../crates/sqlite/tests/fixtures/frozen-push-logical.json',import.meta.url),'utf8')));
   await device.close();device=await DeviceClient.open({path,schema});assert.equal(await device.freeze(),frozen);
   const database=pg(pool);let effects=0,reads=0;
-  const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database,authenticate:()=>'alice',onError:()=>{},mutations:{async edit({ctx,args}){effects++;await database.driver.query(ctx.tx,'UPDATE fixture_todo SET channel=$2 WHERE id=$1',[args.todo.id,args.todo.channel]);}},loads:{async scan(){throw Error('unexpected load');}},loaders:{async todo({tx,ids}){reads++;return Promise.all(ids.map(async({id})=>(await database.driver.query(tx,'SELECT id,title,channel FROM fixture_todo WHERE id=$1',[id]))[0]??null));}}});
+  const app = createBackend({
+    config: {schema, mutations: [], loaders: ['Todo']},
+    native,
+    database,
+    authenticate: () => 'alice',
+    onError: () => {},
+    mutations: {
+      async edit({ctx, args}) {
+        effects++;
+        await database.driver.query(
+          ctx.tx,
+          'UPDATE fixture_todo SET channel=$2 WHERE id=$1',
+          [args.todo.id, args.todo.channel]
+        );
+      }
+    },
+    loads: {
+      async scan() {
+        throw Error('unexpected load');
+      }
+    },
+    loaders: {
+      async todo({tx, ids}) {
+        reads++;
+        return Promise.all(ids.map(async ({id}) =>
+          (await database.driver.query(
+            tx,
+            'SELECT id,title,channel FROM fixture_todo WHERE id=$1',
+            [id]
+          ))[0] ?? null
+        ));
+      }
+    }
+  });
   const receipt=JSON.parse(await app.push('alice',frozen));
   assert.equal(effects,0);assert.equal(reads,0);
   assert.equal(receipt.completions[0].callId,logical.mutations[0].callId);

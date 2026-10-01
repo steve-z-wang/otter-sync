@@ -1159,7 +1159,7 @@ fn stream_removal_never_allocates_eviction_epochs_or_record_metadata() {
     })
     .unwrap();
     assert_eq!(epoch(&mut c), 0);
-    // New untracked cache identity is still fenced by its removal.
+    // An untracked identity's Remove contributes delivery progress only.
     let other = RecordKey {
         model: "Entry".into(),
         identity: json!({"id":"other"}),

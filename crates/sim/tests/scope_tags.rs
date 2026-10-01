@@ -1,10 +1,10 @@
-//! Channel labels remain server-only; the production Pull path delivers identity releases.
-use axton_server::host::{ChannelIntent, RecordRef};
+//! Scope labels remain server-only; the production Pull path delivers identity releases.
+use axton_server::host::{RecordRef, ScopeIntent};
 use axton_sim::{Action, Sim, schema::entry_key};
 
-fn add(channel: &str, tags: &[&str]) -> ChannelIntent {
-    ChannelIntent::Add {
-        channel: channel.into(),
+fn add(scope: &str, tags: &[&str]) -> ScopeIntent {
+    ScopeIntent::Add {
+        scope: scope.into(),
         record: RecordRef {
             model: "Entry".into(),
             identity: serde_json::json!({"id":"a"}),
@@ -12,28 +12,30 @@ fn add(channel: &str, tags: &[&str]) -> ChannelIntent {
         tags: tags.iter().map(|v| v.to_string()).collect(),
     }
 }
-fn remove_tag(channel: &str, tag: &str) -> ChannelIntent {
-    ChannelIntent::RemoveTag {
-        channel: channel.into(),
-        tag: tag.into(),
+fn remove_tag(scope: &str, tag: &str) -> ScopeIntent {
+    ScopeIntent::Select {
+        scope: scope.into(),
+        model: None,
+        predicate: serde_json::from_value(serde_json::json!({"tags":{"any":[tag]}})).unwrap(),
+        action: axton_server::scope_members::SelectionAction::Remove,
     }
 }
-fn tags(sim: &mut Sim, intents: Vec<ChannelIntent>) {
-    sim.apply(Action::ChannelTags { intents }).unwrap();
+fn tags(sim: &mut Sim, intents: Vec<ScopeIntent>) {
+    sim.apply(Action::ScopeTags { intents }).unwrap();
 }
-fn seeded(seed: u64, channels: &[&str]) -> Sim {
+fn seeded(seed: u64, scopes: &[&str]) -> Sim {
     let mut sim = Sim::new(seed, 1);
-    for c in channels {
+    for c in scopes {
         sim.apply(Action::Subscribe {
             client: 0,
-            channel: c.to_string(),
+            scope: c.to_string(),
         })
         .unwrap();
     }
     sim.apply(Action::Declare {
         key: "Entry:a".into(),
         touch: Some(Some("stored".into())),
-        memberships: vec![(channels[0].into(), true)],
+        memberships: vec![(scopes[0].into(), true)],
     })
     .unwrap();
     sim.settle();
@@ -55,7 +57,7 @@ fn removing_x_releases_the_whole_member_including_y_and_survives_offline_reopen(
 }
 
 #[test]
-fn second_channel_hold_preserves_content_until_its_own_release() {
+fn second_scope_hold_preserves_content_until_its_own_release() {
     let mut sim = seeded(9101, &["u", "v"]);
     tags(&mut sim, vec![add("u", &["x"]), add("v", &["y"])]);
     sim.settle();
@@ -89,14 +91,14 @@ fn reproducible_tag_histories_converge_after_reordered_delivery_and_restart() {
         let mut sim = seeded(seed, &["u", "v"]);
         let mut rng = axton_sim::Rng::new(seed);
         for step in 0..80 {
-            let channel = if rng.chance(1, 2) { "u" } else { "v" };
+            let scope = if rng.chance(1, 2) { "u" } else { "v" };
             let tag = if rng.chance(1, 2) { "x" } else { "y" };
             let action = match rng.below(8) {
-                0..=2 => Action::ChannelTags {
-                    intents: vec![add(channel, &[tag])],
+                0..=2 => Action::ScopeTags {
+                    intents: vec![add(scope, &[tag])],
                 },
-                3 => Action::ChannelTags {
-                    intents: vec![remove_tag(channel, tag)],
+                3 => Action::ScopeTags {
+                    intents: vec![remove_tag(scope, tag)],
                 },
                 4 => Action::Pull { client: 0 },
                 5 => Action::Deliver,
@@ -123,12 +125,12 @@ fn reproducible_tag_histories_converge_after_reordered_delivery_and_restart() {
 }
 
 #[test]
-fn delayed_old_channel_page_cannot_restore_a_released_replica() {
+fn delayed_old_scope_page_cannot_restore_a_released_replica() {
     let mut sim = seeded(9103, &["u"]);
     sim.apply(Action::ServerChange {
         key: "Entry:a".into(),
         text: Some("old page".into()),
-        channels: vec!["u".into()],
+        scopes: vec!["u".into()],
     })
     .unwrap();
     sim.apply(Action::Pull { client: 0 }).unwrap();
@@ -237,7 +239,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     let mut sim = Sim::new_with_schema(9106, 1, schema);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "u".into(),
+        scope: "u".into(),
     })
     .unwrap();
     sim.apply(Action::Declare {
@@ -251,7 +253,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         .start_load(
             "EnrolledEntries",
             1,
-            &serde_json::json!({"channel":"u"}),
+            &serde_json::json!({"scope":"u"}),
             LoadOptions::default(),
         )
         .unwrap();
@@ -273,7 +275,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         answer["loads"][0]["outcome"]["status"], "succeeded",
         "{answer}"
     );
-    sim.settle(); // The enrolled Channel delivers first.
+    sim.settle(); // The enrolled Scope delivers first.
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
     sim.apply(Action::Declare {
         key: "Entry:a".into(),
@@ -313,7 +315,7 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
     let mut sim = Sim::new(9107, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "u".into(),
+        scope: "u".into(),
     })
     .unwrap();
     sim.client(0)
@@ -344,10 +346,10 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
         let mut config = axton_sim::schema::config();
         config.schema = schema.clone();
         let mut sim = Sim::new_with_schema(seed, 1, schema);
-        for channel in ["u", "v"] {
+        for scope in ["u", "v"] {
             sim.apply(Action::Subscribe {
                 client: 0,
-                channel: channel.into(),
+                scope: scope.into(),
             })
             .unwrap();
         }
@@ -363,7 +365,7 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
                 .start_load(
                     "EnrolledEntries",
                     1,
-                    &serde_json::json!({"channel":"u"}),
+                    &serde_json::json!({"scope":"u"}),
                     LoadOptions::default(),
                 )
                 .unwrap();
@@ -381,14 +383,14 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
             let handlers = sim.host.native_load_calls();
             sim.settle();
             for step in 0..6 {
-                let channel = if rng.chance(1, 2) { "u" } else { "v" };
+                let scope = if rng.chance(1, 2) { "u" } else { "v" };
                 match rng.below(5) {
-                    0 => tags(&mut sim, vec![add(channel, &["x", "y"])]),
-                    1 => tags(&mut sim, vec![remove_tag(channel, "x")]),
+                    0 => tags(&mut sim, vec![add(scope, &["x", "y"])]),
+                    1 => tags(&mut sim, vec![remove_tag(scope, "x")]),
                     2 => tags(
                         &mut sim,
-                        vec![ChannelIntent::Remove {
-                            channel: channel.into(),
+                        vec![ScopeIntent::Remove {
+                            scope: scope.into(),
                             record: RecordRef {
                                 model: "Entry".into(),
                                 identity: serde_json::json!({"id":"a"}),

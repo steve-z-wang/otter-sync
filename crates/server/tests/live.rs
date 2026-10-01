@@ -1,7 +1,7 @@
 //! Transition tests for the per-socket live controller
 //! ([Server / Connection / Controller](../../../docs/engineering/architecture/server/connection/controller.md)).
 //! Pure state: no host, no socket, no database.
-use axton_core::{AuthorityRecord, ChannelPullPage, CursorRange, limits};
+use axton_core::{AuthorityRecord, CursorRange, ScopePullPage, limits};
 use axton_server::live::{LiveAction, LiveEvent, Negotiation, Subscriptions};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -19,18 +19,18 @@ fn negotiation(heads: &[(&str, u64)]) -> Negotiation {
     }
 }
 
-/// A page for the given channels: `(channel, from, to, head)`, holding one
-/// change per cursor in `from + 1 ..= to` of every channel, capped per channel.
+/// A page for the given scopes: `(scope, from, to, head)`, holding one
+/// change per cursor in `from + 1 ..= to` of every scope, capped per scope.
 fn page(ranges: &[(&str, u64, u64, u64)]) -> String {
     let mut changes = vec![];
-    for (channel, from, to, _) in ranges {
+    for (scope, from, to, _) in ranges {
         for cursor in (*from + 1..=*to).take(limits::PULL_CHANGES) {
-            changes.push(axton_core::ChannelChange::Upsert {
-                channel: (*channel).into(),
+            changes.push(axton_core::ScopeChange::Upsert {
+                scope: (*scope).into(),
                 cursor,
                 record: AuthorityRecord {
                     model: "Task".into(),
-                    identity: json!({"id": format!("{channel}-{cursor}")}),
+                    identity: json!({"id": format!("{scope}-{cursor}")}),
                     stamp: cursor,
                     state: json!(null),
                     error: None,
@@ -38,7 +38,7 @@ fn page(ranges: &[(&str, u64, u64, u64)]) -> String {
             });
         }
     }
-    let page = ChannelPullPage {
+    let page = ScopePullPage {
         cursors: ranges
             .iter()
             .map(|(c, from, to, head)| {
@@ -144,7 +144,7 @@ fn two_commits_during_one_pull_produce_one_extra_pull_not_two() {
 }
 
 #[test]
-fn a_channel_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
+fn a_scope_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 0)]));
     let full = limits::PULL_CHANGES as u64;
     let actions = subscriptions
@@ -236,15 +236,15 @@ fn after_closed_no_event_produces_an_action_and_a_late_page_is_not_sent() {
     assert_eq!(subscriptions.handle(LiveEvent::Closed).unwrap(), vec![]);
 }
 
-/// A scan filters removed Channel members before its limit, so a page can
-/// advance over positions whose records all left the Channel and carry no
+/// A scan filters removed Scope members before its limit, so a page can
+/// advance over positions whose records all left the Scope and carry no
 /// change. It is still progress: it is sent, it moves the cursor, and at the
 /// head it ends the drain, so removed positions cannot stall a live stream.
 #[test]
 fn a_page_that_advances_over_removed_positions_without_changes_is_progress() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
     let holes = String::from_utf8(
-        ChannelPullPage {
+        ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".to_string(),
                 CursorRange {
@@ -315,11 +315,11 @@ fn events_and_actions_cross_the_boundary_as_tagged_json() {
 }
 
 #[test]
-fn a_channel_live_removal_advances_and_preserves_its_identity_only_frame() {
+fn a_scope_live_removal_advances_and_preserves_its_identity_only_frame() {
     let (mut session, _) = Subscriptions::open(negotiation(&[("a", 0)]));
-    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","channel":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
+    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","scope":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
     let actions = session
-        .handle_channel(LiveEvent::Pulled { page: page.clone() })
+        .handle_scope(LiveEvent::Pulled { page: page.clone() })
         .unwrap();
     assert_eq!(actions, vec![LiveAction::Send { frame: page }]);
     assert_eq!(session.scopes()[0].cursor, 8);

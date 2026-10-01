@@ -56,7 +56,7 @@ export type ClientSyncState = {
   pending: number;
   beforeImages: number;
   cursors: Record<string, number>;
-  channels: string[];
+  scopes: string[];
   rejections: Rejection[];
   schema: SchemaState;
 };
@@ -819,8 +819,8 @@ export function createClient<
     get scopes(): { subscribe(scope: string): Promise<Subscription> } {
       return { subscribe: (scope) => this.subscribeScope(scope) };
     }
-    subscribe(channel: string): Promise<Subscription> {
-      return this.subscribeScope(channel);
+    subscribe(scope: string): Promise<Subscription> {
+      return this.subscribeScope(scope);
     }
     /**
      * Accept a native Load durably ([#173](https://github.com/zanminwang/axton/issues/173))
@@ -849,9 +849,9 @@ export function createClient<
       return this.#loads.invalidate(name, args);
     }
     /** Remove whatever registration this Scope name has; its handle stops. */
-    async unsubscribe(channel: string): Promise<void> {
+    async unsubscribe(scope: string): Promise<void> {
       this.#guard();
-      return this.#subscriptions.unsubscribeScope(channel);
+      return this.#subscriptions.unsubscribeScope(scope);
     }
     /**
      * Connect to `server`: install the effects the runtime will ask for, then

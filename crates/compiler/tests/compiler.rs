@@ -551,7 +551,7 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    // Without Models, a Channel has only its mixed verbs and nothing to name.
+    // Without Models, a Scope has only its mixed verbs and nothing to name.
     let empty =
         axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axtonjs/server");
     assert!(
@@ -805,7 +805,7 @@ fn generated_store_hooks_are_typed_and_decode_incoming_records() {
         ts.contains("id: row.id as string"),
         "composite identity decoder: {ts}"
     );
-    assert!(ts.contains("readonly channels:"), "{ts}");
+    assert!(ts.contains("readonly scopes:"), "{ts}");
     assert!(client.contains("onStore?: StoreHooks"), "{client}");
     assert!(
         client.contains("decodeEntryIdentity(change.identity)"),
@@ -1031,8 +1031,8 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
 }
 
 #[test]
-fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
-    // `ctx.touch.todo` and `ctx.channel(name).todo` use the lower-first
+fn model_accessors_are_unique_and_leave_the_scope_verbs_free() {
+    // `ctx.touch.todo` and `ctx.scope(name).todo` use the lower-first
     // accessor, so two Models must not share one.
     let e = compile("model Todo { id String @@id(id) }\n\nmodel todo { id String @@id(id) }\n\n")
         .unwrap_err();
@@ -1062,7 +1062,7 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "__proto__",
         "ToString",
         "Publish",
-        // A Channel handle is no function, so function members stay free too.
+        // A Scope handle is no function, so function members stay free too.
         "Name",
         "Length",
         "Bind",
@@ -1781,7 +1781,6 @@ fn generated_clients_expose_the_scope_facade() {
         " subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }",
         " readonly scopes: Scopes;",
         "this.scopes = new Scopes(client);",
-        " subscribe(channel: string): Promise<Subscription> { return this.#client.subscribe(channel); }",
     ] {
         assert!(ts.contains(line), "{line} missing from {ts}");
     }
@@ -1795,7 +1794,6 @@ fn generated_clients_expose_the_scope_facade() {
         "class Scopes { final Client client; Scopes(this.client);",
         " Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);",
         " late final Scopes scopes = Scopes(client);",
-        " Future<Subscription> subscribe(String channel) => client.subscribe(channel);",
     ] {
         assert!(dart.contains(line), "{line} missing from {dart}");
     }

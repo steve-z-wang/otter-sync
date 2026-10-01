@@ -20,14 +20,14 @@ pub(crate) struct Loaded {
     pub state: BootstrapState,
 }
 
-const COLUMNS: &str = "channel, subscription_id, starting_cursor, cursor, \
+const COLUMNS: &str = "scope, subscription_id, starting_cursor, cursor, \
      bootstrap_state, bootstrap_run, bootstrap_cursor, bootstrap_barrier, bootstrap_error";
 
 /// A decode error is cut to this many UTF-8 bytes before it enters a
 /// [`LedgerIssue`]: it is a reason, never a copy of what the row stores.
 const MAX_DETAIL: usize = 200;
 
-/// How many channel names one settlement candidate query binds at most: below
+/// How many scope names one settlement candidate query binds at most: below
 /// SQLite's older 999-variable floor, whatever limit the host build raised it
 /// to, with nothing else bound beside them.
 const SETTLE_CHUNK: usize = 900;
@@ -39,14 +39,14 @@ const SETTLE_CHUNK: usize = 900;
 /// skipped it gives of why.
 ///
 /// `fingerprint` is what tells one defect from a changed one, for whoever
-/// reports it once: the channel, the raw subscription identity, the raw
+/// reports it once: the scope, the raw subscription identity, the raw
 /// Bootstrap fields, and a delivery position only while that value itself fails
 /// to decode. A valid origin or delivery cursor is left out, so ordinary
 /// delivery moving an otherwise damaged row does not make it a new defect. It
 /// is a comparison key, never part of what the application is told.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LedgerIssue {
-    pub channel: String,
+    pub scope: String,
     pub detail: String,
     pub fingerprint: String,
 }
@@ -101,11 +101,11 @@ fn decode(row: &[Value]) -> Result<Loaded> {
 }
 /// Decode one row selected as [`COLUMNS`], containing a decode failure to that
 /// row: the outer error is one no row can be isolated from, the inner one is
-/// the row's own. A row is isolated by its primary key, the channel; a key that
-/// is not text names no channel to isolate, so it fails the whole read, as
+/// the row's own. A row is isolated by its primary key, the scope; a key that
+/// is not text names no scope to isolate, so it fails the whole read, as
 /// every SQL and store error before it already has.
 fn decode_keyed(row: &[Value]) -> Result<std::result::Result<Loaded, LedgerIssue>> {
-    let channel = row[0].as_str().ok_or_else(|| invalid(KEY_NOT_TEXT))?;
+    let scope = row[0].as_str().ok_or_else(|| invalid(KEY_NOT_TEXT))?;
     let error = match decode(row) {
         Ok(loaded) => return Ok(Ok(loaded)),
         Err(error) => error,
@@ -117,7 +117,7 @@ fn decode_keyed(row: &[Value]) -> Result<std::result::Result<Loaded, LedgerIssue
         Err(_) => value.clone(),
     };
     let fingerprint = json!([
-        channel,
+        scope,
         row[1],
         position(&row[2]),
         position(&row[3]),
@@ -129,7 +129,7 @@ fn decode_keyed(row: &[Value]) -> Result<std::result::Result<Loaded, LedgerIssue
     ])
     .to_string();
     Ok(Err(LedgerIssue {
-        channel: channel.to_string(),
+        scope: scope.to_string(),
         detail: format!(
             "the stored Bootstrap row cannot be decoded: {}",
             truncate(error.to_string(), MAX_DETAIL)
@@ -153,7 +153,7 @@ fn closed(scope: &str, subscription_id: u64) -> axton_core::Error {
 impl<S: ClientStore> Engine<'_, S> {
     fn ledger_columns(&self) -> &'static str {
         if self.reconciliation {
-            "channel, subscription_id, reconcile_bound, cursor, reconcile_state, reconcile_run, reconcile_cursor, reconcile_barrier, reconcile_error"
+            "scope, subscription_id, reconcile_bound, cursor, reconcile_state, reconcile_run, reconcile_cursor, reconcile_barrier, reconcile_error"
         } else {
             COLUMNS
         }
@@ -166,32 +166,32 @@ impl<S: ClientStore> Engine<'_, S> {
             sql.to_string()
         }
     }
-    /// Record that this transaction changed `channel`'s load. The mark is
+    /// Record that this transaction changed `scope`'s load. The mark is
     /// stripped before the changed set reaches watchers and hosts, and it
     /// bumps no subscription generation: a load changes no membership, so it
     /// must not make the open live session stale or a pull in flight
     /// ([`BOOTSTRAP_MARK`]).
-    pub(crate) fn mark_bootstrap(&mut self, channel: &str) {
-        self.changed.insert(format!("{BOOTSTRAP_MARK}{channel}"));
+    pub(crate) fn mark_bootstrap(&mut self, scope: &str) {
+        self.changed.insert(format!("{BOOTSTRAP_MARK}{scope}"));
     }
-    /// The whole row for `channel`, or `None` when it is not subscribed.
-    pub(crate) fn bootstrap_row(&mut self, channel: &str) -> Result<Option<Loaded>> {
+    /// The whole row for `scope`, or `None` when it is not subscribed.
+    pub(crate) fn bootstrap_row(&mut self, scope: &str) -> Result<Option<Loaded>> {
         let rows = self.rows(
             &format!(
-                "SELECT {} FROM axton_subscription WHERE channel=?",
+                "SELECT {} FROM axton_subscription WHERE scope=?",
                 self.ledger_columns()
             ),
-            &[json!(channel)],
+            &[json!(scope)],
         )?;
         rows.rows.first().map(|r| decode(r)).transpose()
     }
     /// The row `subscription_id` names, or the closed error: a registration
     /// that is gone, or one another registration replaced, has no load state
     /// and never adopts another one's.
-    pub(crate) fn bootstrap_of(&mut self, channel: &str, subscription_id: u64) -> Result<Loaded> {
-        match self.bootstrap_row(channel)? {
+    pub(crate) fn bootstrap_of(&mut self, scope: &str, subscription_id: u64) -> Result<Loaded> {
+        match self.bootstrap_row(scope)? {
             Some(row) if row.subscription.subscription_id == subscription_id => Ok(row),
-            _ => Err(closed(channel, subscription_id)),
+            _ => Err(closed(scope, subscription_id)),
         }
     }
     /// Write every bootstrap field of one row, fenced by the identity and by
@@ -214,7 +214,7 @@ impl<S: ClientStore> Engine<'_, S> {
             "axton_subscription",
             &self.ledger_sql("UPDATE axton_subscription SET bootstrap_state=?, bootstrap_run=?, bootstrap_cursor=?, \
              bootstrap_barrier=?, bootstrap_error=? \
-             WHERE channel=? AND subscription_id=? AND bootstrap_run=?"),
+             WHERE scope=? AND subscription_id=? AND bootstrap_run=?"),
             &[
                 json!(state.state.as_str()),
                 json!(state.run),
@@ -262,14 +262,14 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(scan)
     }
-    /// The initialized rows whose run still has work, in channel order, as
+    /// The initialized rows whose run still has work, in scope order, as
     /// stored.
     fn active_rows(&mut self) -> Result<SqlRows> {
         self.rows(
             &self.ledger_sql(&format!(
                 "SELECT {} FROM axton_subscription \
                  WHERE starting_cursor IS NOT NULL AND bootstrap_state IN ('requested','loading','catching_up') \
-                 ORDER BY channel", self.ledger_columns()
+                 ORDER BY scope", self.ledger_columns()
             )),
             &[],
         )
@@ -286,8 +286,8 @@ impl<S: ClientStore> Engine<'_, S> {
     /// name can reach a write: one that cannot be is an issue and is left
     /// out, so it neither completes nor stops the healthy candidates beside it
     /// ([#163](https://github.com/zanminwang/axton/issues/163)).
-    pub(crate) fn settleable_scan(&mut self, channels: &[String]) -> Result<LedgerScan<String>> {
-        let unique: Vec<&str> = channels
+    pub(crate) fn settleable_scan(&mut self, scopes: &[String]) -> Result<LedgerScan<String>> {
+        let unique: Vec<&str> = scopes
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>()
@@ -305,13 +305,10 @@ impl<S: ClientStore> Engine<'_, S> {
                      WHERE starting_cursor IS NOT NULL \
                        AND bootstrap_state='catching_up' AND bootstrap_barrier IS NOT NULL \
                        AND cursor IS NOT NULL AND cursor >= bootstrap_barrier \
-                       AND channel IN ({named}) ORDER BY channel",
+                       AND scope IN ({named}) ORDER BY scope",
                     self.ledger_columns()
                 )),
-                &chunk
-                    .iter()
-                    .map(|channel| json!(channel))
-                    .collect::<Vec<_>>(),
+                &chunk.iter().map(|scope| json!(scope)).collect::<Vec<_>>(),
             )?;
             for row in &rows.rows {
                 match decode_keyed(row)? {
@@ -327,8 +324,8 @@ impl<S: ClientStore> Engine<'_, S> {
     /// Mark a run complete when the barrier it fixed has been reached, and
     /// answer with the state it committed. Reading L and writing the phase in
     /// one transaction is what makes the completion evidence exact.
-    pub(crate) fn settle_barrier(&mut self, channel: &str) -> Result<Option<BootstrapState>> {
-        let Some(row) = self.bootstrap_row(channel)? else {
+    pub(crate) fn settle_barrier(&mut self, scope: &str) -> Result<Option<BootstrapState>> {
+        let Some(row) = self.bootstrap_row(scope)? else {
             return Ok(None);
         };
         let (Some(barrier), BootstrapPhase::CatchingUp) = (row.state.barrier, row.state.state)
@@ -347,7 +344,7 @@ impl<S: ClientStore> Engine<'_, S> {
         let mut state = row.state;
         state.state = BootstrapPhase::Complete;
         if self.set_bootstrap(&state, state.run)? {
-            self.mark_bootstrap(channel);
+            self.mark_bootstrap(scope);
             return Ok(Some(state));
         }
         Ok(None)
@@ -404,7 +401,7 @@ mod tests {
     #[test]
     fn the_fingerprint_ignores_valid_delivery_and_tracks_the_defect() {
         let first = issue(&row(json!(7), json!("x")));
-        assert_eq!(first.channel, "bad");
+        assert_eq!(first.scope, "bad");
         assert_eq!(
             first.detail,
             "the stored Bootstrap row cannot be decoded: expected an unsigned integer"

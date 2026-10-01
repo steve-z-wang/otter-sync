@@ -2,7 +2,7 @@
  * Transaction faults which must reach the adapter's whole-transaction retry
  * loop: a database serialization failure or deadlock, or the engine's
  * `transaction.conflict`, raised when a competing membership write moved a
- * record into a Channel settlement had not locked.
+ * record into a Scope settlement had not locked.
  */
 export function isRetryableTransactionError(error: unknown): boolean {
   const seen = new Set<unknown>();

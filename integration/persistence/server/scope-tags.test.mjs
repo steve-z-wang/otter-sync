@@ -1,5 +1,5 @@
-// Channel tags and synchronized removal against real PostgreSQL: the
-// eight-table schema and its association trigger, the Channel operations as
+// Scope tags and synchronized removal against real PostgreSQL: the
+// eight-table schema and its association trigger, the Scope operations as
 // settlement drives them, rollback, concurrency with real barriers, the
 // forward upgrade from the six-table schema and a 10,000-member removal.
 // Every assertion reads the committed tables through a separate pool.
@@ -42,25 +42,25 @@ const backend=make(database);
 const watched=seen=>make(persistence({transaction:body=>driver.transaction(body),query:(tx,sql,params)=>{seen(sql);return driver.query(tx,sql,params);}}));
 const key=id=>JSON.stringify({id});
 const write=(tx,id,title)=>driver.query(tx,'INSERT INTO tag_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
-const add=(channel,id,tags)=>backend.transaction(({scope: c})=>{const added=c(channel).add.todo({id});if(tags?.length)added.tag(tags);});
-const removeTag=(channel,tag)=>backend.transaction(({scope: c})=>{c(channel).where({ tags: { all: [tag] } }).remove();});
-const remove=(channel,id)=>backend.transaction(({scope: c})=>{c(channel).remove.todo({id});});
+const add=(scope,id,tags)=>backend.transaction(({scope: c})=>{const added=c(scope).add.todo({id});if(tags?.length)added.tag(tags);});
+const removeTag=(scope,tag)=>backend.transaction(({scope: c})=>{c(scope).where({ tags: { all: [tag] } }).remove();});
+const remove=(scope,id)=>backend.transaction(({scope: c})=>{c(scope).remove.todo({id});});
 const touch=(id,title)=>backend.transaction(async({tx,touch})=>{await write(tx,id,title);touch.todo({id});});
 /** The adapter itself, in one transaction: `call` answers a host request. */
 const adapter=body=>driver.transaction(tx=>body(request=>answer(driver,tx,request),(sql,params=[])=>driver.query(tx,sql,params)));
-const delta=(channel,id,{present=true,tags=[],publish=true}={})=>({channel,model:'Todo',identity:{id},identityKey:key(id),present,tags,publish});
+const delta=(scope,id,{present=true,tags=[],publish=true}={})=>({scope,model:'Todo',identity:{id},identityKey:key(id),present,tags,publish});
 
-/** The live members of `channel` with their sorted tags, by identity. */
-const members=async channel=>(await q(
+/** The live members of `scope` with their sorted tags, by identity. */
+const members=async scope=>(await q(
  `SELECT r.identity_key AS key,COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL),'{}') AS tags
-  FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id
-  LEFT JOIN axton_channel_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_channel_tag t ON t.id=mt.tag_id
-  WHERE m.channel=$1 GROUP BY r.identity_key ORDER BY r.identity_key`,[channel])).map(r=>[JSON.parse(r.key).id,r.tags]);
-/** The compacted log of `channel` in cursor order. */
-const log=async channel=>(await q('SELECT r.identity_key AS key,l.cursor::text AS cursor,l.kind FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1 ORDER BY l.cursor',[channel])).map(r=>[JSON.parse(r.key).id,Number(r.cursor),r.kind]);
-const head=async channel=>Number((await q('SELECT head FROM axton_channel WHERE channel=$1',[channel]))[0]?.head??0);
-const tagNames=async channel=>(await q('SELECT name FROM axton_channel_tag WHERE channel=$1 ORDER BY name',[channel])).map(r=>r.name);
-const state=async channel=>({members:await members(channel),log:await log(channel),head:await head(channel),tags:await tagNames(channel)});
+  FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id
+  LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id
+  WHERE m.scope=$1 GROUP BY r.identity_key ORDER BY r.identity_key`,[scope])).map(r=>[JSON.parse(r.key).id,r.tags]);
+/** The compacted log of `scope` in cursor order. */
+const log=async scope=>(await q('SELECT r.identity_key AS key,l.cursor::text AS cursor,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope=$1 ORDER BY l.cursor',[scope])).map(r=>[JSON.parse(r.key).id,Number(r.cursor),r.kind]);
+const head=async scope=>Number((await q('SELECT head FROM axton_scope WHERE scope=$1',[scope]))[0]?.head??0);
+const tagNames=async scope=>(await q('SELECT name FROM axton_scope_tag WHERE scope=$1 ORDER BY name',[scope])).map(r=>r.name);
+const state=async scope=>({members:await members(scope),log:await log(scope),head:await head(scope),tags:await tagNames(scope)});
 const stamps=async ids=>(await q("SELECT identity_key,stamp::text FROM axton_record WHERE model='Todo' AND identity_key = ANY($1) ORDER BY identity_key",[ids.map(key)])).map(r=>({identity_key:r.identity_key,stamp:Number(r.stamp)}));
 const seed=(id,title='v1')=>q('INSERT INTO tag_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
 
@@ -73,48 +73,48 @@ after(async()=>{await pool.end();await check.end();});
 
 // ---- Pairs, tags and removal ----------------------------------------------
 
-test('a pair is one member whose adds union their tags; a tag-only change publishes nothing; same-named tags of two Channels are distinct rows',async()=>{
+test('a pair is one member whose adds union their tags; a tag-only change publishes nothing; same-named tags of two Scopes are distinct rows',async()=>{
  await add('u-C','u-a',['X']);
  await add('u-C','u-a',['Y']);
- await backend.transaction(({scope: channel})=>{channel('u-C').add.todo({id:'u-a'}).tag(['X']);channel('u-C').add.todo({id:'u-a'});});
+ await backend.transaction(({scope: scope})=>{scope('u-C').add.todo({id:'u-a'}).tag(['X']);scope('u-C').add.todo({id:'u-a'});});
  assert.deepEqual(await state('u-C'),{members:[['u-a',['X','Y']]],log:[['u-a',1,'upsert']],head:1,tags:['X','Y']});
- assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_channel_member WHERE channel=$1',['u-C']),[{n:1}],'membership is unique per pair');
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',['u-C']),[{n:1}],'membership is unique per pair');
  await add('u-D','u-a',['X']);
- const ids=await q("SELECT channel,id::text FROM axton_channel_tag WHERE channel IN ('u-C','u-D') AND name='X' ORDER BY channel");
- assert.equal(ids.length,2);assert.notEqual(ids[0].id,ids[1].id,'a tag belongs to its Channel');
+ const ids=await q("SELECT scope,id::text FROM axton_scope_tag WHERE scope IN ('u-C','u-D') AND name='X' ORDER BY scope");
+ assert.equal(ids.length,2);assert.notEqual(ids[0].id,ids[1].id,'a tag belongs to its Scope');
  await removeTag('u-D','X');
  assert.deepEqual(await state('u-C'),{members:[['u-a',['X','Y']]],log:[['u-a',1,'upsert']],head:1,tags:['X','Y']},'removing X in D leaves C untouched');
  assert.deepEqual(await state('u-D'),{members:[],log:[['u-a',2,'remove']],head:2,tags:[]});
 });
 
 test('removing X from A (X, Y) and B (X) removes both whole memberships: no member, no association, two remove rows and no Loader call',async()=>{
- const channel='x-bob';
+ const scope='x-bob';
  for(const id of ['x-A','x-B'])await seed(id);
- await backend.transaction(({scope: c})=>{c(channel).add.todo({id:'x-A'}).tag(['X','Y']);c(channel).add.todo({id:'x-B'}).tag(['X']);});
+ await backend.transaction(({scope: c})=>{c(scope).add.todo({id:'x-A'}).tag(['X','Y']);c(scope).add.todo({id:'x-B'}).tag(['X']);});
  const before=await stamps(['x-A','x-B']);
  loaderCalls=0;
- await removeTag(channel,'X');
+ await removeTag(scope,'X');
  assert.equal(loaderCalls,0,'a removal loads nothing');
- assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_channel_member WHERE channel=$1',[channel]),[{n:0}]);
- assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_channel_member_tag mt JOIN axton_channel_tag t ON t.id=mt.tag_id WHERE t.channel=$1',[channel]),[{n:0}]);
- assert.deepEqual(await q('SELECT kind,count(*)::int AS n FROM axton_channel_log WHERE channel=$1 GROUP BY kind',[channel]),[{kind:'remove',n:2}]);
- assert.deepEqual(await log(channel),[['x-A',3,'remove'],['x-B',4,'remove']],'positions in record-key order above the head');
- assert.equal(await head(channel),4);
- assert.deepEqual(await tagNames(channel),[],'unused tags are collected');
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',[scope]),[{n:0}]);
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member_tag mt JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE t.scope=$1',[scope]),[{n:0}]);
+ assert.deepEqual(await q('SELECT kind,count(*)::int AS n FROM axton_scope_log WHERE scope=$1 GROUP BY kind',[scope]),[{kind:'remove',n:2}]);
+ assert.deepEqual(await log(scope),[['x-A',3,'remove'],['x-B',4,'remove']],'positions in record-key order above the head');
+ assert.equal(await head(scope),4);
+ assert.deepEqual(await tagNames(scope),[],'unused tags are collected');
  assert.deepEqual(await stamps(['x-A','x-B']),before,'record metadata and stamps remain');
  assert.deepEqual(await q('SELECT count(*)::int AS n FROM tag_todo WHERE id IN ($1,$2)',['x-A','x-B']),[{n:2}],'business rows remain');
 });
 
 test('the specification example: removing X keeps C (Y) at its old position; A goes despite its Y label',async()=>{
- const channel='User:bob';
+ const scope='User:bob';
  await backend.transaction(({scope: c})=>{
-  c(channel).add.todo({id:'ex-A'}).tag(['X','Y']);c(channel).add.todo({id:'ex-B'}).tag(['X']);c(channel).add.todo({id:'ex-C'}).tag(['Y']);
+  c(scope).add.todo({id:'ex-A'}).tag(['X','Y']);c(scope).add.todo({id:'ex-B'}).tag(['X']);c(scope).add.todo({id:'ex-C'}).tag(['Y']);
  });
- await removeTag(channel,'X');
- assert.deepEqual(await state(channel),{members:[['ex-C',['Y']]],log:[['ex-C',3,'upsert'],['ex-A',4,'remove'],['ex-B',5,'remove']],head:5,tags:['Y']});
+ await removeTag(scope,'X');
+ assert.deepEqual(await state(scope),{members:[['ex-C',['Y']]],log:[['ex-C',3,'upsert'],['ex-A',4,'remove'],['ex-B',5,'remove']],head:5,tags:['Y']});
 });
 
-test('removing an absent record or an unmatched tag, twice, allocates no cursor, creates no Channel and calls no Loader',async()=>{
+test('removing an absent record or an unmatched tag, twice, allocates no cursor, creates no Scope and calls no Loader',async()=>{
  await add('idem','idem-a',['X']);
  loaderCalls=0;
  for(let n=0;n<2;n++){
@@ -124,7 +124,7 @@ test('removing an absent record or an unmatched tag, twice, allocates no cursor,
   await removeTag('idem-none','X');
  }
  assert.deepEqual(await state('idem'),{members:[['idem-a',['X']]],log:[['idem-a',1,'upsert']],head:1,tags:['X']});
- assert.deepEqual(await q('SELECT channel FROM axton_channel WHERE channel=$1',['idem-none']),[]);
+ assert.deepEqual(await q('SELECT scope FROM axton_scope WHERE scope=$1',['idem-none']),[]);
  assert.equal(loaderCalls,0);
  await remove('idem','idem-a');
  await remove('idem','idem-a');
@@ -139,13 +139,13 @@ test('a whole-member removal discards every tag; a later add starts with only it
  assert.deepEqual(await state('whole'),{members:[['w-a',['Z']]],log:[['w-a',3,'upsert']],head:3,tags:['Z']},'old tags do not revive');
  await remove('whole','w-a');
  assert.deepEqual(await log('whole'),[['w-a',4,'remove']],'one row per pair: the latest position replaced the others');
- assert.deepEqual(await q("SELECT count(*)::int AS n FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel='whole' AND r.identity_key=$1",[key('w-a')]),[{n:1}]);
+ assert.deepEqual(await q("SELECT count(*)::int AS n FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope='whole' AND r.identity_key=$1",[key('w-a')]),[{n:1}]);
 });
 
 test('declarations reduce in order inside one transaction: a selector sees earlier adds, a removed and re-added member publishes one upsert',async()=>{
  await add('ord','ord-E',['X','Y']);
- await backend.transaction(({scope: channel})=>{
-  const c=channel('ord');
+ await backend.transaction(({scope: scope})=>{
+  const c=scope('ord');
   c.add.todo({id:'ord-A'}).tag(['X']);
   c.where({ tags: { all: ['X'] } }).remove();
   c.add.todo({id:'ord-B'}).tag(['X']);
@@ -155,9 +155,9 @@ test('declarations reduce in order inside one transaction: a selector sees earli
   'A was never a lasting member and got no position; E was released and re-added with only Z');
 });
 
-test('the reverse lookup answers every Channel of a record, and a touch reaches exactly those, keeping their tags',async()=>{
+test('the reverse lookup answers every Scope of a record, and a touch reaches exactly those, keeping their tags',async()=>{
  await seed('rev-a');
- await backend.transaction(({scope: channel})=>{channel('rev-1').add.todo({id:'rev-a'}).tag(['X']);channel('rev-2').add.todo({id:'rev-a'});});
+ await backend.transaction(({scope: scope})=>{scope('rev-1').add.todo({id:'rev-a'}).tag(['X']);scope('rev-2').add.todo({id:'rev-a'});});
  assert.deepEqual(await adapter(call=>call({op:'memberships',model:'Todo',identityKey:key('rev-a')})),['rev-1','rev-2']);
  await touch('rev-a','v2');
  assert.deepEqual([await log('rev-1'),await log('rev-2')],[[['rev-a',2,'upsert']],[['rev-a',2,'upsert']]]);
@@ -165,17 +165,17 @@ test('the reverse lookup answers every Channel of a record, and a touch reaches 
  await removeTag('rev-1','X');
  assert.deepEqual(await adapter(call=>call({op:'memberships',model:'Todo',identityKey:key('rev-a')})),['rev-2']);
  await touch('rev-a','v3');
- assert.deepEqual([await head('rev-1'),await head('rev-2')],[3,3],'the removed Channel hears nothing more');
- assert.ok((await q("SELECT indexdef FROM pg_indexes WHERE indexname='axton_channel_member_record'"))[0].indexdef.includes('(record_id, channel)'),'the lookup has its index');
+ assert.deepEqual([await head('rev-1'),await head('rev-2')],[3,3],'the removed Scope hears nothing more');
+ assert.ok((await q("SELECT indexdef FROM pg_indexes WHERE indexname='axton_scope_member_record'"))[0].indexdef.includes('(record_id, scope)'),'the lookup has its index');
 });
 
 test('a rolled-back transaction leaves every member, tag, association, log row and head as it was',async()=>{
  await add('rb','rb-a',['X']);
  const before=await state('rb');
- await assert.rejects(()=>backend.transaction(async({tx,scope: channel})=>{await write(tx,'rb-b','never');channel('rb').add.todo({id:'rb-b'}).tag(['X','N']);throw new Error('cancel add');}),/cancel add/);
- await assert.rejects(()=>backend.transaction(async({scope: channel})=>{channel('rb').where({ tags: { all: ['X'] } }).remove();channel('rb-new').add.todo({id:'rb-a'});throw new Error('cancel removal');}),/cancel removal/);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: scope})=>{await write(tx,'rb-b','never');scope('rb').add.todo({id:'rb-b'}).tag(['X','N']);throw new Error('cancel add');}),/cancel add/);
+ await assert.rejects(()=>backend.transaction(async({scope: scope})=>{scope('rb').where({ tags: { all: ['X'] } }).remove();scope('rb-new').add.todo({id:'rb-a'});throw new Error('cancel removal');}),/cancel removal/);
  assert.deepEqual(await state('rb'),before);
- assert.deepEqual(await q("SELECT channel FROM axton_channel WHERE channel='rb-new'"),[]);
+ assert.deepEqual(await q("SELECT scope FROM axton_scope WHERE scope='rb-new'"),[]);
  assert.deepEqual(await q("SELECT id FROM tag_todo WHERE id='rb-b'"),[]);
  assert.deepEqual(await stamps(['rb-b']),[],'the rolled-back add initialised no stamp');
 });
@@ -185,58 +185,58 @@ test('a rolled-back transaction leaves every member, tag, association, log row a
 /** The SQLSTATE of a refused statement, whichever layer wrapped it. */
 const refused=async(sql,params=[])=>{try{await q(sql,params);}catch(error){return error.code;}return 'accepted';};
 
-test('the association trigger refuses a tag of another Channel on insert and update; Channel ownership of members and tags is immutable',async()=>{
- await q("INSERT INTO axton_channel(channel,head) VALUES('own-P',0),('own-Q',0)");
+test('the association trigger refuses a tag of another Scope on insert and update; Scope ownership of members and tags is immutable',async()=>{
+ await q("INSERT INTO axton_scope(scope,head) VALUES('own-P',0),('own-Q',0)");
  await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[key('own-a')]);
  const [{id:record}]=await q("SELECT id::text FROM axton_record WHERE model='Todo' AND identity_key=$1",[key('own-a')]);
- const [{id:member}]=await q("INSERT INTO axton_channel_member(channel,record_id) VALUES('own-P',$1) RETURNING id::text",[record]);
- const [{id:tagP}]=await q("INSERT INTO axton_channel_tag(channel,name) VALUES('own-P','X') RETURNING id::text");
- const [{id:tagQ}]=await q("INSERT INTO axton_channel_tag(channel,name) VALUES('own-Q','X') RETURNING id::text");
- assert.equal(await refused('INSERT INTO axton_channel_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagQ]),'23514','a member cannot carry a tag of another Channel');
- assert.equal(await refused('INSERT INTO axton_channel_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagP]),'accepted');
- assert.equal(await refused('UPDATE axton_channel_member_tag SET tag_id=$2 WHERE member_id=$1',[member,tagQ]),'23514','nor be moved onto one');
- assert.equal(await refused("UPDATE axton_channel_member SET channel='own-Q' WHERE id=$1",[member]),'23514','a member never changes Channel');
- assert.equal(await refused("UPDATE axton_channel_tag SET channel='own-Q', name='moved' WHERE id=$1",[tagP]),'23514','a tag never changes Channel');
- assert.equal(await refused("INSERT INTO axton_channel_member(channel,record_id) VALUES('own-P',$1)",[record]),'23505','one member per pair');
- assert.equal(await refused("INSERT INTO axton_channel_tag(channel,name) VALUES('own-P','X')"),'23505','one tag per name in a Channel');
- assert.equal(await refused("INSERT INTO axton_channel_log(channel,record_id,cursor,kind) VALUES('own-P',$1,1,'touch')",[record]),'23514','kind is upsert or remove');
- assert.equal(await refused("INSERT INTO axton_channel_log(channel,record_id,cursor,kind) VALUES('own-P',$1,$2,'upsert')",[record,String(MAX+1)]),'23514','cursors stay safe integers');
- await q("INSERT INTO axton_channel_log(channel,record_id,cursor,kind) VALUES('own-P',$1,1,'upsert')",[record]);
+ const [{id:member}]=await q("INSERT INTO axton_scope_member(scope,record_id) VALUES('own-P',$1) RETURNING id::text",[record]);
+ const [{id:tagP}]=await q("INSERT INTO axton_scope_tag(scope,name) VALUES('own-P','X') RETURNING id::text");
+ const [{id:tagQ}]=await q("INSERT INTO axton_scope_tag(scope,name) VALUES('own-Q','X') RETURNING id::text");
+ assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagQ]),'23514','a member cannot carry a tag of another Scope');
+ assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagP]),'accepted');
+ assert.equal(await refused('UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1',[member,tagQ]),'23514','nor be moved onto one');
+ assert.equal(await refused("UPDATE axton_scope_member SET scope='own-Q' WHERE id=$1",[member]),'23514','a member never changes Scope');
+ assert.equal(await refused("UPDATE axton_scope_tag SET scope='own-Q', name='moved' WHERE id=$1",[tagP]),'23514','a tag never changes Scope');
+ assert.equal(await refused("INSERT INTO axton_scope_member(scope,record_id) VALUES('own-P',$1)",[record]),'23505','one member per pair');
+ assert.equal(await refused("INSERT INTO axton_scope_tag(scope,name) VALUES('own-P','X')"),'23505','one tag per name in a Scope');
+ assert.equal(await refused("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,1,'touch')",[record]),'23514','kind is upsert or remove');
+ assert.equal(await refused("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,$2,'upsert')",[record,String(MAX+1)]),'23514','cursors stay safe integers');
+ await q("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,1,'upsert')",[record]);
  assert.equal(await refused('DELETE FROM axton_record WHERE id=$1',[record]),'23503','a record referenced by a member or log row stays');
- await q('DELETE FROM axton_channel_member WHERE id=$1',[member]);
- assert.deepEqual(await q('SELECT * FROM axton_channel_member_tag WHERE member_id=$1',[member]),[],'deleting a member cascades to its associations');
- assert.deepEqual(await q("SELECT name FROM axton_channel_tag WHERE channel='own-P'"),[{name:'X'}],'but keeps the tag row for collection by the adapter');
+ await q('DELETE FROM axton_scope_member WHERE id=$1',[member]);
+ assert.deepEqual(await q('SELECT * FROM axton_scope_member_tag WHERE member_id=$1',[member]),[],'deleting a member cascades to its associations');
+ assert.deepEqual(await q("SELECT name FROM axton_scope_tag WHERE scope='own-P'"),[{name:'X'}],'but keeps the tag row for collection by the adapter');
  assert.equal(await refused('DELETE FROM axton_record WHERE id=$1',[record]),'23503','the log row still holds the record');
 });
 
-test('applyChannelMembers reserves one range per Channel, keeps unpublished deltas cursor-neutral, and refuses head overflow before commit',async()=>{
+test('applyScopeMembers reserves one range per Scope, keeps unpublished deltas cursor-neutral, and refuses head overflow before commit',async()=>{
  for(const id of ['rng-a','rng-b','rng-c'])await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[key(id)]);
- const first=await adapter(call=>call({op:'applyChannelMembers',deltas:[delta('rng-1','rng-a',{tags:['X']}),delta('rng-1','rng-b'),delta('rng-2','rng-c')]}));
- assert.deepEqual(first.map(p=>[p.channel,JSON.parse(p.identityKey).id,p.cursor,p.kind]),[['rng-1','rng-a',1,'upsert'],['rng-1','rng-b',2,'upsert'],['rng-2','rng-c',1,'upsert']]);
- const kept=await adapter(call=>call({op:'applyChannelMembers',deltas:[delta('rng-1','rng-a',{tags:['Y'],publish:false}),delta('rng-1','rng-b',{present:false,tags:[]})]}));
+ const first=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['X']}),delta('rng-1','rng-b'),delta('rng-2','rng-c')]}));
+ assert.deepEqual(first.map(p=>[p.scope,JSON.parse(p.identityKey).id,p.cursor,p.kind]),[['rng-1','rng-a',1,'upsert'],['rng-1','rng-b',2,'upsert'],['rng-2','rng-c',1,'upsert']]);
+ const kept=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['Y'],publish:false}),delta('rng-1','rng-b',{present:false,tags:[]})]}));
  assert.deepEqual(kept.map(p=>[p.cursor,p.kind]),[[1,'upsert'],[3,'remove']],'the kept delta answers its existing position');
  assert.deepEqual(await state('rng-1'),{members:[['rng-a',['Y']]],log:[['rng-a',1,'upsert'],['rng-b',3,'remove']],head:3,tags:['Y']},'set with exactly its tags; X collected');
- const cursorNeutral=await adapter(call=>call({op:'applyChannelMembers',deltas:[delta('rng-1','rng-a',{tags:['Y','Z'],publish:false})]}));
+ const cursorNeutral=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['Y','Z'],publish:false})]}));
  assert.deepEqual(cursorNeutral.map(p=>p.cursor),[1]);assert.equal(await head('rng-1'),3,'a metadata-only change moves no head');
  // Overflow: two positions do not fit below the bound; one does.
- await q("INSERT INTO axton_channel(channel,head) VALUES('rng-max',$1)",[String(MAX-1)]);
- await assert.rejects(()=>adapter(call=>call({op:'applyChannelMembers',deltas:[delta('rng-max','rng-a'),delta('rng-max','rng-b')]})),/overflow|9007199254740991/);
+ await q("INSERT INTO axton_scope(scope,head) VALUES('rng-max',$1)",[String(MAX-1)]);
+ await assert.rejects(()=>adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-max','rng-a'),delta('rng-max','rng-b')]})),/overflow|9007199254740991/);
  assert.deepEqual(await state('rng-max'),{members:[],log:[],head:MAX-1,tags:[]},'nothing of the refused call committed');
- const last=await adapter(call=>call({op:'applyChannelMembers',deltas:[delta('rng-max','rng-a')]}));
+ const last=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-max','rng-a')]}));
  assert.deepEqual(last.map(p=>p.cursor),[MAX],'the last safe cursor is usable');
  await q("UPDATE axton_record SET stamp=$2 WHERE model='Todo' AND identity_key=$1",[key('rng-c'),String(MAX)]);
  await assert.rejects(()=>adapter(call=>call({op:'advanceStamp',model:'Todo',identityKey:key('rng-c')})),error=>error.code==='23514','a content stamp never passes the bound');
  assert.deepEqual(await stamps(['rng-c']),[{identity_key:key('rng-c'),stamp:MAX}]);
 });
 
-test('readChannelMembers answers named and tagged members once with complete tags, whatever the order or repetition of its keys',async()=>{
- await backend.transaction(({scope: channel})=>{const c=channel('read');c.add.todo({id:'read-a'}).tag(['X','Y']);c.add.todo({id:'read-b'}).tag(['X']);c.add.todo({id:'read-c'});});
- const read=(explicitKeys,tags)=>adapter(call=>call({op:'readChannelMembers',channel:'read',explicitKeys:explicitKeys.map(id=>({model:'Todo',identityKey:key(id)})),tags}));
+test('readScopeMembers answers named and tagged members once with complete tags, whatever the order or repetition of its keys',async()=>{
+ await backend.transaction(({scope: scope})=>{const c=scope('read');c.add.todo({id:'read-a'}).tag(['X','Y']);c.add.todo({id:'read-b'}).tag(['X']);c.add.todo({id:'read-c'});});
+ const read=(explicitKeys,tags)=>adapter(call=>call({op:'readScopeMembers',scope:'read',explicitKeys:explicitKeys.map(id=>({model:'Todo',identityKey:key(id)})),tags}));
  const sorted=rows=>rows.map(r=>[JSON.parse(r.identityKey).id,[...r.tags].sort()]).sort((a,b)=>a[0]<b[0]?-1:1);
  assert.deepEqual(sorted(await read(['read-c','read-a','read-c','read-z'],['X'])),[['read-a',['X','Y']],['read-b',['X']],['read-c',[]]]);
  assert.deepEqual(sorted(await read([],['nothing'])),[]);
  assert.deepEqual(sorted(await read(['read-c'],[])),[['read-c',[]]]);
- assert.deepEqual(sorted(await adapter(call=>call({op:'readChannelMembers',channel:'read-none',explicitKeys:[{model:'Todo',identityKey:key('read-a')}],tags:['X']}))),[],'another Channel answers none of them');
+ assert.deepEqual(sorted(await adapter(call=>call({op:'readScopeMembers',scope:'read-none',explicitKeys:[{model:'Todo',identityKey:key('read-a')}],tags:['X']}))),[],'another Scope answers none of them');
 });
 
 // ---- Forward upgrade from the six-table schema ------------------------------
@@ -441,30 +441,30 @@ const serial=(runs,[firstThenSecond,secondThenFirst])=>{
 test('add versus tag removal: one serial outcome, and the retried transaction adds no cursor',async t=>{
  const orders=[];
  for(let trial=0;trial<3;trial++){
-  const channel=`cc-add-${trial}`;
-  await backend.transaction(({scope: c})=>{c(channel).add.todo({id:`${channel}-A`}).tag(['X']);c(channel).add.todo({id:`${channel}-B`}).tag(['X']);});
-  const [A,B,N]=['A','B','N'].map(s=>`${channel}-${s}`);
-  const runs=await together(({scope: c})=>{c(channel).add.todo({id:N}).tag(['X']);},({scope: c})=>{c(channel).where({ tags: { all: ['X'] } }).remove();});
+  const scope=`cc-add-${trial}`;
+  await backend.transaction(({scope: c})=>{c(scope).add.todo({id:`${scope}-A`}).tag(['X']);c(scope).add.todo({id:`${scope}-B`}).tag(['X']);});
+  const [A,B,N]=['A','B','N'].map(s=>`${scope}-${s}`);
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:N}).tag(['X']);},({scope: c})=>{c(scope).where({ tags: { all: ['X'] } }).remove();});
   const {order,expected}=serial(runs,[
    {members:[],log:[[A,4,'remove'],[B,5,'remove'],[N,6,'remove']],head:6,tags:[]},
    {members:[[N,['X']]],log:[[A,3,'remove'],[B,4,'remove'],[N,5,'upsert']],head:5,tags:['X']},
   ]);
   orders.push(order);
-  assert.deepEqual(await state(channel),expected,`trial ${trial}: ${order} committed first`);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}: ${order} committed first`);
  }
  t.diagnostic(`add committed first in: ${orders.map(o=>o==='first'?'yes':'no').join(' ')}`);
 });
 
 test('a tag union versus an empty selector: one serial outcome',async()=>{
  for(let trial=0;trial<3;trial++){
-  const channel=`cc-union-${trial}`,A=`${channel}-A`;
-  await add(channel,A,['X']);
-  const runs=await together(({scope: c})=>{c(channel).add.todo({id:A}).tag(['Y']);},({scope: c})=>{c(channel).where({ tags: { all: ['Y'] } }).remove();});
+  const scope=`cc-union-${trial}`,A=`${scope}-A`;
+  await add(scope,A,['X']);
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:A}).tag(['Y']);},({scope: c})=>{c(scope).where({ tags: { all: ['Y'] } }).remove();});
   const {order,expected}=serial(runs,[
    {members:[],log:[[A,2,'remove']],head:2,tags:[]},
    {members:[[A,['X','Y']]],log:[[A,1,'upsert']],head:1,tags:['X','Y']},
   ]);
-  assert.deepEqual(await state(channel),expected,`trial ${trial}: ${order === 'first' ? 'the union' : 'the empty selector'} committed first`);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}: ${order === 'first' ? 'the union' : 'the empty selector'} committed first`);
  }
 });
 
@@ -472,27 +472,27 @@ test('a touch versus a tag removal: one serial outcome, never an upsert of an ab
  for(let trial=0;trial<3;trial++){
   const K=`cc-touch-K-${trial}`,L=`cc-touch-L-${trial}`,A=`cc-touch-${trial}`;
   await seed(A);
-  await backend.transaction(({scope: channel})=>{channel(K).add.todo({id:A}).tag(['X']);channel(L).add.todo({id:A});});
-  const runs=await together(async({tx,touch})=>{await write(tx,A,'touched');touch.todo({id:A});},({scope: channel})=>{channel(K).where({ tags: { all: ['X'] } }).remove();});
+  await backend.transaction(({scope: scope})=>{scope(K).add.todo({id:A}).tag(['X']);scope(L).add.todo({id:A});});
+  const runs=await together(async({tx,touch})=>{await write(tx,A,'touched');touch.todo({id:A});},({scope: scope})=>{scope(K).where({ tags: { all: ['X'] } }).remove();});
   const {order,expected}=serial(runs,[
    {K:{members:[],log:[[A,3,'remove']],head:3,tags:[]},L:[[A,2,'upsert']],stamp:2},
    {K:{members:[],log:[[A,2,'remove']],head:2,tags:[]},L:[[A,2,'upsert']],stamp:2},
   ]);
   assert.deepEqual({K:await state(K),L:await log(L),stamp:(await stamps([A]))[0].stamp},expected,`trial ${trial}: ${order}`);
-  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],cursors:{[K]:0},models:{Todo:1}})));
-  assert.deepEqual(page.changes,[{channel:K,cursor:expected.K.head,kind:'remove',model:'Todo',identity:{id:A}}],'K delivers only identity removal');
+  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{[K]:0},models:{Todo:1}})));
+  assert.deepEqual(page.changes,[{scope:K,cursor:expected.K.head,kind:'remove',model:'Todo',identity:{id:A}}],'K delivers only identity removal');
  }
 });
 
-test('two first writers to a Channel with no row serialize on its insert: distinct consecutive cursors, or one member with both tags',async()=>{
+test('two first writers to a Scope with no row serialize on its insert: distinct consecutive cursors, or one member with both tags',async()=>{
  for(let trial=0;trial<3;trial++){
-  const channel=`cc-new-${trial}`,[A,B]=[`${channel}-A`,`${channel}-B`];
-  const runs=await together(({scope: c})=>{c(channel).add.todo({id:A}).tag(['X']);},({scope: c})=>{c(channel).add.todo({id:B}).tag(['X']);});
+  const scope=`cc-new-${trial}`,[A,B]=[`${scope}-A`,`${scope}-B`];
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:A}).tag(['X']);},({scope: c})=>{c(scope).add.todo({id:B}).tag(['X']);});
   const {expected}=serial(runs,[
    {members:[[A,['X']],[B,['X']]],log:[[A,1,'upsert'],[B,2,'upsert']],head:2,tags:['X']},
    {members:[[A,['X']],[B,['X']]],log:[[B,1,'upsert'],[A,2,'upsert']],head:2,tags:['X']},
   ]);
-  assert.deepEqual(await state(channel),expected,`trial ${trial}`);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}`);
   const same=`cc-same-${trial}`,S=`${same}-S`;
   const again=await together(({scope: c})=>{c(same).add.todo({id:S}).tag(['X']);},({scope: c})=>{c(same).add.todo({id:S}).tag(['Y']);});
   const {expected:joined}=serial(again,[
@@ -506,40 +506,40 @@ test('two first writers to a Channel with no row serialize on its insert: distin
 // ---- 10,000 members ---------------------------------------------------------
 
 test('removing 10,000 tagged members: a failure after the log writes rolls everything back; the committed removal calls no Loader and runs bounded statement groups',async t=>{
- const channel='bulk',N=10000;
+ const scope='bulk',N=10000;
  const ids=Array.from({length:N},(_,i)=>`bulk-${String(i).padStart(5,'0')}`);
  const counted=()=>{const seen=new Map();let total=0;return {seen,get total(){return total;},hook:sql=>{total++;seen.set(sql,(seen.get(sql)??0)+1);}};};
  const named=seen=>Object.fromEntries([...seen].map(([sql,n])=>[Object.entries(SQL).find(([,text])=>text===sql)?.[0]??sql.slice(0,40),n]));
  const adding=counted();
  let started=performance.now();
- await watched(adding.hook).transaction(({scope: c})=>{c(channel).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','keep']);});
+ await watched(adding.hook).transaction(({scope: c})=>{c(scope).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','keep']);});
  const addMs=performance.now()-started;
- assert.equal(await head(channel),N);
+ assert.equal(await head(scope),N);
  const snapshot=async()=>({
-  members:(await q('SELECT count(*)::int AS n FROM axton_channel_member WHERE channel=$1',[channel]))[0].n,
-  associations:(await q('SELECT count(*)::int AS n FROM axton_channel_member_tag mt JOIN axton_channel_member m ON m.id=mt.member_id WHERE m.channel=$1',[channel]))[0].n,
-  tags:await tagNames(channel),
-  log:(await q('SELECT kind,count(*)::int AS n,sum(cursor)::text AS sum FROM axton_channel_log WHERE channel=$1 GROUP BY kind',[channel])),
-  head:await head(channel),
+  members:(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',[scope]))[0].n,
+  associations:(await q('SELECT count(*)::int AS n FROM axton_scope_member_tag mt JOIN axton_scope_member m ON m.id=mt.member_id WHERE m.scope=$1',[scope]))[0].n,
+  tags:await tagNames(scope),
+  log:(await q('SELECT kind,count(*)::int AS n,sum(cursor)::text AS sum FROM axton_scope_log WHERE scope=$1 GROUP BY kind',[scope])),
+  head:await head(scope),
   business:(await q("SELECT count(*)::int AS n FROM tag_todo WHERE id='bulk-domain'"))[0].n,
  });
  const before=await snapshot();
  assert.deepEqual(before.log,[{kind:'upsert',n:N,sum:String(N*(N+1)/2)}]);
  // Fail after the log statements ran and before the members are deleted.
  const failing=counted();let logged=false;
- const injected=watched(sql=>{failing.hook(sql);if(sql===SQL.WRITE_CHANNEL_LOG)logged=true;if(sql===SQL.DELETE_CHANNEL_MEMBERS)throw new Error('injected before member deletion');});
- await assert.rejects(()=>injected.transaction(async({tx,scope: c})=>{await write(tx,'bulk-domain','never');c(channel).where({ tags: { all: ['X'] } }).remove();}),/injected before member deletion/);
+ const injected=watched(sql=>{failing.hook(sql);if(sql===SQL.WRITE_SCOPE_LOG)logged=true;if(sql===SQL.DELETE_SCOPE_MEMBERS)throw new Error('injected before member deletion');});
+ await assert.rejects(()=>injected.transaction(async({tx,scope: c})=>{await write(tx,'bulk-domain','never');c(scope).where({ tags: { all: ['X'] } }).remove();}),/injected before member deletion/);
  assert.equal(logged,true,'the log writes had run');
  assert.deepEqual(await snapshot(),before,'no partial domain, member, tag, log or head change');
  // The committed removal.
  const removing=counted();loaderCalls=0;
  started=performance.now();
- await watched(removing.hook).transaction(({scope: c})=>{c(channel).where({ tags: { all: ['X'] } }).remove();});
+ await watched(removing.hook).transaction(({scope: c})=>{c(scope).where({ tags: { all: ['X'] } }).remove();});
  const removeMs=performance.now()-started;
  assert.equal(loaderCalls,0,'zero Loader calls');
  assert.deepEqual(await snapshot(),{members:0,associations:0,tags:[],log:[{kind:'remove',n:N,sum:String((N+1+2*N)*N/2)}],head:2*N,business:0});
- const batches=Math.ceil(N/SQL.CHANNEL_BATCH);
- // lockChannels, one tag read, one reservation, then per batch a log write
+ const batches=Math.ceil(N/SQL.SCOPE_BATCH);
+ // lockScopes, one tag read, one reservation, then per batch a log write
  // and a member deletion, and one collection of the dropped tags.
  assert.ok(removing.total<=4+2*batches,`bounded statement groups: ${removing.total} statements for ${N} members`);
  assert.ok(removing.total>=batches,'not an unrealistically constant number of row writes');
@@ -560,56 +560,56 @@ const rawEffects=(memberships,body=async()=>{})=>driver.transaction(async tx=>{
   });
  } catch(error){throw hostError??error;}
 });
-const label=(kind,channel,id,tags)=>({kind,channel,record:{model:'Todo',identity:{id}},tags});
-const select=(channel,predicate,action,model)=>({kind:'select',channel,predicate,action,...(model?{model}:{})});
+const label=(kind,scope,id,tags)=>({kind,scope,record:{model:'Todo',identity:{id}},tags});
+const select=(scope,predicate,action,model)=>({kind:'select',scope,predicate,action,...(model?{model}:{})});
 
 test('exact-only-X removal preserves X/Y and X/Z, detaches labels without stamps, and all-mode selects untagged members',async()=>{
- const channel='scope-effects';
- for(const [id,tags] of [['scope-A',['X','Y']],['scope-B',['X']],['scope-C',[]],['scope-D',['X','Z']]])await add(channel,id,tags);
+ const scope='scope-effects';
+ for(const [id,tags] of [['scope-A',['X','Y']],['scope-B',['X']],['scope-C',[]],['scope-D',['X','Z']]])await add(scope,id,tags);
  const before=await stamps(['scope-A','scope-B','scope-C','scope-D']);
- const logs=await log(channel);
+ const logs=await log(scope);
  loaderCalls=0;
- await backend.transaction(({scope})=>{scope(channel).where({tags:{only:['X']}}).remove();scope(channel).tag('X').remove();});
- assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',[]],['scope-D',['Z']]]);
- assert.equal(await head(channel),5);
+ await backend.transaction(({scope: scoped})=>{scoped(scope).where({tags:{only:['X']}}).remove();scoped(scope).tag('X').remove();});
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-C',[]],['scope-D',['Z']]]);
+ assert.equal(await head(scope),5);
  assert.deepEqual(await stamps(['scope-A','scope-B','scope-C','scope-D']),before);
  assert.equal(loaderCalls,0);
- assert.deepEqual((await log(channel)).filter(r=>r[2]==='upsert'),logs.filter(r=>r[0]!=='scope-B'));
- const stable=await log(channel);
- await backend.transaction(({scope})=>scope(channel).where({tags:{only:[]}}).tag('T').add());
- assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',['T']],['scope-D',['Z']]]);
- assert.deepEqual(await log(channel),stable);
- assert.equal(await head(channel),5);
- await backend.transaction(({scope})=>{scope(channel).tag('X').add.todo('scope-C');scope(channel).where.todo({tags:{only:['T','X']}}).remove();});
- assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-D',['Z']]]);
+ assert.deepEqual((await log(scope)).filter(r=>r[2]==='upsert'),logs.filter(r=>r[0]!=='scope-B'));
+ const stable=await log(scope);
+ await backend.transaction(({scope: scoped})=>scoped(scope).where({tags:{only:[]}}).tag('T').add());
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-C',['T']],['scope-D',['Z']]]);
+ assert.deepEqual(await log(scope),stable);
+ assert.equal(await head(scope),5);
+ await backend.transaction(({scope: scoped})=>{scoped(scope).tag('X').add.todo('scope-C');scoped(scope).where.todo({tags:{only:['T','X']}}).remove();});
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-D',['Z']]]);
 });
 
 test('last label removal retains membership and a missing-member label add rolls back business and membership effects',async()=>{
- const channel='scope-rollback';
+ const scope='scope-rollback';
  await seed('scope-kept');
- await add(channel,'scope-kept',['X']);
- const before=await state(channel);
+ await add(scope,'scope-kept',['X']);
+ const before=await state(scope);
  const beforeStamps=await stamps(['scope-kept']);
- await assert.rejects(()=>backend.transaction(async({tx,scope})=>{await write(tx,'scope-kept','rolled back');scope(channel).tag('X').remove.todo('scope-kept');scope(channel).tag('Y').add.todo('scope-missing');}),/absent member/);
- assert.deepEqual(await state(channel),before);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: scoped})=>{await write(tx,'scope-kept','rolled back');scoped(scope).tag('X').remove.todo('scope-kept');scoped(scope).tag('Y').add.todo('scope-missing');}),/absent member/);
+ assert.deepEqual(await state(scope),before);
  assert.deepEqual(await q('SELECT title FROM tag_todo WHERE id=$1',['scope-kept']),[{title:'v1'}]);
  assert.deepEqual(await stamps(['scope-kept']),beforeStamps);
- await backend.transaction(({scope})=>scope(channel).tag('X').remove.todo('scope-kept'));
- assert.deepEqual(await members(channel),[['scope-kept',[]]]);
- assert.deepEqual(await log(channel),before.log);
- assert.equal(await head(channel),before.head);
- const untagged=await state(channel);
- await rawEffects([label('tagRemove',channel,'scope-kept',['missing']),label('tagRemove',channel,'scope-missing',['X'])]);
- assert.deepEqual(await state(channel),untagged);
+ await backend.transaction(({scope: scoped})=>scoped(scope).tag('X').remove.todo('scope-kept'));
+ assert.deepEqual(await members(scope),[['scope-kept',[]]]);
+ assert.deepEqual(await log(scope),before.log);
+ assert.equal(await head(scope),before.head);
+ const untagged=await state(scope);
+ await rawEffects([label('tagRemove',scope,'scope-kept',['missing']),label('tagRemove',scope,'scope-missing',['X'])]);
+ assert.deepEqual(await state(scope),untagged);
 });
 
 test('reversing detachment and selection changes their result, and reads union all-mode with explicit and tagged candidates',async()=>{
- const channel='scope-order';
- await add(channel,'scope-order-A',['X']);
- await add(channel,'scope-order-B',[]);
- await rawEffects([{kind:'detachTags',channel,tags:['X']},select(channel,{tags:{only:['X']}},{kind:'remove'})]);
- assert.deepEqual(await members(channel),[['scope-order-A',[]],['scope-order-B',[]]]);
- const request={op:'readChannelMembers',channel,explicitKeys:[{model:'Todo',identityKey:key('scope-order-A')}],tags:[]};
+ const scope='scope-order';
+ await add(scope,'scope-order-A',['X']);
+ await add(scope,'scope-order-B',[]);
+ await rawEffects([{kind:'detachTags',scope,tags:['X']},select(scope,{tags:{only:['X']}},{kind:'remove'})]);
+ assert.deepEqual(await members(scope),[['scope-order-A',[]],['scope-order-B',[]]]);
+ const request={op:'readScopeMembers',scope,explicitKeys:[{model:'Todo',identityKey:key('scope-order-A')}],tags:[]};
  await adapter(async call=>{
   assert.equal((await call(request)).length,1,'absent all flag defaults false');
   assert.equal((await call({...request,all:true})).length,2,'all includes untagged members');
@@ -617,32 +617,56 @@ test('reversing detachment and selection changes their result, and reads union a
 });
 
 test('detachment racing selection commits one ordered serial outcome without allocating a content stamp or cursor',async()=>{
- const channel='scope-race',id='scope-race-A';
- await add(channel,id,['X']);
+ const scope='scope-race',id='scope-race-A';
+ await add(scope,id,['X']);
  const runs=[0,0];let arrived=0,open;const both=new Promise(resolve=>{open=resolve;});
  const run=(n,intents)=>rawEffects(intents,async tx=>{
   runs[n]++;
   await driver.query(tx,'SELECT 1',[]);
   if(runs[n]===1){if(++arrived===2)open();await both;}
  });
- await Promise.all([run(0,[{kind:'detachTags',channel,tags:['X']}]),run(1,[select(channel,{tags:{only:['X']}},{kind:'tagAdd',tags:['Y']})])]);
+ await Promise.all([run(0,[{kind:'detachTags',scope,tags:['X']}]),run(1,[select(scope,{tags:{only:['X']}},{kind:'tagAdd',tags:['Y']})])]);
  const {expected}=serial(runs,[[[id,[]]],[[id,['Y']]]]);
- assert.deepEqual(await members(channel),expected);
- assert.equal(await head(channel),1);
- assert.deepEqual(await log(channel),[[id,1,'upsert']]);
+ assert.deepEqual(await members(scope),expected);
+ assert.equal(await head(scope),1);
+ assert.deepEqual(await log(scope),[[id,1,'upsert']]);
  assert.deepEqual(await stamps([id]),[{identity_key:key(id),stamp:1}]);
 });
 
 test('bulk selection label edits reuse final snapshot batches rather than per-association SQL',async()=>{
- const channel='scope-bulk-labels',N=1100;
+ const scope='scope-bulk-labels',N=1100;
  const ids=Array.from({length:N},(_,i)=>`scope-bulk-labels-${i}`);
- await backend.transaction(({scope: c})=>c(channel).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X']));
+ await backend.transaction(({scope: c})=>c(scope).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X']));
  const statements=[];
  const observing={...driver,query:async(tx,sql,params)=>{statements.push(sql);return driver.query(tx,sql,params);}};
- await driver.transaction(tx=>native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships:[select(channel,{tags:{all:['X']}},{kind:'tagAdd',tags:['Y']})]}),async request=>JSON.stringify(await answer(observing,tx,JSON.parse(request)))));
- assert.equal((await members(channel)).length,N);
- assert.ok((await members(channel)).every(([,tags])=>JSON.stringify(tags)===JSON.stringify(['X','Y'])));
- assert.equal(await head(channel),N);
- assert.equal(statements.filter(sql=>sql===SQL.READ_CHANNEL_MEMBERS).length,1);
- assert.ok(statements.length<=3+6*Math.ceil(N/SQL.CHANNEL_BATCH),`${statements.length} statements for ${N} members`);
+ await driver.transaction(tx=>native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships:[select(scope,{tags:{all:['X']}},{kind:'tagAdd',tags:['Y']})]}),async request=>JSON.stringify(await answer(observing,tx,JSON.parse(request)))));
+ assert.equal((await members(scope)).length,N);
+ assert.ok((await members(scope)).every(([,tags])=>JSON.stringify(tags)===JSON.stringify(['X','Y'])));
+ assert.equal(await head(scope),N);
+ assert.equal(statements.filter(sql=>sql===SQL.READ_SCOPE_MEMBERS).length,1);
+ assert.ok(statements.length<=3+6*Math.ceil(N/SQL.SCOPE_BATCH),`${statements.length} statements for ${N} members`);
+});
+
+test('fresh Scope catalog contains exact framework objects and no retired ownership',async()=>{
+ const tables=['axton_call','axton_client','axton_record','axton_scope','axton_scope_log','axton_scope_member','axton_scope_member_tag','axton_scope_tag'];
+ assert.deepEqual((await q("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY tablename")).map(r=>r.tablename),tables);
+ assert.deepEqual((await q("SELECT relname FROM pg_class WHERE relkind='S' AND relname LIKE 'axton_%' ORDER BY relname")).map(r=>r.relname),['axton_record_id_seq','axton_scope_member_id_seq','axton_scope_tag_id_seq']);
+ assert.deepEqual((await q("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'axton_%' ORDER BY tgname")).map(r=>r.tgname),['axton_scope_member_fixed','axton_scope_member_tag_same_scope','axton_scope_tag_fixed']);
+ assert.deepEqual((await q("SELECT proname FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname")).map(r=>r.proname),['axton_scope_member_tag_same_scope','axton_scope_owner_fixed']);
+ const catalog={
+  columns:await q("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' ORDER BY 1,2"),
+  constraints:await q("SELECT conname,pg_get_constraintdef(oid) AS body FROM pg_constraint WHERE conrelid::regclass::text LIKE 'axton_%' ORDER BY conname"),
+  indexes:await q("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY indexname"),
+  functions:await q("SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname"),
+ };
+ assert.equal(JSON.stringify(catalog).includes('channel'),false);
+ for(const table of ['axton_scope','axton_scope_member','axton_scope_tag','axton_scope_log'])assert.ok(catalog.columns.some(r=>r.table_name===table&&r.column_name==='scope'));
+ const before=JSON.stringify(catalog);
+ await q(await source('migration.sql'));
+ assert.equal(JSON.stringify({
+  columns:await q("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' ORDER BY 1,2"),
+  constraints:await q("SELECT conname,pg_get_constraintdef(oid) AS body FROM pg_constraint WHERE conrelid::regclass::text LIKE 'axton_%' ORDER BY conname"),
+  indexes:await q("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY indexname"),
+  functions:await q("SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname"),
+ }),before,'repeat installation keeps the catalog');
 });

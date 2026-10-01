@@ -10,7 +10,7 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_schema",
     "axton_client",
     "axton_record",
-    "axton_channel_member",
+    "axton_scope_member",
     "axton_local_replica_layer",
     "axton_subscription",
     "axton_mutation",
@@ -25,7 +25,7 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
 ];
 
 /// Framework tables an earlier layout kept and this one cannot open in place:
-/// channel claims owned records and push checkpoints settled batches, both
+/// scope claims owned records and push checkpoints settled batches, both
 /// replaced by receipt completion ([#55](https://github.com/zanminwang/axton/issues/55)).
 pub const LEGACY_TABLES: &[&str] = &["axton_claim", "axton_push_checkpoint"];
 
@@ -44,7 +44,7 @@ const CLIENT_COLUMNS: &[&str] = &["last_completed_push", "push_models", "next_su
 const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
     (
         "axton_client",
-        "channel_membership_version",
+        "scope_membership_version",
         "INTEGER NOT NULL DEFAULT 0",
     ),
     (
@@ -116,8 +116,8 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
         }
         store.execute_batch(
             "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=reconcile_run+1
-             WHERE EXISTS (SELECT 1 FROM axton_client WHERE channel_membership_version=0);
-             UPDATE axton_client SET channel_membership_version=1;"
+             WHERE EXISTS (SELECT 1 FROM axton_client WHERE scope_membership_version=0);
+             UPDATE axton_client SET scope_membership_version=1;"
         )?;
         store.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS axton_client (
   last_completed_push INTEGER NOT NULL DEFAULT 0,
   push_models  TEXT,
   push_results TEXT,
-  channel_membership_version INTEGER NOT NULL DEFAULT 1,
+  scope_membership_version INTEGER NOT NULL DEFAULT 1,
   store_epoch INTEGER NOT NULL DEFAULT 0,
   next_subscription INTEGER NOT NULL DEFAULT 1
 );
@@ -161,18 +161,18 @@ CREATE TABLE IF NOT EXISTS axton_record (
   evicted_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (model, identity)
 );
-CREATE TABLE IF NOT EXISTS axton_channel_member (
-  channel TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS axton_scope_member (
+  scope TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
   cursor INTEGER NOT NULL CHECK(cursor > 0), present INTEGER NOT NULL CHECK(present IN (0,1)),
-  PRIMARY KEY(channel, model, identity)
+  PRIMARY KEY(scope, model, identity)
 );
-CREATE INDEX IF NOT EXISTS axton_channel_member_record ON axton_channel_member(model, identity, present);
+CREATE INDEX IF NOT EXISTS axton_scope_member_record ON axton_scope_member(model, identity, present);
 CREATE TABLE IF NOT EXISTS axton_local_replica_layer (
   model TEXT NOT NULL, identity TEXT NOT NULL, operations TEXT NOT NULL,
   PRIMARY KEY(model, identity)
 );
 CREATE TABLE IF NOT EXISTS axton_subscription (
-  channel          TEXT PRIMARY KEY,
+  scope          TEXT PRIMARY KEY,
   subscription_id  INTEGER NOT NULL UNIQUE,
   starting_cursor  INTEGER,
   cursor           INTEGER,
@@ -266,7 +266,7 @@ pub enum Layout {
     Fresh,
     /// This runtime's layout.
     Current,
-    /// An earlier runtime's layout (channel claims, push checkpoints, or an
+    /// An earlier runtime's layout (scope claims, push checkpoints, or an
     /// `axton_client` without this layout's columns): only a rebuild can use
     /// the file ([Reconciliation](../../../docs/engineering/architecture/client/storage/reconciliation.md)).
     Legacy(String),

@@ -24,16 +24,16 @@ async function until(predicate,what='condition') {
  while(Date.now()<deadline) { if(await predicate()) return; await new Promise(r=>setTimeout(r,5)); }
  throw Error(`${what} timed out`);
 }
-const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.channels.map(c=>[c,heads[c]??0]))});
-const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{channel:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
+const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.scopes.map(c=>[c,heads[c]??0]))});
+const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{scope:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
 /** The `bootstrap` part of a status snapshot before anything asked for a load. */
 const notRequested={phase:'not-requested',error:null};
 /**
  * One terminal bootstrap page covering the whole requested interval, with the
- * channel head it observed - the barrier completion then waits for
+ * scope head it observed - the barrier completion then waits for
  * ([#151](https://github.com/zanminwang/axton/issues/151)).
  */
-const loaded=(body,head=body.until)=>({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head,changes:[]});
+const loaded=(body,head=body.until)=>({mode:'bootstrap',scope:body.scope,from:body.after,to:body.until,until:body.until,head,changes:[]});
 /**
  * A fake server whose handshake acknowledges `heads` and whose pull answers when
  * `hold` resolves. A bootstrap request is answered by `load` behind its own
@@ -72,16 +72,16 @@ test('one handle per subscription identity: concurrent and repeated calls coales
   assert.equal(first.scope,'scope');
   assert.deepEqual({...first.status},{active:true,initialization:'pending',connection:'offline',bootstrap:notRequested},
    'registered offline: durable intent with no boundary and no transport');
-  assert.deepEqual((await client.syncState()).channels,['scope']);
+  assert.deepEqual((await client.syncState()).scopes,['scope']);
   assert.deepEqual((await client.syncState()).cursors,{},'an uninitialized subscription has no cursor at all');
   const other=await client.subscribe('other');
   assert.notEqual(other,first,'another Scope is another subscription');
   // A name no socket could subscribe is refused before a row exists, so no
   // handle is handed out and no lane is left with a Scope it cannot ask for.
   for (const blank of ['','  ','\t\n'])
-   await assert.rejects(()=>client.scopes.subscribe(blank),/channel must not be empty/,
+   await assert.rejects(()=>client.scopes.subscribe(blank),/scope must not be empty/,
     `a blank Scope name is refused: ${JSON.stringify(blank)}`);
-  assert.deepEqual((await client.syncState()).channels,['other','scope'],
+  assert.deepEqual((await client.syncState()).scopes,['other','scope'],
    'nothing of a refused registration was written');
  } finally { await fixture.close(); }
 });
@@ -123,7 +123,7 @@ test('an observer exception is reported after the commit and changes nothing', a
   await until(async()=>(await client.syncState()).cursors.scope===0,'the committed boundary');
   assert.ok(reported.length>=2,`the observer failed again after the commit: ${reported.length}`);
   assert.ok(reported.every(e=>e.message==='observer failed'));
-  assert.equal((await client.syncState()).channels.length,1,'nothing was rolled back');
+  assert.equal((await client.syncState()).scopes.length,1,'nothing was rolled back');
   // A failing observer is not a transport failure: the session it fired in is
   // still the one streaming.
   network.sockets[0].send(JSON.stringify(page('streamed')));
@@ -231,7 +231,7 @@ test('a stale handle from before a rebuild cannot disturb the subscription that 
   // The old handle removes nothing: the Scope's current registration is another
   // identity, whose acknowledgement is not this handle's to forget.
   await stale.unsubscribe();
-  assert.deepEqual((await client.syncState()).channels,['scope'],'the current registration stands');
+  assert.deepEqual((await client.syncState()).scopes,['scope'],'the current registration stands');
   assert.deepEqual({...current.status},{active:true,initialization:'ready',connection:'live',bootstrap:notRequested},
    'a removal that removed nothing changes no status');
   assert.deepEqual({...stale.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
@@ -245,18 +245,18 @@ test('unsubscribe removes one registration; an old handle cannot remove its repl
   const first=await client.subscribe('scope');
   await first.unsubscribe();
   assert.deepEqual({...first.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
-  assert.deepEqual((await client.syncState()).channels,[],'the registration is gone');
+  assert.deepEqual((await client.syncState()).scopes,[],'the registration is gone');
   await first.unsubscribe();
-  assert.deepEqual((await client.syncState()).channels,[],'repeating it on a closed handle is a no-op');
+  assert.deepEqual((await client.syncState()).scopes,[],'repeating it on a closed handle is a no-op');
   const second=await client.subscribe('scope');
   assert.notEqual(second,first);
   await first.unsubscribe();
-  assert.deepEqual((await client.syncState()).channels,['scope'],
+  assert.deepEqual((await client.syncState()).scopes,['scope'],
    'an old handle must not delete the subscription that replaced it');
   assert.equal(second.status.active,true);
   // The Scope-named form removes whatever is registered and closes its handle.
   await client.unsubscribe('scope');
-  assert.deepEqual((await client.syncState()).channels,[]);
+  assert.deepEqual((await client.syncState()).scopes,[]);
   assert.deepEqual({...second.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
  } finally { await fixture.close(); }
 });
@@ -276,7 +276,7 @@ test('closing the client stops handles and deletes nothing; work through them fa
   assert.equal(failed?.code,'subscription.closed','a stopped handle cannot commit work');
   const reopened=await runtime.Client.open({path,schema});
   try {
-   assert.deepEqual((await reopened.syncState()).channels,['scope'],'closing the client deleted nothing');
+   assert.deepEqual((await reopened.syncState()).scopes,['scope'],'closing the client deleted nothing');
    const restored=await reopened.subscribe('scope');
    assert.equal(restored.status.active,true);
   } finally { await reopened.close(); }
@@ -313,7 +313,7 @@ test('bootstrap is submitted eagerly, concurrent calls share one run, and the ba
   assert.equal(settled,false,'a barrier delivery has not reached does not complete the run');
   assert.equal(network.loads.length,1,'two concurrent calls registered one task');
   assert.deepEqual(network.loads[0].after,0,'the page asked for the interval from committed progress');
-  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{channel:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
+  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{scope:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
   await both;
   assert.deepEqual({...subscription.status.bootstrap},{phase:'complete',error:null});
   assert.ok(Object.isFrozen(subscription.status.bootstrap),'the load status is immutable too');
@@ -662,5 +662,28 @@ test('unsubscribing a Scope while a bootstrap is submitted rejects it as closed'
   await removed;
   assert.equal((await rejected)?.code,'subscription.closed');
   assert.equal(subscription.status.active,false);
+ } finally { await fixture.close(); }
+});
+
+test('transaction scopes commit and rollback local intent without a channels facade', async()=>{
+ const fixture=await openClient();const {client}=fixture;
+ try {
+  await client.transaction(async tx=>{
+   assert.equal('channels' in tx,false);
+   await tx.scopes.subscribe('U');
+   await tx.scopes.subscribe('discard');
+   await tx.scopes.unsubscribe('discard');
+  });
+  assert.deepEqual((await client.syncState()).scopes,['U']);
+  await assert.rejects(client.transaction(async tx=>{
+   await tx.scopes.unsubscribe('U');
+   await tx.scopes.subscribe('rolled-back');
+   throw Error('rollback scopes');
+  }),/rollback scopes/);
+  assert.deepEqual((await client.syncState()).scopes,['U']);
+  const followed=await client.scopes.subscribe('U');
+  assert.equal(followed,await client.scopes.subscribe('U'));
+  await followed.unsubscribe();
+  assert.equal(followed.status.active,false);
  } finally { await fixture.close(); }
 });

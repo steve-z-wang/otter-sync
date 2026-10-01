@@ -778,8 +778,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // A stored Bootstrap row the ledger cannot decode: the application
             // hears about the contained registration once per unchanged
             // defect; no status transition accompanies it (#163).
-            DownlinkAction::LedgerIssue { channel, message } => {
-                self.error(format!("bootstrap ledger {channel}: {message}"));
+            DownlinkAction::LedgerIssue { scope, message } => {
+                self.error(format!("bootstrap ledger {scope}: {message}"));
             }
             DownlinkAction::Wake { .. } => self.wake_push(),
             DownlinkAction::Report { reports } => self.report(Diagnostic::Records { reports }),

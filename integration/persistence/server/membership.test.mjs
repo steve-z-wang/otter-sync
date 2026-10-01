@@ -1,4 +1,4 @@
-// Channel membership against real PostgreSQL (#140): delivery filtered by
+// Scope membership against real PostgreSQL (#140): delivery filtered by
 // membership in both pull modes, the settlement's transaction ordering under
 // real concurrency, and rollback and failure isolation. Concurrency is
 // coordinated with latches, never sleeps: a transaction fixes its Repeatable
@@ -42,20 +42,20 @@ const make=db=>createBackend({config,native,database:db,authenticate:()=>'alice'
  mutations:{async mark({ctx,args}){await write(ctx.tx,args.todo.id,args.todo.title);await plans.get(args.todo.title)?.(ctx);}},
  loaders:{todo:loader}});
 const backend=make(database);
-const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({capabilities:['channel-membership-v1'],cursors,models:{Todo:1}})));
-const load=async(channel,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['channel-membership-v1'],mode:'bootstrap',channel,models:{Todo:1},after,until})));
-const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({capabilities:['channel-membership-v1'],clientId,batchSequence:1,models:{Todo:1},
+const pull=async(cursors,owner='alice')=>JSON.parse(await backend.pull(owner,JSON.stringify({capabilities:['scope-membership-v1'],cursors,models:{Todo:1}})));
+const load=async(scope,after,until)=>JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],mode:'bootstrap',scope,models:{Todo:1},after,until})));
+const push=(db,clientId,calls)=>db.push('alice',JSON.stringify({capabilities:['scope-membership-v1'],clientId,batchSequence:1,models:{Todo:1},
  mutations:calls.map(([callId,id,title],i)=>({ordinal:i+1,callId,name:'Mark',version:1,args:{todo:{id,title}}}))})).then(JSON.parse);
 const seed=(id,title)=>q('INSERT INTO member_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
-const head=async channel=>Number((await q('SELECT head FROM axton_channel WHERE channel=$1',[channel]))[0]?.head??0);
+const head=async scope=>Number((await q('SELECT head FROM axton_scope WHERE scope=$1',[scope]))[0]?.head??0);
 const stamp=async id=>Number((await q('SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2',['Todo',key(id)]))[0]?.stamp??0);
 /** The pair's one log row: its latest cursor and kind. */
-const position=async(channel,id)=>{const [row]=await q('SELECT l.cursor,l.kind FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1 AND r.model=$2 AND r.identity_key=$3',[channel,'Todo',key(id)]);return row?[Number(row.cursor),row.kind]:null;};
-const members=async id=>(await q('SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel',['Todo',key(id)])).map(r=>r.channel);
+const position=async(scope,id)=>{const [row]=await q('SELECT l.cursor,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope=$1 AND r.model=$2 AND r.identity_key=$3',[scope,'Todo',key(id)]);return row?[Number(row.cursor),row.kind]:null;};
+const members=async id=>(await q('SELECT m.scope FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.scope',['Todo',key(id)])).map(r=>r.scope);
 const delivered=page=>page.changes.filter(c=>c.kind==='upsert').map(c=>[c.identity.id,c.stamp,c.state]);
-const range=(page,channel)=>page.cursors[channel];
-const add=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(channel).add.todo({id});});
-const remove=(channel,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(channel).remove.todo({id});});
+const range=(page,scope)=>page.cursors[scope];
+const add=(scope,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(scope).add.todo({id});});
+const remove=(scope,ids)=>backend.transaction(async call=>{for(const id of ids)call.scope(scope).remove.todo({id});});
 const touch=(id,title)=>backend.transaction(async({tx,touch})=>{if(title===null)await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);else await write(tx,id,title);touch.todo({id});});
 const ids=(prefix,count)=>Array.from({length:count},(_,i)=>`${prefix}-${String(i).padStart(3,'0')}`);
 const settled=()=>new Promise(resolve=>setImmediate(resolve));
@@ -66,47 +66,47 @@ before(async()=>{
 after(async()=>{await pool.end();await check.end();});
 
 test('removing every remaining row yields a terminal page that advances to the head',async()=>{
- const channel='all-removed',records=ids('all-removed',3);
+ const scope='all-removed',records=ids('all-removed',3);
  for(const id of records)await seed(id,'v1');
- await add(channel,records);
- await remove(channel,records);
- assert.equal(await head(channel),6,'each removal takes a position after the head');
- assert.deepEqual(await position(channel,records[0]),[4,'remove'],'and replaces the pair\'s upsert row');
+ await add(scope,records);
+ await remove(scope,records);
+ assert.equal(await head(scope),6,'each removal takes a position after the head');
+ assert.deepEqual(await position(scope,records[0]),[4,'remove'],'and replaces the pair\'s upsert row');
  for(const from of [0,1,2,5]){
-  const page=await pull({[channel]:from});
+  const page=await pull({[scope]:from});
   assert.deepEqual(page.changes.map(c=>[c.kind,c.identity.id]),records.slice(Math.max(0,from-3)).map(id=>['remove',id]),`from ${from}`);
-  assert.deepEqual(range(page,channel),{from,to:6,head:6},'the removal page advances to the head');
+  assert.deepEqual(range(page,scope),{from,to:6,head:6},'the removal page advances to the head');
  }
- const page=await load(channel,0,6);
+ const page=await load(scope,0,6);
  assert.ok(page.changes.every(c=>c.kind==='remove'));
  assert.deepEqual([page.from,page.to,page.until,page.head],[0,6,6,6],'the interval is finished');
 });
 
 test('removed rows exceeding a page do not starve the active rows after them',async()=>{
- const channel='starve',records=ids('starve',115);
+ const scope='starve',records=ids('starve',115);
  for(const id of records)await seed(id,'v1');
- await add(channel,records);
- await remove(channel,records.slice(0,60));
- const first=await pull({[channel]:0});
+ await add(scope,records);
+ await remove(scope,records.slice(0,60));
+ const first=await pull({[scope]:0});
  assert.deepEqual(first.changes.map(c=>c.identity.id),records.slice(60,110),'membership filters before the limit');
- assert.deepEqual(range(first,channel),{from:0,to:110,head:175});
- const second=await pull({[channel]:110});
+ assert.deepEqual(range(first,scope),{from:0,to:110,head:175});
+ const second=await pull({[scope]:110});
  assert.deepEqual(second.changes.filter(c=>c.kind==='upsert').map(c=>c.identity.id),records.slice(110));
  assert.equal(second.changes.filter(c=>c.kind==='remove').length,45);
- assert.deepEqual(range(second,channel),{from:110,to:160,head:175},'removals count toward the page limit');
- const history=await load(channel,0,115);
+ assert.deepEqual(range(second,scope),{from:110,to:160,head:175},'removals count toward the page limit');
+ const history=await load(scope,0,115);
  assert.deepEqual(history.changes.map(r=>r.identity.id),records.slice(60,110));
  assert.equal(history.to,110,'a full page of members is not terminal');
- const rest=await load(channel,110,115);
+ const rest=await load(scope,110,115);
  assert.deepEqual([rest.changes.map(r=>r.identity.id),rest.to],[records.slice(110),115]);
- const crossing=await load(channel,0,100);
+ const crossing=await load(scope,0,100);
  assert.deepEqual([crossing.changes.map(r=>r.identity.id),crossing.to],[records.slice(60,100),100],'a scan crossing the origin is terminal');
 });
 
-test('a record removed and then touched elsewhere is not exposed through its old channel',async()=>{
+test('a record removed and then touched elsewhere is not exposed through its old scope',async()=>{
  const id='exposed';
  await seed(id,'shared');
- await backend.transaction(async({scope: channel})=>{channel('exposed-a').add.todo({id});channel('exposed-b').add.todo({id});});
+ await backend.transaction(async({scope: scope})=>{scope('exposed-a').add.todo({id});scope('exposed-b').add.todo({id});});
  await remove('exposed-a',[id]);
  await touch(id,'after removal');
  assert.equal(await stamp(id),2);
@@ -136,24 +136,24 @@ test('re-adding a removed record publishes its current state at a fresh position
 });
 
 test('a record removed and re-added above a Bootstrap origin is covered by delivery; removal arrives as an identity event',async()=>{
- const channel='origin',records=['origin-e1','origin-e2','origin-m','origin-x'];
+ const scope='origin',records=['origin-e1','origin-e2','origin-m','origin-x'];
  for(const id of records)await seed(id,'history');
- await add(channel,records);
- const origin=await head(channel);
+ await add(scope,records);
+ const origin=await head(scope);
  assert.equal(origin,4);
- await remove(channel,['origin-m']);
- await add(channel,['origin-m']);
- await remove(channel,['origin-x']);
- const page=await load(channel,0,origin);
+ await remove(scope,['origin-m']);
+ await add(scope,['origin-m']);
+ await remove(scope,['origin-x']);
+ const page=await load(scope,0,origin);
  assert.deepEqual(page.changes.map(r=>r.identity.id),['origin-e1','origin-e2']);
  assert.deepEqual([page.to,page.head],[origin,7],'terminal, with a barrier that covers the re-added position');
- const live=await pull({[channel]:origin});
+ const live=await pull({[scope]:origin});
  assert.deepEqual(delivered(live),[['origin-m',1,{title:'history'}]]);
  assert.ok(live.changes.some(c=>c.kind==='remove'&&c.identity.id==='origin-x'));
- assert.deepEqual(range(live,channel),{from:4,to:7,head:7});
+ assert.deepEqual(range(live,scope),{from:4,to:7,head:7});
 });
 
-test('a deleted record stays enrolled and yields null; recreating the identity distributes it again; delete with removal tells the channel nothing',async()=>{
+test('a deleted record stays enrolled and yields null; recreating the identity distributes it again; delete with removal tells the scope nothing',async()=>{
  const id='deleted';
  await seed(id,'v1');
  await add('deleted',[id]);
@@ -162,7 +162,7 @@ test('a deleted record stays enrolled and yields null; recreating the identity d
  assert.deepEqual(delivered(await pull({deleted:1})),[[id,2,null]]);
  await touch(id,'again');
  assert.deepEqual(delivered(await pull({deleted:2})),[[id,3,{title:'again'}]],'the same membership receives the recreated record');
- await backend.transaction(async({tx,scope: channel,touch})=>{await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);touch.todo({id});channel('deleted').remove.todo({id});});
+ await backend.transaction(async({tx,scope: scope,touch})=>{await driver.query(tx,'DELETE FROM member_todo WHERE id=$1',[id]);touch.todo({id});scope('deleted').remove.todo({id});});
  assert.equal(await stamp(id),4);
  assert.deepEqual([await head('deleted'),await position('deleted',id)],[4,[4,'remove']],'the final relationship wins: a removal, not a deletion, is published');
  const page=await pull({deleted:0});
@@ -180,7 +180,7 @@ test('explicit removal fabricates no deletion: it keeps business rows and stamps
  assert.deepEqual(await q('SELECT title FROM member_todo WHERE id=$1',[id]),[{title:'kept'}]);
  assert.deepEqual(await members(id),[]);
  const page=await pull({kept:0});
- assert.deepEqual(page.changes,[{kind:'remove',channel:'kept',cursor:2,model:'Todo',identity:{id}}]);
+ assert.deepEqual(page.changes,[{kind:'remove',scope:'kept',cursor:2,model:'Todo',identity:{id}}]);
  assert.deepEqual(range(page,'kept'),{from:0,to:2,head:2});
 });
 
@@ -189,7 +189,7 @@ test('explicit removal fabricates no deletion: it keeps business rows and stamps
 /** The record's stamp and memberships in the caller's snapshot; the first read fixes it. */
 const view=async(tx,id)=>({
  stamp:Number((await driver.query(tx,'SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2',['Todo',key(id)]))[0]?.stamp??0),
- members:(await driver.query(tx,'SELECT m.channel FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.channel',['Todo',key(id)])).map(r=>r.channel),
+ members:(await driver.query(tx,'SELECT m.scope FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model=$1 AND r.identity_key=$2 ORDER BY m.scope',['Todo',key(id)])).map(r=>r.scope),
 });
 /**
  * `held` fixes its snapshot, then `other` runs to commit, then `held` goes on
@@ -213,17 +213,17 @@ const together=async(id,first,second)=>{
  return views;
 };
 const touchBody=(id,title)=>async({tx,touch})=>{await write(tx,id,title);touch.todo({id});};
-const addBody=(channel,id)=>async({scope: c})=>{c(channel).add.todo({id});};
-const removeBody=(channel,id)=>async({scope: c})=>{c(channel).remove.todo({id});};
-const outcome=async(id,channels)=>({stamp:await stamp(id),members:await members(id),
- ...Object.fromEntries(await Promise.all(channels.map(async c=>[c,{head:await head(c),position:await position(c,id)}])))});
+const addBody=(scope,id)=>async({scope: c})=>{c(scope).add.todo({id});};
+const removeBody=(scope,id)=>async({scope: c})=>{c(scope).remove.todo({id});};
+const outcome=async(id,scopes)=>({stamp:await stamp(id),members:await members(id),
+ ...Object.fromEntries(await Promise.all(scopes.map(async c=>[c,{head:await head(c),position:await position(c,id)}])))});
 /** Which body the driver retried: the one serialized second. */
 const retried=views=>{const counts=views.map(v=>v.length);assert.ok(counts.includes(1)&&counts.includes(2)&&counts.length===2,`exactly one retry: ${counts}`);return counts.indexOf(2);};
 
-test('touch and add serialize in either order: the enrolled Channel always holds the final stamp',async t=>{
+test('touch and add serialize in either order: the enrolled Scope always holds the final stamp',async t=>{
  const orders=[];
  for(const initial of ['present','absent']){
-  // Each order's committed outcome for the record and the Channel C it is
+  // Each order's committed outcome for the record and the Scope C it is
   // added to; a present record is already a member of B at stamp 1.
   const expected=initial==='present'
    ?{touchFirst:{stamp:2,C:{head:1,position:[1,'upsert']}},addFirst:{stamp:2,C:{head:2,position:[2,'upsert']}}}
@@ -263,9 +263,9 @@ test('touch and add serialize in either order: the enrolled Channel always holds
  t.diagnostic(`released together, committed orders: ${orders.join(' ')}`);
 });
 
-test('touch and remove serialize in either order; the stale touch retries and publishes nothing to the removed Channel',async t=>{
+test('touch and remove serialize in either order; the stale touch retries and publishes nothing to the removed Scope',async t=>{
  const orders=[];
- const prepare=async id=>{await seed(id,'v1');await backend.transaction(async({scope: channel})=>{channel(`${id}-B`).add.todo({id});channel(`${id}-C`).add.todo({id});});return `${id}-C`;};
+ const prepare=async id=>{await seed(id,'v1');await backend.transaction(async({scope: scope})=>{scope(`${id}-B`).add.todo({id});scope(`${id}-C`).add.todo({id});});return `${id}-C`;};
  // Either way C ends with the pair's removal; touching first published one more position before it.
  const expected={touchFirst:{head:3,position:[3,'remove']},removeFirst:{head:2,position:[2,'remove']}};
  const verify=async(id,order,label)=>{
@@ -313,22 +313,22 @@ test('membership-only races keep the stamp; a duplicate add publishes once; a re
   retried(await together(id,addBody(`mo-dup-race-${trial}`,id),addBody(`mo-dup-race-${trial}`,id)));
   assert.deepEqual(await outcome(id,[`mo-dup-race-${trial}`]),{stamp:5,members:[`mo-dup-race-${trial}`],[`mo-dup-race-${trial}`]:{head:1,position:[1,'upsert']}});
  }
- // Add and remove of one Channel: either order, at the unchanged stamp.
+ // Add and remove of one Scope: either order, at the unchanged stamp.
  for(let trial=0;trial<4;trial++){
-  const id=`mo-ar-${trial}`,channel=`mo-ar-${trial}`;await fixed(id);
-  const views=await together(id,addBody(channel,id),removeBody(channel,id));
+  const id=`mo-ar-${trial}`,scope=`mo-ar-${trial}`;await fixed(id);
+  const views=await together(id,addBody(scope,id),removeBody(scope,id));
   const order=retried(views)===1?'addFirst':'removeFirst';
   orders.push(order);
   // Adding first publishes the member and then its removal; removing an absent member first publishes nothing.
-  assert.deepEqual(await outcome(id,[channel]),{stamp:5,...(order==='addFirst'?{members:[],[channel]:{head:2,position:[2,'remove']}}:{members:[channel],[channel]:{head:1,position:[1,'upsert']}})},order);
+  assert.deepEqual(await outcome(id,[scope]),{stamp:5,...(order==='addFirst'?{members:[],[scope]:{head:2,position:[2,'remove']}}:{members:[scope],[scope]:{head:1,position:[1,'upsert']}})},order);
  }
  // A record with no metadata: the removal locks nothing and writes nothing, so
  // either way it is ordered before the first enrollment, which is kept.
  for(const held of ['remove','add']){
-  const id=`mo-absent-${held}`,channel=`mo-absent-${held}`;
-  const views=held==='remove'?await stale(id,removeBody(channel,id),addBody(channel,id)):await stale(id,addBody(channel,id),removeBody(channel,id));
+  const id=`mo-absent-${held}`,scope=`mo-absent-${held}`;
+  const views=held==='remove'?await stale(id,removeBody(scope,id),addBody(scope,id)):await stale(id,addBody(scope,id),removeBody(scope,id));
   assert.equal(views.length,1,`${held} held: nothing to conflict on`);
-  assert.deepEqual(await outcome(id,[channel]),{stamp:1,members:[channel],[channel]:{head:1,position:[1,'upsert']}},`${held} held`);
+  assert.deepEqual(await outcome(id,[scope]),{stamp:1,members:[scope],[scope]:{head:1,position:[1,'upsert']}},`${held} held`);
  }
  t.diagnostic(`add/remove released together, committed orders: ${orders.join(' ')}`);
 });
@@ -336,18 +336,18 @@ test('membership-only races keep the stamp; a duplicate add publishes once; a re
 // ---- Rollback and isolation ----------------------------------------------
 
 const callId=n=>`01890f47-1234-7123-8123-${n.toString(16).padStart(12,'0')}`;
-const snapshotOf=async(records,channels)=>({
+const snapshotOf=async(records,scopes)=>({
  rows:await q('SELECT id,title FROM member_todo WHERE id = ANY($1) ORDER BY id',[records]),
  stamps:await q('SELECT identity_key,stamp::int FROM axton_record WHERE identity_key = ANY($1) ORDER BY identity_key',[records.map(key)]),
- members:await q('SELECT m.channel,r.identity_key FROM axton_channel_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key = ANY($1) ORDER BY m.channel,r.identity_key',[records.map(key)]),
- tags:await q('SELECT t.channel,t.name FROM axton_channel_tag t WHERE t.channel = ANY($1) ORDER BY t.channel,t.name',[channels]),
- channels:await q('SELECT channel,head::int FROM axton_channel WHERE channel = ANY($1) ORDER BY channel',[channels]),
- positions:await q('SELECT l.channel,r.identity_key,l.cursor::int,l.kind FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel = ANY($1) ORDER BY l.channel,r.identity_key',[channels]),
+ members:await q('SELECT m.scope,r.identity_key FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key = ANY($1) ORDER BY m.scope,r.identity_key',[records.map(key)]),
+ tags:await q('SELECT t.scope,t.name FROM axton_scope_tag t WHERE t.scope = ANY($1) ORDER BY t.scope,t.name',[scopes]),
+ scopes:await q('SELECT scope,head::int FROM axton_scope WHERE scope = ANY($1) ORDER BY scope',[scopes]),
+ positions:await q('SELECT l.scope,r.identity_key,l.cursor::int,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope = ANY($1) ORDER BY l.scope,r.identity_key',[scopes]),
 });
-const listen=channels=>{const woken=[];const stops=channels.map(c=>backend.onCommitted(c,()=>woken.push(c)));return {woken,stop:()=>stops.forEach(s=>s())};};
+const listen=scopes=>{const woken=[];const stops=scopes.map(c=>backend.onCommitted(c,()=>woken.push(c)));return {woken,stop:()=>stops.forEach(s=>s())};};
 
 test('a call rejected after settlement rolls back its writes, relationships, stamps, heads and wake; the batch continues',async()=>{
- const channels=['rb-kept','rb-rolled','rb-old'],untouched=['rb-refused','rb-other','rb-old'];
+ const scopes=['rb-kept','rb-rolled','rb-old'],untouched=['rb-refused','rb-other','rb-old'];
  await seed('rb-other','v1');await seed('rb-old','v1');await add('rb-old',['rb-old','rb-other']);
  plans.set('rb-keep',ctx=>{ctx.scope('rb-kept').add.todo({id:'rb-kept'});});
  plans.set('rb-declare',async ctx=>{
@@ -359,7 +359,7 @@ test('a call rejected after settlement rolls back its writes, relationships, sta
  });
  refuse=new Set(['rb-refused']);
  const before=await snapshotOf(untouched,['rb-rolled','rb-old']);
- const wakes=listen(channels);
+ const wakes=listen(scopes);
  let receipt;
  try{receipt=await push(backend,'rb',[[callId(0x501),'rb-kept','rb-keep'],[callId(0x502),'rb-refused','rb-declare']]);}
  finally{refuse=new Set();}
@@ -368,7 +368,7 @@ test('a call rejected after settlement rolls back its writes, relationships, sta
  assert.deepEqual([receipt.completions[1].outcome.code,receipt.completions[1].outcome.execution],['todo.forbidden','rejected']);
  assert.deepEqual(await snapshotOf(untouched,['rb-rolled','rb-old']),before,'business rows, stamps, memberships, heads and positions are as before the rejected call');
  assert.deepEqual(await q('SELECT id FROM member_todo WHERE id=$1',['rb-refused']),[]);
- assert.deepEqual(await q('SELECT channel FROM axton_channel WHERE channel=$1',['rb-rolled']),[],'the Channel its enrollment created rolled back too');
+ assert.deepEqual(await q('SELECT scope FROM axton_scope WHERE scope=$1',['rb-rolled']),[],'the Scope its enrollment created rolled back too');
  assert.deepEqual(await members('rb-kept'),['rb-kept'],'the preceding call committed');
  assert.deepEqual(wakes.woken,['rb-kept'],'only the committed publication wakes');
  const saved=await q('SELECT response FROM axton_call WHERE call_id=$1',[callId(0x502)]);
@@ -376,7 +376,7 @@ test('a call rejected after settlement rolls back its writes, relationships, sta
 });
 
 test('a failed transaction rolls back every table, the saved outcome and the wake; the retried batch settles once',async()=>{
- const records=['tx-a','tx-b'],channels=['tx-new','tx-old'];
+ const records=['tx-a','tx-b'],scopes=['tx-new','tx-old'];
  await seed('tx-b','v1');await add('tx-old',['tx-b']);
  plans.set('tx-declare',async ctx=>{
   ctx.scope('tx-new').add.todo({id:'tx-a'});
@@ -387,25 +387,25 @@ test('a failed transaction rolls back every table, the saved outcome and the wak
  });
  const normal=database;
  const broken={driver,transaction:normal.transaction,persistence:tx=>({call:async request=>{if(request.op==='saveReceipt')throw new Error('forced saveReceipt fault');return normal.persistence(tx).call(request);}})};
- const before=await snapshotOf(records,channels);
+ const before=await snapshotOf(records,scopes);
  const failing=make(broken);
- const woken=[];const stops=channels.map(c=>failing.onCommitted(c,()=>woken.push(c)));
+ const woken=[];const stops=scopes.map(c=>failing.onCommitted(c,()=>woken.push(c)));
  await assert.rejects(()=>push(failing,'tx',[[callId(0x601),'tx-a','tx-declare']]),/forced saveReceipt fault/);
  await settled();stops.forEach(s=>s());
- assert.deepEqual(await snapshotOf(records,channels),before,'business rows, stamps, memberships, heads and positions rolled back');
+ assert.deepEqual(await snapshotOf(records,scopes),before,'business rows, stamps, memberships, heads and positions rolled back');
  assert.deepEqual(await q('SELECT call_id FROM axton_call WHERE call_id=$1',[callId(0x601)]),[],'the saved outcome rolled back');
  assert.deepEqual(await q('SELECT client_id FROM axton_client WHERE client_id=$1',['tx']),[]);
  assert.deepEqual(woken,[],'a rolled-back transaction wakes nobody');
- const wakes=listen(channels);
+ const wakes=listen(scopes);
  const receipt=await push(backend,'tx',[[callId(0x601),'tx-a','tx-declare']]);
  await settled();wakes.stop();
  assert.equal(receipt.completions[0].outcome.status,'succeeded');
- assert.deepEqual(wakes.woken.sort(),['tx-new','tx-old'],'the committed retry wakes the Channels it published to, the removal\'s included');
- const after=await snapshotOf(records,channels);
- assert.deepEqual(after.members,[{channel:'tx-new',identity_key:key('tx-a')},{channel:'tx-new',identity_key:key('tx-b')}]);
+ assert.deepEqual(wakes.woken.sort(),['tx-new','tx-old'],'the committed retry wakes the Scopes it published to, the removal\'s included');
+ const after=await snapshotOf(records,scopes);
+ assert.deepEqual(after.members,[{scope:'tx-new',identity_key:key('tx-a')},{scope:'tx-new',identity_key:key('tx-b')}]);
  const replay=await push(backend,'tx-replay',[[callId(0x601),'tx-a','tx-declare']]);
  assert.deepEqual(replay.completions,receipt.completions);
- assert.deepEqual(await snapshotOf(records,channels),after,'a replay settles nothing again');
+ assert.deepEqual(await snapshotOf(records,scopes),after,'a replay settles nothing again');
 });
 
 test('a later subscriber read failure is isolated from the committed mutation',async()=>{

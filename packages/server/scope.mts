@@ -1,6 +1,6 @@
 /** Canonical Scope handles. Validation and capture happen before the shared collector records effects. */
 import type {
-  ChannelIntent,
+  ScopeIntent,
   HostRecordRef,
   ScopePredicate,
   SelectionAction,
@@ -49,7 +49,7 @@ export interface ScopeCollector {
     records: unknown,
     caller: string,
   ): { entry: ScopeEntry; identity: Readonly<Record<string, unknown>> }[];
-  record(intents: readonly ChannelIntent[], caller: string): void;
+  record(intents: readonly ScopeIntent[], caller: string): void;
 }
 const define = (object: object, key: string, value: unknown) =>
   Object.defineProperty(object, key, {
@@ -189,7 +189,7 @@ export function scopeHandle(
     c.check("scope");
     c.name(name);
   });
-  const emit = (intents: readonly ChannelIntent[]) =>
+  const emit = (intents: readonly ScopeIntent[]) =>
     c.guard(() => {
       c.check("scope");
       c.record(intents, "scope");
@@ -206,7 +206,7 @@ export function scopeHandle(
   ) =>
     emit(
       records.map((record) =>
-        Object.freeze({ kind, channel: name, record, tags }),
+        Object.freeze({ kind, scope: name, record, tags }),
       ),
     );
   const add = namespace(c, "scope.add", (records) => {
@@ -214,7 +214,7 @@ export function scopeHandle(
       records.map((record) =>
         Object.freeze({
           kind: "add",
-          channel: name,
+          scope: name,
           record,
           tags: Object.freeze([]),
         }),
@@ -238,7 +238,7 @@ export function scopeHandle(
     const remove = (...args: unknown[]) =>
       c.guard(() => {
         if (args.length === 0) {
-          emit([Object.freeze({ kind: "detachTags", channel: name, tags })]);
+          emit([Object.freeze({ kind: "detachTags", scope: name, tags })]);
           return;
         }
         attach("tagRemove", operands(c, args[0], "scope.tag.remove"), tags);
@@ -259,7 +259,7 @@ export function scopeHandle(
   const remove = namespace(c, "scope.remove", (records) =>
     emit(
       records.map((record) =>
-        Object.freeze({ kind: "remove", channel: name, record }),
+        Object.freeze({ kind: "remove", scope: name, record }),
       ),
     ),
   );
@@ -272,7 +272,7 @@ export function scopeHandle(
         emit([
           Object.freeze({
             kind: "select",
-            channel: name,
+            scope: name,
             ...(entry ? { model: entry.name } : {}),
             predicate,
             action: Object.freeze(action),

@@ -1,10 +1,10 @@
-//! The final membership of each Channel/record pair after one settlement's
+//! The final membership of each Scope/record pair after one settlement's
 //! ordered declarations ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)).
 //!
 //! Pure: settlement reads the members its declarations and touches can reach
-//! (`readChannelMembers`), [`reduce`] folds the declarations over that
+//! (`readScopeMembers`), [`reduce`] folds the declarations over that
 //! transaction-local view in order, and the [`MemberDelta`]s it answers are
-//! what `applyChannelMembers` persists. The wire shapes of the three types
+//! what `applyScopeMembers` persists. The wire shapes of the three types
 //! belong to the host contract ([`crate::host`]).
 use crate::scope_predicate::ScopePredicate;
 use crate::{Result, internal};
@@ -58,7 +58,7 @@ pub fn declared_tags(tags: &[String]) -> std::result::Result<BTreeSet<String>, S
     Ok(distinct)
 }
 
-/// One live member as `readChannelMembers` answers it: the record and its
+/// One live member as `readScopeMembers` answers it: the record and its
 /// complete current tags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -70,7 +70,7 @@ pub struct MemberState {
     pub tags: BTreeSet<String>,
 }
 
-/// One pair's final state, as `applyChannelMembers` persists it. `present`
+/// One pair's final state, as `applyScopeMembers` persists it. `present`
 /// with its complete final `tags`, or absent with none. `publish` allocates a
 /// new position (`upsert` when present, `remove` when not); without it a
 /// present member keeps its existing position and only its tags may change.
@@ -80,7 +80,7 @@ pub struct MemberState {
     into = "crate::host::MemberDeltaWire"
 )]
 pub struct MemberDelta {
-    pub channel: String,
+    pub scope: String,
     pub key: RecordKey,
     pub present: bool,
     pub tags: BTreeSet<String>,
@@ -95,7 +95,7 @@ pub enum PositionKind {
     Remove,
 }
 
-/// The latest position of one pair after `applyChannelMembers`: new for a
+/// The latest position of one pair after `applyScopeMembers`: new for a
 /// published delta, the existing one otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -103,13 +103,13 @@ pub enum PositionKind {
     into = "crate::host::MemberPositionWire"
 )]
 pub struct MemberPosition {
-    pub channel: String,
+    pub scope: String,
     pub key: RecordKey,
     pub cursor: u64,
     pub kind: PositionKind,
 }
 
-/// One declaration against one Channel, its record resolved to a canonical key.
+/// One declaration against one Scope, its record resolved to a canonical key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declaration {
     /// Ensure membership and union `tags` into its labels.
@@ -122,9 +122,6 @@ pub enum Declaration {
         key: RecordKey,
     },
     /// Release every member carrying `tag` as the preceding declarations left it.
-    RemoveTag {
-        tag: String,
-    },
     TagAdd {
         key: RecordKey,
         tags: BTreeSet<String>,
@@ -151,7 +148,7 @@ impl Declaration {
             | Self::Remove { key }
             | Self::TagAdd { key, .. }
             | Self::TagRemove { key, .. } => Some(key),
-            Self::RemoveTag { .. } | Self::DetachTags { .. } | Self::Select { .. } => None,
+            Self::DetachTags { .. } | Self::Select { .. } => None,
         }
     }
 }
@@ -185,7 +182,7 @@ impl Pair {
     }
 }
 
-/// Reduce `channel`'s declarations, in order, over the members read for it,
+/// Reduce `scope`'s declarations, in order, over the members read for it,
 /// to one delta per pair that changes, is touched while present, or is named
 /// by an add, in canonical record key order.
 ///
@@ -196,7 +193,7 @@ impl Pair {
 /// both ends publishes when the member was released and re-added or its
 /// record is touched; otherwise the delta only carries its final tags.
 pub fn reduce(
-    channel: &str,
+    scope: &str,
     initial: Vec<MemberState>,
     declarations: &[Declaration],
     touched: &BTreeSet<String>,
@@ -242,7 +239,7 @@ pub fn reduce(
                     .filter(|pair| pair.current.is_some())
                     .ok_or_else(|| {
                         crate::settlement::invalid_tags(
-                            channel,
+                            scope,
                             format!(
                                 "cannot add labels to absent member {} {}",
                                 key.model, key.identity
@@ -292,13 +289,6 @@ pub fn reduce(
                     }
                 }
             }
-            Declaration::RemoveTag { tag } => {
-                for pair in pairs.values_mut() {
-                    if pair.current.as_ref().is_some_and(|tags| tags.contains(tag)) {
-                        pair.release();
-                    }
-                }
-            }
         }
     }
     let mut deltas = vec![];
@@ -316,7 +306,7 @@ pub fn reduce(
             }
         };
         deltas.push(MemberDelta {
-            channel: channel.into(),
+            scope: scope.into(),
             key: pair.key,
             present,
             tags,
@@ -356,11 +346,15 @@ mod tests {
         Declaration::Remove { key: key(id) }
     }
     fn remove_tag(tag: &str) -> Declaration {
-        Declaration::RemoveTag { tag: tag.into() }
+        Declaration::Select {
+            model: None,
+            predicate: serde_json::from_value(serde_json::json!({"tags":{"any":[tag]}})).unwrap(),
+            action: SelectionAction::Remove,
+        }
     }
     fn delta(id: &str, present: bool, names: &[&str], publish: bool) -> MemberDelta {
         MemberDelta {
-            channel: "U".into(),
+            scope: "U".into(),
             key: key(id),
             present,
             tags: tags(names),
@@ -479,8 +473,8 @@ mod tests {
     }
 
     /// A touched member publishes once however it is also declared; a
-    /// touched record that leaves the Channel publishes its removal instead;
-    /// a touched non-member of this Channel is not in it.
+    /// touched record that leaves the Scope publishes its removal instead;
+    /// a touched non-member of this Scope is not in it.
     #[test]
     fn a_touch_publishes_each_final_member_once() {
         let deltas = reduce(
@@ -561,7 +555,7 @@ mod tests {
             tags: tags(&["X"]),
         };
         assert_eq!(
-            reduce("U", vec![], &[add.clone()], &BTreeSet::new())
+            reduce("U", vec![], std::slice::from_ref(&add), &BTreeSet::new())
                 .unwrap_err()
                 .code,
             crate::code::HANDLER_INVALID

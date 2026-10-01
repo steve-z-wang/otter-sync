@@ -1,5 +1,5 @@
 //! Pull copies the current record stamp from the scan row, covers every
-//! channel of one request and isolates a record its loader cannot read; an
+//! scope of one request and isolates a record its loader cannot read; an
 //! external notification allocates one stamp per record and publishes it at
 //! that stamp.
 mod capability;
@@ -31,10 +31,10 @@ fn config() -> Config {
     }))
     .unwrap()
 }
-/// `scan` returns the given rows; `applyChannelMembers` returns the given
+/// `scan` returns the given rows; `applyScopeMembers` returns the given
 /// value, or with `null` one position per delta from cursor 3. Both stay raw
 /// `Value`s: these tests feed the engine answers the contract refuses.
-/// Records start in no Channel and every lock is granted.
+/// Records start in no Scope and every lock is granted.
 struct Fixed {
     scan: Value,
     apply: Value,
@@ -78,14 +78,14 @@ impl Host for Fixed {
                     self.ensured.lock().unwrap().push(identity_key.clone());
                     json!(9)
                 }
-                HostRequest::ApplyChannelMembers { deltas } => {
+                HostRequest::ApplyScopeMembers { deltas } => {
                     self.published.lock().unwrap().push(request.clone());
                     if self.apply.is_null() {
                         let positions: Vec<Value> = deltas
                             .iter()
                             .zip(3..)
                             .map(|(delta, cursor)| {
-                                json!({"channel":delta.channel,"model":delta.key.model,
+                                json!({"scope":delta.scope,"model":delta.key.model,
                                     "identityKey":delta.key.encoded_identity().unwrap(),
                                     "cursor":cursor,"kind":"upsert"})
                             })
@@ -96,10 +96,10 @@ impl Host for Fixed {
                     }
                 }
                 HostRequest::LockRecord { .. } => json!(9),
-                HostRequest::Memberships { .. } | HostRequest::ReadChannelMembers { .. } => {
+                HostRequest::Memberships { .. } | HostRequest::ReadScopeMembers { .. } => {
                     json!([])
                 }
-                HostRequest::LockChannels { .. } => Value::Null,
+                HostRequest::LockScopes { .. } => Value::Null,
                 other => return Err(format!("unsupported {}", other.label())),
             })
         })
@@ -121,7 +121,7 @@ fn pull_body_declaring(models: &[(&str, u64)]) -> Vec<u8> {
     .unwrap()
 }
 fn row(stamp: Value) -> Value {
-    let mut row = json!({"channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"});
+    let mut row = json!({"scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"});
     if !stamp.is_null() {
         row["stamp"] = stamp;
     }
@@ -272,12 +272,12 @@ fn pull_rejects_rows_without_a_positive_stamp() {
 
 #[test]
 fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_that_stamp() {
-    let enroll = |channel: &str| json!({"kind":"add","channel":channel,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]});
+    let enroll = |scope: &str| json!({"kind":"add","scope":scope,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]});
     let settlement = json!({
         "changes":[{"model":"Entry","identity":{"id":"e"}}],
         "memberships":[enroll("a"),enroll("b")]
     });
-    // One Channel per position, so every answered range is consecutive.
+    // One Scope per position, so every answered range is consecutive.
     let ok = Fixed::new(json!([]), Value::Null);
     let answer = run(axton_server::settle_external(&config(), &settlement, &ok)).unwrap();
     assert_eq!(
@@ -287,16 +287,16 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
     );
     assert_eq!(*ok.advanced.lock().unwrap(), [r#"{"id":"e"}"#], "one stamp");
     let published = ok.published.lock().unwrap();
-    let [HostRequest::ApplyChannelMembers { deltas }] = &published[..] else {
+    let [HostRequest::ApplyScopeMembers { deltas }] = &published[..] else {
         panic!("one write: {published:?}");
     };
     assert_eq!(
         deltas
             .iter()
-            .map(|delta| (delta.channel.as_str(), delta.present, delta.publish))
+            .map(|delta| (delta.scope.as_str(), delta.present, delta.publish))
             .collect::<Vec<_>>(),
         [("a", true, true), ("b", true, true)],
-        "one position per Channel"
+        "one position per Scope"
     );
     drop(published);
     // An enrolled but unchanged record keeps its stamp; `ensureStamp`
@@ -316,7 +316,7 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
     );
     assert!(ensure.advanced.lock().unwrap().is_empty());
     // The host must answer one position per delta; anything else is unusable.
-    let position = |channel: &str, cursor: u64| json!({"channel":channel,"model":"Entry","identityKey":"{\"id\":\"e\"}","cursor":cursor,"kind":"upsert"});
+    let position = |scope: &str, cursor: u64| json!({"scope":scope,"model":"Entry","identityKey":"{\"id\":\"e\"}","cursor":cursor,"kind":"upsert"});
     for bad in [
         json!(3),
         json!({"cursor":3,"stamp":9}),
@@ -328,14 +328,14 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
         let err = run(axton_server::settle_external(&config(), &settlement, &host)).unwrap_err();
         assert_eq!(err.code, axton_server::code::HOST_INVALID, "{bad}: {err}");
     }
-    // A membership naming no channel is refused: a blank name is no more a
-    // channel than an empty one, and nothing is published for it.
+    // A membership naming no scope is refused: a blank name is no more a
+    // scope than an empty one, and nothing is published for it.
     for blank in ["", " ", "\t\n"] {
         let host = Fixed::new(json!([]), Value::Null);
         let err = run(axton_server::settle_external(
             &config(),
             &json!({"changes":[{"model":"Entry","identity":{"id":"e"}}],
-                    "memberships":[{"kind":"add","channel":blank,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]}]}),
+                    "memberships":[{"kind":"add","scope":blank,"record":{"model":"Entry","identity":{"id":"e"}},"tags":[]}]}),
             &host,
         ))
         .unwrap_err();
@@ -347,12 +347,12 @@ fn an_external_settlement_advances_one_stamp_per_record_and_distributes_it_at_th
     for bad in [
         json!({"rejection":"x"}),
         json!({"changes":[]}),
-        json!({"channels":["a"]}),
-        json!({"changes":[],"publications":[{"channel":"a"}]}),
+        json!({"scopes":["a"]}),
+        json!({"changes":[],"publications":[{"scope":"a"}]}),
         json!({"changes":[],"memberships":[],"publications":[]}),
-        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"}}]}),
-        json!({"changes":[],"memberships":[{"channel":"a","model":"Entry","identity":{"id":"e"},"present":true}]}),
-        json!({"changes":[],"memberships":[{"kind":"add","channel":"a","record":{"model":"Entry","identity":{"id":"e"}},"tags":"yes"}]}),
+        json!({"changes":[],"memberships":[{"scope":"a","model":"Entry","identity":{"id":"e"}}]}),
+        json!({"changes":[],"memberships":[{"scope":"a","model":"Entry","identity":{"id":"e"},"present":true}]}),
+        json!({"changes":[],"memberships":[{"kind":"add","scope":"a","record":{"model":"Entry","identity":{"id":"e"}},"tags":"yes"}]}),
     ] {
         let host = Fixed::new(json!([]), Value::Null);
         let err = run(axton_server::settle_external(&config(), &bad, &host)).unwrap_err();
@@ -371,9 +371,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
     let result = run(axton_server::live::negotiate(
         &config(),
         "u",
-        &crate::capability::request(
-            br#"{"type":"subscribe","channels":["a"],"models":{"Entry":1}}"#,
-        ),
+        &crate::capability::request(br#"{"type":"subscribe","scopes":["a"],"models":{"Entry":1}}"#),
         &host,
     ))
     .unwrap();
@@ -386,15 +384,15 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
     // The declaration is checked at the handshake, like a pull's.
     for (frame, code) in [
         (
-            r#"{"type":"subscribe","channels":["a"]}"#,
+            r#"{"type":"subscribe","scopes":["a"]}"#,
             axton_server::code::REQUEST_INVALID,
         ),
         (
-            r#"{"type":"subscribe","channels":["a"],"models":{"Entry":2}}"#,
+            r#"{"type":"subscribe","scopes":["a"],"models":{"Entry":2}}"#,
             axton_server::code::MODEL_VERSION_UNSUPPORTED,
         ),
         (
-            r#"{"type":"subscribe","channels":["a"],"models":{"Ghost":1}}"#,
+            r#"{"type":"subscribe","scopes":["a"],"models":{"Ghost":1}}"#,
             axton_server::code::MODEL_VERSION_UNSUPPORTED,
         ),
     ] {
@@ -421,7 +419,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
         json!([]),
     ] {
         let request =
-            json!({"type":"subscribe","channels":["a"],"models":{"Entry":1},"cursors":cursors});
+            json!({"type":"subscribe","scopes":["a"],"models":{"Entry":1},"cursors":cursors});
         assert!(
             run(axton_server::live::negotiate(
                 &config(),
@@ -435,7 +433,7 @@ fn live_negotiation_establishes_current_heads_and_rejects_cursor_modes() {
     }
 }
 
-/// A scripted host for pulls: per-channel scan rows and per-call load answers.
+/// A scripted host for pulls: per-scope scan rows and per-call load answers.
 struct Multi {
     scans: BTreeMap<String, Value>,
     heads: BTreeMap<String, u64>,
@@ -454,16 +452,16 @@ impl Host for Multi {
                 .map_err(|error| format!("unsupported host request: {error}"))?;
             self.log.lock().unwrap().push(request.clone());
             Ok(match &request {
-                HostRequest::Head { channel } => {
-                    json!(self.heads.get(channel).copied().unwrap_or(0))
+                HostRequest::Head { scope } => {
+                    json!(self.heads.get(scope).copied().unwrap_or(0))
                 }
                 HostRequest::Scan {
-                    channel,
+                    scope,
                     after,
                     limit,
                 } => Value::Array(
                     self.scans
-                        .get(channel)
+                        .get(scope)
                         .and_then(Value::as_array)
                         .into_iter()
                         .flatten()
@@ -491,8 +489,8 @@ impl Host for Multi {
         })
     }
 }
-fn scan_row(channel: &str, cursor: u64, id: &str, stamp: u64) -> Value {
-    json!({"channel":channel,"cursor":cursor,"model":"Entry","identity":{"id":id},"identityKey":format!("{{\"id\":\"{id}\"}}"),"stamp":stamp})
+fn scan_row(scope: &str, cursor: u64, id: &str, stamp: u64) -> Value {
+    json!({"scope":scope,"cursor":cursor,"model":"Entry","identity":{"id":id},"identityKey":format!("{{\"id\":\"{id}\"}}"),"stamp":stamp})
 }
 fn multi(scans: &[(&str, Vec<Value>, u64)], loads: Vec<Value>) -> Multi {
     Multi {
@@ -524,11 +522,11 @@ fn pull_all(host: &Multi, cursors: &[(&str, u64)]) -> axton_server::Result<axton
     .map(|text| capability::pull(text.as_bytes()).unwrap())
 }
 
-/// One pull covers every channel: each channel scans after its own cursor and
-/// reports its own progress and head, and a record both channels changed is
+/// One pull covers every scope: each scope scans after its own cursor and
+/// reports its own progress and head, and a record both scopes changed is
 /// delivered once at its current stamp.
 #[test]
-fn one_pull_covers_every_channel_and_delivers_a_shared_record_once() {
+fn one_pull_covers_every_scope_and_delivers_a_shared_record_once() {
     let host = multi(
         &[
             (
@@ -571,10 +569,10 @@ fn one_pull_covers_every_channel_and_delivers_a_shared_record_once() {
     assert_eq!(loads, 1, "one load per model for the whole page");
 }
 
-/// A channel whose scan filled the page stops at its last row below the head
-/// and continues; the other channel reaches its head.
+/// A scope whose scan filled the page stops at its last row below the head
+/// and continues; the other scope reaches its head.
 #[test]
-fn a_full_channel_continues_independently_of_the_others() {
+fn a_full_scope_continues_independently_of_the_others() {
     let rows: Vec<Value> = (1..=51)
         .map(|c| scan_row("a", c, &format!("r{c}"), 1))
         .collect();
@@ -680,7 +678,7 @@ fn a_malformed_loader_row_fails_only_its_record() {
     assert_eq!(page.changes[0].state["text"], "t-e");
     assert_eq!(page.changes[1].error.as_deref(), Some("loader.invalid"));
     assert_eq!(page.changes[1].stamp, 5);
-    assert_eq!(page.cursors["a"].to, 2, "the channel still advances");
+    assert_eq!(page.cursors["a"].to, 2, "the scope still advances");
 }
 
 /// A batched answer with the wrong number of rows cannot be matched to its
@@ -753,9 +751,9 @@ fn a_thrown_host_error_still_fails_the_pull() {
     assert_eq!(err.code, axton_server::code::HOST);
 }
 
-/// A cursor past a channel's head is refused, naming the channel.
+/// A cursor past a scope's head is refused, naming the scope.
 #[test]
-fn a_cursor_ahead_of_its_channel_head_is_refused() {
+fn a_cursor_ahead_of_its_scope_head_is_refused() {
     let host = multi(&[("a", vec![], 2), ("b", vec![], 9)], vec![]);
     let err = pull_all(&host, &[("a", 3), ("b", 0)]).unwrap_err();
     assert_eq!(err.code, axton_server::code::REQUEST_INVALID);
@@ -763,12 +761,12 @@ fn a_cursor_ahead_of_its_channel_head_is_refused() {
 }
 
 #[test]
-fn channel_removal_is_identity_only_and_never_loads_content() {
+fn scope_removal_is_identity_only_and_never_loads_content() {
     let host = Fixed::new(
-        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"}]),
+        json!([{"scope":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"}]),
         Value::Null,
     );
-    let page = run(axton_server::process_channel_pull(
+    let page = run(axton_server::process_scope_pull(
         &config(),
         "alice",
         &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"c":0}}"#),
@@ -778,29 +776,29 @@ fn channel_removal_is_identity_only_and_never_loads_content() {
     let page: Value = serde_json::from_str(&page).unwrap();
     assert_eq!(
         page["changes"],
-        json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"}}])
+        json!([{"scope":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"e"}}])
     );
     assert_eq!(page["cursors"]["c"]["to"], 5);
     assert!(host.loaded.lock().unwrap().is_empty());
 }
 
 #[test]
-fn channel_loader_null_and_error_remain_stamped_upserts() {
+fn scope_loader_null_and_error_remain_stamped_upserts() {
     for (answer, error) in [
         (json!([null]), None),
         (json!({"error":"boom"}), Some("loader.failed")),
     ] {
         let host = multi(&[("a", vec![scan_row("a", 1, "e", 2)], 1)], vec![answer]);
-        let text = run(axton_server::process_channel_pull(
+        let text = run(axton_server::process_scope_pull(
             &config(),
             "alice",
             &crate::capability::request(br#"{"models":{"Entry":1},"cursors":{"a":0}}"#),
             &host,
         ))
         .unwrap();
-        let page = axton_core::ChannelPullPage::decode(text.as_bytes()).unwrap();
-        let axton_core::ChannelChange::Upsert { record, .. } = &page.changes[0] else {
-            panic!("a Loader result is never a channel removal")
+        let page = axton_core::ScopePullPage::decode(text.as_bytes()).unwrap();
+        let axton_core::ScopeChange::Upsert { record, .. } = &page.changes[0] else {
+            panic!("a Loader result is never a scope removal")
         };
         assert_eq!(record.stamp, 2);
         assert_eq!(record.error.as_deref(), error);
@@ -808,20 +806,20 @@ fn channel_loader_null_and_error_remain_stamped_upserts() {
     }
 }
 
-fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
+fn uuid_scope_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
     let lower = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut schema = serde_json::to_value(config().schema).unwrap();
     schema["models"][0]["fields"][0]["type"]["name"] = json!("uuid");
     let cfg = Config::decode(json!({"schema":schema,"loaders":["Entry"],"mutations":[]})).unwrap();
     let host = Fixed::new(
         json!([{
-            "channel":"c","cursor":4,"kind":kind,"model":"Entry",
+            "scope":"c","cursor":4,"kind":kind,"model":"Entry",
             "identity":{"id":lower.to_uppercase()},"identityKey":format!("{{\"id\":\"{lower}\"}}"),"stamp":2
         }]),
         Value::Null,
     );
     let request = if bootstrap {
-        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"c","after":0,"until":5})
+        json!({"mode":"bootstrap","models":{"Entry":1},"scope":"c","after":0,"until":5})
     } else {
         json!({"models":{"Entry":1},"cursors":{"c":0}})
     };
@@ -834,7 +832,7 @@ fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
     ))
     .unwrap();
     host.loaded.lock().unwrap().clear();
-    let page = run(axton_server::process_channel_pull(
+    let page = run(axton_server::process_scope_pull(
         &cfg,
         "alice",
         &crate::capability::request(request.to_string().as_bytes()),
@@ -848,9 +846,9 @@ fn uuid_channel_scan(kind: &str, bootstrap: bool) -> (Value, Vec<u64>) {
 }
 
 #[test]
-fn channel_uuid_scan_upsert_uses_canonical_identity_in_delta_and_bootstrap() {
+fn scope_uuid_scan_upsert_uses_canonical_identity_in_delta_and_bootstrap() {
     for bootstrap in [false, true] {
-        let (page, loads) = uuid_channel_scan("upsert", bootstrap);
+        let (page, loads) = uuid_scope_scan("upsert", bootstrap);
         assert_eq!(
             page["changes"][0]["identity"]["id"],
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -864,12 +862,12 @@ fn channel_uuid_scan_upsert_uses_canonical_identity_in_delta_and_bootstrap() {
 }
 
 #[test]
-fn channel_uuid_scan_removal_uses_canonical_identity_in_delta_and_bootstrap() {
+fn scope_uuid_scan_removal_uses_canonical_identity_in_delta_and_bootstrap() {
     for bootstrap in [false, true] {
-        let (page, loads) = uuid_channel_scan("remove", bootstrap);
+        let (page, loads) = uuid_scope_scan("remove", bootstrap);
         assert_eq!(
             page["changes"],
-            json!([{"channel":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}])
+            json!([{"scope":"c","cursor":4,"kind":"remove","model":"Entry","identity":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}}])
         );
         assert!(loads.is_empty());
     }

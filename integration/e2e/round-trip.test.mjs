@@ -147,8 +147,8 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   // one page over HTTP from the cursor it committed.
   await connection.pause();
   await wait(async()=>readerSubscription.status.connection==='offline','the reader lane is offline');
-  await app.backend.transaction(async({tx,scope: channel,touch})=>{
-   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});touch.entry({id:`paged-${i}`});channel('book:demo').add.entry({id:`paged-${i}`});}
+  await app.backend.transaction(async({tx,scope: scope,touch})=>{
+   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});touch.entry({id:`paged-${i}`});scope('book:demo').add.entry({id:`paged-${i}`});}
    // The seeded record, already a member, is touched inside the burst too: it is
    // above both origins there, so the live writer and the catching-up reader both hold it.
    touch.entry({id:'entry-1'});
@@ -176,10 +176,10 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   assert.ok(observed.some(rows=>rows.length>=56));
   assert.ok(pullRequests.length>=2,'more than 50 records catch up via HTTP pages');
   assert.deepEqual(pullRequests[0].cursors,{'book:demo':origin},'catch-up starts at the committed cursor');
-  assert.equal((await reader.readSql('SELECT starting_cursor FROM axton_subscription WHERE channel=?',['book:demo']))[0].starting_cursor,origin,'catching up did not move the origin');
+  assert.equal((await reader.readSql('SELECT starting_cursor FROM axton_subscription WHERE scope=?',['book:demo']))[0].starting_cursor,origin,'catching up did not move the origin');
   const caughtUpPulls=pullRequests.length;
   // Queue two edits to the same record. Each batch completes from its own receipt
-  // (no channel page is awaited); the second push must follow the first without
+  // (no scope page is awaited); the second push must follow the first without
   // another application event, and the row ends at the server's normalized value.
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' first dependent '}}]});
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' second dependent '}}]});
@@ -189,7 +189,7 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   assert.equal(pullRequests.length,caughtUpPulls,'ordinary live updates do not trigger HTTP polling');
   // A client with no subscription at all: its push's response alone corrects the
   // local row, leaves nothing pending, and the result survives a reopen. The reader,
-  // subscribed to the channel, receives the same record at the same stamp.
+  // subscribed to the scope, receives the same record at the same stamp.
   const stampOf=async(client,id)=>{const rows=await client.readSql('SELECT stamp FROM axton_record WHERE model = ? AND identity = ?',['Entry',JSON.stringify({id})]);assert.equal(rows.length,1,`${id} has stamp evidence`);return rows[0].stamp;};
   const lonePath=join(directory,'lone.sqlite');
   let lone=await Client.open({path:lonePath,schema:app.schema});
@@ -198,7 +198,7 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
    await lone.transaction(tx=>tx.direct({model:'Entry',op:'create',identity:{id:'entry-1'},values:{text:'stale local copy',note:null}}));
    await lone.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:'  lone push  '}}]});
    assert.equal((await lone.read('Entry',{id:'entry-1'})).text,'  lone push  ','the prediction is visible before the push');
-   assert.deepEqual((await lone.syncState()).channels,[],'the lone client follows no channel');
+   assert.deepEqual((await lone.syncState()).scopes,[],'the lone client follows no scope');
    const loneConnection=await lone.connect(config,{onError:e=>errors.push(e)});
    try{
     await wait(async()=>(await lone.syncState()).pending===0,'lone push completion');
@@ -213,9 +213,9 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
    assert.equal((await lone.syncState()).pending,0);
    assert.equal(await stampOf(lone,'entry-1'),loneStamp,'the stamp evidence survives a reopen');
   }finally{await lone.close();}
-  await wait(async()=>(await reader.read('Entry',{id:'entry-1'}))?.text==='lone push','the subscribed reader receives the lone push through the channel');
-  assert.equal(await stampOf(reader,'entry-1'),loneStamp,'the channel delivers the same record at the same stamp the receipt carried');
-  assert.equal(pullRequests.length,caughtUpPulls,'the channel delivery did not trigger HTTP polling');
+  await wait(async()=>(await reader.read('Entry',{id:'entry-1'}))?.text==='lone push','the subscribed reader receives the lone push through the scope');
+  assert.equal(await stampOf(reader,'entry-1'),loneStamp,'the scope delivers the same record at the same stamp the receipt carried');
+  assert.equal(pullRequests.length,caughtUpPulls,'the scope delivery did not trigger HTTP polling');
   const saved=(await reader.syncState()).cursors['book:demo'];
   await connection.pause();
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' offline reconciled '}}]});

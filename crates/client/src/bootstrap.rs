@@ -8,7 +8,7 @@
 //! far the historical scan of `(0, S]` has committed. **L** is the ordinary
 //! delivery `cursor`. Bootstrap walks `(B, S]` and never writes S or L;
 //! delivery moves L and never writes B. The terminal historical page fixes
-//! **H**, the channel head its transaction observed, as a completion barrier:
+//! **H**, the scope head its transaction observed, as a completion barrier:
 //! the run completes once `B = S` and `L >= H`
 //! ([#151](https://github.com/zanminwang/axton/issues/151)).
 use crate::bootstrap_ledger::{LedgerIssue, Loaded};
@@ -264,21 +264,21 @@ pub struct BootstrapTask {
     pub origin: u64,
 }
 impl BootstrapTask {
-    /// Final wire envelope, including the engine's channel protocol capability.
+    /// Final wire envelope, including the engine's scope protocol capability.
     pub fn encode_request(
         &self,
         models: std::collections::BTreeMap<String, u64>,
     ) -> Result<Vec<u8>> {
         axton_core::with_capabilities(
             &self.request(models).encode()?,
-            &[axton_core::CHANNEL_MEMBERSHIP_CAPABILITY],
+            &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY],
         )
     }
     /// The page this run asks for next: `(B, S]` with the client's declared
     /// read contracts, as [`PullRequest`](axton_core::PullRequest) carries them.
     pub fn request(&self, models: std::collections::BTreeMap<String, u64>) -> BootstrapRequest {
         BootstrapRequest {
-            channel: self.state.scope.clone(),
+            scope: self.state.scope.clone(),
             models,
             after: self.state.cursor,
             until: self.origin,
@@ -301,14 +301,14 @@ impl<S: ClientStore> Client<S> {
         Ok(self.bootstrap_schedule_scan(rotation)?.0)
     }
     pub(crate) fn retry_reconciliation_failures(&mut self) -> Result<()> {
-        let channels=self.view(|e| Ok(e.rows("SELECT channel FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
-        if channels.is_empty() {
+        let scopes=self.view(|e| Ok(e.rows("SELECT scope FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
+        if scopes.is_empty() {
             return Ok(());
         }
         self.write(|e| {
             e.reconciled(|e| {
-                for channel in channels {
-                    let Some(row) = e.bootstrap_row(&channel)? else {
+                for scope in scopes {
+                    let Some(row) = e.bootstrap_row(&scope)? else {
                         continue;
                     };
                     if row.state.state != BootstrapPhase::Failed {
@@ -327,7 +327,7 @@ impl<S: ClientStore> Client<S> {
                     };
                     state.error = None;
                     written(e.set_bootstrap(&state, old_run)?)?;
-                    e.mark_bootstrap(&channel);
+                    e.mark_bootstrap(&scope);
                 }
                 Ok(())
             })
@@ -362,20 +362,20 @@ impl<S: ClientStore> Client<S> {
         self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state NOT IN ('not_requested','complete') LIMIT 1", &[])?.is_some()))
     }
     pub(crate) fn reconciliation_pending(&mut self, scope: &str) -> Result<bool> {
-        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE channel=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(scope)])?.is_some()))
+        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE scope=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(scope)])?.is_some()))
     }
-    pub(crate) fn apply_channel_history_page(
+    pub(crate) fn apply_scope_history_page(
         &mut self,
         reconciliation: bool,
         scope: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ChannelBootstrapPage,
+        page: &axton_core::ScopeBootstrapPage,
     ) -> Result<BootstrapApply> {
         self.write(|e| {
             e.reconciliation = reconciliation;
-            e.apply_channel_bootstrap_body(scope, subscription_id, run, expected_after, page)
+            e.apply_scope_bootstrap_body(scope, subscription_id, run, expected_after, page)
         })
     }
     pub(crate) fn fail_history_state(
@@ -627,15 +627,15 @@ impl<S: ClientStore> Client<S> {
     }
     /// [`Client::settle_bootstrap_barriers`] with an issue for every candidate
     /// it left out because its row cannot be decoded. The committed reads
-    /// decide which channels enter the write - only a candidate whose whole
+    /// decide which scopes enter the write - only a candidate whose whole
     /// row decoded does, so a damaged one is never written - and whether a
     /// write is worth opening at all; an empty set reads and writes nothing.
     /// The write then re-reads and fences each healthy candidate itself.
     pub(crate) fn settle_bootstrap_barriers_scan(
         &mut self,
-        channels: &[String],
+        scopes: &[String],
     ) -> Result<(Vec<BootstrapState>, Vec<LedgerIssue>)> {
-        let (states, issues) = self.settle_history_barriers_scan(channels)?;
+        let (states, issues) = self.settle_history_barriers_scan(scopes)?;
         Ok((
             states
                 .into_iter()
@@ -646,10 +646,10 @@ impl<S: ClientStore> Client<S> {
     }
     pub(crate) fn settle_history_barriers_scan(
         &mut self,
-        channels: &[String],
+        scopes: &[String],
     ) -> Result<HistoryBarrierScan> {
-        let scan = self.view(|e| e.settleable_scan(channels))?;
-        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(channels)))?;
+        let scan = self.view(|e| e.settleable_scan(scopes))?;
+        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(scopes)))?;
         let mut issues = scan.issues;
         issues.extend(reconciliation.issues);
         if scan.rows.is_empty() && reconciliation.rows.is_empty() {
@@ -788,7 +788,7 @@ fn answers(
             BootstrapPhase::Requested | BootstrapPhase::Loading
         )
         && row.state.cursor == expected_after
-        && page.channel == row.state.scope
+        && page.scope == row.state.scope
         && page.from == expected_after
         && row.subscription.starting_cursor == Some(page.until)
 }
@@ -808,13 +808,13 @@ fn validate(page: &BootstrapPage, expected_after: u64) -> Result<()> {
 impl<S: ClientStore> Client<S> {
     /// Apply the response to a scheduled task, preserving its opaque history lane.
     /// The task's registration, run and cursor fence stale or duplicate responses.
-    pub fn apply_channel_bootstrap_task(
+    pub fn apply_scope_bootstrap_task(
         &mut self,
         task: BootstrapTask,
-        page: &axton_core::ChannelBootstrapPage,
+        page: &axton_core::ScopeBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
-        self.apply_channel_history_page(
+        self.apply_scope_history_page(
             task.reconciliation,
             &task.state.scope,
             task.state.subscription_id,
@@ -825,36 +825,36 @@ impl<S: ClientStore> Client<S> {
     }
 
     /// Apply explicitly requested ordinary bootstrap history.
-    /// Responses to [`Client::bootstrap_schedule`] use [`Client::apply_channel_bootstrap_task`].
-    pub fn apply_channel_bootstrap_page(
+    /// Responses to [`Client::bootstrap_schedule`] use [`Client::apply_scope_bootstrap_task`].
+    pub fn apply_scope_bootstrap_page(
         &mut self,
         scope: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ChannelBootstrapPage,
+        page: &axton_core::ScopeBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
         self.write(|e| {
-            e.apply_channel_bootstrap_body(scope, subscription_id, run, expected_after, page)
+            e.apply_scope_bootstrap_body(scope, subscription_id, run, expected_after, page)
         })
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
-    pub(crate) fn apply_channel_bootstrap_prepared_body(
+    pub(crate) fn apply_scope_bootstrap_prepared_body(
         &mut self,
         scope: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ChannelBootstrapPage,
+        page: &axton_core::ScopeBootstrapPage,
         admitted: Option<&BootstrapState>,
     ) -> Result<BootstrapApply> {
         if admitted.is_none() {
             return Ok(BootstrapApply::Stale);
         }
         let envelope = BootstrapPage {
-            channel: page.channel.clone(),
+            scope: page.scope.clone(),
             from: page.from,
             to: page.to,
             until: page.until,
@@ -866,7 +866,7 @@ impl<S: ClientStore> Engine<'_, S> {
             .as_ref()
             .is_some_and(|row| answers(row, subscription_id, run, expected_after, &envelope))
         {
-            return self.apply_channel_bootstrap_body(
+            return self.apply_scope_bootstrap_body(
                 scope,
                 subscription_id,
                 run,
@@ -878,20 +878,20 @@ impl<S: ClientStore> Engine<'_, S> {
         // delivery. Keep admitted membership and authority, but never move the
         // removed run or its replacement's progress.
         page.validate()?;
-        let report = self.apply_channel_changes(&page.changes)?;
+        let report = self.apply_scope_changes(&page.changes)?;
         Ok(BootstrapApply::Detached { report })
     }
-    pub(crate) fn apply_channel_bootstrap_body(
+    pub(crate) fn apply_scope_bootstrap_body(
         &mut self,
         scope: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ChannelBootstrapPage,
+        page: &axton_core::ScopeBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
         let legacy = BootstrapPage {
-            channel: page.channel.clone(),
+            scope: page.scope.clone(),
             from: page.from,
             to: page.to,
             until: page.until,
@@ -905,7 +905,7 @@ impl<S: ClientStore> Engine<'_, S> {
             return Ok(BootstrapApply::Stale);
         };
         validate(&legacy, expected_after)?;
-        let report = self.apply_channel_changes(&page.changes)?;
+        let report = self.apply_scope_changes(&page.changes)?;
         let failures: Vec<_> = report
             .reports
             .iter()
@@ -916,7 +916,7 @@ impl<S: ClientStore> Engine<'_, S> {
             state.state = BootstrapPhase::Failed;
             state.error = Some(BootstrapError::new(
                 RECORDS_FAILED,
-                "channel bootstrap records failed",
+                "scope bootstrap records failed",
                 failures,
             ));
             written(self.set_bootstrap(&state, run)?)?;

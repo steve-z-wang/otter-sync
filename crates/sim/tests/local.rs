@@ -11,7 +11,7 @@ fn l1_merged_view_shows_pending_edits_in_order() {
     let mut sim = Sim::new(41, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -56,7 +56,7 @@ fn l4_direct_write_is_never_pushed_and_survives_rejection() {
     let mut sim = Sim::new(42, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -109,7 +109,7 @@ fn l4_direct_write_keeps_its_place_above_earlier_pending_edits() {
     let mut sim = Sim::new(44, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -171,7 +171,7 @@ fn l4_direct_write_on_pending_create_goes_with_the_rejected_create() {
     let mut sim = Sim::new(1, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -215,13 +215,13 @@ fn l4_stale_duplicate_page_does_not_undo_a_direct_write() {
     let mut sim = Sim::new(1, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::ServerChange {
         key: "Entry:e1".into(),
         text: Some("server".into()),
-        channels: vec!["a".into()],
+        scopes: vec!["a".into()],
     })
     .unwrap();
     sim.apply(Action::Pull { client: 0 }).unwrap();
@@ -254,7 +254,7 @@ fn l5_delete_cascades_locally_and_on_the_server() {
     let mut sim = Sim::new(43, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {

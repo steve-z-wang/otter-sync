@@ -6,7 +6,7 @@ import {
   type User,
 } from "../../generated/mobile/client";
 
-export const channel = "todo:demo";
+export const scope = "todo:demo";
 
 export interface TodoSession {
   watch(
@@ -54,8 +54,8 @@ export async function openTodoSession(options: {
   // installation asks for it explicitly. The call registers its work when it is
   // made and runs in the background: the screen renders what is already local
   // and fills in as pages commit, so nothing here waits for the whole Scope.
-  // Its rejection is a sync failure like any other and goes to the same channel.
-  const subscription = await client.scopes.subscribe(channel);
+  // Its rejection is a sync failure like any other and goes to the same scope.
+  const subscription = await client.scopes.subscribe(scope);
   subscription.bootstrap().catch(options.onConnectionError);
   const session: TodoSession = {
     watch(listener, onError) {

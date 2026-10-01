@@ -5,13 +5,13 @@
 //! The client builds the canonical request at its own local Model read
 //! version, so stored authority always matches local storage, and applies the
 //! one record a stored response carries under the shared stamp rules. Unlike a
-//! channel page or a direct Action response, a Fetch is one delivery of one
+//! scope page or a direct Action response, a Fetch is one delivery of one
 //! record: a record this client cannot store - an equal-stamp conflict or a
 //! state the local tables refuse - fails the whole delivery instead of being
 //! reported and skipped, so a successful Fetch always means its authority was
 //! stored or was a stale/identical no-op. The runtime owns the request
 //! lifecycle ([`crate::runtime`]); nothing here touches the network, the
-//! Mutation queue, Channel membership or cursors.
+//! Mutation queue, Scope membership or cursors.
 use crate::engine::Engine;
 use crate::{ApplyReport, Client, ClientStore, ReportKind};
 use axton_core::{FetchRequest, FetchResponse, Result, invalid};

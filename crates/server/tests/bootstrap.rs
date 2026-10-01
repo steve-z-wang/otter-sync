@@ -1,7 +1,7 @@
 //! Bounded pull: the `mode: "bootstrap"` request walks the historical
-//! interval `(after, until]` of one channel with the ordinary scan and the
+//! interval `(after, until]` of one scope with the ordinary scan and the
 //! ordinary Loader resolution, and stops at the subscription origin while the
-//! channel head keeps moving ([#151](https://github.com/zanminwang/axton/issues/151)).
+//! scope head keeps moving ([#151](https://github.com/zanminwang/axton/issues/151)).
 mod capability;
 use axton_core::{BootstrapPage, limits};
 use axton_server::{Config, Host, HostResult, code, host::HostRequest};
@@ -38,18 +38,18 @@ fn config() -> Config {
     }))
     .unwrap()
 }
-/// One invalidation row: the record's position in the channel with the
+/// One invalidation row: the record's position in the scope with the
 /// record's current stamp, as `scan` answers it.
-fn row(channel: &str, cursor: u64, model: &str, id: &str, stamp: u64) -> Value {
-    json!({"channel":channel,"cursor":cursor,"model":model,"identity":{"id":id},
+fn row(scope: &str, cursor: u64, model: &str, id: &str, stamp: u64) -> Value {
+    json!({"scope":scope,"cursor":cursor,"model":model,"identity":{"id":id},
            "identityKey":format!("{{\"id\":\"{id}\"}}"),"stamp":stamp})
 }
 fn entry(cursor: u64, id: &str, stamp: u64) -> Value {
     row("a", cursor, "Entry", id, stamp)
 }
 
-/// An in-memory host over one channel: `head` answers the configured head, and
-/// `scan` answers the configured rows of the scanned channel whose cursor is
+/// An in-memory host over one scope: `head` answers the configured head, and
+/// `scan` answers the configured rows of the scanned scope whose cursor is
 /// above `after`, sorted by cursor and truncated to `limit`, as PostgreSQL's
 /// cursor-ordered scan does. In `verbatim` mode it answers the configured rows
 /// exactly as given instead, so a test can feed the engine an answer the scan
@@ -109,14 +109,14 @@ impl Host for Scoped {
             Ok(match &request {
                 HostRequest::Head { .. } => json!(self.head),
                 HostRequest::Scan {
-                    channel,
+                    scope,
                     after,
                     limit,
                 } => {
                     self.scans
                         .lock()
                         .unwrap()
-                        .push((channel.clone(), *after, *limit));
+                        .push((scope.clone(), *after, *limit));
                     if self.verbatim {
                         Value::Array(self.rows.iter().take(*limit as usize).cloned().collect())
                     } else {
@@ -124,7 +124,7 @@ impl Host for Scoped {
                             .rows
                             .iter()
                             .filter(|row| {
-                                row["channel"] == json!(channel)
+                                row["scope"] == json!(scope)
                                     && row["cursor"].as_u64().unwrap() > *after
                             })
                             .cloned()
@@ -162,9 +162,9 @@ impl Host for Scoped {
         })
     }
 }
-/// A bootstrap request on channel `a` for the interval `(after, until]`.
+/// A bootstrap request on scope `a` for the interval `(after, until]`.
 fn body(after: u64, until: u64) -> Vec<u8> {
-    json!({"mode":"bootstrap","channel":"a","models":{"Entry":1,"Note":1},
+    json!({"mode":"bootstrap","scope":"a","models":{"Entry":1,"Note":1},
            "after":after,"until":until})
     .to_string()
     .into_bytes()
@@ -320,19 +320,19 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
         json!(true),
         json!({}),
     ] {
-        let err = pull(json!({"mode":mode,"channel":"a","models":{"Entry":1},"after":0,"until":1}))
+        let err = pull(json!({"mode":mode,"scope":"a","models":{"Entry":1},"after":0,"until":1}))
             .unwrap_err();
         assert_eq!(err.code, code::REQUEST_INVALID, "mode {mode}: {err}");
         assert!(err.message.contains("mode"), "mode {mode}: {err}");
     }
     // A bootstrap envelope whose own fields are wrong is a request error.
     for bad in [
-        json!({"mode":"bootstrap","channel":"","models":{"Entry":1},"after":0,"until":1}),
-        json!({"mode":"bootstrap","channel":" ","models":{"Entry":1},"after":0,"until":1}),
-        json!({"mode":"bootstrap","channel":"a","models":{"Entry":1},"after":2,"until":1}),
-        json!({"mode":"bootstrap","channel":"a","models":{"Entry":1},"until":1}),
-        json!({"mode":"bootstrap","channel":"a","models":{"Entry":1},"after":-1,"until":1}),
-        json!({"mode":"bootstrap","channel":"a","models":{},"after":0,"until":1}),
+        json!({"mode":"bootstrap","scope":"","models":{"Entry":1},"after":0,"until":1}),
+        json!({"mode":"bootstrap","scope":" ","models":{"Entry":1},"after":0,"until":1}),
+        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":2,"until":1}),
+        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"until":1}),
+        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":-1,"until":1}),
+        json!({"mode":"bootstrap","scope":"a","models":{},"after":0,"until":1}),
     ] {
         assert_eq!(
             pull(bad.clone()).unwrap_err().code,
@@ -342,7 +342,7 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
     }
     // An undeclared or unretained read contract is refused with its own code.
     let err =
-        pull(json!({"mode":"bootstrap","channel":"a","models":{"Entry":9},"after":0,"until":1}))
+        pull(json!({"mode":"bootstrap","scope":"a","models":{"Entry":9},"after":0,"until":1}))
             .unwrap_err();
     assert_eq!(err.code, code::MODEL_VERSION_UNSUPPORTED, "{err}");
     let err = run(axton_server::process_pull(
@@ -359,7 +359,7 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
 fn a_page_holding_a_model_the_client_did_not_declare_is_refused() {
     let host = Scoped::new(140, vec![row("a", 10, "Note", "n", 3)]);
     let request =
-        json!({"mode":"bootstrap","channel":"a","models":{"Entry":1},"after":0,"until":100});
+        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":0,"until":100});
     let err = run(axton_server::process_pull(
         &config(),
         "u",
@@ -431,9 +431,9 @@ fn a_malformed_scan_row_fails_the_request() {
     let cases: [(Value, &str); 4] = [
         (entry(0, "e", 7), "a cursor at or below `after`"),
         (entry(400, "e", 7), "a cursor above the head"),
-        (row("other", 10, "Entry", "e", 7), "another channel"),
+        (row("other", 10, "Entry", "e", 7), "another scope"),
         (
-            json!({"channel":"a","cursor":10,"model":"Entry","identity":{"id":"e"},
+            json!({"scope":"a","cursor":10,"model":"Entry","identity":{"id":"e"},
                    "identityKey":"{\"id\":\"other\"}","stamp":7}),
             "a noncanonical identity key",
         ),
@@ -483,21 +483,21 @@ fn successive_pages_drop_a_record_republished_above_the_origin() {
 #[test]
 fn the_ordinary_pull_page_is_unchanged() {
     // Pins the ordinary page's bytes across the shared-helper refactor: two
-    // models, a deletion and a full channel that continues.
+    // models, a deletion and a full scope that continues.
     struct Fixed;
     impl Host for Fixed {
         fn call(&self, r: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>> {
             Box::pin(async move {
                 let request: HostRequest = serde_json::from_value(r).map_err(|e| e.to_string())?;
                 Ok(match &request {
-                    HostRequest::Head { channel } => {
-                        json!(if channel == "a" { 80 } else { 9 })
+                    HostRequest::Head { scope } => {
+                        json!(if scope == "a" { 80 } else { 9 })
                     }
                     HostRequest::Scan {
-                        channel,
+                        scope,
                         after,
                         limit,
-                    } if channel == "a" => Value::Array(
+                    } if scope == "a" => Value::Array(
                         (1..=limits::PULL_CHANGES as u64 + 1)
                             .filter(|i| i > after)
                             .take(*limit as usize)
@@ -549,19 +549,19 @@ fn the_ordinary_pull_page_is_unchanged() {
     assert_eq!(page.cursors["b"].to, 9);
     assert_eq!(page.changes.len(), limits::PULL_CHANGES + 1);
     assert!(page.changes[0].state.is_null(), "a tombstone is a deletion");
-    let channel = axton_core::ChannelPullPage::decode(text.as_bytes()).unwrap();
-    assert_eq!(text, String::from_utf8(channel.encode().unwrap()).unwrap());
+    let scope = axton_core::ScopePullPage::decode(text.as_bytes()).unwrap();
+    assert_eq!(text, String::from_utf8(scope.encode().unwrap()).unwrap());
     assert!(
-        channel
+        scope
             .changes
             .iter()
-            .all(|c| matches!(c, axton_core::ChannelChange::Upsert { .. }))
+            .all(|c| matches!(c, axton_core::ScopeChange::Upsert { .. }))
     );
 }
 
-fn channel_page(host: &Scoped, request: Value) -> Value {
+fn scope_page(host: &Scoped, request: Value) -> Value {
     serde_json::from_str(
-        &run(axton_server::process_channel_pull(
+        &run(axton_server::process_scope_pull(
             &config(),
             "alice",
             &crate::capability::request(&serde_json::to_vec(&request).unwrap()),
@@ -577,7 +577,7 @@ fn removed(cursor: u64, id: &str) -> Value {
     row
 }
 #[test]
-fn channel_pages_keep_mixed_changes_and_each_channels_provenance_with_one_loader_read() {
+fn scope_pages_keep_mixed_changes_and_each_scopes_provenance_with_one_loader_read() {
     let host = Scoped::new(
         9,
         vec![
@@ -586,25 +586,25 @@ fn channel_pages_keep_mixed_changes_and_each_channels_provenance_with_one_loader
             row("b", 8, "Entry", "e", 3),
         ],
     );
-    let page = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
+    let page = scope_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
     assert_eq!(page["changes"].as_array().unwrap().len(), 3);
     assert_eq!(page["changes"][1]["kind"], "remove");
-    assert_eq!(page["changes"][2]["channel"], "b");
+    assert_eq!(page["changes"][2]["scope"], "b");
     assert_eq!(host.loaded(), vec![("Entry".into(), vec!["e".into()])]);
 }
 #[test]
-fn channel_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
+fn scope_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
     for bootstrap in [false, true] {
         let host = Scoped::new(
             100,
             (1..=50).map(|i| removed(i, &format!("e{i}"))).collect(),
         );
         let request = if bootstrap {
-            json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90})
+            json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":0,"until":90})
         } else {
             json!({"models":{"Entry":1},"cursors":{"a":0}})
         };
-        let page = channel_page(&host, request);
+        let page = scope_page(&host, request);
         assert_eq!(page["changes"].as_array().unwrap().len(), 50);
         assert_eq!(
             if bootstrap {
@@ -618,7 +618,7 @@ fn channel_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_pag
     }
 }
 #[test]
-fn channel_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
+fn scope_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
     let host = Scoped::new(
         100,
         (1..=51)
@@ -626,18 +626,18 @@ fn channel_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_it
             .chain([entry(100, "moved", 4)])
             .collect(),
     );
-    let first = channel_page(
+    let first = scope_page(
         &host,
-        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":0,"until":90}),
+        json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":0,"until":90}),
     );
     assert_eq!(first["to"], 50);
-    let second = channel_page(
+    let second = scope_page(
         &host,
-        json!({"mode":"bootstrap","models":{"Entry":1},"channel":"a","after":50,"until":90}),
+        json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":50,"until":90}),
     );
     assert_eq!(second["to"], 90);
     assert_eq!(second["changes"].as_array().unwrap().len(), 1);
     assert!(host.loaded().is_empty());
-    let delta = channel_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
+    let delta = scope_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
     assert_eq!(delta["changes"][0]["identity"]["id"], "moved");
 }

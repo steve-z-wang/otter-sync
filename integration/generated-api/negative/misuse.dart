@@ -116,7 +116,15 @@ Future<void> transactionMisuse(GeneratedClient client, ApplicationTransaction tx
   // the callback queues no Mutation, modifies no Channel and exposes no raw port
   local.mutations;
   local.channels;
+  local.scopes;
   local.transaction;
   // the callback cannot watch
   local.models.composition.watch();
+}
+
+Future<void> retiredScopeAliases(GeneratedClient client, GeneratedTransaction tx) async {
+  client.channels;
+  tx.channels;
+  await tx.scopes.subscribe('U');
+  await tx.scopes.unsubscribe('U');
 }

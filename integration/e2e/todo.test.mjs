@@ -11,7 +11,7 @@ import { createExample } from '../../examples/todo/server.mts';
 import { GeneratedClient } from '../../examples/todo/generated/node/client.ts';
 import { declaredModels, syncProtocol } from './protocol-fixture.mjs';
 
-const CHANNEL = 'todo:demo';
+const SCOPE = 'todo:demo';
 
 async function wait(predicate, label, timeout = 10000) {
  const deadline = Date.now() + timeout;
@@ -60,7 +60,7 @@ async function scenario(body) {
    });
    clients.add(client);
    if (options.subscribe !== false) {
-    const subscription = await client.scopes.subscribe(CHANNEL);
+    const subscription = await client.scopes.subscribe(SCOPE);
     scopes.set(name, subscription);
     if (options.server !== false && options.ready !== false) {
      await wait(() => subscription.status.initialization === 'ready', `${name}'s subscription is initialized`);
@@ -311,7 +311,7 @@ test('a retried frozen request after a lost receipt runs the handler once and st
   // this client first establishes its origin the way an application does: one
   // live session whose acknowledged head becomes the subscription's first
   // boundary. The seeds are published again after that and the pull delivers them.
-  const subscription = await alice.scopes.subscribe(CHANNEL);
+  const subscription = await alice.scopes.subscribe(SCOPE);
   const origin = await alice.connect({ url: ctx.url, token: 'alice' }, { onError: error => ctx.errors.push(error) });
   await wait(() => subscription.status.initialization === 'ready', 'the origin is committed');
   await origin.close();

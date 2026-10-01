@@ -1,8 +1,8 @@
-//! Direct writes to a Model that Channels also deliver (L4,
+//! Direct writes to a Model that Scopes also deliver (L4,
 //! [#188](https://github.com/zanminwang/axton/issues/188)). An application
 //! may store canonical data it received over another transport, such as a
 //! REST lookup, with a plain local write. This file pins what then happens,
-//! once per canonical source: a Channel page, a native Load page and a Fetch.
+//! once per canonical source: a Scope page, a native Load page and a Fetch.
 //!
 //! - The direct write is device-only: it is never queued or sent.
 //! - Newer canonical data for the same identity replaces it, and nothing
@@ -23,11 +23,11 @@ use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug)]
 enum Source {
-    Channel,
+    Scope,
     Load,
     Fetch,
 }
-const SOURCES: [Source; 3] = [Source::Channel, Source::Load, Source::Fetch];
+const SOURCES: [Source; 3] = [Source::Scope, Source::Load, Source::Fetch];
 
 /// How a direct write reaches `Entry e`.
 #[derive(Clone, Copy, Debug)]
@@ -42,7 +42,7 @@ enum Direct {
 }
 const DIRECTS: [Direct; 3] = [Direct::After, Direct::Before, Direct::AfterCompanion];
 
-/// One device holding `Entry e`, subscribed to channel `ch`.
+/// One device holding `Entry e`, subscribed to scope `ch`.
 struct Device {
     _dir: tempfile::TempDir,
     path: PathBuf,
@@ -132,14 +132,14 @@ impl Device {
     /// the source answered, without judging it.
     fn try_deliver(&mut self, source: Source, text: &str, stamp: u64) -> Delivered {
         match source {
-            Source::Channel => {
+            Source::Scope => {
                 let from = self.cursor;
                 self.cursor += 1;
                 let page = multi(
                     &[("ch", from, self.cursor, self.cursor)],
                     vec![authority(Some(text), stamp)],
                 );
-                Delivered::Channel(self.c.apply_page(page).unwrap())
+                Delivered::Scope(self.c.apply_page(page).unwrap())
             }
             Source::Load => {
                 let job = self
@@ -175,7 +175,7 @@ impl Device {
     /// Deliver canonical data that must be stored.
     fn deliver(&mut self, source: Source, text: &str, stamp: u64) {
         match self.try_deliver(source, text, stamp) {
-            Delivered::Channel(report) => {
+            Delivered::Scope(report) => {
                 assert_eq!(
                     (report.applied, report.conflicts()),
                     (1, 0),
@@ -202,7 +202,7 @@ impl Device {
 }
 
 enum Delivered {
-    Channel(ApplyReport),
+    Scope(ApplyReport),
     Load(Box<LoadStored>),
     Fetch(Result<ApplyReport>),
 }
@@ -281,7 +281,7 @@ fn direct_write_on_a_pending_row(source: Source, how: Direct) -> Device {
 fn a_direct_write_is_never_queued_and_newer_canonical_data_replaces_it() {
     for source in SOURCES {
         // The issue's case: the device has no row; another transport's answer
-        // is stored with a direct create; a Channel, Load or Fetch delivers it.
+        // is stored with a direct create; a Scope, Load or Fetch delivers it.
         let mut d = Device::new();
         d.direct(create_e("from rest"));
         d.assert_nothing_queued(&format!("{source:?} create"));
@@ -425,7 +425,7 @@ fn canonical_data_during_a_pending_mutation_retires_the_direct_write_for_good() 
 /// Current behaviour, not yet a decided guarantee: a redelivery at the stamp
 /// the device already holds is not newer canonical data. The direct write
 /// changed the row that stamp describes, so the redelivery is an equal-stamp
-/// conflict (D2, D8). A Channel page reports it and keeps the direct write; a
+/// conflict (D2, D8). A Scope page reports it and keeps the direct write; a
 /// Load page or a Fetch carrying it is refused whole (N2, Fetch). Nothing is
 /// queued either way.
 #[test]
@@ -435,7 +435,7 @@ fn an_equal_stamp_redelivery_is_not_newer_canonical_data() {
         d.deliver(source, "canonical", 1);
         d.direct_text("from rest");
         match d.try_deliver(source, "canonical", 1) {
-            Delivered::Channel(report) => {
+            Delivered::Scope(report) => {
                 assert_eq!((report.applied, report.conflicts()), (0, 1));
                 assert_eq!(
                     d.c.cursor("ch").unwrap(),

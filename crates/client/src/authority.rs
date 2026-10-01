@@ -1,6 +1,6 @@
 //! One applier for authoritative records, whichever path delivered them: a
-//! push receipt or a channel page. Content is ordered by record stamp alone;
-//! channels and cursors never enter here
+//! push receipt or a scope page. Content is ordered by record stamp alone;
+//! scopes and cursors never enter here
 //! ([Settlement](../../../docs/engineering/architecture/client/engine/settlement.md)).
 use crate::engine::Engine;
 use crate::rows::merge_identity;

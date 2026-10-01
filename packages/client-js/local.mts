@@ -177,7 +177,7 @@ function runLocal(callback: LocalCallback, expired: () => Error): LocalRun {
 /**
  * The handle a `local` callback receives: local Model reads and direct
  * writes through the callback's own capability, nothing else - no Mutation,
- * Channel, watch or savepoint. It expires when the callback returns: a later
+ * Scope, watch or savepoint. It expires when the callback returns: a later
  * command is refused, and poisons the transaction while it is still open.
  * The outstanding-command and first-failure rules are the transaction's.
  */

@@ -80,7 +80,7 @@ ctx.touch.todo({ id: "A" });
 // @ts-expect-error missing identity
 ctx.scope("project:1").add.todo({});
 // @ts-expect-error old API is gone
-ctx.publish({ channel: "project:1" });
+ctx.publish({ scope: "project:1" });
 // @ts-expect-error old API is gone
 ctx.changes.add(todo);
 // @ts-expect-error Query has no membership writer
@@ -103,16 +103,16 @@ ctx.scope("project:1").remove.pin({ todo: "A" });
 // @ts-expect-error touch has one method per Model
 ctx.touch.nope({ id: "A" });
 // Mixed sets take the generated, explicitly typed references.
-const channel: Scope = ctx.scope("project:1");
-channel.add([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
-channel.remove([TodoRef({ id: "B" })]);
-channel.add([{ model: "Todo", identity: { id: "C" } }]);
-channel.add([]);
+const scope: Scope = ctx.scope("project:1");
+scope.add([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
+scope.remove([TodoRef({ id: "B" })]);
+scope.add([{ model: "Todo", identity: { id: "C" } }]);
+scope.add([]);
 // @ts-expect-error a raw identity names no Model
-channel.add([{ id: "A" }]);
+scope.add([{ id: "A" }]);
 // @ts-expect-error a reference's identity is its own Model's
-channel.add([{ model: "Todo", identity: { at } }]);
-channel.remove(TodoRef({ id: "A" }));
+scope.add([{ model: "Todo", identity: { at } }]);
+scope.remove(TodoRef({ id: "A" }));
 // @ts-expect-error a constructor takes its own Model's identity
 Moment({ id: "A" });
 const narrowed: Extract<RecordRef, { model: "Pin" }> = Pin({ todo: "A", at });
@@ -187,13 +187,13 @@ const loaders: Loaders<Tx> = {
   },
 };
 void [handlers, loaders];
-// Loads (#173): typed args, a context whose Channels only add, and identity pages.
+// Loads (#173): typed args, a context whose Scopes only add, and identity pages.
 declare const loadCtx: LoadContext<Tx>;
 void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
-// A Load context adds page records to Channels, and only adds.
+// A Load context adds page records to Scopes, and only adds.
 loadCtx.scope("project:1").add.todo({ id: "A" });
 loadCtx.scope("project:1").add([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
-// @ts-expect-error a Load Channel cannot remove
+// @ts-expect-error a Load Scope cannot remove
 loadCtx.scope("project:1").remove.todo({ id: "A" });
 // @ts-expect-error a Load context has no change declaration
 loadCtx.touch.todo({ id: "A" });
@@ -261,20 +261,20 @@ if (false) {
   // The external transaction hands its body the same generated handles and
   // answers the body's own value.
   const external: Promise<number> = backend.transaction(
-    async ({ tx, scope: channel, touch }) => {
+    async ({ tx, scope: scope, touch }) => {
       tx.rows.set(todo.id, todo);
       touch.todo({ id: todo.id });
-      channel("project:1").add.todo({ id: todo.id });
-      channel("project:1").add([Pin({ todo: todo.id, at })]);
+      scope("project:1").add.todo({ id: todo.id });
+      scope("project:1").add([Pin({ todo: todo.id, at })]);
       return tx.rows.size;
     },
   );
   void external;
   // @ts-expect-error the external body has no changes collector
   void backend.transaction(async ({ changes }) => changes);
-  void backend.transaction(async ({ scope: channel }) => {
+  void backend.transaction(async ({ scope: scope }) => {
     // @ts-expect-error missing identity
-    channel("project:1").add.todo({});
+    scope("project:1").add.todo({});
   });
   // @ts-expect-error a schema that retains Queries requires the queries map
   createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, loads });

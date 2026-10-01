@@ -1,19 +1,19 @@
 import { Book, Entry, createBackend, devAuth, type Handlers, type Loaders, type Mutations } from "./backend.ts";
 type Tx = { rows: Map<string, object> };
 export const handlers: Handlers<Tx> = {
-  // An ordinary write: the target record is stamped and read back without any Channel membership.
+  // An ordinary write: the target record is stamped and read back without any Scope membership.
   async createEntry({ input, tx }) { tx.rows.set(input.entry.id, input.entry); },
   editEntry: {
-    async v1({ input, scope: channel }) { channel("c").add.entry(input.target.identity); },
-    // A touch declares a changed record; membership is added or removed per Channel.
-    async v2({ input, scope: channel, touch }) { touch.entry(input.entry.identity); channel("c").add.entry(input.entry.identity); channel("audit").remove.entry(input.entry.identity); },
+    async v1({ input, scope: scope }) { scope("c").add.entry(input.target.identity); },
+    // A touch declares a changed record; membership is added or removed per Scope.
+    async v2({ input, scope: scope, touch }) { touch.entry(input.entry.identity); scope("c").add.entry(input.entry.identity); scope("audit").remove.entry(input.entry.identity); },
   },
   removeEntries: {
-    async v1({ input, scope: channel }) { channel("c").add(input.entries.map(({ identity }) => Entry(identity))); },
-    async v2({ input, scope: channel }) { channel("c").remove(input.entries.map(({ identity }) => Entry(identity))); },
+    async v1({ input, scope: scope }) { scope("c").add(input.entries.map(({ identity }) => Entry(identity))); },
+    async v2({ input, scope: scope }) { scope("c").remove(input.entries.map(({ identity }) => Entry(identity))); },
   },
-  async addBook({ input, scope: channel, touch }) { touch.book({ id: input.book.id }); channel("c").add([]); channel("c").add([Book(input.book)]); },
-  async addComment({ input, scope: channel }) { channel("c").add.comment(input.comment); },
+  async addBook({ input, scope: scope, touch }) { touch.book({ id: input.book.id }); scope("c").add([]); scope("c").add([Book(input.book)]); },
+  async addComment({ input, scope: scope }) { scope("c").add.comment(input.comment); },
   // Handlers receive the client-expanded create: defaulted fields are present and required (#27).
   async addDraft({ input, tx }) { const { id, created, body }: { id: string; created: Date; body: string } = input.draft; tx.rows.set(id, { created, body }); },
 };
@@ -45,6 +45,6 @@ export const backend = createBackend<Tx>({
   native: { validateConfig() {}, processPush: async () => "", processAction: async () => "", processFetch: async () => "", processPull: async () => "", validateLoadBatch: () => [], encodeLoadBatch: () => "", processLoad: async () => "", settleExternal: async () => "", negotiateLive: async () => "", pullLive: async () => "", liveEvent: () => "[]", liveClose() {} },
 });
 // An external write declares through the same handles and answers its own value.
-export const external: Promise<number> = backend.transaction(async ({ tx, scope: channel, touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); channel("c").add.book({ id: "b" }); return tx.rows.size; });
+export const external: Promise<number> = backend.transaction(async ({ tx, scope: scope, touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); scope("c").add.book({ id: "b" }); return tx.rows.size; });
 // A write in a transaction the application owns declares through the same handles; the wake is called after that transaction commits.
-export const owned: Promise<() => void> = backend.publish({ rows: new Map() }, ({ touch, scope: channel }) => { touch.book({ id: "b" }); channel("c").add.book({ id: "b" }); });
+export const owned: Promise<() => void> = backend.publish({ rows: new Map() }, ({ touch, scope: scope }) => { touch.book({ id: "b" }); scope("c").add.book({ id: "b" }); });

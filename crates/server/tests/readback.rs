@@ -1,5 +1,5 @@
 //! Authoritative readback in a push: each successful mutation settles the
-//! records it changed (one stamp each, distributed to their Channels), reads
+//! records it changed (one stamp each, distributed to their Scopes), reads
 //! its uploaded targets back through the loaders at the declared version
 //! inside its own savepoint, and the receipt carries the last successful
 //! authority per target record. Extra handler changes are settled, not read.
@@ -99,23 +99,23 @@ fn record(model: &str, id: &str) -> Value {
 fn settled(changes: Value, memberships: Value) -> Value {
     json!({"changes":changes,"memberships":memberships})
 }
-fn add(channel: &str, model: &str, id: &str) -> Value {
-    json!({"kind":"add","channel":channel,"record":{"model":model,"identity":{"id":id}},"tags":[]})
+fn add(scope: &str, model: &str, id: &str) -> Value {
+    json!({"kind":"add","scope":scope,"record":{"model":model,"identity":{"id":id}},"tags":[]})
 }
 fn decode(text: &str) -> PushReceipt {
     PushReceipt::decode(text.as_bytes()).unwrap()
 }
 
-/// Everything a savepoint isolates: business rows, record stamps, channel
+/// Everything a savepoint isolates: business rows, record stamps, scope
 /// heads, persistent memberships and their positions.
 #[derive(Default, Clone)]
 struct Store {
     business: BTreeMap<String, Value>,
     stamps: BTreeMap<String, u64>,
     heads: BTreeMap<String, u64>,
-    /// `(stamp key, channel)` to the member's tags.
+    /// `(stamp key, scope)` to the member's tags.
     members: BTreeMap<(String, String), BTreeSet<String>>,
-    /// `(channel, stamp key)` to the pair's latest cursor.
+    /// `(scope, stamp key)` to the pair's latest cursor.
     positions: BTreeMap<(String, String), u64>,
 }
 type Answer = HostResult<Value>;
@@ -136,9 +136,9 @@ struct State {
     skip_operations: bool,
     /// Answers for the n-th `load` call (0-based) instead of the table.
     load_overrides: BTreeMap<usize, Answer>,
-    /// A fixed answer for every `applyChannelMembers` instead of the positions.
+    /// A fixed answer for every `applyScopeMembers` instead of the positions.
     apply_answer: Option<Answer>,
-    /// Every published upsert as `(channel, identity key, record stamp then)`.
+    /// Every published upsert as `(scope, identity key, record stamp then)`.
     published: Vec<(String, String, u64)>,
     /// The fields a loader of this version returns; others are the whole row.
     load_fields: BTreeMap<u64, Vec<String>>,
@@ -146,7 +146,7 @@ struct State {
     fail_rollback: bool,
 }
 /// A scripted in-memory host: a business table keyed by encoded record key,
-/// stamp counters, channel heads, a savepoint stack, stored receipts and a log
+/// stamp counters, scope heads, a savepoint stack, stored receipts and a log
 /// of every request it received.
 struct Scripted {
     state: Mutex<State>,
@@ -271,8 +271,8 @@ impl Scripted {
                 s.clients.insert(client_id, (sequence, Some(receipt)));
                 Value::Null
             }
-            HostRequest::Head { channel } => {
-                json!(s.store.heads.get(&channel).copied().unwrap_or(0))
+            HostRequest::Head { scope } => {
+                json!(s.store.heads.get(&scope).copied().unwrap_or(0))
             }
             HostRequest::Scan { .. } => json!([]),
             HostRequest::Savepoint { ordinal } => {
@@ -376,9 +376,9 @@ impl Scripted {
                     .entry(stamp_key(&model, &identity_key))
                     .or_insert(1)
             ),
-            HostRequest::LockChannels { .. } => Value::Null,
-            HostRequest::ReadChannelMembers {
-                channel,
+            HostRequest::LockScopes { .. } => Value::Null,
+            HostRequest::ReadScopeMembers {
+                scope,
                 explicit_keys,
                 tags,
                 all,
@@ -389,7 +389,7 @@ impl Scripted {
                     .collect();
                 let mut rows = vec![];
                 for ((record, c), held) in &s.store.members {
-                    if *c == channel
+                    if *c == scope
                         && (all || named.contains(record) || tags.iter().any(|t| held.contains(t)))
                     {
                         let (model, identity_key) = record.split_once(' ').unwrap();
@@ -398,7 +398,7 @@ impl Scripted {
                 }
                 Value::Array(rows)
             }
-            HostRequest::ApplyChannelMembers { deltas } => {
+            HostRequest::ApplyScopeMembers { deltas } => {
                 if let Some(answer) = s.apply_answer.clone() {
                     return answer;
                 }
@@ -409,28 +409,28 @@ impl Scripted {
                     let Some(stamp) = s.store.stamps.get(&record).copied() else {
                         return Err(format!("{record} has no metadata to enroll"));
                     };
-                    let member = (record.clone(), delta.channel.clone());
-                    let pair = (delta.channel.clone(), record);
+                    let member = (record.clone(), delta.scope.clone());
+                    let pair = (delta.scope.clone(), record);
                     if delta.present {
                         s.store.members.insert(member, delta.tags.clone());
                     } else {
                         s.store.members.remove(&member);
                     }
-                    let head = s.store.heads.entry(delta.channel.clone()).or_insert(0);
+                    let head = s.store.heads.entry(delta.scope.clone()).or_insert(0);
                     let cursor = if delta.publish {
                         *head += 1;
                         let cursor = *head;
                         s.store.positions.insert(pair, cursor);
                         if delta.present {
                             s.published
-                                .push((delta.channel.clone(), identity_key.clone(), stamp));
+                                .push((delta.scope.clone(), identity_key.clone(), stamp));
                         }
                         cursor
                     } else {
                         s.store.positions[&pair]
                     };
                     let kind = if delta.present { "upsert" } else { "remove" };
-                    positions.push(json!({"channel":delta.channel,"model":delta.key.model,
+                    positions.push(json!({"scope":delta.scope,"model":delta.key.model,
                         "identityKey":identity_key,"cursor":cursor,"kind":kind}));
                 }
                 Value::Array(positions)
@@ -454,7 +454,7 @@ impl Scripted {
                         .members
                         .keys()
                         .filter(|(member, _)| *member == record)
-                        .map(|(_, channel)| channel.clone())
+                        .map(|(_, scope)| scope.clone())
                         .collect::<Vec<_>>()
                 )
             }
@@ -495,7 +495,7 @@ fn assert_publishes_carry_current_stamps(host: &Scripted) {
 /// A success reads back each changed record once at its allocated stamp with
 /// the loader's normalized state, in the order touch recipients, stamp,
 /// recipients again under the (here empty) lock set, load; a record in no
-/// Channel is published nowhere.
+/// Scope is published nowhere.
 #[test]
 fn success_reads_back_each_changed_record_once_at_its_stamp() {
     let host = Scripted::new();
@@ -542,7 +542,7 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
         ("Entry", 1, "u")
     );
     assert_eq!(*identities, vec![json!({"id":"a"})]);
-    assert_eq!(host.count("applyChannelMembers"), 0);
+    assert_eq!(host.count("applyScopeMembers"), 0);
     // A second batch advances the same record's stamp.
     let text = process(&config(), &push(2, vec![edit(1, "a", "again")]), &host).unwrap();
     assert_eq!(decode(&text).records[0].stamp, 2);
@@ -625,14 +625,14 @@ fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_the
             "handle(ordinal 1)",
             "memberships",
             "memberships",
-            "lockChannels",
+            "lockScopes",
             "advanceStamp",
             "advanceStamp",
             "ensureStamp",
             "memberships",
             "memberships",
-            "readChannelMembers",
-            "applyChannelMembers",
+            "readScopeMembers",
+            "applyScopeMembers",
             "load",
             "release(ordinal 1)",
             "saveReceipt"
@@ -650,9 +650,9 @@ fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_the
     );
     assert_eq!(
         log[12],
-        HostRequest::ApplyChannelMembers {
-            deltas: vec![axton_server::channel_members::MemberDelta {
-                channel: "shared".into(),
+        HostRequest::ApplyScopeMembers {
+            deltas: vec![axton_server::scope_members::MemberDelta {
+                scope: "shared".into(),
                 key: key("Entry", "c"),
                 present: true,
                 tags: BTreeSet::new(),
@@ -710,7 +710,7 @@ fn enrolled_changes_publish_at_their_allocated_stamps() {
     );
     assert_eq!(host.count("ensureStamp"), 0);
     assert_publishes_carry_current_stamps(&host);
-    // A later change of the enrolled record reaches the Channel again without
+    // A later change of the enrolled record reaches the Scope again without
     // any declaration.
     host.settle(1, settled(json!([]), json!([])));
     let receipt =
@@ -723,7 +723,7 @@ fn enrolled_changes_publish_at_their_allocated_stamps() {
     );
 }
 
-/// A change with no membership publishes nothing and creates no Channel.
+/// A change with no membership publishes nothing and creates no Scope.
 #[test]
 fn a_change_without_membership_publishes_nothing() {
     let host = Scripted::new();
@@ -732,8 +732,8 @@ fn a_change_without_membership_publishes_nothing() {
     let receipt =
         decode(&process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap());
     assert_eq!(receipt.records.len(), 1);
-    assert_eq!(host.count("lockChannels"), 0);
-    assert_eq!(host.count("applyChannelMembers"), 0);
+    assert_eq!(host.count("lockScopes"), 0);
+    assert_eq!(host.count("applyScopeMembers"), 0);
     assert_eq!(host.count("ensureStamp"), 0);
     assert_eq!(host.with(|s| s.store.heads.len()), 0);
 }
@@ -746,11 +746,11 @@ fn a_position_for_another_record_is_host_invalid() {
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
     host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
     host.answer_apply(Ok(
-        json!([{"channel":"shared","model":"Entry","identityKey":"{\"id\":\"b\"}","cursor":1,"kind":"upsert"}]),
+        json!([{"scope":"shared","model":"Entry","identityKey":"{\"id\":\"b\"}","cursor":1,"kind":"upsert"}]),
     ));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST_INVALID, "{err}");
-    assert!(err.message.contains("applyChannelMembers"), "{err}");
+    assert!(err.message.contains("applyScopeMembers"), "{err}");
     assert_eq!(host.count("saveReceipt"), 0);
 }
 
@@ -1023,10 +1023,10 @@ fn a_failed_publication_fails_the_push() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
     host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
-    host.answer_apply(Err("channel down".into()));
+    host.answer_apply(Err("scope down".into()));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST);
-    assert_eq!(err.message, "channel down");
+    assert_eq!(err.message, "scope down");
     assert_eq!(host.count("saveReceipt"), 0);
 }
 
@@ -1239,7 +1239,7 @@ fn handler_changes_naming_an_unregistered_model_are_an_error() {
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
     assert!(err.message.contains("Model Note"), "{err}");
     assert_eq!(
-        host.count("applyChannelMembers"),
+        host.count("applyScopeMembers"),
         0,
         "a device-only Model is never published"
     );

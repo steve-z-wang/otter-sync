@@ -1,12 +1,12 @@
-//! Acceptance scenarios for per-record stamps across channels. Channels are
+//! Acceptance scenarios for per-record stamps across scopes. Scopes are
 //! delivery paths: they never own a record, and stamp evidence outlives both
 //! deletion and unsubscription.
 mod common;
 use axton_client::*;
 use common::*;
 
-fn stamped(channel: &str, from: u64, to: u64, stamp: u64, text: Option<&str>) -> PullPage {
-    let mut p = page(channel, from, to, text);
+fn stamped(scope: &str, from: u64, to: u64, stamp: u64, text: Option<&str>) -> PullPage {
+    let mut p = page(scope, from, to, text);
     p.changes[0].stamp = stamp;
     p
 }
@@ -14,7 +14,7 @@ fn stamped(channel: &str, from: u64, to: u64, stamp: u64, text: Option<&str>) ->
 /// Spec scenario 1: the newer content arrives through B first; A's delayed older page
 /// cannot regress it, but A's cursor still advances.
 #[test]
-fn delayed_page_from_another_channel_cannot_regress_newer_content() {
+fn delayed_page_from_another_scope_cannot_regress_newer_content() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -25,7 +25,7 @@ fn delayed_page_from_another_channel_cannot_regress_newer_content() {
     assert_eq!(report.conflicts(), 0);
     assert_eq!(
         report.cursors["a"], 10,
-        "but the page still moves the channel"
+        "but the page still moves the scope"
     );
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "new");
     assert_eq!(c.cursor("a").unwrap(), Some(10));
@@ -50,8 +50,8 @@ fn redelivered_page_is_a_no_op() {
 }
 
 /// Spec scenario 6: a delete with a newer stamp removes the record on the first
-/// channel that delivers it; the stamp survives so an older upsert arriving in
-/// between is discarded, and the other channel's copy of the delete is a no-op.
+/// scope that delivers it; the stamp survives so an older upsert arriving in
+/// between is discarded, and the other scope's copy of the delete is a no-op.
 #[test]
 fn delete_keeps_its_stamp_so_stale_content_cannot_resurrect_the_record() {
     let dir = tempfile::tempdir().unwrap();
@@ -79,10 +79,10 @@ fn delete_keeps_its_stamp_so_stale_content_cannot_resurrect_the_record() {
 }
 
 /// Spec scenario 5: a record moves A -> B -> A. Each hop is one change published
-/// to the channels that now provide it; the client keeps the newest stamp
-/// whichever channel delivered it, in either arrival order.
+/// to the scopes that now provide it; the client keeps the newest stamp
+/// whichever scope delivered it, in either arrival order.
 #[test]
-fn move_between_channels_and_back() {
+fn move_between_scopes_and_back() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -121,8 +121,7 @@ fn reopen_preserves_stamps_and_tombstones() {
     c.apply_page(stamped("a", 0, 1, 1, Some("A"))).unwrap();
     c.apply_page(stamped("b", 0, 1, 2, Some("B"))).unwrap();
     c.apply_page(stamped("b", 1, 2, 4, None)).unwrap();
-    c.transaction(|tx| tx.set_channel("b".into(), false))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
     drop(c);
     let mut c = open(&path);
     assert!(c.read(&key()).unwrap().is_none());

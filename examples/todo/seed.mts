@@ -4,7 +4,7 @@ import type { createBackend } from "./generated/node/backend.ts";
 type Tx = Prisma.TransactionClient;
 type Backend = ReturnType<typeof createBackend<Tx>>;
 
-export const CHANNEL = "todo:demo";
+export const SCOPE = "todo:demo";
 
 export const SEED_USERS = [
   { id: "alice", name: "Alice" },
@@ -25,8 +25,8 @@ export const SEED_TODOS = [
  * each a new stamp and position, and enrolling an existing member does nothing.
  */
 export async function seed(backend: Backend): Promise<void> {
-  await backend.transaction(async ({ tx, scope: channel, touch }) => {
-    const demo = channel(CHANNEL);
+  await backend.transaction(async ({ tx, scope: scope, touch }) => {
+    const demo = scope(SCOPE);
     for (const user of SEED_USERS) {
       await tx.user.upsert({
         where: { id: user.id },

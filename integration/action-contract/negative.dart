@@ -127,7 +127,7 @@ Future<void> transactionMisuse(GeneratedClient client, GeneratedTransaction stor
       local.loads; // the callback starts no Load
       local.fetch; // the callback fetches nothing
       local.queries; // the callback runs no Query
-      local.channels; // the callback modifies no Channel
+      local.scopes; // the callback modifies no Scope
       local.transaction; // the callback opens no savepoint and has no raw port
       local.models.todo.watch(); // the callback cannot watch
     });

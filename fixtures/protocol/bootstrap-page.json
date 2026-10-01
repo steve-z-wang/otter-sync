@@ -1,8 +1,8 @@
 {
- "comment": "The bounded pull page both sides must decode alike: `mode: \"bootstrap\"`, the echoed channel and origin, the interval the page covers (`from` exclusive, `to` inclusive), and the channel head the page transaction observed. Records are the same receipt-shaped authority a pull page carries, at most 50 of them, once each. `to == until` is completion; no done flag travels. `from <= to <= until <= head` always holds.",
+ "comment": "The bounded pull page both sides must decode alike: `mode: \"bootstrap\"`, the echoed scope and origin, the interval the page covers (`from` exclusive, `to` inclusive), and the scope head the page transaction observed. Records are the same receipt-shaped authority a pull page carries, at most 50 of them, once each. `to == until` is completion; no done flag travels. `from <= to <= until <= head` always holds.",
  "canonical": {
-  "wire": "{\"channel\":\"project:123\",\"from\":40,\"head\":140,\"mode\":\"bootstrap\",\"records\":[{\"identity\":{\"id\":\"e\"},\"model\":\"Entry\",\"stamp\":12,\"state\":{\"note\":null,\"text\":\"Hello\"}},{\"identity\":{\"id\":\"f\"},\"model\":\"Entry\",\"stamp\":3,\"state\":null},{\"error\":\"loader.failed\",\"identity\":{\"id\":\"g\"},\"model\":\"Entry\",\"stamp\":5,\"state\":null}],\"to\":100,\"until\":100}",
-  "channel": "project:123",
+  "wire": "{\"from\":40,\"head\":140,\"mode\":\"bootstrap\",\"records\":[{\"identity\":{\"id\":\"e\"},\"model\":\"Entry\",\"stamp\":12,\"state\":{\"note\":null,\"text\":\"Hello\"}},{\"identity\":{\"id\":\"f\"},\"model\":\"Entry\",\"stamp\":3,\"state\":null},{\"error\":\"loader.failed\",\"identity\":{\"id\":\"g\"},\"model\":\"Entry\",\"stamp\":5,\"state\":null}],\"scope\":\"project:123\",\"to\":100,\"until\":100}",
+  "scope": "project:123",
   "from": 40,
   "to": 100,
   "until": 100,
@@ -13,59 +13,59 @@
  "page": [
   {
    "name": "a terminal page with authority, a deletion and a read failure",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\",\"note\":null}},{\"model\":\"Entry\",\"identity\":{\"id\":\"f\"},\"stamp\":3,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"error\":\"loader.failed\"}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\",\"note\":null}},{\"model\":\"Entry\",\"identity\":{\"id\":\"f\"},\"stamp\":3,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"error\":\"loader.failed\"}]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "a nonterminal page stops below the origin",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"records\":[]}",
    "valid": true,
    "terminal": false
   },
   {
    "name": "an exhausted interval is an empty terminal page",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":100,\"to\":100,\"until\":100,\"head\":140,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":100,\"to\":100,\"until\":100,\"head\":140,\"records\":[]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "an empty scope completes at zero",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":0,\"until\":0,\"head\":0,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":0,\"until\":0,\"head\":0,\"records\":[]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "exactly fifty records",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"1\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"2\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"3\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"4\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"5\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"6\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"7\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"8\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"9\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"10\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"11\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"12\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"13\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"14\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"15\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"16\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"17\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"18\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"19\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"20\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"21\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"22\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"23\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"24\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"25\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"26\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"27\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"28\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"29\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"30\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"31\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"32\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"33\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"34\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"35\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"36\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"37\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"38\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"39\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"40\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"41\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"42\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"43\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"44\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"45\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"46\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"47\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"48\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"49\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"50\"},\"stamp\":1,\"state\":null}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"1\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"2\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"3\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"4\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"5\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"6\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"7\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"8\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"9\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"10\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"11\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"12\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"13\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"14\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"15\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"16\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"17\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"18\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"19\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"20\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"21\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"22\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"23\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"24\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"25\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"26\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"27\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"28\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"29\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"30\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"31\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"32\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"33\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"34\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"35\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"36\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"37\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"38\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"39\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"40\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"41\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"42\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"43\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"44\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"45\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"46\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"47\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"48\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"49\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"50\"},\"stamp\":1,\"state\":null}]}",
    "valid": true,
    "terminal": false
   },
   {
    "name": "safe maximum counters",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":9007199254740991,\"to\":9007199254740991,\"until\":9007199254740991,\"head\":9007199254740991,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":9007199254740991,\"to\":9007199254740991,\"until\":9007199254740991,\"head\":9007199254740991,\"records\":[]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "unknown fields are ignored so a newer server can extend the page",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[],\"future\":true}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[],\"future\":true}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "an unknown mode is not a bootstrap page",
-   "wire": "{\"mode\":\"snapshot\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"snapshot\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "a null mode is not a bootstrap page",
-   "wire": "{\"mode\":null,\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":null,\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "mode missing",
-   "wire": "{\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
@@ -75,82 +75,82 @@
   },
   {
    "name": "the page moves backwards",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":40,\"to\":30,\"until\":100,\"head\":100,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":40,\"to\":30,\"until\":100,\"head\":100,\"records\":[]}",
    "valid": false
   },
   {
    "name": "the page reaches past the origin",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":120,\"until\":100,\"head\":140,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":120,\"until\":100,\"head\":140,\"records\":[]}",
    "valid": false
   },
   {
    "name": "the origin is past the head",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":80,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":80,\"records\":[]}",
    "valid": false
   },
   {
-   "name": "channel missing",
+   "name": "scope missing",
    "wire": "{\"mode\":\"bootstrap\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
-   "name": "channel blank",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\" \",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "name": "scope blank",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\" \",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "from missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "to missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "until missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "head missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "records missing",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1}",
    "valid": false
   },
   {
    "name": "records is not an array",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":{}}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":{}}",
    "valid": false
   },
   {
    "name": "head overflows the safe integer range",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":9007199254740992,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":9007199254740992,\"records\":[]}",
    "valid": false
   },
   {
    "name": "from negative",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":-1,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":-1,\"to\":1,\"until\":1,\"head\":1,\"records\":[]}",
    "valid": false
   },
   {
    "name": "duplicate record",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":2,\"until\":2,\"head\":2,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":2,\"state\":null}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":2,\"until\":2,\"head\":2,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null},{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":2,\"state\":null}]}",
    "valid": false
   },
   {
    "name": "state and error together",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"state\":{\"text\":\"x\"},\"error\":\"loader.failed\"}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"state\":{\"text\":\"x\"},\"error\":\"loader.failed\"}]}",
    "valid": false
   },
   {
    "name": "stamp zero",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":0,\"state\":null}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"records\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":0,\"state\":null}]}",
    "valid": false
   },
   {
@@ -159,13 +159,13 @@
    "valid": false
   },
   {
-   "name": "a legacy page refuses channel changes in its records",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\"}}]}",
+   "name": "a legacy page refuses scope changes in its records",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\"}}]}",
    "valid": false
   },
   {
-   "name": "a channel page is not a legacy page",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "name": "a scope page is not a legacy page",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   }
  ],
@@ -173,89 +173,89 @@
   "comment": "A page may carry at most limits::PULL_CHANGES records; the test builds fifty-one and expects a refusal.",
   "records": 51
  },
- "channelPage": [
+ "scopePage": [
   {
    "name": "a terminal page with an upsert, a stamped null, a Loader error and a removal",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\",\"note\":null}},{\"channel\":\"project:123\",\"cursor\":60,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"},\"stamp\":3,\"state\":null},{\"channel\":\"project:123\",\"cursor\":61,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"error\":\"loader.failed\"},{\"channel\":\"project:123\",\"cursor\":99,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"h\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":12,\"state\":{\"text\":\"Hello\",\"note\":null}},{\"scope\":\"project:123\",\"cursor\":60,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"},\"stamp\":3,\"state\":null},{\"scope\":\"project:123\",\"cursor\":61,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"g\"},\"stamp\":5,\"error\":\"loader.failed\"},{\"scope\":\"project:123\",\"cursor\":99,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"h\"}}]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "a nonterminal page stops below the origin",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"changes\":[{\"channel\":\"a\",\"cursor\":50,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":100,\"changes\":[{\"scope\":\"a\",\"cursor\":50,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": true,
    "terminal": false
   },
   {
    "name": "an empty scope completes at zero",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":0,\"until\":0,\"head\":0,\"changes\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":0,\"until\":0,\"head\":0,\"changes\":[]}",
    "valid": true,
    "terminal": true
   },
   {
    "name": "unknown fields are ignored",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"changes\":[],\"future\":true}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":1,\"until\":1,\"head\":1,\"changes\":[],\"future\":true}",
    "valid": true,
    "terminal": true
   },
   {
-   "name": "a change in another channel",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"b\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "name": "a change in another scope",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"b\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
-   "name": "a change without a channel",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "name": "a change without a scope",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
    "name": "a change at the page start",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":40,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":40,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
    "name": "a change past the page end",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":120,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":101,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":120,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":101,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
    "name": "a duplicate pair",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null},{\"channel\":\"project:123\",\"cursor\":42,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null},{\"scope\":\"project:123\",\"cursor\":42,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
    "name": "two records at one position",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}},{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}},{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"}}]}",
    "valid": false
   },
   {
    "name": "an unknown kind",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"tag\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"tag\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"}}]}",
    "valid": false
   },
   {
    "name": "a removal with a stamp",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"channel\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"scope\":\"project:123\",\"cursor\":41,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1}]}",
    "valid": false
   },
   {
    "name": "a record-only change",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null}]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null}]}",
    "valid": false
   },
   {
    "name": "records instead of changes",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"records\":[]}",
    "valid": false
   },
   {
    "name": "the origin is past the head",
-   "wire": "{\"mode\":\"bootstrap\",\"channel\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":80,\"changes\":[]}",
+   "wire": "{\"mode\":\"bootstrap\",\"scope\":\"a\",\"from\":0,\"to\":50,\"until\":100,\"head\":80,\"changes\":[]}",
    "valid": false
   },
   {
    "name": "mode missing",
-   "wire": "{\"channel\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[]}",
+   "wire": "{\"scope\":\"project:123\",\"from\":40,\"to\":100,\"until\":100,\"head\":140,\"changes\":[]}",
    "valid": false
   }
  ]

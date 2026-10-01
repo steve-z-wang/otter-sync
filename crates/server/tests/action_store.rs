@@ -156,7 +156,7 @@ impl Host for StoreHost {
                     state.stamps.insert(key, stamp);
                     json!(stamp)
                 }
-                // No Todo belongs to a Channel here.
+                // No Todo belongs to a Scope here.
                 "memberships" => json!([]),
                 "load" => {
                     let version = request["version"].as_u64().unwrap();

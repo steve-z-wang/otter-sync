@@ -21,7 +21,7 @@ fn every_external_ingress_refuses_missing_capability_before_host_effects() {
         run(axton_server::process_fetch(&config, "alice", bytes, &host)).unwrap_err(),
         run(axton_server::process_load(&config, "alice", bytes, &host)).unwrap_err(),
         run(axton_server::process_pull(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_channel_pull(
+        run(axton_server::process_scope_pull(
             &config, "alice", bytes, &host,
         ))
         .unwrap_err(),
@@ -42,7 +42,7 @@ fn malformed_negotiation_is_request_invalid_before_host_effects() {
     let host = Backend::new();
     for bytes in [b"{\"capabilities\":true}".as_slice(), b"[]", b"{"] {
         assert_eq!(
-            run(axton_server::process_channel_pull(
+            run(axton_server::process_scope_pull(
                 &config, "alice", bytes, &host
             ))
             .unwrap_err()

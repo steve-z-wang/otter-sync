@@ -1,5 +1,5 @@
 //! Bounded membership-label predicates. No business fields or client state.
-use crate::channel_members::declared_tags;
+use crate::scope_members::declared_tags;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;

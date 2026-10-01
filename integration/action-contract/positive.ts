@@ -161,7 +161,7 @@ async function transactionContract(client: GeneratedClient) {
   // A business input named `store` stays apart from the store option.
   const opened: Call<OpenTodoOutput> = await client.transaction(tx => tx.mutations.openTodo({ store: 'business' }, { store: { suggestions: false } }));
   const pinged: Call<PingOutput> = await client.transaction(tx => tx.mutations.ping({}, { store: false }));
-  const plain: number = await client.transaction(async tx => { await tx.channels.subscribe('todos'); return 1; });
+  const plain: number = await client.transaction(async tx => { await tx.scopes.subscribe('todos'); return 1; });
   const nothing: void = await client.transaction(async tx => { await tx.models.todo.delete(identity); });
   const outcome: CallOutcome<AddTodoOutput> = await one.wait();
   const count: number | undefined = outcome.result?.count;
@@ -208,8 +208,8 @@ const loaders: Loaders<Tx> = {
 };
 // Loads (#173): a page answers every declared identity list and a portable continuation.
 const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
-// A Load enrolls records into a Channel, add only: by the lower-first Model accessor or a mixed reference list; a composite identity names every component.
-const loadChannel = (ctx: LoadContext<Tx>): void => { const channel: LoadScope = ctx.scope('tenant:t'); channel.add.todo({ id: 't' }); channel.add.project({ tenantId: 't', id: 'p' }); channel.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); channel.add.todo({ id: 't' }).tag(['X']); channel.add([Todo({ id: 't' })]).tag(['X']); channel.add([]); };
+// A Load enrolls records into a Scope, add only: by the lower-first Model accessor or a mixed reference list; a composite identity names every component.
+const loadScope = (ctx: LoadContext<Tx>): void => { const scope: LoadScope = ctx.scope('tenant:t'); scope.add.todo({ id: 't' }); scope.add.project({ tenantId: 't', id: 'p' }); scope.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); scope.add.todo({ id: 't' }).tag(['X']); scope.add([Todo({ id: 't' })]).tag(['X']); scope.add([]); };
 const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
 const nullState: LoadNext = { state: null };
 const loads: Loads<Tx> = {
@@ -234,7 +234,7 @@ declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
 // A Model without a Loader is device-only (#187): the map may omit it, and the backend refuses at startup a Mutation that names it on the wire.
 const deviceOnlyLoaders: Loaders<Tx> = { todo: loaders.todo, project: loaders.project };
-void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, loadChannel, versionedLoads, startBackend];
+void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, loadScope, versionedLoads, startBackend];
 
 function canonicalScopeContract(ctx:MutationContext<object>, load:LoadContext<object>) {
  const scope=ctx.scope('U');

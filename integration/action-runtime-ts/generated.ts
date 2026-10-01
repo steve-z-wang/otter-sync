@@ -384,13 +384,13 @@ export interface StoreHooks {
  readonly moment?: StoreHandler<MomentIdentity, Moment>;
  readonly pin?: StoreHandler<PinIdentity, Pin>;
 }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly channels:{subscribe(channel:string):Promise<void>;unsubscribe(channel:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.channels=(transaction as WritePort & {channels:GeneratedTransaction['channels']}).channels; } }
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly scopes:{subscribe(scope:string):Promise<void>;unsubscribe(scope:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.scopes=(transaction as WritePort & {scopes:GeneratedTransaction['scopes']}).scopes; } }
 /** The raw options of a Mutation queued in an application transaction: store policy and the `local` callback, which receives the restricted companion port. */
 export type SubmitMutationOptions = CallOptions & { local?: (port:WritePort) => Promise<void> };
 export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>; }
 /** The raw application transaction's resolutions of unsent work, which only `ApplicationTransaction` needs. */
 export interface UnsentResolutionPort { readonly rejections:{ dismiss(id:number):Promise<void> }; readonly failures:{ retry(taskKeys:string[]):Promise<void>; drop(ordinal:number):Promise<void> }; }
-/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Channels, watch or savepoints. */
+/** A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Scopes, watch or savepoints. */
 export class CompanionContext { readonly models:TxModels; constructor(port:WritePort) { this.models=txModels(port); } }
 /** Transaction-only option: `local` runs inside the open transaction and its Model writes belong to that Mutation. */
 export type CompanionOptions = { local?: (local:CompanionContext) => Promise<void> };
@@ -403,5 +403,5 @@ export function makeTransactionMutations(port:SubmitMutationPort) { const submit
  put: (args:PutInput, options?:PutOptions & CompanionOptions):Promise<Call<PutOutput>> => port.submitMutation('Put',2,encodePutInput(args),decodePutOutput,submit(options)),
  removeMoment: (args:RemoveMomentInput, options?:RemoveMomentOptions & CompanionOptions):Promise<Call<RemoveMomentOutput>> => port.submitMutation('RemoveMoment',1,encodeRemoveMomentInput(args),decodeRemoveMomentOutput,submit(options)),
 }; }
-/** The application transaction: local Models and Channels, `mutations`, which queue typed Mutations in the same local commit, and `rejections` / `failures`, which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it. */
+/** The application transaction: local Models and Scopes, `mutations`, which queue typed Mutations in the same local commit, and `rejections` / `failures`, which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it. */
 export class ApplicationTransaction extends GeneratedTransaction { readonly mutations:ReturnType<typeof makeTransactionMutations>; readonly rejections:UnsentResolutionPort['rejections']; readonly failures:UnsentResolutionPort['failures']; constructor(transaction:WritePort & SubmitMutationPort & UnsentResolutionPort) { super(transaction); this.mutations=makeTransactionMutations(transaction); this.rejections=transaction.rejections; this.failures=transaction.failures; } }

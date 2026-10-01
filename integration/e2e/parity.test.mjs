@@ -15,7 +15,7 @@ import {Client} from '../../packages/client-js/index.mts';
 // differ between two clients. parity_client.dart is the Dart half.
 //
 // Each runtime starts from the same published state: `reseed` puts entry-1 back to
-// its initial text and notifies the channel, so the second runtime does not
+// its initial text and notifies the scope, so the second runtime does not
 // inherit the first one's result. A subscription's origin is the first head its
 // handshake acknowledges (#150), so each runtime signals `READY` once it is
 // initialized and `reseed` runs then; nothing published earlier would reach it,
@@ -55,7 +55,7 @@ async function nodeScript(url,directory,schema,ready){
   return {
    initial,afterAccepted,
    entries:entries.map(row=>({id:row.id,text:row.text,note:row.note})),
-   pending:status.pending,beforeImages:status.beforeImages,channels:status.channels,rejections:status.rejections,
+   pending:status.pending,beforeImages:status.beforeImages,scopes:status.scopes,rejections:status.rejections,
    entry1:await client.syncState('Entry',{id:'entry-1'}),
    localOnly:await client.syncState('Entry',{id:'local-only'}),
   };

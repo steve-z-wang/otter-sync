@@ -153,7 +153,7 @@ fn admitted_page_applies_after_unsubscribe_without_restoring_cursor() {
         .prepare_store(StoreDelivery::Page(page("a", 0, 1, Some("server"))))
         .unwrap();
     client
-        .session(|tx| tx.set_channel("a".into(), false))
+        .session(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     let report = client.apply_prepared_store(prepared).unwrap();
     assert_eq!(report.as_page().unwrap().applied, 1);
@@ -310,7 +310,7 @@ fn bootstrap_preflight_retains_partial_failure_rules() {
     let mut bad = authority_of("bad", Some("bad"), 1);
     bad.state = json!({"text": 42});
     let page = BootstrapPage {
-        channel: "a".into(),
+        scope: "a".into(),
         from: 0,
         to: 1,
         until: 2,
@@ -363,7 +363,7 @@ fn bootstrap_authority_survives_unsubscribe_without_recreating_run() {
         .request_bootstrap("a", registration.subscription_id)
         .unwrap();
     let page = BootstrapPage {
-        channel: "a".into(),
+        scope: "a".into(),
         from: 0,
         to: 1,
         until: 1,
@@ -381,7 +381,7 @@ fn bootstrap_authority_survives_unsubscribe_without_recreating_run() {
         })
         .unwrap();
     client
-        .session(|tx| tx.set_channel("a".into(), false))
+        .session(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     client.apply_prepared_store(prepared).unwrap();
     client.commit_session().unwrap();
@@ -417,7 +417,7 @@ fn preflight_does_not_consume_outstanding_pull_identity() {
         .unwrap();
     client.rollback_session().unwrap();
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let report = client
@@ -453,7 +453,7 @@ fn rolled_back_caller_savepoint_does_not_consume_prepared_pull() {
     assert_eq!(client.cursor("a").unwrap(), Some(0));
     assert!(!client.last_changed().contains("Entry"));
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let report = client
@@ -482,7 +482,7 @@ fn released_caller_savepoint_keeps_prepared_pull_for_commit() {
     client.commit_session().unwrap();
     assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "first");
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let mut second = page("a", 0, 1, Some("second"));
@@ -706,7 +706,7 @@ fn fetch_delivery_prepares_its_one_change_and_refuses_a_conflict_before_the_hook
 }
 
 /// A record the local store cannot write is reported and skipped in a
-/// channel delivery, but a Fetch rejects instead of succeeding from the
+/// scope delivery, but a Fetch rejects instead of succeeding from the
 /// server envelope alone, and nothing it staged remains.
 #[test]
 fn fetch_refuses_a_record_the_store_cannot_write_and_keeps_the_row() {
@@ -799,13 +799,13 @@ fn a_store_session_submits_no_mutation_and_records_no_companion() {
 }
 
 #[test]
-fn channel_release_notifies_local_observers_only_after_commit() {
+fn scope_release_notifies_local_observers_only_after_commit() {
     use std::collections::{BTreeMap, BTreeSet};
     let dir = tempfile::tempdir().unwrap();
     let mut client = open(&dir.path().join("db"));
     subscribe(&mut client, "a");
     client
-        .apply_channel_page(ChannelPullPage {
+        .apply_scope_page(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -814,8 +814,8 @@ fn channel_release_notifies_local_observers_only_after_commit() {
                     head: 1,
                 },
             )]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record: authority(Some("base"), 7),
             }],
@@ -824,7 +824,7 @@ fn channel_release_notifies_local_observers_only_after_commit() {
     let observer = client.watch(BTreeSet::from(["Entry".into()]));
     client.begin_session().unwrap();
     let prepared = client
-        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
             cursors: BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -833,8 +833,8 @@ fn channel_release_notifies_local_observers_only_after_commit() {
                     head: 2,
                 },
             )]),
-            changes: vec![ChannelChange::Remove {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Remove {
+                scope: "a".into(),
                 cursor: 2,
                 key: key(),
             }],
@@ -852,12 +852,11 @@ fn channel_release_notifies_local_observers_only_after_commit() {
 }
 
 #[test]
-fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
+fn prepared_scope_bootstrap_detaches_after_hook_replaces_registration() {
     for removal_only in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut c = open(&dir.path().join("db"));
-        c.transaction(|tx| tx.set_channel("a".into(), true))
-            .unwrap();
+        c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
         acknowledge(&mut c, &[("a", 1)]);
         let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
         let run = c.request_bootstrap("a", old).unwrap().run;
@@ -866,26 +865,26 @@ fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
         }
         c.begin_session().unwrap();
         let change = if removal_only {
-            ChannelChange::Remove {
-                channel: "a".into(),
+            ScopeChange::Remove {
+                scope: "a".into(),
                 cursor: 1,
                 key: key(),
             }
         } else {
-            ChannelChange::Upsert {
-                channel: "a".into(),
+            ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record: authority(Some("admitted"), 7),
             }
         };
         let prepared = c
-            .prepare_store(StoreDelivery::ChannelBootstrap {
+            .prepare_store(StoreDelivery::ScopeBootstrap {
                 scope: "a".into(),
                 subscription_id: old,
                 run,
                 expected_after: 0,
-                page: ChannelBootstrapPage {
-                    channel: "a".into(),
+                page: ScopeBootstrapPage {
+                    scope: "a".into(),
                     from: 0,
                     to: 1,
                     until: 1,
@@ -896,8 +895,8 @@ fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
             .unwrap();
         assert_eq!(prepared.accepted().len(), usize::from(!removal_only));
         c.session(|tx| {
-            tx.set_channel("a".into(), false)?;
-            tx.set_channel("a".into(), true)?;
+            tx.set_scope("a".into(), false)?;
+            tx.set_scope("a".into(), true)?;
             tx.direct(create(
                 "Entry",
                 "hook",
@@ -922,7 +921,7 @@ fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
         assert!(c.bootstrap_state("a", old).is_err());
         let member = c
             .read_sql(
-                "SELECT cursor,present FROM axton_channel_member WHERE channel='a'",
+                "SELECT cursor,present FROM axton_scope_member WHERE scope='a'",
                 &[],
             )
             .unwrap();
@@ -941,14 +940,14 @@ fn prepared_channel_bootstrap_detaches_after_hook_replaces_registration() {
     }
 }
 #[test]
-fn prepared_channel_page_keeps_admitted_authority_after_hook_replaces_registration() {
+fn prepared_scope_page_keeps_admitted_authority_after_hook_replaces_registration() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
     let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
     c.begin_session().unwrap();
     let prepared = c
-        .prepare_store(StoreDelivery::ChannelPage(ChannelPullPage {
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
             cursors: std::collections::BTreeMap::from([(
                 "a".into(),
                 CursorRange {
@@ -957,16 +956,16 @@ fn prepared_channel_page_keeps_admitted_authority_after_hook_replaces_registrati
                     head: 1,
                 },
             )]),
-            changes: vec![ChannelChange::Upsert {
-                channel: "a".into(),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
                 cursor: 1,
                 record: authority(Some("admitted"), 7),
             }],
         }))
         .unwrap();
     c.session(|tx| {
-        tx.set_channel("a".into(), false)?;
-        tx.set_channel("a".into(), true)
+        tx.set_scope("a".into(), false)?;
+        tx.set_scope("a".into(), true)
     })
     .unwrap();
     let result = c.apply_prepared_store(prepared).unwrap();
@@ -978,7 +977,7 @@ fn prepared_channel_page_keeps_admitted_authority_after_hook_replaces_registrati
     assert_eq!(new.cursor, None);
     let member = c
         .read_sql(
-            "SELECT cursor,present FROM axton_channel_member WHERE channel='a'",
+            "SELECT cursor,present FROM axton_scope_member WHERE scope='a'",
             &[],
         )
         .unwrap();

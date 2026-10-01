@@ -20,10 +20,10 @@ const externalHooks: StoreHooks = {
     const at: Date = change.row.at;
     const status: 'active' | 'archived' = change.row.status;
     await tx.models.entry.get({id});
-    await tx.channels.subscribe(`entry:${id}`);
+    await tx.scopes.subscribe(`entry:${id}`);
     void [at,status];
    } else {
-    await tx.channels.unsubscribe(`entry:${id}`);
+    await tx.scopes.unsubscribe(`entry:${id}`);
     // @ts-expect-error deletes have no row
     void change.row;
    }
@@ -93,22 +93,22 @@ if(false){
  const bad:Entry={...row,status:'typo'};
 
  type Tx={rows:Map<string,object>};
- const shorthand:Handlers<Tx>['addBook']=async({input,tx,scope: channel,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);channel('c').add.book(input.book)};
+ const shorthand:Handlers<Tx>['addBook']=async({input,tx,scope: scope,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);scope('c').add.book(input.book)};
  const grouped:Handlers<Tx>['editEntry']={
-  async v1({input,scope: channel}){channel('c').add.entry(input.target.identity)},
+  async v1({input,scope: scope}){scope('c').add.entry(input.target.identity)},
   // Legacy slot handlers declare through the same handles; mixed lists take explicit references and may be empty.
-  async v2({input,scope: channel,touch}){touch.entry(input.entry.identity);channel('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);channel('audit').remove([])},
+  async v2({input,scope: scope,touch}){touch.entry(input.entry.identity);scope('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);scope('audit').remove([])},
   // @ts-expect-error v3 is not a retained version of EditEntry
   async v3(){},
  };
  // @ts-expect-error a mutation with two retained versions cannot register a bare function
  const bare:Handlers<Tx>['editEntry']=async()=>{};
  // @ts-expect-error every retained version must be registered
- const partial:Handlers<Tx>['editEntry']={v2:async({input,scope: channel})=>{channel('c').add.entry(input.entry.identity)}};
+ const partial:Handlers<Tx>['editEntry']={v2:async({input,scope: scope})=>{scope('c').add.entry(input.entry.identity)}};
  // @ts-expect-error handlers declare through `scope` and `touch`; there is no notify and no return value
- const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({channel:'c',records:[]})};
+ const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({scope:'c',records:[]})};
  // @ts-expect-error the old publish API is gone
- const published:Handlers<Tx>['addBook']=async({publish})=>{publish({channel:'c'})};
+ const published:Handlers<Tx>['addBook']=async({publish})=>{publish({scope:'c'})};
  // @ts-expect-error the old changes collector is gone
  const changed:Handlers<Tx>['addBook']=async({changes})=>{changes.add({model:'Book',identity:{id:'b'}})};
 
@@ -120,7 +120,7 @@ if(false){
   // @ts-expect-error missing identity
   ctx.scope('project:1').add.book({});
   // @ts-expect-error old API is gone
-  ctx.publish({channel:'project:1'});
+  ctx.publish({scope:'project:1'});
   // @ts-expect-error Query has no membership writer
   queryCtx.scope('project:1').add.book({id:'A'});
   // @ts-expect-error Query has no change declaration
@@ -137,7 +137,7 @@ if(false){
   project.add([{id:'A'}]);
   // @ts-expect-error a UUID identity is a string
   external.touch.entry({id:1});
-  // @ts-expect-error the Channel's mixed verbs take references, not identities
+  // @ts-expect-error the Scope's mixed verbs take references, not identities
   project.remove({id:'A'});
   // Chained labels and explicit selections support typed and mixed record declarations.
   ctx.scope('project:1').add.entry({id:row.id}).tag(['X']);
@@ -163,11 +163,11 @@ if(false){
   project.remove({tag:'X'});
   project.add.book([{id:'A'}]);
  };
- // @ts-expect-error a handler has no return value to select a channel with
- const returned:Handlers<Tx>['addBook']=async()=>({channel:'c'});
- // @ts-expect-error loaders receive no channel
- const channelled:Loaders<Tx>['book']=async({ids,scope: channel})=>ids.map(id=>({...id,title:String(channel)}));
- // A schema without Loads declares no Load context or its add-only Channel.
+ // @ts-expect-error a handler has no return value to select a scope with
+ const returned:Handlers<Tx>['addBook']=async()=>({scope:'c'});
+ // @ts-expect-error loaders receive no scope
+ const scopeled:Loaders<Tx>['book']=async({ids,scope: scope})=>ids.map(id=>({...id,title:String(scope)}));
+ // A schema without Loads declares no Load context or its add-only Scope.
  // @ts-expect-error legacy LoadChannel is never declared
  type NoLoadScope=import('./backend.ts').LoadChannel;
  // @ts-expect-error no Load is declared, so the backend declares no LoadContext
@@ -212,7 +212,7 @@ function misuse(app:GeneratedClient){
 }
 void misuse;
 // The generated Scope facade ([#150](https://github.com/zanminwang/axton/issues/150)):
-// one handle per registration, typed handle members, and the retained `channels`
+// one handle per registration, typed handle members, and the `scopes`
 // spelling on that same ledger path.
 const scopeDirectory=await mkdtemp(join(tmpdir(),'generated-scopes-'));
 const client=await GeneratedClient.open({path:join(scopeDirectory,'state.sqlite')});
@@ -235,12 +235,11 @@ try{
  const stopWatching:()=>void=handle.watch(snapshot=>void snapshot.connection);
  stopWatching();
  check(scope==='project:123'&&status.connection==='offline','typed handle members');
- // The retained spelling is the same ledger path, not a second algorithm: with
- // no server it registers durable intent that has no boundary yet.
- const retained:Subscription=await client.channels.subscribe('project:456');
- assert.equal(retained.status.initialization,'pending','channels registers through the same ledger');
- assert.equal(await client.channels.subscribe('project:456'),retained,'and shares one handle per registration');
- const removal:Promise<void>=client.channels.unsubscribe('project:456');
+ // A second Scope registers durable intent before any server boundary.
+ const retained:Subscription=await client.scopes.subscribe('project:456');
+ assert.equal(retained.status.initialization,'pending','scopes registers through the same ledger');
+ assert.equal(await client.scopes.subscribe('project:456'),retained,'and shares one handle per registration');
+ const removal:Promise<void>=retained.unsubscribe();
  await removal;
  assert.equal(retained.status.active,false);
  await handle.unsubscribe();
@@ -260,18 +259,18 @@ let release=()=>{};
 const held=new Promise<void>(resolve=>{release=resolve;});
 const http=createServer(async(request,response)=>{
  const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk as Buffer);
- const body=JSON.parse(Buffer.concat(chunks).toString()) as {mode?:string;channel:string;after:number;until:number};
+ const body=JSON.parse(Buffer.concat(chunks).toString()) as {mode?:string;scope:string;after:number;until:number};
  // Only a bootstrap page is expected here, and the test transport holds it.
  loads.push({after:body.after,until:body.until});
  await held;
- response.end(JSON.stringify({mode:'bootstrap',channel:body.channel,from:body.after,to:body.until,until:body.until,head:body.until,changes:[]}));
+ response.end(JSON.stringify({mode:'bootstrap',scope:body.scope,from:body.after,to:body.until,until:body.until,head:body.until,changes:[]}));
 });
 await new Promise<void>(resolve=>http.listen(0,'127.0.0.1',()=>resolve()));
 const sockets=new WebSocketServer({server:http});
 sockets.on('connection',socket=>{
  socket.on('message',message=>{
-  const subscribe=JSON.parse(String(message)) as {channels:string[]};
-  socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(subscribe.channels.map(channel=>[channel,0]))}));
+  const subscribe=JSON.parse(String(message)) as {scopes:string[]};
+  socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(subscribe.scopes.map(scope=>[scope,0]))}));
  });
 });
 const address=http.address();
@@ -333,7 +332,7 @@ try{
   Object.assign(decoderHooks,{entry:()=>{throw Error('mutable map replaced registration');}});
   assert.ok(registered?.Entry);
   const rawRow=encodeEntry(row);
-  await registered.Entry({channels:{}},[{kind:'upsert',identity:{id:row.id},row:rawRow},{kind:'delete',identity:{id:row.id}}]);
+  await registered.Entry({scopes:{}},[{kind:'upsert',identity:{id:row.id},row:rawRow},{kind:'delete',identity:{id:row.id}}]);
   assert.deepEqual(delivered,[`${row.id}:2026-01-01T00:00:00.000Z`,`delete:${row.id}`]);
  }finally{await adapted.close();}
 }finally{rawClass.open=originalRawOpen;}
@@ -443,10 +442,10 @@ function scriptedTransaction(){
  const companions:object[]=[];
  const resolutions:object[]=[];
  const companionPort:WritePort={...reads,async read(){return compositionRow},async direct(op){companions.push(op);}};
- const port:WritePort&SubmitMutationPort&UnsentResolutionPort&{channels:GeneratedTransaction['channels']}={
+ const port:WritePort&SubmitMutationPort&UnsentResolutionPort&{scopes:GeneratedTransaction['scopes']}={
   ...reads,
   async direct(op){outer.push(op);},
-  channels:{async subscribe(){},async unsubscribe(){}},
+  scopes:{async subscribe(){},async unsubscribe(){}},
   rejections:{async dismiss(id){resolutions.push({dismiss:id});}},
   failures:{async retry(taskKeys){resolutions.push({retry:taskKeys});},async drop(ordinal){resolutions.push({drop:ordinal});}},
   async submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>{
@@ -471,7 +470,7 @@ async function transactionShapes(client:GeneratedClient){
   const second=await tx.mutations.rename({id:compositionId,title:'t'},{store:false});
   return {first,second};
  });
- const counted:number=await client.transaction(async tx=>{await tx.models.composition.create(compositionRow);await tx.channels.subscribe('c');return 1;});
+ const counted:number=await client.transaction(async tx=>{await tx.models.composition.create(compositionRow);await tx.scopes.subscribe('c');return 1;});
  const nothing:void=await client.transaction(async tx=>{await tx.models.composition.delete({id:compositionId});});
  const outcome=await published.wait();
  const at:Date|undefined=outcome.result?.published.at;
@@ -520,7 +519,7 @@ async function checkTransactionMutations(){
  assert.equal('call' in tx.mutations,false,'no direct route in a transaction');
  assert.deepEqual(Object.keys(tx.mutations).sort(),['publishEntry','rename']);
  assert.ok(context instanceof CompanionContext);
- for(const member of ['mutations','channels','transaction','savepoint'])assert.equal(member in context,false,member);
+ for(const member of ['mutations','scopes','transaction','savepoint'])assert.equal(member in context,false,member);
  assert.equal('watch' in context.models.composition,false);
  await tx.models.composition.delete({id:compositionId});
  assert.deepEqual(scripted.outer,[{model:'Composition',op:'delete',identity:{id:compositionId}}],'ordinary writes stay independent');

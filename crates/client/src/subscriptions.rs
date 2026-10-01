@@ -7,7 +7,7 @@
 use crate::engine::{Engine, as_u64};
 use crate::store::ClientStore;
 use crate::{Client, SUBSCRIPTION_MARK};
-use axton_core::{MAX_SAFE_INTEGER, Result, check_channel, invalid};
+use axton_core::{MAX_SAFE_INTEGER, Result, check_scope, invalid};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ pub struct Initialization {
     pub fault: Option<String>,
 }
 
-const COLUMNS: &str = "channel, subscription_id, starting_cursor, cursor";
+const COLUMNS: &str = "scope, subscription_id, starting_cursor, cursor";
 
 fn optional(value: &Value) -> Result<Option<u64>> {
     if value.is_null() {
@@ -65,20 +65,20 @@ impl<S: ClientStore> Engine<'_, S> {
     /// Record that this transaction changed which Scopes are subscribed. The
     /// mark is stripped before the changed set reaches watchers; it bumps the
     /// subscription generation and makes pulls in flight stale.
-    pub(crate) fn mark_subscription(&mut self, channel: &str) {
-        self.changed.insert(format!("{SUBSCRIPTION_MARK}{channel}"));
+    pub(crate) fn mark_subscription(&mut self, scope: &str) {
+        self.changed.insert(format!("{SUBSCRIPTION_MARK}{scope}"));
     }
-    pub fn subscription(&mut self, channel: &str) -> Result<Option<SubscriptionState>> {
+    pub fn subscription(&mut self, scope: &str) -> Result<Option<SubscriptionState>> {
         let rows = self.rows(
-            &format!("SELECT {COLUMNS} FROM axton_subscription WHERE channel=?"),
-            &[json!(channel)],
+            &format!("SELECT {COLUMNS} FROM axton_subscription WHERE scope=?"),
+            &[json!(scope)],
         )?;
         rows.rows.first().map(|r| decode(r)).transpose()
     }
     /// Every subscription, subscribed order, initialized or not.
     pub fn subscription_states(&mut self) -> Result<Vec<SubscriptionState>> {
         let rows = self.rows(
-            &format!("SELECT {COLUMNS} FROM axton_subscription ORDER BY channel"),
+            &format!("SELECT {COLUMNS} FROM axton_subscription ORDER BY scope"),
             &[],
         )?;
         rows.rows.iter().map(|r| decode(r)).collect()
@@ -93,25 +93,25 @@ impl<S: ClientStore> Engine<'_, S> {
             .filter_map(|s| s.cursor.map(|c| (s.scope, c)))
             .collect())
     }
-    /// How far `channel` committed delivery: `None` when it has no
+    /// How far `scope` committed delivery: `None` when it has no
     /// subscription, and `None` while its subscription is uninitialized.
-    pub fn cursor(&mut self, channel: &str) -> Result<Option<u64>> {
-        Ok(self.subscription(channel)?.and_then(|s| s.cursor))
+    pub fn cursor(&mut self, scope: &str) -> Result<Option<u64>> {
+        Ok(self.subscription(scope)?.and_then(|s| s.cursor))
     }
-    /// The subscription for `channel`, registering it when absent, and whether
+    /// The subscription for `scope`, registering it when absent, and whether
     /// this call created it. Insert-if-absent, never an upsert: a repeated
     /// registration reads the stored identity and cursors untouched. A name the
-    /// wire refuses ([`check_channel`]) is refused here, so every registration
-    /// path - `set_channel`, `scopeSubscribe`, the generated facade - is held to
+    /// wire refuses ([`check_scope`]) is refused here, so every registration
+    /// path - `set_scope`, `scopeSubscribe`, the generated facade - is held to
     /// the one rule.
-    pub fn ensure_subscription(&mut self, channel: &str) -> Result<(SubscriptionState, bool)> {
-        check_channel(channel)?;
-        if let Some(state) = self.subscription(channel)? {
+    pub fn ensure_subscription(&mut self, scope: &str) -> Result<(SubscriptionState, bool)> {
+        check_scope(scope)?;
+        if let Some(state) = self.subscription(scope)? {
             return Ok((state, false));
         }
         let subscription_id = self.bump("next_subscription")?;
         let state = SubscriptionState {
-            scope: channel.to_string(),
+            scope: scope.to_string(),
             subscription_id,
             starting_cursor: None,
             cursor: None,
@@ -119,16 +119,16 @@ impl<S: ClientStore> Engine<'_, S> {
         self.exec(
             "axton_subscription",
             &format!("INSERT INTO axton_subscription ({COLUMNS}) VALUES (?,?,NULL,NULL)"),
-            &[json!(channel), json!(subscription_id)],
+            &[json!(scope), json!(subscription_id)],
         )?;
         if self
             .scalar(
-                "SELECT 1 FROM axton_channel_member WHERE channel=? LIMIT 1",
-                &[json!(channel)],
+                "SELECT 1 FROM axton_scope_member WHERE scope=? LIMIT 1",
+                &[json!(scope)],
             )?
             .is_some()
         {
-            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE channel=? AND subscription_id=?", &[json!(channel), json!(subscription_id)])?;
+            self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=1 WHERE scope=? AND subscription_id=?", &[json!(scope), json!(subscription_id)])?;
         }
         Ok((state, true))
     }
@@ -138,14 +138,14 @@ impl<S: ClientStore> Engine<'_, S> {
     /// which mean this initialization no longer applies.
     pub fn initialize_subscription(
         &mut self,
-        channel: &str,
+        scope: &str,
         subscription_id: u64,
         cursor: u64,
     ) -> Result<bool> {
         let affected = self.exec(
             "axton_subscription",
-            "UPDATE axton_subscription SET starting_cursor=?, cursor=? WHERE channel=? AND subscription_id=? AND starting_cursor IS NULL",
-            &[json!(cursor), json!(cursor), json!(channel), json!(subscription_id)],
+            "UPDATE axton_subscription SET starting_cursor=?, cursor=? WHERE scope=? AND subscription_id=? AND starting_cursor IS NULL",
+            &[json!(cursor), json!(cursor), json!(scope), json!(subscription_id)],
         )?;
         Ok(affected == 1)
     }
@@ -208,7 +208,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         for (scope, head) in heads {
             if let Some(id) = expected.get(scope) {
-                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE channel=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(scope),json!(id)])?;
+                self.exec("axton_subscription", "UPDATE axton_subscription SET reconcile_bound=? WHERE scope=? AND subscription_id=? AND reconcile_bound IS NULL AND reconcile_state='requested'", &[json!(head),json!(scope),json!(id)])?;
             }
         }
         for (scope, subscription_id, head) in boundaries {
@@ -224,42 +224,37 @@ impl<S: ClientStore> Engine<'_, S> {
     /// pending, and cannot move a subscription that replaced the one the caller
     /// read. A caller reads the row before it moves it, so no row to update is
     /// a fault, not a no-op.
-    pub fn advance_cursor(
-        &mut self,
-        channel: &str,
-        subscription_id: u64,
-        cursor: u64,
-    ) -> Result<()> {
+    pub fn advance_cursor(&mut self, scope: &str, subscription_id: u64, cursor: u64) -> Result<()> {
         let affected = self.exec(
             "axton_subscription",
-            "UPDATE axton_subscription SET cursor=? WHERE channel=? AND subscription_id=? AND cursor IS NOT NULL",
-            &[json!(cursor), json!(channel), json!(subscription_id)],
+            "UPDATE axton_subscription SET cursor=? WHERE scope=? AND subscription_id=? AND cursor IS NOT NULL",
+            &[json!(cursor), json!(scope), json!(subscription_id)],
         )?;
         if affected != 1 {
             return Err(invalid(format!(
-                "no initialized subscription {subscription_id} for {channel}; its cursor cannot advance"
+                "no initialized subscription {subscription_id} for {scope}; its cursor cannot advance"
             )));
         }
         Ok(())
     }
-    /// Unsubscribe `channel`, and whether a row went. `subscription_id` fences
+    /// Unsubscribe `scope`, and whether a row went. `subscription_id` fences
     /// the removal to one registration: an old handle cannot delete the
     /// subscription that replaced it. `None` removes whichever is stored.
     pub fn remove_subscription(
         &mut self,
-        channel: &str,
+        scope: &str,
         subscription_id: Option<u64>,
     ) -> Result<bool> {
         let affected = match subscription_id {
             Some(id) => self.exec(
                 "axton_subscription",
-                "DELETE FROM axton_subscription WHERE channel=? AND subscription_id=?",
-                &[json!(channel), json!(id)],
+                "DELETE FROM axton_subscription WHERE scope=? AND subscription_id=?",
+                &[json!(scope), json!(id)],
             )?,
             None => self.exec(
                 "axton_subscription",
-                "DELETE FROM axton_subscription WHERE channel=?",
-                &[json!(channel)],
+                "DELETE FROM axton_subscription WHERE scope=?",
+                &[json!(scope)],
             )?,
         };
         Ok(affected > 0)
@@ -283,10 +278,10 @@ impl<S: ClientStore> Client<S> {
     /// state. Repeating it returns the same identity and the same cursors; a
     /// new registration starts uninitialized, with no delivery position until
     /// its first boundary is committed. A name the wire refuses
-    /// ([`check_channel`]) is refused here too: a row no session could ever
+    /// ([`check_scope`]) is refused here too: a row no session could ever
     /// subscribe for would fail every handshake and stop every other Scope.
     pub fn ensure_subscription(&mut self, scope: &str) -> Result<SubscriptionState> {
-        check_channel(scope)?;
+        check_scope(scope)?;
         // A registration that already exists is answered from the committed
         // reader: repeating it writes nothing, so it neither bumps the client
         // generation nor notifies a watcher. The write below re-reads the row
@@ -334,9 +329,9 @@ impl<S: ClientStore> Client<S> {
             Ok(removed)
         })
     }
-    /// How far `channel` committed delivery; see [`Engine::cursor`].
-    pub fn cursor(&mut self, channel: &str) -> Result<Option<u64>> {
-        self.view(|e| e.cursor(channel))
+    /// How far `scope` committed delivery; see [`Engine::cursor`].
+    pub fn cursor(&mut self, scope: &str) -> Result<Option<u64>> {
+        self.view(|e| e.cursor(scope))
     }
     /// The initialized subscriptions with their cursors; see
     /// [`Engine::subscriptions`].
@@ -345,7 +340,7 @@ impl<S: ClientStore> Client<S> {
     }
     /// Every subscribed Scope, whether or not its first boundary is committed:
     /// the set a live session asks for.
-    pub fn desired_channels(&mut self) -> Result<std::collections::BTreeSet<String>> {
+    pub fn desired_scopes(&mut self) -> Result<std::collections::BTreeSet<String>> {
         Ok(self
             .subscription_states()?
             .into_iter()

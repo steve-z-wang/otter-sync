@@ -334,8 +334,8 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         "import type { Todo as TodoRecord, TodoIdentity, TodoPatch, Note as NoteRecord, NoteIdentity, NotePatch, Status } from \"./generated.ts\";\n",
         "export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n",
         "export type LoadNext = null | { state: JsonValue };\n",
-        // An add-only Channel handle: the same lower-first accessors and
-        // mixed RecordRef list as a Mutation's Channel, without remove.
+        // An add-only Scope handle: the same lower-first accessors and
+        // mixed RecordRef list as a Mutation's Scope, without remove.
         "export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }\n",
         "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n scope(name: string): LoadScope;\n}\n",
         "export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n",
@@ -389,7 +389,7 @@ fn retained_load_versions_register_together_with_their_own_contracts() {
         " todos: { v1(call: LoadHandlerCall<Tx, TodosV1Input>): Promise<TodosV1HandlerOutput>; v2(call: LoadHandlerCall<Tx, TodosInput>): Promise<TodosHandlerOutput> };\n",
         "export interface TodoV1Identity {\n id: string;\n}\n",
         // Every retained version shares the one context: it enrolls by the
-        // current identity, like a Mutation's Channel.
+        // current identity, like a Mutation's Scope.
         "export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }\n",
         " scope(name: string): LoadScope;\n",
     ] {

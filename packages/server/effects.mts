@@ -22,7 +22,7 @@ import {
  * enrollment bounded like the engine bounds it.
  */
 import type {
-  ChannelIntent,
+  ScopeIntent,
   HostRecordRef,
   SettlementEffects,
 } from "./host-contract.mts";
@@ -59,14 +59,14 @@ export type LoadEffectFailure = {
 export interface LoadEffectCollector {
   scope(name: string): RuntimeLoadScope;
   /** Owned copies of the distinct additions, in first-declaration order. */
-  memberships(): readonly ChannelIntent[];
+  memberships(): readonly ScopeIntent[];
   /** The first overflow, else the first refused declaration; `undefined` when neither happened. */
   failure(): LoadEffectFailure | undefined;
   /** Refuses every later declaration, through any handle. Idempotent. */
   close(): void;
 }
 /**
- * One Load page's enrollment bounds, counted over distinct Channel/record
+ * One Load page's enrollment bounds, counted over distinct Scope/record
  * pairs: the engine's `LOAD_ENROLLMENT_PAIRS` and `LOAD_ENROLLMENT_BYTES`
  * (`axton_core::limits`), shared through
  * `fixtures/protocol/load-enrollment-limits.json`.
@@ -314,17 +314,17 @@ function entriesOf(
 type Declared = { entry: Entry; identity: Identity };
 
 const LONE_SURROGATE = /\p{Surrogate}/u;
-type AddIntent = Extract<ChannelIntent, { kind: "add" }>;
+type AddIntent = Extract<ScopeIntent, { kind: "add" }>;
 /** An owned add intent: the record and tags frozen with it. */
 function addIntent(
-  channel: string,
+  scope: string,
   model: string,
   identity: Identity,
   tags: readonly string[],
 ): AddIntent {
   return Object.freeze({
     kind: "add",
-    channel,
+    scope,
     record: Object.freeze({ model, identity }) as HostRecordRef,
     tags,
   });
@@ -332,14 +332,14 @@ function addIntent(
 /**
  * What every collector over one configuration shares: the validated Models
  * and the per-call checks that refuse a device-only Model, a malformed
- * reference or a blank Channel name.
+ * reference or a blank Scope name.
  */
 type Declarations = {
   entries: readonly Entry[];
   publishable(model: string, caller: string): void;
   /** Resolves a mixed list whole, so a caught failure declares nothing. */
   list(records: unknown, caller: string): Declared[];
-  channelName(name: unknown): void;
+  scopeName(name: unknown): void;
 };
 function declarationsOf(
   models: readonly EffectModel[],
@@ -384,9 +384,9 @@ function declarationsOf(
         resolved.push(reference(records[index], caller));
       return resolved;
     },
-    channelName(name) {
+    scopeName(name) {
       // Non-empty after JS `trim()`. The engine applies its own check
-      // (`check_channel`, Rust `trim()`) at settlement; the two trims differ
+      // (`check_scope`, Rust `trim()`) at settlement; the two trims differ
       // on a few code points such as U+FEFF and U+0085.
       if (typeof name !== "string" || name.trim() === "")
         throw new Error("scope: a Scope name must be a nonblank string");
@@ -413,7 +413,7 @@ export function effectsFor(
   enums: readonly EffectEnum[] = [],
   loaded?: ReadonlySet<string>,
 ): () => EffectCollector {
-  const { entries, publishable, list, channelName } = declarationsOf(
+  const { entries, publishable, list, scopeName } = declarationsOf(
     models,
     enums,
     loaded,
@@ -422,7 +422,7 @@ export function effectsFor(
     let open = true;
     const changes: HostRecordRef[] = [];
     const changed = new Set<string>();
-    const memberships: ChannelIntent[] = [];
+    const memberships: ScopeIntent[] = [];
     const assertOpen = (caller: string) => {
       if (!open) throw closed(caller);
     };
@@ -437,9 +437,9 @@ export function effectsFor(
       entries,
       publishable,
       list,
-      name: channelName,
+      name: scopeName,
       check: assertOpen,
-      record: (intents: readonly ChannelIntent[]) => {
+      record: (intents: readonly ScopeIntent[]) => {
         memberships.push(...intents);
       },
     };
@@ -485,7 +485,7 @@ function canonicalJson(value: unknown): string {
  * length of its add intent's canonical JSON, identity canonical and tags
  * included.
  */
-export function enrollmentBytes(intent: ChannelIntent): number {
+export function enrollmentBytes(intent: ScopeIntent): number {
   return Buffer.byteLength(canonicalJson(intent), "utf8");
 }
 /** A declaration past a bound: the page fails `load.page_too_large`. */
@@ -493,8 +493,8 @@ class EnrollmentOverflow extends Error {}
 
 /**
  * The add-only counterpart of `effectsFor`, for Load pages: over the same
- * validated configuration, it answers a factory of collectors whose Channel
- * handles only add. A repeated Channel/record pair, as the engine
+ * validated configuration, it answers a factory of collectors whose Scope
+ * handles only add. A repeated Scope/record pair, as the engine
  * canonicalizes it, is stored once, in its first place, with its tags
  * unioned; the declaration that would pass `LOAD_ENROLLMENT_PAIRS` or
  * `LOAD_ENROLLMENT_BYTES` throws and stores nothing. Every refused
@@ -506,7 +506,7 @@ export function loadEffectsFor(
   enums: readonly EffectEnum[] = [],
   loaded?: ReadonlySet<string>,
 ): () => LoadEffectCollector {
-  const { entries, publishable, list, channelName } = declarationsOf(
+  const { entries, publishable, list, scopeName } = declarationsOf(
     models,
     enums,
     loaded,
@@ -517,7 +517,7 @@ export function loadEffectsFor(
     /** Distinct additions by their canonical pair, in first-declaration order, with their bytes. */
     const pairs = new Map<string, { intent: AddIntent; bytes: number }>();
     let bytes = 0;
-    const declarations: ChannelIntent[] = [];
+    const declarations: ScopeIntent[] = [];
     /** Runs one declaration, keeping its refusal even if the handler catches it. */
     const declare = <R,>(body: () => R): R => {
       try {
@@ -542,7 +542,7 @@ export function loadEffectsFor(
      * text or the result passes a bound.
      */
     const enroll = (
-      channel: string,
+      scope: string,
       declared: Declared[],
       tags: readonly string[],
       caller: string,
@@ -557,10 +557,10 @@ export function loadEffectsFor(
       const fresh = new Map<string, { intent: AddIntent; bytes: number }>();
       let added = 0;
       let more = 0;
-      const additions: ChannelIntent[] = [];
+      const additions: ScopeIntent[] = [];
       for (const { entry, identity } of declared) {
         const canonical = entry.canonical(identity);
-        const key = canonicalJson([channel, entry.name, canonical]);
+        const key = canonicalJson([scope, entry.name, canonical]);
         const prior = fresh.get(key) ?? pairs.get(key);
         let merged = tags;
         let contribution = tags;
@@ -574,21 +574,21 @@ export function loadEffectsFor(
         // A repeated pair keeps the record as first declared.
         const intent = prior
           ? Object.freeze({ ...prior.intent, tags: merged })
-          : addIntent(channel, entry.name, identity, merged);
+          : addIntent(scope, entry.name, identity, merged);
         const size = enrollmentBytes(
-          addIntent(channel, entry.name, canonical, merged),
+          addIntent(scope, entry.name, canonical, merged),
         );
         more += size - (prior?.bytes ?? 0);
         fresh.set(key, { intent, bytes: size });
         additions.push(
           Object.freeze({
-            ...addIntent(channel, entry.name, identity, contribution),
+            ...addIntent(scope, entry.name, identity, contribution),
             kind,
           }),
         );
         if (pairs.size + added > LOAD_ENROLLMENT_PAIRS)
           throw new EnrollmentOverflow(
-            `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Channel/record pairs`,
+            `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Scope/record pairs`,
           );
         if (bytes + more > LOAD_ENROLLMENT_BYTES)
           throw new EnrollmentOverflow(
@@ -606,14 +606,14 @@ export function loadEffectsFor(
       publishable,
       list,
       name: (name: unknown) => {
-        channelName(name);
+        scopeName(name);
         if (LONE_SURROGATE.test(name as string))
           throw new Error(
             "scope: a Scope name must be Unicode text, without a lone surrogate",
           );
       },
       check: (caller: string) => declare(() => assertOpen(caller)),
-      record: (intents: readonly ChannelIntent[], caller: string) =>
+      record: (intents: readonly ScopeIntent[], caller: string) =>
         declare(() => {
           if (intents.length === 0) return;
           const first = intents[0]!;
@@ -630,13 +630,13 @@ export function loadEffectsFor(
             )!;
             return { entry, identity: intent.record.identity };
           });
-          enroll(first.channel, declared, first.tags, caller, first.kind);
+          enroll(first.scope, declared, first.tags, caller, first.kind);
         }),
     };
     return Object.freeze({
       scope: (name: string) =>
         declare(() => scopeHandle(canonical, name, true) as RuntimeLoadScope),
-      memberships: (): readonly ChannelIntent[] => [...declarations],
+      memberships: (): readonly ScopeIntent[] => [...declarations],
       failure: () => failed,
       close() {
         open = false;

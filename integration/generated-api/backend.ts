@@ -124,7 +124,7 @@ export interface RemoveEntriesInput {
 }
 /** Trusted framework context and caller-supplied arguments of a Mutation. */
 export type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };
-/** A Query's context has no `channel` or `touch`: it reads without business side effects. */
+/** A Query's context has no `scope` or `touch`: it reads without business side effects. */
 export type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };
 export interface PublishEntryInput {
  entry: Entry;

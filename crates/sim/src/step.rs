@@ -3,7 +3,7 @@
 use crate::{Action, MutationSpec, Sim, shrink};
 use std::fmt;
 
-const CHANNELS: [&str; 3] = ["a", "b", "c"];
+const SCOPES: [&str; 3] = ["a", "b", "c"];
 
 pub struct Failure {
     pub seed: u64,
@@ -40,16 +40,16 @@ impl Sim {
             .filter(|&i| !self.is_up(i))
             .collect()
     }
-    fn pick_channel(&mut self) -> String {
-        self.rng.pick(&CHANNELS).to_string()
+    fn pick_scope(&mut self) -> String {
+        self.rng.pick(&SCOPES).to_string()
     }
-    /// A channel to notify for `Action::ServerChange`. Stays within the record's real
+    /// A scope to notify for `Action::ServerChange`. Stays within the record's real
     /// membership once it has one, so the generated state is always one that respects
     /// the application rule (see `generate_membership_faults`'s doc) unless a test has
     /// deliberately turned that flag on to exercise the rule being broken.
-    fn pick_notify_channel(&mut self, real_membership: &[String]) -> String {
+    fn pick_notify_scope(&mut self, real_membership: &[String]) -> String {
         if self.generate_membership_faults || real_membership.is_empty() {
-            self.pick_channel()
+            self.pick_scope()
         } else {
             self.rng.pick(real_membership).clone()
         }
@@ -76,19 +76,19 @@ impl Sim {
                     return Some(Action::Deliver);
                 }
                 let id = self.rng.pick(&self.known_entries).clone();
-                // A random non-empty subset of the three channels: the record's new
+                // A random non-empty subset of the three scopes: the record's new
                 // membership after this move.
-                let mut channels: Vec<String> = CHANNELS
+                let mut scopes: Vec<String> = SCOPES
                     .iter()
                     .filter(|_| self.rng.chance(1, 2))
                     .map(|c| c.to_string())
                     .collect();
-                if channels.is_empty() {
-                    channels.push(self.pick_channel());
+                if scopes.is_empty() {
+                    scopes.push(self.pick_scope());
                 }
                 Action::MoveMembership {
                     key: format!("Entry:{id}"),
-                    channels,
+                    scopes,
                 }
             }
             68..72 => Action::Drop,
@@ -117,17 +117,17 @@ impl Sim {
                 }
             }
             90..92 => {
-                let channel = self.pick_channel();
+                let scope = self.pick_scope();
                 Action::Subscribe {
                     client: client?,
-                    channel,
+                    scope,
                 }
             }
             92 => {
-                let channel = self.pick_channel();
+                let scope = self.pick_scope();
                 Action::Unsubscribe {
                     client: client?,
-                    channel,
+                    scope,
                 }
             }
             93..96 => {
@@ -141,17 +141,17 @@ impl Sim {
                     Some(format!("s{}", self.rng.below(1000)))
                 };
                 let real_membership = self.host.membership(&crate::schema::entry_key(&id));
-                let mut channels = vec![self.pick_notify_channel(&real_membership)];
+                let mut scopes = vec![self.pick_notify_scope(&real_membership)];
                 if self.rng.chance(1, 2) {
-                    let c = self.pick_notify_channel(&real_membership);
-                    if !channels.contains(&c) {
-                        channels.push(c);
+                    let c = self.pick_notify_scope(&real_membership);
+                    if !scopes.contains(&c) {
+                        scopes.push(c);
                     }
                 }
                 Action::ServerChange {
                     key: format!("Entry:{id}"),
                     text,
-                    channels,
+                    scopes,
                 }
             }
             96..98 => Action::RejectNext {
@@ -207,7 +207,7 @@ impl Sim {
                     _ => Some(Some(format!("m{}", self.rng.below(1000)))),
                 };
                 let intents = (0..self.rng.below(4))
-                    .map(|_| (self.pick_channel(), self.rng.chance(1, 2)))
+                    .map(|_| (self.pick_scope(), self.rng.chance(1, 2)))
                     .collect();
                 Action::Declare {
                     key: format!("Entry:{id}"),
@@ -247,40 +247,53 @@ impl Sim {
                 }
             }
             roll => {
-                use axton_server::host::{ChannelIntent, RecordRef};
+                use axton_server::host::{RecordRef, ScopeIntent};
                 let id = self.rng.pick(&self.known_entries).clone();
                 let record = RecordRef {
                     model: "Entry".into(),
                     identity: serde_json::json!({"id":id}),
                 };
-                let channel = self.pick_channel();
+                let scope = self.pick_scope();
                 let tag = if self.rng.chance(1, 2) { "x" } else { "y" }.to_string();
                 let intents = match roll {
-                    20 | 21 => vec![ChannelIntent::Add {
-                        channel,
+                    20 | 21 => vec![ScopeIntent::Add {
+                        scope,
                         record,
                         tags: vec![tag],
                     }],
-                    22 => vec![ChannelIntent::RemoveTag { channel, tag }],
-                    23 => vec![ChannelIntent::Remove { channel, record }],
+                    22 => vec![ScopeIntent::Select {
+                        scope,
+                        model: None,
+                        predicate: serde_json::from_value(
+                            serde_json::json!({"tags":{"any":[tag]}}),
+                        )
+                        .unwrap(),
+                        action: axton_server::scope_members::SelectionAction::Remove,
+                    }],
+                    23 => vec![ScopeIntent::Remove { scope, record }],
                     _ => vec![
-                        ChannelIntent::Add {
-                            channel: channel.clone(),
+                        ScopeIntent::Add {
+                            scope: scope.clone(),
                             record: record.clone(),
                             tags: vec![tag.clone()],
                         },
-                        ChannelIntent::RemoveTag {
-                            channel: channel.clone(),
-                            tag,
+                        ScopeIntent::Select {
+                            scope: scope.clone(),
+                            model: None,
+                            predicate: serde_json::from_value(
+                                serde_json::json!({"tags":{"any":[tag]}}),
+                            )
+                            .unwrap(),
+                            action: axton_server::scope_members::SelectionAction::Remove,
                         },
-                        ChannelIntent::Add {
-                            channel,
+                        ScopeIntent::Add {
+                            scope,
                             record,
                             tags: vec!["y".into()],
                         },
                     ],
                 };
-                Action::ChannelTags { intents }
+                Action::ScopeTags { intents }
             }
         })
     }
@@ -365,7 +378,7 @@ impl Sim {
     /// Runs the seeded sequence, checking every invariant after every step. Every
     /// `SETTLE_EVERY` steps also settles (a legal sequence of actions, so it appends to
     /// the trace and shrinking still applies) and checks again: a client is rarely at a
-    /// channel's head while the channel still holds records mid-run, so without this
+    /// scope's head while the scope still holds records mid-run, so without this
     /// `no_pending_means_converged`'s content comparison rarely fires - settling
     /// periodically forces convergence so that check to actually run. Returns the
     /// total number of content comparisons `no_pending_means_converged` made, on
@@ -382,7 +395,7 @@ impl Sim {
         for i in 0..clients {
             sim.apply(Action::Subscribe {
                 client: i,
-                channel: "a".into(),
+                scope: "a".into(),
             })
             .unwrap();
         }

@@ -127,7 +127,7 @@ pub enum Input {
 /// call, `subscriptionId`, `ordinal`, `sequence`) must be a positive safe
 /// integer and is refused otherwise.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Command {
     // --- Reads ---
     /// One record, or `null`.
@@ -166,8 +166,8 @@ pub enum Command {
     Enqueue { mutation: Mutation },
     /// Apply one local-only operation.
     Direct { operation: crate::Operation },
-    /// Subscribe or unsubscribe a Channel.
-    Channel { channel: String, subscribed: bool },
+    /// Subscribe or unsubscribe a Scope.
+    Scope { scope: String, subscribed: bool },
     /// Submit a durable Action call; answers `{callId, ordinal}`. `store` is
     /// the call's store policy, beside its arguments, never inside them.
     SubmitAction {
@@ -451,7 +451,7 @@ pub enum ConnectionEvent {
 /// `rollbackSavepoint` name the scope they close, or the innermost one when
 /// `scope` is absent.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransactionCommand {
     Read {
         key: RecordKey,
@@ -488,8 +488,8 @@ pub enum TransactionCommand {
     Direct {
         operation: crate::Operation,
     },
-    Channel {
-        channel: String,
+    Scope {
+        scope: String,
         subscribed: bool,
     },
     /// Submit a named durable Mutation as part of the transaction; answers

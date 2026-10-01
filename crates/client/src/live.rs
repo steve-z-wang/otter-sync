@@ -8,7 +8,7 @@ use crate::*;
 /// One socket attempt.
 struct Session {
     epoch: u64,
-    /// The subscription generation the channels were snapshotted under.
+    /// The subscription generation the scopes were snapshotted under.
     generation: u64,
     /// What the socket asked for; the acknowledgement must confirm exactly it.
     subscribe: SubscribeRequest,
@@ -34,18 +34,18 @@ pub struct LiveSession {
 }
 
 impl LiveSession {
-    /// Begin a session for `channels` under `generation`: the epoch that fences
+    /// Begin a session for `scopes` under `generation`: the epoch that fences
     /// its frames and the subscribe frame the host sends once the socket opens.
     pub fn begin(
         &mut self,
-        channels: Vec<String>,
+        scopes: Vec<String>,
         models: BTreeMap<String, u64>,
         generation: u64,
     ) -> Result<(u64, String)> {
-        let subscribe = SubscribeRequest::new(channels, models)?;
+        let subscribe = SubscribeRequest::new(scopes, models)?;
         let frame = String::from_utf8(with_capabilities(
             &subscribe.encode()?,
-            &[CHANNEL_MEMBERSHIP_CAPABILITY],
+            &[SCOPE_MEMBERSHIP_CAPABILITY],
         )?)
         .map_err(|_| invalid("utf8"))?;
         self.epoch = allocate(self.epoch, "socket epoch")?;
@@ -82,7 +82,7 @@ impl LiveSession {
         self.session.take().map(|s| s.epoch)
     }
     /// The acknowledgement in handshake order: the first one of the session, for
-    /// exactly the channels it subscribed. From here pages are in order.
+    /// exactly the scopes it subscribed. From here pages are in order.
     pub fn acknowledge(&mut self, ack: &SubscriptionAck) -> Result<()> {
         let Some(session) = self.session.as_mut() else {
             return Err(invalid("invalid live subscription acknowledgement"));

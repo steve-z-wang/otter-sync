@@ -28,7 +28,7 @@ export async function createExample() {
         data: { ...patch, ...(typeof patch.text === "string" ? { text: patch.text.trim() } : {}) },
       });
       // The edited entry is stamped and read back for the receipt, and that same
-      // version reaches every Channel it is a member of: no enrollment here.
+      // version reaches every Scope it is a member of: no enrollment here.
     },
   };
   /**
@@ -69,19 +69,19 @@ export async function createExample() {
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );
-      await backend.transaction(async ({ tx, scope: channel, touch }) => {
+      await backend.transaction(async ({ tx, scope: scope, touch }) => {
         await tx.entry.upsert({
           where: { id: "entry-1" },
           create: { id: "entry-1", text: "Hello from the server" },
           update: {},
         });
         touch.entry({ id: "entry-1" });
-        channel("book:demo").add.entry({ id: "entry-1" });
+        scope("book:demo").add.entry({ id: "entry-1" });
       });
     },
     /**
      * Touch the current `Entry` rows, enrolling them on `name`: a new stamp and a
-     * new position on every Channel they belong to. A subscription's origin is
+     * new position on every Scope they belong to. A subscription's origin is
      * the first head its handshake acknowledges
      * ([#150](https://github.com/zanminwang/axton/issues/150)), so a client that
      * subscribes after `initialize` meets the seeded rows either this way or
@@ -90,29 +90,29 @@ export async function createExample() {
      * the version that moves a position without touching the stamp.
      */
     async notify(ids: string[] = ["entry-1"], name = "book:demo") {
-      await backend.transaction(async ({ scope: channel, touch }) => {
+      await backend.transaction(async ({ scope: scope, touch }) => {
         for (const id of ids) {
           touch.entry({ id });
-          channel(name).add.entry({ id });
+          scope(name).add.entry({ id });
         }
       });
     },
     /**
-     * Write `count` new `Entry` rows and publish them on `channel`, each at its
+     * Write `count` new `Entry` rows and publish them on `scope`, each at its
      * own cursor. Written in batches, because one interactive PostgreSQL
      * transaction per hundred records runs into the driver's transaction
      * timeout; the returned ids are in publication order.
      */
     async publishMany(
       count: number,
-      options: { channel: string; prefix: string; from?: number; batch?: number },
+      options: { scope: string; prefix: string; from?: number; batch?: number },
     ): Promise<string[]> {
       const from = options.from ?? 1;
       const size = options.batch ?? 20;
       const ids = Array.from({ length: count }, (_, i) => `${options.prefix}-${from + i}`);
       for (let start = 0; start < ids.length; start += size) {
         const batch = ids.slice(start, start + size);
-        await backend.transaction(async ({ tx, scope: channel, touch }) => {
+        await backend.transaction(async ({ tx, scope: scope, touch }) => {
           for (const id of batch) {
             await tx.entry.upsert({
               where: { id },
@@ -120,18 +120,18 @@ export async function createExample() {
               update: { text: `${id} text` },
             });
             touch.entry({ id });
-            channel(options.channel).add.entry({ id });
+            scope(options.scope).add.entry({ id });
           }
         });
       }
       return ids;
     },
-    /** Write one `Entry` and enroll it on every named Channel: one stamp, one position on each. */
-    async publishOne(id: string, text: string, channels: string[]): Promise<void> {
-      await backend.transaction(async ({ tx, scope: channel, touch }) => {
+    /** Write one `Entry` and enroll it on every named Scope: one stamp, one position on each. */
+    async publishOne(id: string, text: string, scopes: string[]): Promise<void> {
+      await backend.transaction(async ({ tx, scope: scope, touch }) => {
         await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
         touch.entry({ id });
-        for (const name of channels) channel(name).add.entry({ id });
+        for (const name of scopes) scope(name).add.entry({ id });
       });
     },
     /**
@@ -143,11 +143,11 @@ export async function createExample() {
      * subscription's own delivery ([#151](https://github.com/zanminwang/axton/issues/151)).
      */
     async readd(ids: string[], name: string): Promise<void> {
-      await backend.transaction(async ({ scope: channel }) => {
-        channel(name).remove(ids.map((id) => Entry({ id })));
+      await backend.transaction(async ({ scope: scope }) => {
+        scope(name).remove(ids.map((id) => Entry({ id })));
       });
-      await backend.transaction(async ({ scope: channel }) => {
-        channel(name).add(ids.map((id) => Entry({ id })));
+      await backend.transaction(async ({ scope: scope }) => {
+        scope(name).add(ids.map((id) => Entry({ id })));
       });
     },
     /** Delete the row and touch it: its members' Loader answers `null`, an authoritative deletion (D6). */
@@ -164,31 +164,31 @@ export async function createExample() {
     allowLoads(...ids: string[]) {
       for (const id of ids) refusing.delete(id);
     },
-    /** The channel head: the highest cursor the invalidation log has allocated. */
-    async head(channel: string): Promise<number> {
+    /** The scope head: the highest cursor the invalidation log has allocated. */
+    async head(scope: string): Promise<number> {
       const rows = await db.$queryRawUnsafe<{ head: bigint }[]>(
-        "SELECT head FROM axton_channel WHERE channel = $1",
-        channel,
+        "SELECT head FROM axton_scope WHERE scope = $1",
+        scope,
       );
       return rows.length === 0 ? 0 : Number(rows[0]!.head);
     },
-    /** The one retained position `id` has on `channel`, or `null`; a later publication replaces it in place. */
-    async positionOf(channel: string, id: string): Promise<number | null> {
+    /** The one retained position `id` has on `scope`, or `null`; a later publication replaces it in place. */
+    async positionOf(scope: string, id: string): Promise<number | null> {
       const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
-        "SELECT l.cursor FROM axton_channel_log l JOIN axton_record r ON r.id = l.record_id WHERE l.channel = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
-        channel,
+        "SELECT l.cursor FROM axton_scope_log l JOIN axton_record r ON r.id = l.record_id WHERE l.scope = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
+        scope,
         JSON.stringify({ id }),
       );
       return rows.length === 0 ? null : Number(rows[0]!.cursor);
     },
     /**
      * Empty every AXTON table and the `Entry` rows. A bootstrap scenario asserts
-     * cursors and channel heads, so it starts from an empty log rather than from
+     * cursors and scope heads, so it starts from an empty log rather than from
      * whatever an earlier scenario in the same database left behind.
      */
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_channel_member_tag, axton_channel_member, axton_channel_tag, axton_channel_log, axton_channel, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_scope_member_tag, axton_scope_member, axton_scope_tag, axton_scope_log, axton_scope, axton_record, axton_client, axton_call",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();

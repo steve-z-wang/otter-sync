@@ -10,7 +10,7 @@ use axton_client::runtime::{ClientRuntime, Input};
 use axton_client::*;
 use axton_core::invalid;
 use axton_sqlite::SqliteStore;
-use common::{ack, channel_fixture};
+use common::{ack, scope_fixture};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -271,7 +271,7 @@ impl<S: ClientStore + 'static> Host<S> {
     }
     fn ok(&mut self, id: &str, body: &str) {
         let body = serde_json::from_str::<Value>(body)
-            .map(channel_fixture)
+            .map(scope_fixture)
             .map(|v| v.to_string())
             .unwrap_or_else(|_| body.to_string());
         self.answer(id, json!({"ok":true,"value":{"status":200,"body":body}}));
@@ -285,7 +285,7 @@ impl<S: ClientStore + 'static> Host<S> {
     }
     fn frame(&mut self, socket: &str, body: &str) {
         let body = serde_json::from_str::<Value>(body)
-            .map(channel_fixture)
+            .map(scope_fixture)
             .map(|v| v.to_string())
             .unwrap_or_else(|_| body.to_string());
         self.answer(
@@ -389,7 +389,7 @@ fn cancelled(events: &[Value], id: &str) -> bool {
     events.contains(&json!({"type":"cancelEffect","effectId":id}))
 }
 fn page(from: u64, to: u64, id: &str, text: &str) -> String {
-    json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"kind":"upsert","channel":"book","cursor":to,"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]}).to_string()
+    json!({"cursors":{"book":{"from":from,"to":to,"head":to}},"changes":[{"kind":"upsert","scope":"book","cursor":to,"model":"Entry","identity":{"id":id},"stamp":to,"state":{"text":text,"note":null}}]}).to_string()
 }
 fn call_id(body: &str) -> String {
     serde_json::from_str::<Value>(body).unwrap()["call"]["callId"]
@@ -870,12 +870,12 @@ fn live_hook_subscription_edits_commit_without_resurrecting_old_progress() {
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+            "command":{"kind":"scope","scope":"book","subscribed":false}}),
         );
         assert!(h.run().contains(&done("remove", Value::Null)));
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+                "command":{"kind":"scope","scope":"book","subscribed":true}}));
             assert!(h.run().contains(&done("replace", Value::Null)));
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,
@@ -950,12 +950,12 @@ fn terminal_bootstrap_hook_unsubscribe_keeps_authority_without_old_run_progress(
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+            "command":{"kind":"scope","scope":"book","subscribed":false}}),
         );
         assert!(h.run().contains(&done("remove", Value::Null)));
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+                "command":{"kind":"scope","scope":"book","subscribed":true}}));
             assert!(h.run().contains(&done("replace", Value::Null)));
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true}));
@@ -1021,12 +1021,12 @@ fn terminal_bootstrap_hook_failure_rolls_back_page_then_fails_the_original_run()
         let transaction = callback["operation"]["transactionId"].as_str().unwrap();
         h.submit(
             json!({"type":"transactionCommand","requestId":"remove","transactionId":transaction,
-            "command":{"kind":"channel","channel":"book","subscribed":false}}),
+            "command":{"kind":"scope","scope":"book","subscribed":false}}),
         );
         h.run();
         if recreate {
             h.submit(json!({"type":"transactionCommand","requestId":"replace","transactionId":transaction,
-                "command":{"kind":"channel","channel":"book","subscribed":true}}));
+                "command":{"kind":"scope","scope":"book","subscribed":true}}));
             h.run();
         }
         h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":false,"error":"refused"}));
@@ -1216,7 +1216,7 @@ fn hooked_live_commit_keeps_notifications_and_barrier_retry_after_scan_failure()
             run,
             0,
             &BootstrapPage {
-                channel: "book".into(),
+                scope: "book".into(),
                 from: 0,
                 to: 0,
                 until: 0,
@@ -1403,7 +1403,7 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
         serde_json::from_str(h.open[&socket]["subscribe"].as_str().unwrap()).unwrap();
     assert_eq!(
         subscribe,
-        json!({"capabilities":[CHANNEL_MEMBERSHIP_CAPABILITY],"type":"subscribe","channels":["book"],"models":{"Entry":1}})
+        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"type":"subscribe","scopes":["book"],"models":{"Entry":1}})
     );
     assert_eq!(sockets(&events).len(), 1);
     assert!(
@@ -1441,7 +1441,7 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
     let (pull, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[CHANNEL_MEMBERSHIP_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
+        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
     );
     assert_eq!(connections(&events), ["catching-up"]);
     h.frame(&socket, &page(1, 2, "e", "queued"));
@@ -1647,7 +1647,7 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     let (load, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[CHANNEL_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","channel":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","scope":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Live traffic flows beside the outstanding historical page.
     h.frame(&socket, &page(7, 8, "live", "streamed"));
@@ -1666,7 +1666,11 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     h.ok(&push, &receipt(&client_id, &push_body));
     h.ok(&call, &renamed(&call_body, "direct"));
     h.frame(&socket, &page(8, 9, "live", "again"));
-    h.ok(&load, &json!({"mode":"bootstrap","channel":"book","from":0,"to":7,"until":7,"head":9,"changes":[]}).to_string());
+    h.ok(
+        &load,
+        &json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
+            .to_string(),
+    );
     let mut events = h.take();
     let mut steps = 0;
     loop {
@@ -2037,7 +2041,7 @@ fn pending_rebuild(dir: &Path) -> ClientRuntime<SqliteStore> {
 }
 /// A replica left incompatible with unsent work, optionally subscribed to
 /// `book` and with a durable load of it registered.
-fn rebuildable(dir: &Path, channel: bool, bootstrap: bool) -> ClientRuntime<SqliteStore> {
+fn rebuildable(dir: &Path, scope: bool, bootstrap: bool) -> ClientRuntime<SqliteStore> {
     let path = dir.join("db");
     {
         let mut runtime = ClientRuntime::open_at(
@@ -2048,9 +2052,9 @@ fn rebuildable(dir: &Path, channel: bool, bootstrap: bool) -> ClientRuntime<Sqli
         )
         .unwrap();
         let client = runtime.client();
-        if channel {
+        if scope {
             client
-                .transaction(|tx| tx.set_channel("book".into(), true))
+                .transaction(|tx| tx.set_scope("book".into(), true))
                 .unwrap();
         }
         client
@@ -2145,7 +2149,7 @@ fn a_rebuild_fences_old_lane_io_and_reopens_in_the_same_intent() {
     let generation = h.client().generation();
     h.ok(
         &old_load,
-        &json!({"mode":"bootstrap","channel":"book","from":0,"to":2,"until":2,"head":2,"changes":[]})
+        &json!({"mode":"bootstrap","scope":"book","from":0,"to":2,"until":2,"head":2,"changes":[]})
             .to_string(),
     );
     h.ok(&old_push, "{}");
@@ -2201,12 +2205,12 @@ fn historical(records: Value) -> String {
         .map(|(i, record)| {
             let mut record = record.clone();
             record["kind"] = json!("upsert");
-            record["channel"] = json!("book");
+            record["scope"] = json!("book");
             record["cursor"] = json!(7 - records.as_array().unwrap().len() + i + 1);
             record
         })
         .collect();
-    json!({"mode":"bootstrap","channel":"book","from":0,"to":7,"until":7,"head":9,"changes":changes})
+    json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":changes})
         .to_string()
 }
 impl Host {
@@ -2336,7 +2340,7 @@ fn a_rebuild_keeps_a_running_lane_running_under_fresh_effects() {
         assert!(cancelled(&events, id), "{id} abandoned: {events:?}");
     }
     assert_eq!(
-        Vec::from_iter(h.client().desired_channels().unwrap()),
+        Vec::from_iter(h.client().desired_scopes().unwrap()),
         ["book"],
         "the Scope is carried"
     );
@@ -2442,11 +2446,11 @@ fn a_rebuild_fences_a_bootstrap_page_in_flight() {
     );
 }
 
-/// A running lane with no Channel still resets on a rebuild, and then idles
+/// A running lane with no Scope still resets on a rebuild, and then idles
 /// until a registration wakes it
 /// ([#162](https://github.com/zanminwang/axton/issues/162)).
 #[test]
-fn a_rebuild_under_a_running_lane_with_no_channel_resets_and_idles() {
+fn a_rebuild_under_a_running_lane_with_no_scope_resets_and_idles() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = Host::of(rebuildable(dir.path(), false, false), Some(dir));
     h.connect(false);
@@ -2462,7 +2466,7 @@ fn a_rebuild_under_a_running_lane_with_no_channel_resets_and_idles() {
     assert!(h.open.is_empty(), "still idle: {:?}", h.open);
     h.task(
         "subscribe",
-        json!({"kind":"channel","channel":"book","subscribed":true}),
+        json!({"kind":"scope","scope":"book","subscribed":true}),
     );
     let events = h.run();
     assert_eq!(sockets(&events).len(), 1, "{events:?}");
@@ -2564,7 +2568,7 @@ fn inbound_work_admitted_after_an_ordinary_task_runs_after_it() {
     );
     h.task(
         "unsubscribe",
-        json!({"kind":"channel","channel":"book","subscribed":false}),
+        json!({"kind":"scope","scope":"book","subscribed":false}),
     );
     h.task(
         "resubscribe",
@@ -2802,7 +2806,11 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     );
     let (history, body) = h.http("pull");
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["until"], 6);
-    h.ok(&history,&json!({"mode":"bootstrap","channel":"book","from":0,"to":6,"until":6,"head":6,"changes":[]}).to_string());
+    h.ok(
+        &history,
+        &json!({"mode":"bootstrap","scope":"book","from":0,"to":6,"until":6,"head":6,"changes":[]})
+            .to_string(),
+    );
     let events = h.run();
     assert_eq!(
         snapshots(&events, &renewed).last().unwrap()["status"],
@@ -2842,7 +2850,11 @@ fn bootstrap_waiters_answer_after_the_completion_commit_and_share_the_run() {
         serde_json::from_str::<Value>(&body).unwrap()["mode"],
         "bootstrap"
     );
-    h.ok(&load, &json!({"mode":"bootstrap","channel":"book","from":0,"to":7,"until":7,"head":9,"changes":[]}).to_string());
+    h.ok(
+        &load,
+        &json!({"mode":"bootstrap","scope":"book","from":0,"to":7,"until":7,"head":9,"changes":[]})
+            .to_string(),
+    );
     let events = h.run();
     assert_eq!(phases(&events), ["catching-up"]);
     assert!(!completed(&events, "first") && !completed(&events, "second"));
@@ -2883,7 +2895,7 @@ fn bootstrap_waiters_answer_after_the_completion_commit_and_share_the_run() {
     h.frame(&socket, &ack(&[("book", 9), ("shelf", 3)]));
     h.run();
     let (load, _) = h.http("pull");
-    h.ok(&load, &json!({"mode":"bootstrap","channel":"shelf","from":0,"to":3,"until":3,"head":3,"changes":[]}).to_string());
+    h.ok(&load, &json!({"mode":"bootstrap","scope":"shelf","from":0,"to":3,"until":3,"head":3,"changes":[]}).to_string());
     // The page answers - and completes the run - ahead of the late call.
     h.task(
         "late",
@@ -3409,21 +3421,21 @@ fn scope_commands_register_read_and_remove_one_identity() {
     for blank in ["", " ", "\t\n"] {
         let subscribe = h.call("blank", json!({"kind":"scopeSubscribe","scope":blank}));
         assert!(refused(&subscribe).is_some(), "{blank:?}: {subscribe}");
-        let channel = h.call(
-            "blank channel",
-            json!({"kind":"channel","channel":blank,"subscribed":true}),
+        let scope = h.call(
+            "blank scope",
+            json!({"kind":"scope","scope":blank,"subscribed":true}),
         );
-        assert!(refused(&channel).is_some(), "the same rule: {blank:?}");
+        assert!(refused(&scope).is_some(), "the same rule: {blank:?}");
     }
     assert_eq!(
-        Vec::from_iter(h.client().desired_channels().unwrap()),
+        Vec::from_iter(h.client().desired_scopes().unwrap()),
         ["book"],
         "nothing of a refused registration was written"
     );
-    // The Channel command shares the ledger: the same row, the same identity.
+    // The Scope command shares the ledger: the same row, the same identity.
     h.call(
-        "channel",
-        json!({"kind":"channel","channel":"book","subscribed":true}),
+        "scope",
+        json!({"kind":"scope","scope":"book","subscribed":true}),
     );
     assert_eq!(h.call("read", state.clone())["value"]["subscriptionId"], 1);
     for malformed in [
@@ -3449,7 +3461,7 @@ fn scope_commands_register_read_and_remove_one_identity() {
         "another identity's unsubscribe removes nothing"
     );
     assert_eq!(
-        Vec::from_iter(h.client().desired_channels().unwrap()),
+        Vec::from_iter(h.client().desired_scopes().unwrap()),
         ["book"]
     );
     let generation = h.client().generation();
@@ -3540,7 +3552,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     let (page, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[CHANNEL_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","channel":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","scope":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Nothing asks twice: a wake finds the request in flight.
     h.call("wake", json!({"kind":"connection","event":"wake"}));
@@ -3928,7 +3940,7 @@ fn a_ledger_issue_reaches_the_application_once_per_unchanged_defect() {
     let mut raw = SqliteStore::open(&path).unwrap();
     assert_eq!(
         raw.execute(
-            "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE channel=?",
+            "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE scope=?",
             &[json!("bad")]
         )
         .unwrap(),
@@ -3980,7 +3992,7 @@ fn a_committed_callback_transaction_wakes_the_lanes() {
         "command":{"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"create","identity":{"id":"e"},"values":{"text":"queued","note":null}}]}}}));
     h.submit(
         json!({"type":"transactionCommand","requestId":"subscribe","transactionId":transaction,
-        "command":{"kind":"channel","channel":"book","subscribed":true}}),
+        "command":{"kind":"scope","scope":"book","subscribed":true}}),
     );
     let events = h.run();
     assert_eq!(h.completion(&events, "enqueue")["ok"], true);
@@ -5207,7 +5219,7 @@ fn a_join_over_three_models_re_emits_after_a_commit_to_each_and_nothing_else() {
 }
 
 /// Settlement, optimistic apply, rejection rollback, replay under a pending
-/// call, Channel delivery and Fetch each commit a table the statement reads,
+/// call, Scope delivery and Fetch each commit a table the statement reads,
 /// and each re-emits it.
 #[test]
 fn every_commit_path_re_emits_a_watched_statement() {
@@ -5293,7 +5305,7 @@ fn every_commit_path_re_emits_a_watched_statement() {
     h.frame(
         &socket,
         &json!({"cursors":{"book":{"from":0,"to":2,"head":2}},"changes":[
-            {"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":"channel","note":"n"}}]})
+            {"model":"Entry","identity":{"id":"e"},"stamp":2,"state":{"text":"scope","note":"n"}}]})
         .to_string(),
     );
     let events = h.run();
@@ -5303,7 +5315,7 @@ fn every_commit_path_re_emits_a_watched_statement() {
         "replay"
     );
 
-    // Channel delivery of a record nothing pends on.
+    // Scope delivery of a record nothing pends on.
     h.frame(&socket, &page(2, 3, "f", "delivered"));
     let events = h.run();
     assert_eq!(
@@ -5312,7 +5324,7 @@ fn every_commit_path_re_emits_a_watched_statement() {
             row("e", "pending", Some("n")),
             row("f", "delivered", None)
         ])],
-        "Channel delivery"
+        "Scope delivery"
     );
 
     // A Fetch stores the Loader's record.
@@ -5488,7 +5500,7 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
         h.connect(false);
         common::subscribe(h.client(), "a");
         h.client()
-            .apply_channel_page(ChannelPullPage {
+            .apply_scope_page(ScopePullPage {
                 cursors: [(
                     "a".into(),
                     CursorRange {
@@ -5498,8 +5510,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                     },
                 )]
                 .into(),
-                changes: vec![ChannelChange::Upsert {
-                    channel: "a".into(),
+                changes: vec![ScopeChange::Upsert {
+                    scope: "a".into(),
                     cursor: 1,
                     record: common::authority(Some("base"), 7),
                 }],
@@ -5509,7 +5521,7 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
         h.run();
         let (http, body) = h.http("fetch");
         h.client()
-            .apply_channel_page(ChannelPullPage {
+            .apply_scope_page(ScopePullPage {
                 cursors: [(
                     "a".into(),
                     CursorRange {
@@ -5519,8 +5531,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                     },
                 )]
                 .into(),
-                changes: vec![ChannelChange::Remove {
-                    channel: "a".into(),
+                changes: vec![ScopeChange::Remove {
+                    scope: "a".into(),
                     cursor: 2,
                     key: common::key(),
                 }],
@@ -5570,7 +5582,7 @@ fn runtime_direct_effect_advertises_membership_without_changing_call_identity() 
     assert!(
         read_capabilities(&request)
             .unwrap()
-            .contains(CHANNEL_MEMBERSHIP_CAPABILITY)
+            .contains(SCOPE_MEMBERSHIP_CAPABILITY)
     );
 }
 
@@ -5579,7 +5591,7 @@ fn native_pull_command_consumes_removal_frames() {
     let mut h = host();
     h.connect(false);
     h.streaming(0);
-    let reply=h.call("remove",json!({"kind":"pull","page":{"cursors":{"book":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","channel":"book","cursor":1,"model":"Entry","identity":{"id":"e"}}]}}));
+    let reply=h.call("remove",json!({"kind":"pull","page":{"cursors":{"book":{"from":0,"to":1,"head":1}},"changes":[{"kind":"remove","scope":"book","cursor":1,"model":"Entry","identity":{"id":"e"}}]}}));
     assert_eq!(reply["ok"], true, "{reply}");
     assert_eq!(h.client().cursor("book").unwrap(), Some(1));
 }

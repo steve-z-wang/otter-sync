@@ -833,7 +833,7 @@ const GENERATED_NAMES: &[&str] = &[
     "CallStatus",
     "CallStore",
     "CallSuccess",
-    "Channels",
+    "Scopes",
     "Client",
     "ClientClosedException",
     "ClientSyncState",

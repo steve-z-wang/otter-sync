@@ -1180,13 +1180,13 @@ test("store hooks use transaction guards, savepoints, and immediate cancellation
       if (id === "hold") { held = tx; entered.resolve(); await gate.promise; return; }
       escaped = tx;
       assert.match((await client.read("Entry", { id }).catch(e => e)).message, /transaction_active/);
-      if (id === "unawaited") { void tx.channels.subscribe("x"); return; }
+      if (id === "unawaited") { void tx.scopes.subscribe("x"); return; }
       if (id === "nested") {
         await tx.savepoint(() => tx.savepoint(async () => { throw Error("nested failure"); }));
         return;
       }
-      await tx.channels.subscribe("x");
-      await tx.savepoint(async () => { await tx.channels.unsubscribe("x"); });
+      await tx.scopes.subscribe("x");
+      await tx.savepoint(async () => { await tx.scopes.unsubscribe("x"); });
     },
   } });
   const effect = (effectId, id) => {
@@ -1207,7 +1207,7 @@ test("store hooks use transaction guards, savepoints, and immediate cancellation
     effect("ok", "normal");
     assert.equal((await answer("ok")).ok, true);
     assert.deepEqual(submitted.filter(x => x.type === "transactionCommand").map(x => x.command.kind),
-      ["channel", "savepoint", "channel", "release"]);
+      ["scope", "savepoint", "scope", "release"]);
     await assert.rejects(escaped.read("Entry", { id: "normal" }), /closed/);
     effect("bad", "nested");
     assert.match((await answer("bad")).error, /nested failure/);
@@ -1221,20 +1221,20 @@ test("store hooks use transaction guards, savepoints, and immediate cancellation
   } finally { gate.resolve(); await client.close(); }
 });
 
-test("transaction Channel helpers commit local intent without a Subscription handle", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "axton-tx-channel-"));
+test("transaction Scope helpers commit local intent without a Subscription handle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-tx-scope-"));
   const Client = createClient(native, Transaction, () => { throw Error("no network"); });
   const client = await Client.open({ path: join(directory, "db"), schema });
   try {
     await client.transaction(async (tx) => {
-      assert.equal(await tx.channels.subscribe("project:p1"), undefined);
-      assert.equal(await tx.channels.subscribe("project:p1"), undefined);
+      assert.equal(await tx.scopes.subscribe("project:p1"), undefined);
+      assert.equal(await tx.scopes.subscribe("project:p1"), undefined);
     });
-    assert.deepEqual((await client.syncState()).channels, ["project:p1"]);
+    assert.deepEqual((await client.syncState()).scopes, ["project:p1"]);
     await client.transaction(async (tx) => {
-      assert.equal(await tx.channels.unsubscribe("project:p1"), undefined);
+      assert.equal(await tx.scopes.unsubscribe("project:p1"), undefined);
     });
-    assert.deepEqual((await client.syncState()).channels, []);
+    assert.deepEqual((await client.syncState()).scopes, []);
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });

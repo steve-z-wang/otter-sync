@@ -37,15 +37,15 @@ export type SaveCallRequest = {
   callId: string;
   response: string;
 };
-/** The channel's current head cursor. */
-export type HeadRequest = { op: "head"; channel: string };
+/** The scope's current head cursor. */
+export type HeadRequest = { op: "head"; scope: string };
 /**
  * Retained log rows after `after`, including removals, at most `limit`
  * in cursor order. Legacy projection happens only in the engine.
  */
 export type ScanRequest = {
   op: "scan";
-  channel: string;
+  scope: string;
   after: number;
   limit: number;
 };
@@ -80,7 +80,7 @@ export type JsonValue =
 export type LoadNext = null | { state: JsonValue };
 /**
  * Run one Load handler for one page. Its context declares no changes: the
- * answer names identities, the next continuation and the Channel additions
+ * answer names identities, the next continuation and the Scope additions
  * its add-only handles declared.
  */
 export type HandleLoadRequest = {
@@ -95,7 +95,7 @@ export type HandleLoadRequest = {
 };
 /**
  * Load the current state of these identities as records of one retained model
- * read contract, for this caller. Loads name no channel: the same identity,
+ * read contract, for this caller. Loads name no scope: the same identity,
  * version and stamp describe the same content on every delivery path.
  */
 export type LoadRequest = {
@@ -139,42 +139,42 @@ export type LockRecordRequest = {
   model: string;
   identityKey: string;
 };
-/** The Channels this record is a persistent member of: a touch's recipients. */
+/** The Scopes this record is a persistent member of: a touch's recipients. */
 export type MembershipsRequest = {
   op: "memberships";
   model: string;
   identityKey: string;
 };
 /**
- * Serialize membership changes on these Channels: lock each existing Channel
+ * Serialize membership changes on these Scopes: lock each existing Scope
  * row, in exactly this order (distinct, canonical byte order), until the
- * transaction ends. Creates no Channel. Every settlement takes its Channels
+ * transaction ends. Creates no Scope. Every settlement takes its Scopes
  * this way before any record guard.
  */
-export type LockChannelsRequest = { op: "lockChannels"; channels: string[] };
-/** A record as the Channel operations name it: its Model and canonical identity key. */
+export type LockScopesRequest = { op: "lockScopes"; scopes: string[] };
+/** A record as the Scope operations name it: its Model and canonical identity key. */
 export type MemberKey = { model: string; identityKey: string };
 /**
- * The live members of the locked `channel` that `explicitKeys` names or that
+ * The live members of the locked `scope` that `explicitKeys` names or that
  * carry one of `tags` (distinct, canonical byte order), each once, with its
  * complete current tags. `all: true` additionally selects every present
  * member; absent `all` defaults to false. Reads only.
  */
-export type ReadChannelMembersRequest = {
-  op: "readChannelMembers";
-  channel: string;
+export type ReadScopeMembersRequest = {
+  op: "readScopeMembers";
+  scope: string;
   explicitKeys: MemberKey[];
   tags: string[];
   all?: boolean;
 };
 /**
  * One pair's final state. Present with exactly `tags`, or absent with none.
- * `publish` takes the Channel's next position (`upsert` when present,
+ * `publish` takes the Scope's next position (`upsert` when present,
  * `remove` when not; a removal always publishes); without it the member keeps
  * its existing position and only its tags may change.
  */
 export type MemberDelta = {
-  channel: string;
+  scope: string;
   model: string;
   identity: Record<string, unknown>;
   identityKey: string;
@@ -185,12 +185,12 @@ export type MemberDelta = {
 /**
  * Persist final member states in the caller's transaction, without
  * re-evaluating any selector or opening a transaction. A present delta needs
- * the record's metadata row; a missing Channel starts at head zero. Published
- * deltas take consecutive positions per Channel in delta order. Answers one
+ * the record's metadata row; a missing Scope starts at head zero. Published
+ * deltas take consecutive positions per Scope in delta order. Answers one
  * position per delta, in delta order.
  */
-export type ApplyChannelMembersRequest = {
-  op: "applyChannelMembers";
+export type ApplyScopeMembersRequest = {
+  op: "applyScopeMembers";
   deltas: MemberDelta[];
 };
 
@@ -213,9 +213,9 @@ export type HostRequest =
   | ReadStampsRequest
   | LockRecordRequest
   | MembershipsRequest
-  | LockChannelsRequest
-  | ReadChannelMembersRequest
-  | ApplyChannelMembersRequest;
+  | LockScopesRequest
+  | ReadScopeMembersRequest
+  | ApplyScopeMembersRequest;
 
 export type HostOperation = HostRequest["op"];
 
@@ -243,13 +243,13 @@ export type ClaimedCall = {
 /** The answer to `head`: a bare counter. */
 export type Head = number;
 /**
- * One retained channel position and centralized identity. Only an upsert
+ * One retained scope position and centralized identity. Only an upsert
  * carries the current content stamp from the same snapshot as its Loader.
  */
 export type Invalidation = {
   /** Omitted only by legacy hosts; new scans include retained removals. */
   kind?: "upsert" | "remove";
-  channel: string;
+  scope: string;
   cursor: number;
   model: string;
   identity: Record<string, unknown>;
@@ -263,13 +263,13 @@ export type Stamped = number;
 export type Stamps = number[];
 /** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
 export type Locked = number | null;
-/** The answer to `memberships`: unique Channel names, sorted by the database. */
+/** The answer to `memberships`: unique Scope names, sorted by the database. */
 export type Memberships = string[];
-/** One member `readChannelMembers` answers: its complete current tags, each once, in any order. */
+/** One member `readScopeMembers` answers: its complete current tags, each once, in any order. */
 export type MemberState = MemberKey & { tags: string[] };
 /** The latest position of one pair: new for a published delta, the existing one otherwise. */
 export type MemberPosition = MemberKey & {
-  channel: string;
+  scope: string;
   cursor: number;
   kind: "upsert" | "remove";
 };
@@ -279,32 +279,30 @@ export type HostRecordRef = {
   identity: Record<string, unknown>;
 };
 /**
- * One persistent Channel membership declaration, in declaration order: `add`
- * makes the record a member of `channel` and unions `tags` (distinct, as
+ * One persistent Scope membership declaration, in declaration order: `add`
+ * makes the record a member of `scope` and unions `tags` (distinct, as
  * spelled; `[]` adds none) with its labels; `remove` releases the record's
- * whole membership; `removeTag` releases every member of `channel` carrying
- * `tag`, as the preceding declarations left it. The engine reduces the list
+ * whole membership; predicate selections operate on the preceding declarations. The engine reduces the list
  * in order to its final state.
  */
-export type ChannelIntent =
+export type ScopeIntent =
   | {
       kind: "add";
-      channel: string;
+      scope: string;
       record: HostRecordRef;
       tags: readonly string[];
     }
-  | { kind: "remove"; channel: string; record: HostRecordRef }
-  | { kind: "removeTag"; channel: string; tag: string }
+  | { kind: "remove"; scope: string; record: HostRecordRef }
   | {
       kind: "tagAdd" | "tagRemove";
-      channel: string;
+      scope: string;
       record: HostRecordRef;
       tags: readonly string[];
     }
-  | { kind: "detachTags"; channel: string; tags: readonly string[] }
+  | { kind: "detachTags"; scope: string; tags: readonly string[] }
   | {
       kind: "select";
-      channel: string;
+      scope: string;
       model?: string;
       predicate: ScopePredicate;
       action: SelectionAction;
@@ -326,11 +324,11 @@ export type SelectionAction =
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input
- * targets and ordered Channel intents. There is no implicit publication.
+ * targets and ordered Scope intents. There is no implicit publication.
  */
 export type SettlementEffects = {
   changes: HostRecordRef[];
-  memberships: ChannelIntent[];
+  memberships: ScopeIntent[];
 };
 /**
  * The answer to `handle`: the records the handler changed beyond the uploaded
@@ -353,7 +351,7 @@ export type HandledAction =
 /**
  * The answer to `handleLoad`: the page's identity lists, next continuation
  * and the membership additions the handler declared through its add-only
- * Channel handles, a rejection code, or a failure carrying a thrown handler
+ * Scope handles, a rejection code, or a failure carrying a thrown handler
  * error. `memberships` is omitted when there are none (an older host never
  * sends it); `null`, `changes`, or memberships beside a rejection or failure
  * are refused. The engine, not this type, refuses a removal, a tag selector
@@ -363,7 +361,7 @@ export type HandledLoad =
   | {
       data: Record<string, unknown>;
       next: LoadNext;
-      memberships?: ChannelIntent[];
+      memberships?: ScopeIntent[];
     }
   | { rejection: string }
   | { error: string };
@@ -398,9 +396,9 @@ export type HostResponse = {
   readStamps: Stamps;
   lockRecord: Locked;
   memberships: Memberships;
-  lockChannels: Acknowledged;
-  readChannelMembers: MemberState[];
-  applyChannelMembers: MemberPosition[];
+  lockScopes: Acknowledged;
+  readScopeMembers: MemberState[];
+  applyScopeMembers: MemberPosition[];
 };
 
 /**
@@ -426,9 +424,9 @@ const OPERATIONS: Record<HostOperation, true> = {
   readStamps: true,
   lockRecord: true,
   memberships: true,
-  lockChannels: true,
-  readChannelMembers: true,
-  applyChannelMembers: true,
+  lockScopes: true,
+  readScopeMembers: true,
+  applyScopeMembers: true,
 };
 
 export const HOST_OPERATIONS: readonly HostOperation[] = Object.keys(

@@ -39,7 +39,7 @@ fn declare(sim: &mut Sim, key: &str, touch: Option<Option<&str>>, memberships: &
         touch: touch.map(|text| text.map(str::to_string)),
         memberships: memberships
             .iter()
-            .map(|(channel, present)| (channel.to_string(), *present))
+            .map(|(scope, present)| (scope.to_string(), *present))
             .collect(),
     })
     .unwrap();
@@ -50,15 +50,15 @@ fn load(sim: &mut Sim, client: usize) {
     sim.drain();
 }
 /// The committed historical progress of one registration.
-fn progress(sim: &mut Sim, client: usize, channel: &str) -> u64 {
+fn progress(sim: &mut Sim, client: usize, scope: &str) -> u64 {
     let id = sim
         .client(client)
-        .subscription_state(channel)
+        .subscription_state(scope)
         .unwrap()
         .unwrap()
         .subscription_id;
     sim.client(client)
-        .bootstrap_state(channel, id)
+        .bootstrap_state(scope, id)
         .unwrap()
         .cursor
 }
@@ -73,7 +73,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
     for client in [0, 1] {
         sim.apply(Action::Subscribe {
             client,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
     }
@@ -90,7 +90,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
     // starts after it (D9).
     sim.apply(Action::SubscribeAtHead {
         client: 2,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert_eq!(sim.client(2).cursor("a").unwrap(), Some(origin));
@@ -103,7 +103,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
 
     sim.apply(Action::Bootstrap {
         client: 2,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert_eq!(sim.bootstrap_phase(2, "a"), BootstrapPhase::Requested);
@@ -187,7 +187,7 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
     let mut sim = Sim::new(3, 2);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     create(&mut sim, 0, "moving", "the record that moves");
@@ -199,12 +199,12 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 
     sim.apply(Action::SubscribeAtHead {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Bootstrap {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     // Before the scan runs, the record is removed and re-added in separate
@@ -255,7 +255,7 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
     let mut sim = Sim::new(9, 2);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     for i in 0..125 {
@@ -274,12 +274,12 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
     assert_eq!(origin, 185, "one removal position per removed member");
     sim.apply(Action::SubscribeAtHead {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Bootstrap {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
 
@@ -321,7 +321,7 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
         assert_eq!(
             sim.read_text(0, &key),
             expected,
-            "e{i:03} on the existing client after channel releases"
+            "e{i:03} on the existing client after scope releases"
         );
     }
     sim.check().unwrap();
@@ -330,11 +330,11 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
 }
 
 #[test]
-fn resumed_channel_reconciles_removed_history_through_the_public_scheduler() {
+fn resumed_scope_reconciles_removed_history_through_the_public_scheduler() {
     let mut sim = Sim::new(91, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     declare(&mut sim, "Entry:e", Some(Some("held")), &[("a", true)]);
@@ -342,13 +342,13 @@ fn resumed_channel_reconciles_removed_history_through_the_public_scheduler() {
     assert_eq!(sim.read_text(0, &entry_key("e")), Some("held".into()));
     sim.apply(Action::Unsubscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     declare(&mut sim, "Entry:e", None, &[("a", false)]);
     sim.apply(Action::SubscribeAtHead {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     let origin = sim.client(0).cursor("a").unwrap();

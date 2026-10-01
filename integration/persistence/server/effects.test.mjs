@@ -10,16 +10,16 @@ const {schema}=JSON.parse(await readFile(new URL('../../action-runtime-ts/backen
 const models=schema.models;
 const fresh=()=>createEffects(models);
 const empty={changes:[],memberships:[]};
-const add=(channel,model,identity,tags=[])=>({kind:'add',channel,record:{model,identity},tags});
-const remove=(channel,model,identity)=>({kind:'remove',channel,record:{model,identity}});
-const removeTag=(channel,tag)=>({kind:'select',channel,predicate:{tags:{all:[tag]}},action:{kind:'remove'}});
-const tagAdd=(channel,model,identity,tags)=>({...add(channel,model,identity,tags),kind:'tagAdd'});
+const add=(scope,model,identity,tags=[])=>({kind:'add',scope,record:{model,identity},tags});
+const remove=(scope,model,identity)=>({kind:'remove',scope,record:{model,identity}});
+const removeTag=(scope,tag)=>({kind:'select',scope,predicate:{tags:{all:[tag]}},action:{kind:'remove'}});
+const tagAdd=(scope,model,identity,tags)=>({...add(scope,model,identity,tags),kind:'tagAdd'});
 
 test('declarations snapshot identities at the call, in declaration order',()=>{
  const effects=fresh();
  const identity={id:'A'};
- const channel=effects.scope('project:1');
- channel.add.todo(identity);
+ const scope=effects.scope('project:1');
+ scope.add.todo(identity);
  identity.id='B';
  effects.touch.todo({id:'A'});
  assert.deepEqual(effects.settlement(),{
@@ -100,23 +100,23 @@ test('mixed calls take explicit references, including the generated constructors
 
 test('missing, null, malformed and unknown references fail at the call',()=>{
  const effects=fresh();
- const channel=effects.scope('c');
+ const scope=effects.scope('c');
  for(const identity of [undefined,null,{},{id:null},{id:1},{title:'no id'}])
-  assert.throws(()=>channel.add.todo(identity),/Todo/,JSON.stringify(identity));
+  assert.throws(()=>scope.add.todo(identity),/Todo/,JSON.stringify(identity));
  assert.throws(()=>effects.touch.todo({}),/Todo identity field id/);
  assert.throws(()=>effects.touch.moment({at:new Date('nope')}),/Moment identity field at/);
  assert.throws(()=>effects.touch.moment({at:'yesterday'}),/Moment identity field at/);
  assert.throws(()=>effects.touch.pin({todo:'t'}),/Pin identity field at/);
- assert.throws(()=>channel.add('x'),/record reference/);
- assert.throws(()=>channel.add({id:'A'}),/record reference/);
- assert.throws(()=>channel.add([null]),/record reference/);
- assert.throws(()=>channel.add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/);
- assert.throws(()=>channel.add([{model:'Todo'}]),/Todo identity/);
+ assert.throws(()=>scope.add('x'),/record reference/);
+ assert.throws(()=>scope.add({id:'A'}),/record reference/);
+ assert.throws(()=>scope.add([null]),/record reference/);
+ assert.throws(()=>scope.add([{model:'Nope',identity:{id:'x'}}]),/unknown Model Nope/);
+ assert.throws(()=>scope.add([{model:'Todo'}]),/Todo identity/);
  // A raw identity names no Model, so a mixed call cannot place it.
- assert.throws(()=>channel.add([{id:'A'}]),/record reference/);
- assert.throws(()=>channel.remove([{id:'A'}]),/record reference/);
+ assert.throws(()=>scope.add([{id:'A'}]),/record reference/);
+ assert.throws(()=>scope.remove([{id:'A'}]),/record reference/);
  assert.equal(effects.touch.nope,undefined);
- assert.equal(channel.nope,undefined);
+ assert.equal(scope.nope,undefined);
  assert.deepEqual(effects.settlement(),empty,'nothing failed half-way into the declarations');
 });
 
@@ -125,20 +125,20 @@ test('UUID, enum and date-time components follow the engine rules at the declara
   {name:'Ticket',identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'uuid'},nullable:false}]},
   {name:'Tag',identity:['kind'],fields:[{name:'kind',type:{kind:'enum',name:'Kind'},nullable:false}]},
  ],[{name:'Kind',values:['a','b']}]);
- const channel=effects.scope('c');
+ const scope=effects.scope('c');
  // 36 characters, hyphenated, RFC 4122 variant, version 1 to 8.
  for(const id of ['not-a-uuid','123e4567e89b42d3a456426614174000','{123e4567-e89b-42d3-a456-426614174000}','urn:uuid:123e4567-e89b-42d3-a456-426614174000','123e4567-e89b-02d3-a456-426614174000','123e4567-e89b-92d3-a456-426614174000','123e4567-e89b-42d3-c456-426614174000','123e4567-e89b-42d3-a456-42661417400g']){
   assert.throws(()=>effects.touch.ticket({id}),/Ticket identity field id must be a UUID/,id);
-  assert.throws(()=>channel.add.ticket({id}),/Ticket identity field id must be a UUID/,id);
-  assert.throws(()=>channel.add([{model:'Ticket',identity:{id}}]),/Ticket identity field id must be a UUID/,id);
+  assert.throws(()=>scope.add.ticket({id}),/Ticket identity field id must be a UUID/,id);
+  assert.throws(()=>scope.add([{model:'Ticket',identity:{id}}]),/Ticket identity field id must be a UUID/,id);
  }
  // An enum component is one of its enum's values, exactly.
  for(const kind of ['c','A',''])assert.throws(()=>effects.touch.tag({kind}),/Tag identity field kind must be one of a, b/,kind);
- assert.throws(()=>channel.remove.tag({kind:'c'}),/one of a, b/);
+ assert.throws(()=>scope.remove.tag({kind:'c'}),/one of a, b/);
  // A date-time string is zoned RFC 3339 with real calendar fields; a Date must encode to one.
  for(const at of ['2026-01-01T00:00:00','2026-01-01 00:00:00Z','2026-01-01t00:00:00Z','2026-13-01T00:00:00Z','2026-02-29T00:00:00Z','2026-04-31T00:00:00Z','2026-01-01T24:00:00Z','2026-01-01T00:60:00Z','2026-01-01T00:00:00+0100','2026-01-01T00:00:00+24:00','2026-01-01T00:00:00.1234567890Z','26-01-01T00:00:00Z',new Date('+010000-01-01T00:00:00Z')])
   assert.throws(()=>effects.touch.moment({at}),/Moment identity field at must be a valid Date or a zoned RFC 3339 date-time string/,String(at));
- assert.throws(()=>channel.add([Todo({id:'A'}),{model:'Ticket',identity:{id:'not-a-uuid'}}]),/UUID/);
+ assert.throws(()=>scope.add([Todo({id:'A'}),{model:'Ticket',identity:{id:'not-a-uuid'}}]),/UUID/);
  assert.deepEqual(effects.settlement(),empty,'no refused declaration appended an intent');
  effects.touch.ticket({id:'123E4567-E89B-82D3-B456-426614174000'});
  effects.touch.tag({kind:'b'});
@@ -148,15 +148,15 @@ test('UUID, enum and date-time components follow the engine rules at the declara
 
 test('a mixed call with a later invalid element appends nothing, even when caught',()=>{
  const effects=fresh();
- const channel=effects.scope('c');
- assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B'}),{id:'C'}]),/record reference/);
- try{channel.remove([Todo({id:'A'}),{model:'Todo',identity:{}}]);}catch{}
+ const scope=effects.scope('c');
+ assert.throws(()=>scope.add([Todo({id:'A'}),Todo({id:'B'}),{id:'C'}]),/record reference/);
+ try{scope.remove([Todo({id:'A'}),{model:'Todo',identity:{}}]);}catch{}
  assert.deepEqual(effects.settlement(),empty);
- channel.add([Todo({id:'A'})]);
+ scope.add([Todo({id:'A'})]);
  assert.deepEqual(effects.settlement().memberships,[add('c','Todo',{id:'A'})]);
 });
 
-test('a Channel name must be a nonblank string; selecting one declares nothing',()=>{
+test('a Scope name must be a nonblank string; selecting one declares nothing',()=>{
  const effects=fresh();
  for(const name of ['','  ','\n',undefined,null,1,{}])
   assert.throws(()=>effects.scope(name),/name/,String(name));
@@ -170,23 +170,23 @@ test('handles are null-prototype dictionaries; __proto__, constructor and functi
   {name:'__proto__',identity:['id'],fields:[{name:'id',type:scalar,nullable:false}]},
   {name:'Constructor',identity:['__proto__'],fields:[{name:'__proto__',type:scalar,nullable:false}]},
   {name:'ToString',identity:['id'],fields:[{name:'id',type:scalar,nullable:false}]},
-  // A Channel handle is no function, so function members need no reservation either.
+  // A Scope handle is no function, so function members need no reservation either.
   ...['Name','Length','Bind','Apply','Call'].map(name=>({name,identity:['id'],fields:[{name:'id',type:scalar,nullable:false}]})),
  ]);
  assert.equal(Object.getPrototypeOf(effects.touch),null);
  const keys=['__proto__','constructor','toString','name','length','bind','apply','call'];
  assert.deepEqual(Object.keys(effects.touch),keys);
- const channel=effects.scope('c');
- assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(channel)),null);
- assert.deepEqual(Object.keys(channel.add),keys);
- assert.deepEqual(Object.keys(channel.remove),keys);
- assert.deepEqual(Object.keys(channel),['add','remove','tag','where']);
- assert.equal(typeof channel,'object');
- channel.add.name({id:'n'});
- channel.remove.length({id:'l'});
+ const scope=effects.scope('c');
+ assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(scope)),null);
+ assert.deepEqual(Object.keys(scope.add),keys);
+ assert.deepEqual(Object.keys(scope.remove),keys);
+ assert.deepEqual(Object.keys(scope),['add','remove','tag','where']);
+ assert.equal(typeof scope,'object');
+ scope.add.name({id:'n'});
+ scope.remove.length({id:'l'});
  effects.touch.call({id:'k'});
- channel.add.__proto__({id:'p'});
- channel.remove.constructor({['__proto__']:'c'});
+ scope.add.__proto__({id:'p'});
+ scope.remove.constructor({['__proto__']:'c'});
  effects.touch.toString({id:'s'});
  effects.touch.__proto__({id:'p'});
  const identity=Object.defineProperty({},'__proto__',{value:'c',enumerable:true});
@@ -211,23 +211,24 @@ test('runtime configuration refuses duplicate accessors and allows operation nam
 
 test('closing refuses every later declaration, including through escaped handles; settlement stays readable',()=>{
  const effects=fresh();
- const channel=effects.scope('c');
- const todo={add: channel.add.todo};
+ const scope=effects.scope('c');
+ const todo={add: scope.add.todo};
  const touch=effects.touch;
- channel.add.todo({id:'A'});
+ scope.add.todo({id:'A'});
  touch.todo({id:'A'});
  effects.close();
  const closed=/closed/;
- assert.throws(()=>channel.add.todo({id:'B'}),closed);
- assert.throws(()=>channel.remove.todo({id:'B'}),closed);
- assert.throws(()=>channel.add([]),closed);
- assert.throws(()=>channel.remove([Todo({id:'B'})]),closed);
+ assert.throws(()=>scope.add.todo({id:'B'}),closed);
+ assert.throws(()=>todo.add({id:'B'}),closed);
+ assert.throws(()=>scope.remove.todo({id:'B'}),closed);
+ assert.throws(()=>scope.add([]),closed);
+ assert.throws(()=>scope.remove([Todo({id:'B'})]),closed);
  assert.throws(()=>touch.todo({id:'B'}),closed);
  assert.throws(()=>effects.scope('c'),closed);
  // Tagged adds and tag selectors are declarations too.
- assert.throws(()=>channel.add.todo({id:'B'}).tag(['X']),closed);
- assert.throws(()=>channel.add([Todo({id:'B'})]).tag(['X']),closed);
- assert.throws(()=>channel.where({ tags: { all: ['X'] } }).remove(),closed);
+ assert.throws(()=>scope.add.todo({id:'B'}).tag(['X']),closed);
+ assert.throws(()=>scope.add([Todo({id:'B'})]).tag(['X']),closed);
+ assert.throws(()=>scope.where({ tags: { all: ['X'] } }).remove(),closed);
  const expected={changes:[{model:'Todo',identity:{id:'A'}}],memberships:[add('c','Todo',{id:'A'})]};
  const settled=effects.settlement();
  assert.deepEqual(settled,expected);
@@ -378,21 +379,21 @@ const scalar=name=>({kind:'scalar',name});
 const ticket={name:'Ticket',identity:['id'],fields:[{name:'id',type:scalar('uuid'),nullable:false}]};
 const freshLoad=(loaded)=>createLoadEffects([...models,ticket],[],loaded);
 
-test('a Load Channel handle adds only: no remove or touch exists on any runtime object',()=>{
+test('a Load Scope handle adds only: no remove or touch exists on any runtime object',()=>{
  const effects=freshLoad();
- const channel=effects.scope('c');
- assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(channel)),null);
- assert.ok(Object.isFrozen(channel));
- assert.deepEqual(Object.keys(channel),['add','tag']);
- assert.deepEqual(Object.keys(channel.add),['todo','moment','pin','ticket']);
- assert.equal('remove' in channel,false);
- assert.equal('touch' in channel,false);
+ const scope=effects.scope('c');
+ assert.equal(Object.getPrototypeOf(Object.getPrototypeOf(scope)),null);
+ assert.ok(Object.isFrozen(scope));
+ assert.deepEqual(Object.keys(scope),['add','tag']);
+ assert.deepEqual(Object.keys(scope.add),['todo','moment','pin','ticket']);
+ assert.equal('remove' in scope,false);
+ assert.equal('touch' in scope,false);
  assert.equal('touch' in effects,false,'the collector has no touch to hand out');
  assert.equal('settlement' in effects,false,'nor a change settlement');
  assert.ok(Object.isFrozen(effects));
  // The facade cannot be widened after the fact.
- assert.throws(()=>{channel.remove=()=>{};},TypeError);
- assert.throws(()=>{channel.add.todo=()=>{};},TypeError);
+ assert.throws(()=>{scope.remove=()=>{};},TypeError);
+ assert.throws(()=>{scope.add.todo=()=>{};},TypeError);
 });
 
 test('Load declarations snapshot typed identities at the call, in first-declaration order',()=>{
@@ -400,11 +401,11 @@ test('Load declarations snapshot typed identities at the call, in first-declarat
  const identity={id:'A',title:'not identity'};
  const at=new Date('2026-01-01T00:00:00.000Z');
  const pin={todo:'t',at:new Date('2026-02-01T00:00:00.000Z'),label:'x'};
- const channel=effects.scope('project:1');
- channel.add.todo(identity);
- channel.add.moment({at});
- channel.add.pin(pin);
- channel.add.ticket({id:'123e4567-e89b-42d3-a456-426614174000'});
+ const scope=effects.scope('project:1');
+ scope.add.todo(identity);
+ scope.add.moment({at});
+ scope.add.pin(pin);
+ scope.add.ticket({id:'123e4567-e89b-42d3-a456-426614174000'});
  identity.id='B';at.setUTCFullYear(2030);pin.todo='other';pin.at.setUTCFullYear(2031);
  assert.deepEqual(effects.memberships(),[
   add('project:1','Todo',{id:'A'}),
@@ -420,7 +421,7 @@ test('Load declarations snapshot typed identities at the call, in first-declarat
  assert.equal(effects.memberships().length,4);
 });
 
-test('a repeated Channel/record pair is one intent, however it is spelled; another Channel is another pair',()=>{
+test('a repeated Scope/record pair is one intent, however it is spelled; another Scope is another pair',()=>{
  const effects=freshLoad();
  const a=effects.scope('a');
  a.add.todo({id:'1'});
@@ -446,26 +447,26 @@ test('a repeated Channel/record pair is one intent, however it is spelled; anoth
 test('a mixed Load list takes explicit references and appends nothing when any element fails',()=>{
  const effects=freshLoad();
  const at=new Date('2026-01-01T00:00:00.000Z');
- const channel=effects.scope('mixed');
- channel.add([Todo({id:'A'}),Moment({at}),Pin({todo:'t',at}),{model:'Todo',identity:{id:'B',title:'extra'}}]);
- channel.add([]);
+ const scope=effects.scope('mixed');
+ scope.add([Todo({id:'A'}),Moment({at}),Pin({todo:'t',at}),{model:'Todo',identity:{id:'B',title:'extra'}}]);
+ scope.add([]);
  assert.deepEqual(effects.memberships(),[
   add('mixed','Todo',{id:'A'}),add('mixed','Moment',{at:'2026-01-01T00:00:00.000Z'}),
   add('mixed','Pin',{todo:'t',at:'2026-01-01T00:00:00.000Z'}),add('mixed','Todo',{id:'B'}),
  ]);
  assert.equal(effects.failure(),undefined);
- assert.throws(()=>channel.add([Todo({id:'C'}),{id:'D'}]),/record reference/);
+ assert.throws(()=>scope.add([Todo({id:'C'}),{id:'D'}]),/record reference/);
  assert.equal(effects.memberships().length,4,'the refused list appended nothing');
 });
 
 test('a Load identity with a lone surrogate is refused at the declaration; a mixed list appends none of its pairs',()=>{
  const effects=freshLoad();
- const channel=effects.scope('c');
+ const scope=effects.scope('c');
  // A well-formed pair of surrogates is Unicode text and declares as usual.
- channel.add.todo({id:'emoji \ud83d\ude00'});
- assert.throws(()=>channel.add.todo({id:'\ud800'}),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
- assert.throws(()=>channel.add.pin({todo:'t\udfff',at:new Date(0)}),{message:'scope: Pin identity field todo must be Unicode text, without a lone surrogate'});
- assert.throws(()=>channel.add([Todo({id:'A'}),Todo({id:'B\ud800'}),Todo({id:'C'})]),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
+ scope.add.todo({id:'emoji \ud83d\ude00'});
+ assert.throws(()=>scope.add.todo({id:'\ud800'}),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>scope.add.pin({todo:'t\udfff',at:new Date(0)}),{message:'scope: Pin identity field todo must be Unicode text, without a lone surrogate'});
+ assert.throws(()=>scope.add([Todo({id:'A'}),Todo({id:'B\ud800'}),Todo({id:'C'})]),{message:'scope: Todo identity field id must be Unicode text, without a lone surrogate'});
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'emoji \ud83d\ude00'})],'no refused pair, and nothing from the refused list');
  assert.equal(effects.failure().kind,'invalid','the caught refusal leaves the collector failed');
  assert.match(effects.failure().error.message,/scope: Todo identity field id must be Unicode text/,'the first refusal wins');
@@ -473,10 +474,10 @@ test('a Load identity with a lone surrogate is refused at the declaration; a mix
 
 test('every refused Load declaration leaves the collector failed with its first error, even when caught',()=>{
  const cases=[
-  ['blank Channel',e=>e.scope('  '),/name/],
-  ['non-string Channel',e=>e.scope(7),/name/],
+  ['blank Scope',e=>e.scope('  '),/name/],
+  ['non-string Scope',e=>e.scope(7),/name/],
   // A lone surrogate is not Unicode text: the engine could not decode the answer.
-  ['lone surrogate Channel',e=>e.scope('a\ud800'),/name/],
+  ['lone surrogate Scope',e=>e.scope('a\ud800'),/name/],
   // Nor in a string identity component: the host could not send the answer.
   ['lone surrogate identity',e=>e.scope('c').add.todo({id:'a\udc00'}),/Todo identity field id must be Unicode text/],
   ['lone surrogate identity in a list',e=>e.scope('c').add([Todo({id:'A'}),Pin({todo:'\ud800b',at:new Date(0)})]),/Pin identity field todo must be Unicode text/],
@@ -517,12 +518,13 @@ test('a device-only Model is refused at every Load declaration naming it',()=>{
 
 test('closing refuses every later Load declaration, including through escaped handles',()=>{
  const effects=freshLoad();
- const channel=effects.scope('c');
- const todo={add: channel.add.todo};
- channel.add.todo({id:'A'});
+ const scope=effects.scope('c');
+ const todo={add: scope.add.todo};
+ scope.add.todo({id:'A'});
  effects.close();
- assert.throws(()=>channel.add.todo({id:'B'}),/closed/);
- assert.throws(()=>channel.add([Todo({id:'B'})]),/closed/);
+ assert.throws(()=>scope.add.todo({id:'B'}),/closed/);
+ assert.throws(()=>todo.add({id:'B'}),/closed/);
+ assert.throws(()=>scope.add([Todo({id:'B'})]),/closed/);
  assert.throws(()=>effects.scope('c'),/closed/);
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'A'})],'still readable after close');
  effects.close();
@@ -538,17 +540,17 @@ test('the Load enrollment bounds are the shared fixture, and a pair measures as 
  }
 });
 
-const pairBytes=channel=>enrollmentBytes(add(channel,'Todo',{id:'t1'}));
+const pairBytes=scope=>enrollmentBytes(add(scope,'Todo',{id:'t1'}));
 
 test('Load enrollment is bounded by distinct pairs after deduplication; the pair past the bound throws and stays failed',()=>{
- const channels=Array.from({length:LOAD_ENROLLMENT_PAIRS},(_,n)=>`c${n}`);
+ const scopes=Array.from({length:LOAD_ENROLLMENT_PAIRS},(_,n)=>`c${n}`);
  const effects=freshLoad();
- for(const name of [...channels,...channels])effects.scope(name).add.todo({id:'t1'});
+ for(const name of [...scopes,...scopes])effects.scope(name).add.todo({id:'t1'});
  assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'exactly the bound, each pair declared twice');
  assert.equal(effects.failure(),undefined);
  let thrown;
  try{effects.scope('one-more').add.todo({id:'t1'});}catch(error){thrown=error;}
- assert.match(thrown?.message??'',/more than 1000 Channel\/record pairs/);
+ assert.match(thrown?.message??'',/more than 1000 Scope\/record pairs/);
  assert.deepEqual(effects.failure(),{kind:'overflow',error:thrown});
  assert.equal(effects.memberships().length,LOAD_ENROLLMENT_PAIRS,'the crossing pair is not stored');
  // A repeat of a counted pair is still no new pair.
@@ -558,16 +560,16 @@ test('Load enrollment is bounded by distinct pairs after deduplication; the pair
 
 test('Load enrollment is bounded by encoded bytes after deduplication, one byte over fails',()=>{
  const count=256,each=LOAD_ENROLLMENT_BYTES/count;
- const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
- assert.equal(channels.reduce((sum,c)=>sum+pairBytes(c),0),LOAD_ENROLLMENT_BYTES);
+ const scopes=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
+ assert.equal(scopes.reduce((sum,c)=>sum+pairBytes(c),0),LOAD_ENROLLMENT_BYTES);
  const effects=freshLoad();
- for(const name of channels)effects.scope(name).add.todo({id:'t1'});
- effects.scope(channels[0]).add([Todo({id:'t1'})]);
+ for(const name of scopes)effects.scope(name).add.todo({id:'t1'});
+ effects.scope(scopes[0]).add([Todo({id:'t1'})]);
  assert.equal(effects.failure(),undefined,'a repeated pair counts once');
  assert.equal(effects.memberships().length,count);
  const over=freshLoad();
- for(const name of channels.slice(0,-1))over.scope(name).add.todo({id:'t1'});
- assert.throws(()=>over.scope(channels.at(-1)+'x').add.todo({id:'t1'}),/more than 1048576 bytes/);
+ for(const name of scopes.slice(0,-1))over.scope(name).add.todo({id:'t1'});
+ assert.throws(()=>over.scope(scopes.at(-1)+'x').add.todo({id:'t1'}),/more than 1048576 bytes/);
  assert.equal(over.failure().kind,'overflow');
 });
 
@@ -619,24 +621,24 @@ test('an invalid Load label or options leave the collector failed and append not
 
 test('an escaped Load handle refuses tagged adds after close',()=>{
  const effects=freshLoad();
- const channel=effects.scope('c');
+ const scope=effects.scope('c');
  effects.close();
- assert.throws(()=>channel.add.todo({id:'A'}).tag(['X']),/closed/);
- assert.throws(()=>channel.add([Todo({id:'A'})]).tag(['X']),/closed/);
- assert.equal('remove' in channel,false,'a Load handle has no selector either');
+ assert.throws(()=>scope.add.todo({id:'A'}).tag(['X']),/closed/);
+ assert.throws(()=>scope.add([Todo({id:'A'})]).tag(['X']),/closed/);
+ assert.equal('remove' in scope,false,'a Load handle has no selector either');
 });
 
 test('Load enrollment bytes count tags, including tags merged into a repeated pair',()=>{
  assert.equal(enrollmentBytes(add('c','Todo',{id:'t1'},['X'])),enrollmentBytes(add('c','Todo',{id:'t1'}))+3);
  const count=256,each=LOAD_ENROLLMENT_BYTES/count;
- const channels=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
+ const scopes=Array.from({length:count},(_,n)=>{const name=String(n).padStart(3,'0');return name+'x'.repeat(each-pairBytes(name));});
  const effects=freshLoad();
- for(const name of channels)effects.scope(name).add.todo({id:'t1'});
+ for(const name of scopes)effects.scope(name).add.todo({id:'t1'});
  assert.equal(effects.failure(),undefined,'exactly the bound');
  // A repeated pair adds no pair, but its new label adds bytes past the bound.
- assert.throws(()=>effects.scope(channels[0]).add.todo({id:'t1'}).tag(['X']),/more than 1048576 bytes/);
+ assert.throws(()=>effects.scope(scopes[0]).add.todo({id:'t1'}).tag(['X']),/more than 1048576 bytes/);
  assert.equal(effects.failure().kind,'overflow');
- assert.deepEqual(effects.memberships()[0],add(channels[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
+ assert.deepEqual(effects.memberships()[0],add(scopes[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
 });
 
 test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-tag declaration',()=>{
@@ -715,7 +717,7 @@ test('only argument-free tag remove detaches and Load label failures poison',()=
  const effects=fresh(),tag=effects.scope('U').tag('X');
  assert.throws(()=>tag.remove(undefined));assert.deepEqual(effects.settlement(),empty);
  assert.throws(()=>tag.remove([{model:'Todo',identity:{id:'A'}},undefined]));assert.deepEqual(effects.settlement(),empty);
- tag.remove();assert.deepEqual(effects.settlement().memberships,[{kind:'detachTags',channel:'U',tags:['X']}]);
+ tag.remove();assert.deepEqual(effects.settlement().memberships,[{kind:'detachTags',scope:'U',tags:['X']}]);
  for(const call of [scope=>scope.tag([]),scope=>scope.tag('X').add(undefined),scope=>scope.add.todo('A').tag([])]){
   const load=createLoadEffects(models);assert.throws(()=>call(load.scope('U')));assert.equal(load.failure().kind,'invalid');
  }

@@ -23,4 +23,4 @@ test=(node --test --test-timeout=300000 --test-force-exit)
 "${test[@]}" "$root/integration/persistence/server/membership.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/loads.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/fetch.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/channel-tags.test.mjs"
+"${test[@]}" "$root/integration/persistence/server/scope-tags.test.mjs"

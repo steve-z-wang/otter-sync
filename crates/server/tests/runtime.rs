@@ -48,37 +48,37 @@ fn historical_known_field_outside_capability_is_refused() {
 }
 
 #[test]
-fn live_subscribe_requires_one_subscribe_frame_and_normalizes_channels() {
+fn live_subscribe_requires_one_subscribe_frame_and_normalizes_scopes() {
     let decoded = axton_server::live::decode_subscribe(
-        br#"{"type":"subscribe","channels":["shared","alice","shared"],"models":{"Task":1}}"#,
+        br#"{"type":"subscribe","scopes":["shared","alice","shared"],"models":{"Task":1}}"#,
     )
     .unwrap();
-    assert_eq!(decoded.channels, vec!["alice", "shared"]);
+    assert_eq!(decoded.scopes, vec!["alice", "shared"]);
     assert_eq!(decoded.models.get("Task"), Some(&1));
     assert!(
         axton_server::live::decode_subscribe(
-            br#"{"type":"other","channels":["a"],"models":{"Task":1}}"#
+            br#"{"type":"other","scopes":["a"],"models":{"Task":1}}"#
         )
         .is_err()
     );
     assert!(
         axton_server::live::decode_subscribe(
-            br#"{"type":"subscribe","channels":[],"models":{"Task":1}}"#
+            br#"{"type":"subscribe","scopes":[],"models":{"Task":1}}"#
         )
         .is_err()
     );
     assert!(
-        axton_server::live::decode_subscribe(br#"{"type":"subscribe","channels":["a"]}"#).is_err(),
+        axton_server::live::decode_subscribe(br#"{"type":"subscribe","scopes":["a"]}"#).is_err(),
         "models are required"
     );
 }
 
 #[test]
-fn live_page_progression_checks_every_channel_it_asked_for() {
+fn live_page_progression_checks_every_scope_it_asked_for() {
     let full = json!({
         "cursors": {"shared": {"from":7, "to":57, "head":90}},
         "changes": (8..=57).map(|i| json!({
-            "channel":"shared","cursor":i,"kind":"upsert","model":"Task","identity":{"id":i},"stamp":i,"state":null
+            "scope":"shared","cursor":i,"kind":"upsert","model":"Task","identity":{"id":i},"stamp":i,"state":null
         })).collect::<Vec<_>>()
     });
     let asked = std::collections::BTreeMap::from([("shared".to_string(), 7)]);
@@ -438,7 +438,7 @@ mod refusals {
         ))
         .unwrap_err();
         assert_eq!(err.code, code::PRINCIPAL_INVALID);
-        let err = axton_server::live::decode_subscribe(br#"{"type":"other","channels":["a"]}"#)
+        let err = axton_server::live::decode_subscribe(br#"{"type":"other","scopes":["a"]}"#)
             .unwrap_err();
         assert_eq!(err.code, code::REQUEST_INVALID);
     }

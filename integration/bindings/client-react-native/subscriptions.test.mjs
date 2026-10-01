@@ -42,11 +42,11 @@ test("the mobile host shares the runtime subscription handles and their offline 
   });
   try {
     const [first, second] = await Promise.all([
-      client.scopes.subscribe("project:123"),
-      client.scopes.subscribe("project:123"),
+      client.streams.subscribe("project:123"),
+      client.streams.subscribe("project:123"),
     ]);
     assert.equal(first, second, "concurrent calls obtain one cached handle");
-    assert.equal(first.scope, "project:123");
+    assert.equal(first.stream, "project:123");
     assert.deepEqual(
       { ...first.status },
       {
@@ -77,7 +77,7 @@ test("the mobile host shares the runtime subscription handles and their offline 
       },
     );
     assert.deepEqual(
-      (await client.syncState()).scopes,
+      (await client.syncState()).streams,
       [],
       "the registration is gone",
     );
@@ -108,7 +108,7 @@ test("the mobile host registers a bootstrap eagerly and rejects the waiters of a
     schema,
   });
   try {
-    const subscription = await client.scopes.subscribe("project:123");
+    const subscription = await client.streams.subscribe("project:123");
     assert.deepEqual(
       { ...subscription.status.bootstrap },
       { phase: "not-requested", error: null },

@@ -989,7 +989,7 @@ test("a rebuild wakes the sleeping downlink lane without another start", async (
     assert.ok(asleep(), `the lane sleeps until woken: ${[...outstanding.values()]}`);
     await client.rebuild({ discardPending: true });
     await eventually(() => sockets.length === 2, "the carried Scope subscribed again after the rebuild");
-    assert.deepEqual(sockets[1].subscribe.scopes, ["scope"]);
+    assert.deepEqual(sockets[1].subscribe.streams, ["scope"]);
     assert.equal(sockets[0].signal.aborted, true, "the old socket was abandoned");
     assert.equal(sockets[1].signal.aborted, false, "the new socket stays");
     await client.syncState();

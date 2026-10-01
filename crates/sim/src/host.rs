@@ -1,17 +1,17 @@
 //! The server's persistence, in memory. Mirrors packages/postgres/src/persistence.mts
 //! closely enough that axton_server cannot tell the difference: per-client receipts,
-//! per-scope heads, one position row per (scope, record) carrying the latest
+//! per-stream heads, one position row per (stream, record) carrying the latest
 //! cursor and whether it is a removal, one stamp counter per record that only a
-//! business change advances, and the persistent tagged (record, scope) memberships.
+//! business change advances, and persistent (record, stream) tracking pairs.
 use axton_core::{PushRequest, RecordKey};
 use axton_server::{
     Host,
     host::{
-        Acknowledged, Claimed, ClaimedCall, Handled, HandledLoad, Head, HostRequest,
-        Invalidation as ContractInvalidation, Loaded, Locked, Memberships, Positions, RecordRef,
-        Scanned, ScopeIntent, ScopeMembers, Stamped, Stamps,
+        Acknowledged, Claimed, ClaimedCall, GuardMode, Guards, Handled, HandledLoad, Head,
+        HostRequest, Invalidation as ContractInvalidation, Loaded, Locked, Positions, RecordRef,
+        Scanned, Stamped, Stamps, StreamIntent, TrackIntent, Tracking, TrackingPair,
     },
-    scope_members::{MemberPosition, MemberState, PositionKind},
+    stream_members::{MemberPosition, PositionKind},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -28,9 +28,9 @@ struct Invalidation {
     identity: Value,
     identity_key: String,
     cursor: u64,
-    /// The stamp this scope was last told about. `scan` answers with the record's
+    /// The stamp this stream was last told about. `scan` answers with the record's
     /// *current* stamp instead (see `Tables::stamps`); this one only says how far
-    /// behind the record this scope's own invalidation is.
+    /// behind the record this stream's own invalidation is.
     stamp: u64,
     /// The latest position released the membership; scans deliver its identity.
     removed: bool,
@@ -64,17 +64,17 @@ struct Tables {
     stamps: BTreeMap<String, Stamp>,
     heads: BTreeMap<String, u64>,
     invalidations: BTreeMap<(String, String), Invalidation>,
-    /// Live members: (encoded record key, scope), in primary-key order, to
-    /// the member's tags. Kept apart from `stamps` and `invalidations`. It
+    /// Tracking pairs: (encoded record key, stream), in primary-key order.
+    /// Kept apart from `stamps` and `invalidations`. The set
     /// lives in the tables, so savepoints and failed transactions restore it
     /// with everything else.
-    memberships: BTreeMap<(String, String), BTreeSet<String>>,
+    memberships: BTreeSet<(String, String)>,
 }
 
 #[derive(Default)]
 struct State {
     tables: Tables,
-    /// The scenario's routing: which scopes the sim handler publishes each
+    /// The scenario's routing: which streams the sim handler publishes each
     /// record to. Configuration, not persistence (see `Tables::memberships`).
     membership: BTreeMap<String, Vec<String>>,
     clients: BTreeMap<String, Claimed>,
@@ -90,6 +90,7 @@ struct State {
     fail_load: BTreeSet<String>,
     /// Records whose next single-identity `load` is refused with `sim.refused`.
     refuse_load: BTreeSet<String>,
+    hidden_for_viewer: BTreeSet<(String, String)>,
     handler_calls: usize,
     native_load_calls: usize,
     accepted: usize,
@@ -172,12 +173,11 @@ impl MemHost {
         s.active_transaction = None;
         result
     }
-    pub fn set_membership(&self, key: &RecordKey, scopes: &[&str]) {
-        self.0
-            .lock()
-            .unwrap()
-            .membership
-            .insert(encoded(key), scopes.iter().map(|c| c.to_string()).collect());
+    pub fn set_membership(&self, key: &RecordKey, streams: &[&str]) {
+        self.0.lock().unwrap().membership.insert(
+            encoded(key),
+            streams.iter().map(|c| c.to_string()).collect(),
+        );
     }
     pub fn membership(&self, key: &RecordKey) -> Vec<String> {
         self.0
@@ -195,7 +195,7 @@ impl MemHost {
             .into_iter()
             .collect()
     }
-    /// Whether membership was ever explicitly set for `key`, even to no scopes at
+    /// Whether membership was ever explicitly set for `key`, even to no streams at
     /// all - distinct from `membership` being empty because nothing was set yet.
     pub fn has_membership(&self, key: &RecordKey) -> bool {
         self.0
@@ -204,37 +204,37 @@ impl MemHost {
             .membership
             .contains_key(&encoded(key))
     }
-    /// One business change to `key`, distributed to `scopes` by low-level
+    /// One business change to `key`, distributed to `streams` by low-level
     /// publication: the stamp advances once, the record is enrolled in every
-    /// scope it is not yet a member of, and
-    /// every scope is invalidated at that same stamp. Other memberships are
+    /// stream it is not yet a member of, and
+    /// every stream is invalidated at that same stamp. Other memberships are
     /// left alone and not published to, so a change can reach a subset.
-    pub fn notify(&self, key: &RecordKey, scopes: &[&str]) {
+    pub fn notify(&self, key: &RecordKey, streams: &[&str]) {
         let mut s = self.0.lock().unwrap();
         let stamp = advance(&mut s.tables, key);
-        for c in scopes {
-            set_stored_membership(&mut s.tables, c, key, true).expect("stamped record");
+        for c in streams {
+            set_stored_membership(&mut s.tables, c, key).expect("stamped record");
             publish_at(&mut s.tables, c, key, stamp).expect("current stamp");
         }
     }
-    /// Republish `key` on `scope` at its current stamp, initializing the stamp at 1
-    /// only if the record has none and enrolling it first: a scope learning of an
+    /// Republish `key` on `stream` at its current stamp, initializing the stamp at 1
+    /// only if the record has none and enrolling it first: a stream learning of an
     /// existing record, which never advances its version.
-    pub fn ensure_publish(&self, key: &RecordKey, scope: &str) {
+    pub fn ensure_publish(&self, key: &RecordKey, stream: &str) {
         let mut s = self.0.lock().unwrap();
         let stamp = ensure(&mut s.tables, key);
-        set_stored_membership(&mut s.tables, scope, key, true).expect("stamped record");
-        publish_at(&mut s.tables, scope, key, stamp).expect("current stamp");
+        set_stored_membership(&mut s.tables, stream, key).expect("stamped record");
+        publish_at(&mut s.tables, stream, key, stamp).expect("current stamp");
     }
     /// One application transaction outside any push (`backend.transaction`):
     /// apply `writes` to the business rows, then settle `changes` and the
-    /// ordered membership intents through `axton_server::settle_external`.
+    /// tracking and invalidation declarations through `axton_server::settle_external`.
     /// A failure rolls every table back, business rows included.
     pub fn transact(
         &self,
         writes: &[(RecordKey, Option<Value>)],
         changes: Vec<RecordRef>,
-        memberships: Vec<ScopeIntent>,
+        declarations: Vec<StreamIntent>,
     ) -> Result<(), String> {
         self.transaction(|| {
             {
@@ -246,7 +246,7 @@ impl MemHost {
                     };
                 }
             }
-            let settlement = json!({"changes": changes, "memberships": memberships});
+            let settlement = json!({"changes": changes, "declarations": declarations});
             block_on(axton_server::settle_external(
                 &crate::schema::config(),
                 &settlement,
@@ -255,6 +255,37 @@ impl MemHost {
             .map(|_| ())
             .map_err(|e| e.to_string())
         })
+    }
+    /// Restore a persisted pre-tracking removal event for compatibility scenarios.
+    /// Fresh settlement has no withdrawal verb; this only models saved log evidence.
+    pub fn restore_historical_removal(&self, key: &RecordKey, stream: &str) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        let k = encoded(key);
+        let pair = (stream.to_string(), k.clone());
+        if !s
+            .tables
+            .memberships
+            .contains(&(k.clone(), stream.to_string()))
+        {
+            return Ok(());
+        }
+        if !s.tables.invalidations.contains_key(&pair) {
+            return Err("historical removal has no saved position".into());
+        }
+        s.tables
+            .memberships
+            .remove(&(k.clone(), stream.to_string()));
+        let head = s.tables.heads.entry(stream.to_string()).or_insert(0);
+        *head += 1;
+        let cursor = *head;
+        let row = s
+            .tables
+            .invalidations
+            .get_mut(&pair)
+            .ok_or("historical removal has no saved position")?;
+        row.cursor = cursor;
+        row.removed = true;
+        Ok(())
     }
     pub fn set_state(&self, key: &RecordKey, state: Option<Value>) {
         let mut s = self.0.lock().unwrap();
@@ -292,6 +323,14 @@ impl MemHost {
     pub fn refuse_load_next(&self, key: &RecordKey) {
         self.0.lock().unwrap().refuse_load.insert(encoded(key));
     }
+    /// Scenario permission rule: the viewer Loader answers absence for this pair.
+    pub fn hide_for_viewer(&self, viewer: &str, key: &RecordKey) {
+        self.0
+            .lock()
+            .unwrap()
+            .hidden_for_viewer
+            .insert((viewer.into(), encoded(key)));
+    }
     pub fn state(&self, key: &RecordKey) -> Option<Value> {
         self.0
             .lock()
@@ -304,7 +343,7 @@ impl MemHost {
     pub fn records(&self) -> BTreeMap<String, Value> {
         self.0.lock().unwrap().tables.records.clone()
     }
-    /// The record's current stamp: its content version, shared by every scope.
+    /// The record's current stamp: its content version, shared by every stream.
     pub fn stamp(&self, key: &RecordKey) -> u64 {
         self.0
             .lock()
@@ -327,13 +366,13 @@ impl MemHost {
             .map(|s| (s.key.clone(), s.value, s.advances, s.initialized))
             .collect()
     }
-    pub fn head(&self, scope: &str) -> u64 {
+    pub fn head(&self, stream: &str) -> u64 {
         self.0
             .lock()
             .unwrap()
             .tables
             .heads
-            .get(scope)
+            .get(stream)
             .copied()
             .unwrap_or(0)
     }
@@ -365,24 +404,24 @@ impl MemHost {
             .map(|s| s.key.clone())
             .collect()
     }
-    /// The stamp `scope` was last invalidated for `key` at, if ever. A change
-    /// published to a subset of a record's scopes leaves the others behind
+    /// The stamp `stream` was last invalidated for `key` at, if ever. A change
+    /// published to a subset of a record's streams leaves the others behind
     /// `stamp(key)` until they are next told.
-    pub fn scope_stamp(&self, scope: &str, key: &RecordKey) -> Option<u64> {
+    pub fn stream_stamp(&self, stream: &str, key: &RecordKey) -> Option<u64> {
         self.0
             .lock()
             .unwrap()
             .tables
             .invalidations
-            .get(&(scope.to_string(), encoded(key)))
+            .get(&(stream.to_string(), encoded(key)))
             .map(|row| row.stamp)
     }
-    pub fn scope_records(&self, scope: &str) -> Vec<RecordKey> {
+    pub fn stream_records(&self, stream: &str) -> Vec<RecordKey> {
         let s = self.0.lock().unwrap();
         s.tables
             .invalidations
             .iter()
-            .filter(|((c, _), _)| c == scope)
+            .filter(|((c, _), _)| c == stream)
             .map(|(_, row)| key_of(&row.model, &row.identity))
             .collect()
     }
@@ -489,9 +528,9 @@ fn ensure(t: &mut Tables, key: &RecordKey) -> u64 {
         .value
 }
 
-/// `publish`: invalidate `key` on `scope` at `stamp`, which must be the record's
-/// current stamp. Allocates only the scope's cursor.
-fn publish_at(t: &mut Tables, scope: &str, key: &RecordKey, stamp: u64) -> Result<u64, String> {
+/// `publish`: invalidate `key` on `stream` at `stamp`, which must be the record's
+/// current stamp. Allocates only the stream's cursor.
+fn publish_at(t: &mut Tables, stream: &str, key: &RecordKey, stamp: u64) -> Result<u64, String> {
     let k = encoded(key);
     let current = t.stamps.get(&k).map(|s| s.value);
     if current != Some(stamp) {
@@ -499,11 +538,11 @@ fn publish_at(t: &mut Tables, scope: &str, key: &RecordKey, stamp: u64) -> Resul
             "publish of {k} at stamp {stamp}, record is at {current:?}"
         ));
     }
-    let head = t.heads.entry(scope.to_string()).or_insert(0);
+    let head = t.heads.entry(stream.to_string()).or_insert(0);
     *head += 1;
     let cursor = *head;
     t.invalidations.insert(
-        (scope.to_string(), k),
+        (stream.to_string(), k),
         Invalidation {
             model: key.model.clone(),
             identity: key.identity.clone(),
@@ -516,90 +555,59 @@ fn publish_at(t: &mut Tables, scope: &str, key: &RecordKey, stamp: u64) -> Resul
     Ok(cursor)
 }
 
-/// `memberships`: the scopes `key` is a member of, sorted and unique.
+/// `memberships`: the streams `key` is a member of, sorted and unique.
 fn stored_memberships(t: &Tables, key: &RecordKey) -> BTreeSet<String> {
     let k = encoded(key);
     t.memberships
         .range((k.clone(), String::new())..)
-        .take_while(|((record, _), _)| *record == k)
-        .map(|((_, scope), _)| scope.clone())
+        .take_while(|(record, _)| *record == k)
+        .map(|(_, stream)| stream.clone())
         .collect()
 }
 
-/// Add (creating the scope at head zero) or remove one membership, keeping
-/// an existing member's tags. Idempotent both ways; allocates no cursor;
-/// adding needs the record's metadata row, as the foreign key does.
-fn set_stored_membership(
-    t: &mut Tables,
-    scope: &str,
-    key: &RecordKey,
-    present: bool,
-) -> Result<(), String> {
+/// Track a pair, creating the stream at head zero. Allocates no cursor;
+/// needs the record's metadata row, as the foreign key does.
+fn set_stored_membership(t: &mut Tables, stream: &str, key: &RecordKey) -> Result<(), String> {
     let k = encoded(key);
-    if !present {
-        t.memberships.remove(&(k, scope.to_string()));
-        return Ok(());
-    }
     if !t.stamps.contains_key(&k) {
         return Err(format!(
             "Record metadata missing for {k}: membership needs its record first"
         ));
     }
-    t.heads.entry(scope.to_string()).or_insert(0);
-    t.memberships.entry((k, scope.to_string())).or_default();
+    t.heads.entry(stream.to_string()).or_insert(0);
+    t.memberships.insert((k, stream.to_string()));
     Ok(())
 }
 
-/// `applyScopeMembers`: persist final member states as given. A published
-/// delta takes its Scope's next cursor (an upsert at the record's current
+/// `applyStreamMembers`: persist final member states as given. A published
+/// delta takes its Stream's next cursor (an upsert at the record's current
 /// stamp, or a removal); an unpublished one keeps its member's position.
 fn apply_members(
     t: &mut Tables,
-    deltas: Vec<axton_server::scope_members::MemberDelta>,
+    deltas: Vec<axton_server::stream_members::MemberDelta>,
 ) -> Result<Positions, String> {
     let mut positions = vec![];
     for delta in deltas {
         let key = key_of(&delta.key.model, &delta.key.identity);
         let k = encoded(&key);
-        let member = (k.clone(), delta.scope.clone());
-        let pair = (delta.scope.clone(), k.clone());
-        let was_member = t.memberships.contains_key(&member);
-        let (cursor, kind) = if delta.present {
-            set_stored_membership(t, &delta.scope, &key, true)?;
-            t.memberships.insert(member, delta.tags);
-            if delta.publish {
-                let stamp = t.stamps[&k].value;
-                (
-                    publish_at(t, &delta.scope, &key, stamp)?,
-                    PositionKind::Upsert,
-                )
-            } else {
-                match t.invalidations.get(&pair) {
-                    Some(row) if was_member && !row.removed => (row.cursor, PositionKind::Upsert),
-                    _ => return Err(format!("{k} keeps no position in {}", delta.scope)),
-                }
-            }
+        let member = (k.clone(), delta.stream.clone());
+        let pair = (delta.stream.clone(), k.clone());
+        let was_member = t.memberships.contains(&member);
+        set_stored_membership(t, &delta.stream, &key)?;
+        let cursor = if delta.publish {
+            let stamp = t.stamps[&k].value;
+            publish_at(t, &delta.stream, &key, stamp)?
         } else {
-            if !was_member {
-                return Err(format!("{k} is no member of {} to remove", delta.scope));
+            match t.invalidations.get(&pair) {
+                Some(row) if was_member && !row.removed => row.cursor,
+                _ => return Err(format!("{k} keeps no position in {}", delta.stream)),
             }
-            t.memberships.remove(&member);
-            let head = t.heads.entry(delta.scope.clone()).or_insert(0);
-            *head += 1;
-            let cursor = *head;
-            let row = t
-                .invalidations
-                .get_mut(&pair)
-                .ok_or_else(|| format!("{k} has no position in {}", delta.scope))?;
-            row.cursor = cursor;
-            row.removed = true;
-            (cursor, PositionKind::Remove)
         };
         positions.push(MemberPosition {
-            scope: delta.scope,
+            stream: delta.stream,
             key: delta.key,
             cursor,
-            kind,
+            kind: PositionKind::Upsert,
         });
     }
     Ok(positions)
@@ -792,8 +800,8 @@ impl Host for MemHost {
                     row.response = Some(response);
                     response!(Acknowledged)
                 }
-                HostRequest::Head { scope } => {
-                    response!(Head(s.tables.heads.get(&scope).copied().unwrap_or(0)))
+                HostRequest::Head { stream } => {
+                    response!(Head(s.tables.heads.get(&stream).copied().unwrap_or(0)))
                 }
                 HostRequest::Savepoint { .. } => {
                     let snap = s.tables.clone();
@@ -852,11 +860,8 @@ impl Host for MemHost {
                         Ok(changed) => {
                             // Report every changed record (the engine dedups the ones
                             // the operations already named) and declare the scenario's
-                            // routing as each record's desired persistent membership:
-                            // an add per routed scope and a removal per stored
-                            // scope the routing no longer names. The engine reduces
-                            // these against the stored memberships, so a changed
-                            // record reaches exactly its routed scopes. A record
+                            // routing as tracking declarations. A changed record
+                            // globally invalidates all its persisted holders. A record
                             // with no routing is changed, stamped and read back, but
                             // published nowhere.
                             let changes: Vec<RecordRef> = changed
@@ -875,31 +880,20 @@ impl Host for MemHost {
                                     .unwrap_or_default()
                                     .into_iter()
                                     .collect();
-                                let stored = stored_memberships(&s.tables, key);
-                                for scope in stored.difference(&routed) {
-                                    memberships.push(ScopeIntent::Remove {
-                                        scope: scope.clone(),
+                                for stream in routed {
+                                    memberships.push(StreamIntent::Track {
+                                        stream,
                                         record: RecordRef {
                                             model: key.model.clone(),
                                             identity: key.identity.clone(),
                                         },
-                                    });
-                                }
-                                for scope in routed {
-                                    memberships.push(ScopeIntent::Add {
-                                        scope,
-                                        record: RecordRef {
-                                            model: key.model.clone(),
-                                            identity: key.identity.clone(),
-                                        },
-                                        tags: vec![],
                                     });
                                 }
                             }
                             s.accepted += 1;
                             response!(Handled::Settled {
                                 changes,
-                                memberships,
+                                declarations: memberships,
                             })
                         }
                         Err(code) => {
@@ -920,7 +914,7 @@ impl Host for MemHost {
                         return Err("sim Load handler is not configured".into());
                     }
                     s.native_load_calls += 1;
-                    let scope = arguments["channel"]
+                    let stream = arguments["channel"]
                         .as_str()
                         .ok_or("missing channel")?
                         .to_string();
@@ -937,12 +931,11 @@ impl Host for MemHost {
                     response!(HandledLoad::Settled {
                         data: json!({"entries":records.iter().map(|r|r.identity.clone()).collect::<Vec<_>>()}),
                         next: Some(Value::Null),
-                        memberships: records
+                        tracking: records
                             .into_iter()
-                            .map(|record| ScopeIntent::Add {
-                                scope: scope.clone(),
+                            .map(|record| TrackIntent::Track {
+                                stream: stream.clone(),
                                 record,
-                                tags: vec![]
                             })
                             .collect(),
                     })
@@ -988,50 +981,59 @@ impl Host for MemHost {
                         .map(|row| Stamped(row.value));
                     response!(locked)
                 }
-                HostRequest::Memberships {
-                    model,
-                    identity_key,
-                } => {
-                    let key = key_from_identity_key(&model, &identity_key)?;
-                    response!(Memberships(stored_memberships(&s.tables, &key)))
+                HostRequest::GuardRecords { records } => {
+                    let mut guards: Guards = vec![];
+                    for record in records {
+                        let key = key_from_identity_key(&record.model, &record.identity_key)?;
+                        let value = match record.mode {
+                            GuardMode::Advance => Some(Stamped(advance(&mut s.tables, &key))),
+                            GuardMode::Ensure => Some(Stamped(ensure(&mut s.tables, &key))),
+                            GuardMode::Lock => s
+                                .tables
+                                .stamps
+                                .get(&encoded(&key))
+                                .map(|v| Stamped(v.value)),
+                        };
+                        guards.push(value);
+                    }
+                    response!(guards)
                 }
-                // One thread: the lock is the order check the decoder made.
-                HostRequest::LockScopes { .. } => response!(Acknowledged),
-                HostRequest::ReadScopeMembers {
-                    scope,
-                    explicit_keys,
-                    tags,
-                    all,
-                } => {
-                    let named: BTreeSet<String> = explicit_keys
+                HostRequest::ReadTracking { records, pairs } => {
+                    let global: BTreeSet<String> = records
                         .iter()
-                        .map(|key| encoded(&key_of(&key.model, &key.identity)))
-                        .collect();
-                    let members: ScopeMembers = s
+                        .map(|r| {
+                            key_from_identity_key(&r.model, &r.identity_key).map(|k| encoded(&k))
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let explicit: BTreeSet<(String, String)> = pairs
+                        .iter()
+                        .map(|p| {
+                            key_from_identity_key(&p.model, &p.identity_key)
+                                .map(|k| (encoded(&k), p.stream.clone()))
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let tracking: Tracking = s
                         .tables
                         .memberships
                         .iter()
-                        .filter(|((record, c), held)| {
-                            *c == scope
-                                && (all
-                                    || named.contains(record)
-                                    || tags.iter().any(|tag| held.contains(tag)))
-                        })
-                        .map(|((record, _), held)| {
-                            let row = &s.tables.stamps[record];
-                            MemberState {
-                                key: row.key.clone(),
-                                tags: held.clone(),
+                        .filter(|pair| global.contains(&pair.0) || explicit.contains(*pair))
+                        .map(|(record, stream)| {
+                            let key = &s.tables.stamps[record].key;
+                            TrackingPair {
+                                stream: stream.clone(),
+                                model: key.model.clone(),
+                                identity_key: key.encoded_identity().unwrap(),
                             }
                         })
                         .collect();
-                    response!(members)
+                    response!(tracking)
                 }
-                HostRequest::ApplyScopeMembers { deltas } => {
+                HostRequest::LockStreams { .. } => response!(Acknowledged),
+                HostRequest::ApplyStreamMembers { deltas } => {
                     response!(apply_members(&mut s.tables, deltas)?)
                 }
                 HostRequest::Scan {
-                    scope,
+                    stream,
                     after,
                     limit,
                 } => {
@@ -1041,7 +1043,7 @@ impl Host for MemHost {
                         .tables
                         .invalidations
                         .iter()
-                        .filter(|((c, _), row)| *c == scope && row.cursor > after)
+                        .filter(|((c, _), row)| *c == stream && row.cursor > after)
                         .map(|(_, row)| row)
                         .collect();
                     rows.sort_by_key(|row| row.cursor);
@@ -1066,7 +1068,7 @@ impl Host for MemHost {
                                 } else {
                                     PositionKind::Upsert
                                 },
-                                scope: scope.clone(),
+                                stream: stream.clone(),
                                 cursor: row.cursor,
                                 model: row.model.clone(),
                                 identity: row.identity.clone(),
@@ -1078,7 +1080,10 @@ impl Host for MemHost {
                     response!(scanned)
                 }
                 HostRequest::Load {
-                    model, identities, ..
+                    model,
+                    identities,
+                    owner,
+                    ..
                 } => {
                     // A record marked to fail makes every load naming it fail; the
                     // mark is consumed by the single-identity retry, so exactly
@@ -1104,12 +1109,17 @@ impl Host for MemHost {
                             rejection: "sim.refused".into()
                         }));
                     }
-                    // Loads name no scope: the record exists or it does not, for
-                    // every delivery path alike.
+                    // Loads are viewer-specific; the same viewer sees the same
+                    // authority through every delivery path.
                     let rows: Vec<Option<Value>> = identities
                         .iter()
                         .map(|identity| {
                             let key = key_of(&model, identity);
+                            if s.hidden_for_viewer
+                                .contains(&(owner.clone(), encoded(&key)))
+                            {
+                                return None;
+                            }
                             s.tables.records.get(&encoded(&key)).map(|v| {
                                 let mut m: Map<String, Value> = v.as_object().unwrap().clone();
                                 if model == "Entry" {
@@ -1130,7 +1140,7 @@ impl Host for MemHost {
 mod tests {
     use super::*;
     use crate::schema::{self, entry_key};
-    use axton_core::{AuthorityRecord, PushReceipt, ScopeChange, ScopePullPage};
+    use axton_core::{AuthorityRecord, PushReceipt, StreamChange, StreamPullPage};
 
     #[test]
     fn call_claims_belong_to_the_simulated_transaction_and_follow_savepoint_rollback() {
@@ -1176,30 +1186,30 @@ mod tests {
     fn push_bytes(client_id: &str, sequence: u64, mutation: &axton_client::Mutation) -> Vec<u8> {
         let m = serde_json::to_value(mutation).unwrap();
         let ops = &m["operations"];
-        let body = json!({"capabilities":["scope-membership-v1"],"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
+        let body = json!({"capabilities":["stream-membership-v1"],"clientId":client_id,"batchSequence":sequence,"models":schema::declared_models(),"mutations":[{"ordinal":1,"name":mutation.name,"version":1,"operations":ops}]});
         let bytes = axton_core::canonical_json(&body).unwrap().into_bytes();
         axton_core::PushRequest::decode(&bytes).unwrap();
         bytes
     }
 
-    fn pull(host: &MemHost, scope: &str, from: u64) -> ScopePullPage {
-        let req = json!({"capabilities":["scope-membership-v1"],"cursors":BTreeMap::from([(scope.to_string(),from)]),"models":schema::declared_models()});
-        ScopePullPage::decode(
+    fn pull(host: &MemHost, stream: &str, from: u64) -> StreamPullPage {
+        let req = json!({"capabilities":["stream-membership-v1"],"cursors":BTreeMap::from([(stream.to_string(),from)]),"models":schema::declared_models()});
+        StreamPullPage::decode(
             host.pull("u", &serde_json::to_vec(&req).unwrap())
                 .unwrap()
                 .as_bytes(),
         )
         .unwrap()
     }
-    fn record(change: &ScopeChange) -> &AuthorityRecord {
+    fn record(change: &StreamChange) -> &AuthorityRecord {
         match change {
-            ScopeChange::Upsert { record, .. } => record,
-            ScopeChange::Remove { .. } => panic!("expected content upsert"),
+            StreamChange::Upsert { record, .. } => record,
+            StreamChange::Remove { .. } => panic!("expected content upsert"),
         }
     }
 
     #[test]
-    fn push_allocates_one_stamp_and_pull_delivers_it_on_every_scope() {
+    fn push_allocates_one_stamp_and_pull_delivers_it_on_every_stream() {
         let host = MemHost::new();
         host.set_membership(&entry_key("e1"), &["a", "b"]);
         let receipt = host
@@ -1217,10 +1227,10 @@ mod tests {
         assert_eq!(
             host.stamp(&entry_key("e1")),
             1,
-            "one change is one stamp, however many scopes distribute it"
+            "one change is one stamp, however many streams distribute it"
         );
-        assert_eq!(host.scope_stamp("a", &entry_key("e1")), Some(1));
-        assert_eq!(host.scope_stamp("b", &entry_key("e1")), Some(1));
+        assert_eq!(host.stream_stamp("a", &entry_key("e1")), Some(1));
+        assert_eq!(host.stream_stamp("b", &entry_key("e1")), Some(1));
         assert_eq!(host.handler_calls(), 1);
         // Duplicate push returns the stored receipt without a handler call.
         let again = host
@@ -1255,8 +1265,8 @@ mod tests {
         assert_eq!(receipt.rejections.len(), 0);
         assert_eq!(receipt.records[0].stamp, 1);
         assert_eq!(host.stamp(&entry_key("e1")), 1);
-        assert_eq!(host.head("a"), 0, "no scope was told");
-        assert!(host.scope_records("a").is_empty());
+        assert_eq!(host.head("a"), 0, "no stream was told");
+        assert!(host.stream_records("a").is_empty());
     }
 
     #[test]
@@ -1272,7 +1282,7 @@ mod tests {
             Some(json!({"id":"e1","text":"v2","note":null})),
         );
         host.notify(&entry_key("e1"), &["b"]); // stamp 2, b:1; a's row still says 1
-        assert_eq!(host.scope_stamp("a", &entry_key("e1")), Some(1));
+        assert_eq!(host.stream_stamp("a", &entry_key("e1")), Some(1));
         let page = pull(&host, "a", 0);
         assert_eq!(
             record(&page.changes[0]).stamp,
@@ -1287,7 +1297,7 @@ mod tests {
             2,
             "republication never advances"
         );
-        assert_eq!(host.scope_stamp("c", &entry_key("e1")), Some(2));
+        assert_eq!(host.stream_stamp("c", &entry_key("e1")), Some(2));
         assert_eq!(host.head("c"), 1);
         // A record with no stamp at all gets one on first publication, once.
         host.ensure_publish(&entry_key("e2"), "c");
@@ -1454,29 +1464,28 @@ mod tests {
     }
     fn members(host: &MemHost, id: &str) -> Result<Value, String> {
         let identity_key = entry_key(id).encoded_identity().unwrap();
-        call(
+        let pairs = call(
             host,
-            json!({"op":"memberships","model":"Entry","identityKey":identity_key}),
-        )
+            json!({"op":"readTracking","records":[{"model":"Entry","identityKey":identity_key}],"pairs":[]}),
+        )?;
+        Ok(pairs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["stream"].clone())
+            .collect())
     }
-    /// One final member state of `id` in `scope`, as settlement writes it.
-    fn apply(
-        host: &MemHost,
-        scope: &str,
-        id: &str,
-        present: bool,
-        publish: bool,
-    ) -> Result<Value, String> {
+    /// One final tracking pair of `id` in `stream`, as fresh settlement writes it.
+    fn apply(host: &MemHost, stream: &str, id: &str, publish: bool) -> Result<Value, String> {
         let key = entry_key(id);
         call(
             host,
-            json!({"op":"applyScopeMembers","deltas":[{"scope":scope,"model":"Entry",
-                "identity":key.identity,"identityKey":key.encoded_identity().unwrap(),
-                "present":present,"tags":[],"publish":publish}]}),
+            json!({"op":"applyStreamMembers","deltas":[{"stream":stream,"model":"Entry",
+                "identity":key.identity,"identityKey":key.encoded_identity().unwrap(),"publish":publish}]}),
         )
     }
-    fn enroll(host: &MemHost, scope: &str, id: &str, present: bool) -> Result<Value, String> {
-        apply(host, scope, id, present, true)
+    fn track(host: &MemHost, stream: &str, id: &str) -> Result<Value, String> {
+        apply(host, stream, id, true)
     }
     fn ensure_stamp(host: &MemHost, id: &str) -> Result<Value, String> {
         let identity_key = entry_key(id).encoded_identity().unwrap();
@@ -1515,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_members_need_record_metadata_and_take_one_position_per_published_state() {
+    fn stream_members_need_record_metadata_and_take_one_position_per_published_state() {
         let host = MemHost::new();
         let cursor = |answer: Value| answer[0]["cursor"].clone();
         host.transaction(|| {
@@ -1525,16 +1534,10 @@ mod tests {
                 "absent record: nothing locked"
             );
             assert!(
-                enroll(&host, "a", "e1", true)
+                track(&host, "a", "e1")
                     .unwrap_err()
                     .contains("Record metadata missing"),
                 "a member needs its record row first"
-            );
-            assert!(
-                enroll(&host, "a", "e1", false)
-                    .unwrap_err()
-                    .contains("no member"),
-                "settlement never removes a non-member"
             );
             assert_eq!(
                 lock(&host, "e1")?,
@@ -1542,18 +1545,22 @@ mod tests {
                 "neither lock nor refusal creates the row"
             );
             assert_eq!(ensure_stamp(&host, "e1")?, json!(1));
-            assert_eq!(cursor(enroll(&host, "b", "e1", true)?), json!(1));
-            assert_eq!(cursor(enroll(&host, "a", "e1", true)?), json!(1));
+            assert_eq!(cursor(track(&host, "b", "e1")?), json!(1));
+            assert_eq!(cursor(track(&host, "a", "e1")?), json!(1));
             assert_eq!(
-                cursor(apply(&host, "a", "e1", true, false)?),
+                cursor(apply(&host, "a", "e1", false)?),
                 json!(1),
                 "an unpublished state keeps its position"
             );
             assert_eq!(members(&host, "e1")?, json!(["a", "b"]), "unique, sorted");
             assert_eq!(members(&host, "e2")?, json!([]));
-            let removed = enroll(&host, "b", "e1", false)?;
+            host.restore_historical_removal(&entry_key("e1"), "b")?;
+            let saved = call(
+                &host,
+                json!({"op":"scan","stream":"b","after":1,"limit":10}),
+            )?;
             assert_eq!(
-                (cursor(removed.clone()), removed[0]["kind"].clone()),
+                (saved[0]["cursor"].clone(), saved[0]["kind"].clone()),
                 (json!(2), json!("remove"))
             );
             assert_eq!(members(&host, "e1")?, json!(["a"]));
@@ -1584,14 +1591,14 @@ mod tests {
         let host = MemHost::new();
         host.transaction(|| {
             ensure_stamp(&host, "e1")?;
-            enroll(&host, "a", "e1", true)?;
+            track(&host, "a", "e1")?;
             Ok(())
         })
         .unwrap();
         host.transaction(|| {
             call(&host, json!({"op":"savepoint","ordinal":1}))?;
-            enroll(&host, "b", "e1", true)?;
-            enroll(&host, "a", "e1", false)?;
+            track(&host, "b", "e1")?;
+            host.restore_historical_removal(&entry_key("e1"), "a")?;
             assert_eq!(members(&host, "e1")?, json!(["b"]));
             call(&host, json!({"op":"rollback","ordinal":1}))?;
             call(&host, json!({"op":"release","ordinal":1}))?;
@@ -1601,7 +1608,7 @@ mod tests {
                 "the savepoint restored both edits"
             );
             call(&host, json!({"op":"savepoint","ordinal":2}))?;
-            enroll(&host, "c", "e1", true)?;
+            track(&host, "c", "e1")?;
             call(&host, json!({"op":"release","ordinal":2}))?;
             Ok(())
         })
@@ -1609,8 +1616,8 @@ mod tests {
         assert_eq!(host.stored_memberships(&entry_key("e1")), ["a", "c"]);
         assert!(
             host.transaction(|| {
-                enroll(&host, "a", "e1", false)?;
-                enroll(&host, "d", "e1", true)?;
+                host.restore_historical_removal(&entry_key("e1"), "a")?;
+                track(&host, "d", "e1")?;
                 Err::<(), _>("cancel".into())
             })
             .is_err()
@@ -1632,6 +1639,48 @@ mod tests {
     }
 
     #[test]
+    fn read_tracking_returns_global_holders_union_existing_explicit_pairs_once() {
+        let host = MemHost::new();
+        let entry = entry_key("e1");
+        let comment = schema::comment_key("c1");
+        let other = entry_key("other");
+        host.notify(&entry, &["a", "b"]);
+        host.notify(&comment, &["a", "c"]);
+        host.notify(&other, &["unrelated"]);
+        let pair = |stream: &str, key: &RecordKey| json!({"stream":stream,"model":key.model,"identityKey":key.encoded_identity().unwrap()});
+        host.transaction(||{
+            let answer=call(&host,json!({"op":"readTracking","records":[{"model":"Entry","identityKey":entry.encoded_identity().unwrap()}],"pairs":[pair("a",&entry),pair("c",&comment),pair("missing",&other),pair("c",&comment)]}))?;
+            let actual:BTreeSet<String>=answer.as_array().unwrap().iter().map(|p|serde_json::to_string(p).unwrap()).collect();
+            let expected:BTreeSet<String>=[pair("a",&entry),pair("b",&entry),pair("c",&comment)].iter().map(|p|serde_json::to_string(p).unwrap()).collect();
+            assert_eq!(actual,expected);assert_eq!(answer.as_array().unwrap().len(),3,"overlapping candidates deduplicate");Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn bulk_guards_keep_request_alignment_across_models_modes_and_absent_rows() {
+        let host = MemHost::new();
+        let entry = entry_key("existing");
+        let comment = schema::comment_key("new");
+        let missing = entry_key("missing");
+        host.notify(&entry, &[]);
+        host.notify(&entry, &[]);
+        let guard = |key: &RecordKey, mode: &str| json!({"model":key.model,"identityKey":key.encoded_identity().unwrap(),"mode":mode});
+        host.transaction(||{
+            assert_eq!(call(&host,json!({"op":"guardRecords","records":[guard(&comment,"advance"),guard(&entry,"ensure"),guard(&missing,"lock")]}))?,json!([1,2,null]));
+            assert_eq!(call(&host,json!({"op":"guardRecords","records":[guard(&comment,"lock"),guard(&entry,"advance"),guard(&missing,"ensure")]}))?,json!([1,3,1]));Ok(())
+        }).unwrap();
+        assert_eq!(host.stamp(&comment), 1);
+        assert_eq!(host.stamp(&entry), 3);
+        assert_eq!(host.stamp(&missing), 1);
+        assert!(host.transaction(||{
+            call(&host,json!({"op":"guardRecords","records":[guard(&comment,"advance"),guard(&entry,"advance")]}))?;
+            Err::<(),String>("cancel".into())
+        }).is_err());
+        assert_eq!(host.stamp(&comment), 1);
+        assert_eq!(host.stamp(&entry), 3, "bulk advances rolled back together");
+    }
+
+    #[test]
     fn load_is_membership_blind() {
         let host = MemHost::new();
         host.set_membership(&entry_key("e1"), &["b"]);
@@ -1639,7 +1688,7 @@ mod tests {
             &entry_key("e1"),
             Some(json!({"id":"e1","text":"in b","note":null})),
         );
-        // Published on a scope outside its routing (`notify` enrolls it there
+        // Published on a stream outside its routing (`notify` enrolls it there
         // first): the content is the same on every delivery path, membership
         // only decides where it is distributed.
         host.notify(&entry_key("e1"), &["a", "b"]);

@@ -75,7 +75,7 @@ const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
 const post = async (body: unknown) => {
-  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["scope-membership-v1"] }) });
+  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["stream-membership-v1"] }) });
   assert.equal(response.status, 200);
   return (await response.json()) as { loads: LoadResponseItem[] };
 };
@@ -223,7 +223,7 @@ test("a newer live update that arrives before an older Load page keeps the newer
     // The subscription's origin is its first acknowledged head: it is ready
     // before the writes it must receive live.
     client = await GeneratedClient.open({ path: reader.path, server: server(), onStore: hooks });
-    const subscription = await client.scopes.subscribe("items:live");
+    const subscription = await client.streams.subscribe("items:live");
     await wait(() => subscription.status.initialization === "ready", "the live subscription");
     writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
     await writer.mutations.call.addItem({ item: { id: "live-1", project: "live", title: "v1" } });
@@ -593,11 +593,11 @@ test("a failed refresh stays failed for once callers, never the earlier completi
 const subscribed = async (name: string, scope: string) => {
   const directory = await scratch(name);
   const client = await GeneratedClient.open({ path: directory.path, server: server(), onStore: hooks });
-  const subscription = await client.scopes.subscribe(scope);
+  const subscription = await client.streams.subscribe(scope);
   await wait(() => subscription.status.initialization === "ready", `${scope} initialized`);
-  return { client, cleanup: async () => { await client.close(); await directory.cleanup(); } };
+  return { client, subscription, cleanup: async () => { await client.close(); await directory.cleanup(); } };
 };
-const titleOf = async (client: GeneratedClient, id: string) => (await client.models.item.get({ id }))?.title;
+const titleOf = async (client: GeneratedClient, id: string) => (await client.models.item.get({ id }))?.title ?? null;
 /** Exchanges that could carry records other than a Scope's: Loads and Fetches. */
 const reads = () => proxy.exchanges.filter((exchange) => exchange.path === "/sync/loads" || exchange.path === "/sync/fetch").length;
 
@@ -637,89 +637,78 @@ test("a Load enrolls the records it returns; a later touch or Mutation reaches t
   }
 });
 
-test("native Load enrollment releases live content durably and a second Scope hold prevents eviction", async () => {
-  const directory = await scratch("load-release");
-  await fixture.seed("release", 2);
-  fixture.enrolling.add("release");
-  fixture.enrollmentTags.set("release", [["X"]]);
-  let client = await GeneratedClient.open({ path: directory.path, server: server() });
+test("a mixed Load tracks A/B; selected absence advances only A and global Mutation reaches both once", async () => {
+  await fixture.seed("tracking", 2);
+  await fixture.seedTags("tracking", ["one"]);
+  fixture.trackingStreams.set("tracking", ["items:tracking-A", "items:tracking-B"]);
+  const a = await subscribed("tracking-A", "items:tracking-A");
+  const b = await subscribed("tracking-B", "items:tracking-B");
   try {
-    const first = await client.scopes.subscribe("items:release");
-    const second = await client.scopes.subscribe("items:release-other");
-    await wait(() => first.status.initialization === "ready" && second.status.initialization === "ready", "both Scopes initialized");
-    await (await client.loads.projectItems({ project: "release" })).wait();
-    await fixture.membership("release-2", "items:release-other", true);
-    await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
-    const hooks = await seen(client);
-    await fixture.backend.transaction(async ({scope}) => {
-      scope("items:release").where({tags: {only: ["X"]}}).remove();
-      scope("items:release").tag("X").remove();
-    });
-    await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
-    await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Scope removals persisted before checking the second hold");
-    assert.ok(await client.models.item.get({ id: "release-2" }), "second Scope keeps content");
-    assert.deepEqual(await seen(client), hooks, "withdrawals do not invoke onStore");
-    await fixture.backend.transaction(async ({scope}) => scope("items:release-other").where({tags: {only: []}}).remove());
-    await wait(async () => (await client.models.item.get({ id: "release-2" })) === null, "last Scope release evicts B");
-    await client.close();
-    client = await GeneratedClient.open({ path: directory.path });
-    assert.equal(await client.models.item.get({ id: "release-1" }), null, "release persists across offline reopen");
-    assert.equal(await client.models.item.get({ id: "release-2" }), null, "last hold release persists offline");
+    await (await a.client.loads.projectItems({ project: "tracking" })).wait();
+    await wait(async () => (await b.client.models.item.get({ id: "tracking-1" })) !== null, "B receives tracked Item");
+    assert.equal((await fixture.tracked("items:tracking-A")).length, 3, "two Items and one Tag");
+    assert.deepEqual(await fixture.tracked("items:tracking-A"), await fixture.tracked("items:tracking-B"));
+    const headB = await fixture.head("items:tracking-B");
+    const [stamp] = await stampsOf(["tracking-1"]);
+    fixture.absent.add("tracking-1");
+    await fixture.invalidate(["tracking-1"], ["items:tracking-A"]);
+    await wait(async () => await a.client.models.item.get({ id: "tracking-1" }) === null, "A receives authoritative absence");
+    assert.equal(await fixture.head("items:tracking-B"), headB, "selected invalidation leaves B cursor unchanged");
+    assert.ok(await b.client.models.item.get({ id: "tracking-1" }), "B retains its prior projection");
+    const [newStamp] = await stampsOf(["tracking-1"]);
+    assert.equal(Number(newStamp.stamp), Number(stamp.stamp) + 1);
+    assert.equal((await fixture.tracked("items:tracking-A")).length, 3, "absence retains tracking");
+    fixture.absent.delete("tracking-1");
+    const headA = await fixture.head("items:tracking-A");
+    await a.client.mutations.call.renameItem({ item: { id: "tracking-1", title: "global" } });
+    await wait(async () => await titleOf(a.client, "tracking-1") === "global" && await titleOf(b.client, "tracking-1") === "global", "inferred global Mutation reaches both");
+    assert.equal(await fixture.head("items:tracking-A"), headA + 1);
+    assert.equal(await fixture.head("items:tracking-B"), headB + 1);
+    fixture.loaderErrors.add("tracking-1");
+    await fixture.invalidate(["tracking-1"]);
+    await fixture.create("tracking-marker", "tracking", "items:tracking-A");
+    await wait(async () => await titleOf(a.client, "tracking-marker") !== null, "page containing the Loader error processed");
+    assert.equal(await titleOf(a.client, "tracking-1"), "global", "Loader error retains local content");
+    fixture.loaderErrors.delete("tracking-1");
+    await a.subscription.unsubscribe();
+    assert.equal(await titleOf(a.client, "tracking-1"), "global", "unsubscribe keeps cache");
+    assert.equal((await fixture.tracked("items:tracking-A")).length, 4, "unsubscribe keeps server tracking");
   } finally {
-    fixture.enrolling.delete("release");
-    fixture.enrollmentTags.delete("release");
-    await client.close();
-    await directory.cleanup();
+    fixture.absent.delete("tracking-1"); fixture.loaderErrors.delete("tracking-1");
+    fixture.trackingStreams.delete("tracking");
+    await a.cleanup(); await b.cleanup();
   }
 });
 
-test("a delayed enrolled Load response and its durable replay cannot restore or re-enroll a released member", async () => {
+test("a held Load page and saved replay cannot replace newer selected absence or repeat declarations", async () => {
   await fixture.seed("released-page", 2);
   fixture.enrolling.add("released-page");
-  fixture.enrollmentTags.set("released-page", [["X"], ["Y"]]);
   const reader = await subscribed("released-page", "items:released-page");
   const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "released-page" && item.continuation === null));
   try {
-    const { client } = reader;
-    const load = await client.loads.projectItems({ project: "released-page" });
+    const load = await reader.client.loads.projectItems({ project: "released-page" });
     const exchange = await held.arrived;
-    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Scope enrollment delivered while the Load response was held");
-    await fixture.backend.transaction(async ({scope}) => {
-      scope("items:released-page").where({tags: {only: ["X", "Y"]}}).remove();
-      scope("items:released-page").tag("X").remove();
-    });
-    await wait(async () => (await client.models.item.get({ id: "released-page-1" })) === null, "newer live removal committed before the old claim");
-    const runs = fixture.handled.length;
+    await wait(async () => await titleOf(reader.client, "released-page-1") !== null, "tracking delivered while page held");
+    fixture.absent.add("released-page-1");
+    await fixture.invalidate(["released-page-1"], ["items:released-page"]);
+    await wait(async () => await reader.client.models.item.get({ id: "released-page-1" }) === null, "newer absence before stale page");
+    const [authority] = await reader.client.readSql("SELECT stamp,base_state FROM axton_record WHERE model='Item' AND identity=?", [JSON.stringify({ id: 'released-page-1' })]);
+    const old = (JSON.parse(exchange.response!).loads as LoadResponseItem[])[0]!.records.find(record => record.identity.id === "released-page-1")!;
+    assert.equal(authority!.base_state, "absent");
+    assert.ok(Number(authority!.stamp) > old.stamp, "newer absence is established before stale response release");
+    held.release(); await load.wait();
+    assert.equal(await reader.client.models.item.get({ id: "released-page-1" }), null);
+    const runs = fixture.handled.length, loaders = fixture.loaderCalls;
     const head = await fixture.head("items:released-page");
-    held.release();
-    await load.wait();
-    assert.equal(await client.models.item.get({ id: "released-page-1" }), null, "older enrolled page cannot resurrect released content");
-    // Replay the same committed first-page HTTP request through production admission.
     const replay = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer alice" }, body: exchange.body });
     assert.equal(replay.status, 200);
-    assert.deepEqual(await replay.json(), JSON.parse(exchange.response!), "saved reply retains its original claims");
-    assert.equal(fixture.handled.length, runs + 1, "only the traversal's final empty page ran; durable replay ran no handler");
-    assert.equal(await fixture.head("items:released-page"), head, "replayed page did not re-enroll or publish");
-    const members = await fixture.pool.query("SELECT 1 FROM axton_scope_member AS m JOIN axton_record AS r ON r.id=m.record_id WHERE m.scope=$1 AND r.model='Item' AND r.identity_key=$2", ["items:released-page", JSON.stringify({ id: "released-page-1" })]);
-    assert.equal(members.rowCount, 0, "server membership remains released");
-    assert.deepEqual(await fixture.taggedMembers("items:released-page"), [], "saved replay did not restore labels");
-    const fresh = await client.loads.projectItems({project: "released-page"});
-    assert.notEqual(fresh.id, load.id);
-    await fresh.wait();
-    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "fresh traversal re-enrolls the released row");
-    const labeled = await fixture.pool.query("SELECT r.identity_key,t.name FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id JOIN axton_scope_member_tag mt ON mt.member_id=m.id JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 ORDER BY r.identity_key,t.name", ["items:released-page"]);
-    assert.deepEqual(labeled.rows, [
-      {identity_key: JSON.stringify({id: "released-page-1"}), name: "X"},
-      {identity_key: JSON.stringify({id: "released-page-1"}), name: "Y"},
-      {identity_key: JSON.stringify({id: "released-page-2"}), name: "X"},
-      {identity_key: JSON.stringify({id: "released-page-2"}), name: "Y"},
-    ]);
-    await fixture.retitle("released-page-1", "fresh touch");
-    await wait(async () => (await titleOf(client, "released-page-1")) === "fresh touch", "fresh enrollment receives later touches");
+    assert.deepEqual(await replay.json(), JSON.parse(exchange.response!));
+    assert.equal(fixture.handled.length, runs, "saved replay runs no handler");
+    assert.equal(fixture.loaderCalls, loaders, "saved replay runs no Loader");
+    assert.equal(await fixture.head("items:released-page"), head, "saved replay declares nothing");
+    assert.equal((await fixture.tracked("items:released-page")).length, 2, "absence keeps tracking");
   } finally {
-    held.release();
-    fixture.enrolling.delete("released-page");
-    fixture.enrollmentTags.delete("released-page");
+    held.release(); fixture.absent.delete("released-page-1"); fixture.enrolling.delete("released-page");
     await reader.cleanup();
   }
 });
@@ -890,63 +879,66 @@ test("the generated Dart client receives a later change to a record its Load enr
 });
 
 
-test("the generated Dart client releases Load enrollment and reopens offline with a second hold retained", async () => {
-  const { path, cleanup } = await scratch("dart-release");
+test("generated Dart tracking preserves cache/server interest after unsubscribe and selected absence offline", async () => {
+  const directory = await scratch("dart-release");
   await fixture.seed("dart-release", 2);
-  fixture.enrolling.add("dart-release");
+  await fixture.seedTags("dart-release", ["mixed"]);
+  fixture.trackingStreams.set("dart-release", ["items:dart-release", "items:dart-release-other"]);
   const root = join(here, "../..");
-  const child = spawn("dart", ["run", "client.dart", proxy.url, path,
-    join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "remove"], { cwd: here });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const child = spawn("dart", ["run", "client.dart", proxy.url, directory.path,
+    join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "tracking"], { cwd: here });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", chunk => { stdout += String(chunk); });
+  child.stderr.on("data", chunk => { stderr += String(chunk); });
   const exited = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
   try {
-    await wait(() => stdout.includes("Dart release: loaded"), "Dart Load stored its enrolled rows");
-    await fixture.membership("dart-release-2", "items:dart-release-other", true);
-    await wait(() => stdout.includes("Dart release: second held"), "Dart persisted the second hold");
-    await fixture.membership("dart-release-1", "items:dart-release", false);
-    await fixture.membership("dart-release-2", "items:dart-release", false);
-    await wait(() => stdout.includes("Dart Load removal: passed"), `Dart offline removal: ${stderr}`);
+    await wait(() => stdout.includes("Dart tracking: loaded"), `Dart mixed Load tracked A/B: ${stderr}`);
+    const b = await fixture.head("items:dart-release-other");
+    fixture.absent.add("dart-release-1");
+    await fixture.invalidate(["dart-release-1"], ["items:dart-release"]);
+    await wait(() => stdout.includes("Dart tracking: absent"), `Dart selected absence: ${stderr}`);
+    assert.equal(await fixture.head("items:dart-release-other"), b);
+    fixture.absent.delete("dart-release-1");
+    const writer = await GeneratedClient.open({ path: join(directory.directory, "writer.sqlite"), server: server() });
+    try { await writer.mutations.call.renameItem({ item: { id: "dart-release-1", title: "global" } }); } finally { await writer.close(); }
+    await wait(() => stdout.includes("Dart tracking: passed"), `Dart global/offline assertions: ${stderr}`);
     assert.equal(await exited, 0, stderr);
+    assert.equal((await fixture.tracked("items:dart-release")).length, 3);
   } finally {
-    child.kill();
-    fixture.enrolling.delete("dart-release");
-    await cleanup();
+    child.kill(); fixture.absent.delete("dart-release-1"); fixture.trackingStreams.delete("dart-release");
+    await directory.cleanup();
   }
 });
 
 
-test("native Load validates each tagged add separately, unions 65 labels once, and replays its saved page", async () => {
-  const tags = Array.from({ length: 65 }, (_, i) => `t${String(i).padStart(2, "0")}`);
-  await fixture.seed("tag-union", 1);
-  fixture.enrollmentTags.set("tag-union", [tags.slice(0, 64), [tags[0]!, tags[64]!]]);
-  const request: LoadRequestItem = { loadId: "01890f47-1234-7123-8123-00000000f001", callId: "01890f47-1234-7123-8123-00000000f002", name: "ProjectItems", version: 1, args: { project: "tag-union" }, continuation: null, models: { Item: 1, Tag: 1 } };
-  const result = (await post({ loads: [request] })).loads;
-  assert.equal(result[0]!.outcome.status, "succeeded", JSON.stringify(result));
-  const members = await fixture.taggedMembers("items:tag-union");
-  assert.equal(members.length, 1);
-  assert.deepEqual(members[0]!.tags, tags);
-  assert.equal(await fixture.head("items:tag-union"), 1, "one pair takes one position");
-  const runs = fixture.handled.length;
-  assert.deepEqual((await post({ loads: [request] })).loads, result);
-  assert.equal(fixture.handled.length, runs);
-  assert.deepEqual(await fixture.taggedMembers("items:tag-union"), members);
-  assert.equal(await fixture.head("items:tag-union"), 1);
-
-  await fixture.seed("tag-overflow", 1);
-  fixture.enrollmentTags.set("tag-overflow", [tags]);
-  const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004", args: { project: "tag-overflow" } };
-  const refused = (await post({ loads: [invalid] })).loads;
-  assert.equal(refused[0]!.outcome.status, "failed");
-  if (refused[0]!.outcome.status === "failed") {
-    assert.equal(refused[0]!.outcome.error.code, "handler.failed", "the collector refuses inside the handler");
-    assert.equal(refused[0]!.outcome.error.message, "handler.failed");
-  }
-  assert.deepEqual(await fixture.taggedMembers("items:tag-overflow"), []);
-  assert.equal(await fixture.head("items:tag-overflow"), 0);
-  assert.deepEqual((await post({ loads: [invalid] })).loads, refused);
-  fixture.enrollmentTags.delete("tag-union");
-  fixture.enrollmentTags.delete("tag-overflow");
+test("native Load Cartesian tracking counts distinct pairs, preserves the 1000 limit, and saves failure replay", async () => {
+  await fixture.seed("tracking-limit", 1);
+  const names = Array.from({ length: 1000 }, (_, i) => `limit:${i}`);
+  fixture.trackingStreams.set("tracking-limit", [...names, names[0]!]);
+  const request: LoadRequestItem = { loadId: "01890f47-1234-7123-8123-00000000f001", callId: "01890f47-1234-7123-8123-00000000f002", name: "ProjectItems", version: 1, args: { project: "tracking-limit" }, continuation: null, models: { Item: 1, Tag: 1 } };
+  try {
+    const result = (await post({ loads: [request] })).loads;
+    assert.equal(result[0]!.outcome.status, "succeeded", JSON.stringify(result));
+    assert.equal((await fixture.tracked(names[0]!)).length, 1);
+    assert.equal(await fixture.head(names[0]!), 1, "duplicate stream names produce one pair/position");
+    const runs = fixture.handled.length, loaders = fixture.loaderCalls;
+    assert.deepEqual((await post({ loads: [request] })).loads, result);
+    assert.equal(fixture.handled.length, runs); assert.equal(fixture.loaderCalls, loaders);
+    const freshNames = Array.from({ length: 1001 }, (_, i) => `limit:fresh:${i}`);
+    const freshState = async () => ({
+      heads: (await fixture.pool.query("SELECT stream,head::text AS head FROM axton_stream WHERE stream = ANY($1) ORDER BY stream", [freshNames])).rows,
+      pairs: (await fixture.pool.query("SELECT m.stream,r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream = ANY($1) ORDER BY m.stream,r.model,r.identity_key", [freshNames])).rows,
+    });
+    assert.deepEqual(await freshState(), { heads: [], pairs: [] }, "overflow names are disjoint and untracked before the request");
+    fixture.trackingStreams.set("tracking-limit", freshNames);
+    const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004" };
+    const failed = (await post({ loads: [invalid] })).loads;
+    assert.equal(failed[0]!.outcome.status, "failed");
+    assert.deepEqual(await freshState(), { heads: [], pairs: [] }, "failed Cartesian declaration commits no fresh prefix, tracking or heads");
+    const failedRuns = fixture.handled.length, failedLoaders = fixture.loaderCalls;
+    assert.deepEqual((await post({ loads: [invalid] })).loads, failed);
+    assert.equal(fixture.handled.length, failedRuns, "failure replay runs no handler");
+    assert.equal(fixture.loaderCalls, failedLoaders, "failure replay runs no Loader");
+    assert.deepEqual(await freshState(), { heads: [], pairs: [] }, "failure replay commits no fresh tracking or heads");
+  } finally { fixture.trackingStreams.delete("tracking-limit"); }
 });

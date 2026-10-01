@@ -7,13 +7,13 @@ import 'package:test/test.dart';
 
 final subscribeFrame = jsonEncode({
   'type': 'subscribe',
-  'scopes': ['scope'],
+  'streams': ['scope'],
 });
 
 /// The acknowledgement: every subscribed scope at `head`.
 String ack(Map sub, [int head = 0]) => jsonEncode({
   'type': 'subscribed',
-  'cursors': {for (final scope in sub['scopes'] as List) scope: head},
+  'cursors': {for (final scope in sub['streams'] as List) scope: head},
 });
 Map<String, dynamic> range(int from, int to, [int? head]) => {
   'from': from,
@@ -139,7 +139,7 @@ void main() {
       try {
         expect(await handshake.future.timeout(const Duration(seconds: 2)), {
           'type': 'subscribe',
-          'scopes': ['scope'],
+          'streams': ['scope'],
         });
         await second.future.timeout(const Duration(seconds: 2));
         expect(
@@ -330,7 +330,7 @@ void main() {
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
         expect(subscribes, hasLength(1));
-        expect((await client.syncState())['scopes'], isEmpty);
+        expect((await client.syncState())['streams'], isEmpty);
         expect(errors, isEmpty);
       } finally {
         if (!held.isCompleted) held.complete();
@@ -459,7 +459,7 @@ void main() {
         'changes': [
           {
             'kind': 'upsert',
-            'scope': 'scope',
+            'stream': 'scope',
             'cursor': cursor + 1,
             'model': 'Entry',
             'identity': {'id': 'live'},
@@ -477,7 +477,7 @@ void main() {
             r.response.write(
               jsonEncode({
                 'mode': 'bootstrap',
-                'scope': pull['scope'],
+                'stream': pull['stream'],
                 'from': pull['after'],
                 'to': pull['until'],
                 'until': pull['until'],
@@ -603,7 +603,7 @@ void main() {
             'changes': [
               {
                 'kind': 'remove',
-                'scope': 'scope',
+                'stream': 'scope',
                 'cursor': 12,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
@@ -666,7 +666,7 @@ void main() {
           for (var cursor = from + 1; cursor <= to; cursor++)
             {
               'kind': 'upsert',
-              'scope': 'scope',
+              'stream': 'scope',
               'cursor': cursor,
               'model': 'Entry',
               'identity': {'id': 'e$cursor'},
@@ -696,7 +696,7 @@ void main() {
             request.response.write(
               jsonEncode({
                 'mode': 'bootstrap',
-                'scope': body['scope'],
+                'stream': body['stream'],
                 'from': from,
                 'to': to,
                 'until': bound,
@@ -992,7 +992,7 @@ void moreTests() {
               'changes': [
                 {
                   'kind': 'upsert',
-                  'scope': 'scope',
+                  'stream': 'scope',
                   'cursor': from + 1,
                   'model': 'Entry',
                   'identity': {'id': 'live'},
@@ -1125,7 +1125,7 @@ void moreTests() {
         'changes': [
           {
             'kind': 'upsert',
-            'scope': 'scope',
+            'stream': 'scope',
             'cursor': to,
             'model': 'Entry',
             'identity': {'id': 'live'},
@@ -1470,9 +1470,9 @@ void moreTests() {
         await until(() => subscribes.length == 2, 'second subscribe');
         expect(subscribes[1], {
           'type': 'subscribe',
-          'scopes': ['scope'],
+          'streams': ['scope'],
           'models': {'Entry': 1},
-          'capabilities': ['scope-membership-v1'],
+          'capabilities': ['stream-membership-v1'],
         });
         sockets[1].add(
           jsonEncode({
@@ -1480,7 +1480,7 @@ void moreTests() {
             'changes': [
               {
                 'kind': 'upsert',
-                'scope': 'scope',
+                'stream': 'scope',
                 'cursor': 1,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
@@ -1716,7 +1716,7 @@ void moreTests() {
         int cursor,
       ) => {
         'kind': 'upsert',
-        'scope': 'scope',
+        'stream': 'scope',
         'cursor': cursor,
         'model': 'Entry',
         'identity': {'id': id},
@@ -1755,7 +1755,7 @@ void moreTests() {
             'changes': [
               {
                 'kind': 'upsert',
-                'scope': 'scope',
+                'stream': 'scope',
                 'cursor': 2,
                 'model': 'Entry',
                 'identity': {'id': 'live'},

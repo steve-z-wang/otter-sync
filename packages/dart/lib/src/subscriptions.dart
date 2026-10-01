@@ -20,13 +20,13 @@ enum SubscriptionInitialization { pending, ready }
 /// delivers normally, not that all history is loaded.
 enum SubscriptionConnection { offline, connecting, catchingUp, live, stopped }
 
-/// What the durable load of a Scope's published history is doing
+/// What the durable load of a Stream's published history is doing
 /// ([#151](https://github.com/zanminwang/axton/issues/151)).
 /// `waitingForInitialization` is a requested run with no starting boundary to
 /// bound its interval yet, `catchingUp` a loaded interval whose completion
 /// barrier ordinary delivery has not reached, and `complete` says the initial
 /// publication coverage was processed - not that a snapshot was taken, nor that
-/// the Scope is currently fresh.
+/// the Stream is currently fresh.
 enum BootstrapPhase {
   notRequested,
   waitingForInitialization,
@@ -72,7 +72,7 @@ class SubscriptionStatus {
   final SubscriptionInitialization initialization;
   final SubscriptionConnection connection;
 
-  /// The durable load of this Scope's published history, as it was last
+  /// The durable load of this Stream's published history, as it was last
   /// committed.
   final BootstrapStatus bootstrap;
   const SubscriptionStatus({
@@ -174,48 +174,48 @@ class BootstrapFailedException implements Exception {
 /// call into a success ([#151](https://github.com/zanminwang/axton/issues/151)).
 class BootstrapSupersededException implements Exception {
   final String code = 'bootstrap.superseded';
-  final String scope;
-  const BootstrapSupersededException(this.scope);
+  final String stream;
+  const BootstrapSupersededException(this.stream);
   @override
   String toString() =>
-      'bootstrap.superseded: the bootstrap run of $scope this call waited for '
+      'bootstrap.superseded: the bootstrap run of $stream this call waited for '
       'was superseded';
 }
 
-/// One stored subscription, as the native Scope commands answer it. A boundary
+/// One stored subscription, as the native Stream commands answer it. A boundary
 /// that is not committed yet is `null`; zero is a delivery position.
 class SubscriptionState {
-  final String scope;
+  final String stream;
   final int subscriptionId;
   final int? startingCursor;
   final int? cursor;
   const SubscriptionState({
-    required this.scope,
+    required this.stream,
     required this.subscriptionId,
     this.startingCursor,
     this.cursor,
   });
   factory SubscriptionState.fromRecord(Map<String, dynamic> record) =>
       SubscriptionState(
-        scope: record['scope'] as String,
+        stream: record['stream'] as String,
         subscriptionId: record['subscriptionId'] as int,
         startingCursor: record['startingCursor'] as int?,
         cursor: record['cursor'] as int?,
       );
 }
 
-/// The public error of a failed `scopeBootstrap` task. The runtime names the
+/// The public error of a failed `streamBootstrap` task. The runtime names the
 /// reason in `details.code`; a task still queued when the runtime closed has
 /// none and fails with `client_closed`; anything else is the caller's to see
 /// unchanged.
-Object _bootstrapError(Object error, String scope) {
+Object _bootstrapError(Object error, String stream) {
   if (error is TaskFailure) {
     final code = error.details['code'];
     if (code is String) {
       return switch (code) {
         'subscription.closed' => const SubscriptionClosedException(),
         'client_closed' => const ClientClosedException(),
-        'bootstrap.superseded' => BootstrapSupersededException(scope),
+        'bootstrap.superseded' => BootstrapSupersededException(stream),
         _ => BootstrapFailedException(
           code,
           error.details['message'] as String? ?? error.message,
@@ -232,13 +232,13 @@ Object _bootstrapError(Object error, String scope) {
 /// One durable subscription as the application holds it. It is a handle, not
 /// the owner of a socket or of the subscription's lifetime.
 class Subscription {
-  final String scope;
+  final String stream;
   final int subscriptionId;
   final String _observerId;
   final Subscriptions _registry;
 
   /// The runtime's last snapshot. The first one is published in the batch of
-  /// the `scopeSubscribe` completion that created this handle, so it replaces
+  /// the `streamSubscribe` completion that created this handle, so it replaces
   /// this placeholder before the handle is returned.
   SubscriptionStatus _snapshot = const SubscriptionStatus(
     active: true,
@@ -254,7 +254,7 @@ class Subscription {
   bool _stopped = false;
   final _sinks = <MultiStreamController<SubscriptionStatus>>[];
   Subscription._(SubscriptionState state, this._observerId, this._registry)
-    : scope = state.scope,
+    : stream = state.stream,
       subscriptionId = state.subscriptionId;
   SubscriptionStatus get status => _snapshot;
 
@@ -287,7 +287,7 @@ class Subscription {
     _sinks.clear();
   }
 
-  /// Prepare this Scope's published history. The registration is submitted
+  /// Prepare this Stream's published history. The registration is submitted
   /// when the call is made, whether or not the returned Future is awaited; the
   /// runtime completes it only after the completion transaction commits. Calls
   /// during one active run share it, a call after a valid completion completes
@@ -299,14 +299,14 @@ class Subscription {
     if (_closed) return Future.error(const SubscriptionClosedException());
     return _registry._host
         .task({
-          'kind': 'scopeBootstrap',
-          'scope': scope,
+          'kind': 'streamBootstrap',
+          'stream': stream,
           'subscriptionId': subscriptionId,
         })
         .then<void>(
           (_) {},
           onError: (Object error, StackTrace stack) =>
-              Error.throwWithStackTrace(_bootstrapError(error, scope), stack),
+              Error.throwWithStackTrace(_bootstrapError(error, stream), stack),
         );
   }
 
@@ -337,8 +337,8 @@ class Subscription {
     if (_stopped) throw const SubscriptionClosedException();
     if (_closed) return;
     await _registry._host.task({
-      'kind': 'scopeUnsubscribe',
-      'scope': scope,
+      'kind': 'streamUnsubscribe',
+      'stream': stream,
       'subscriptionId': subscriptionId,
     });
   }
@@ -360,11 +360,11 @@ class Subscriptions {
   /// dispatched, so the runtime's first snapshot, which follows it in the same
   /// batch, is already this handle's; concurrent calls read the same identity
   /// and share one cached handle.
-  Future<Subscription> subscribe(String scope) async {
+  Future<Subscription> subscribe(String stream) async {
     late Subscription handle;
     await _host.task({
-      'kind': 'scopeSubscribe',
-      'scope': scope,
+      'kind': 'streamSubscribe',
+      'stream': stream,
     }, onValue: (value) => handle = _claim(value as Map<String, dynamic>));
     return handle;
   }
@@ -389,14 +389,10 @@ class Subscriptions {
     _host.unlisten(handle._observerId);
   }
 
-  /// Remove whatever registration a Scope name has. The runtime ends the handle it had
+  /// Remove whatever registration a Stream name has. The runtime ends the handle it had
   /// before the removal completes.
-  Future<void> unsubscribeScope(String scope) async {
-    await _host.task({
-      'kind': 'scope',
-      'scope': scope,
-      'subscribed': false,
-    });
+  Future<void> unsubscribeStream(String stream) async {
+    await _host.task({'kind': 'stream', 'stream': stream, 'subscribed': false});
   }
 
   /// The client began closing: the runtime's terminal snapshots from here on

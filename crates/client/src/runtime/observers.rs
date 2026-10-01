@@ -11,20 +11,20 @@
 //! them.
 //!
 //! **Subscription status.** One observer per persistent subscription
-//! identity, registered by `scopeSubscribe`. Its `connection` is projected
+//! identity, registered by `streamSubscribe`. Its `connection` is projected
 //! from the runtime-owned connection: no connection, or a paused one, is
 //! `offline`; no open session is `connecting`; a catch-up request out is
-//! `catching-up`; a session whose handshake covered the Scope is `live`,
+//! `catching-up`; a session whose handshake covered the Stream is `live`,
 //! otherwise `connecting`. The handshake's coverage belongs to the session
 //! that acknowledged it and to the registration it covered: a removal forgets
-//! its Scope, so a registration created after it is `connecting` until a
+//! its Stream, so a registration created after it is `connecting` until a
 //! session of its own acknowledges it. `initialization` is `ready` once the
 //! stored starting boundary exists, re-read whenever the Downlink worker
-//! commits for the Scope. `bootstrap` is the last committed run of the
+//! commits for the Stream. `bootstrap` is the last committed run of the
 //! identity, which never moves backwards within a run; a `requested` run with
 //! no starting boundary is `waiting-for-initialization`.
 //!
-//! **Bootstrap waiters.** `scopeBootstrap` registers (or explicitly retries)
+//! **Bootstrap waiters.** `streamBootstrap` registers (or explicitly retries)
 //! the durable load and parks its task on the run the registration answered
 //! with. The task completes with `null` when a committed transition of that
 //! run is `complete`, fails with the run's stored `{code, message}` when it is
@@ -58,16 +58,16 @@ pub(super) struct Observers {
     registrations: BTreeMap<u64, Registration>,
     /// Watches by the number behind their observer id: registration order.
     watches: BTreeMap<u64, Watch>,
-    /// The Scopes the handshake of the session of this epoch covered.
+    /// The Streams the handshake of the session of this epoch covered.
     acknowledged: Option<(u64, BTreeSet<String>)>,
     /// Watched read-only SQL, re-run by the tables it reads.
     pub(super) sql: super::sql_watches::SqlWatches,
 }
 
 struct Registration {
-    scope: String,
-    /// The observer publishing its status, once `scopeSubscribe` named it; a
-    /// registration only waited on by `scopeBootstrap` publishes nothing.
+    stream: String,
+    /// The observer publishing its status, once `streamSubscribe` named it; a
+    /// registration only waited on by `streamBootstrap` publishes nothing.
     observer: Option<String>,
     /// A durable starting boundary exists.
     ready: bool,
@@ -78,7 +78,7 @@ struct Registration {
     published: Option<Value>,
 }
 
-/// One parked `scopeBootstrap` task, attached to the run it registered.
+/// One parked `streamBootstrap` task, attached to the run it registered.
 struct Waiter {
     run: u64,
     request_id: String,
@@ -104,9 +104,9 @@ fn rank(phase: BootstrapPhase) -> u8 {
 }
 
 impl Registration {
-    fn new(scope: String) -> Self {
+    fn new(stream: String) -> Self {
         Self {
-            scope,
+            stream,
             observer: None,
             ready: false,
             run: None,
@@ -143,20 +143,20 @@ impl Registration {
         })
     }
     fn snapshot(&self, id: u64, status: Value) -> Value {
-        json!({"kind": "subscription", "scope": self.scope, "subscriptionId": id, "status": status})
+        json!({"kind": "subscription", "stream": self.stream, "subscriptionId": id, "status": status})
     }
 }
 
 impl<S: ClientStore + 'static> ClientRuntime<S> {
     // --- Subscriptions -----------------------------------------------------
 
-    /// `scopeSubscribe {scope}`: register durable intent, and observe the
+    /// `streamSubscribe {stream}`: register durable intent, and observe the
     /// identity the commit answered with. Repeated calls for one identity
     /// answer the same observer.
-    pub(super) fn subscribe_scope(&mut self, scope: &str) -> std::result::Result<Value, String> {
+    pub(super) fn subscribe_stream(&mut self, stream: &str) -> std::result::Result<Value, String> {
         let state = self
             .client
-            .ensure_subscription(scope)
+            .ensure_subscription(stream)
             .map_err(|e| e.to_string())?;
         let id = state.subscription_id;
         let known = self.observers.registrations.contains_key(&id);
@@ -173,13 +173,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .observers
             .registrations
             .entry(id)
-            .or_insert_with(|| Registration::new(state.scope.clone()));
+            .or_insert_with(|| Registration::new(state.stream.clone()));
         registration.observer = Some(observer.clone());
         registration.ready = state.starting_cursor.is_some();
         if !known {
             // A load of this identity may already be running or finished from
             // before this runtime: its status needs no new transition.
-            match self.client.bootstrap_state(&state.scope, id) {
+            match self.client.bootstrap_state(&state.stream, id) {
                 Ok(run) => self.observe_run(run),
                 Err(e) => self.error(e.to_string()),
             }
@@ -187,10 +187,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         Ok(json!({"state": state, "observerId": observer}))
     }
 
-    /// `scopeBootstrap {scope, subscriptionId}`: register the load, or
+    /// `streamBootstrap {stream, subscriptionId}`: register the load, or
     /// explicitly retry a failed one, and wait for the run it answered with.
     /// `None` while the task waits; a completed run answers at once.
-    pub(super) fn bootstrap_scope(
+    pub(super) fn bootstrap_stream(
         &mut self,
         request_id: &str,
         command: &Command,
@@ -203,11 +203,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Ok(state) => state,
             Err(e) => return Some(Err(e.to_string())),
         };
-        let (scope, id, run) = (state.scope.clone(), state.subscription_id, state.run);
+        let (stream, id, run) = (state.stream.clone(), state.subscription_id, state.run);
         self.observers
             .registrations
             .entry(id)
-            .or_insert_with(|| Registration::new(scope.clone()));
+            .or_insert_with(|| Registration::new(stream.clone()));
         if state.state == BootstrapPhase::Complete {
             self.observe_run(state);
             return Some(Ok(Value::Null));
@@ -221,7 +221,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.observe_run(state);
         // Whatever committed for this identity since the registration's own
         // answer settles the waiter now rather than never.
-        match self.client.bootstrap_state(&scope, id) {
+        match self.client.bootstrap_state(&stream, id) {
             Ok(stored) => self.observe_run(stored),
             Err(e) => self.error(e.to_string()),
         }
@@ -236,7 +236,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         else {
             return;
         };
-        if registration.scope != state.scope {
+        if registration.stream != state.stream {
             return;
         }
         let outcome = match state.state {
@@ -247,7 +247,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Some(error) => (error.code.clone(), error.message.clone()),
                 None => (
                     "bootstrap.failed".to_string(),
-                    format!("the bootstrap of {} failed", state.scope),
+                    format!("the bootstrap of {} failed", state.stream),
                 ),
             })),
             _ => None,
@@ -288,25 +288,25 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
 
-    /// The Downlink worker committed for these Scopes: re-read their stored
+    /// The Downlink worker committed for these Streams: re-read their stored
     /// starting boundary.
-    pub(super) fn scopes_changed(&mut self, scopes: &[String]) {
-        for scope in scopes {
+    pub(super) fn streams_changed(&mut self, streams: &[String]) {
+        for stream in streams {
             if !self
                 .observers
                 .registrations
                 .values()
-                .any(|r| &r.scope == scope)
+                .any(|r| &r.stream == stream)
             {
                 continue;
             }
-            match self.client.subscription_state(scope) {
+            match self.client.subscription_state(stream) {
                 Ok(Some(state)) => {
                     if let Some(registration) = self
                         .observers
                         .registrations
                         .get_mut(&state.subscription_id)
-                        .filter(|r| r.scope == state.scope)
+                        .filter(|r| r.stream == state.stream)
                     {
                         registration.ready = state.starting_cursor.is_some();
                     }
@@ -317,8 +317,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
 
-    /// The handshake of the open session covered these Scopes.
-    pub(super) fn acknowledged(&mut self, scopes: Vec<String>) {
+    /// The handshake of the open session covered these Streams.
+    pub(super) fn acknowledged(&mut self, streams: Vec<String>) {
         let Some(epoch) = self.connection.as_ref().and_then(|c| c.session()) else {
             return;
         };
@@ -328,50 +328,50 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             *acknowledged = Some((epoch, BTreeSet::new()));
         }
         if let Some((_, covered)) = acknowledged {
-            covered.extend(scopes);
+            covered.extend(streams);
         }
     }
 
     /// An ordinary command committed a removal: the identities it removed are
-    /// closed and their Scopes' acknowledgement is forgotten.
+    /// closed and their Streams' acknowledgement is forgotten.
     pub(super) fn removed(&mut self, command: &Command, value: &Value) {
         match command {
-            Command::ScopeUnsubscribe {
-                scope,
+            Command::StreamUnsubscribe {
+                stream,
                 subscription_id,
             } => {
                 self.close_registration(*subscription_id, crate::SUBSCRIPTION_CLOSED);
-                // Nothing went: another registration is this Scope's current
+                // Nothing went: another registration is this Stream's current
                 // one, and the acknowledgement it may hold is not this one's.
                 if value["removed"] == true {
-                    self.forget(scope);
+                    self.forget(stream);
                 }
             }
-            Command::Scope {
-                scope,
+            Command::Stream {
+                stream,
                 subscribed: false,
             } => {
                 let ids: Vec<u64> = self
                     .observers
                     .registrations
                     .iter()
-                    .filter(|(_, r)| &r.scope == scope)
+                    .filter(|(_, r)| &r.stream == stream)
                     .map(|(id, _)| *id)
                     .collect();
                 for id in ids {
                     self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
                 }
-                self.forget(scope);
+                self.forget(stream);
             }
             _ => {}
         }
     }
-    fn forget(&mut self, scope: &str) {
+    fn forget(&mut self, stream: &str) {
         if let Some((_, covered)) = &mut self.observers.acknowledged {
-            covered.remove(scope);
+            covered.remove(stream);
         }
     }
-    /// A callback may edit Scopes through transaction commands. Reconcile
+    /// A callback may edit Streams through transaction commands. Reconcile
     /// observer ownership after its commit from durable subscription identity,
     /// including remove-and-recreate under the same name.
     pub(super) fn reconcile_registrations(&mut self) {
@@ -379,14 +379,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .observers
             .registrations
             .iter()
-            .map(|(id, registration)| (*id, registration.scope.clone()))
+            .map(|(id, registration)| (*id, registration.stream.clone()))
             .collect();
-        for (id, scope) in registrations {
-            match self.client.subscription_state(&scope) {
+        for (id, stream) in registrations {
+            match self.client.subscription_state(&stream) {
                 Ok(Some(state)) if state.subscription_id == id => {}
                 Ok(_) => {
                     self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
-                    self.forget(&scope);
+                    self.forget(&stream);
                 }
                 Err(error) => self.error(error.to_string()),
             }
@@ -423,8 +423,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
 
-    /// The `connection` of a live registration of `scope`.
-    fn connection_status(&self, scope: &str) -> &'static str {
+    /// The `connection` of a live registration of `stream`.
+    fn connection_status(&self, stream: &str) -> &'static str {
         let Some(connection) = &self.connection else {
             return "offline";
         };
@@ -438,7 +438,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             return "catching-up";
         }
         match &self.observers.acknowledged {
-            Some((acknowledged, covered)) if *acknowledged == epoch && covered.contains(scope) => {
+            Some((acknowledged, covered)) if *acknowledged == epoch && covered.contains(stream) => {
                 "live"
             }
             _ => "connecting",
@@ -454,7 +454,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             let Some(observer_id) = &registration.observer else {
                 continue;
             };
-            let status = registration.status(self.connection_status(&registration.scope));
+            let status = registration.status(self.connection_status(&registration.stream));
             if registration.published.as_ref() != Some(&status) {
                 changed.push((*id, observer_id.clone(), status));
             }

@@ -38,8 +38,8 @@ fn random_sequences_with_direct_writes() {
     }
 }
 
-/// Publishing a change to a scope outside a record's membership is harmless to
-/// the engine: loads are scope-blind, so the extra scope delivers the same
+/// Publishing a change to a stream outside a record's membership is harmless to
+/// the engine: loads are stream-blind, so the extra stream delivers the same
 /// content at the same stamp. Every invariant still holds with such faults generated.
 #[test]
 fn publication_outside_membership_violates_no_invariant() {
@@ -50,7 +50,7 @@ fn publication_outside_membership_violates_no_invariant() {
         for i in 0..2 {
             sim.apply(axton_sim::Action::Subscribe {
                 client: i,
-                scope: "a".into(),
+                stream: "a".into(),
             })
             .unwrap();
         }
@@ -87,7 +87,7 @@ fn every_run_ends_converged_after_settle() {
         for i in 0..2 {
             sim.apply(axton_sim::Action::Subscribe {
                 client: i,
-                scope: "a".into(),
+                stream: "a".into(),
             })
             .unwrap();
         }

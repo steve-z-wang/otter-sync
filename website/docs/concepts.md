@@ -24,31 +24,29 @@ The TypeScript backend SDK connects three operations to your application:
 
 | Primitive | Application responsibility |
 | --- | --- |
-| **Handler** | Execute a named Mutation or Query against your business data, including business authorization, and return its declared outputs. A Query handler receives no `touch` or `scope`. |
+| **Handler** | Execute a named Mutation or Query against your business data, including business authorization, and return its declared outputs. A Query handler receives no `invalidate` or `stream`. |
 | **Loader** | Return current, complete, visible state for the requested identities, in their supplied order. Return null for missing or unauthorized rows. A Model without a Loader is [device-only](backend/api.md#device-only-models): it is never published. |
-| **Publish** | Enroll identities with `scope(name).add.todo(identity)` in a write handler or a Load returning those identities. Later content changes reach holding Scopes. `touch.todo(identity)` declares additional changed content; labels edit backend grouping only. |
+| **Publish** | Enroll identities with `stream(name).track.todo(identity)` in a write handler or a Load returning those identities. Later content changes reach holding Streams. `invalidate.todo(identity)` declares additional changed content; selected invalidation refreshes existing selected holders. |
 
-The framework resolves Model outputs through retained Loaders during each invocation. The result is that invocation's snapshot. Model inputs are not results: for durable batches the framework stamps every changed Record and reads the Model inputs back for batch-final authority in the receipt, and a direct call applies the same authority before it returns. A touched Record is published to its Scopes but is not returned to the caller. The application provides the transaction runner; business writes, outcomes, stamps, Scope memberships, publications and receipts commit together. A business rejection or attributable Handler/Loader failure rolls back that call's savepoint, while independent calls can commit. An infrastructure fault aborts the delivery transaction for retry. Backend outcomes remain stored without TTL or automatic pruning; client business results live only in memory.
+The framework resolves Model outputs through retained Loaders during each invocation. The result is that invocation's snapshot. Model inputs are not results: for durable batches the framework stamps every changed Record and reads the Model inputs back for batch-final authority in the receipt, and a direct call applies the same authority before it returns. A touched Record is published to its Streams but is not returned to the caller. The application provides the transaction runner; business writes, outcomes, stamps, Stream memberships, publications and receipts commit together. A business rejection or attributable Handler/Loader failure rolls back that call's savepoint, while independent calls can commit. An infrastructure fault aborts the delivery transaction for retry. Backend outcomes remain stored without TTL or automatic pruning; client business results live only in memory.
 
-Background jobs write through `backend.transaction`, which runs the job's writes, touches and Scope memberships in one application transaction, advances the stamps of the records it touches, and wakes live subscribers once the transaction commits.
+Background jobs write through `backend.transaction`, which runs the job's writes, touches and Stream memberships in one application transaction, advances the stamps of the records it touches, and wakes live subscribers once the transaction commits.
 
 The [backend SDK guide](backend/setup.md) shows registration and background publication. The backend stores its metadata in [PostgreSQL](backend/database.md), through `pg`, Prisma or Drizzle.
 
-## Scope and Cursor
+## Stream and Cursor
 
-A **Scope** is a named collection of held identities for delivery, such as `User:alice`. It may contain several Models. The backend explicitly enrolls identities with `scope(name).add.todo(identity)`; clients subscribe with `client.scopes.subscribe(name)`. The viewer's Loader remains the authority for current visible content.
+A **Stream** is a named collection of held identities for delivery, such as `User:alice`. It may contain several Models. The backend explicitly enrolls identities with `stream(name).track.todo(identity)`; clients subscribe with `client.streams.subscribe(name)`. The viewer's Loader remains the authority for current visible content.
 
-Labels organize a Scope's members on the backend. They grant no access, acquire no independent holding and never reach clients. Removing a label, including the last one, leaves membership present. Withdrawing a member releases the whole membership and its labels. It sends a per-record release rather than a label command.
+Tracking is durable interest and survives Loader absence. Global invalidation reaches every finally tracking Stream; selected invalidation targets only existing selected holders and never enrolls. Shared content changes require global invalidation; permission/projection changes may use selected invalidation. Each invalidated identity receives one newer stamp per settlement, even without holders. Mutation input changes always invalidate globally.
 
-One Scope's withdrawal preserves a replicated base held by another Scope. Last-hold release evicts the base under the local ledger and request-fencing contract, preserving pending and device-local work. It is distinct from an authoritative business deletion and invokes neither `onStore` nor schema cascades.
-
-A **Cursor** is a receive position within one Scope. Cursors from different Scopes are not comparable and do not order record content; a **Stamp** orders that content across all delivery paths. A withdrawal changes membership evidence without inventing newer content. Re-enrollment can therefore deliver content at an equal stamp while establishing a new hold.
+A **Cursor** orders delivery within a Stream; a **Stamp** orders one record's authority across all paths. A newer stamped Loader `null` is authoritative absence. A Loader error retains local data. Historical identity-only removals still release source holdings and preserve pending/device-only work; they are separate protocol evidence, not a public withdrawal API. No automatic tracking or cache retention policy is provided.
 
 Subscribing establishes a durable starting point for future updates, rather than downloading all history. Reconnecting resumes the saved cursor. The subscription's explicit `bootstrap()` processes retained history before its starting point through the same viewer Loaders and catches up to the position at which that walk ended. It is a load, not a snapshot or proof that every record was read successfully.
 
-Unsubscribe stops following and removes that registration's bootstrap work; it does not delete cached records. A finite Fetch, Query or Load with no enrollment acquires no Scope holding. Such unheld cache has no universal future-cleanup guarantee.
+Unsubscribe stops following and removes that registration's bootstrap work; it does not delete cached records. A finite Fetch, Query or Load with no enrollment acquires no Stream holding. Such unheld cache has no universal future-cleanup guarantee.
 
-Scopes deliver identities and current state, rather than every historical intermediate value. Pull resolves published identities through viewer Loaders. See [Scopes](backend/api.md#scopes), [Loads](frontend/loads.md#add-loaded-records-to-a-scope) and [sync and recovery](frontend/sync.md).
+Streams deliver identities and current state, rather than every historical intermediate value. Pull resolves published identities through viewer Loaders. See [Streams](backend/api.md#streams), [Loads](frontend/loads.md#track-loaded-records-in-a-stream) and [sync and recovery](frontend/sync.md).
 
 
 ## How a receipt replaces optimism
@@ -58,25 +56,25 @@ Consider one pending title edit:
 1. The client writes inferred optimistic Model state and persists the Mutation intent.
 2. Push sends a frozen request. If the result is unknown, a retry uses the same persisted request bytes and batch sequence.
 3. The server commits business changes, each call's result snapshot, batch-final record authority and the receipt. The receipt reports the outcome per call and the authoritative content and Stamp of changed Records.
-4. The client applies that authority beneath its pending work, removes completed queue entries and replays remaining pending work, all in one local transaction. No Scope is awaited to complete a call.
+4. The client applies that authority beneath its pending work, removes completed queue entries and replays remaining pending work, all in one local transaction. No Stream is awaited to complete a call.
 
-If the Record is a member of a Scope the client follows, a Pull page carries the same content at the same Stamp, before or after the receipt. Whichever arrives second rewrites nothing: an equal Stamp with equal content is a no-op, a newer Stamp wins, an older one is ignored. Both orders leave the same local state.
+If the Record is a member of a Stream the client follows, a Pull page carries the same content at the same Stamp, before or after the receipt. Whichever arrives second rewrites nothing: an equal Stamp with equal content is a no-op, a newer Stamp wins, an older one is ignored. Both orders leave the same local state.
 
 A server may normalize the title or reject the edit. `wait()` reports the call's outcome; rejections are also retained in the local inbox. See [recovery](frontend/storage.md) for retry and rejection handling.
 
-## Stamps across scopes
+## Stamps across streams
 
-A **Stamp** orders content for one record across every path that delivers it: the receipt, catch-up pages and the live stream. Every successful change to a record allocates a newer stamp; publishing the same version to several scopes carries that one stamp to all of them. The client applies a newer value and ignores delayed older content, regardless of which path delivers it. Equal stamps are idempotent; inconsistent content for the same stamp is a diagnostic condition.
+A **Stamp** orders content for one record across every path that delivers it: the receipt, catch-up pages and the live stream. Every successful change to a record allocates a newer stamp; publishing the same version to several streams carries that one stamp to all of them. The client applies a newer value and ignores delayed older content, regardless of which path delivers it. Equal stamps are idempotent; inconsistent content for the same stamp is a diagnostic condition.
 
-A newer deletion withdraws the record across scopes, and the client keeps the deleted record's stamp so that older content arriving later cannot bring it back. A scope is a delivery path, not an owner: unsubscribing stops its delivery and removes nothing the client already holds. Stamps are required on pull changes; they are separate from each scope's cursor. See the [stamp acceptance tests](https://github.com/zanminwang/axton/blob/main/crates/sqlite/tests/stamp_scenarios.rs) for the ordering cases.
+Newer stamped absence removes record content across delivery paths, and the client keeps the deleted record's stamp so that older content arriving later cannot bring it back. A stream is a delivery path, not an owner: unsubscribing stops its delivery and removes nothing the client already holds. Stamps are required on pull changes; they are separate from each stream's cursor. See the [stamp acceptance tests](https://github.com/zanminwang/axton/blob/main/crates/sqlite/tests/stamp_scenarios.rs) for the ordering cases.
 
 ## Local reads and sync reads
 
 `get`, `query`, relation accessors, raw SQL and `watch` read local SQLite through the Rust engine. They do not call a loader. Read-only SQL uses the on-disk tables rather than copying the full record set into a separate projection.
 
-The backend Loader supplies Model result snapshots for Mutations and Queries, changed-record authority, and the current authorized content of records a publication identified for a page. It never sees which scope is asking. A record the Loader cannot read in a page fails alone: the rest of the page is delivered, and the client keeps its copy and reports the failure.
+The backend Loader supplies Model result snapshots for Mutations and Queries, changed-record authority, and the current authorized content of records a publication identified for a page. It never sees which stream is asking. A record the Loader cannot read in a page fails alone: the rest of the page is delivered, and the client keeps its copy and reports the failure.
 
-AXTON uses one connection: HTTP submits durable calls and direct requests, and catches up missing records in one pull for all scopes; WebSocket delivers ongoing changes. Initial connection, reconnection and gap recovery use saved scope cursors. Received records pass through the Rust engine into SQLite.
+AXTON uses one connection: HTTP submits durable calls and direct requests, and catches up missing records in one pull for all streams; WebSocket delivers ongoing changes. Initial connection, reconnection and gap recovery use saved stream cursors. Received records pass through the Rust engine into SQLite.
 
 ## Current limits
 

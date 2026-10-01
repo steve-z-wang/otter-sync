@@ -10,9 +10,9 @@
 //! mutation's rejection; a failure carries a thrown application error as
 //! data. Every other thrown host error still aborts the whole delivery
 //! ([#95](https://github.com/zanminwang/axton/issues/95) narrows nothing more).
-use crate::scope_members::{MemberDelta, MemberPosition, MemberState, PositionKind, check_tag};
+use crate::stream_members::{MemberDelta, MemberPosition, PositionKind};
 use crate::{Error, Host, Result, code, valid_code};
-use axton_core::{LoadNext, RecordKey, canonical_json, check_scope, read_counter};
+use axton_core::{LoadNext, RecordKey, canonical_json, check_stream, read_counter};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeSet, fmt::Display, future::Future, pin::Pin};
@@ -52,52 +52,28 @@ fn present<'de, D: Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 
-/// A Scope name under the one protocol rule ([`check_scope`]).
-fn scope_name<'de, D: Deserializer<'de>>(deserializer: D) -> std::result::Result<String, D::Error> {
-    let scope = String::deserialize(deserializer)?;
-    check_scope(&scope)
-        .map_err(|error| serde::de::Error::custom(format!("invalid scope: {error}")))?;
-    Ok(scope)
-}
-
-/// The Scopes `lockScopes` names: at least one, each valid, in strictly
+/// The Streams `lockStreams` names: at least one, each valid, in strictly
 /// increasing byte order, which is the one lock order every writer uses.
 fn lock_order<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<Vec<String>, D::Error> {
-    let scopes = Vec::<String>::deserialize(deserializer)?;
-    if scopes.is_empty() {
-        return Err(serde::de::Error::custom("lockScopes names no Scope"));
+    let streams = Vec::<String>::deserialize(deserializer)?;
+    if streams.is_empty() {
+        return Err(serde::de::Error::custom("lockStreams names no Stream"));
     }
-    for scope in &scopes {
-        check_scope(scope)
-            .map_err(|error| serde::de::Error::custom(format!("invalid scope: {error}")))?;
+    for stream in &streams {
+        check_stream(stream)
+            .map_err(|error| serde::de::Error::custom(format!("invalid stream: {error}")))?;
     }
-    if scopes.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if streams.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(serde::de::Error::custom(
-            "Scopes must be distinct and in canonical byte order",
+            "Streams must be distinct and in canonical byte order",
         ));
     }
-    Ok(scopes)
+    Ok(streams)
 }
 
-/// The tags a selector names: each valid, distinct, in canonical byte order.
-fn tag_order<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Vec<String>, D::Error> {
-    let tags = Vec::<String>::deserialize(deserializer)?;
-    for tag in &tags {
-        check_tag(tag).map_err(serde::de::Error::custom)?;
-    }
-    if tags.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(serde::de::Error::custom(
-            "tags must be distinct and in canonical byte order",
-        ));
-    }
-    Ok(tags)
-}
-
-/// A record as the Scope operations name it: its Model and the canonical
+/// A record as the Stream operations name it: its Model and the canonical
 /// JSON of its identity object (`identityKey`), which must be canonical.
 fn record_key(model: String, identity_key: &str) -> std::result::Result<RecordKey, String> {
     if model.is_empty() {
@@ -118,130 +94,175 @@ fn encoded_identity(key: &RecordKey) -> String {
     canonical_json(&key.identity).unwrap_or_default()
 }
 
-/// Tags as a set: each valid and none repeated, in whatever order answered.
-fn tag_set(tags: Vec<String>) -> std::result::Result<BTreeSet<String>, String> {
-    let mut set = BTreeSet::new();
-    for tag in tags {
-        check_tag(&tag)?;
-        if !set.insert(tag) {
-            return Err("duplicate tag".into());
-        }
-    }
-    Ok(set)
-}
-
 /// `{model, identityKey}` on the wire.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct KeyWire {
+pub struct KeyWire {
     model: String,
     identity_key: String,
 }
 
-/// `readScopeMembers`' `explicitKeys`: records as `{model, identityKey}`.
-mod record_keys {
-    use super::*;
-    pub fn serialize<S: serde::Serializer>(
-        keys: &[RecordKey],
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_seq(keys.iter().map(|key| KeyWire {
-            model: key.model.clone(),
-            identity_key: encoded_identity(key),
-        }))
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Vec<RecordKey>, D::Error> {
-        Vec::<KeyWire>::deserialize(deserializer)?
-            .into_iter()
-            .map(|key| record_key(key.model, &key.identity_key))
-            .collect::<std::result::Result<_, _>>()
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// [`MemberState`] on the wire: `{model, identityKey, tags}`.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct MemberStateWire {
-    model: String,
-    identity_key: String,
-    tags: Vec<String>,
-}
-impl TryFrom<MemberStateWire> for MemberState {
-    type Error = String;
-    fn try_from(wire: MemberStateWire) -> std::result::Result<Self, String> {
-        Ok(Self {
-            key: record_key(wire.model, &wire.identity_key)?,
-            tags: tag_set(wire.tags)?,
-        })
-    }
-}
-impl From<MemberState> for MemberStateWire {
-    fn from(state: MemberState) -> Self {
-        Self {
-            identity_key: encoded_identity(&state.key),
-            model: state.key.model,
-            tags: state.tags.into_iter().collect(),
-        }
-    }
-}
-
-/// [`MemberDelta`] on the wire: `{scope, model, identity, identityKey,
-/// present, tags, publish}`. An absent pair carries no tags and always
-/// publishes its removal.
+/// Fresh tracking creates/upserts only; saved removal positions still decode.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MemberDeltaWire {
-    scope: String,
+    stream: String,
     model: String,
     identity: Value,
     identity_key: String,
-    present: bool,
-    tags: Vec<String>,
     publish: bool,
 }
 impl TryFrom<MemberDeltaWire> for MemberDelta {
     type Error = String;
     fn try_from(wire: MemberDeltaWire) -> std::result::Result<Self, String> {
-        check_scope(&wire.scope).map_err(|error| format!("invalid scope: {error}"))?;
+        check_stream(&wire.stream).map_err(|e| e.to_string())?;
         let key = record_key(wire.model, &wire.identity_key)?;
         if key.identity != wire.identity {
             return Err("identity and identityKey name different records".into());
         }
-        let tags = tag_set(wire.tags)?;
-        if !wire.present && (!tags.is_empty() || !wire.publish) {
-            return Err("a removed member carries no tags and always publishes".into());
-        }
         Ok(Self {
-            scope: wire.scope,
+            stream: wire.stream,
             key,
-            present: wire.present,
-            tags,
             publish: wire.publish,
         })
     }
 }
 impl From<MemberDelta> for MemberDeltaWire {
-    fn from(delta: MemberDelta) -> Self {
+    fn from(d: MemberDelta) -> Self {
         Self {
-            scope: delta.scope,
-            identity_key: encoded_identity(&delta.key),
-            model: delta.key.model,
-            identity: delta.key.identity,
-            present: delta.present,
-            tags: delta.tags.into_iter().collect(),
-            publish: delta.publish,
+            stream: d.stream,
+            identity_key: encoded_identity(&d.key),
+            model: d.key.model,
+            identity: d.key.identity,
+            publish: d.publish,
         }
     }
 }
 
-/// [`MemberPosition`] on the wire: `{scope, model, identityKey, cursor, kind}`.
+/// A canonical record operand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, try_from = "KeyWire")]
+pub struct MemberKey {
+    pub model: String,
+    pub identity_key: String,
+}
+impl TryFrom<KeyWire> for MemberKey {
+    type Error = String;
+    fn try_from(w: KeyWire) -> std::result::Result<Self, String> {
+        record_key(w.model.clone(), &w.identity_key)?;
+        Ok(Self {
+            model: w.model,
+            identity_key: w.identity_key,
+        })
+    }
+}
+impl MemberKey {
+    pub fn from_key(k: &RecordKey) -> Self {
+        Self {
+            model: k.model.clone(),
+            identity_key: encoded_identity(k),
+        }
+    }
+    pub fn key(&self) -> RecordKey {
+        record_key(self.model.clone(), &self.identity_key).expect("validated member key")
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "TrackingPairWire"
+)]
+pub struct TrackingPair {
+    pub stream: String,
+    pub model: String,
+    pub identity_key: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrackingPairWire {
+    stream: String,
+    model: String,
+    identity_key: String,
+}
+impl TryFrom<TrackingPairWire> for TrackingPair {
+    type Error = String;
+    fn try_from(w: TrackingPairWire) -> std::result::Result<Self, String> {
+        check_stream(&w.stream).map_err(|e| e.to_string())?;
+        record_key(w.model.clone(), &w.identity_key)?;
+        Ok(Self {
+            stream: w.stream,
+            model: w.model,
+            identity_key: w.identity_key,
+        })
+    }
+}
+impl TrackingPair {
+    pub fn key(&self) -> RecordKey {
+        record_key(self.model.clone(), &self.identity_key).expect("validated tracking key")
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuardMode {
+    Advance,
+    Ensure,
+    Lock,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    deny_unknown_fields,
+    try_from = "GuardRecordWire"
+)]
+pub struct GuardRecord {
+    pub model: String,
+    pub identity_key: String,
+    pub mode: GuardMode,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GuardRecordWire {
+    model: String,
+    identity_key: String,
+    mode: GuardMode,
+}
+impl TryFrom<GuardRecordWire> for GuardRecord {
+    type Error = String;
+    fn try_from(w: GuardRecordWire) -> std::result::Result<Self, String> {
+        record_key(w.model.clone(), &w.identity_key)?;
+        Ok(Self {
+            model: w.model,
+            identity_key: w.identity_key,
+            mode: w.mode,
+        })
+    }
+}
+fn guard_order<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<GuardRecord>, D::Error> {
+    let records = Vec::<GuardRecord>::deserialize(d)?;
+    let keys: Vec<String> = records
+        .iter()
+        .map(|r| {
+            record_key(r.model.clone(), &r.identity_key)
+                .unwrap()
+                .encoded()
+                .unwrap()
+        })
+        .collect();
+    if keys.windows(2).any(|p| p[0] >= p[1]) {
+        return Err(serde::de::Error::custom(
+            "guards must be distinct and canonically ordered",
+        ));
+    }
+    Ok(records)
+}
+pub type Tracking = Vec<TrackingPair>;
+pub type Guards = Vec<Option<Stamped>>;
+/// [`MemberPosition`] on the wire: `{stream, model, identityKey, cursor, kind}`.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MemberPositionWire {
-    scope: String,
+    stream: String,
     model: String,
     identity_key: String,
     #[serde(with = "cursor")]
@@ -251,9 +272,9 @@ pub(crate) struct MemberPositionWire {
 impl TryFrom<MemberPositionWire> for MemberPosition {
     type Error = String;
     fn try_from(wire: MemberPositionWire) -> std::result::Result<Self, String> {
-        check_scope(&wire.scope).map_err(|error| format!("invalid scope: {error}"))?;
+        check_stream(&wire.stream).map_err(|error| format!("invalid stream: {error}"))?;
         Ok(Self {
-            scope: wire.scope,
+            stream: wire.stream,
             key: record_key(wire.model, &wire.identity_key)?,
             cursor: wire.cursor,
             kind: wire.kind,
@@ -263,7 +284,7 @@ impl TryFrom<MemberPositionWire> for MemberPosition {
 impl From<MemberPosition> for MemberPositionWire {
     fn from(position: MemberPosition) -> Self {
         Self {
-            scope: position.scope,
+            stream: position.stream,
             identity_key: encoded_identity(&position.key),
             model: position.key.model,
             cursor: position.cursor,
@@ -306,10 +327,10 @@ pub const OPERATIONS: [&str; 21] = [
     "ensureStamp",
     "readStamps",
     "lockRecord",
-    "memberships",
-    "lockScopes",
-    "readScopeMembers",
-    "applyScopeMembers",
+    "readTracking",
+    "guardRecords",
+    "lockStreams",
+    "applyStreamMembers",
 ];
 
 /// Every request the engine issues to a host, tagged by `op` on the wire.
@@ -322,7 +343,10 @@ pub const OPERATIONS: [&str; 21] = [
 )]
 pub enum HostRequest {
     /// Lock this client's row and report its last accepted batch.
-    Claim { owner: String, client_id: String },
+    Claim {
+        owner: String,
+        client_id: String,
+    },
     /// Record the receipt for an accepted batch.
     SaveReceipt {
         owner: String,
@@ -342,21 +366,29 @@ pub enum HostRequest {
         call_id: String,
         response: String,
     },
-    /// The scope's current head cursor.
-    Head { scope: String },
+    /// The stream's current head cursor.
+    Head {
+        stream: String,
+    },
     /// Retained upsert and removal log rows after `after`, at most `limit`
     /// in cursor order. Identity comes from centralized record metadata.
     Scan {
-        scope: String,
+        stream: String,
         after: u64,
         limit: u64,
     },
     /// Open the savepoint that isolates one mutation.
-    Savepoint { ordinal: u64 },
+    Savepoint {
+        ordinal: u64,
+    },
     /// Undo one mutation's effects back to its savepoint.
-    Rollback { ordinal: u64 },
+    Rollback {
+        ordinal: u64,
+    },
     /// Discard one mutation's savepoint, keeping its effects.
-    Release { ordinal: u64 },
+    Release {
+        ordinal: u64,
+    },
     /// Run one mutation's handler. `arguments` carries the decoded slots
     /// verbatim: its shape is the schema's business, not the contract's.
     Handle {
@@ -378,7 +410,7 @@ pub enum HostRequest {
     /// Execute one generated Load handler for one page: the normalized flat
     /// arguments and the page's continuation (`null` on the first page). Its
     /// context declares no changes: the answer carries identities, the next
-    /// continuation and the Scope additions its add-only handles declared.
+    /// continuation and the Stream additions its add-only handles declared.
     HandleLoad {
         name: String,
         version: u64,
@@ -391,7 +423,7 @@ pub enum HostRequest {
     },
     /// Load the current state of these identities as the records of one
     /// retained model read contract (`version`), for this caller. Loads name
-    /// no scope: the same identity, version and stamp describe the same
+    /// no stream: the same identity, version and stamp describe the same
     /// content on every delivery path.
     Load {
         model: String,
@@ -400,9 +432,15 @@ pub enum HostRequest {
         owner: String,
     },
     /// Allocate the next stamp of one record: initialize it at 1 or increment it.
-    AdvanceStamp { model: String, identity_key: String },
+    AdvanceStamp {
+        model: String,
+        identity_key: String,
+    },
     /// The record's current stamp, initialized at 1 only when it has none.
-    EnsureStamp { model: String, identity_key: String },
+    EnsureStamp {
+        model: String,
+        identity_key: String,
+    },
     /// The current stamps of these records of one model, one per key in
     /// request order: an existing stamp is read and never rewritten, and only
     /// a record without one is initialized at 1.
@@ -414,43 +452,69 @@ pub enum HostRequest {
     /// (`UPDATE ... SET stamp=stamp`), so a concurrent writer of the same row
     /// whose snapshot predates this commit restarts instead of acting on it.
     /// Never creates a row: an absent record answers `null`.
-    LockRecord { model: String, identity_key: String },
-    /// The Scopes this record is a persistent member of, independent of
-    /// positions and subscribers: the recipients of a touch.
-    Memberships { model: String, identity_key: String },
-    /// Serialize membership changes on these Scopes: lock each existing
-    /// Scope row, in exactly this order (canonical byte order), until the
-    /// transaction ends. Creates no Scope. Every settlement takes its
-    /// Scopes this way before any record guard.
-    LockScopes {
+    LockRecord {
+        model: String,
+        identity_key: String,
+    },
+    ReadTracking {
+        records: Vec<MemberKey>,
+        pairs: Vec<TrackingPair>,
+    },
+    GuardRecords {
+        #[serde(deserialize_with = "guard_order")]
+        records: Vec<GuardRecord>,
+    },
+    LockStreams {
         #[serde(deserialize_with = "lock_order")]
-        scopes: Vec<String>,
+        streams: Vec<String>,
     },
-    /// The live members of the locked `scope` that `explicitKeys` names or
-    /// that carry one of `tags`, or all present members when `all` is true,
-    /// each once with its complete current tags. Reads only.
-    ReadScopeMembers {
-        #[serde(deserialize_with = "scope_name")]
-        scope: String,
-        #[serde(with = "record_keys")]
-        explicit_keys: Vec<RecordKey>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        all: bool,
-        #[serde(deserialize_with = "tag_order")]
-        tags: Vec<String>,
+    ApplyStreamMembers {
+        deltas: Vec<MemberDelta>,
     },
-    /// Persist final member states, in the caller's transaction, without
-    /// re-evaluating any selector. A present delta makes the record a member
-    /// with exactly `tags` (its metadata row must exist; a missing Scope
-    /// starts at head zero); an absent one deletes the member and its tags. A
-    /// published delta takes the Scope's next position (`upsert` or
-    /// `remove`), consecutive per Scope in delta order; an unpublished one
-    /// keeps the member's existing position. Answers one position per delta,
-    /// in delta order.
-    ApplyScopeMembers { deltas: Vec<MemberDelta> },
 }
 
 impl HostRequest {
+    pub fn validate_response(&self, value: &Value) -> Result<()> {
+        match self {
+            Self::ReadTracking { records, pairs } => {
+                let rows: Tracking =
+                    serde_json::from_value(value.clone()).map_err(|e| self.invalid_response(e))?;
+                let mut seen = BTreeSet::new();
+                for row in rows {
+                    if !seen.insert((
+                        row.stream.clone(),
+                        row.model.clone(),
+                        row.identity_key.clone(),
+                    )) {
+                        return Err(self.invalid_response("duplicate tracking pair"));
+                    }
+                    if !records
+                        .iter()
+                        .any(|r| r.model == row.model && r.identity_key == row.identity_key)
+                        && !pairs.contains(&row)
+                    {
+                        return Err(self.invalid_response("unrelated tracking pair"));
+                    }
+                }
+            }
+            Self::GuardRecords { records } => {
+                let rows: Guards =
+                    serde_json::from_value(value.clone()).map_err(|e| self.invalid_response(e))?;
+                if rows.len() != records.len() {
+                    return Err(self.invalid_response("wrong guard cardinality"));
+                }
+                if records
+                    .iter()
+                    .zip(rows)
+                    .any(|(r, s)| r.mode != GuardMode::Lock && s.is_none())
+                {
+                    return Err(self.invalid_response("null advance/ensure stamp"));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     /// The operation, and the ordinal when the operation carries one.
     pub fn label(&self) -> String {
         match self {
@@ -471,10 +535,10 @@ impl HostRequest {
             Self::EnsureStamp { .. } => "ensureStamp".into(),
             Self::ReadStamps { .. } => "readStamps".into(),
             Self::LockRecord { .. } => "lockRecord".into(),
-            Self::Memberships { .. } => "memberships".into(),
-            Self::LockScopes { .. } => "lockScopes".into(),
-            Self::ReadScopeMembers { .. } => "readScopeMembers".into(),
-            Self::ApplyScopeMembers { .. } => "applyScopeMembers".into(),
+            Self::ReadTracking { .. } => "readTracking".into(),
+            Self::GuardRecords { .. } => "guardRecords".into(),
+            Self::LockStreams { .. } => "lockStreams".into(),
+            Self::ApplyStreamMembers { .. } => "applyStreamMembers".into(),
         }
     }
     /// The code an unusable response to this operation has always carried.
@@ -497,10 +561,10 @@ impl HostRequest {
             | Self::EnsureStamp { .. }
             | Self::ReadStamps { .. }
             | Self::LockRecord { .. }
-            | Self::Memberships { .. }
-            | Self::LockScopes { .. }
-            | Self::ReadScopeMembers { .. }
-            | Self::ApplyScopeMembers { .. } => code::HOST_INVALID,
+            | Self::ReadTracking { .. }
+            | Self::GuardRecords { .. }
+            | Self::LockStreams { .. }
+            | Self::ApplyStreamMembers { .. } => code::HOST_INVALID,
         }
     }
     /// A response the protocol cannot use, named by operation.
@@ -544,7 +608,7 @@ pub struct ClaimedCall {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Head(#[serde(with = "counter")] pub u64);
 
-/// One retained scope position with centralized identity. Upserts carry
+/// One retained stream position with centralized identity. Upserts carry
 /// the current content stamp from the Loader's snapshot; removals need no
 /// stamp and never enter a Loader. A missing kind is legacy upsert only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,7 +616,7 @@ pub struct Head(#[serde(with = "counter")] pub u64);
 pub struct Invalidation {
     #[serde(default = "legacy_upsert")]
     pub kind: PositionKind,
-    pub scope: String,
+    pub stream: String,
     #[serde(with = "cursor")]
     pub cursor: u64,
     pub model: String,
@@ -631,31 +695,7 @@ pub type Stamps = Vec<Stamped>;
 /// when the record has no metadata row (nothing was locked or created).
 pub type Locked = Option<Stamped>;
 
-/// The answer to `memberships`: unique, valid Scope names. The persistence
-/// answers them sorted by its own collation; Rust holds them in canonical byte
-/// order, so every consumer iterates Scopes the same way.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "Vec<String>")]
-pub struct Memberships(pub BTreeSet<String>);
-
-impl TryFrom<Vec<String>> for Memberships {
-    type Error = String;
-    fn try_from(scopes: Vec<String>) -> std::result::Result<Self, String> {
-        let mut members = BTreeSet::new();
-        for scope in scopes {
-            check_scope(&scope).map_err(|error| format!("invalid scope: {error}"))?;
-            if !members.insert(scope) {
-                return Err("duplicate membership scope".into());
-            }
-        }
-        Ok(Self(members))
-    }
-}
-
-/// The answer to `readScopeMembers`.
-pub type ScopeMembers = Vec<MemberState>;
-
-/// The answer to `applyScopeMembers`: one position per delta, in order.
+/// The answer to `applyStreamMembers`: one position per delta, in order.
 pub type Positions = Vec<MemberPosition>;
 
 /// A record a handler names: an additional changed record.
@@ -666,89 +706,72 @@ pub struct RecordRef {
     pub identity: Value,
 }
 
-/// One persistent Scope declaration, tagged by `kind` on the wire. Intents
-/// form an ordered list the engine reduces in order to each Scope's final
-/// state ([Publish](../../../docs/engineering/architecture/server/engine/publish.md)):
-/// `add` makes the record a member and unions `tags` with its labels (`[]`
-/// adds none), `remove` releases the record's whole membership, and a predicate selection releases the matching membership.
+/// Explicit declarations combine as sets in one settlement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub enum ScopeIntent {
-    Add {
-        scope: String,
-        record: RecordRef,
-        tags: Vec<String>,
-    },
-    Remove {
-        scope: String,
+pub enum StreamIntent {
+    Track {
+        stream: String,
         record: RecordRef,
     },
-    TagAdd {
-        scope: String,
+    Invalidate {
+        #[serde(deserialize_with = "required_streams")]
+        streams: Option<Vec<String>>,
         record: RecordRef,
-        tags: Vec<String>,
-    },
-    TagRemove {
-        scope: String,
-        record: RecordRef,
-        tags: Vec<String>,
-    },
-    DetachTags {
-        scope: String,
-        tags: Vec<String>,
-    },
-    Select {
-        scope: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-        predicate: crate::scope_predicate::ScopePredicate,
-        action: crate::scope_members::SelectionAction,
     },
 }
-
-impl ScopeIntent {
-    /// The Scope every kind names.
-    pub fn scope(&self) -> &str {
+impl StreamIntent {
+    pub fn record(&self) -> &RecordRef {
         match self {
-            Self::Add { scope, .. }
-            | Self::Remove { scope, .. }
-            | Self::TagAdd { scope, .. }
-            | Self::TagRemove { scope, .. }
-            | Self::DetachTags { scope, .. }
-            | Self::Select { scope, .. } => scope,
+            Self::Track { record, .. } | Self::Invalidate { record, .. } => record,
         }
     }
-    /// Record membership and label edits name one identity; selectors name none.
-    pub fn record(&self) -> Option<&RecordRef> {
+    pub fn streams(&self) -> Vec<&str> {
         match self {
-            Self::Add { record, .. }
-            | Self::Remove { record, .. }
-            | Self::TagAdd { record, .. }
-            | Self::TagRemove { record, .. } => Some(record),
-            Self::DetachTags { .. } | Self::Select { .. } => None,
+            Self::Track { stream, .. } => vec![stream],
+            Self::Invalidate { streams, .. } => {
+                streams.iter().flatten().map(String::as_str).collect()
+            }
+        }
+    }
+}
+fn required_streams<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error> {
+    Option::<Vec<String>>::deserialize(d)
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TrackIntent {
+    Track { stream: String, record: RecordRef },
+}
+impl From<TrackIntent> for StreamIntent {
+    fn from(t: TrackIntent) -> Self {
+        match t {
+            TrackIntent::Track { stream, record } => Self::Track { stream, record },
         }
     }
 }
 
 /// The effects of one settlement, shared by modern handlers, legacy handlers
 /// and external transactions: the changed records beyond any input targets,
-/// and the ordered Scope intents. There is no implicit publication.
-fn effects(changes: Value, memberships: Value) -> std::result::Result<Effects, String> {
+/// and the ordered Stream intents. There is no implicit publication.
+fn effects(changes: Value, declarations: Value) -> std::result::Result<Effects, String> {
     let changes: Vec<RecordRef> = serde_json::from_value(changes)
         .map_err(|error| format!("invalid handler changes: {error}"))?;
-    let memberships: Vec<ScopeIntent> = serde_json::from_value(memberships)
-        .map_err(|error| format!("invalid handler memberships: {error}"))?;
+    let declarations: Vec<StreamIntent> = serde_json::from_value(declarations)
+        .map_err(|error| format!("invalid handler declarations: {error}"))?;
     let malformed = |r: &RecordRef| r.model.is_empty() || !r.identity.is_object();
     if changes.iter().any(malformed)
-        || memberships
+        || declarations
             .iter()
-            .any(|m| m.scope().is_empty() || m.record().is_some_and(malformed))
+            .any(|m| m.streams().iter().any(|s| check_stream(s).is_err()) || malformed(m.record()))
     {
         return Err("invalid handler settlement".into());
     }
-    Ok((changes, memberships))
+    Ok((changes, declarations))
 }
-type Effects = (Vec<RecordRef>, Vec<ScopeIntent>);
+type Effects = (Vec<RecordRef>, Vec<StreamIntent>);
 
 /// The answer to `handle`: the records the handler changed beyond the
 /// uploaded operations and its membership intents, a rejection code, or a
@@ -759,7 +782,7 @@ type Effects = (Vec<RecordRef>, Vec<ScopeIntent>);
 pub enum Handled {
     Settled {
         changes: Vec<RecordRef>,
-        memberships: Vec<ScopeIntent>,
+        declarations: Vec<StreamIntent>,
     },
     Rejected {
         rejection: String,
@@ -776,7 +799,7 @@ pub enum HandledAction {
     Settled {
         outputs: Value,
         changes: Vec<RecordRef>,
-        memberships: Vec<ScopeIntent>,
+        declarations: Vec<StreamIntent>,
     },
     Rejected {
         rejection: String,
@@ -794,7 +817,7 @@ struct HandledActionWire {
     #[serde(default, deserialize_with = "present")]
     changes: Option<Value>,
     #[serde(default, deserialize_with = "present")]
-    memberships: Option<Value>,
+    declarations: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     rejection: Option<Value>,
     #[serde(default, deserialize_with = "present")]
@@ -807,7 +830,7 @@ impl TryFrom<HandledActionWire> for HandledAction {
         match (
             wire.outputs,
             wire.changes,
-            wire.memberships,
+            wire.declarations,
             wire.rejection,
             wire.error,
         ) {
@@ -824,14 +847,14 @@ impl TryFrom<HandledActionWire> for HandledAction {
                     error: error.into(),
                 })
                 .ok_or_else(|| "invalid handler error".into()),
-            (Some(outputs), Some(changes), Some(memberships), None, None)
+            (Some(outputs), Some(changes), Some(declarations), None, None)
                 if outputs.is_object() =>
             {
-                let (changes, memberships) = effects(changes, memberships)?;
+                let (changes, declarations) = effects(changes, declarations)?;
                 Ok(Self::Settled {
                     outputs,
                     changes,
-                    memberships,
+                    declarations,
                 })
             }
             _ => Err("invalid Action handler settlement".into()),
@@ -839,21 +862,9 @@ impl TryFrom<HandledActionWire> for HandledAction {
     }
 }
 
-/// The answer to `handleLoad`: the page's identity lists, the next
-/// continuation and the membership intents its add-only Scope handles
-/// declared, a rejection code, or a failure carrying a thrown handler error.
-/// A Load context declares no changes, so an answer carrying `changes`, or
-/// memberships beside a rejection or failure, or anything else is refused.
-///
-/// `data` and `next` are carried as answered (`next` is `None` when the
-/// member is absent): the engine judges them, so a missing or malformed
-/// continuation is the page's `load.invalid_continuation` and malformed data
-/// its `handler.invalid`, whichever host bridge produced them. An absent
-/// `memberships` (an older host) is an empty list and is encoded absent;
-/// `null` or a malformed intent is refused. A structurally valid intent
-/// decodes even when a Load may not declare it (a removal, a tag selector, a
-/// record outside the page): the engine judges those so every host fails the
-/// page alike.
+/// A native Load answers its identity lists, continuation and optional tracking.
+/// Tracking is legal only beside successful data, never a refusal/failure.
+/// The page engine validates continuation, identities and returned-record bounds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged, try_from = "HandledLoadWire")]
 pub enum HandledLoad {
@@ -862,7 +873,7 @@ pub enum HandledLoad {
         #[serde(skip_serializing_if = "Option::is_none")]
         next: Option<Value>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
-        memberships: Vec<ScopeIntent>,
+        tracking: Vec<TrackIntent>,
     },
     Rejected {
         rejection: String,
@@ -880,7 +891,7 @@ struct HandledLoadWire {
     #[serde(default, deserialize_with = "present")]
     next: Option<Value>,
     #[serde(default, deserialize_with = "present")]
-    memberships: Option<Value>,
+    tracking: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     rejection: Option<Value>,
     #[serde(default, deserialize_with = "present")]
@@ -890,8 +901,8 @@ struct HandledLoadWire {
 impl TryFrom<HandledLoadWire> for HandledLoad {
     type Error = String;
     fn try_from(wire: HandledLoadWire) -> std::result::Result<Self, String> {
-        if wire.memberships.is_some() && wire.data.is_none() {
-            return Err("a Load answer carries memberships only beside its data".into());
+        if wire.tracking.is_some() && wire.data.is_none() {
+            return Err("a Load answer carries tracking only beside its data".into());
         }
         match (wire.data, wire.next, wire.rejection, wire.error) {
             (None, None, Some(rejection), None) => rejection
@@ -908,14 +919,15 @@ impl TryFrom<HandledLoadWire> for HandledLoad {
                 })
                 .ok_or_else(|| "invalid handler error".into()),
             (Some(data), next, None, None) => {
-                let memberships = match wire.memberships {
+                let tracking = match wire.tracking {
                     None => vec![],
-                    Some(memberships) => effects(Value::Array(vec![]), memberships)?.1,
+                    Some(tracking) => serde_json::from_value::<Vec<TrackIntent>>(tracking)
+                        .map_err(|e| format!("invalid Load tracking: {e}"))?,
                 };
                 Ok(Self::Settled {
                     data,
                     next,
-                    memberships,
+                    tracking,
                 })
             }
             _ => Err("invalid Load handler settlement".into()),
@@ -929,7 +941,7 @@ struct HandledWire {
     #[serde(default, deserialize_with = "present")]
     changes: Option<Value>,
     #[serde(default, deserialize_with = "present")]
-    memberships: Option<Value>,
+    declarations: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     rejection: Option<Value>,
     #[serde(default, deserialize_with = "present")]
@@ -939,7 +951,7 @@ struct HandledWire {
 impl TryFrom<HandledWire> for Handled {
     type Error = String;
     fn try_from(wire: HandledWire) -> std::result::Result<Self, String> {
-        match (wire.changes, wire.memberships, wire.rejection, wire.error) {
+        match (wire.changes, wire.declarations, wire.rejection, wire.error) {
             (None, None, Some(rejection), None) => rejection
                 .as_str()
                 .filter(|code| valid_code(code))
@@ -954,14 +966,14 @@ impl TryFrom<HandledWire> for Handled {
                 })
                 .ok_or_else(|| "invalid handler error".into()),
             (_, _, Some(_), _) | (_, _, _, Some(_)) => Err(
-                "a settlement carries changes and memberships, a rejection or a failure, not several"
+                "a settlement carries changes and declarations, a rejection or a failure, not several"
                     .into(),
             ),
-            (Some(changes), Some(memberships), None, None) => {
-                let (changes, memberships) = effects(changes, memberships)?;
+            (Some(changes), Some(declarations), None, None) => {
+                let (changes, declarations) = effects(changes, declarations)?;
                 Ok(Self::Settled {
                     changes,
-                    memberships,
+                    declarations,
                 })
             }
             _ => Err("invalid handler settlement".into()),
@@ -987,6 +999,7 @@ impl<H: Host + ?Sized> HostExt for H {
             let encoded = serde_json::to_value(&request)
                 .map_err(|error| Error::new(code::INTERNAL, error.to_string()))?;
             let response = self.call(encoded).await?;
+            request.validate_response(&response)?;
             serde_json::from_value(response).map_err(|error| request.invalid_response(error))
         })
     }

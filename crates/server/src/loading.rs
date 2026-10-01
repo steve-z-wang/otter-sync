@@ -1,7 +1,7 @@
-//! Bounded loading of a Scope's historical interval, and the record
+//! Bounded loading of a Stream's historical interval, and the record
 //! resolution both pull modes share.
 //!
-//! A bootstrap request walks `(after, until]` of one scope with the same
+//! A bootstrap request walks `(after, until]` of one stream with the same
 //! cursor-ordered `scan` and the same grouped Loader reads the ordinary delta
 //! pull uses, in the caller's transaction. The upper bound is the
 //! subscription's origin S, fixed for the whole walk, so the walk terminates
@@ -18,22 +18,22 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, btree_map::Entry};
 
 /// Validate one scan row against the rules both pull modes apply, and answer
-/// its canonical record key: the row belongs to the scanned scope, its cursor
-/// advances past `previous` without passing the scope head, its model has a
+/// its canonical record key: the row belongs to the scanned stream, its cursor
+/// advances past `previous` without passing the stream head, its model has a
 /// registered loader, and its stored identity key is the canonical encoding of
 /// its identity. The caller decides what to do with the row; this decides
 /// whether the row is usable at all.
 pub(crate) fn validate_row(
     config: &Config,
-    scope: &str,
+    stream: &str,
     maximum: u64,
     previous: u64,
     row: &Invalidation,
 ) -> Result<RecordKey> {
-    if row.scope != scope || row.cursor <= previous || row.cursor > maximum {
+    if row.stream != stream || row.cursor <= previous || row.cursor > maximum {
         return Err(storage_invalid("invalid invalidation order"));
     }
-    if row.kind == crate::scope_members::PositionKind::Upsert && row.stamp == 0 {
+    if row.kind == crate::stream_members::PositionKind::Upsert && row.stamp == 0 {
         return Err(storage_invalid("upsert stamp missing"));
     }
     if !config.loaders.contains(&row.model) {
@@ -49,7 +49,7 @@ pub(crate) fn validate_row(
     Ok(key)
 }
 /// Keep one entry per record, keyed canonically, at the highest stamp seen for
-/// it: a record published to two scanned scopes is one entry at its current
+/// it: a record published to two scanned streams is one entry at its current
 /// stamp, whichever mode collected it.
 pub(crate) fn insert(
     records: &mut BTreeMap<String, (RecordKey, u64)>,
@@ -204,9 +204,9 @@ fn refusal_code(loaded: Loaded) -> String {
 
 /// Scan a bounded interval, including tombstones. A one-row probe identifies
 /// a terminal full page even when compaction leaves a gap before the bound.
-async fn scope_rows(
+async fn stream_rows(
     config: &Config,
-    scope: &str,
+    stream: &str,
     after: u64,
     bound: u64,
     maximum: u64,
@@ -217,7 +217,7 @@ async fn scope_rows(
     }
     let rows: Vec<Invalidation> = host
         .call_typed(HostRequest::Scan {
-            scope: scope.into(),
+            stream: stream.into(),
             after,
             limit: limits::PULL_CHANGES as u64,
         })
@@ -227,7 +227,7 @@ async fn scope_rows(
     }
     let mut previous = after;
     for row in &rows {
-        validate_row(config, scope, maximum, previous, row)?;
+        validate_row(config, stream, maximum, previous, row)?;
         previous = row.cursor;
     }
     let full = rows.len() == limits::PULL_CHANGES;
@@ -236,7 +236,7 @@ async fn scope_rows(
     if full && previous < bound {
         let later: Vec<Invalidation> = host
             .call_typed(HostRequest::Scan {
-                scope: scope.into(),
+                stream: stream.into(),
                 after: previous,
                 limit: 1,
             })
@@ -245,7 +245,7 @@ async fn scope_rows(
             return Err(storage_invalid("invalid continuation scan size"));
         }
         if let Some(row) = later.first() {
-            validate_row(config, scope, maximum, previous, row)?;
+            validate_row(config, stream, maximum, previous, row)?;
             if row.cursor <= bound {
                 to = previous;
             }
@@ -254,14 +254,14 @@ async fn scope_rows(
     Ok((rows, to))
 }
 
-/// Resolve content once per identity, retaining every scope pair's evidence.
-async fn scope_changes(
+/// Resolve content once per identity, retaining every stream pair's evidence.
+async fn stream_changes(
     config: &Config,
     owner: &str,
     models: &BTreeMap<String, u64>,
     rows: Vec<Invalidation>,
     host: &impl Host,
-) -> Result<Vec<axton_core::ScopeChange>> {
+) -> Result<Vec<axton_core::StreamChange>> {
     let rows = rows
         .into_iter()
         .map(|row| {
@@ -274,7 +274,7 @@ async fn scope_changes(
         .collect::<Result<Vec<_>>>()?;
     let keys = rows
         .iter()
-        .filter(|(row, _)| row.kind == crate::scope_members::PositionKind::Upsert)
+        .filter(|(row, _)| row.kind == crate::stream_members::PositionKind::Upsert)
         .map(|(row, key)| (key.clone(), row.stamp))
         .collect();
     let authority = resolve_records(config, owner, models, keys, host).await?;
@@ -293,15 +293,15 @@ async fn scope_changes(
     rows.into_iter()
         .map(|(row, key)| {
             Ok(match row.kind {
-                crate::scope_members::PositionKind::Remove => axton_core::ScopeChange::Remove {
-                    scope: row.scope,
+                crate::stream_members::PositionKind::Remove => axton_core::StreamChange::Remove {
+                    stream: row.stream,
                     cursor: row.cursor,
                     key,
                 },
-                crate::scope_members::PositionKind::Upsert => {
+                crate::stream_members::PositionKind::Upsert => {
                     let encoded = key.encoded().map_err(internal)?;
-                    axton_core::ScopeChange::Upsert {
-                        scope: row.scope,
+                    axton_core::StreamChange::Upsert {
+                        stream: row.stream,
                         cursor: row.cursor,
                         record: records
                             .get(&encoded)
@@ -314,7 +314,7 @@ async fn scope_changes(
         .collect()
 }
 
-pub(crate) async fn process_scope_delta(
+pub(crate) async fn process_stream_delta(
     config: &Config,
     owner: &str,
     bytes: &[u8],
@@ -324,15 +324,15 @@ pub(crate) async fn process_scope_delta(
     config.check_declared(&request.models)?;
     let mut cursors = BTreeMap::new();
     let mut rows = vec![];
-    for (scope, from) in request.cursors {
-        let maximum = head(host, &scope).await?;
+    for (stream, from) in request.cursors {
+        let maximum = head(host, &stream).await?;
         if from > maximum {
             return Err(request_invalid("cursor ahead of head"));
         }
-        let (page, to) = scope_rows(config, &scope, from, maximum, maximum, host).await?;
+        let (page, to) = stream_rows(config, &stream, from, maximum, maximum, host).await?;
         rows.extend(page);
         cursors.insert(
-            scope,
+            stream,
             axton_core::CursorRange {
                 from,
                 to,
@@ -340,16 +340,16 @@ pub(crate) async fn process_scope_delta(
             },
         );
     }
-    let changes = scope_changes(config, owner, &request.models, rows, host).await?;
+    let changes = stream_changes(config, owner, &request.models, rows, host).await?;
     String::from_utf8(
-        axton_core::ScopePullPage { cursors, changes }
+        axton_core::StreamPullPage { cursors, changes }
             .encode()
             .map_err(internal)?,
     )
     .map_err(internal)
 }
 
-pub(crate) async fn process_scope_bootstrap(
+pub(crate) async fn process_stream_bootstrap(
     config: &Config,
     owner: &str,
     bytes: &[u8],
@@ -357,23 +357,23 @@ pub(crate) async fn process_scope_bootstrap(
 ) -> Result<String> {
     let request = BootstrapRequest::decode(bytes).map_err(request_invalid)?;
     config.check_declared(&request.models)?;
-    let maximum = head(host, &request.scope).await?;
+    let maximum = head(host, &request.stream).await?;
     if request.until > maximum {
         return Err(request_invalid("bootstrap origin ahead of head"));
     }
-    let (rows, to) = scope_rows(
+    let (rows, to) = stream_rows(
         config,
-        &request.scope,
+        &request.stream,
         request.after,
         request.until,
         maximum,
         host,
     )
     .await?;
-    let changes = scope_changes(config, owner, &request.models, rows, host).await?;
+    let changes = stream_changes(config, owner, &request.models, rows, host).await?;
     String::from_utf8(
-        axton_core::ScopeBootstrapPage {
-            scope: request.scope,
+        axton_core::StreamBootstrapPage {
+            stream: request.stream,
             from: request.after,
             to,
             until: request.until,

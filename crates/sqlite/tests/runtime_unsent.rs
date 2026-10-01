@@ -763,7 +763,7 @@ fn neither_a_store_hook_nor_a_local_callback_resolves_unsent_work() {
     // The onStore transaction resolves nothing either.
     h.task(
         "sub",
-        json!({"kind":"scope","scope":"feed","subscribed":true}),
+        json!({"kind":"stream","stream":"feed","subscribed":true}),
     );
     h.run();
     let client = h.runtime.client();

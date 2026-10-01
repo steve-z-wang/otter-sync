@@ -269,10 +269,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             {
                 match serde_json::to_vec(page)
                     .map_err(|e| crate::invalid(e.to_string()))
-                    .and_then(|bytes| crate::ScopePullPage::decode(&bytes))
+                    .and_then(|bytes| crate::StreamPullPage::decode(&bytes))
                 {
                     Ok(page) => self.open_store(
-                        crate::StoreDelivery::ScopePage(page),
+                        crate::StoreDelivery::StreamPage(page),
                         StoreContinuation::Pull { request_id },
                         now,
                         entropy,
@@ -337,8 +337,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Command::Rebuild { discard_pending } => {
                 Some(self.rebuild(discard_pending.unwrap_or(false), now, entropy))
             }
-            Command::ScopeSubscribe { scope } => Some(self.subscribe_scope(scope)),
-            Command::ScopeBootstrap { .. } => self.bootstrap_scope(&request_id, &command),
+            Command::StreamSubscribe { stream } => Some(self.subscribe_stream(stream)),
+            Command::StreamBootstrap { .. } => self.bootstrap_stream(&request_id, &command),
             Command::Watch { model, spec } => Some(self.watch(model, spec.as_ref())),
             Command::WatchSql { sql, parameters } => Some(self.watch_sql(sql, parameters)),
             Command::Unwatch { observer_id } => {

@@ -611,3 +611,73 @@ test("a disposed handle is not retained by the client", async () => {
   // is released at once.
   assert.deepEqual(JSON.parse(stdout), { disposed: true, observed: true });
 });
+
+test('standing absence reclaims its cache; a late newer child remains gated by the application Query', async () => {
+  const { standingSchema, eligibleEntries, reclaimStanding } = await import('./loads-harness.mjs');
+  class FixtureTransaction extends Transaction {
+    get models() { return { Entry: { delete: identity => this.direct({ model: 'Entry', op: 'delete', identity }) } }; }
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'axton-standing-'));
+  const childGate = deferred(), pushGate = deferred();
+  let childRequested = false, standingHooks = 0, childHooks = 0;
+  const Client = createClient(native, FixtureTransaction, () => ({
+    open() {},
+    push: async (kind, text) => {
+      const request = JSON.parse(text);
+      if (kind === 'push') { await pushGate.promise; return JSON.stringify({ clientId: request.clientId, batchSequence: request.batchSequence, rejections: [], completions: request.mutations.map(m => ({callId:m.callId,outcome:{status:'succeeded',result:null}})), records: [] }); }
+      if (kind === 'load') {
+        childRequested = true; await childGate.promise;
+        return JSON.stringify({ loads: request.loads.map(intent => {
+          const response = page(intent, [['child','late child']]);
+          response.records[0].stamp = 20;
+          response.records[0].state.note = 'lost';
+          return response;
+        }) });
+      }
+      assert.equal(kind, 'fetch');
+      return JSON.stringify({ completion: { callId: request.callId, outcome: { status: 'succeeded', result: null } }, records: [{ model: request.model, identity: request.identity, stamp: request.model === 'Entry' ? 30 : 10, state: null }] });
+    },
+  }));
+  const client = await Client.open({ path: join(directory,'db'), schema: standingSchema, onStore: {
+    Standing: async (tx, changes) => { standingHooks++; await reclaimStanding(tx,changes); },
+    Entry: () => { childHooks++; },
+  }});
+  const create = (model,id,values) => ({model,op:'create',identity:{id},values});
+  let connection;
+  try {
+    await client.transaction(async tx => {
+      await tx.direct(create('Standing','lost',{})); await tx.direct(create('Standing','other',{}));
+      for (const id of ['child','own','independent','pending']) await tx.direct(create('Entry',id,{text:id,note:'lost'}));
+      await tx.direct(create('Composition','draft',{text:'device words',note:null}));
+      await tx.submitMutation('Edit',1,{entry:{id:'pending',text:'pending words'}}, x=>x, { local: async local => { await local.direct(create('Entry','companion',{text:'companion words',note:null})); } });
+      await tx.streams.subscribe('lost');
+    });
+    const job = await client.startLoad('Entries',1,args);
+    connection = await client.connect({url:'http://unused',token:'token'});
+    await until(()=>childRequested);
+    await client.unsubscribe('lost');
+    assert.equal(standingHooks,0,'unsubscribe and incomplete Load do not signal standing absence');
+    assert.notEqual(await client.read('Standing',{id:'lost'}),null);
+    await client.fetchModel('Standing',1,{id:'lost'},x=>x);
+    assert.equal(standingHooks,1);
+    assert.equal(await client.read('Entry',{id:'child'}),null,'direct hook deletion reclaims the cache');
+    assert.equal((await client.read('Entry',{id:'pending'})).text,'pending words');
+    assert.equal((await client.read('Entry',{id:'companion'})).text,'companion words');
+    assert.equal((await client.read('Composition',{id:'draft'})).text,'device words');
+    assert.deepEqual((await client.readSql(eligibleEntries)).map(r=>r.id),['companion','independent','own','pending']);
+    const epoch = await client.readSql("SELECT store_epoch FROM axton_client");
+    childGate.resolve(); await job.wait();
+    assert.equal((await client.read('Entry',{id:'child'})).text,'late child','direct cache deletion is not a request fence');
+    assert.equal(childHooks,1,'actual changed child authority still runs its hook');
+    assert.deepEqual(await client.readSql("SELECT store_epoch FROM axton_client"),epoch);
+    assert.deepEqual((await client.readSql(eligibleEntries)).map(r=>r.id),['companion','independent','own','pending'],'Query excludes rematerialized cache without standing');
+    assert.equal((await client.readSql('SELECT count(*) AS n FROM axton_mutation'))[0].n,1);
+    await client.fetchModel('Entry',1,{id:'child'},x=>x);
+    assert.equal(await client.read('Entry',{id:'child'}),null,'changed child absence applies normally');
+    assert.equal(childHooks,2);
+  } finally {
+    childGate.resolve(); pushGate.resolve();
+    if(connection) await connection.close();
+    await client.close(); await rm(directory,{recursive:true,force:true});
+  }
+});

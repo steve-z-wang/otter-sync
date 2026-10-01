@@ -7,8 +7,7 @@ import type {
   Invalidation,
   Locked,
   MemberPosition,
-  MemberState,
-  Memberships,
+  TrackingPair,
   Stamped,
   Stamps,
   Database,
@@ -16,9 +15,6 @@ import type {
 } from "@axtonjs/server";
 import type { PostgresDriver } from "./driver.mts";
 import * as SQL from "./sql.mts";
-
-/** The bound of every stamp, cursor and head: `Number.MAX_SAFE_INTEGER`. */
-const MAX_COUNTER = 9007199254740991;
 
 const safe = (n: unknown): number => {
   const number = Number(n);
@@ -36,37 +32,15 @@ const storedStamp = (n: unknown): number => {
 };
 
 /**
- * A Scope name is a string that is non-empty after JS `trim()`. The engine
- * applies its own check (`check_scope` in crates/core, Rust `trim()`) at
+ * A Stream name is a string that is non-empty after JS `trim()`. The engine
+ * applies its own check (`check_stream` in crates/core, Rust `trim()`) at
  * settlement; the two trims differ on a few code points such as U+FEFF and
  * U+0085, so this is a guard, not the same rule.
  */
-const scopeName = (scope: unknown): string => {
-  if (typeof scope !== "string" || scope.trim() === "")
-    throw new Error(`Invalid membership scope ${JSON.stringify(scope)}`);
-  return scope;
-};
-
-/**
- * The record operations name exactly these fields: a request carrying
- * another, or an empty or non-string model or identity key, is refused before
- * any SQL runs.
- */
-const MEMBERSHIP_FIELDS = {
-  lockRecord: ["op", "model", "identityKey"],
-  memberships: ["op", "model", "identityKey"],
-} as const;
-const checkMembershipRequest = (
-  r: { op: keyof typeof MEMBERSHIP_FIELDS } & Record<string, unknown>,
-): void => {
-  const allowed: readonly string[] = MEMBERSHIP_FIELDS[r.op];
-  for (const field of Object.keys(r))
-    if (!allowed.includes(field))
-      throw new Error(`Unknown ${r.op} field ${field}`);
-  if (typeof r.model !== "string" || r.model === "")
-    throw new Error(`${r.op}: model must be a non-empty string`);
-  if (typeof r.identityKey !== "string" || r.identityKey === "")
-    throw new Error(`${r.op}: identityKey must be a non-empty string`);
+const streamName = (stream: unknown): string => {
+  if (typeof stream !== "string" || stream.trim() === "")
+    throw new Error(`Invalid tracking stream ${JSON.stringify(stream)}`);
+  return stream;
 };
 
 type Query = (
@@ -74,15 +48,15 @@ type Query = (
   ...params: unknown[]
 ) => Promise<Record<string, unknown>[]>;
 
-/** `items` in groups of at most `SQL.SCOPE_BATCH`, in order. */
+/** `items` in groups of at most `SQL.STREAM_BATCH`, in order. */
 const batches = <T,>(items: readonly T[]): T[][] => {
   const groups: T[][] = [];
-  for (let at = 0; at < items.length; at += SQL.SCOPE_BATCH)
-    groups.push(items.slice(at, at + SQL.SCOPE_BATCH));
+  for (let at = 0; at < items.length; at += SQL.STREAM_BATCH)
+    groups.push(items.slice(at, at + SQL.STREAM_BATCH));
   return groups;
 };
 
-/** Canonical Scope order: UTF-8 byte order, which is code point order. */
+/** Canonical Stream order: UTF-8 byte order, which is code point order. */
 const byteOrder = (a: string, b: string): number => {
   const x = [...a].map((c) => c.codePointAt(0)!);
   const y = [...b].map((c) => c.codePointAt(0)!);
@@ -120,197 +94,193 @@ const strings = (value: unknown, what: string): string[] => {
 const json = (value: unknown): unknown =>
   typeof value === "string" ? JSON.parse(value) : value;
 
-async function lockScopes(q: Query, r: unknown): Promise<Acknowledged> {
-  const request = fieldsOf(r, ["op", "scopes"], "lockScopes");
-  const scopes = strings(request.scopes, "lockScopes scopes");
-  if (scopes.length === 0)
-    throw new Error("lockScopes needs at least one Scope");
-  scopes.forEach(scopeName);
-  await q(SQL.LOCK_SCOPES, JSON.stringify(scopes));
-  return null;
-}
-
-async function readScopeMembers(q: Query, r: unknown): Promise<MemberState[]> {
-  const request = fieldsOf(
-    r,
-    ["op", "scope", "explicitKeys", "tags", "all"],
-    "readScopeMembers",
-  );
-  const scope = scopeName(request.scope);
-  if (!Array.isArray(request.explicitKeys))
-    throw new Error("readScopeMembers explicitKeys must be an array");
-  const keys = request.explicitKeys.map((value) => {
-    const key = fieldsOf(value, ["model", "identityKey"], "member key");
-    return {
-      model: nonEmpty(key.model, "member key model"),
-      identityKey: nonEmpty(key.identityKey, "member key identityKey"),
-    };
-  });
-  const tags = strings(request.tags, "readScopeMembers tags");
-  if (request.all !== undefined && typeof request.all !== "boolean")
-    throw new Error("readScopeMembers all must be a boolean");
-  const all = request.all ?? false;
-  // The tags are selected once, with the first group of keys; a member
-  // reached twice is answered once.
-  const members = new Map<string, MemberState>();
-  const groups = keys.length ? batches(keys) : tags.length || all ? [[]] : [];
-  for (const [index, group] of groups.entries())
-    for (const row of await q(
-      SQL.READ_SCOPE_MEMBERS,
-      scope,
-      JSON.stringify(group),
-      JSON.stringify(index === 0 ? tags : []),
-      index === 0 && all,
-    ))
-      members.set(String(row.member_id), {
-        model: String(row.model),
-        identityKey: String(row.identity_key),
-        tags: strings(json(row.tags), "stored member tags"),
-      });
-  return [...members.values()];
-}
-
-type Delta = {
-  scope: string;
-  model: string;
-  identityKey: string;
-  present: boolean;
-  tags: string[];
-  publish: boolean;
-};
-const DELTA_FIELDS = [
-  "scope",
-  "model",
-  "identity",
-  "identityKey",
-  "present",
-  "tags",
-  "publish",
-] as const;
-const deltaOf = (value: unknown): Delta => {
-  const delta = fieldsOf(value, DELTA_FIELDS, "member delta");
-  if (typeof delta.present !== "boolean" || typeof delta.publish !== "boolean")
-    throw new Error("member delta present and publish must be booleans");
-  const tags = strings(delta.tags, "member delta tags");
-  if (!delta.present && (tags.length > 0 || !delta.publish))
-    throw new Error("an absent member delta has no tags and publishes");
+const keyOf = (
+  value: unknown,
+  extra: readonly string[] = [],
+): Record<string, unknown> & { model: string; identityKey: string } => {
+  const key = fieldsOf(value, ["model", "identityKey", ...extra], "record key");
   return {
-    scope: scopeName(delta.scope),
-    model: nonEmpty(delta.model, "member delta model"),
-    identityKey: nonEmpty(delta.identityKey, "member delta identityKey"),
-    present: delta.present,
-    tags,
-    publish: delta.publish,
+    ...key,
+    model: nonEmpty(key.model, "record model"),
+    identityKey: nonEmpty(key.identityKey, "record identityKey"),
   };
 };
-
-/**
- * Persist final member states, in statement groups over batches of
- * `SQL.SCOPE_BATCH` deltas: one head reservation per Scope, the log
- * (published positions written, kept ones read), live members and their
- * tags, deleted members, then unused tags. Every statement runs in the
- * caller's transaction; a failure anywhere leaves it to roll back whole.
- */
-async function applyScopeMembers(
+const pairId = (p: { model: string; identityKey: string; stream?: string }) =>
+  JSON.stringify([p.stream, p.model, p.identityKey]);
+const arrayOf = (value: unknown, what: string): unknown[] => {
+  if (!Array.isArray(value)) throw new Error(`${what} must be an array`);
+  return value;
+};
+const unique = (
+  values: { model: string; identityKey: string; stream?: string }[],
+  what: string,
+) => {
+  if (new Set(values.map(pairId)).size !== values.length)
+    throw new Error(`${what} repeats a key`);
+};
+async function lockStreams(q: Query, r: unknown): Promise<Acknowledged> {
+  const request = fieldsOf(r, ["op", "streams"], "lockStreams");
+  const streams = strings(request.streams, "lockStreams streams");
+  if (streams.length === 0)
+    throw new Error("lockStreams needs at least one Stream");
+  streams.forEach(streamName);
+  for (let i = 1; i < streams.length; i++)
+    if (byteOrder(streams[i - 1]!, streams[i]!) >= 0)
+      throw new Error("lockStreams needs canonical order");
+  for (const group of batches(streams))
+    await q(SQL.LOCK_STREAMS, JSON.stringify(group));
+  return null;
+}
+async function readTracking(q: Query, r: unknown): Promise<TrackingPair[]> {
+  const request = fieldsOf(r, ["op", "records", "pairs"], "readTracking");
+  const records = arrayOf(request.records, "records").map((v) => keyOf(v));
+  const pairs = arrayOf(request.pairs, "pairs").map((v) => {
+    const p = keyOf(v, ["stream"]);
+    return { ...p, stream: streamName(p.stream) };
+  });
+  unique(records, "records");
+  unique(pairs, "pairs");
+  const result = new Map<string, TrackingPair>();
+  const rg = batches(records),
+    pg = batches(pairs);
+  for (let i = 0; i < Math.max(rg.length, pg.length); i++)
+    for (const row of await q(
+      SQL.READ_TRACKING,
+      JSON.stringify(rg[i] ?? []),
+      JSON.stringify(pg[i] ?? []),
+    )) {
+      const pair = {
+        stream: streamName(row.stream),
+        model: nonEmpty(row.model, "stored model"),
+        identityKey: nonEmpty(row.identity_key, "stored key"),
+      };
+      result.set(pairId(pair), pair);
+    }
+  return [...result.values()];
+}
+async function guardRecords(q: Query, r: unknown): Promise<(number | null)[]> {
+  const request = fieldsOf(r, ["op", "records"], "guardRecords");
+  const records = arrayOf(request.records, "records").map((v) => {
+    const p = keyOf(v, ["mode"]);
+    if (
+      typeof p.mode !== "string" ||
+      !["advance", "ensure", "lock"].includes(p.mode)
+    )
+      throw new Error("invalid guard mode");
+    return { ...p, mode: p.mode };
+  });
+  unique(records, "guardRecords");
+  for (let i = 1; i < records.length; i++) {
+    const a = records[i - 1]!,
+      b = records[i]!;
+    if (
+      byteOrder(a.model, b.model) > 0 ||
+      (a.model === b.model && byteOrder(a.identityKey, b.identityKey) >= 0)
+    )
+      throw new Error("guardRecords needs canonical order");
+  }
+  const stamps: (number | null)[] = [];
+  for (const group of batches(
+    records.map((record, index) => ({ ...record, ordinal: index + 1 })),
+  )) {
+    const rows = await q(SQL.GUARD_RECORDS, JSON.stringify(group));
+    if (rows.length !== group.length)
+      throw new Error("guardRecords returned wrong number of stamps");
+    rows.forEach((row, i) => {
+      if (Number(row.ord) !== group[i]!.ordinal)
+        throw new Error("guardRecords returned wrong order");
+      if (row.stamp === null && group[i]!.mode !== "lock")
+        throw new Error("Only a lock guard may return null");
+      stamps.push(row.stamp === null ? null : storedStamp(row.stamp));
+    });
+  }
+  return stamps;
+}
+async function applyStreamMembers(
   q: Query,
   r: unknown,
 ): Promise<MemberPosition[]> {
-  const request = fieldsOf(r, ["op", "deltas"], "applyScopeMembers");
-  if (!Array.isArray(request.deltas))
-    throw new Error("applyScopeMembers deltas must be an array");
-  const deltas = request.deltas.map(deltaOf);
-  const pairs = new Set(
-    deltas.map((d) => JSON.stringify([d.scope, d.model, d.identityKey])),
-  );
-  if (pairs.size !== deltas.length)
-    throw new Error("applyScopeMembers names a pair twice");
-
-  // 1. One `head += N` per Scope, in canonical order.
+  const request = fieldsOf(r, ["op", "deltas"], "applyStreamMembers");
+  const deltas = arrayOf(request.deltas, "deltas").map((v) => {
+    const p = keyOf(v, ["stream", "identity", "publish"]);
+    if (
+      typeof p.identity !== "object" ||
+      p.identity === null ||
+      Array.isArray(p.identity)
+    )
+      throw new Error("identity must be an object");
+    if (typeof p.publish !== "boolean")
+      throw new Error("delta publish must be boolean");
+    return {
+      stream: streamName(p.stream),
+      model: p.model,
+      identityKey: p.identityKey,
+      publish: p.publish,
+    };
+  });
+  unique(deltas, "applyStreamMembers");
   const counts = new Map<string, number>();
-  for (const delta of deltas)
-    if (delta.publish)
-      counts.set(delta.scope, (counts.get(delta.scope) ?? 0) + 1);
+  for (const d of deltas)
+    if (d.publish) counts.set(d.stream, (counts.get(d.stream) ?? 0) + 1);
   const next = new Map<string, number>();
   for (const group of batches(
     [...counts].sort(([a], [b]) => byteOrder(a, b)),
   )) {
     const rows = await q(
       SQL.RESERVE_HEADS,
-      JSON.stringify(group.map(([scope, count]) => ({ scope, count }))),
+      JSON.stringify(group.map(([stream, count]) => ({ stream, count }))),
     );
-    const heads = new Map(rows.map((row) => [String(row.scope), row.head]));
-    for (const [scope, count] of group) {
-      if (!heads.has(scope))
-        throw new Error(
-          `Scope ${scope} cannot take ${count} more positions: its head would pass ${MAX_COUNTER} (counter overflow)`,
-        );
-      next.set(scope, safe(heads.get(scope)) - count + 1);
+    const heads = new Map(rows.map((row) => [String(row.stream), row.head]));
+    for (const [stream, count] of group) {
+      if (!heads.has(stream))
+        throw new Error(`Stream ${stream} head counter overflow`);
+      next.set(stream, safe(heads.get(stream)) - count + 1);
     }
   }
-
-  // 2. The log: consecutive cursors per Scope in delta order.
   const positions: MemberPosition[] = [];
-  const records: string[] = [];
   for (const group of batches(deltas)) {
-    const payload = group.map((d) => {
-      const cursor = d.publish ? next.get(d.scope)! : null;
-      if (cursor !== null) next.set(d.scope, cursor + 1);
-      const kind = d.present ? "upsert" : "remove";
+    const payload = group.map((d, index) => {
+      const cursor = d.publish ? next.get(d.stream)! : null;
+      if (cursor !== null) next.set(d.stream, cursor + 1);
       return {
-        scope: d.scope,
+        ...d,
+        cursor,
+        kind: "upsert",
+        ordinal: positions.length + index + 1,
+      };
+    });
+    const rows = await q(SQL.WRITE_STREAM_LOG, JSON.stringify(payload));
+    if (rows.length !== group.length)
+      throw new Error("Stream log returned wrong number of positions");
+    rows.forEach((row, i) => {
+      const d = group[i]!,
+        expected = payload[i]!;
+      if (
+        Number(row.ord) !== expected.ordinal ||
+        row.record_id == null ||
+        row.kind !== "upsert" ||
+        (d.publish && safe(row.cursor) !== expected.cursor)
+      )
+        throw new Error("Invalid Stream position or missing record metadata");
+      const cursor = storedStamp(row.cursor);
+      positions.push({
+        stream: d.stream,
         model: d.model,
         identityKey: d.identityKey,
         cursor,
-        kind,
-      };
-    });
-    const rows = await q(SQL.WRITE_SCOPE_LOG, JSON.stringify(payload));
-    if (rows.length !== group.length)
-      throw new Error("The Scope log answered a different number of positions");
-    group.forEach((d, i) => {
-      const row = rows[i]!;
-      if (row.record_id === null || row.record_id === undefined)
-        throw new Error(
-          `Record metadata missing for ${d.model} ${d.identityKey}`,
-        );
-      if (!d.publish && row.kind !== "upsert")
-        throw new Error(
-          `${d.model} ${d.identityKey} keeps no upsert position in Scope ${d.scope}`,
-        );
-      records.push(String(row.record_id));
-      positions.push({
-        scope: d.scope,
-        model: d.model,
-        identityKey: d.identityKey,
-        cursor: safe(row.cursor),
-        kind: d.present ? "upsert" : "remove",
+        kind: "upsert",
       });
     });
-  }
-
-  // 3. Live members with exactly their tags; 4. deleted members.
-  const dropped = new Set<string>();
-  const present = deltas.flatMap((d, i) =>
-    d.present ? [{ scope: d.scope, recordId: records[i]!, tags: d.tags }] : [],
-  );
-  for (const group of batches(present)) {
     await q(
-      SQL.INSERT_SCOPE_MEMBERS,
-      JSON.stringify(group.map(({ scope, recordId }) => ({ scope, recordId }))),
+      SQL.INSERT_STREAM_MEMBERS,
+      JSON.stringify(
+        rows.map((row, i) => ({
+          stream: group[i]!.stream,
+          recordId: String(row.record_id),
+        })),
+      ),
     );
-    for (const row of await q(SQL.SET_MEMBER_TAGS, JSON.stringify(group)))
-      dropped.add(String(row.tag_id));
   }
-  const absent = deltas.flatMap((d, i) =>
-    d.present ? [] : [{ scope: d.scope, recordId: records[i]! }],
-  );
-  for (const group of batches(absent))
-    for (const row of await q(SQL.DELETE_SCOPE_MEMBERS, JSON.stringify(group)))
-      dropped.add(String(row.tag_id));
-
-  // 5. Tags nobody carries any more; no log or record refers to a tag.
-  for (const group of batches([...dropped]))
-    await q(SQL.COLLECT_TAGS, JSON.stringify(group));
   return positions;
 }
 
@@ -426,15 +396,15 @@ export async function answer<Tx>(
       return acknowledged;
     }
     case "head": {
-      const rows = await q(SQL.HEAD, r.scope);
+      const rows = await q(SQL.HEAD, r.stream);
       const head: Head = rows.length ? safe(rows[0]!.head) : 0;
       return head;
     }
     case "scan": {
-      const rows = await q(SQL.SCAN, r.scope, BigInt(r.after), r.limit);
+      const rows = await q(SQL.SCAN, r.stream, BigInt(r.after), r.limit);
       const scanned: Invalidation[] = rows.map((row) => {
         if (row.kind !== "upsert" && row.kind !== "remove")
-          throw new Error("Invalid scope log kind");
+          throw new Error("Invalid stream log kind");
         if (
           row.model === null ||
           row.identity === null ||
@@ -442,10 +412,10 @@ export async function answer<Tx>(
             (row.stamp === null || row.stamp === undefined))
         )
           throw new Error(
-            `Record metadata missing for record ${row.record_id} on scope ${row.scope}`,
+            `Record metadata missing for record ${row.record_id} on stream ${row.stream}`,
           );
         return {
-          scope: String(row.scope),
+          stream: String(row.stream),
           kind: row.kind,
           cursor: safe(row.cursor),
           model: String(row.model),
@@ -498,7 +468,8 @@ export async function answer<Tx>(
       return stamps as Stamps;
     }
     case "lockRecord": {
-      checkMembershipRequest(r);
+      fieldsOf(r, ["op", "model", "identityKey"], "lockRecord");
+      keyOf({ model: r.model, identityKey: r.identityKey });
       const rows = await q(SQL.LOCK_RECORD, r.model, r.identityKey);
       if (rows.length > 1)
         throw new Error(
@@ -507,22 +478,14 @@ export async function answer<Tx>(
       const locked: Locked = rows.length ? storedStamp(rows[0]!.stamp) : null;
       return locked;
     }
-    case "memberships": {
-      checkMembershipRequest(r);
-      const rows = await q(SQL.MEMBERSHIPS, r.model, r.identityKey);
-      const memberships: Memberships = rows.map((row) => scopeName(row.scope));
-      if (new Set(memberships).size !== memberships.length)
-        throw new Error(
-          `Duplicate membership scope for ${r.model} ${r.identityKey}`,
-        );
-      return memberships;
-    }
-    case "lockScopes":
-      return lockScopes(q, r);
-    case "readScopeMembers":
-      return readScopeMembers(q, r);
-    case "applyScopeMembers":
-      return applyScopeMembers(q, r);
+    case "readTracking":
+      return readTracking(q, r);
+    case "guardRecords":
+      return guardRecords(q, r);
+    case "lockStreams":
+      return lockStreams(q, r);
+    case "applyStreamMembers":
+      return applyStreamMembers(q, r);
     case "savepoint":
     case "rollback":
     case "release": {

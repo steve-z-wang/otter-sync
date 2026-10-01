@@ -516,7 +516,7 @@ void main() {
           () => handshakes.length == 2,
           'the carried Scope subscribed again after the rebuild',
         );
-        expect(handshakes[1]['scopes'], ['scope']);
+        expect(handshakes[1]['streams'], ['scope']);
         await closed[0].future.timeout(
           const Duration(seconds: 5),
           onTimeout: () => fail('the old socket was not abandoned'),
@@ -873,7 +873,7 @@ void _mutationTests() {
             tx.read('Entry', {'id': 'e'}),
             tx.direct(const {}),
             tx.submitMutation('Ping', 1, const {}, _decode),
-            tx.scopes.subscribe('book'),
+            tx.streams.subscribe('book'),
             tx.savepoint(() async {}),
           ]) {
             await expectLater(refused, _stateError(_capability));
@@ -1146,7 +1146,7 @@ void _mutationTests() {
               _stateError(_capability),
             );
             await expectLater(
-              tx.scopes.subscribe('book'),
+              tx.streams.subscribe('book'),
               _stateError(_capability),
             );
             await expectLater(

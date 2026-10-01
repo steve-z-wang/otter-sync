@@ -751,14 +751,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     && self.lanes.downlink.stream_acknowledged()
                     && self
                         .client
-                        .subscription_state(&state.scope)
+                        .subscription_state(&state.stream)
                         .ok()
                         .flatten()
                         .is_some_and(|subscription| {
                             subscription.subscription_id == state.subscription_id
                         })
                 {
-                    self.acknowledged(vec![state.scope]);
+                    self.acknowledged(vec![state.stream]);
                 }
             }
             // The replica was rebuilt: the runtime already cancelled the old
@@ -778,13 +778,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // A stored Bootstrap row the ledger cannot decode: the application
             // hears about the contained registration once per unchanged
             // defect; no status transition accompanies it (#163).
-            DownlinkAction::LedgerIssue { scope, message } => {
-                self.error(format!("bootstrap ledger {scope}: {message}"));
+            DownlinkAction::LedgerIssue { stream, message } => {
+                self.error(format!("bootstrap ledger {stream}: {message}"));
             }
             DownlinkAction::Wake { .. } => self.wake_push(),
             DownlinkAction::Report { reports } => self.report(Diagnostic::Records { reports }),
-            DownlinkAction::Changed { scopes } => self.scopes_changed(&scopes),
-            DownlinkAction::Acknowledged { scopes } => self.acknowledged(scopes),
+            DownlinkAction::Changed { streams } => self.streams_changed(&streams),
+            DownlinkAction::Acknowledged { streams } => self.acknowledged(streams),
             DownlinkAction::Wait { millis } => {
                 let Some(connection) = &mut self.connection else {
                     return;

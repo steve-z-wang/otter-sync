@@ -55,7 +55,7 @@ export async function openTodoSession(options: {
   // made and runs in the background: the screen renders what is already local
   // and fills in as pages commit, so nothing here waits for the whole Scope.
   // Its rejection is a sync failure like any other and goes to the same scope.
-  const subscription = await client.scopes.subscribe(scope);
+  const subscription = await client.streams.subscribe(scope);
   subscription.bootstrap().catch(options.onConnectionError);
   const session: TodoSession = {
     watch(listener, onError) {

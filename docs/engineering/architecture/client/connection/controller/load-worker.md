@@ -2,7 +2,7 @@
 
 ## 1. Introduction and Goals
 
-The Load worker decides when native [Load](../../../schema/loads.md) pages are requested ([#173](https://github.com/zanminwang/axton/issues/173)). One worker per client runtime reads jobs with a ready page from SQLite, groups them into bounded `POST /sync/loads` batches, and queues each answer for the [Load engine](../../engine/loads.md) to apply. It is a pure Rust state machine driven by the [runtime](../../runtime.md), not a thread per job and not a JavaScript or Dart loop. Mutation ordering, push sequences and Scope cursors are untouched.
+The Load worker decides when native [Load](../../../schema/loads.md) pages are requested ([#173](https://github.com/zanminwang/axton/issues/173)). One worker per client runtime reads jobs with a ready page from SQLite, groups them into bounded `POST /sync/loads` batches, and queues each answer for the [Load engine](../../engine/loads.md) to apply. It is a pure Rust state machine driven by the [runtime](../../runtime.md), not a thread per job and not a JavaScript or Dart loop. Mutation ordering, push sequences and Stream cursors are untouched.
 
 ## 3. Context and Scope
 

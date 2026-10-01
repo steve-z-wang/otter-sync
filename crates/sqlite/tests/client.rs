@@ -95,7 +95,7 @@ fn watch_fires_only_for_declared_tables() {
     seed(&mut c, "A");
     assert!(entry.try_recv().is_ok());
     assert!(queue.try_recv().is_err());
-    c.transaction(|tx| tx.set_scope("book".into(), true))
+    c.transaction(|tx| tx.set_stream("book".into(), true))
         .unwrap();
     assert!(entry.try_recv().is_err());
     assert_eq!(
@@ -279,7 +279,8 @@ fn unsubscribe_retains_records_and_restarts_from_zero() {
     let mut other = page("a", 1, 2, Some("O"));
     other.changes[0].identity = json!({"id":"only-a"});
     c.apply_page(other).unwrap();
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
     assert_eq!(
         c.cursor("a").unwrap(),
         None,

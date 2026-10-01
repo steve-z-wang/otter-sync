@@ -4,7 +4,7 @@ import {
   Moment,
   Pin,
   Todo as TodoRef,
-  type Scope,
+  type Stream,
   type MutationContext,
   type MutationHandlerCall,
   type QueryContext,
@@ -74,45 +74,45 @@ void [
   removed,
 ];
 ctx.tx.rows.set(todo.id, todo);
-ctx.scope("project:1").add.todo({ id: "A" });
-ctx.scope("project:1").remove.todo({ id: "A" });
-ctx.touch.todo({ id: "A" });
+ctx.stream("project:1").track.todo({ id: "A" });
+ctx.stream("project:1").invalidate.todo({ id: "A" });
+ctx.invalidate.todo({ id: "A" });
 // @ts-expect-error missing identity
-ctx.scope("project:1").add.todo({});
+ctx.stream("project:1").track.todo({});
 // @ts-expect-error old API is gone
 ctx.publish({ scope: "project:1" });
 // @ts-expect-error old API is gone
-ctx.changes.add(todo);
+ctx.changes.track(todo);
 // @ts-expect-error Query has no membership writer
-queryCtx.scope("project:1").add.todo({ id: "A" });
+queryCtx.stream("project:1").track.todo({ id: "A" });
 // @ts-expect-error Query has no change declaration
-queryCtx.touch.todo({ id: "A" });
+queryCtx.invalidate.todo({ id: "A" });
 queryCtx.tx.rows.get(todo.id);
 void queryCtx.callId;
 // A structurally compatible record is accepted; only its identity is copied.
-ctx.scope("project:1").add.todo(todo);
+ctx.stream("project:1").track.todo(todo);
 const at = new Date();
 // A DateTime identity is a Date, and a composite identity names every component.
-ctx.touch.moment({ at });
-ctx.scope("project:1").add.pin({ todo: "A", at });
-ctx.touch.pin({ todo: "A", at });
+ctx.invalidate.moment({ at });
+ctx.stream("project:1").track.pin({ todo: "A", at });
+ctx.invalidate.pin({ todo: "A", at });
 // @ts-expect-error a DateTime identity is a Date, not its wire string
-ctx.touch.moment({ at: "2026-01-01T00:00:00.000Z" });
+ctx.invalidate.moment({ at: "2026-01-01T00:00:00.000Z" });
 // @ts-expect-error a composite identity needs every component
-ctx.scope("project:1").remove.pin({ todo: "A" });
+ctx.stream("project:1").invalidate.pin({ todo: "A" });
 // @ts-expect-error touch has one method per Model
-ctx.touch.nope({ id: "A" });
+ctx.invalidate.nope({ id: "A" });
 // Mixed sets take the generated, explicitly typed references.
-const scope: Scope = ctx.scope("project:1");
-scope.add([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
-scope.remove([TodoRef({ id: "B" })]);
-scope.add([{ model: "Todo", identity: { id: "C" } }]);
-scope.add([]);
+const scope: Stream = ctx.stream("project:1");
+scope.track([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
+scope.invalidate([TodoRef({ id: "B" })]);
+scope.track([{ model: "Todo", identity: { id: "C" } }]);
+scope.track([]);
 // @ts-expect-error a raw identity names no Model
-scope.add([{ id: "A" }]);
+scope.track([{ id: "A" }]);
 // @ts-expect-error a reference's identity is its own Model's
-scope.add([{ model: "Todo", identity: { at } }]);
-scope.remove(TodoRef({ id: "A" }));
+scope.track([{ model: "Todo", identity: { at } }]);
+scope.invalidate(TodoRef({ id: "A" }));
 // @ts-expect-error a constructor takes its own Model's identity
 Moment({ id: "A" });
 const narrowed: Extract<RecordRef, { model: "Pin" }> = Pin({ todo: "A", at });
@@ -126,7 +126,7 @@ const queries: Queries<Tx> = {
     async v2({ ctx }) {
       ctx.tx.rows.get("one");
       // @ts-expect-error Query handlers cannot declare changes
-      ctx.touch.todo({ id: "one" });
+      ctx.invalidate.todo({ id: "one" });
       return { todo: { id: "one" } };
     },
   },
@@ -145,7 +145,7 @@ const handlers: Mutations<Tx> = {
   put: {
     async v1({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.scope("todos").add.todo(args.todo);
+      ctx.stream("todos").track.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -154,7 +154,7 @@ const handlers: Mutations<Tx> = {
     },
     async v2({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.scope("todos").add.todo(args.todo);
+      ctx.stream("todos").track.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -187,16 +187,16 @@ const loaders: Loaders<Tx> = {
   },
 };
 void [handlers, loaders];
-// Loads (#173): typed args, a context whose Scopes only add, and identity pages.
+// Loads (#173): typed args, a context whose Streams only add, and identity pages.
 declare const loadCtx: LoadContext<Tx>;
 void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
-// A Load context adds page records to Scopes, and only adds.
-loadCtx.scope("project:1").add.todo({ id: "A" });
-loadCtx.scope("project:1").add([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
-// @ts-expect-error a Load Scope cannot remove
-loadCtx.scope("project:1").remove.todo({ id: "A" });
+// A Load context adds page records to Streams, and only adds.
+loadCtx.stream("project:1").track.todo({ id: "A" });
+loadCtx.stream("project:1").track([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
+// @ts-expect-error a Load Stream cannot remove
+loadCtx.stream("project:1").invalidate.todo({ id: "A" });
 // @ts-expect-error a Load context has no change declaration
-loadCtx.touch.todo({ id: "A" });
+loadCtx.invalidate.todo({ id: "A" });
 const loads: Loads<Tx> = {
   async todoPages({ ctx, args, continuation }) {
     ctx.tx.rows.get("one");
@@ -228,7 +228,7 @@ const wrongArgs: Loads<Tx> = {
     // @ts-expect-error a Load has only its declared args
     void args.cursor;
     // @ts-expect-error a Load handler cannot declare changes
-    ctx.touch.todo({ id: "one" });
+    ctx.invalidate.todo({ id: "one" });
     void wire;
     return { data: { todos: [], moments: [] }, next: null };
   },
@@ -261,20 +261,20 @@ if (false) {
   // The external transaction hands its body the same generated handles and
   // answers the body's own value.
   const external: Promise<number> = backend.transaction(
-    async ({ tx, scope: scope, touch }) => {
+    async ({ tx, stream: scope, invalidate: touch }) => {
       tx.rows.set(todo.id, todo);
       touch.todo({ id: todo.id });
-      scope("project:1").add.todo({ id: todo.id });
-      scope("project:1").add([Pin({ todo: todo.id, at })]);
+      scope("project:1").track.todo({ id: todo.id });
+      scope("project:1").track([Pin({ todo: todo.id, at })]);
       return tx.rows.size;
     },
   );
   void external;
   // @ts-expect-error the external body has no changes collector
   void backend.transaction(async ({ changes }) => changes);
-  void backend.transaction(async ({ scope: scope }) => {
+  void backend.transaction(async ({ stream: scope }) => {
     // @ts-expect-error missing identity
-    scope("project:1").add.todo({});
+    scope("project:1").track.todo({});
   });
   // @ts-expect-error a schema that retains Queries requires the queries map
   createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, loads });

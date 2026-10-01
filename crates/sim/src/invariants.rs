@@ -81,19 +81,19 @@ fn stamps_never_decrease(sim: &mut Sim) -> Result<(), String> {
 fn cursors_never_decrease(sim: &mut Sim) -> Result<(), String> {
     for i in up(sim) {
         let subs = sim.client(i).subscriptions().map_err(|e| e.to_string())?;
-        // Unsubscribing and resubscribing intentionally restarts a scope's cursor at
-        // 0 (the next sync of that scope is a fresh one; the records it delivered
-        // stay): forget the high-water mark for any scope the client is not
+        // Unsubscribing and resubscribing intentionally restarts a stream's cursor at
+        // 0 (the next sync of that stream is a fresh one; the records it delivered
+        // stay): forget the high-water mark for any stream the client is not
         // currently subscribed to, so that legitimate reset is not mistaken for a
         // regression.
         let subscribed: BTreeSet<String> = subs.iter().map(|(c, _)| c.clone()).collect();
         sim.seen_cursors
-            .retain(|(ci, scope), _| *ci != i || subscribed.contains(scope));
-        for (scope, cursor) in subs {
-            let slot = sim.seen_cursors.entry((i, scope.clone())).or_insert(0);
+            .retain(|(ci, stream), _| *ci != i || subscribed.contains(stream));
+        for (stream, cursor) in subs {
+            let slot = sim.seen_cursors.entry((i, stream.clone())).or_insert(0);
             if cursor < *slot {
                 return Err(format!(
-                    "client {i} scope {scope} cursor {cursor} < {}",
+                    "client {i} stream {stream} cursor {cursor} < {}",
                     *slot
                 ));
             }
@@ -135,15 +135,15 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
         if sim.client(i).pending_count().map_err(|e| e.to_string())? != 0 {
             continue;
         }
-        for (scope, cursor) in sim.client(i).subscriptions().map_err(|e| e.to_string())? {
-            if cursor != sim.host.head(&scope) {
+        for (stream, cursor) in sim.client(i).subscriptions().map_err(|e| e.to_string())? {
+            if cursor != sim.host.head(&stream) {
                 continue;
             }
-            for key in sim.host.scope_records(&scope) {
+            for key in sim.host.stream_records(&stream) {
                 // A direct write shadows this (client, key) pair on purpose (N4/L4):
-                // it never reaches the server, so no scope's invalidation stream
+                // it never reaches the server, so no stream's invalidation stream
                 // can ever agree with it. Exempt exactly this pair, not the whole
-                // client or scope.
+                // client or stream.
                 if sim.direct_writes.contains(&(i, key.encoded().unwrap())) {
                     continue;
                 }
@@ -154,25 +154,25 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
                 if sim.stale_reads.contains(&(i, key.encoded().unwrap())) {
                     continue;
                 }
-                // A record's invalidation row on this scope outlives its
+                // A record's invalidation row on this stream outlives its
                 // membership. A release establishes no content authority: a
                 // second hold, local work, or a fresh unheld read may retain
-                // content. Presence after release is checked in scope_tags
+                // content. Presence after release is checked in historical_removals
                 // traces, separately from current-member content convergence.
                 if !sim
                     .host
                     .stored_memberships(&key)
                     .iter()
-                    .any(|m| m == &scope)
+                    .any(|m| m == &stream)
                 {
                     continue;
                 }
-                // This scope's own invalidation for `key` is behind the record's
-                // stamp when a change was published to other scopes only: this
-                // scope was never told, so its head says nothing about that change.
+                // This stream's own invalidation for `key` is behind the record's
+                // stamp when a change was published to other streams only: this
+                // stream was never told, so its head says nothing about that change.
                 if sim
                     .host
-                    .scope_stamp(&scope, &key)
+                    .stream_stamp(&stream, &key)
                     .is_some_and(|stamp| stamp < sim.host.stamp(&key))
                 {
                     continue;
@@ -182,7 +182,7 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
                 sim.comparisons += 1;
                 if local != server {
                     return Err(format!(
-                        "client {i} at head of {scope} but {} is {local:?}, server has {server:?} (not converged)",
+                        "client {i} at head of {stream} but {} is {local:?}, server has {server:?} (not converged)",
                         key.encoded().unwrap()
                     ));
                 }
@@ -265,7 +265,7 @@ fn completed_work_had_a_matching_response(sim: &mut Sim) -> Result<(), String> {
 /// Republication cannot advance a stamp: on the server, every record's stamp is
 /// exactly the number of business changes committed to it, plus one if its first
 /// publication had to initialize missing metadata. Publishing an existing record to
-/// a scope, however often, contributes nothing.
+/// a stream, however often, contributes nothing.
 fn republication_cannot_advance_a_stamp(sim: &mut Sim) -> Result<(), String> {
     for (key, stamp, advances, initialized) in sim.host.stamp_accounting() {
         let expected = advances + u64::from(initialized);
@@ -391,7 +391,7 @@ mod tests {
         for i in 0..2 {
             sim.apply(Action::Subscribe {
                 client: i,
-                scope: "a".into(),
+                stream: "a".into(),
             })
             .unwrap();
         }
@@ -415,7 +415,7 @@ mod tests {
         let mut sim = Sim::new(4, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         sim.apply(Action::Enqueue {
@@ -467,7 +467,7 @@ mod tests {
         let mut sim = Sim::new(6, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         frozen_batch(&mut sim, "e1");
@@ -486,7 +486,7 @@ mod tests {
         let mut sim = Sim::new(5, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         frozen_batch(&mut sim, "e1");
@@ -512,7 +512,7 @@ mod tests {
         let mut sim = Sim::new(7, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         frozen_batch(&mut sim, "e1"); // stamp 1
@@ -520,7 +520,7 @@ mod tests {
         sim.apply(Action::ServerChange {
             key: "Entry:e1".into(),
             text: Some("v2".into()),
-            scopes: vec!["a".into()],
+            streams: vec!["a".into()],
         })
         .unwrap(); // stamp 2
         sim.settle();
@@ -559,7 +559,7 @@ mod tests {
         let mut sim = Sim::new(9, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         frozen_batch(&mut sim, "e1");
@@ -578,7 +578,7 @@ mod tests {
         // `apply` runs `unsubscribe_cannot_remove_content` itself.
         sim.apply(Action::Unsubscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         assert_eq!(
@@ -591,7 +591,7 @@ mod tests {
         sim.check().unwrap();
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
         // The cursor restarted at 0 in a new generation; that is not a regression.

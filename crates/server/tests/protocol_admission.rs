@@ -10,31 +10,35 @@ fn config() -> Config {
 fn every_external_ingress_refuses_missing_capability_before_host_effects() {
     let config = config();
     let host = Backend::new();
-    let bytes = b"{}";
-    let errors: Vec<Error> = vec![
-        run(axton_server::process_push(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_action_push(
-            &config, "alice", bytes, &host,
-        ))
-        .unwrap_err(),
-        run(axton_server::process_action(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_fetch(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_load(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_pull(&config, "alice", bytes, &host)).unwrap_err(),
-        run(axton_server::process_scope_pull(
-            &config, "alice", bytes, &host,
-        ))
-        .unwrap_err(),
-        run(axton_server::live::negotiate(
-            &config, "alice", bytes, &host,
-        ))
-        .unwrap_err(),
-        axton_server::validate_load_batch(bytes).unwrap_err(),
-    ];
-    for error in errors {
-        assert_eq!(error.code, "protocol.unsupported");
+    for bytes in [
+        b"{}".as_slice(),
+        b"{\"capabilities\":[\"scope-membership-v1\"]}".as_slice(),
+    ] {
+        let errors: Vec<Error> = vec![
+            run(axton_server::process_push(&config, "alice", bytes, &host)).unwrap_err(),
+            run(axton_server::process_action_push(
+                &config, "alice", bytes, &host,
+            ))
+            .unwrap_err(),
+            run(axton_server::process_action(&config, "alice", bytes, &host)).unwrap_err(),
+            run(axton_server::process_fetch(&config, "alice", bytes, &host)).unwrap_err(),
+            run(axton_server::process_load(&config, "alice", bytes, &host)).unwrap_err(),
+            run(axton_server::process_pull(&config, "alice", bytes, &host)).unwrap_err(),
+            run(axton_server::process_stream_pull(
+                &config, "alice", bytes, &host,
+            ))
+            .unwrap_err(),
+            run(axton_server::live::negotiate(
+                &config, "alice", bytes, &host,
+            ))
+            .unwrap_err(),
+            axton_server::validate_load_batch(bytes).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(error.code, "protocol.unsupported");
+        }
+        assert!(host.0.lock().unwrap().log.is_empty());
     }
-    assert!(host.0.lock().unwrap().log.is_empty());
 }
 #[test]
 fn malformed_negotiation_is_request_invalid_before_host_effects() {
@@ -42,7 +46,7 @@ fn malformed_negotiation_is_request_invalid_before_host_effects() {
     let host = Backend::new();
     for bytes in [b"{\"capabilities\":true}".as_slice(), b"[]", b"{"] {
         assert_eq!(
-            run(axton_server::process_scope_pull(
+            run(axton_server::process_stream_pull(
                 &config, "alice", bytes, &host
             ))
             .unwrap_err()

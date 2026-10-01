@@ -1,4 +1,4 @@
-//! Whole-Scope Bootstrap: the durable load of everything published to a Scope
+//! Whole-Stream Bootstrap: the durable load of everything published to a Stream
 //! before its subscription's origin. The ledger lives in the same
 //! `axton_subscription` row as the #150 identity and boundary, so a load is
 //! bound to one registration and goes with it.
@@ -8,7 +8,7 @@
 //! far the historical scan of `(0, S]` has committed. **L** is the ordinary
 //! delivery `cursor`. Bootstrap walks `(B, S]` and never writes S or L;
 //! delivery moves L and never writes B. The terminal historical page fixes
-//! **H**, the scope head its transaction observed, as a completion barrier:
+//! **H**, the stream head its transaction observed, as a completion barrier:
 //! the run completes once `B = S` and `L >= H`
 //! ([#151](https://github.com/zanminwang/axton/issues/151)).
 use crate::bootstrap_ledger::{LedgerIssue, Loaded};
@@ -40,8 +40,8 @@ pub const MAX_FAILURES: usize = 50;
 /// A stored failure message is cut to this many UTF-8 bytes.
 pub const MAX_MESSAGE: usize = 1024;
 
-/// How far a Scope's historical load has got. The names are the stored column
-/// values, and the phase of a Scope that never asked for one is
+/// How far a Stream's historical load has got. The names are the stored column
+/// values, and the phase of a Stream that never asked for one is
 /// [`BootstrapPhase::NotRequested`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,12 +166,12 @@ pub(crate) fn truncate(text: String, bytes: usize) -> String {
     text[..end].to_string()
 }
 
-/// One Scope's load, as the ledger holds it. `cursor` is B and `barrier` is H;
+/// One Stream's load, as the ledger holds it. `cursor` is B and `barrier` is H;
 /// S and L stay in [`SubscriptionState`], which Bootstrap never writes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapState {
-    pub scope: String,
+    pub stream: String,
     pub subscription_id: u64,
     pub state: BootstrapPhase,
     /// The retry fence: every call and every response belongs to one run.
@@ -193,14 +193,14 @@ impl BootstrapState {
         if self.barrier.is_some() && !barrier {
             return Err(invalid(format!(
                 "bootstrap barrier stored for {} in state {}",
-                self.scope,
+                self.stream,
                 self.state.as_str()
             )));
         }
         if self.error.is_some() && self.state != BootstrapPhase::Failed {
             return Err(invalid(format!(
                 "bootstrap failure stored for {} in state {}",
-                self.scope,
+                self.stream,
                 self.state.as_str()
             )));
         }
@@ -264,21 +264,21 @@ pub struct BootstrapTask {
     pub origin: u64,
 }
 impl BootstrapTask {
-    /// Final wire envelope, including the engine's scope protocol capability.
+    /// Final wire envelope, including the engine's stream protocol capability.
     pub fn encode_request(
         &self,
         models: std::collections::BTreeMap<String, u64>,
     ) -> Result<Vec<u8>> {
         axton_core::with_capabilities(
             &self.request(models).encode()?,
-            &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY],
+            &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
         )
     }
     /// The page this run asks for next: `(B, S]` with the client's declared
     /// read contracts, as [`PullRequest`](axton_core::PullRequest) carries them.
     pub fn request(&self, models: std::collections::BTreeMap<String, u64>) -> BootstrapRequest {
         BootstrapRequest {
-            scope: self.state.scope.clone(),
+            stream: self.state.stream.clone(),
             models,
             after: self.state.cursor,
             until: self.origin,
@@ -288,7 +288,7 @@ impl BootstrapTask {
 
 impl<S: ClientStore> Client<S> {
     /// The next run to ask a page for, rotating: the first schedulable task in
-    /// Scope order after `rotation`, or the first of all when that was the last
+    /// Stream order after `rotation`, or the first of all when that was the last
     /// one. One committed read, so the transaction is closed before the request
     /// leaves; a run that is catching up waits for delivery and is skipped.
     ///
@@ -301,14 +301,14 @@ impl<S: ClientStore> Client<S> {
         Ok(self.bootstrap_schedule_scan(rotation)?.0)
     }
     pub(crate) fn retry_reconciliation_failures(&mut self) -> Result<()> {
-        let scopes=self.view(|e| Ok(e.rows("SELECT scope FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
-        if scopes.is_empty() {
+        let streams=self.view(|e| Ok(e.rows("SELECT stream FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
+        if streams.is_empty() {
             return Ok(());
         }
         self.write(|e| {
             e.reconciled(|e| {
-                for scope in scopes {
-                    let Some(row) = e.bootstrap_row(&scope)? else {
+                for stream in streams {
+                    let Some(row) = e.bootstrap_row(&stream)? else {
                         continue;
                     };
                     if row.state.state != BootstrapPhase::Failed {
@@ -327,7 +327,7 @@ impl<S: ClientStore> Client<S> {
                     };
                     state.error = None;
                     written(e.set_bootstrap(&state, old_run)?)?;
-                    e.mark_bootstrap(&scope);
+                    e.mark_bootstrap(&stream);
                 }
                 Ok(())
             })
@@ -361,38 +361,38 @@ impl<S: ClientStore> Client<S> {
     pub(crate) fn any_reconciliation_pending(&mut self) -> Result<bool> {
         self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state NOT IN ('not_requested','complete') LIMIT 1", &[])?.is_some()))
     }
-    pub(crate) fn reconciliation_pending(&mut self, scope: &str) -> Result<bool> {
-        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE scope=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(scope)])?.is_some()))
+    pub(crate) fn reconciliation_pending(&mut self, stream: &str) -> Result<bool> {
+        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE stream=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(stream)])?.is_some()))
     }
-    pub(crate) fn apply_scope_history_page(
+    pub(crate) fn apply_stream_history_page(
         &mut self,
         reconciliation: bool,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ScopeBootstrapPage,
+        page: &axton_core::StreamBootstrapPage,
     ) -> Result<BootstrapApply> {
         self.write(|e| {
             e.reconciliation = reconciliation;
-            e.apply_scope_bootstrap_body(scope, subscription_id, run, expected_after, page)
+            e.apply_stream_bootstrap_body(stream, subscription_id, run, expected_after, page)
         })
     }
     pub(crate) fn fail_history_state(
         &mut self,
         reconciliation: bool,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         error: BootstrapError,
     ) -> Result<Option<BootstrapState>> {
         if !reconciliation {
-            return self.fail_bootstrap_state(scope, subscription_id, run, error);
+            return self.fail_bootstrap_state(stream, subscription_id, run, error);
         }
         self.write(|e| {
             e.reconciled(|e| {
                 let Some(row) = e
-                    .bootstrap_row(scope)?
+                    .bootstrap_row(stream)?
                     .filter(|r| r.subscription.subscription_id == subscription_id)
                 else {
                     return Ok(None);
@@ -404,7 +404,7 @@ impl<S: ClientStore> Client<S> {
                 state.state = BootstrapPhase::Failed;
                 state.error = Some(error);
                 written(e.set_bootstrap(&state, run)?)?;
-                e.mark_bootstrap(scope);
+                e.mark_bootstrap(stream);
                 Ok(Some(state))
             })
         })
@@ -446,19 +446,19 @@ impl<S: ClientStore> Client<S> {
             );
             tasks.sort_by(|a, b| {
                 a.state
-                    .scope
-                    .cmp(&b.state.scope)
+                    .stream
+                    .cmp(&b.state.stream)
                     .then(b.reconciliation.cmp(&a.reconciliation))
             });
             let mut issues = scan.issues;
             issues.extend(reconciliation.issues);
             let after = rotation
-                .and_then(|last| tasks.iter().find(|t| t.state.scope.as_str() > last))
+                .and_then(|last| tasks.iter().find(|t| t.state.stream.as_str() > last))
                 .or_else(|| tasks.first());
             Ok((after.cloned(), issues))
         })
     }
-    /// Every run waiting for its barrier, in Scope order: what a reopen
+    /// Every run waiting for its barrier, in Stream order: what a reopen
     /// re-evaluates before it issues any request. Like the schedule, it skips a
     /// row that cannot be decoded - which therefore never supplies completion
     /// evidence - so one damaged registration cannot hold every other reached
@@ -478,12 +478,12 @@ impl<S: ClientStore> Client<S> {
                 .rows
                 .into_iter()
                 .filter(|row| row.state.state == BootstrapPhase::CatchingUp)
-                .map(|row| row.state.scope)
+                .map(|row| row.state.stream)
                 .collect();
             Ok((waiting, scan.issues))
         })
     }
-    /// Register a durable load of everything published to `scope` before its
+    /// Register a durable load of everything published to `stream` before its
     /// origin, and answer with the stored state the call attached to.
     ///
     /// | Stored phase | Outcome |
@@ -493,23 +493,23 @@ impl<S: ClientStore> Client<S> {
     /// | `complete` | unchanged: the call resolves locally, offline included |
     /// | `failed` | `requested`, run + 1, the failure and the barrier cleared, B retained |
     ///
-    /// It is one local transaction and needs no connection: a Scope registered
+    /// It is one local transaction and needs no connection: a Stream registered
     /// offline carries a requested load until #150 commits its origin.
     pub fn request_bootstrap(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
     ) -> Result<BootstrapState> {
         // A call that changes nothing is answered from the committed reader, so
         // it neither bumps the client generation nor notifies a watcher. The
         // write re-reads the row inside its transaction, so a concurrent change
         // still wins.
-        let stored = self.bootstrap_state(scope, subscription_id)?;
+        let stored = self.bootstrap_state(stream, subscription_id)?;
         if stored.state.active() || stored.state == BootstrapPhase::Complete {
             return Ok(stored);
         }
         self.write(|e| {
-            let row = e.bootstrap_of(scope, subscription_id)?;
+            let row = e.bootstrap_of(stream, subscription_id)?;
             let mut state = row.state;
             if state.state.active() || state.state == BootstrapPhase::Complete {
                 return Ok(state);
@@ -520,15 +520,19 @@ impl<S: ClientStore> Client<S> {
             state.barrier = None;
             state.error = None;
             written(e.set_bootstrap(&state, from_run)?)?;
-            e.mark_bootstrap(scope);
+            e.mark_bootstrap(stream);
             Ok(state)
         })
     }
     /// The stored load state of the registration `subscription_id` names.
-    pub fn bootstrap_state(&mut self, scope: &str, subscription_id: u64) -> Result<BootstrapState> {
-        self.view(|e| Ok(e.bootstrap_of(scope, subscription_id)?.state))
+    pub fn bootstrap_state(
+        &mut self,
+        stream: &str,
+        subscription_id: u64,
+    ) -> Result<BootstrapState> {
+        self.view(|e| Ok(e.bootstrap_of(stream, subscription_id)?.state))
     }
-    /// The initialized runs with work left, in Scope order: what the scheduler
+    /// The initialized runs with work left, in Stream order: what the scheduler
     /// rotates through, one page at a time.
     pub fn bootstrap_tasks(&mut self) -> Result<Vec<BootstrapState>> {
         self.view(|e| e.bootstrap_tasks())
@@ -540,7 +544,7 @@ impl<S: ClientStore> Client<S> {
     /// refused as [`BootstrapApply::Stale`] - writing nothing at all - unless
     /// it still answers the stored task: the same identity, the same run, a
     /// phase that is still loading, `bootstrap_cursor == expected_after`, and a
-    /// page that echoes this Scope, that `from` and the stored origin. A
+    /// page that echoes this Stream, that `from` and the stored origin. A
     /// protocol-invalid envelope is an error and commits nothing. Otherwise the
     /// records are staged by stamp; if any of them failed to read, validate or
     /// apply, the successful ones stay committed, the interval does not advance
@@ -550,7 +554,7 @@ impl<S: ClientStore> Client<S> {
     /// delivery has reached it.
     pub fn apply_bootstrap_page(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
@@ -561,11 +565,11 @@ impl<S: ClientStore> Client<S> {
         let answered = |row: Option<&Loaded>| {
             row.is_some_and(|row| answers(row, subscription_id, run, expected_after, page))
         };
-        if !self.view(|e| Ok(answered(e.bootstrap_row(scope)?.as_ref())))? {
+        if !self.view(|e| Ok(answered(e.bootstrap_row(stream)?.as_ref())))? {
             return Ok(BootstrapApply::Stale);
         }
         self.write(|e| {
-            e.apply_bootstrap_page_body(scope, subscription_id, run, expected_after, page)
+            e.apply_bootstrap_page_body(stream, subscription_id, run, expected_after, page)
         })
     }
 
@@ -575,26 +579,26 @@ impl<S: ClientStore> Client<S> {
     /// refusal. `false` when the run is no longer the active one.
     pub fn fail_bootstrap(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         error: BootstrapError,
     ) -> Result<bool> {
         Ok(self
-            .fail_bootstrap_state(scope, subscription_id, run, error)?
+            .fail_bootstrap_state(stream, subscription_id, run, error)?
             .is_some())
     }
     /// The same guarded transition with the state produced inside its write.
     /// The worker can announce it without a fallible read after commit.
     pub(crate) fn fail_bootstrap_state(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         error: BootstrapError,
     ) -> Result<Option<BootstrapState>> {
         self.write(|e| {
-            let row = e.bootstrap_of(scope, subscription_id)?;
+            let row = e.bootstrap_of(stream, subscription_id)?;
             let mut state = row.state;
             if state.run != run || !state.state.active() {
                 return Ok(None);
@@ -602,17 +606,17 @@ impl<S: ClientStore> Client<S> {
             state.state = BootstrapPhase::Failed;
             state.error = Some(error);
             written(e.set_bootstrap(&state, run)?)?;
-            e.mark_bootstrap(scope);
+            e.mark_bootstrap(stream);
             Ok(Some(state))
         })
     }
     /// Complete every named run whose fixed barrier ordinary delivery has
     /// reached, in one transaction, and answer with the states it committed.
-    /// The caller runs it after committed delivery progress; a Scope that is
+    /// The caller runs it after committed delivery progress; a Stream that is
     /// not catching up, or is still behind its barrier, contributes nothing.
-    /// An empty list names no Scope and settles nothing.
+    /// An empty list names no Stream and settles nothing.
     ///
-    /// Which Scopes are settleable is decided by committed reads, in chunks of
+    /// Which Streams are settleable is decided by committed reads, in chunks of
     /// at most 900 names, barrier and delivery cursor included - each chunk is
     /// its own read, with no snapshot across them, which the write's own fence
     /// makes harmless - so a run still short of its barrier opens no
@@ -622,20 +626,20 @@ impl<S: ClientStore> Client<S> {
     /// supplies no completion evidence and cannot hold the others open; the
     /// Downlink worker reports the candidates it left out
     /// ([#163](https://github.com/zanminwang/axton/issues/163)).
-    pub fn settle_bootstrap_barriers(&mut self, scopes: &[String]) -> Result<Vec<BootstrapState>> {
-        Ok(self.settle_bootstrap_barriers_scan(scopes)?.0)
+    pub fn settle_bootstrap_barriers(&mut self, streams: &[String]) -> Result<Vec<BootstrapState>> {
+        Ok(self.settle_bootstrap_barriers_scan(streams)?.0)
     }
     /// [`Client::settle_bootstrap_barriers`] with an issue for every candidate
     /// it left out because its row cannot be decoded. The committed reads
-    /// decide which scopes enter the write - only a candidate whose whole
+    /// decide which streams enter the write - only a candidate whose whole
     /// row decoded does, so a damaged one is never written - and whether a
     /// write is worth opening at all; an empty set reads and writes nothing.
     /// The write then re-reads and fences each healthy candidate itself.
     pub(crate) fn settle_bootstrap_barriers_scan(
         &mut self,
-        scopes: &[String],
+        streams: &[String],
     ) -> Result<(Vec<BootstrapState>, Vec<LedgerIssue>)> {
-        let (states, issues) = self.settle_history_barriers_scan(scopes)?;
+        let (states, issues) = self.settle_history_barriers_scan(streams)?;
         Ok((
             states
                 .into_iter()
@@ -646,10 +650,10 @@ impl<S: ClientStore> Client<S> {
     }
     pub(crate) fn settle_history_barriers_scan(
         &mut self,
-        scopes: &[String],
+        streams: &[String],
     ) -> Result<HistoryBarrierScan> {
-        let scan = self.view(|e| e.settleable_scan(scopes))?;
-        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(scopes)))?;
+        let scan = self.view(|e| e.settleable_scan(streams))?;
+        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(streams)))?;
         let mut issues = scan.issues;
         issues.extend(reconciliation.issues);
         if scan.rows.is_empty() && reconciliation.rows.is_empty() {
@@ -657,12 +661,12 @@ impl<S: ClientStore> Client<S> {
         }
         let settled = self.write(|e| {
             let mut settled = vec![];
-            for scope in &scan.rows {
-                settled.extend(e.settle_barrier(scope)?.map(|state| (state, false)));
+            for stream in &scan.rows {
+                settled.extend(e.settle_barrier(stream)?.map(|state| (state, false)));
             }
             e.reconciled(|e| {
-                for scope in &reconciliation.rows {
-                    settled.extend(e.settle_barrier(scope)?.map(|state| (state, true)));
+                for stream in &reconciliation.rows {
+                    settled.extend(e.settle_barrier(stream)?.map(|state| (state, true)));
                 }
                 Ok(())
             })?;
@@ -678,7 +682,7 @@ impl<S: ClientStore> Client<S> {
 impl<S: ClientStore> Engine<'_, S> {
     pub(crate) fn apply_bootstrap_prepared_body(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
@@ -689,12 +693,12 @@ impl<S: ClientStore> Engine<'_, S> {
             return Ok(BootstrapApply::Stale);
         };
         if self
-            .bootstrap_row(scope)?
+            .bootstrap_row(stream)?
             .as_ref()
             .is_some_and(|row| answers(row, subscription_id, run, expected_after, page))
         {
             return self.apply_bootstrap_page_body(
-                scope,
+                stream,
                 subscription_id,
                 run,
                 expected_after,
@@ -709,14 +713,14 @@ impl<S: ClientStore> Engine<'_, S> {
 
     pub(crate) fn apply_bootstrap_page_body(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
         page: &BootstrapPage,
     ) -> Result<BootstrapApply> {
         let Some(row) = self
-            .bootstrap_row(scope)?
+            .bootstrap_row(stream)?
             .filter(|row| answers(row, subscription_id, run, expected_after, page))
         else {
             return Ok(BootstrapApply::Stale);
@@ -734,7 +738,7 @@ impl<S: ClientStore> Engine<'_, S> {
             state.error = Some(BootstrapError::new(
                 RECORDS_FAILED,
                 format!(
-                    "{} of {} records on the bootstrap page ({}, {}] for {scope} could not be applied",
+                    "{} of {} records on the bootstrap page ({}, {}] for {stream} could not be applied",
                     failures.len(),
                     page.records.len(),
                     page.from,
@@ -743,7 +747,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 failures,
             ));
             written(self.set_bootstrap(&state, state.run)?)?;
-            self.mark_bootstrap(scope);
+            self.mark_bootstrap(stream);
             return Ok(BootstrapApply::Failed { state, report });
         }
         state.cursor = page.to;
@@ -760,7 +764,7 @@ impl<S: ClientStore> Engine<'_, S> {
             }
         }
         written(self.set_bootstrap(&state, state.run)?)?;
-        self.mark_bootstrap(scope);
+        self.mark_bootstrap(stream);
         Ok(BootstrapApply::Applied { state, report })
     }
 }
@@ -788,7 +792,7 @@ fn answers(
             BootstrapPhase::Requested | BootstrapPhase::Loading
         )
         && row.state.cursor == expected_after
-        && page.scope == row.state.scope
+        && page.stream == row.state.stream
         && page.from == expected_after
         && row.subscription.starting_cursor == Some(page.until)
 }
@@ -808,15 +812,15 @@ fn validate(page: &BootstrapPage, expected_after: u64) -> Result<()> {
 impl<S: ClientStore> Client<S> {
     /// Apply the response to a scheduled task, preserving its opaque history lane.
     /// The task's registration, run and cursor fence stale or duplicate responses.
-    pub fn apply_scope_bootstrap_task(
+    pub fn apply_stream_bootstrap_task(
         &mut self,
         task: BootstrapTask,
-        page: &axton_core::ScopeBootstrapPage,
+        page: &axton_core::StreamBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
-        self.apply_scope_history_page(
+        self.apply_stream_history_page(
             task.reconciliation,
-            &task.state.scope,
+            &task.state.stream,
             task.state.subscription_id,
             task.state.run,
             task.state.cursor,
@@ -825,36 +829,36 @@ impl<S: ClientStore> Client<S> {
     }
 
     /// Apply explicitly requested ordinary bootstrap history.
-    /// Responses to [`Client::bootstrap_schedule`] use [`Client::apply_scope_bootstrap_task`].
-    pub fn apply_scope_bootstrap_page(
+    /// Responses to [`Client::bootstrap_schedule`] use [`Client::apply_stream_bootstrap_task`].
+    pub fn apply_stream_bootstrap_page(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ScopeBootstrapPage,
+        page: &axton_core::StreamBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
         self.write(|e| {
-            e.apply_scope_bootstrap_body(scope, subscription_id, run, expected_after, page)
+            e.apply_stream_bootstrap_body(stream, subscription_id, run, expected_after, page)
         })
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
-    pub(crate) fn apply_scope_bootstrap_prepared_body(
+    pub(crate) fn apply_stream_bootstrap_prepared_body(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ScopeBootstrapPage,
+        page: &axton_core::StreamBootstrapPage,
         admitted: Option<&BootstrapState>,
     ) -> Result<BootstrapApply> {
         if admitted.is_none() {
             return Ok(BootstrapApply::Stale);
         }
         let envelope = BootstrapPage {
-            scope: page.scope.clone(),
+            stream: page.stream.clone(),
             from: page.from,
             to: page.to,
             until: page.until,
@@ -862,12 +866,12 @@ impl<S: ClientStore> Engine<'_, S> {
             records: vec![],
         };
         if self
-            .bootstrap_row(scope)?
+            .bootstrap_row(stream)?
             .as_ref()
             .is_some_and(|row| answers(row, subscription_id, run, expected_after, &envelope))
         {
-            return self.apply_scope_bootstrap_body(
-                scope,
+            return self.apply_stream_bootstrap_body(
+                stream,
                 subscription_id,
                 run,
                 expected_after,
@@ -878,20 +882,20 @@ impl<S: ClientStore> Engine<'_, S> {
         // delivery. Keep admitted membership and authority, but never move the
         // removed run or its replacement's progress.
         page.validate()?;
-        let report = self.apply_scope_changes(&page.changes)?;
+        let report = self.apply_stream_changes(&page.changes)?;
         Ok(BootstrapApply::Detached { report })
     }
-    pub(crate) fn apply_scope_bootstrap_body(
+    pub(crate) fn apply_stream_bootstrap_body(
         &mut self,
-        scope: &str,
+        stream: &str,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: &axton_core::ScopeBootstrapPage,
+        page: &axton_core::StreamBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
         let legacy = BootstrapPage {
-            scope: page.scope.clone(),
+            stream: page.stream.clone(),
             from: page.from,
             to: page.to,
             until: page.until,
@@ -899,13 +903,13 @@ impl<S: ClientStore> Engine<'_, S> {
             records: vec![],
         };
         let Some(row) = self
-            .bootstrap_row(scope)?
+            .bootstrap_row(stream)?
             .filter(|row| answers(row, subscription_id, run, expected_after, &legacy))
         else {
             return Ok(BootstrapApply::Stale);
         };
         validate(&legacy, expected_after)?;
-        let report = self.apply_scope_changes(&page.changes)?;
+        let report = self.apply_stream_changes(&page.changes)?;
         let failures: Vec<_> = report
             .reports
             .iter()
@@ -916,11 +920,11 @@ impl<S: ClientStore> Engine<'_, S> {
             state.state = BootstrapPhase::Failed;
             state.error = Some(BootstrapError::new(
                 RECORDS_FAILED,
-                "scope bootstrap records failed",
+                "stream bootstrap records failed",
                 failures,
             ));
             written(self.set_bootstrap(&state, run)?)?;
-            self.mark_bootstrap(scope);
+            self.mark_bootstrap(stream);
             return Ok(BootstrapApply::Failed { state, report });
         }
         state.cursor = page.to;
@@ -938,7 +942,7 @@ impl<S: ClientStore> Engine<'_, S> {
             };
         }
         written(self.set_bootstrap(&state, run)?)?;
-        self.mark_bootstrap(scope);
+        self.mark_bootstrap(stream);
         Ok(BootstrapApply::Applied { state, report })
     }
 }

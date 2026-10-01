@@ -57,11 +57,11 @@ bash scripts/build.sh
     print(entry?.text);
     ```
 
-These examples open local storage without a connection. A fresh database returns null until you write local data or synchronize a scope. Use one active client per SQLite file and a separate file per signed-in user.
+These examples open local storage without a connection. A fresh database returns null until you write local data or synchronize a stream. Use one active client per SQLite file and a separate file per signed-in user.
 
 ## Connect to your backend
 
-Start the fixture backend with `bash integration/e2e/fixtures/round-trip/run.sh` (or the [To-do backend](../getting-started.md) with its own token and scope), then connect the client:
+Start the fixture backend with `bash integration/e2e/fixtures/round-trip/run.sh` (or the [To-do backend](../getting-started.md) with its own token and stream), then connect the client:
 
 === "TypeScript"
 
@@ -76,7 +76,7 @@ Start the fixture backend with `bash integration/e2e/fixtures/round-trip/run.sh`
       },
       connection: { onError: console.error },
     });
-    await client.scopes.subscribe('book:demo');
+    await client.streams.subscribe('book:demo');
     ```
 
 === "Flutter"
@@ -93,12 +93,12 @@ Start the fixture backend with `bash integration/e2e/fixtures/round-trip/run.sh`
       ),
       onError: (error) => print(error),
     );
-    await client.scopes.subscribe('book:demo');
+    await client.streams.subscribe('book:demo');
     ```
 
-Configure the server once. AXTON submits durable calls over HTTP, catches up from saved scope cursors over HTTP, and receives ongoing record changes over WebSocket. Direct calls use the separate request/response route. Every received page passes through the Rust engine into local SQLite and updates `watch` subscriptions.
+Configure the server once. AXTON submits durable calls over HTTP, catches up from saved stream cursors over HTTP, and receives ongoing record changes over WebSocket. Direct calls use the separate request/response route. Every received page passes through the Rust engine into local SQLite and updates `watch` subscriptions.
 
-Subscribing wakes the connection; it does not wait for initial records, and it does not download the records the scope already holds: a subscription starts at the position the server acknowledges for it and delivers what is published from then on. Call `bootstrap()` on the handle it returns to load that earlier history in the background ([subscribe and observe](sync.md#subscribe-and-observe)). The registration is durable, so it works offline and survives a restart, and so is the load. A client with no subscribed scopes can still send durable calls and receive its own result and authority. Subscribe when your UI needs later changes made elsewhere. [Call results](sync.md#receive-your-own-results) and live synchronization are described in the sync guide. Replace the demo URL and token with your application's endpoint and credentials. On a physical device, localhost refers to that device; use a reachable development-server address.
+Subscribing wakes the connection; it does not wait for initial records, and it does not download the records the stream already holds: a subscription starts at the position the server acknowledges for it and delivers what is published from then on. Call `bootstrap()` on the handle it returns to load that earlier history in the background ([subscribe and observe](sync.md#subscribe-and-observe)). The registration is durable, so it works offline and survives a restart, and so is the load. A client with no subscribed streams can still send durable calls and receive its own result and authority. Subscribe when your UI needs later changes made elsewhere. [Call results](sync.md#receive-your-own-results) and live synchronization are described in the sync guide. Replace the demo URL and token with your application's endpoint and credentials. On a physical device, localhost refers to that device; use a reachable development-server address.
 
 Omit `server` to open local storage without starting a connection.
 

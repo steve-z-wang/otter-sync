@@ -307,7 +307,7 @@ void main() {
         return;
       }
       final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-      expect(body['capabilities'], contains('scope-membership-v1'));
+      expect(body['capabilities'], contains('stream-membership-v1'));
       bodies.add(body);
       request.response.write(
         jsonEncode({
@@ -587,7 +587,7 @@ void main() {
           return;
         }
         final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-        expect(body['capabilities'], contains('scope-membership-v1'));
+        expect(body['capabilities'], contains('stream-membership-v1'));
         request.response.write(
           jsonEncode({
             'completion': {
@@ -658,7 +658,7 @@ void main() {
         return;
       }
       final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-      expect(body['capabilities'], contains('scope-membership-v1'));
+      expect(body['capabilities'], contains('stream-membership-v1'));
       final mutation = (body['mutations'] as List).single as Map;
       executions++;
       request.response.write(
@@ -730,7 +730,7 @@ void main() {
           return;
         }
         final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-        expect(body['capabilities'], contains('scope-membership-v1'));
+        expect(body['capabilities'], contains('stream-membership-v1'));
         requests++;
         request.response.write(
           jsonEncode({
@@ -841,7 +841,7 @@ void main() {
           return;
         }
         final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-        expect(body['capabilities'], contains('scope-membership-v1'));
+        expect(body['capabilities'], contains('stream-membership-v1'));
         requests++;
         request.response.write(
           jsonEncode({
@@ -1020,7 +1020,7 @@ void main() {
           return;
         }
         final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-        expect(body['capabilities'], contains('scope-membership-v1'));
+        expect(body['capabilities'], contains('stream-membership-v1'));
         bodies.add(body);
         final call = body['call'] as Map;
         final args = (call['args'] as Map)['note'] as Map;

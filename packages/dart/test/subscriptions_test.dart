@@ -22,7 +22,7 @@ Map<String, dynamic> snapshot({
   bool closed = false,
 }) => {
   'kind': 'subscription',
-  'scope': 'scope',
+  'stream': 'scope',
   'subscriptionId': 1,
   'status': {
     'active': active,
@@ -97,10 +97,10 @@ class FakeHost implements ObserverHost {
   }
 }
 
-/// The value of `scopeSubscribe` for the one identity these tests use.
+/// The value of `streamSubscribe` for the one identity these tests use.
 Map<String, dynamic> subscribed([String observerId = '7']) => {
   'state': {
-    'scope': 'scope',
+    'stream': 'scope',
     'subscriptionId': 1,
     'startingCursor': 0,
     'cursor': 0,
@@ -117,7 +117,7 @@ Future<(Subscriptions, Subscription)> handle(
 ]) async {
   final registry = Subscriptions(host);
   final subscribing = registry.subscribe('scope');
-  host.succeed('scopeSubscribe', subscribed());
+  host.succeed('streamSubscribe', subscribed());
   host.emit('7', first ?? snapshot());
   return (registry, await subscribing);
 }
@@ -125,7 +125,7 @@ Future<(Subscriptions, Subscription)> handle(
 /// The acknowledgement: every subscribed scope at `head`.
 String ack(Map sub, int head) => jsonEncode({
   'type': 'subscribed',
-  'cursors': {for (final scope in sub['scopes'] as List) scope: head},
+  'cursors': {for (final scope in sub['streams'] as List) scope: head},
 });
 Map<String, Object?> page(String text, int cursor, int stamp) => {
   'cursors': {
@@ -134,7 +134,7 @@ Map<String, Object?> page(String text, int cursor, int stamp) => {
   'changes': [
     {
       'kind': 'upsert',
-      'scope': 'scope',
+      'stream': 'scope',
       'cursor': cursor + 1,
       'model': 'Entry',
       'identity': {'id': 'live'},
@@ -149,7 +149,7 @@ Map<String, Object?> page(String text, int cursor, int stamp) => {
 /// ([#151](https://github.com/zanminwang/axton/issues/151)).
 Map<String, Object?> loaded(Map body, int head) => {
   'mode': 'bootstrap',
-  'scope': body['scope'],
+  'stream': body['stream'],
   'from': body['after'],
   'to': body['until'],
   'until': body['until'],
@@ -280,42 +280,51 @@ class FakeServer {
 
 void main() {
   test(
-    'transaction scopes persist only committed registrations on reopen',
+    'transaction streams persist only committed registrations on reopen',
     () async {
       final directory = await Directory.systemTemp.createTemp(
-        'axton-dart-transaction-scopes-',
+        'axton-dart-transaction-streams-',
       );
       var client = await Fixture.openClient(directory);
       try {
         await client.transaction((tx) async {
-          await tx.scopes.subscribe('U');
-          await tx.scopes.subscribe('discard');
+          await tx.streams.subscribe('U');
+          await tx.savepoint(() async {
+            await tx.streams.subscribe('discard');
+            await expectLater(
+              tx.savepoint(() async {
+                await tx.streams.subscribe('nested-rollback');
+                throw StateError('nested rollback');
+              }),
+              throwsStateError,
+            );
+          });
         });
-        expect((await client.syncState())['scopes'], ['U', 'discard']);
+        expect((await client.syncState())['streams'], ['U', 'discard']);
         await client.transaction((tx) async {
-          await tx.scopes.unsubscribe('discard');
+          await tx.streams.unsubscribe('discard');
         });
-        expect((await client.syncState())['scopes'], ['U']);
+        expect((await client.syncState())['streams'], ['U']);
         await expectLater(
           client.transaction((tx) async {
-            await tx.scopes.unsubscribe('U');
-            await tx.scopes.subscribe('discard');
-            await tx.scopes.subscribe('rolled-back');
-            throw StateError('rollback scopes');
+            await tx.streams.unsubscribe('U');
+            await tx.streams.subscribe('discard');
+            await tx.streams.subscribe('rolled-back');
+            throw StateError('rollback streams');
           }),
           throwsA(
             isA<StateError>().having(
               (error) => error.message,
               'message',
-              'rollback scopes',
+              'rollback streams',
             ),
           ),
         );
-        expect((await client.syncState())['scopes'], ['U']);
+        expect((await client.syncState())['streams'], ['U']);
         await client.close();
         client = await Fixture.openClient(directory);
         expect(
-          (await client.syncState())['scopes'],
+          (await client.syncState())['streams'],
           ['U'],
           reason:
               'reopen preserves committed registrations before any subscribe call',
@@ -337,10 +346,10 @@ void main() {
         final second = await client.subscribe('scope');
         expect(identical(first, second), isTrue);
         expect(
-          identical(await client.scopes.subscribe('scope'), first),
+          identical(await client.streams.subscribe('scope'), first),
           isTrue,
         );
-        expect(first.scope, 'scope');
+        expect(first.stream, 'scope');
         expect(
           first.status,
           const SubscriptionStatus(
@@ -351,7 +360,7 @@ void main() {
           reason: 'registered offline: durable intent with no boundary',
         );
         final state = await client.syncState();
-        expect(state['scopes'], ['scope']);
+        expect(state['streams'], ['scope']);
         expect(
           state['cursors'],
           isEmpty,
@@ -491,7 +500,7 @@ void main() {
                 'the failing observer heard the first snapshot and the commit',
           );
           expect(
-            (await client.syncState())['scopes'],
+            (await client.syncState())['streams'],
             ['scope'],
             reason: 'nothing was rolled back',
           );
@@ -665,10 +674,10 @@ void main() {
     },
   );
 
-  // A replica rebuild carries the Scope names over with fresh identities, so a
+  // A replica rebuild carries the Stream names over with fresh identities, so a
   // handle from before it names a registration that no longer exists: the one
   // public path where an identity-fenced removal answers "nothing went" while
-  // the Scope has a live registration.
+  // the Stream has a live registration.
   test(
     'a stale handle from before a rebuild cannot disturb the subscription that replaced it',
     () async {
@@ -756,14 +765,14 @@ void main() {
           stale.status,
           invalidated,
           reason:
-              'the new session acknowledges the Scope name, not the stale handle',
+              'the new session acknowledges the Stream name, not the stale handle',
         );
-        // The old handle removes nothing: the Scope's current registration is
+        // The old handle removes nothing: the Stream's current registration is
         // another identity, whose acknowledgement is not this handle's to
         // forget.
         await stale.unsubscribe();
         expect(
-          (await client.syncState())['scopes'],
+          (await client.syncState())['streams'],
           ['scope'],
           reason: 'the current registration stands',
         );
@@ -802,10 +811,10 @@ void main() {
             connection: SubscriptionConnection.stopped,
           ),
         );
-        expect((await client.syncState())['scopes'], isEmpty);
+        expect((await client.syncState())['streams'], isEmpty);
         await first.unsubscribe();
         expect(
-          (await client.syncState())['scopes'],
+          (await client.syncState())['streams'],
           isEmpty,
           reason: 'repeating it on a closed handle is a no-op',
         );
@@ -813,16 +822,16 @@ void main() {
         expect(identical(second, first), isFalse);
         await first.unsubscribe();
         expect(
-          (await client.syncState())['scopes'],
+          (await client.syncState())['streams'],
           ['scope'],
           reason:
               'an old handle must not delete the subscription that replaced it',
         );
         expect(second.status.active, isTrue);
-        // The Scope-named form removes whatever is registered and closes its
+        // The Stream-named form removes whatever is registered and closes its
         // handle.
         await client.unsubscribe('scope');
-        expect((await client.syncState())['scopes'], isEmpty);
+        expect((await client.syncState())['streams'], isEmpty);
         expect(second.status.connection, SubscriptionConnection.stopped);
       } finally {
         await fixture.close();
@@ -865,7 +874,7 @@ void main() {
         final reopened = await Fixture.openClient(directory);
         try {
           expect(
-            (await reopened.syncState())['scopes'],
+            (await reopened.syncState())['streams'],
             ['scope'],
             reason: 'closing the client deleted nothing',
           );
@@ -879,7 +888,7 @@ void main() {
     },
   );
 
-  // Whole-Scope bootstrap through the handle
+  // Whole-Stream bootstrap through the handle
   // ([#151](https://github.com/zanminwang/axton/issues/151)): registration is
   // eager and local, completion is a committed transition, and the status says
   // which of the two the run is waiting for.
@@ -957,7 +966,7 @@ void main() {
             'changes': [
               {
                 'kind': 'upsert',
-                'scope': 'scope',
+                'stream': 'scope',
                 'cursor': 3,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
@@ -1237,7 +1246,7 @@ void main() {
       final (_, subscription) = await handle(host);
       final refused = subscription.bootstrap();
       host.fail(
-        'scopeBootstrap',
+        'streamBootstrap',
         TaskFailure(
           'subscription.closed: subscription 1 for scope is closed; '
           'it has no bootstrap state',
@@ -1252,7 +1261,7 @@ void main() {
       // An unrelated engine failure is still the caller's to see, unchanged.
       final other = StateError('the database is locked');
       final locked = subscription.bootstrap();
-      host.fail('scopeBootstrap', other);
+      host.fail('streamBootstrap', other);
       await expectLater(locked, throwsA(same(other)));
     },
   );
@@ -1271,7 +1280,7 @@ void main() {
       registry.closing();
       host.emit('7', terminal());
       host.fail(
-        'scopeBootstrap',
+        'streamBootstrap',
         TaskFailure('client_closed', const {'code': 'client_closed'}),
       );
       expect(await pending, isA<ClientClosedException>());
@@ -1286,7 +1295,7 @@ void main() {
       final host2 = FakeHost();
       final (_, queued) = await handle(host2);
       final late = queued.bootstrap();
-      host2.fail('scopeBootstrap', StateError('client_closed'));
+      host2.fail('streamBootstrap', StateError('client_closed'));
       await expectLater(late, throwsA(isA<ClientClosedException>()));
     },
   );
@@ -1308,17 +1317,17 @@ void main() {
       // The runtime observed run 2 and failed the waiter of run 1 with its
       // code; run 1 must not complete from run 2.
       host.fail(
-        'scopeBootstrap',
+        'streamBootstrap',
         TaskFailure('bootstrap.superseded', const {
           'code': 'bootstrap.superseded',
         }),
       );
       final superseded = await first;
       expect(superseded, isA<BootstrapSupersededException>());
-      expect((superseded as BootstrapSupersededException).scope, 'scope');
+      expect((superseded as BootstrapSupersededException).stream, 'scope');
       // The newest run still settles the call that belongs to it.
       host.emit('7', snapshot(phase: 'complete'));
-      host.succeed('scopeBootstrap');
+      host.succeed('streamBootstrap');
       expect(await second, 'resolved');
       expect(
         subscription.status.bootstrap,
@@ -1335,13 +1344,13 @@ void main() {
         (_) => 'resolved',
         onError: (Object error) => error,
       );
-      final task = host.pending('scopeBootstrap');
+      final task = host.pending('streamBootstrap');
       expect(task.command, {
-        'kind': 'scopeBootstrap',
-        'scope': 'scope',
+        'kind': 'streamBootstrap',
+        'stream': 'scope',
         'subscriptionId': 1,
       }, reason: 'submitted when the call is made');
-      host.fail('scopeBootstrap', failure);
+      host.fail('streamBootstrap', failure);
       return call;
     }
 
@@ -1366,7 +1375,7 @@ void main() {
         }),
       ),
       isA<BootstrapSupersededException>().having(
-        (e) => e.scope,
+        (e) => e.stream,
         'scope',
         'scope',
       ),
@@ -1389,7 +1398,7 @@ void main() {
     );
     // Success is `null`, once the completion committed.
     final done = subscription.bootstrap();
-    host.succeed('scopeBootstrap');
+    host.succeed('streamBootstrap');
     await done;
   });
 
@@ -1449,7 +1458,7 @@ void main() {
       final host = FakeHost();
       final (registry, subscription) = await handle(host);
       final repeated = registry.subscribe('scope');
-      host.succeed('scopeSubscribe', subscribed());
+      host.succeed('streamSubscribe', subscribed());
       expect(identical(await repeated, subscription), isTrue);
       expect(host.listeners.keys, ['7'], reason: 'one observer per identity');
     },
@@ -1495,7 +1504,7 @@ void main() {
       expect(await subscription.watch().toList(), [stopped]);
       // The identity is forgotten: a later registration is another handle.
       final next = registry.subscribe('scope');
-      host.succeed('scopeSubscribe', {
+      host.succeed('streamSubscribe', {
         ...subscribed('9'),
         'state': <String, dynamic>{
           ...subscribed()['state'] as Map<String, dynamic>,
@@ -1512,19 +1521,19 @@ void main() {
       final host = FakeHost();
       final (_, subscription) = await handle(host);
       final removing = subscription.unsubscribe();
-      expect(host.pending('scopeUnsubscribe').command, {
-        'kind': 'scopeUnsubscribe',
-        'scope': 'scope',
+      expect(host.pending('streamUnsubscribe').command, {
+        'kind': 'streamUnsubscribe',
+        'stream': 'scope',
         'subscriptionId': 1,
       });
       expect(subscription.status.active, isTrue);
       host.emit('7', terminal());
-      host.succeed('scopeUnsubscribe', {'removed': true});
+      host.succeed('streamUnsubscribe', {'removed': true});
       await removing;
       expect(subscription.status.active, isFalse);
       await subscription.unsubscribe();
       expect(
-        host.submitted.where((t) => t.command['kind'] == 'scopeUnsubscribe'),
+        host.submitted.where((t) => t.command['kind'] == 'streamUnsubscribe'),
         hasLength(1),
         reason: 'repeating it on a closed handle is a no-op',
       );
@@ -1559,7 +1568,7 @@ void main() {
   );
 
   test(
-    'unsubscribing a Scope while a bootstrap is submitted rejects it as closed',
+    'unsubscribing a Stream while a bootstrap is submitted rejects it as closed',
     () async {
       final fixture = await Fixture.open();
       try {

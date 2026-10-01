@@ -1,61 +1,57 @@
 {
-  "description": "Bounds on the Scope enrollment one Load page declares, after deduplicating repeated Scope/record pairs (a repeated pair unions its tags into the first). A pair's bytes are the UTF-8 length of the canonical JSON of its add intent {scope, kind, record: {identity, model}, tags} with its canonical identity.",
+  "description": "Bounds on distinct Stream tracking pairs declared by one Load page after expansion and deduplication; bytes measure each canonical track intent.",
   "pairs": 1000,
   "bytes": 1048576,
   "intents": [
     {
       "name": "an ASCII pair",
       "intent": {
-        "kind": "add",
-        "scope": "project:p1",
+        "kind": "track",
         "record": {
           "model": "Todo",
           "identity": {
             "id": "t1"
           }
         },
-        "tags": []
+        "stream": "project:p1"
       },
-      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"scope\":\"project:p1\",\"tags\":[]}",
-      "bytes": 94
+      "encoded": "{\"kind\":\"track\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"stream\":\"project:p1\"}",
+      "bytes": 87
     },
     {
       "name": "multibyte UTF-8 counts bytes, not characters",
       "intent": {
-        "kind": "add",
-        "scope": "équipe",
+        "kind": "track",
         "record": {
           "model": "Todo",
           "identity": {
             "id": "日本"
           }
         },
-        "tags": []
+        "stream": "équipe"
       },
-      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\"},\"scope\":\"équipe\",\"tags\":[]}",
-      "bytes": 95
+      "encoded": "{\"kind\":\"track\",\"record\":{\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\"},\"stream\":\"équipe\"}",
+      "bytes": 88
     },
     {
       "name": "escapes and an astral character",
       "intent": {
-        "kind": "add",
-        "scope": "a\"b\n😀",
+        "kind": "track",
         "record": {
           "model": "Todo",
           "identity": {
             "id": "t\\1"
           }
         },
-        "tags": []
+        "stream": "a\"b\n😀"
       },
-      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\"},\"scope\":\"a\\\"b\\n😀\",\"tags\":[]}",
-      "bytes": 96
+      "encoded": "{\"kind\":\"track\",\"record\":{\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\"},\"stream\":\"a\\\"b\\n😀\"}",
+      "bytes": 89
     },
     {
       "name": "identity members in canonical order",
       "intent": {
-        "kind": "add",
-        "scope": "org",
+        "kind": "track",
         "record": {
           "model": "Member",
           "identity": {
@@ -63,29 +59,10 @@
             "orgId": "o1"
           }
         },
-        "tags": []
+        "stream": "org"
       },
-      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\"},\"scope\":\"org\",\"tags\":[]}",
-      "bytes": 106
-    },
-    {
-      "name": "tags count as spelled, in declaration order",
-      "intent": {
-        "kind": "add",
-        "scope": "project:p1",
-        "record": {
-          "model": "Todo",
-          "identity": {
-            "id": "t1"
-          }
-        },
-        "tags": [
-          "Journal:1",
-          "équipe"
-        ]
-      },
-      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"scope\":\"project:p1\",\"tags\":[\"Journal:1\",\"équipe\"]}",
-      "bytes": 115
+      "encoded": "{\"kind\":\"track\",\"record\":{\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\"},\"stream\":\"org\"}",
+      "bytes": 99
     }
   ]
 }

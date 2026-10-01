@@ -26,7 +26,7 @@ export async function createFixture() {
       handlerCalls++;
       await ctx.tx.query("INSERT INTO action_e2e_todo(id,title) VALUES($1,$2)", [args.todo.id, args.todo.title.trim()]);
       // Joins its Scope once: this change and every later one reach its subscribers.
-      ctx.scope("todos:demo").add.todo(args.todo);
+      ctx.stream("todos:demo").track.todo(args.todo);
     },
     async updateTodo({ ctx, args }) {
       handlerCalls++;
@@ -57,7 +57,7 @@ export async function createFixture() {
       const changed = await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE id=$1 RETURNING id", [args.todo.id, args.todo.title?.trim()]);
       if (changed.rows.length === 0) throw new CallRejected("todo.missing");
       await ctx.tx.query("UPDATE action_e2e_note SET body=$2 WHERE id=$1", [args.note, args.body]);
-      ctx.touch.note({ id: args.note });
+      ctx.invalidate.note({ id: args.note });
     },
     async sendEmail({ ctx, args }) {
       handlerCalls++;
@@ -99,7 +99,7 @@ export async function createFixture() {
       handlerCalls++;
       const rows = (await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE title ILIKE '%' || $1 || '%' RETURNING id", [args.query, args.title])).rows.map((row) => ({ id: String(row.id) })).sort((a, b) => a.id.localeCompare(b.id));
       // Explicit extra touches: distributed to their Scopes, not caller authority.
-      for (const todo of rows) ctx.touch.todo(todo);
+      for (const todo of rows) ctx.invalidate.todo(todo);
       return { todos: rows, first: rows[0] ?? null };
     },
   };

@@ -80,7 +80,7 @@ void main() {
       final handlers = <String, StoreHook>{
         'Entry': (tx, changes) async {
           observed.add(changes);
-          await tx.scopes.subscribe('project:p1');
+          await tx.streams.subscribe('project:p1');
         },
       };
       final client = await Client.open(
@@ -121,7 +121,7 @@ void main() {
       expect(
         carrier.commands,
         equals([
-          {'kind': 'scope', 'scope': 'project:p1', 'subscribed': true},
+          {'kind': 'stream', 'stream': 'project:p1', 'subscribed': true},
         ]),
       );
       expect(
@@ -212,7 +212,7 @@ void main() {
             );
             final id = (changes.single['identity'] as Map)['id'];
             if (id == 'unawaited') {
-              unawaited(tx.scopes.subscribe('x'));
+              unawaited(tx.streams.subscribe('x'));
             } else {
               await tx.savepoint(
                 () => tx.savepoint<void>(
@@ -1024,8 +1024,8 @@ void main() {
           'invoke' => {
             'outcome': {'status': 'succeeded', 'result': null},
           },
-          'scopeSubscribe' => {
-            'state': {'scope': 'book', 'subscriptionId': 1},
+          'streamSubscribe' => {
+            'state': {'stream': 'book', 'subscriptionId': 1},
             'observerId': '9',
           },
           'watch' || 'watchSql' => {'observerId': '3'},
@@ -1103,7 +1103,7 @@ void main() {
       );
       final subscription = await step(
         '122',
-        () => client.subscribeScope('book'),
+        () => client.subscribeStream('book'),
       );
       await step('124', subscription.bootstrap);
       await step('126', subscription.unsubscribe);
@@ -1198,7 +1198,7 @@ void main() {
       try {
         final reported = <Object>[];
         final subscribed =
-            await bridge.task({'kind': 'scopeSubscribe', 'scope': 'book'})
+            await bridge.task({'kind': 'streamSubscribe', 'stream': 'book'})
                 as Map;
         runZonedGuarded(
           () => bridge.listen(
@@ -1212,8 +1212,8 @@ void main() {
         final state = subscribed['state'] as Map;
         await bridge
             .task({
-              'kind': 'scopeUnsubscribe',
-              'scope': 'book',
+              'kind': 'streamUnsubscribe',
+              'stream': 'book',
               'subscriptionId': state['subscriptionId'],
             })
             .timeout(const Duration(seconds: 5));
@@ -1235,7 +1235,7 @@ void main() {
         final heard = <Map<String, dynamic>>[];
         String? claimed;
         final value = await bridge.task(
-          {'kind': 'scopeSubscribe', 'scope': 'book'},
+          {'kind': 'streamSubscribe', 'stream': 'book'},
           onValue: (value) {
             claimed = (value as Map)['observerId'] as String;
             expect(heard, isEmpty, reason: 'claimed before its first snapshot');
@@ -1261,8 +1261,8 @@ void main() {
     try {
       await expectLater(
         bridge.task({
-          'kind': 'scopeBootstrap',
-          'scope': 'book',
+          'kind': 'streamBootstrap',
+          'stream': 'book',
           'subscriptionId': 99,
         }),
         throwsA(

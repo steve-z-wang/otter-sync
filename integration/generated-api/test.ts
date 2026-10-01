@@ -20,10 +20,10 @@ const externalHooks: StoreHooks = {
     const at: Date = change.row.at;
     const status: 'active' | 'archived' = change.row.status;
     await tx.models.entry.get({id});
-    await tx.scopes.subscribe(`entry:${id}`);
+    await tx.streams.subscribe(`entry:${id}`);
     void [at,status];
    } else {
-    await tx.scopes.unsubscribe(`entry:${id}`);
+    await tx.streams.unsubscribe(`entry:${id}`);
     // @ts-expect-error deletes have no row
     void change.row;
    }
@@ -93,18 +93,18 @@ if(false){
  const bad:Entry={...row,status:'typo'};
 
  type Tx={rows:Map<string,object>};
- const shorthand:Handlers<Tx>['addBook']=async({input,tx,scope: scope,touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);scope('c').add.book(input.book)};
+ const shorthand:Handlers<Tx>['addBook']=async({input,tx,stream: scope,invalidate:touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);scope('c').track.book(input.book)};
  const grouped:Handlers<Tx>['editEntry']={
-  async v1({input,scope: scope}){scope('c').add.entry(input.target.identity)},
+  async v1({input,stream: scope}){scope('c').track.entry(input.target.identity)},
   // Legacy slot handlers declare through the same handles; mixed lists take explicit references and may be empty.
-  async v2({input,scope: scope,touch}){touch.entry(input.entry.identity);scope('c').add([EntryRef(input.entry.identity),Book({id:'b'})]);scope('audit').remove([])},
+  async v2({input,stream: scope,invalidate:touch}){touch.entry(input.entry.identity);scope('c').track([EntryRef(input.entry.identity),Book({id:'b'})]);scope('audit').invalidate([])},
   // @ts-expect-error v3 is not a retained version of EditEntry
   async v3(){},
  };
  // @ts-expect-error a mutation with two retained versions cannot register a bare function
  const bare:Handlers<Tx>['editEntry']=async()=>{};
  // @ts-expect-error every retained version must be registered
- const partial:Handlers<Tx>['editEntry']={v2:async({input,scope: scope})=>{scope('c').add.entry(input.entry.identity)}};
+ const partial:Handlers<Tx>['editEntry']={v2:async({input,stream: scope})=>{scope('c').track.entry(input.entry.identity)}};
  // @ts-expect-error handlers declare through `scope` and `touch`; there is no notify and no return value
  const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({scope:'c',records:[]})};
  // @ts-expect-error the old publish API is gone
@@ -114,59 +114,47 @@ if(false){
 
  // The generated declaration API, per schema: operation before Model.
  const declare=(ctx:MutationContext<Tx>,queryCtx:QueryContext<Tx>,call:HandlerCall<Tx,AddBookInput>,external:TransactionCall<Tx>)=>{
-  ctx.scope('project:1').add.book({id:'A'});
-  ctx.scope('project:1').remove.book({id:'A'});
-  ctx.touch.book({id:'A'});
+  ctx.stream('project:1').track.book({id:'A'});
+  ctx.stream('project:1').invalidate.book({id:'A'});
+  ctx.invalidate.book({id:'A'});
   // @ts-expect-error missing identity
-  ctx.scope('project:1').add.book({});
+  ctx.stream('project:1').track.book({});
   // @ts-expect-error old API is gone
   ctx.publish({scope:'project:1'});
   // @ts-expect-error Query has no membership writer
-  queryCtx.scope('project:1').add.book({id:'A'});
+  queryCtx.stream('project:1').track.book({id:'A'});
   // @ts-expect-error Query has no change declaration
-  queryCtx.touch.book({id:'A'});
+  queryCtx.invalidate.book({id:'A'});
   // A Scope handle exposes each Model under its operation namespaces.
-  const project=ctx.scope('project:1');
-  project.add([Book({id:'A'}),Comment({id:'c'}),EntryRef({id:row.id})]);
-  project.remove.comment({id:'c'});
-  call.scope('project:1').add.entry({id:row.id});
-  call.touch.counter({id:'n'});
-  external.scope('project:1').remove([Book({id:'A'})]);
-  external.touch.draft({id:row.id});
+  const project=ctx.stream('project:1');
+  project.track([Book({id:'A'}),Comment({id:'c'}),EntryRef({id:row.id})]);
+  project.invalidate.comment({id:'c'});
+  call.stream('project:1').track.entry({id:row.id});
+  call.invalidate.counter({id:'n'});
+  external.stream('project:1').invalidate([Book({id:'A'})]);
+  external.invalidate.draft({id:row.id});
   // @ts-expect-error a raw identity names no Model
-  project.add([{id:'A'}]);
+  project.track([{id:'A'}]);
   // @ts-expect-error a UUID identity is a string
-  external.touch.entry({id:1});
+  external.invalidate.entry({id:1});
   // @ts-expect-error the Scope's mixed verbs take references, not identities
-  project.remove({id:'A'});
-  // Chained labels and explicit selections support typed and mixed record declarations.
-  ctx.scope('project:1').add.entry({id:row.id}).tag(['X']);
-  project.add([Book({id:'A'}),EntryRef({id:row.id})]).tag(['X','Y']);
-  project.add.book({id:'A'});
-  project.add([Comment({id:'c'})]);
-  project.where({ tags: { all: ['X'] } }).remove();
-  external.scope('project:1').where({ tags: { all: ['X'] } }).remove();
-  call.scope('project:1').add([Book({id:'A'})]).tag(['X']);
-  // @ts-expect-error a tagged add still names the Model's identity: a Book id is a string
-  project.add.book({id:1}).tag(['X']);
-  // @ts-expect-error an Entry identity is not a Book identity
-  project.add.entry({title:'t'}).tag(['X']);
-  // @ts-expect-error labels are strings or lists of strings
-  project.add.book({id:'A'}).tag(3);
-  // @ts-expect-error label options are retired
-  project.add.book({id:'A'}, {tag:'X'});
-  // @ts-expect-error a Model's remove takes an identity, not a tag selector
-  project.remove.book({tag:'X'});
-  // @ts-expect-error a remove carries no tags
-  project.remove([Book({id:'A'})]).tag(['X']);
-  // @ts-expect-error a tag selector is not a record reference
-  project.remove({tag:'X'});
-  project.add.book([{id:'A'}]);
+  project.invalidate({id:'A'});
+  // Mixed, single and list operands, including the composite identity.
+  ctx.stream(['project:1','audit']).track([Book({id:'A'}),EntryRef({id:row.id})]);
+  project.track.book([{id:'A'}]);
+  ctx.stream('project:1').track(Book({id:'A'}));
+  ctx.invalidate([Book({id:'A'}),Comment({id:'c'})]);
+  // @ts-expect-error tags are retired
+  project.track.book({id:'A'}).tag('X');
+  // @ts-expect-error selectors are retired
+  project.where({ tags: { all: ['X'] } });
+  // @ts-expect-error tracking has no public withdrawal
+  project.remove(Book({id:'A'}));
  };
  // @ts-expect-error a handler has no return value to select a scope with
  const returned:Handlers<Tx>['addBook']=async()=>({scope:'c'});
  // @ts-expect-error loaders receive no scope
- const scopeled:Loaders<Tx>['book']=async({ids,scope: scope})=>ids.map(id=>({...id,title:String(scope)}));
+ const scopeled:Loaders<Tx>['book']=async({ids,stream: scope})=>ids.map(id=>({...id,title:String(scope)}));
  // A schema without Loads declares no Load context or its add-only Scope.
  // @ts-expect-error legacy LoadChannel is never declared
  type NoLoadScope=import('./backend.ts').LoadChannel;
@@ -218,27 +206,27 @@ const scopeDirectory=await mkdtemp(join(tmpdir(),'generated-scopes-'));
 const client=await GeneratedClient.open({path:join(scopeDirectory,'state.sqlite')});
 try{
  const [a,b]=await Promise.all([
-  client.scopes.subscribe("project:123"),
-  client.scopes.subscribe("project:123"),
+  client.streams.subscribe("project:123"),
+  client.streams.subscribe("project:123"),
  ]);
  assert.equal(a,b);
  assert.equal(a.status.initialization,"pending");
  await a.unsubscribe();
- const c=await client.scopes.subscribe("project:123");
+ const c=await client.streams.subscribe("project:123");
  await a.unsubscribe();
  assert.equal(c.status.active,true);
  // The handle is the runtime's: its Scope, its immutable status, its observer
  // cancellation and its removal are all named through the generated module.
  const handle:Subscription=c;
- const scope:string=handle.scope;
+ const scope:string=handle.stream;
  const status:SubscriptionStatus=handle.status;
  const stopWatching:()=>void=handle.watch(snapshot=>void snapshot.connection);
  stopWatching();
  check(scope==='project:123'&&status.connection==='offline','typed handle members');
  // A second Scope registers durable intent before any server boundary.
- const retained:Subscription=await client.scopes.subscribe('project:456');
+ const retained:Subscription=await client.streams.subscribe('project:456');
  assert.equal(retained.status.initialization,'pending','scopes registers through the same ledger');
- assert.equal(await client.scopes.subscribe('project:456'),retained,'and shares one handle per registration');
+ assert.equal(await client.streams.subscribe('project:456'),retained,'and shares one handle per registration');
  const removal:Promise<void>=retained.unsubscribe();
  await removal;
  assert.equal(retained.status.active,false);
@@ -259,25 +247,25 @@ let release=()=>{};
 const held=new Promise<void>(resolve=>{release=resolve;});
 const http=createServer(async(request,response)=>{
  const chunks:Buffer[]=[];for await(const chunk of request)chunks.push(chunk as Buffer);
- const body=JSON.parse(Buffer.concat(chunks).toString()) as {mode?:string;scope:string;after:number;until:number};
+ const body=JSON.parse(Buffer.concat(chunks).toString()) as {mode?:string;stream:string;after:number;until:number};
  // Only a bootstrap page is expected here, and the test transport holds it.
  loads.push({after:body.after,until:body.until});
  await held;
- response.end(JSON.stringify({mode:'bootstrap',scope:body.scope,from:body.after,to:body.until,until:body.until,head:body.until,changes:[]}));
+ response.end(JSON.stringify({mode:'bootstrap',stream:body.stream,from:body.after,to:body.until,until:body.until,head:body.until,changes:[]}));
 });
 await new Promise<void>(resolve=>http.listen(0,'127.0.0.1',()=>resolve()));
 const sockets=new WebSocketServer({server:http});
 sockets.on('connection',socket=>{
  socket.on('message',message=>{
-  const subscribe=JSON.parse(String(message)) as {scopes:string[]};
-  socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(subscribe.scopes.map(scope=>[scope,0]))}));
+  const subscribe=JSON.parse(String(message)) as {streams:string[]};
+  socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(subscribe.streams.map(scope=>[scope,0]))}));
  });
 });
 const address=http.address();
 const port=typeof address==='object'&&address!==null?address.port:0;
 const loading=await GeneratedClient.open({path:join(bootstrapDirectory,'state.sqlite')});
 try{
- const subscription=await loading.scopes.subscribe("project:123");
+ const subscription=await loading.streams.subscribe("project:123");
  const initial:BootstrapStatus=subscription.status.bootstrap;
  const phase:BootstrapPhase=initial.phase;
  assert.deepEqual({...initial},{phase:'not-requested',error:null});
@@ -332,7 +320,7 @@ try{
   Object.assign(decoderHooks,{entry:()=>{throw Error('mutable map replaced registration');}});
   assert.ok(registered?.Entry);
   const rawRow=encodeEntry(row);
-  await registered.Entry({scopes:{}},[{kind:'upsert',identity:{id:row.id},row:rawRow},{kind:'delete',identity:{id:row.id}}]);
+  await registered.Entry({streams:{}},[{kind:'upsert',identity:{id:row.id},row:rawRow},{kind:'delete',identity:{id:row.id}}]);
   assert.deepEqual(delivered,[`${row.id}:2026-01-01T00:00:00.000Z`,`delete:${row.id}`]);
  }finally{await adapted.close();}
 }finally{rawClass.open=originalRawOpen;}
@@ -442,10 +430,10 @@ function scriptedTransaction(){
  const companions:object[]=[];
  const resolutions:object[]=[];
  const companionPort:WritePort={...reads,async read(){return compositionRow},async direct(op){companions.push(op);}};
- const port:WritePort&SubmitMutationPort&UnsentResolutionPort&{scopes:GeneratedTransaction['scopes']}={
+ const port:WritePort&SubmitMutationPort&UnsentResolutionPort&{streams:GeneratedTransaction['streams']}={
   ...reads,
   async direct(op){outer.push(op);},
-  scopes:{async subscribe(){},async unsubscribe(){}},
+  streams:{async subscribe(){},async unsubscribe(){}},
   rejections:{async dismiss(id){resolutions.push({dismiss:id});}},
   failures:{async retry(taskKeys){resolutions.push({retry:taskKeys});},async drop(ordinal){resolutions.push({drop:ordinal});}},
   async submitMutation<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:SubmitMutationOptions):Promise<Call<T>>{
@@ -470,7 +458,7 @@ async function transactionShapes(client:GeneratedClient){
   const second=await tx.mutations.rename({id:compositionId,title:'t'},{store:false});
   return {first,second};
  });
- const counted:number=await client.transaction(async tx=>{await tx.models.composition.create(compositionRow);await tx.scopes.subscribe('c');return 1;});
+ const counted:number=await client.transaction(async tx=>{await tx.models.composition.create(compositionRow);await tx.streams.subscribe('c');return 1;});
  const nothing:void=await client.transaction(async tx=>{await tx.models.composition.delete({id:compositionId});});
  const outcome=await published.wait();
  const at:Date|undefined=outcome.result?.published.at;
@@ -519,7 +507,7 @@ async function checkTransactionMutations(){
  assert.equal('call' in tx.mutations,false,'no direct route in a transaction');
  assert.deepEqual(Object.keys(tx.mutations).sort(),['publishEntry','rename']);
  assert.ok(context instanceof CompanionContext);
- for(const member of ['mutations','scopes','transaction','savepoint'])assert.equal(member in context,false,member);
+ for(const member of ['mutations','streams','transaction','savepoint'])assert.equal(member in context,false,member);
  assert.equal('watch' in context.models.composition,false);
  await tx.models.composition.delete({id:compositionId});
  assert.deepEqual(scripted.outer,[{model:'Composition',op:'delete',identity:{id:compositionId}}],'ordinary writes stay independent');

@@ -1,6 +1,6 @@
 # Local storage
 
-AXTON stores cached records, queued Mutation and Query intent, durable Load jobs, scope progress and rejection details in a local SQLite file. It does not persist completed business result objects on the client. This page explains how to manage the file and recover from storage or synchronization failures.
+AXTON stores cached records, queued Mutation and Query intent, durable Load jobs, stream progress and rejection details in a local SQLite file. It does not persist completed business result objects on the client. This page explains how to manage the file and recover from storage or synchronization failures.
 
 ## Choose a database path
 
@@ -36,23 +36,23 @@ A [transaction that queues Mutations](client-api.md#queue-mutations-in-a-transac
 | A prerequisite fails | Resolve its cause, then reset its readiness to `pending`; the client runs its handler again. |
 | Another client wrote to the same file | Close the stale instance and reopen it; keep one active client per file. |
 
-Do not manually delete pending batches, scope cursors or backend receipts to clear an error. These records work together to prevent duplicate execution and complete local changes from their receipts. Preserve the database for diagnosis when an error cannot be resolved through the public APIs.
+Do not manually delete pending batches, stream cursors or backend receipts to clear an error. These records work together to prevent duplicate execution and complete local changes from their receipts. Preserve the database for diagnosis when an error cannot be resolved through the public APIs.
 
 [Sync and recovery](sync.md) shows the application calls for these cases.
 
 ## Manage cached data
 
-Unsubscribing stops that scope's synchronization and removes nothing: cached records, their stamps, before images and pending edits stay, and another subscribed scope can still update them. It does remove the subscription itself, including its receive position and any `bootstrap()` progress, so subscribing to that name again is a new subscription that starts at the position the server acknowledges next and downloads the scope's history only if you ask for it again. Retained records are readable but not kept fresh without a scope that delivers them. Permissions are enforced by your backend. When a record is no longer visible, publish it to the affected scopes so their loaders can return null. There is no automatic eviction of cached records.
+Unsubscribing stops that stream's synchronization and removes nothing: cached records, their stamps, before images and pending edits stay, and another subscribed stream can still update them. It does remove the subscription itself, including its receive position and any `bootstrap()` progress, so subscribing to that name again is a new subscription that starts at the position the server acknowledges next and downloads the stream's history only if you ask for it again. Retained records are readable but not kept fresh without a stream that delivers them. Permissions are enforced by your backend. When a record is no longer visible, publish it to the affected streams so their loaders can return null. There is no automatic eviction of cached records.
 
-A subscription, its receive position and the progress of a `bootstrap()` load are stored in the local database, so they survive a restart: reopening resumes from the saved position instead of starting over, and an unfinished load continues without being called again. A rebuilt local database ([change the schema](#change-the-schema)) keeps the scope names you subscribed to but not their positions or their load progress, so each one starts again at the position the server acknowledges next.
+A subscription, its receive position and the progress of a `bootstrap()` load are stored in the local database, so they survive a restart: reopening resumes from the saved position instead of starting over, and an unfinished load continues without being called again. A rebuilt local database ([change the schema](#change-the-schema)) keeps the stream names you subscribed to but not their positions or their load progress, so each one starts again at the position the server acknowledges next.
 
 Results saved by [`once` Query calls](client-api.md#reuse-a-query-result-with-once) are stored in the same local database and are reused offline and after a restart. They are keyed by the compiled client schema: a schema change starts a new set and removes the previous one when the database opens, and a rebuilt database starts with none. They are scoped to the database file, not to a user: open a separate database for each backend, account or tenant, or delete it when the signed-in identity changes. Remove saved results with `client.queries.invalidate.<name>(args)`; nothing expires them automatically.
 
-Receipts and pull changes carry a per-record stamp. A newer stamp replaces the record's authoritative state; a delayed lower stamp cannot overwrite it, whichever path delivers it. Deletions apply across scopes, and the deleted record's stamp is kept so older content cannot resurrect it. See [how state moves](../concepts.md) for the relationship between records, scopes and pending writes.
+Receipts and pull changes carry a per-record stamp. A newer stamp replaces the record's authoritative state; a delayed lower stamp cannot overwrite it, whichever path delivers it. Deletions apply across streams, and the deleted record's stamp is kept so older content cannot resurrect it. See [how state moves](../concepts.md) for the relationship between records, streams and pending writes.
 
 ## Storage size
 
-Cached records, queued calls, rejection details, saved `once` Query results and backend receipts persist. Client business results held by live `Call` handles are memory-only. Saved `once` results have no size limit; your application bounds them through the argument sets it uses and `invalidate`. The runtime does not impose a cache-size limit or automatically expire these entries. Backend call outcomes are retained without TTL or automatic pruning; backend invalidations compact by scope/Model/identity, but distinct identities still consume space.
+Cached records, queued calls, rejection details, saved `once` Query results and backend receipts persist. Client business results held by live `Call` handles are memory-only. Saved `once` results have no size limit; your application bounds them through the argument sets it uses and `invalidate`. The runtime does not impose a cache-size limit or automatically expire these entries. Backend call outcomes are retained without TTL or automatic pruning; backend invalidations compact by stream/Model/identity, but distinct identities still consume space.
 
 Measure database size, pending work and synchronization lag with your application's working set. Local reads, including read-only SQL, use on-disk SQLite tables. They do not copy the full record set into a separate query projection.
 

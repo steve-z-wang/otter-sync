@@ -11,11 +11,11 @@ import {
   type Loaders,
   type Loads,
   type PutV1Input,
-  type Scope,
-  type Touch,
+  type Stream,
+  type RecordDeclaration,
 } from "./backend.ts";
 import type { Todo } from "./generated.ts";
-import type { ScopeIntent } from "../../packages/server/host-contract.mts";
+import type { StreamIntent } from "../../packages/server/host-contract.mts";
 
 test("generated backend decodes Date values and declares canonical identities through its handles", async () => {
   const first = "2026-01-01T00:00:00.000Z";
@@ -30,17 +30,17 @@ test("generated backend decodes Date values and declares canonical identities th
     ctx.tx.rows.set(args.todo.id, args.todo);
     // The input Todo is inferred by the engine; touches name extra records.
     const moment = { at: new Date(first) };
-    ctx.touch.moment(moment);
+    ctx.invalidate.moment(moment);
     moment.at = new Date(second);
-    ctx.touch.moment(moment);
-    ctx.touch.moment({ at: new Date(second) });
-    const scope = ctx.scope("todos");
-    scope.add.todo(args.todo);
-    scope.add([
+    ctx.invalidate.moment(moment);
+    ctx.invalidate.moment({ at: new Date(second) });
+    const scope = ctx.stream("todos");
+    scope.track.todo(args.todo);
+    scope.track([
       Moment({ at: new Date("2026-01-03T00:00:00.000Z") }),
       Pin({ todo: args.todo.id, at: args.todo.at }),
     ]);
-    scope.remove.pin({ todo: args.todo.id, at: args.todo.at });
+    scope.invalidate.pin({ todo: args.todo.id, at: args.todo.at });
     return {
       todo: { id: args.todo.id },
       echoed: new Date(args.when.getTime()),
@@ -169,30 +169,29 @@ test("generated backend decodes Date values and declares canonical identities th
   for (const handled of seen.slice(0, 2) as {
     outputs: { todo: { id: string }; echoed: string; status: string };
     changes: { model: string; identity: Record<string, unknown> }[];
-    memberships: ScopeIntent[];
+    declarations: StreamIntent[];
   }[]) {
     assert.deepEqual(handled.outputs.todo, { id: "one" });
     assert.equal(handled.outputs.echoed, first);
     assert.equal(handled.outputs.status, "open");
     // Each declaration copied its identity at the call, once per record.
-    assert.deepEqual(handled.changes, [
-      { model: "Moment", identity: { at: first } },
-      { model: "Moment", identity: { at: second } },
-    ]);
+    assert.deepEqual(handled.changes, []);
     // Only identity fields, in declaration order; the engine reduces them.
     const add = (model: string, identity: object) => ({
-      kind: "add",
-      scope: "todos",
+      kind: "track",
+      stream: "todos",
       record: { model, identity },
-      tags: [],
     });
-    assert.deepEqual(handled.memberships, [
+    assert.deepEqual(handled.declarations, [
+      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: first } } },
+      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: second } } },
+      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: second } } },
       add("Todo", { id: "one" }),
       add("Moment", { at: "2026-01-03T00:00:00.000Z" }),
       add("Pin", { todo: "one", at: first }),
       {
-        kind: "remove",
-        scope: "todos",
+        kind: "invalidate",
+        streams: ["todos"],
         record: { model: "Pin", identity: { todo: "one", at: first } },
       },
     ]);
@@ -305,7 +304,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
       ...mutationHandlers(),
       find: async ({ ctx, args }) => {
         seen.push({ kind: "mutation", keys: Object.keys(ctx).sort() });
-        ctx.touch.todo({ id: "one" });
+        ctx.invalidate.todo({ id: "one" });
         assert.ok(args.at instanceof Date);
         return { todo: { id: "one" } };
       },
@@ -318,9 +317,9 @@ test("Query handlers receive no effect capabilities and settle without effects",
           assert.equal(ctx.callId, "Find-2");
           assert.ok(args.at instanceof Date);
           // @ts-expect-error a Query context has no membership writer
-          assert.equal(ctx.scope, undefined);
+          assert.equal(ctx.stream, undefined);
           // @ts-expect-error a Query context has no change declaration
-          assert.equal(ctx.touch, undefined);
+          assert.equal(ctx.invalidate, undefined);
           return { todo: { id: "one" } };
         },
       },
@@ -331,16 +330,16 @@ test("Query handlers receive no effect capabilities and settle without effects",
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "scope", "touch", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "invalidate", "stream", "tx", "userId"] },
     { kind: "query", keys: ["callId", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
     {
       outputs: { todo: { id: "one" } },
-      changes: [{ model: "Todo", identity: { id: "one" } }],
-      memberships: [],
+      changes: [],
+      declarations: [{ kind: "invalidate", streams: null, record: { model: "Todo", identity: { id: "one" } } }],
     },
-    { outputs: { todo: { id: "one" } }, changes: [], memberships: [] },
+    { outputs: { todo: { id: "one" } }, changes: [], declarations: [] },
   ]);
 });
 
@@ -453,8 +452,8 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
 
 test("declaration handles close when the handler or external body settles, even when it throws", async () => {
   const escaped: {
-    scope: (name: string) => Scope;
-    touch: Touch;
+    stream: (name: string) => Stream;
+    invalidate: RecordDeclaration;
   }[] = [];
   const answers: unknown[] = [];
   const settled: string[] = [];
@@ -481,8 +480,8 @@ test("declaration handles close when the handler or external body settles, even 
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx }) => {
-        escaped.push({ scope: ctx.scope, touch: ctx.touch });
-        ctx.scope("found").add.todo({ id: "one" });
+        escaped.push({ stream: ctx.stream, invalidate: ctx.invalidate });
+        ctx.stream("found").track.todo({ id: "one" });
         if (ctx.callId === "find-2") throw new Error("after declaring");
         return { todo: null };
       },
@@ -498,45 +497,45 @@ test("declaration handles close when the handler or external body settles, even 
     {
       outputs: { todo: null },
       changes: [],
-      memberships: [
+      declarations: [
         {
-          kind: "add",
-          scope: "found",
+          kind: "track",
+          stream: "found",
           record: { model: "Todo", identity: { id: "one" } },
-          tags: [],
-        },
+            },
       ],
     },
     { error: "after declaring" },
   ]);
   // The external body answers its own value; its declarations settle after it.
-  const value = await backend.transaction(async ({ scope: scope, touch }) => {
-    escaped.push({ scope: scope, touch });
+  const value = await backend.transaction(async ({ stream: scope, invalidate: touch }) => {
+    escaped.push({ stream: scope, invalidate: touch });
     touch.pin({ todo: "one", at: new Date(at) });
-    scope("found").remove.todo({ id: "one" });
+    scope("found").invalidate.todo({ id: "one" });
     return { arbitrary: [1, 2] };
   });
   assert.deepEqual(value, { arbitrary: [1, 2] });
   assert.deepEqual(JSON.parse(settled[0]!), {
-    changes: [{ model: "Pin", identity: { todo: "one", at } }],
-    memberships: [
+    changes: [],
+    declarations: [
+      { kind: "invalidate", streams: null, record: { model: "Pin", identity: { todo: "one", at } } },
       {
-        kind: "remove",
-        scope: "found",
+        kind: "invalidate",
+        streams: ["found"],
         record: { model: "Todo", identity: { id: "one" } },
       },
     ],
   });
   await assert.rejects(
-    backend.transaction(async ({ scope: scope, touch }) => {
-      escaped.push({ scope: scope, touch });
+    backend.transaction(async ({ stream: scope, invalidate: touch }) => {
+      escaped.push({ stream: scope, invalidate: touch });
       throw new Error("body failed");
     }),
     /body failed/,
   );
   assert.equal(settled.length, 1, "a failed body settles nothing");
   assert.equal(escaped.length, 4);
-  for (const { scope: scope, touch } of escaped) {
+  for (const { stream: scope, invalidate: touch } of escaped) {
     assert.throws(() => scope("late"), /closed/);
     assert.throws(() => touch.todo({ id: "late" }), /closed/);
   }
@@ -625,7 +624,7 @@ test("Load handlers take decoded args and a context with a scope and no touch, a
       userId,
     })),
     requests.map(() => ({
-      keys: ["callId", "loadId", "scope", "tx", "userId"],
+      keys: ["callId", "loadId", "stream", "tx", "userId"],
       since: at,
       statuses: ["open", "closed"],
       loadId: "load-1",
@@ -741,7 +740,7 @@ test("the native engine refuses a full Model value that type-checks as an identi
     await backend.loads(
       "alice",
       JSON.stringify({
-        capabilities: ["scope-membership-v1"],
+        capabilities: ["stream-membership-v1"],
         loads: [item(1, null), item(2, { state: "ids" })],
       }),
     ),

@@ -9,9 +9,8 @@ pub mod live;
 mod loading;
 mod loads;
 mod readback;
-pub mod scope_members;
-pub mod scope_predicate;
 mod settlement;
+pub mod stream_members;
 pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
 use axton_core::{PushReceipt, PushRequest, RecordKey, Rejection, Schema, read_counter};
 pub use error::{Error, code};
@@ -370,7 +369,7 @@ fn storage_invalid(e: impl std::fmt::Display) -> Error {
 }
 /// Framework protocol admission precedes every external host operation.
 pub(crate) fn admit_protocol(bytes: &[u8]) -> Result<()> {
-    axton_core::require_capability(bytes, axton_core::SCOPE_MEMBERSHIP_CAPABILITY)
+    axton_core::require_capability(bytes, axton_core::STREAM_MEMBERSHIP_CAPABILITY)
         .map_err(|error| Error::new(error.code(), error.to_string()))
 }
 
@@ -552,16 +551,16 @@ fn principal(owner: &str) -> Result<()> {
         Ok(())
     }
 }
-async fn head(host: &impl Host, scope: &str) -> Result<u64> {
+async fn head(host: &impl Host, stream: &str) -> Result<u64> {
     let Head(cursor) = host
         .call_typed(HostRequest::Head {
-            scope: scope.into(),
+            stream: stream.into(),
         })
         .await?;
     Ok(cursor)
 }
 /// Process one push: every mutation runs in its own savepoint, its changed
-/// records are settled (stamped and distributed to their Scopes) and its
+/// records are settled (stamped and distributed to their Streams) and its
 /// uploaded targets read back by the loaders in that savepoint, and the
 /// receipt carries the final authority of every record a successful
 /// mutation's operations targeted. An unsupported mutation version, a
@@ -665,7 +664,7 @@ pub async fn process_push(
             Handled::Failed { .. } => Outcome::Refused(code::HANDLER_FAILED.into()),
             Handled::Settled {
                 changes,
-                memberships,
+                declarations,
             } => {
                 // The uploaded targets are this mutation's caller authority;
                 // the handler's extra changes are distributed, not read back.
@@ -678,7 +677,7 @@ pub async fn process_push(
                     settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
                 }
                 let stamps =
-                    settlement::settle_changes(config, &changed, &memberships, host).await?;
+                    settlement::settle_changes(config, &changed, &declarations, host).await?;
                 let outcome = readback::read_back(
                     config,
                     &request.models,
@@ -689,7 +688,7 @@ pub async fn process_push(
                 )
                 .await?;
                 if let Outcome::Records(records) = &outcome {
-                    enrolled = stamps.claims(config, &memberships, records)?;
+                    enrolled = stamps.claims(config, &declarations, records)?;
                 }
                 outcome
             }
@@ -707,7 +706,7 @@ pub async fn process_push(
             Outcome::Records(records) => {
                 for claim in enrolled {
                     let key = (
-                        claim.scope.clone(),
+                        claim.stream.clone(),
                         claim.key().encoded().map_err(internal)?,
                     );
                     if claims
@@ -751,8 +750,8 @@ pub async fn process_push(
 }
 /// The one pull entry point every binding, route and direct backend caller
 /// shares. The request's `mode` selects what it serves, before either mode
-/// decodes: an absent mode is the ordinary delta pull over every scope a
-/// client follows, `"bootstrap"` is one bounded page of a Scope's historical
+/// decodes: an absent mode is the ordinary delta pull over every stream a
+/// client follows, `"bootstrap"` is one bounded page of a Stream's historical
 /// interval (`loading::process_bootstrap`), and any other present value is
 /// refused.
 /// Both modes run in the caller's transaction and make no extra host calls
@@ -763,12 +762,12 @@ pub async fn process_pull(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
-    process_scope_pull(config, owner, bytes, host).await
+    process_stream_pull(config, owner, bytes, host).await
 }
 /// Settle a business change made outside a handler, in the application's
-/// transaction: the same `{changes, memberships}` shape a handler answers
+/// transaction: the same `{changes, declarations}` shape a handler answers
 /// with, through the same settlement. Every changed record gets its next
-/// stamp and reaches its Scopes at that stamp; nothing is read back, since
+/// stamp and reaches its Streams at that stamp; nothing is read back, since
 /// no client is waiting for a receipt. Answers `[{model, identity, stamp}]`
 /// for the changed records.
 pub async fn settle_external(
@@ -780,19 +779,19 @@ pub async fn settle_external(
         .map_err(|e| Error::new(code::PUBLISH_INVALID, e.to_string()))?;
     let Handled::Settled {
         changes,
-        memberships,
+        declarations,
     } = settled
     else {
         return Err(Error::new(
             code::PUBLISH_INVALID,
-            "an external settlement carries changes and memberships",
+            "an external settlement carries changes and declarations",
         ));
     };
     let mut changed = Changes::new();
     for record in &changes {
         settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
     }
-    let stamps = settlement::settle_changes(config, &changed, &memberships, host).await?;
+    let stamps = settlement::settle_changes(config, &changed, &declarations, host).await?;
     Ok(Value::Array(
         changed
             .iter()
@@ -803,8 +802,8 @@ pub async fn settle_external(
     ))
 }
 
-/// Scope-aware pull delivery.
-pub async fn process_scope_pull(
+/// Stream-aware pull delivery.
+pub async fn process_stream_pull(
     config: &Config,
     owner: &str,
     bytes: &[u8],
@@ -813,9 +812,9 @@ pub async fn process_scope_pull(
     admit_protocol(bytes)?;
     principal(owner)?;
     match axton_core::pull_mode(bytes).as_deref() {
-        None => loading::process_scope_delta(config, owner, bytes, host).await,
+        None => loading::process_stream_delta(config, owner, bytes, host).await,
         Some(axton_core::BOOTSTRAP_MODE) => {
-            loading::process_scope_bootstrap(config, owner, bytes, host).await
+            loading::process_stream_bootstrap(config, owner, bytes, host).await
         }
         Some(_) => Err(request_invalid("pull mode must be absent or bootstrap")),
     }

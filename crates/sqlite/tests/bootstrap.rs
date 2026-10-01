@@ -14,7 +14,7 @@ use std::rc::Rc;
 /// at `head` establishes: S = L = `head`, the origin every historical page of
 /// this subscription is bounded by.
 fn origin(c: &mut Client<SqliteStore>, scope: &str, head: u64) -> SubscriptionState {
-    c.transaction(|tx| tx.set_scope(scope.into(), true))
+    c.transaction(|tx| tx.set_stream(scope.into(), true))
         .unwrap();
     acknowledge(c, &[(scope, head)]);
     c.subscription_state(scope).unwrap().expect("a row")
@@ -30,7 +30,7 @@ fn historical(
     records: Vec<AuthorityRecord>,
 ) -> BootstrapPage {
     BootstrapPage {
-        scope: scope.to_string(),
+        stream: scope.to_string(),
         from,
         to,
         until,
@@ -65,7 +65,7 @@ fn failed(outcome: &BootstrapApply) -> (&BootstrapState, &ApplyReport) {
     }
 }
 fn scopes(c: &Client<SqliteStore>) -> Vec<String> {
-    c.last_bootstrap_scopes().iter().cloned().collect()
+    c.last_bootstrap_streams().iter().cloned().collect()
 }
 /// A record whose state this client's schema refuses: a `Skipped` report.
 fn refused(id: &str, stamp: u64) -> AuthorityRecord {
@@ -160,7 +160,7 @@ fn registering_a_load_does_not_invalidate_the_live_session() {
         "a load request is not a membership change"
     );
     assert_eq!(
-        c.last_bootstrap_scopes(),
+        c.last_bootstrap_streams(),
         &std::collections::BTreeSet::from(["a".to_string()]),
         "the commit still names the Scope whose load changed"
     );
@@ -179,7 +179,7 @@ fn registering_a_load_does_not_invalidate_the_live_session() {
     assert_eq!(c.cursor("a").unwrap(), Some(7));
     // A call that changes nothing names nothing.
     c.request_bootstrap("a", id).unwrap();
-    assert!(c.last_bootstrap_scopes().is_empty());
+    assert!(c.last_bootstrap_streams().is_empty());
 }
 
 /// Only the first active call registers work: duplicate calls share the run,
@@ -768,7 +768,7 @@ fn the_terminal_page_fixes_a_barrier_that_ordinary_delivery_settles() {
     assert_eq!(
         c.subscription_state("a").unwrap().unwrap(),
         SubscriptionState {
-            scope: "a".into(),
+            stream: "a".into(),
             subscription_id: id,
             starting_cursor: Some(5),
             cursor: Some(9),
@@ -834,7 +834,7 @@ fn tasks_are_the_initialized_runs_with_work_in_scope_order() {
         c.bootstrap_tasks()
             .unwrap()
             .into_iter()
-            .map(|t| (t.scope, t.state))
+            .map(|t| (t.stream, t.state))
             .collect::<Vec<_>>(),
         vec![
             ("a".to_string(), BootstrapPhase::Requested),
@@ -853,9 +853,9 @@ fn raw_store(path: &std::path::Path) -> SqliteStore {
 fn raw_row(store: &mut SqliteStore, scope: &str) -> Vec<serde_json::Value> {
     let rows = store
         .query_committed(
-            "SELECT scope, subscription_id, starting_cursor, cursor, bootstrap_state, \
+            "SELECT stream, subscription_id, starting_cursor, cursor, bootstrap_state, \
              bootstrap_run, bootstrap_cursor, typeof(bootstrap_cursor), bootstrap_barrier, \
-             bootstrap_error, typeof(bootstrap_error) FROM axton_subscription WHERE scope=?",
+             bootstrap_error, typeof(bootstrap_error) FROM axton_subscription WHERE stream=?",
             &[json!(scope)],
         )
         .unwrap();
@@ -882,12 +882,12 @@ fn an_undecodable_active_row_does_not_block_the_schedule() {
     }
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE scope='bad'",
+        "UPDATE axton_subscription SET bootstrap_cursor='x' WHERE stream='bad'",
         &[],
     )
     .unwrap();
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='worse'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE stream='worse'",
         &[],
     )
     .unwrap();
@@ -911,7 +911,7 @@ fn an_undecodable_active_row_does_not_block_the_schedule() {
             .bootstrap_schedule(rotation)
             .unwrap()
             .expect("the healthy run is schedulable");
-        assert_eq!(task.state.scope, "good", "after {rotation:?}");
+        assert_eq!(task.state.stream, "good", "after {rotation:?}");
         assert_eq!(task.origin, 5);
     }
     assert!(c.bootstrap_barriers().unwrap().is_empty());
@@ -947,7 +947,7 @@ fn an_undecodable_active_row_does_not_hide_a_reached_barrier() {
     }
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='bad'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE stream='bad'",
         &[],
     )
     .unwrap();
@@ -962,11 +962,11 @@ fn an_undecodable_active_row_does_not_hide_a_reached_barrier() {
     let waiting = c.bootstrap_barriers().unwrap();
     assert_eq!(waiting, vec!["waiting".to_string()]);
     let task = c.bootstrap_schedule(None).unwrap().expect("a healthy run");
-    assert_eq!(task.state.scope, "good");
+    assert_eq!(task.state.stream, "good");
 
     let settled = c.settle_bootstrap_barriers(&waiting).unwrap();
     assert_eq!(settled.len(), 1);
-    assert_eq!(settled[0].scope, "waiting");
+    assert_eq!(settled[0].stream, "waiting");
     assert_eq!(settled[0].state, BootstrapPhase::Complete);
     assert_eq!(
         c.bootstrap_state("waiting", ids["waiting"]).unwrap().state,
@@ -1039,7 +1039,7 @@ fn settlement_takes_its_names_as_a_set_of_any_size() {
     assert_eq!(
         settled
             .iter()
-            .map(|s| (s.scope.as_str(), s.state, s.barrier))
+            .map(|s| (s.stream.as_str(), s.state, s.barrier))
             .collect::<Vec<_>>(),
         vec![
             ("a", BootstrapPhase::Complete, Some(9)),
@@ -1097,7 +1097,10 @@ fn a_settlement_binds_each_distinct_name_once_in_chunks_of_900() {
     let (names, distinct) = crowd();
     let settled = c.settle_bootstrap_barriers(&names).unwrap();
     assert_eq!(
-        settled.iter().map(|s| s.scope.as_str()).collect::<Vec<_>>(),
+        settled
+            .iter()
+            .map(|s| s.stream.as_str())
+            .collect::<Vec<_>>(),
         vec!["a", "z"]
     );
     let candidates: Vec<usize> = reads
@@ -1132,7 +1135,7 @@ fn an_undecodable_candidate_does_not_block_a_healthy_settlement() {
     let good = reached(&mut c, "good");
     let mut raw = raw_store(&path);
     raw.execute(
-        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE scope='bad'",
+        "UPDATE axton_subscription SET bootstrap_error='{not json' WHERE stream='bad'",
         &[],
     )
     .unwrap();
@@ -1148,7 +1151,7 @@ fn an_undecodable_candidate_does_not_block_a_healthy_settlement() {
     assert_eq!(
         settled
             .iter()
-            .map(|s| (s.scope.as_str(), s.state))
+            .map(|s| (s.stream.as_str(), s.state))
             .collect::<Vec<_>>(),
         vec![("good", BootstrapPhase::Complete)]
     );
@@ -1179,7 +1182,7 @@ fn bootstrap_state_is_serializable() {
     let state = c.request_bootstrap("a", id).unwrap();
     assert_eq!(
         serde_json::to_value(&state).unwrap(),
-        json!({"scope":"a","subscriptionId":id,"state":"requested","run":1,"cursor":0,"barrier":null,"error":null})
+        json!({"stream":"a","subscriptionId":id,"state":"requested","run":1,"cursor":0,"barrier":null,"error":null})
     );
     let error = BootstrapError::new(
         "bootstrap.records_failed",
@@ -1195,7 +1198,7 @@ fn bootstrap_state_is_serializable() {
     let state = c.bootstrap_state("a", id).unwrap();
     assert_eq!(
         serde_json::to_value(&state).unwrap(),
-        json!({"scope":"a","subscriptionId":id,"state":"failed","run":1,"cursor":0,"barrier":null,
+        json!({"stream":"a","subscriptionId":id,"state":"failed","run":1,"cursor":0,"barrier":null,
                "error":{"code":"bootstrap.records_failed","message":"one record",
                         "records":[{"model":"Entry","identity":{"id":"e"},"stamp":3,"code":"loader.failed"}]}})
     );

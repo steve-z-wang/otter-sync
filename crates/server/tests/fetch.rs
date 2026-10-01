@@ -33,10 +33,10 @@ const FORBIDDEN: [&str; 10] = [
     "handleAction",
     "advanceStamp",
     "lockRecord",
-    "memberships",
-    "lockScopes",
-    "readScopeMembers",
-    "applyScopeMembers",
+    "readTracking",
+    "guardRecords",
+    "lockStreams",
+    "applyStreamMembers",
     "head",
     "scan",
 ];
@@ -129,7 +129,9 @@ impl Host for FetchHost {
                             .collect(),
                     ),
                 },
-                "handleAction" => json!({"outputs":{"message":"ok"},"changes":[],"memberships":[]}),
+                "handleAction" => {
+                    json!({"outputs":{"message":"ok"},"changes":[],"declarations":[]})
+                }
                 _ => Value::Null,
             })
         })

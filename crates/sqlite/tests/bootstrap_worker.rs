@@ -23,14 +23,14 @@ fn historical(
     let changes = records
         .into_iter()
         .enumerate()
-        .map(|(i, record)| ScopeChange::Upsert {
-            scope: scope.into(),
+        .map(|(i, record)| StreamChange::Upsert {
+            stream: scope.into(),
             cursor: to.saturating_sub(count.saturating_sub(i + 1) as u64),
             record,
         })
         .collect();
-    let page = ScopeBootstrapPage {
-        scope: scope.into(),
+    let page = StreamBootstrapPage {
+        stream: scope.into(),
         from,
         to,
         until,
@@ -180,7 +180,7 @@ fn a_registered_load_asks_for_its_interval_and_leaves_delivery_alone() {
     let actions = lane.register("a");
     let (id, request) = only(&actions);
     assert_eq!(
-        (request.scope.as_str(), request.after, request.until),
+        (request.stream.as_str(), request.after, request.until),
         ("a", 0, 100),
         "the historical interval is bounded by the committed origin"
     );
@@ -255,14 +255,14 @@ fn two_scopes_take_turns_one_page_each() {
     lane.intend("b");
     let first = lane.send(DownlinkEvent::Wake);
     let (id, request) = only(&first);
-    assert_eq!(request.scope, "a", "Scope order opens the rotation");
+    assert_eq!(request.stream, "a", "Scope order opens the rotation");
     let second = lane.answer(id, historical("a", 0, 40, 100, 130, vec![]));
     let (id, request) = only(&second);
-    assert_eq!(request.scope, "b", "the turn moved on");
+    assert_eq!(request.stream, "b", "the turn moved on");
     assert_eq!((request.after, request.until), (0, 200));
     let third = lane.answer(id, historical("b", 0, 60, 200, 240, vec![]));
     let (id, request) = only(&third);
-    assert_eq!(request.scope, "a", "and back again");
+    assert_eq!(request.stream, "a", "and back again");
     assert_eq!(
         (request.after, request.until),
         (40, 100),
@@ -271,7 +271,7 @@ fn two_scopes_take_turns_one_page_each() {
     let fourth = lane.answer(id, historical("a", 40, 100, 100, 130, vec![]));
     let (_, request) = only(&fourth);
     assert_eq!(
-        request.scope, "b",
+        request.stream, "b",
         "a Scope that finished its interval leaves the rotation"
     );
 }
@@ -349,7 +349,7 @@ fn a_stale_refusal_writes_nothing_and_errors_nothing() {
         lane.message(epoch, ack(&[("a", head), (scope, 200)]));
         lane.intend(scope);
         let (id, request) = only(&lane.send(DownlinkEvent::Wake));
-        assert_eq!(request.scope, scope);
+        assert_eq!(request.stream, scope);
         // The registration goes while its page is in flight.
         lane.set(scope, false);
         lane.enqueue(stale(id));
@@ -1037,9 +1037,10 @@ fn issues(actions: &[DownlinkAction]) -> Vec<(&str, &str)> {
     actions
         .iter()
         .filter_map(|action| match action {
-            DownlinkAction::LedgerIssue { scope, message } => {
-                Some((scope.as_str(), message.as_str()))
-            }
+            DownlinkAction::LedgerIssue {
+                stream: scope,
+                message,
+            } => Some((scope.as_str(), message.as_str())),
             _ => None,
         })
         .collect()
@@ -1061,7 +1062,7 @@ fn stored(raw: &mut SqliteStore, scope: &str) -> Vec<serde_json::Value> {
     raw.query_committed(
         "SELECT subscription_id, bootstrap_state, bootstrap_run, bootstrap_cursor, \
          typeof(bootstrap_cursor), bootstrap_barrier, bootstrap_error, typeof(bootstrap_error) \
-         FROM axton_subscription WHERE scope=?",
+         FROM axton_subscription WHERE stream=?",
         &[json!(scope)],
     )
     .unwrap()
@@ -1075,7 +1076,7 @@ fn stored(raw: &mut SqliteStore, scope: &str) -> Vec<serde_json::Value> {
 fn tamper(raw: &mut SqliteStore, scope: &str, set: &str) {
     let changed = raw
         .execute(
-            &format!("UPDATE axton_subscription SET {set} WHERE scope=?"),
+            &format!("UPDATE axton_subscription SET {set} WHERE stream=?"),
             &[json!(scope)],
         )
         .unwrap();
@@ -1085,10 +1086,10 @@ fn tamper(raw: &mut SqliteStore, scope: &str, set: &str) {
 /// catching up to the barrier H = 130 while delivery stands where it was.
 fn finished(lane: &mut Lane, scope: &str) {
     let state = lane.load(scope);
-    let page =
-        ScopeBootstrapPage::decode(historical(scope, 0, 100, 100, 130, vec![]).as_bytes()).unwrap();
+    let page = StreamBootstrapPage::decode(historical(scope, 0, 100, 100, 130, vec![]).as_bytes())
+        .unwrap();
     lane.client
-        .apply_scope_bootstrap_page(scope, state.subscription_id, state.run, 0, &page)
+        .apply_stream_bootstrap_page(scope, state.subscription_id, state.run, 0, &page)
         .unwrap();
     assert_eq!(lane.load(scope).state, BootstrapPhase::CatchingUp);
 }
@@ -1121,10 +1122,10 @@ fn an_undecodable_row_is_reported_once_while_a_healthy_load_proceeds() {
         .unwrap();
     assert_eq!(
         serde_json::to_value(issue).unwrap(),
-        json!({"type": "ledgerIssue", "scope": "bad", "message": NOT_A_NUMBER})
+        json!({"type": "ledgerIssue", "stream": "bad", "message": NOT_A_NUMBER})
     );
     let (id, request) = only(&started);
-    assert_eq!(request.scope, "good", "the healthy load still asks");
+    assert_eq!(request.stream, "good", "the healthy load still asks");
     let epoch = session(&started).expect("the session opened");
     let acknowledged = lane.message(epoch, ack(&[("bad", 100), ("good", 100)]));
     assert_eq!(issues(&acknowledged), vec![]);
@@ -1191,9 +1192,9 @@ fn an_undecodable_row_is_reported_once_while_a_healthy_load_proceeds() {
 
     // Removed, then back exactly as it was: reported again.
     let row = raw
-        .query_committed("SELECT * FROM axton_subscription WHERE scope='bad'", &[])
+        .query_committed("SELECT * FROM axton_subscription WHERE stream='bad'", &[])
         .unwrap();
-    raw.execute("DELETE FROM axton_subscription WHERE scope='bad'", &[])
+    raw.execute("DELETE FROM axton_subscription WHERE stream='bad'", &[])
         .unwrap();
     assert_eq!(lane.send(DownlinkEvent::Wake), vec![], "nothing to report");
     let named = row.columns.join(", ");
@@ -1238,7 +1239,7 @@ fn a_reopen_settles_a_healthy_barrier_beside_an_undecodable_row() {
     assert_eq!(
         settled
             .iter()
-            .map(|s| (s.scope.as_str(), s.state))
+            .map(|s| (s.stream.as_str(), s.state))
             .collect::<Vec<_>>(),
         vec![("waiting", BootstrapPhase::Complete)],
         "{started:?}"
@@ -1248,7 +1249,7 @@ fn a_reopen_settles_a_healthy_barrier_beside_an_undecodable_row() {
     assert_eq!(reported[0].0, "bad");
     assert!(undecodable(reported[0]), "{reported:?}");
     let (_, request) = only(&started);
-    assert_eq!(request.scope, "good");
+    assert_eq!(request.stream, "good");
     assert_eq!(
         stored(&mut raw, "bad"),
         damaged,
@@ -1287,7 +1288,7 @@ fn an_undecodable_barrier_candidate_is_reported_once_beside_a_healthy_one() {
     assert_eq!(
         statuses(&delivered)
             .iter()
-            .map(|s| (s.scope.as_str(), s.state, s.barrier))
+            .map(|s| (s.stream.as_str(), s.state, s.barrier))
             .collect::<Vec<_>>(),
         vec![("good", BootstrapPhase::Complete, Some(130))],
         "{delivered:?}"

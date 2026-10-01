@@ -223,7 +223,8 @@ fn unsubscribing_retains_records_and_later_pages_are_dropped() {
     c.apply_page(clean).unwrap();
     c.transaction(|tx| tx.enqueue(mutation("B"))).unwrap();
     c.freeze().unwrap().unwrap();
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
     assert_eq!(table_count(&mut c, "axton_subscription"), 0);
     assert_eq!(
         c.read(&key()).unwrap().unwrap()["text"],
@@ -270,10 +271,12 @@ fn another_scope_updates_retained_content_and_restart_keeps_it() {
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     c.apply_page(stamped("a", 0, 1, 1, Some("from a"))).unwrap();
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
     c.apply_page(stamped("b", 0, 1, 2, Some("from b"))).unwrap();
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "from b");
-    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("b".into(), false))
+        .unwrap();
     assert!(c.subscriptions().unwrap().is_empty());
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "from b");
     drop(c);
@@ -398,7 +401,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     cycle.restart();
     let action = cycle.next(&mut c).unwrap().unwrap();
     assert_eq!(action.kind, "pull");
-    c.transaction(|tx| tx.set_scope("b".into(), true)).unwrap();
+    c.transaction(|tx| tx.set_stream("b".into(), true)).unwrap();
     cycle
         .complete(
             &mut c,
@@ -505,7 +508,8 @@ fn scopes_are_gated_one_by_one_and_a_gap_holds_the_whole_page() {
     assert!(covered.stale);
     assert_eq!(read(&mut c, "e").unwrap()["text"], "B");
     // An unsubscribed scope's part is ignored; the other scope still moves.
-    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("b".into(), false))
+        .unwrap();
     let report = c
         .apply_page(multi(
             &[("a", 5, 6, 6), ("b", 2, 3, 3)],
@@ -648,8 +652,9 @@ fn scope_membership_page_ignores_unsubscribed_changes_without_progress() {
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     c.apply_page(page("a", 0, 1, Some("cached"))).unwrap();
-    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
-    c.apply_scope_page(ScopePullPage {
+    c.transaction(|tx| tx.set_stream("a".into(), false))
+        .unwrap();
+    c.apply_stream_page(StreamPullPage {
         cursors: BTreeMap::from([
             (
                 "a".into(),
@@ -668,8 +673,8 @@ fn scope_membership_page_ignores_unsubscribed_changes_without_progress() {
                 },
             ),
         ]),
-        changes: vec![ScopeChange::Remove {
-            scope: "a".into(),
+        changes: vec![StreamChange::Remove {
+            stream: "a".into(),
             cursor: 2,
             key: key(),
         }],
@@ -678,5 +683,5 @@ fn scope_membership_page_ignores_unsubscribed_changes_without_progress() {
     assert_eq!(c.cursor("a").unwrap(), None);
     assert_eq!(c.cursor("b").unwrap(), Some(1));
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "cached");
-    assert_eq!(table_count(&mut c, "axton_scope_member"), 0);
+    assert_eq!(table_count(&mut c, "axton_stream_member"), 0);
 }

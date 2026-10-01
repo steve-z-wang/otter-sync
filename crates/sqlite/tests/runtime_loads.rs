@@ -500,7 +500,10 @@ fn nine_ready_jobs_go_out_as_eight_and_one_and_a_slow_batch_holds_back_no_lane()
             .any(|e| e["type"] == "callCompleted" && e["callId"] == call),
         "{events:?}"
     );
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     h.run();
     let (socket, _) = h.one("socket", None);
     h.answer(
@@ -1689,7 +1692,10 @@ fn load_pages_and_downlink_pages_alternate_one_application_per_turn() {
     let mut h = host();
     let started: Vec<String> = (0..4).map(|n| h.recent(&format!("s{n}"))).collect();
     h.connect(false);
-    h.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    h.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     h.run();
     let (socket, _) = h.one("socket", None);
     h.answer(

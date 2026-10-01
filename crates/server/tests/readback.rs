@@ -1,5 +1,5 @@
 //! Authoritative readback in a push: each successful mutation settles the
-//! records it changed (one stamp each, distributed to their Scopes), reads
+//! records it changed (one stamp each, distributed to their Streams), reads
 //! its uploaded targets back through the loaders at the declared version
 //! inside its own savepoint, and the receipt carries the last successful
 //! authority per target record. Extra handler changes are settled, not read.
@@ -96,26 +96,26 @@ fn key(model: &str, id: &str) -> RecordKey {
 fn record(model: &str, id: &str) -> Value {
     json!({"model":model,"identity":{"id":id}})
 }
-fn settled(changes: Value, memberships: Value) -> Value {
-    json!({"changes":changes,"memberships":memberships})
+fn settled(changes: Value, declarations: Value) -> Value {
+    json!({"changes":changes,"declarations":declarations})
 }
-fn add(scope: &str, model: &str, id: &str) -> Value {
-    json!({"kind":"add","scope":scope,"record":{"model":model,"identity":{"id":id}},"tags":[]})
+fn track(stream: &str, model: &str, id: &str) -> Value {
+    json!({"kind":"track","stream":stream,"record":{"model":model,"identity":{"id":id}}})
 }
 fn decode(text: &str) -> PushReceipt {
     PushReceipt::decode(text.as_bytes()).unwrap()
 }
 
-/// Everything a savepoint isolates: business rows, record stamps, scope
+/// Everything a savepoint isolates: business rows, record stamps, stream
 /// heads, persistent memberships and their positions.
 #[derive(Default, Clone)]
 struct Store {
     business: BTreeMap<String, Value>,
     stamps: BTreeMap<String, u64>,
     heads: BTreeMap<String, u64>,
-    /// `(stamp key, scope)` to the member's tags.
-    members: BTreeMap<(String, String), BTreeSet<String>>,
-    /// `(scope, stamp key)` to the pair's latest cursor.
+    /// Persisted `(stamp key, stream)` tracking pairs.
+    members: BTreeSet<(String, String)>,
+    /// `(stream, stamp key)` to the pair's latest cursor.
     positions: BTreeMap<(String, String), u64>,
 }
 type Answer = HostResult<Value>;
@@ -136,9 +136,9 @@ struct State {
     skip_operations: bool,
     /// Answers for the n-th `load` call (0-based) instead of the table.
     load_overrides: BTreeMap<usize, Answer>,
-    /// A fixed answer for every `applyScopeMembers` instead of the positions.
+    /// A fixed answer for every `applyStreamMembers` instead of the positions.
     apply_answer: Option<Answer>,
-    /// Every published upsert as `(scope, identity key, record stamp then)`.
+    /// Every published upsert as `(stream, identity key, record stamp then)`.
     published: Vec<(String, String, u64)>,
     /// The fields a loader of this version returns; others are the whole row.
     load_fields: BTreeMap<u64, Vec<String>>,
@@ -146,7 +146,7 @@ struct State {
     fail_rollback: bool,
 }
 /// A scripted in-memory host: a business table keyed by encoded record key,
-/// stamp counters, scope heads, a savepoint stack, stored receipts and a log
+/// stamp counters, stream heads, a savepoint stack, stored receipts and a log
 /// of every request it received.
 struct Scripted {
     state: Mutex<State>,
@@ -271,10 +271,28 @@ impl Scripted {
                 s.clients.insert(client_id, (sequence, Some(receipt)));
                 Value::Null
             }
-            HostRequest::Head { scope } => {
-                json!(s.store.heads.get(&scope).copied().unwrap_or(0))
+            HostRequest::Head { stream } => {
+                json!(s.store.heads.get(&stream).copied().unwrap_or(0))
             }
-            HostRequest::Scan { .. } => json!([]),
+            HostRequest::Scan {
+                stream,
+                after,
+                limit,
+            } => {
+                let mut rows: Vec<_> = s
+                    .store
+                    .positions
+                    .iter()
+                    .filter(|((name, _), cursor)| name == &stream && **cursor > after)
+                    .collect();
+                rows.sort_by_key(|(_, cursor)| **cursor);
+                Value::Array(rows.into_iter().take(limit as usize).map(|((_, encoded), cursor)| {
+                    let (model, identity_key) = encoded.split_once(' ').unwrap();
+                    let identity: Value = serde_json::from_str(identity_key).unwrap();
+                    json!({"kind":"upsert","stream":stream,"cursor":cursor,"model":model,
+                        "identity":identity,"identityKey":identity_key,"stamp":s.store.stamps[encoded]})
+                }).collect())
+            }
             HostRequest::Savepoint { ordinal } => {
                 let snapshot = s.store.clone();
                 s.savepoints.push((ordinal, snapshot));
@@ -376,29 +394,47 @@ impl Scripted {
                     .entry(stamp_key(&model, &identity_key))
                     .or_insert(1)
             ),
-            HostRequest::LockScopes { .. } => Value::Null,
-            HostRequest::ReadScopeMembers {
-                scope,
-                explicit_keys,
-                tags,
-                all,
-            } => {
-                let named: BTreeSet<String> = explicit_keys
-                    .iter()
-                    .map(|key| stamp_key(&key.model, &key.encoded_identity().unwrap()))
-                    .collect();
+            HostRequest::LockStreams { .. } => Value::Null,
+            HostRequest::ReadTracking { records, pairs } => {
                 let mut rows = vec![];
-                for ((record, c), held) in &s.store.members {
-                    if *c == scope
-                        && (all || named.contains(record) || tags.iter().any(|t| held.contains(t)))
+                for (record, stream) in &s.store.members {
+                    let (model, identity_key) = record.split_once(' ').unwrap();
+                    if records
+                        .iter()
+                        .any(|r| r.model == model && r.identity_key == identity_key)
+                        || pairs.iter().any(|p| {
+                            p.stream == *stream
+                                && p.model == model
+                                && p.identity_key == identity_key
+                        })
                     {
-                        let (model, identity_key) = record.split_once(' ').unwrap();
-                        rows.push(json!({"model":model,"identityKey":identity_key,"tags":held}));
+                        rows.push(
+                            json!({"stream":stream,"model":model,"identityKey":identity_key}),
+                        );
                     }
                 }
                 Value::Array(rows)
             }
-            HostRequest::ApplyScopeMembers { deltas } => {
+            HostRequest::GuardRecords { records } => Value::Array(
+                records
+                    .into_iter()
+                    .map(|r| {
+                        let key = stamp_key(&r.model, &r.identity_key);
+                        match r.mode {
+                            axton_server::host::GuardMode::Advance => {
+                                let stamp = s.store.stamps.entry(key).or_insert(0);
+                                *stamp += 1;
+                                json!(*stamp)
+                            }
+                            axton_server::host::GuardMode::Ensure => {
+                                json!(*s.store.stamps.entry(key).or_insert(1))
+                            }
+                            axton_server::host::GuardMode::Lock => json!(s.store.stamps.get(&key)),
+                        }
+                    })
+                    .collect(),
+            ),
+            HostRequest::ApplyStreamMembers { deltas } => {
                 if let Some(answer) = s.apply_answer.clone() {
                     return answer;
                 }
@@ -409,28 +445,22 @@ impl Scripted {
                     let Some(stamp) = s.store.stamps.get(&record).copied() else {
                         return Err(format!("{record} has no metadata to enroll"));
                     };
-                    let member = (record.clone(), delta.scope.clone());
-                    let pair = (delta.scope.clone(), record);
-                    if delta.present {
-                        s.store.members.insert(member, delta.tags.clone());
-                    } else {
-                        s.store.members.remove(&member);
-                    }
-                    let head = s.store.heads.entry(delta.scope.clone()).or_insert(0);
+                    let member = (record.clone(), delta.stream.clone());
+                    let pair = (delta.stream.clone(), record);
+                    s.store.members.insert(member);
+                    let head = s.store.heads.entry(delta.stream.clone()).or_insert(0);
                     let cursor = if delta.publish {
                         *head += 1;
                         let cursor = *head;
                         s.store.positions.insert(pair, cursor);
-                        if delta.present {
-                            s.published
-                                .push((delta.scope.clone(), identity_key.clone(), stamp));
-                        }
+                        s.published
+                            .push((delta.stream.clone(), identity_key.clone(), stamp));
                         cursor
                     } else {
                         s.store.positions[&pair]
                     };
-                    let kind = if delta.present { "upsert" } else { "remove" };
-                    positions.push(json!({"scope":delta.scope,"model":delta.key.model,
+                    let kind = "upsert";
+                    positions.push(json!({"stream":delta.stream,"model":delta.key.model,
                         "identityKey":identity_key,"cursor":cursor,"kind":kind}));
                 }
                 Value::Array(positions)
@@ -444,20 +474,6 @@ impl Scripted {
                     .get(&stamp_key(&model, &identity_key))
                     .copied()
             ),
-            HostRequest::Memberships {
-                model,
-                identity_key,
-            } => {
-                let record = stamp_key(&model, &identity_key);
-                json!(
-                    s.store
-                        .members
-                        .keys()
-                        .filter(|(member, _)| *member == record)
-                        .map(|(_, scope)| scope.clone())
-                        .collect::<Vec<_>>()
-                )
-            }
         })
     }
 }
@@ -495,7 +511,7 @@ fn assert_publishes_carry_current_stamps(host: &Scripted) {
 /// A success reads back each changed record once at its allocated stamp with
 /// the loader's normalized state, in the order touch recipients, stamp,
 /// recipients again under the (here empty) lock set, load; a record in no
-/// Scope is published nowhere.
+/// Stream is published nowhere.
 #[test]
 fn success_reads_back_each_changed_record_once_at_its_stamp() {
     let host = Scripted::new();
@@ -520,9 +536,9 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
             "claim",
             "savepoint(ordinal 1)",
             "handle(ordinal 1)",
-            "memberships",
-            "advanceStamp",
-            "memberships",
+            "readTracking",
+            "guardRecords",
+            "readTracking",
             "load",
             "release(ordinal 1)",
             "saveReceipt"
@@ -542,7 +558,7 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
         ("Entry", 1, "u")
     );
     assert_eq!(*identities, vec![json!({"id":"a"})]);
-    assert_eq!(host.count("applyScopeMembers"), 0);
+    assert_eq!(host.count("applyStreamMembers"), 0);
     // A second batch advances the same record's stamp.
     let text = process(&config(), &push(2, vec![edit(1, "a", "again")]), &host).unwrap();
     assert_eq!(decode(&text).records[0].stamp, 2);
@@ -563,7 +579,7 @@ fn repeated_operations_on_one_record_share_one_stamp() {
     assert_eq!(receipt.records.len(), 1);
     assert_eq!(receipt.records[0].stamp, 1);
     assert_eq!(receipt.records[0].state, json!({"text":"second"}));
-    assert_eq!(host.count("advanceStamp"), 1);
+    assert_eq!(host.count("guardRecords"), 1);
     assert_eq!(host.count("load"), 1);
 }
 
@@ -578,7 +594,7 @@ fn a_later_mutation_on_the_same_record_replaces_the_earlier_result() {
     assert_eq!(receipt.records.len(), 1);
     assert_eq!(receipt.records[0].stamp, 2);
     assert_eq!(receipt.records[0].state, json!({"text":"edited"}));
-    assert_eq!(host.count("advanceStamp"), 2);
+    assert_eq!(host.count("guardRecords"), 2);
 }
 
 /// Records the handler adds via `changes` are settled (stamped and
@@ -599,7 +615,7 @@ fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_the
         1,
         settled(
             json!([record("Entry", "b")]),
-            json!([add("shared", "Entry", "c")]),
+            json!([track("shared", "Entry", "c")]),
         ),
     );
     let receipt =
@@ -623,40 +639,47 @@ fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_the
             "claim",
             "savepoint(ordinal 1)",
             "handle(ordinal 1)",
-            "memberships",
-            "memberships",
-            "lockScopes",
-            "advanceStamp",
-            "advanceStamp",
-            "ensureStamp",
-            "memberships",
-            "memberships",
-            "readScopeMembers",
-            "applyScopeMembers",
+            "readTracking",
+            "lockStreams",
+            "guardRecords",
+            "readTracking",
+            "applyStreamMembers",
             "load",
             "release(ordinal 1)",
             "saveReceipt"
         ]
     );
     let log = host.log();
-    assert!(
-        matches!(&log[6], HostRequest::AdvanceStamp { identity_key, .. } if identity_key == r#"{"id":"a"}"#)
-    );
-    assert!(
-        matches!(&log[7], HostRequest::AdvanceStamp { identity_key, .. } if identity_key == r#"{"id":"b"}"#)
-    );
-    assert!(
-        matches!(&log[8], HostRequest::EnsureStamp { identity_key, .. } if identity_key == r#"{"id":"c"}"#)
+    let HostRequest::GuardRecords { records } = &log[5] else {
+        panic!("bulk guards")
+    };
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| (&r.identity_key, r.mode))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                &r#"{"id":"a"}"#.to_string(),
+                axton_server::host::GuardMode::Advance
+            ),
+            (
+                &r#"{"id":"b"}"#.to_string(),
+                axton_server::host::GuardMode::Advance
+            ),
+            (
+                &r#"{"id":"c"}"#.to_string(),
+                axton_server::host::GuardMode::Ensure
+            )
+        ]
     );
     assert_eq!(
-        log[12],
-        HostRequest::ApplyScopeMembers {
-            deltas: vec![axton_server::scope_members::MemberDelta {
-                scope: "shared".into(),
+        log[7],
+        HostRequest::ApplyStreamMembers {
+            deltas: vec![axton_server::stream_members::MemberDelta {
+                stream: "shared".into(),
                 key: key("Entry", "c"),
-                present: true,
-                tags: BTreeSet::new(),
-                publish: true,
+                publish: true
             }]
         }
     );
@@ -665,7 +688,7 @@ fn handler_changes_are_settled_not_read_back_and_enrolled_records_publish_at_the
         [("shared".into(), r#"{"id":"c"}"#.into(), 1)]
     );
     assert!(
-        matches!(&log[13], HostRequest::Load { identities, .. } if *identities == vec![json!({"id":"a"})])
+        matches!(&log[8], HostRequest::Load { identities, .. } if *identities == vec![json!({"id":"a"})])
     );
     assert_publishes_carry_current_stamps(&host);
 }
@@ -686,7 +709,7 @@ fn enrolled_changes_publish_at_their_allocated_stamps() {
         1,
         settled(
             json!([record("Entry", "b")]),
-            json!([add("shared", "Entry", "a"), add("shared", "Entry", "b")]),
+            json!([track("shared", "Entry", "a"), track("shared", "Entry", "b")]),
         ),
     );
     // Record b has been stamped before: its next stamp is 4, not 1.
@@ -708,9 +731,9 @@ fn enrolled_changes_publish_at_their_allocated_stamps() {
             ("shared".to_string(), r#"{"id":"b"}"#.to_string(), 4)
         ]
     );
-    assert_eq!(host.count("ensureStamp"), 0);
+    assert_eq!(host.count("guardRecords"), 1);
     assert_publishes_carry_current_stamps(&host);
-    // A later change of the enrolled record reaches the Scope again without
+    // A later change of the enrolled record reaches the Stream again without
     // any declaration.
     host.settle(1, settled(json!([]), json!([])));
     let receipt =
@@ -723,7 +746,7 @@ fn enrolled_changes_publish_at_their_allocated_stamps() {
     );
 }
 
-/// A change with no membership publishes nothing and creates no Scope.
+/// A change with no membership publishes nothing and creates no Stream.
 #[test]
 fn a_change_without_membership_publishes_nothing() {
     let host = Scripted::new();
@@ -732,9 +755,9 @@ fn a_change_without_membership_publishes_nothing() {
     let receipt =
         decode(&process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap());
     assert_eq!(receipt.records.len(), 1);
-    assert_eq!(host.count("lockScopes"), 0);
-    assert_eq!(host.count("applyScopeMembers"), 0);
-    assert_eq!(host.count("ensureStamp"), 0);
+    assert_eq!(host.count("lockStreams"), 0);
+    assert_eq!(host.count("applyStreamMembers"), 0);
+    assert_eq!(host.count("guardRecords"), 1);
     assert_eq!(host.with(|s| s.store.heads.len()), 0);
 }
 
@@ -744,13 +767,16 @@ fn a_change_without_membership_publishes_nothing() {
 fn a_position_for_another_record_is_host_invalid() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
+    host.settle(
+        1,
+        settled(json!([]), json!([track("shared", "Entry", "a")])),
+    );
     host.answer_apply(Ok(
-        json!([{"scope":"shared","model":"Entry","identityKey":"{\"id\":\"b\"}","cursor":1,"kind":"upsert"}]),
+        json!([{"stream":"shared","model":"Entry","identityKey":"{\"id\":\"b\"}","cursor":1,"kind":"upsert"}]),
     ));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST_INVALID, "{err}");
-    assert!(err.message.contains("applyScopeMembers"), "{err}");
+    assert!(err.message.contains("applyStreamMembers"), "{err}");
     assert_eq!(host.count("saveReceipt"), 0);
 }
 
@@ -916,9 +942,9 @@ fn a_loader_refusal_rejects_the_mutation_and_keeps_earlier_results() {
         [
             "savepoint(ordinal 2)",
             "handle(ordinal 2)",
-            "memberships",
-            "advanceStamp",
-            "memberships",
+            "readTracking",
+            "guardRecords",
+            "readTracking",
             "load",
             "rollback(ordinal 2)",
             "release(ordinal 2)",
@@ -1022,11 +1048,14 @@ fn a_later_rejection_on_the_same_record_keeps_the_first_success() {
 fn a_failed_publication_fails_the_push() {
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(1, settled(json!([]), json!([add("shared", "Entry", "a")])));
-    host.answer_apply(Err("scope down".into()));
+    host.settle(
+        1,
+        settled(json!([]), json!([track("shared", "Entry", "a")])),
+    );
+    host.answer_apply(Err("stream down".into()));
     let err = process(&config(), &push(1, vec![edit(1, "a", "typed")]), &host).unwrap_err();
     assert_eq!(err.code, code::HOST);
-    assert_eq!(err.message, "scope down");
+    assert_eq!(err.message, "stream down");
     assert_eq!(host.count("saveReceipt"), 0);
 }
 
@@ -1229,18 +1258,146 @@ fn handler_changes_naming_an_unregistered_model_are_an_error() {
         err.message,
         "Model Note has no registered Loader: it is device-only and never published"
     );
-    assert_eq!(host.count("advanceStamp"), 0);
+    assert_eq!(host.count("guardRecords"), 0);
     assert_eq!(host.count("saveReceipt"), 0);
     // The same for a membership of an unregistered model.
     let host = Scripted::new();
     host.seed("Entry", "a", json!({"id":"a","text":"old"}));
-    host.settle(1, settled(json!([]), json!([add("shared", "Note", "n")])));
+    host.settle(1, settled(json!([]), json!([track("shared", "Note", "n")])));
     let err = process(&config, &body, &host).unwrap_err();
     assert_eq!(err.code, code::LOADER_UNREGISTERED, "{err}");
     assert!(err.message.contains("Model Note"), "{err}");
     assert_eq!(
-        host.count("applyScopeMembers"),
+        host.count("applyStreamMembers"),
         0,
         "a device-only Model is never published"
+    );
+}
+
+fn pull_viewer(
+    host: &Scripted,
+    owner: &str,
+    stream: &str,
+    cursor: u64,
+) -> axton_core::StreamPullPage {
+    let request = json!({"cursors":{stream:cursor},"models":{"Entry":1}}).to_string();
+    let page = run(axton_server::process_stream_pull(
+        &config(),
+        owner,
+        &crate::capability::request(request.as_bytes()),
+        host,
+    ))
+    .unwrap();
+    axton_core::StreamPullPage::decode(page.as_bytes()).unwrap()
+}
+
+fn track_two_viewers(host: &Scripted) {
+    host.seed("Entry", "a", json!({"id":"a","text":"still shared"}));
+    host.with(|s| {
+        s.store
+            .stamps
+            .insert(stamp_key("Entry", r#"{"id":"a"}"#), 7);
+    });
+    run(axton_server::settle_external(
+        &config(),
+        &settled(
+            json!([]),
+            json!([track("A", "Entry", "a"), track("B", "Entry", "a")]),
+        ),
+        host,
+    ))
+    .unwrap();
+    for viewer in ["A", "B"] {
+        let page = pull_viewer(host, viewer, viewer, 0);
+        let [axton_core::StreamChange::Upsert { record, .. }] = page.changes.as_slice() else {
+            panic!("each newly tracked viewer receives the original row");
+        };
+        assert_eq!(record.stamp, 7);
+        assert_eq!(record.state, json!({"text":"still shared"}));
+        assert!(!record.is_error());
+    }
+}
+
+fn invalidate_viewer_a(host: &Scripted) {
+    run(axton_server::settle_external(
+        &config(),
+        &settled(
+            json!([]),
+            json!([{"kind":"invalidate","streams":["A"],"record":record("Entry", "a")}]),
+        ),
+        host,
+    ))
+    .unwrap();
+}
+
+#[test]
+fn targeted_viewer_absence_arrives_at_a_new_stamp_without_notifying_another_holder() {
+    let host = Scripted::new();
+    track_two_viewers(&host);
+    invalidate_viewer_a(&host);
+    host.answer_load(2, Ok(json!([null])));
+    let page = pull_viewer(&host, "A", "A", 1);
+    let [
+        axton_core::StreamChange::Upsert {
+            stream,
+            cursor,
+            record,
+        },
+    ] = page.changes.as_slice()
+    else {
+        panic!("Loader absence is stamped authority, not membership removal");
+    };
+    assert_eq!((stream.as_str(), *cursor, record.stamp), ("A", 2, 8));
+    assert_eq!(record.state, Value::Null);
+    assert!(!record.is_error());
+    assert_eq!(
+        host.with(|s| s.store.heads.clone()),
+        BTreeMap::from([("A".into(), 2), ("B".into(), 1)])
+    );
+    assert!(pull_viewer(&host, "B", "B", 1).changes.is_empty());
+    assert_eq!(
+        host.business("Entry", "a"),
+        Some(json!({"id":"a","text":"still shared"}))
+    );
+    assert_eq!(
+        host.with(|s| s.store.members.len()),
+        2,
+        "absence does not withdraw tracking"
+    );
+    assert_eq!(
+        host.published().last(),
+        Some(&("A".into(), r#"{"id":"a"}"#.into(), 8))
+    );
+    assert!(
+        matches!(host.log().iter().rev().find(|request| matches!(request,HostRequest::Load {..})), Some(HostRequest::Load {owner,..}) if owner=="A")
+    );
+}
+
+#[test]
+fn targeted_viewer_loader_failure_is_a_diagnostic_and_never_absence() {
+    let host = Scripted::new();
+    track_two_viewers(&host);
+    invalidate_viewer_a(&host);
+    host.answer_load(2, Ok(json!({"error":"viewer storage unavailable"})));
+    let page = pull_viewer(&host, "A", "A", 1);
+    let [axton_core::StreamChange::Upsert { record, .. }] = page.changes.as_slice() else {
+        panic!("the tracked pair retains delivery evidence for its diagnostic");
+    };
+    assert_eq!(record.stamp, 8);
+    assert_eq!(record.error.as_deref(), Some(code::LOADER_FAILED));
+    assert!(
+        record.is_error(),
+        "a failed Loader supplies no authority absence"
+    );
+    assert!(pull_viewer(&host, "B", "B", 1).changes.is_empty());
+    assert_eq!(host.with(|s| s.store.members.len()), 2);
+    assert_eq!(
+        host.business("Entry", "a"),
+        Some(json!({"id":"a","text":"still shared"}))
+    );
+    assert_eq!(
+        host.count("load"),
+        3,
+        "a single-identity failure needs no batch fallback"
     );
 }

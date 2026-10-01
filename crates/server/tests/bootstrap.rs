@@ -1,7 +1,7 @@
 //! Bounded pull: the `mode: "bootstrap"` request walks the historical
-//! interval `(after, until]` of one scope with the ordinary scan and the
+//! interval `(after, until]` of one stream with the ordinary scan and the
 //! ordinary Loader resolution, and stops at the subscription origin while the
-//! scope head keeps moving ([#151](https://github.com/zanminwang/axton/issues/151)).
+//! stream head keeps moving ([#151](https://github.com/zanminwang/axton/issues/151)).
 mod capability;
 use axton_core::{BootstrapPage, limits};
 use axton_server::{Config, Host, HostResult, code, host::HostRequest};
@@ -38,24 +38,24 @@ fn config() -> Config {
     }))
     .unwrap()
 }
-/// One invalidation row: the record's position in the scope with the
+/// One invalidation row: the record's position in the stream with the
 /// record's current stamp, as `scan` answers it.
-fn row(scope: &str, cursor: u64, model: &str, id: &str, stamp: u64) -> Value {
-    json!({"scope":scope,"cursor":cursor,"model":model,"identity":{"id":id},
+fn row(stream: &str, cursor: u64, model: &str, id: &str, stamp: u64) -> Value {
+    json!({"stream":stream,"cursor":cursor,"model":model,"identity":{"id":id},
            "identityKey":format!("{{\"id\":\"{id}\"}}"),"stamp":stamp})
 }
 fn entry(cursor: u64, id: &str, stamp: u64) -> Value {
     row("a", cursor, "Entry", id, stamp)
 }
 
-/// An in-memory host over one scope: `head` answers the configured head, and
-/// `scan` answers the configured rows of the scanned scope whose cursor is
+/// An in-memory host over one stream: `head` answers the configured head, and
+/// `scan` answers the configured rows of the scanned stream whose cursor is
 /// above `after`, sorted by cursor and truncated to `limit`, as PostgreSQL's
 /// cursor-ordered scan does. In `verbatim` mode it answers the configured rows
 /// exactly as given instead, so a test can feed the engine an answer the scan
 /// contract refuses. Every `load` is recorded to prove which identities a page
 /// actually read.
-struct Scoped {
+struct Streamd {
     head: u64,
     rows: Vec<Value>,
     loads: Mutex<Vec<(String, u64, Vec<Value>)>>,
@@ -63,7 +63,7 @@ struct Scoped {
     refuse: Option<String>,
     verbatim: bool,
 }
-impl Scoped {
+impl Streamd {
     fn new(head: u64, rows: Vec<Value>) -> Self {
         Self {
             head,
@@ -101,7 +101,7 @@ impl Scoped {
             .collect()
     }
 }
-impl Host for Scoped {
+impl Host for Streamd {
     fn call(&self, r: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>> {
         Box::pin(async move {
             let request: HostRequest = serde_json::from_value(r)
@@ -109,14 +109,14 @@ impl Host for Scoped {
             Ok(match &request {
                 HostRequest::Head { .. } => json!(self.head),
                 HostRequest::Scan {
-                    scope,
+                    stream,
                     after,
                     limit,
                 } => {
                     self.scans
                         .lock()
                         .unwrap()
-                        .push((scope.clone(), *after, *limit));
+                        .push((stream.clone(), *after, *limit));
                     if self.verbatim {
                         Value::Array(self.rows.iter().take(*limit as usize).cloned().collect())
                     } else {
@@ -124,7 +124,7 @@ impl Host for Scoped {
                             .rows
                             .iter()
                             .filter(|row| {
-                                row["scope"] == json!(scope)
+                                row["stream"] == json!(stream)
                                     && row["cursor"].as_u64().unwrap() > *after
                             })
                             .cloned()
@@ -162,14 +162,14 @@ impl Host for Scoped {
         })
     }
 }
-/// A bootstrap request on scope `a` for the interval `(after, until]`.
+/// A bootstrap request on stream `a` for the interval `(after, until]`.
 fn body(after: u64, until: u64) -> Vec<u8> {
-    json!({"mode":"bootstrap","scope":"a","models":{"Entry":1,"Note":1},
+    json!({"mode":"bootstrap","stream":"a","models":{"Entry":1,"Note":1},
            "after":after,"until":until})
     .to_string()
     .into_bytes()
 }
-fn bootstrap(host: &Scoped, after: u64, until: u64) -> BootstrapPage {
+fn bootstrap(host: &Streamd, after: u64, until: u64) -> BootstrapPage {
     let text = run(axton_server::process_pull(
         &config(),
         "u",
@@ -191,7 +191,7 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
     // S = 100: the row at 40 is historical, the row at 120 belongs to the
     // subscription's own delivery and is never loaded. The page is terminal:
     // the scan crossed the origin, so nothing below it remains.
-    let host = Scoped::new(140, vec![entry(40, "e", 7), entry(120, "f", 9)]);
+    let host = Streamd::new(140, vec![entry(40, "e", 7), entry(120, "f", 9)]);
     let page = bootstrap(&host, 0, 100);
     assert_eq!(
         (page.from, page.to, page.until, page.head),
@@ -213,7 +213,7 @@ fn a_full_scan_below_the_origin_is_nonterminal_and_stops_at_its_last_cursor() {
     let rows: Vec<Value> = (1..=limits::PULL_CHANGES as u64 + 1)
         .map(|i| entry(i, &format!("e{i}"), i))
         .collect();
-    let host = Scoped::new(400, rows);
+    let host = Streamd::new(400, rows);
     let page = bootstrap(&host, 0, 100);
     assert_eq!(page.to, limits::PULL_CHANGES as u64);
     assert!(!page.terminal(), "the interval continues above `to`");
@@ -241,7 +241,7 @@ fn a_full_scan_whose_last_row_sits_on_the_origin_is_terminal() {
         .map(|i| entry(i, &format!("e{i}"), i))
         .collect();
     rows.push(entry(100, "last", 5));
-    let host = Scoped::new(140, rows);
+    let host = Streamd::new(140, rows);
     let page = bootstrap(&host, 0, 100);
     assert_eq!(page.to, 100);
     assert!(page.terminal());
@@ -254,7 +254,7 @@ fn a_full_scan_whose_last_row_sits_on_the_origin_is_terminal() {
 
 #[test]
 fn an_empty_scan_is_terminal_and_carries_the_current_head() {
-    let host = Scoped::new(140, vec![]);
+    let host = Streamd::new(140, vec![]);
     let page = bootstrap(&host, 0, 100);
     assert_eq!(
         (page.from, page.to, page.until, page.head),
@@ -267,7 +267,7 @@ fn an_empty_scan_is_terminal_and_carries_the_current_head() {
 
 #[test]
 fn an_exhausted_interval_is_an_empty_terminal_page_carrying_the_head() {
-    let host = Scoped::new(140, vec![entry(40, "e", 7)]);
+    let host = Streamd::new(140, vec![entry(40, "e", 7)]);
     let page = bootstrap(&host, 100, 100);
     assert_eq!(
         (page.from, page.to, page.until, page.head),
@@ -279,8 +279,8 @@ fn an_exhausted_interval_is_an_empty_terminal_page_carrying_the_head() {
         host.scans.lock().unwrap().is_empty(),
         "an exhausted interval scans nothing"
     );
-    // A zero-head empty Scope completes the same way.
-    let empty = Scoped::new(0, vec![]);
+    // A zero-head empty Stream completes the same way.
+    let empty = Streamd::new(0, vec![]);
     let page = bootstrap(&empty, 0, 0);
     assert_eq!((page.from, page.to, page.until, page.head), (0, 0, 0, 0));
     assert!(page.terminal());
@@ -288,7 +288,7 @@ fn an_exhausted_interval_is_an_empty_terminal_page_carrying_the_head() {
 
 #[test]
 fn an_origin_above_the_head_is_refused() {
-    let host = Scoped::new(80, vec![entry(40, "e", 7)]);
+    let host = Streamd::new(80, vec![entry(40, "e", 7)]);
     let err = run(axton_server::process_pull(
         &config(),
         "u",
@@ -303,7 +303,7 @@ fn an_origin_above_the_head_is_refused() {
 
 #[test]
 fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
-    let host = Scoped::new(140, vec![]);
+    let host = Streamd::new(140, vec![]);
     let pull = |raw: Value| {
         run(axton_server::process_pull(
             &config(),
@@ -320,19 +320,19 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
         json!(true),
         json!({}),
     ] {
-        let err = pull(json!({"mode":mode,"scope":"a","models":{"Entry":1},"after":0,"until":1}))
+        let err = pull(json!({"mode":mode,"stream":"a","models":{"Entry":1},"after":0,"until":1}))
             .unwrap_err();
         assert_eq!(err.code, code::REQUEST_INVALID, "mode {mode}: {err}");
         assert!(err.message.contains("mode"), "mode {mode}: {err}");
     }
     // A bootstrap envelope whose own fields are wrong is a request error.
     for bad in [
-        json!({"mode":"bootstrap","scope":"","models":{"Entry":1},"after":0,"until":1}),
-        json!({"mode":"bootstrap","scope":" ","models":{"Entry":1},"after":0,"until":1}),
-        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":2,"until":1}),
-        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"until":1}),
-        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":-1,"until":1}),
-        json!({"mode":"bootstrap","scope":"a","models":{},"after":0,"until":1}),
+        json!({"mode":"bootstrap","stream":"","models":{"Entry":1},"after":0,"until":1}),
+        json!({"mode":"bootstrap","stream":" ","models":{"Entry":1},"after":0,"until":1}),
+        json!({"mode":"bootstrap","stream":"a","models":{"Entry":1},"after":2,"until":1}),
+        json!({"mode":"bootstrap","stream":"a","models":{"Entry":1},"until":1}),
+        json!({"mode":"bootstrap","stream":"a","models":{"Entry":1},"after":-1,"until":1}),
+        json!({"mode":"bootstrap","stream":"a","models":{},"after":0,"until":1}),
     ] {
         assert_eq!(
             pull(bad.clone()).unwrap_err().code,
@@ -342,7 +342,7 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
     }
     // An undeclared or unretained read contract is refused with its own code.
     let err =
-        pull(json!({"mode":"bootstrap","scope":"a","models":{"Entry":9},"after":0,"until":1}))
+        pull(json!({"mode":"bootstrap","stream":"a","models":{"Entry":9},"after":0,"until":1}))
             .unwrap_err();
     assert_eq!(err.code, code::MODEL_VERSION_UNSUPPORTED, "{err}");
     let err = run(axton_server::process_pull(
@@ -357,9 +357,9 @@ fn a_bootstrap_request_is_refused_like_an_ordinary_pull_when_it_is_malformed() {
 
 #[test]
 fn a_page_holding_a_model_the_client_did_not_declare_is_refused() {
-    let host = Scoped::new(140, vec![row("a", 10, "Note", "n", 3)]);
+    let host = Streamd::new(140, vec![row("a", 10, "Note", "n", 3)]);
     let request =
-        json!({"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":0,"until":100});
+        json!({"mode":"bootstrap","stream":"a","models":{"Entry":1},"after":0,"until":100});
     let err = run(axton_server::process_pull(
         &config(),
         "u",
@@ -379,7 +379,7 @@ fn both_pull_modes_resolve_records_through_the_same_grouped_loader_helper() {
         row("a", 20, "Note", "n", 3),
         entry(30, "f", 9),
     ];
-    let host = Scoped::new(140, rows.clone());
+    let host = Streamd::new(140, rows.clone());
     let page = bootstrap(&host, 0, 100);
     assert_eq!(ids(&page), ["e", "f", "n"], "canonical record order");
     assert_eq!(
@@ -398,7 +398,7 @@ fn both_pull_modes_resolve_records_through_the_same_grouped_loader_helper() {
     }
     .encode()
     .unwrap();
-    let host = Scoped::new(140, rows.clone());
+    let host = Streamd::new(140, rows.clone());
     let text = run(axton_server::process_pull(
         &config(),
         "u",
@@ -409,7 +409,7 @@ fn both_pull_modes_resolve_records_through_the_same_grouped_loader_helper() {
     let delta = capability::pull(text.as_bytes()).unwrap();
     assert_eq!(delta.changes, page.records, "one resolution for both modes");
     // A refusal isolates the record in either mode, with the refusal code.
-    let mut refusing = Scoped::new(140, rows);
+    let mut refusing = Streamd::new(140, rows);
     refusing.refuse = Some("entry.forbidden".into());
     let page = bootstrap(&refusing, 0, 100);
     assert_eq!(
@@ -431,15 +431,15 @@ fn a_malformed_scan_row_fails_the_request() {
     let cases: [(Value, &str); 4] = [
         (entry(0, "e", 7), "a cursor at or below `after`"),
         (entry(400, "e", 7), "a cursor above the head"),
-        (row("other", 10, "Entry", "e", 7), "another scope"),
+        (row("other", 10, "Entry", "e", 7), "another stream"),
         (
-            json!({"scope":"a","cursor":10,"model":"Entry","identity":{"id":"e"},
+            json!({"stream":"a","cursor":10,"model":"Entry","identity":{"id":"e"},
                    "identityKey":"{\"id\":\"other\"}","stamp":7}),
             "a noncanonical identity key",
         ),
     ];
     for (bad, why) in cases {
-        let host = Scoped::raw(140, vec![bad]);
+        let host = Streamd::raw(140, vec![bad]);
         let err = run(axton_server::process_pull(
             &config(),
             "u",
@@ -450,7 +450,7 @@ fn a_malformed_scan_row_fails_the_request() {
         assert_eq!(err.code, code::STORAGE_INVALID, "{why}: {err}");
     }
     // A row of a model with no registered loader is a configuration fault.
-    let host = Scoped::raw(140, vec![row("a", 10, "Other", "e", 7)]);
+    let host = Streamd::raw(140, vec![row("a", 10, "Other", "e", 7)]);
     let err = run(axton_server::process_pull(
         &config(),
         "u",
@@ -466,11 +466,11 @@ fn successive_pages_drop_a_record_republished_above_the_origin() {
     // The first page reads `e` at cursor 10. Between the pages `e` is
     // republished to 120, above S: its row leaves the historical interval and
     // the second page does not deliver it again.
-    let first = Scoped::new(140, vec![entry(10, "e", 7), entry(60, "f", 8)]);
+    let first = Streamd::new(140, vec![entry(10, "e", 7), entry(60, "f", 8)]);
     let page = bootstrap(&first, 0, 100);
     assert_eq!(ids(&page), ["e", "f"]);
     assert!(page.terminal());
-    let moved = Scoped::new(160, vec![entry(60, "f", 8), entry(120, "e", 11)]);
+    let moved = Streamd::new(160, vec![entry(60, "f", 8), entry(120, "e", 11)]);
     let second = bootstrap(&moved, 60, 100);
     assert_eq!((second.from, second.to, second.head), (60, 100, 160));
     assert!(second.terminal());
@@ -483,21 +483,21 @@ fn successive_pages_drop_a_record_republished_above_the_origin() {
 #[test]
 fn the_ordinary_pull_page_is_unchanged() {
     // Pins the ordinary page's bytes across the shared-helper refactor: two
-    // models, a deletion and a full scope that continues.
+    // models, a deletion and a full stream that continues.
     struct Fixed;
     impl Host for Fixed {
         fn call(&self, r: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>> {
             Box::pin(async move {
                 let request: HostRequest = serde_json::from_value(r).map_err(|e| e.to_string())?;
                 Ok(match &request {
-                    HostRequest::Head { scope } => {
-                        json!(if scope == "a" { 80 } else { 9 })
+                    HostRequest::Head { stream } => {
+                        json!(if stream == "a" { 80 } else { 9 })
                     }
                     HostRequest::Scan {
-                        scope,
+                        stream,
                         after,
                         limit,
-                    } if scope == "a" => Value::Array(
+                    } if stream == "a" => Value::Array(
                         (1..=limits::PULL_CHANGES as u64 + 1)
                             .filter(|i| i > after)
                             .take(*limit as usize)
@@ -549,19 +549,19 @@ fn the_ordinary_pull_page_is_unchanged() {
     assert_eq!(page.cursors["b"].to, 9);
     assert_eq!(page.changes.len(), limits::PULL_CHANGES + 1);
     assert!(page.changes[0].state.is_null(), "a tombstone is a deletion");
-    let scope = axton_core::ScopePullPage::decode(text.as_bytes()).unwrap();
-    assert_eq!(text, String::from_utf8(scope.encode().unwrap()).unwrap());
+    let stream = axton_core::StreamPullPage::decode(text.as_bytes()).unwrap();
+    assert_eq!(text, String::from_utf8(stream.encode().unwrap()).unwrap());
     assert!(
-        scope
+        stream
             .changes
             .iter()
-            .all(|c| matches!(c, axton_core::ScopeChange::Upsert { .. }))
+            .all(|c| matches!(c, axton_core::StreamChange::Upsert { .. }))
     );
 }
 
-fn scope_page(host: &Scoped, request: Value) -> Value {
+fn stream_page(host: &Streamd, request: Value) -> Value {
     serde_json::from_str(
-        &run(axton_server::process_scope_pull(
+        &run(axton_server::process_stream_pull(
             &config(),
             "alice",
             &crate::capability::request(&serde_json::to_vec(&request).unwrap()),
@@ -571,14 +571,15 @@ fn scope_page(host: &Scoped, request: Value) -> Value {
     )
     .unwrap()
 }
+/// A retained historical log fixture; fresh settlement emits only upserts.
 fn removed(cursor: u64, id: &str) -> Value {
     let mut row = entry(cursor, id, 1);
     row["kind"] = json!("remove");
     row
 }
 #[test]
-fn scope_pages_keep_mixed_changes_and_each_scopes_provenance_with_one_loader_read() {
-    let host = Scoped::new(
+fn stream_pages_keep_mixed_changes_and_each_streams_provenance_with_one_loader_read() {
+    let host = Streamd::new(
         9,
         vec![
             entry(2, "e", 3),
@@ -586,25 +587,25 @@ fn scope_pages_keep_mixed_changes_and_each_scopes_provenance_with_one_loader_rea
             row("b", 8, "Entry", "e", 3),
         ],
     );
-    let page = scope_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
+    let page = stream_page(&host, json!({"models":{"Entry":1},"cursors":{"a":0,"b":0}}));
     assert_eq!(page["changes"].as_array().unwrap().len(), 3);
     assert_eq!(page["changes"][1]["kind"], "remove");
-    assert_eq!(page["changes"][2]["scope"], "b");
+    assert_eq!(page["changes"][2]["stream"], "b");
     assert_eq!(host.loaded(), vec![("Entry".into(), vec!["e".into()])]);
 }
 #[test]
-fn scope_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
+fn stream_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page() {
     for bootstrap in [false, true] {
-        let host = Scoped::new(
+        let host = Streamd::new(
             100,
             (1..=50).map(|i| removed(i, &format!("e{i}"))).collect(),
         );
         let request = if bootstrap {
-            json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":0,"until":90})
+            json!({"mode":"bootstrap","models":{"Entry":1},"stream":"a","after":0,"until":90})
         } else {
             json!({"models":{"Entry":1},"cursors":{"a":0}})
         };
-        let page = scope_page(&host, request);
+        let page = stream_page(&host, request);
         assert_eq!(page["changes"].as_array().unwrap().len(), 50);
         assert_eq!(
             if bootstrap {
@@ -618,26 +619,26 @@ fn scope_delta_and_bootstrap_advance_over_compacted_gaps_after_a_full_last_page(
     }
 }
 #[test]
-fn scope_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
-    let host = Scoped::new(
+fn stream_pages_continue_after_fifty_and_bootstrap_excludes_rows_moved_above_its_bound() {
+    let host = Streamd::new(
         100,
         (1..=51)
             .map(|i| removed(i, &format!("e{i}")))
             .chain([entry(100, "moved", 4)])
             .collect(),
     );
-    let first = scope_page(
+    let first = stream_page(
         &host,
-        json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":0,"until":90}),
+        json!({"mode":"bootstrap","models":{"Entry":1},"stream":"a","after":0,"until":90}),
     );
     assert_eq!(first["to"], 50);
-    let second = scope_page(
+    let second = stream_page(
         &host,
-        json!({"mode":"bootstrap","models":{"Entry":1},"scope":"a","after":50,"until":90}),
+        json!({"mode":"bootstrap","models":{"Entry":1},"stream":"a","after":50,"until":90}),
     );
     assert_eq!(second["to"], 90);
     assert_eq!(second["changes"].as_array().unwrap().len(), 1);
     assert!(host.loaded().is_empty());
-    let delta = scope_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
+    let delta = stream_page(&host, json!({"models":{"Entry":1},"cursors":{"a":90}}));
     assert_eq!(delta["changes"][0]["identity"]["id"], "moved");
 }

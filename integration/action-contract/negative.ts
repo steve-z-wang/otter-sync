@@ -397,8 +397,8 @@ function invalidViewerLoaderScope(call: import('./backend.ts').LoaderCall<object
 }
 
 // Task 3A: backend exposes only the canonical Scope surface.
-// @ts-expect-error backend Scope facade is retired
-mutationContext.scope('U');
+// @ts-expect-error backend Channel facade is retired
+mutationContext.channel('U');
 // @ts-expect-error Model-first membership is retired
 mutationContext.scope('U').todo.add({ id: 'A' });
 // @ts-expect-error tag selectors are not record references

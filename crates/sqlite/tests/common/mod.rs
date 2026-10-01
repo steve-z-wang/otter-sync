@@ -336,13 +336,12 @@ pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
 /// Upgrade the old authority-only fixture vocabulary at the test host boundary.
 /// Production decoders stay strict; these fixtures now state Stream provenance.
 pub fn scope_fixture(mut value: Value) -> Value {
-    if value["mode"] == "bootstrap" {
-        if let Some(scope) = value
+    if value["mode"] == "bootstrap"
+        && let Some(scope) = value
             .as_object_mut()
             .and_then(|object| object.remove("scope"))
-        {
-            value["stream"] = scope;
-        }
+    {
+        value["stream"] = scope;
     }
     let ranges = value.get("cursors").and_then(Value::as_object).cloned();
     if let Some(ranges) = ranges {

@@ -946,6 +946,7 @@ fn incomplete_or_conflicting_scope_layout_rolls_back_without_mutating_work() {
         "ALTER TABLE axton_client ADD COLUMN stream_membership_version INTEGER",
         "ALTER TABLE axton_scope_member DROP COLUMN present",
         "DROP TABLE axton_load_once",
+        "DROP TABLE axton_client",
         "CREATE INDEX axton_stream_member_record ON Todo(channel)",
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -973,6 +974,14 @@ fn incomplete_or_conflicting_scope_layout_rolls_back_without_mutating_work() {
             .rows;
         let load = raw
             .query("SELECT intent,continuation FROM axton_load", &[])
+            .unwrap()
+            .rows;
+        let members = raw
+            .query("SELECT * FROM axton_scope_member ORDER BY rowid", &[])
+            .unwrap()
+            .rows;
+        let subscriptions = raw
+            .query("SELECT * FROM axton_subscription ORDER BY rowid", &[])
             .unwrap()
             .rows;
         drop(raw);
@@ -1006,6 +1015,20 @@ fn incomplete_or_conflicting_scope_layout_rolls_back_without_mutating_work() {
                 .unwrap()
                 .rows,
             load,
+            "{damage}"
+        );
+        assert_eq!(
+            raw.query("SELECT * FROM axton_scope_member ORDER BY rowid", &[])
+                .unwrap()
+                .rows,
+            members,
+            "{damage}"
+        );
+        assert_eq!(
+            raw.query("SELECT * FROM axton_subscription ORDER BY rowid", &[])
+                .unwrap()
+                .rows,
+            subscriptions,
             "{damage}"
         );
     }

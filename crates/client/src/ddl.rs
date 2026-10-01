@@ -166,9 +166,10 @@ pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
         // Older incompatible replicas are still rebuilt beside by opening;
         // do not turn their pre-membership Scope vocabulary into a refusal.
         if LEGACY_TABLES.iter().any(|table| tables.contains(table))
-            || CLIENT_COLUMNS
-                .iter()
-                .any(|required| !client.iter().any(|column| column == required))
+            || (tables.contains(&"axton_client")
+                && CLIENT_COLUMNS
+                    .iter()
+                    .any(|required| !client.iter().any(|column| column == required)))
         {
             return Ok(());
         }

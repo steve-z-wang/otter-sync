@@ -51,6 +51,20 @@ for(const [name,nRecords,nStreams] of [['records',2001,3],['streams',2,1001]])te
  const kept=await adapter(call=>call({op:'applyStreamMembers',deltas:deltas.map(d=>({...d,publish:false}))}));
  assert.deepEqual(kept.map(p=>p.cursor),deltas.map((_,i)=>i%nRecords+1));
 });
+test('bulk readTracking includes disjoint explicit-only pairs and deduplicates cross-chunk overlap',async()=>{
+ const keys=['all','explicit','unrequested'].map(id=>record('ReadBranches',id));
+ await adapter(async call=>{
+  await call({op:'guardRecords',records:keys});
+  await call({op:'applyStreamMembers',deltas:pairs(keys,['read:holders'])});
+ });
+ const candidate=r=>({model:r.model,identityKey:r.identityKey});
+ const records=[candidate(keys[0]),...Array.from({length:1000},(_,i)=>candidate(record('ReadAbsent',String(i))))];
+ const requested=[{...candidate(keys[1]),stream:'read:holders'},...Array.from({length:999},(_,i)=>({...candidate(record('ReadAbsent',String(i))),stream:'read:missing'})),{...candidate(keys[0]),stream:'read:holders'},{...candidate(keys[2]),stream:'read:missing'}];
+ let reads=0;
+ const result=await adapter(call=>call({op:'readTracking',records,pairs:requested}),sql=>{if(sql===SQL.READ_TRACKING)reads++;});
+ assert.equal(reads,2);
+ assert.deepEqual(result.sort((a,b)=>a.identityKey.localeCompare(b.identityKey)),keys.slice(0,2).map(r=>({...candidate(r),stream:'read:holders'})));
+});
 test('bulk chunk 2 failure rolls back business, guards, pairs, heads, logs and call claims',async()=>{
  const records=Array.from({length:1001},(_,i)=>record('Rollback',String(i).padStart(5,'0')));let count=0;
  await assert.rejects(()=>adapter(async(call,sql)=>{
@@ -91,13 +105,75 @@ test('mixed guards across chunks retry stale snapshots and two first creates as 
  await Promise.all([adapter(call=>call({op:'guardRecords',records:first})),adapter(call=>call({op:'guardRecords',records:first}))]);
  assert.deepEqual((await q("SELECT stamp::int stamp FROM axton_record WHERE model='First' ORDER BY identity_key")).map(r=>r.stamp),[2,1]);
 });
+// Replace only an existing ensure's no-op write for the negative control. All
+// enrollment/member writes and the stale invalidator still use the real adapter.
+const readOnlyEnsure=`SELECT (v->>'ordinal')::bigint ord,r.stamp
+ FROM jsonb_array_elements($1::jsonb) v
+ JOIN axton_record r ON r.model=v->>'model' AND r.identity_key=v->>'identityKey'
+ ORDER BY ord FOR UPDATE OF r`;
+for(const weakened of [false,true])test(`Repeatable Read enrollment ${weakened?'weakened guard control misses the new holder':'no-op fence retries the entire stale invalidation and refreshes holders'}`,{timeout:10000},async()=>{
+ const model=weakened?'FenceControl':'FenceProtected';
+ const records=[record(model,'entry')];const oldStream=`${model}:old`,newStream=`${model}:new`;
+ await adapter(async call=>{
+  await call({op:'guardRecords',records});
+  await call({op:'applyStreamMembers',deltas:pairs(records,[oldStream])});
+ });
+ const snapshot=latch(),enrolled=latch();let attempts=0;const failures=[],holders=[];
+ const transaction=async(body,isolation,weak=false)=>{
+  for(let attempt=0;attempt<3;attempt++){
+   const tx=await pool.connect();
+   try{
+    await tx.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+    await tx.query("SET LOCAL statement_timeout='3000ms'");
+    const call=r=>answer({query:async(_,sql,params)=>{
+     if(weak&&sql===SQL.GUARD_RECORDS){assert.ok(JSON.parse(params[0]).every(r=>r.mode==='ensure'));sql=readOnlyEnsure;}
+     return (await tx.query(sql,params)).rows;
+    }},tx,r);
+    const value=await body(call,tx);await tx.query('COMMIT');return value;
+   }catch(error){await tx.query('ROLLBACK');if(error.code!=='40001'||attempt===2)throw error;failures.push(error.code);}
+   finally{tx.release();}
+  }
+ };
+ const stale=transaction(async(call,tx)=>{
+  attempts++;
+  assert.equal((await tx.query('SHOW transaction_isolation')).rows[0].transaction_isolation,'serializable');
+  // Fix authority and holder snapshots before enrollment commits.
+  assert.equal((await tx.query('SELECT stamp::int FROM axton_record WHERE model=$1',[model])).rows[0].stamp,1);
+  const before=await call({op:'readTracking',records:records.map(({mode,...r})=>r),pairs:[]});
+  holders.push(before.map(r=>r.stream).sort());
+  await tx.query('INSERT INTO stream_business VALUES($1)',[model]);
+  if(attempts===1){snapshot.resolve();await enrolled.promise;}
+  assert.deepEqual(await call({op:'guardRecords',records:records.map(r=>({...r,mode:'advance'}))}),[2]);
+  const refreshed=await call({op:'readTracking',records:records.map(({mode,...r})=>r),pairs:[]});
+  await call({op:'applyStreamMembers',deltas:pairs(records,refreshed.map(r=>r.stream))});
+ },'SERIALIZABLE');
+ try{
+  await snapshot.promise;
+  await transaction(async(call,tx)=>{
+   assert.equal((await tx.query('SHOW transaction_isolation')).rows[0].transaction_isolation,'repeatable read');
+   const version=async()=>(await tx.query('SELECT xmin::text version FROM axton_record WHERE model=$1',[model])).rows[0].version;
+   const before=await version();
+   assert.deepEqual(await call({op:'guardRecords',records}),[1]);
+   assert.equal((await version())===before,weakened,'only the actual no-op write replaces the catalog row version');
+   await call({op:'applyStreamMembers',deltas:pairs(records,[newStream])});
+  },'REPEATABLE READ',weakened);
+ }finally{enrolled.resolve();}
+ await stale;
+ assert.equal(attempts,weakened?1:2);
+ assert.deepEqual(failures,weakened?[]:['40001']);
+ assert.deepEqual(holders,weakened?[[oldStream]]:[[oldStream],[newStream,oldStream].sort()]);
+ const heads=await q('SELECT stream,head::int head FROM axton_stream WHERE stream=ANY($1) ORDER BY stream',[[oldStream,newStream]]);
+ assert.deepEqual(heads,[{stream:newStream,head:weakened?1:2},{stream:oldStream,head:2}].sort((a,b)=>a.stream.localeCompare(b.stream)));
+ assert.equal((await q('SELECT stamp::int stamp FROM axton_record WHERE model=$1',[model]))[0].stamp,2);
+ assert.equal((await q('SELECT count(*)::int n FROM stream_business WHERE id=$1',[model]))[0].n,1,'failed attempt business write rolled back before the entire body reran');
+});
 const databaseUrl=name=>{const u=new URL(process.env.DATABASE_URL);u.pathname='/'+name;return u.toString();};
 const scratch=async name=>{await q(`DROP DATABASE IF EXISTS ${name}`);await q(`CREATE DATABASE ${name}`);const u=new URL(process.env.DATABASE_URL);u.pathname='/'+name;const c=new Client({connectionString:u.toString()});await c.connect();return c;};
 const upgrade=async c=>{try{await c.query(await source('migrations/2026-10-01-streams.sql'));}catch(e){await c.query('ROLLBACK');throw e;}};
 const sortRows=(a,b)=>JSON.stringify(Object.entries(a.row).sort()).localeCompare(JSON.stringify(Object.entries(b.row).sort()));
 const snapshot=async c=>{const rows={};for(const t of ['axton_record','axton_stream','axton_stream_member','axton_stream_log','axton_client','axton_call','fixture_todo'])rows[t]=(await c.query(`SELECT to_jsonb(t) row FROM ${t} t ORDER BY to_jsonb(t)::text`)).rows;return rows;};
-for(const mode of ['Channel','Scope'])test(`Stream upgrade ${mode}: preserves retained data, removal cursors and opaque JSON; idempotent repeat`,async()=>{
- const c=await scratch(`axton_stream_upgrade_${mode.toLowerCase()}`);
+test('Stream upgrade Channel-to-Scope chain: preserves retained data, removal cursors and opaque JSON; idempotent repeat',async()=>{
+ const c=await scratch('axton_stream_upgrade_chain');
  try{
   await c.query(await fixture('v02-framework.sql'));await c.query(await fixture('postgres-state.sql'));await c.query(await fixture('postgres-optional-retained-v01.sql'));
   await c.query(await source('migrations/2026-09-30-scopes.sql'));

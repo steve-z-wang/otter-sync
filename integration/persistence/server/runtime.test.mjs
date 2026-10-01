@@ -66,21 +66,21 @@ test('native exports production runtime',()=>{assert.equal(typeof native.process
 });
 test('backend validates config and complete registrations at startup',()=>{
  const base={...config,schema:structuredClone(schema)};
- assert.throws(()=>createBackend({native,config:{...base,mutations:[{name:'bad',version:0,slots:[]}]},native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/invalid mutation descriptor/);
- assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/Missing handler edit for edit v1/);
+ assert.throws(()=>createBackend({config:{...base,mutations:[{name:'bad',version:0,slots:[]}]},native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/invalid mutation descriptor/);
+ assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{},loaders:{task:async()=>[]}}),/Missing handler edit for edit v1/);
  // Omitting the Loader of a Model a slot writes is refused by the engine, naming the Mutation, slot and Model.
- assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Mutation edit v1 slot task names Model Task, which has no Loader/);
+ assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{}}),/Mutation edit v1 slot task names Model Task, which has no Loader/);
  // A Loader under a key that names no Model is a typo, never a silent device-only Model.
- assert.throws(()=>createBackend({native,config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
+ assert.throws(()=>createBackend({config:base,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],tsak:async()=>[]}}),/Unknown loader tsak: no Model tsak/);
  // A hand-written config gets the compiler's accessor rules: unique, and neither add nor remove.
  const withModel=name=>({...base,schema:{...base.schema,models:[...base.schema.models,{...base.schema.models[0],name}]}});
- assert.doesNotThrow(()=>createBackend({native,config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}));
- assert.throws(()=>createBackend({native,config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
+ assert.doesNotThrow(()=>createBackend({config:withModel('Add'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[],add:async()=>[]}}));
+ assert.throws(()=>createBackend({config:withModel('task'),native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders:{task:async()=>[]}}),/Models Task and task both generate the accessor task/);
 });
 test('loader registration names every retained model version and a function means v1 only',()=>{
  const base={...config,schema:structuredClone(schema)};
  const contract=version=>({name:'Task',version,identity:['id'],fields:schema.models[0].fields,enums:[]});
- const register=(models,loaders,currentVersion=1)=>{const c={...base,schema:structuredClone(schema),models};c.schema.models[0].version=currentVersion;return createBackend({native,config:c,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders});};
+ const register=(models,loaders,currentVersion=1)=>{const c={...base,schema:structuredClone(schema),models};c.schema.models[0].version=currentVersion;return createBackend({config:c,native,database:database(),authenticate,handlers:{edit:async()=>{}},loaders});};
  const both=[contract(1),contract(2)];
  assert.throws(()=>register(both,{task:async()=>[]},2),/Loader task must register v1, v2 of Task; a function registers v1 only/);
  assert.throws(()=>register([contract(2)],{task:async()=>[]},2),/Loader task must register v2 of Task; a function registers v1 only/);
@@ -97,7 +97,7 @@ test('loader registration names every retained model version and a function mean
 });
 test('handler registration names every retained version and a function means v1 only',()=>{
  const base={...config,schema:structuredClone(schema)};
- const register=(mutations,handlers)=>createBackend({native,config:{...base,mutations},native,database:database(),authenticate,handlers,loaders:{task:async()=>[]}});
+ const register=(mutations,handlers)=>createBackend({config:{...base,mutations},native,database:database(),authenticate,handlers,loaders:{task:async()=>[]}});
  const both=[config.mutations[0],{...config.mutations[0],version:2}];
  assert.throws(()=>register(both,{edit:async()=>{}}),/Handler edit must register v1, v2 of edit; a function registers v1 only/);
  assert.throws(()=>register([{...config.mutations[0],version:2}],{edit:async()=>{}}),/Handler edit must register v2 of edit; a function registers v1 only/);
@@ -704,7 +704,7 @@ test('HTTP classifies native failures by code, not message wording; unknown code
  const reason=(code,message,details)=>Object.assign(new Error(JSON.stringify({code,message,...(details?{details}:{})})),{});
  const fake={validateConfig(){},async processPush(){throw reason('gap','the batch sequence 5 skips ahead of 1 (reworded)');},async processPull(){throw reason('mutation_version_unsupported','anything',{ordinal:2,name:'edit',version:9});},async publish(){return '[]';},async negotiateLive(){throw reason('request.invalid','no');},async pullLive(){throw reason('loader.unregistered','unregistered loader');},liveEvent(){return '[]';},liveClose(){}};
  const memory={transaction:body=>body({}),persistence:()=>({call:async()=>null})};
- const fakeBackend=createBackend({config,native,database:memory,native:fake,authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
+ const fakeBackend=createBackend({config,database:memory,native:fake,authenticate,onError:e=>errors.push(e),handlers:{async edit(){}},loaders:{async task({ids}){return ids.map(()=>null)}}});
  await assert.rejects(()=>fakeBackend.push('alice','{}'),error=>error instanceof EngineError&&error.code==='gap'&&error.message.includes('reworded'));
  const server=await fakeBackend.listen({port:0});
  try{

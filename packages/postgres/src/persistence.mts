@@ -130,10 +130,7 @@ async function lockScopes(q: Query, r: unknown): Promise<Acknowledged> {
   return null;
 }
 
-async function readScopeMembers(
-  q: Query,
-  r: unknown,
-): Promise<MemberState[]> {
+async function readScopeMembers(q: Query, r: unknown): Promise<MemberState[]> {
   const request = fieldsOf(
     r,
     ["op", "scope", "explicitKeys", "tags", "all"],
@@ -269,9 +266,7 @@ async function applyScopeMembers(
     });
     const rows = await q(SQL.WRITE_SCOPE_LOG, JSON.stringify(payload));
     if (rows.length !== group.length)
-      throw new Error(
-        "The Scope log answered a different number of positions",
-      );
+      throw new Error("The Scope log answered a different number of positions");
     group.forEach((d, i) => {
       const row = rows[i]!;
       if (row.record_id === null || row.record_id === undefined)
@@ -296,16 +291,12 @@ async function applyScopeMembers(
   // 3. Live members with exactly their tags; 4. deleted members.
   const dropped = new Set<string>();
   const present = deltas.flatMap((d, i) =>
-    d.present
-      ? [{ scope: d.scope, recordId: records[i]!, tags: d.tags }]
-      : [],
+    d.present ? [{ scope: d.scope, recordId: records[i]!, tags: d.tags }] : [],
   );
   for (const group of batches(present)) {
     await q(
       SQL.INSERT_SCOPE_MEMBERS,
-      JSON.stringify(
-        group.map(({ scope, recordId }) => ({ scope, recordId })),
-      ),
+      JSON.stringify(group.map(({ scope, recordId }) => ({ scope, recordId }))),
     );
     for (const row of await q(SQL.SET_MEMBER_TAGS, JSON.stringify(group)))
       dropped.add(String(row.tag_id));
@@ -314,10 +305,7 @@ async function applyScopeMembers(
     d.present ? [] : [{ scope: d.scope, recordId: records[i]! }],
   );
   for (const group of batches(absent))
-    for (const row of await q(
-      SQL.DELETE_SCOPE_MEMBERS,
-      JSON.stringify(group),
-    ))
+    for (const row of await q(SQL.DELETE_SCOPE_MEMBERS, JSON.stringify(group)))
       dropped.add(String(row.tag_id));
 
   // 5. Tags nobody carries any more; no log or record refers to a tag.
@@ -475,9 +463,7 @@ export async function answer<Tx>(
     case "memberships": {
       checkMembershipRequest(r);
       const rows = await q(SQL.MEMBERSHIPS, r.model, r.identityKey);
-      const memberships: Memberships = rows.map((row) =>
-        scopeName(row.scope),
-      );
+      const memberships: Memberships = rows.map((row) => scopeName(row.scope));
       if (new Set(memberships).size !== memberships.length)
         throw new Error(
           `Duplicate membership scope for ${r.model} ${r.identityKey}`,

@@ -76,13 +76,9 @@ export class Transaction {
   } {
     return {
       subscribe: (scope) =>
-        this.#call({ kind: "scope", scope, subscribed: true }).then(
-          () => {},
-        ),
+        this.#call({ kind: "scope", scope, subscribed: true }).then(() => {}),
       unsubscribe: (scope) =>
-        this.#call({ kind: "scope", scope, subscribed: false }).then(
-          () => {},
-        ),
+        this.#call({ kind: "scope", scope, subscribed: false }).then(() => {}),
     };
   }
   /** Dismiss a refusal as part of this transaction. */

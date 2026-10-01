@@ -133,7 +133,7 @@ pub fn enrollment_schema() -> Schema {
     let mut value = serde_json::to_value(schema()).unwrap();
     value["resultModels"] = json!([{"name":"Entry","version":1,"identity":["id"],"fields":value["models"][0]["fields"],"enums":[]}]);
     value["loads"] = json!([{"name":"EnrolledEntries","version":1,
-      "inputs":[{"kind":"value","name":"scope","type":{"kind":"scalar","name":"string"},"nullable":false,"list":false,"required":true,"cardinality":"single"}],
+      "inputs":[{"kind":"value","name":"channel","type":{"kind":"scalar","name":"string"},"nullable":false,"list":false,"required":true,"cardinality":"single"}],
       "outputs":[{"name":"entries","kind":"model","cardinality":"list","source":"handlerIdentity","model":"Entry","modelReadVersion":1,
         "handlerType":{"kind":"identity","model":"Entry","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
       "input":{"models":[],"enums":[]},"outputEnums":[]}]);

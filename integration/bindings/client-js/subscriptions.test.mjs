@@ -16,8 +16,8 @@ import { Bridge } from '../../../packages/client-js/bridge.mts';
 async function openClient() {
  const dir = await mkdtemp(join(tmpdir(),'axton-subscriptions-'));
  const schema = JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json',import.meta.url),'utf8'));
- const client = await runtime.Client.open({path:join(dir,'client.sqlite'),schema});
- return {client, async close() { await client.close(); await rm(dir,{recursive:true,force:true}); }};
+ let client = await runtime.Client.open({path:join(dir,'client.sqlite'),schema});
+ return {client, async reopen() { await client.close(); client = await runtime.Client.open({path:join(dir,'client.sqlite'),schema}); return client; }, async close() { await client.close(); await rm(dir,{recursive:true,force:true}); }};
 }
 async function until(predicate,what='condition') {
  const deadline=Date.now()+5000;
@@ -665,24 +665,30 @@ test('unsubscribing a Scope while a bootstrap is submitted rejects it as closed'
  } finally { await fixture.close(); }
 });
 
-test('transaction scopes commit and rollback local intent without a channels facade', async()=>{
+test('transaction scopes commit, rollback and reopen local intent without a channels facade', async()=>{
  const fixture=await openClient();const {client}=fixture;
  try {
   await client.transaction(async tx=>{
    assert.equal('channels' in tx,false);
    await tx.scopes.subscribe('U');
    await tx.scopes.subscribe('discard');
+  });
+  assert.deepEqual((await client.syncState()).scopes,['U','discard']);
+  await client.transaction(async tx=>{
    await tx.scopes.unsubscribe('discard');
   });
   assert.deepEqual((await client.syncState()).scopes,['U']);
   await assert.rejects(client.transaction(async tx=>{
    await tx.scopes.unsubscribe('U');
+   await tx.scopes.subscribe('discard');
    await tx.scopes.subscribe('rolled-back');
    throw Error('rollback scopes');
   }),/rollback scopes/);
   assert.deepEqual((await client.syncState()).scopes,['U']);
-  const followed=await client.scopes.subscribe('U');
-  assert.equal(followed,await client.scopes.subscribe('U'));
+  const reopened=await fixture.reopen();
+  assert.deepEqual((await reopened.syncState()).scopes,['U'],'reopen preserves only committed registrations before any subscribe call');
+  const followed=await reopened.scopes.subscribe('U');
+  assert.equal(followed,await reopened.scopes.subscribe('U'));
   await followed.unsubscribe();
   assert.equal(followed.status.active,false);
  } finally { await fixture.close(); }

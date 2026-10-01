@@ -920,9 +920,9 @@ impl Host for MemHost {
                         return Err("sim Load handler is not configured".into());
                     }
                     s.native_load_calls += 1;
-                    let scope = arguments["scope"]
+                    let scope = arguments["channel"]
                         .as_str()
-                        .ok_or("missing scope")?
+                        .ok_or("missing channel")?
                         .to_string();
                     let records: Vec<RecordRef> = s
                         .tables

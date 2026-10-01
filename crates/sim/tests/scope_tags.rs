@@ -253,7 +253,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         .start_load(
             "EnrolledEntries",
             1,
-            &serde_json::json!({"scope":"u"}),
+            &serde_json::json!({"channel":"u"}),
             LoadOptions::default(),
         )
         .unwrap();
@@ -264,6 +264,12 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         .unwrap()
         .dispatch
         .unwrap();
+    let wire: serde_json::Value = serde_json::from_str(&dispatch.body).unwrap();
+    assert_eq!(
+        wire["capabilities"],
+        serde_json::json!(["scope-membership-v1"])
+    );
+    assert_eq!(wire["loads"][0]["args"], serde_json::json!({"channel":"u"}));
     let request = LoadBatchRequest::decode_envelope(dispatch.body.as_bytes()).unwrap();
     let held = sim
         .host
@@ -365,7 +371,7 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
                 .start_load(
                     "EnrolledEntries",
                     1,
-                    &serde_json::json!({"scope":"u"}),
+                    &serde_json::json!({"channel":"u"}),
                     LoadOptions::default(),
                 )
                 .unwrap();

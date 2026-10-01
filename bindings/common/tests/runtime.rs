@@ -1,6 +1,6 @@
 //! The native actor carrier: one runtime per client on its own thread, an
 //! outbox drained on wake, and detach before the wake sink is released
-//! ([#134](https://github.com/zanminwang/axton/issues/134)). The wake scope
+//! ([#134](https://github.com/zanminwang/axton/issues/134)). The wake transport
 //! is the only barrier; a timeout only turns a lost wake into a failure.
 use axton_binding::actor::{self, WakeSink};
 use serde_json::{Value, json};
@@ -15,7 +15,7 @@ const LOST_WAKE: Duration = Duration::from_secs(20);
 fn schema() -> Value {
     serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap()
 }
-fn scope_sink() -> (WakeSink, Receiver<u64>) {
+fn wake_sink() -> (WakeSink, Receiver<u64>) {
     let (sender, receiver) = mpsc::channel();
     (
         Box::new(move |runtime| {
@@ -32,7 +32,7 @@ struct Carrier {
 }
 impl Carrier {
     fn open(path: &std::path::Path) -> (Self, Value) {
-        let (sink, wakes) = scope_sink();
+        let (sink, wakes) = wake_sink();
         let id = actor::open(
             json!({"type":"open","requestId":"open","path":path,"schema":schema()}),
             sink,
@@ -96,7 +96,7 @@ fn native_open_validates_store_hook_model_names() {
         json!([3]),
         json!("Entry"),
     ] {
-        let (sink, wakes) = scope_sink();
+        let (sink, wakes) = wake_sink();
         let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema(),"storeHooks":hooks}), sink).unwrap();
         let mut carrier = Carrier {
             id,
@@ -108,7 +108,7 @@ fn native_open_validates_store_hook_model_names() {
         carrier.until(|e| e["type"] == "runtimeClosed");
         actor::detach(id);
     }
-    let (sink, wakes) = scope_sink();
+    let (sink, wakes) = wake_sink();
     let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("valid"),"schema":schema(),"storeHooks":["Entry"]}), sink).unwrap();
     let mut carrier = Carrier {
         id,
@@ -147,7 +147,7 @@ fn open_answers_on_the_wake_and_a_failed_open_closes_the_runtime() {
     actor::detach(carrier.id);
     assert!(actor::drain(carrier.id).is_empty());
 
-    let (sink, wakes) = scope_sink();
+    let (sink, wakes) = wake_sink();
     let missing = dir.path().join("missing").join("sub").join("db");
     let id = actor::open(
         json!({"type":"open","requestId":"7","path":missing,"schema":schema()}),
@@ -170,7 +170,7 @@ fn open_answers_on_the_wake_and_a_failed_open_closes_the_runtime() {
     );
 
     // Admission refuses what it cannot route; nothing is spawned for it.
-    let (sink, _) = scope_sink();
+    let (sink, _) = wake_sink();
     assert!(actor::open(json!({"type":"open"}), sink).is_err());
     // A malformed envelope is a protocol report on the runtime, not a refusal.
     let (mut carrier, _) = Carrier::open(&dir.path().join("other"));
@@ -425,7 +425,7 @@ fn a_client_waiting_on_the_network_holds_no_writer_and_no_other_client_waits() {
     let dir = tempfile::tempdir().unwrap();
     let mut with_action = schema();
     with_action["actions"] = json!([{"name":"Rename","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],"outputs":[]}]);
-    let (sink, wakes) = scope_sink();
+    let (sink, wakes) = wake_sink();
     let id = actor::open(
         json!({"type":"open","requestId":"open","path":dir.path().join("a"),"schema":with_action}),
         sink,
@@ -643,7 +643,7 @@ fn a_native_load_runs_through_the_carrier() {
             "handlerType":{"kind":"identity","model":"Entry","fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}]}}],
         "input":{"models":[],"enums":[]},"outputEnums":[]}]);
     let dir = tempfile::tempdir().unwrap();
-    let (sink, wakes) = scope_sink();
+    let (sink, wakes) = wake_sink();
     let id = actor::open(
         json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema}),
         sink,

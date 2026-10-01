@@ -280,6 +280,54 @@ class FakeServer {
 
 void main() {
   test(
+    'transaction scopes persist only committed registrations on reopen',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'axton-dart-transaction-scopes-',
+      );
+      var client = await Fixture.openClient(directory);
+      try {
+        await client.transaction((tx) async {
+          await tx.scopes.subscribe('U');
+          await tx.scopes.subscribe('discard');
+        });
+        expect((await client.syncState())['scopes'], ['U', 'discard']);
+        await client.transaction((tx) async {
+          await tx.scopes.unsubscribe('discard');
+        });
+        expect((await client.syncState())['scopes'], ['U']);
+        await expectLater(
+          client.transaction((tx) async {
+            await tx.scopes.unsubscribe('U');
+            await tx.scopes.subscribe('discard');
+            await tx.scopes.subscribe('rolled-back');
+            throw StateError('rollback scopes');
+          }),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'rollback scopes',
+            ),
+          ),
+        );
+        expect((await client.syncState())['scopes'], ['U']);
+        await client.close();
+        client = await Fixture.openClient(directory);
+        expect(
+          (await client.syncState())['scopes'],
+          ['U'],
+          reason:
+              'reopen preserves committed registrations before any subscribe call',
+        );
+      } finally {
+        await client.close();
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
     'one handle per subscription identity: repeated calls coalesce',
     () async {
       final fixture = await Fixture.open();

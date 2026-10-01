@@ -244,10 +244,12 @@ Use the single transaction to check supported required table/column shapes befor
 ### Task 4: Assemble simulation, SDK boundaries and documented guarantees
 
 **Files:**
-- Modify: `crates/sim/src/invariants.rs`, `crates/sim/src/sim.rs`, `crates/sim/src/host.rs`, `crates/sim/tests/authority.rs`, `historical_removals.rs`, `stream_tracking.rs`, `upgrade.rs`.
+- Modify: `crates/sim/src/invariants.rs`, `crates/sim/src/sim.rs`, `crates/sim/src/host.rs`, `crates/sim/tests/authority.rs`, `historical_removals.rs`, `stream_tracking.rs`, `upgrade.rs`, `distribution.rs`, `bootstrap.rs`, and `push.rs` where active capability or removed ownership expectations need adaptation.
 - Modify: `integration/persistence/server/protocol-admission.test.mjs`, `actions.test.mjs`, `loads.test.mjs`, `stream-tracking.test.mjs`; `integration/persistence/client/reopen.mts`.
 - Modify affected fixtures/capability literals in `integration/bindings/client-js/*.test.mjs`, `packages/dart/test/*_test.dart`, `integration/generated-api/`, `integration/action-e2e/`, `integration/load-e2e/` and `integration/e2e/` as discovered by the literal scan below. Preserve original historical fixtures as migration inputs.
 - Modify: `docs/engineering/guarantees.md`, `docs/engineering/architecture/protocol/common.md`, `push.md`, `actions.md`, `loads.md`, `pull.md`, `subscriptions.md`; `docs/engineering/architecture/client/storage/reconciliation.md`, `client/engine/README.md`, `client/connection/controller/downlink-worker.md`; `docs/engineering/architecture/server/engine/publish.md`, `server/persistence.md`; `website/docs/backend/deployment.md`, `backend/api.md`, `frontend/sync.md`.
+- Active documentation consumers: `docs/engineering/architecture/client/engine/pull.md`, `docs/engineering/testing/components/client.md`, `docs/engineering/testing/components/server.md`, and `website/docs/backend/database.md`. Keep dated historical observations distinct from new evidence; update their current contract descriptions.
+- Read-only preparation inventory: `/private/tmp/authority-boundary-inventory.md` identifies existing active fixtures, rollback/replay anchors and remaining docs. Verify against current source while implementing; this inventory is not acceptance evidence.
 
 **Interfaces:**
 - Public track/invalidate/subscription signatures remain as already generated. Regeneration must not invent a cache operation or change Model/action versions.

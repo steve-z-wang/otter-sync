@@ -111,7 +111,7 @@ test('handler registration names every retained version and a function means v1 
 });
 test('push commits business + compacted publication + exact durable receipt together',async()=>{
  const request=push('dedup',1,[mutation(1,'first')]);const receipt=await backend.push('alice',request);const calls=called;
- assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"scope":"shared","cursor":1,"identity":{"id":"a"},"model":"Task"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
+ assert.equal(receipt,'{"batchSequence":1,"clientId":"dedup","memberships":[{"cursor":1,"identity":{"id":"a"},"model":"Task","scope":"shared"}],"records":[{"identity":{"id":"a"},"model":"Task","stamp":1,"state":{"title":"first"}}],"rejections":[]}','the receipt is canonical JSON: keys sorted, the loader\'s authority for every changed record');
  // Replay is keyed by (clientId, batchSequence): the same frozen bytes and a changed body both return the stored receipt without a handler call, a business write, a publication or a subscriber wake.
  let wakes=0;const unsubscribe=backend.onCommitted('shared',()=>{wakes++;});const rows=await count('axton_scope_log');
  assert.equal(await backend.push('alice',request),receipt);assert.equal(called,calls);

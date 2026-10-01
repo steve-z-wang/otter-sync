@@ -651,7 +651,7 @@ test("native Load enrollment releases live content durably and a second Scope ho
     await fixture.membership("release-2", "items:release-other", true);
     await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
     const hooks = await seen(client);
-    await fixture.backend.transaction(({scope}) => {
+    await fixture.backend.transaction(async ({scope}) => {
       scope("items:release").where({tags: {only: ["X"]}}).remove();
       scope("items:release").tag("X").remove();
     });
@@ -659,7 +659,7 @@ test("native Load enrollment releases live content durably and a second Scope ho
     await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Scope removals persisted before checking the second hold");
     assert.ok(await client.models.item.get({ id: "release-2" }), "second Scope keeps content");
     assert.deepEqual(await seen(client), hooks, "withdrawals do not invoke onStore");
-    await fixture.backend.transaction(({scope}) => scope("items:release-other").where({tags: {only: []}}).remove());
+    await fixture.backend.transaction(async ({scope}) => scope("items:release-other").where({tags: {only: []}}).remove());
     await wait(async () => (await client.models.item.get({ id: "release-2" })) === null, "last Scope release evicts B");
     await client.close();
     client = await GeneratedClient.open({ path: directory.path });
@@ -684,7 +684,7 @@ test("a delayed enrolled Load response and its durable replay cannot restore or 
     const load = await client.loads.projectItems({ project: "released-page" });
     const exchange = await held.arrived;
     await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Scope enrollment delivered while the Load response was held");
-    await fixture.backend.transaction(({scope}) => {
+    await fixture.backend.transaction(async ({scope}) => {
       scope("items:released-page").where({tags: {only: ["X", "Y"]}}).remove();
       scope("items:released-page").tag("X").remove();
     });

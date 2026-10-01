@@ -14,7 +14,7 @@ Shared content changes require global invalidation. Selected invalidation serves
 
 ## 5. Building Block View
 
-[settlement.rs](../../../../../crates/server/src/settlement.rs) validates and canonicalizes declarations, and [stream_members.rs](../../../../../crates/server/src/stream_members.rs) combines final tracking/invalidation effects. The host contract uses `readTracking`, `lockStreams`, `guardRecords` and `applyStreamMembers` ([Persistence](../persistence.md)).
+[settlement.rs](../../../../../crates/server/src/settlement.rs) validates and canonicalizes declarations, combines tracking/invalidation effects and reconciles final pairs. [stream_members.rs](../../../../../crates/server/src/stream_members.rs) defines the delta and position types. The host contract uses `readTracking`, `lockStreams`, `guardRecords` and `applyStreamMembers` ([Persistence](../persistence.md)).
 
 1. Read candidate tracking in bulk: all holders for globally invalidated records, explicit candidate pairs for tracking and selected invalidation.
 2. Lock candidate Streams, including newly tracked names, in canonical UTF-8 byte order before record guards.

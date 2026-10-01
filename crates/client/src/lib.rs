@@ -24,8 +24,10 @@ pub mod queue;
 pub mod rows;
 pub mod runtime;
 pub mod schema_store;
+pub mod scope_members;
 pub mod store;
 mod store_delivery;
+mod store_epoch;
 pub mod subscriptions;
 pub mod transport;
 pub mod unsent;
@@ -52,6 +54,7 @@ pub use query::{Direction, QueryOrder, QuerySpec};
 pub use query_cache::{QueryCacheEntry, QueryCacheKey, QueryOnce, QueryOnceOptions};
 pub use store::*;
 pub use store_delivery::{PreparedStore, StoreChange, StoreDelivery, StoreResult};
+pub use store_epoch::StoreToken;
 pub use subscriptions::{Initialization, SubscriptionState};
 pub use transport::*;
 pub use unsent::{FailedAct, FailedTask, RefusedAct, SubmittedAct};
@@ -185,7 +188,7 @@ impl Report {
         }
     }
 }
-/// What applying a receipt or a page came to. `cursors` are the channel
+/// What applying a receipt or a page came to. `cursors` are the scope
 /// cursors the page moved, at their new values.
 #[derive(Debug, Default, Serialize)]
 pub struct ApplyReport {
@@ -237,6 +240,8 @@ struct SessionSavepoint {
 
 pub struct Client<S: ClientStore> {
     store: S,
+    store_epoch: StoreToken,
+    request_tokens: std::cell::RefCell<BTreeMap<String, StoreToken>>,
     schema: Schema,
     client_id: String,
     generation: u64,
@@ -312,12 +317,12 @@ pub struct AbandonedCall {
 }
 
 /// Marker a transaction leaves in its changed set when it subscribes or
-/// unsubscribes a channel; stripped before the set reaches watchers.
+/// unsubscribes a scope; stripped before the set reaches watchers.
 pub(crate) const SUBSCRIPTION_MARK: &str = "axton_subscription:";
 /// Marker a transaction leaves in its changed set when it changes a Scope's
 /// bootstrap state ([#151](https://github.com/zanminwang/axton/issues/151)).
 /// A load request changes no membership, so - unlike [`SUBSCRIPTION_MARK`] - it
-/// bumps neither the subscription generation nor a channel epoch: registering a
+/// bumps neither the subscription generation nor a scope epoch: registering a
 /// load must not make the open live session stale or a pull in flight. It is
 /// stripped like the other mark, and the Scopes it named are read back through
 /// [`Client::last_bootstrap_scopes`].
@@ -342,8 +347,8 @@ fn strip_marks(changed: &mut BTreeSet<String>, prefix: &str) -> BTreeSet<String>
 }
 
 /// In-memory memory of the pulls this client issued and of how many times each
-/// channel's subscription changed since open. A page whose request predates the
-/// current subscription of any channel it names is stale, not a gap: the
+/// scope's subscription changed since open. A page whose request predates the
+/// current subscription of any scope it names is stale, not a gap: the
 /// resubscribe reset the cursor, and the next pull from that cursor delivers
 /// everything. Nothing here is durable; a process restart cannot have a
 /// request in flight.
@@ -355,8 +360,8 @@ struct PullLedger {
     /// session compares it with the value it started under.
     generation: u64,
 }
-/// One request: the cursor it asked from on every channel, and the epoch each
-/// channel's subscription was at.
+/// One request: the cursor it asked from on every scope, and the epoch each
+/// scope's subscription was at.
 #[derive(Clone)]
 struct IssuedPull {
     cursors: BTreeMap<String, u64>,
@@ -364,13 +369,13 @@ struct IssuedPull {
 }
 impl PullLedger {
     const CAPACITY: usize = 1024;
-    fn epoch(&self, channel: &str) -> u64 {
-        self.epochs.get(channel).copied().unwrap_or(0)
+    fn epoch(&self, scope: &str) -> u64 {
+        self.epochs.get(scope).copied().unwrap_or(0)
     }
     /// Apply the subscription changes a committed transaction recorded.
     fn absorb(&mut self, changed: &mut BTreeSet<String>) {
-        for channel in strip_marks(changed, SUBSCRIPTION_MARK) {
-            *self.epochs.entry(channel).or_insert(0) += 1;
+        for scope in strip_marks(changed, SUBSCRIPTION_MARK) {
+            *self.epochs.entry(scope).or_insert(0) += 1;
             self.generation += 1;
         }
     }
@@ -388,7 +393,7 @@ impl PullLedger {
         cursors.keys().map(|c| (c.clone(), self.epoch(c))).collect()
     }
     /// Whether the page answering a request from `cursors` was requested under
-    /// an earlier subscription of one of its channels. Consumes the matching
+    /// an earlier subscription of one of its scopes. Consumes the matching
     /// request. A page this client never requested is not judged here.
     fn stale(&mut self, cursors: &BTreeMap<String, u64>) -> bool {
         let current = self.current_epochs(cursors);
@@ -399,7 +404,7 @@ impl PullLedger {
             .position(|p| matches(p) && p.epochs == current)
         {
             self.issued.remove(i);
-            // The wire identifies requests only by channels and cursors. If old
+            // The wire identifies requests only by scopes and cursors. If old
             // and current subscriptions issued the same request, this response
             // could belong to either one. Let every indistinguishable answer use
             // the cursor gate; otherwise the fresh answer can be dropped as stale
@@ -419,11 +424,13 @@ impl PullLedger {
 }
 
 impl<S: ClientStore> Client<S> {
-    /// Open `store` for `schema`. An earlier framework layout is refused: file
+    /// Open `store` for `schema`. Supported ownership renames migrate first.
+    /// An incompatible earlier framework layout is refused: file
     /// selection and rebuilding belong to [`Client::open_at`]. The schema the
     /// store is built for is recorded (or replaced) once reconciliation succeeds.
     pub fn open(mut store: S, schema: Schema) -> Result<Self> {
         schema.validate()?;
+        ddl::migrate_scope_layout(&mut store)?;
         if let ddl::Layout::Legacy(what) = ddl::check_layout(&mut store)? {
             return Err(invalid(format!(
                 "this database was created by an earlier AXTON runtime ({what}); open it through a path so it can be rebuilt beside"
@@ -469,8 +476,14 @@ impl<S: ClientStore> Client<S> {
                 &[],
             )?;
         }
+        let store_epoch = store.query_committed("SELECT store_epoch FROM axton_client", &[])?;
+        let store_epoch = StoreToken {
+            epoch: engine::as_u64(&store_epoch.rows[0][0])?,
+        };
         Ok(Self {
             store,
+            store_epoch,
+            request_tokens: Default::default(),
             schema,
             client_id,
             generation,
@@ -508,6 +521,7 @@ impl<S: ClientStore> Client<S> {
         let path = path.as_ref().to_path_buf();
         let file = schema_store::current_file(&path);
         let mut store = factory(&file)?;
+        ddl::migrate_scope_layout(&mut store)?;
         let mut client = match ddl::check_layout(&mut store)? {
             ddl::Layout::Fresh => Self::open(store, schema.clone())?,
             ddl::Layout::Legacy(what) => {
@@ -590,11 +604,8 @@ impl<S: ClientStore> Client<S> {
         }
         let new_file = schema_store::next_free_file(path);
         let mut old = factory(old_file)?;
-        let channels: Vec<String> = old
-            .query_committed(
-                "SELECT channel FROM axton_subscription ORDER BY channel",
-                &[],
-            )
+        let scopes: Vec<String> = old
+            .query_committed("SELECT scope FROM axton_subscription ORDER BY scope", &[])
             .map(|rows| {
                 rows.rows
                     .iter()
@@ -622,13 +633,13 @@ impl<S: ClientStore> Client<S> {
         };
         let abandoned_loads = abandoned_loads(&mut old)?;
         let mut client = Self::open(factory(&new_file)?, schema.clone())?;
-        if !channels.is_empty() || next_subscription.is_some() {
+        if !scopes.is_empty() || next_subscription.is_some() {
             client.write(|e| {
                 if let Some(next) = next_subscription {
                     e.carry_subscription_allocator(next)?;
                 }
-                for channel in &channels {
-                    e.ensure_subscription(channel)?;
+                for scope in &scopes {
+                    e.ensure_subscription(scope)?;
                 }
                 Ok(())
             })?;
@@ -768,10 +779,22 @@ impl<S: ClientStore> Client<S> {
             Ok(value) => {
                 // A failed COMMIT leaves the transaction open; without this rollback
                 // every later `begin` would fail. The commit error is what we report.
+                let epoch = match self
+                    .store
+                    .query("SELECT store_epoch FROM axton_client", &[])
+                    .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+                {
+                    Ok(epoch) => epoch,
+                    Err(error) => {
+                        let _ = self.store.rollback();
+                        return Err(error);
+                    }
+                };
                 if let Err(e) = self.store.commit() {
                     let _ = self.store.rollback();
                     return Err(e);
                 }
+                self.store_epoch = StoreToken { epoch };
                 self.generation += 1;
                 changed.insert("axton_client".into());
                 self.notify(changed);
@@ -867,12 +890,24 @@ impl<S: ClientStore> Client<S> {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        let epoch = match self
+            .store
+            .query("SELECT store_epoch FROM axton_client", &[])
+            .and_then(|rows| engine::as_u64(&rows.rows[0][0]))
+        {
+            Ok(epoch) => epoch,
+            Err(error) => {
+                let _ = self.physical_rollback();
+                return Err(error);
+            }
+        };
         // The session is already taken; a failed COMMIT must also close the
         // transaction, or every later `begin` would fail. Report the commit error.
         if let Err(e) = self.store.commit() {
             let _ = self.physical_rollback();
             return Err(e);
         }
+        self.store_epoch = StoreToken { epoch };
         self.generation += 1;
         for cursors in &session.pull_pages {
             self.pulls.stale(cursors);
@@ -1094,11 +1129,13 @@ impl<S: ClientStore> Client<S> {
         self.freeze_with_limit(limits::PUSH_BYTES)
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-        self.write(|e| e.freeze(max_bytes))
+        self.write(|e| e.freeze(max_bytes))?
+            .map(|bytes| with_capabilities(&bytes, &[SCOPE_MEMBERSHIP_CAPABILITY]))
+            .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority
     /// lands, the completed operations leave the queue and what remains
-    /// replays, in one transaction. Nothing waits for a channel.
+    /// replays, in one transaction. Nothing waits for a scope.
     pub fn acknowledge(&mut self, sequence: u64, receipt: PushReceipt) -> Result<ApplyReport> {
         self.write(|e| e.acknowledge(sequence, &receipt))
     }
@@ -1255,11 +1292,11 @@ fn count_direct<S: ClientStore>(store: &mut S, schema: &Schema) -> Result<usize>
             .iter()
             .map(|k| format!("'{}', m.{}", k.replace('\'', "''"), ddl::quote(k)))
             .collect();
-        // A row with no stamp and no pending operation reached this file only
+        // A row with no positive stamp and no pending operation reached this file only
         // through a direct write: nothing will ever send it.
         let identity = format!("json_object({})", pairs.join(", "));
         let sql = format!(
-            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity}) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
+            "SELECT COUNT(*) FROM {} m WHERE NOT EXISTS (SELECT 1 FROM axton_record r WHERE r.model = ? AND r.identity = {identity} AND r.stamp > 0) AND NOT EXISTS (SELECT 1 FROM axton_mutation_operation o WHERE o.model = ? AND o.identity = {identity})",
             ddl::quote(&model.name),
         );
         let rows = store.query_committed(&sql, &[json!(model.name), json!(model.name)])?;
@@ -1306,23 +1343,23 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             }
         }
     }
-    /// Subscribe or unsubscribe `channel` in this transaction. Subscribing
+    /// Subscribe or unsubscribe `scope` in this transaction. Subscribing
     /// registers durable intent with no delivery position; subscribing an
-    /// already subscribed channel is not a membership change: it touches no
+    /// already subscribed scope is not a membership change: it touches no
     /// cursor and leaves the subscription generation alone.
-    pub fn set_channel(&mut self, channel: String, subscribed: bool) -> Result<()> {
+    pub fn set_scope(&mut self, scope: String, subscribed: bool) -> Result<()> {
         if subscribed {
             // Registration is intent only: the first delivery boundary is the
             // head the Downlink worker's next handshake acknowledges, not zero
             // ([#150](https://github.com/zanminwang/axton/issues/150)).
-            let (_, created) = self.engine.ensure_subscription(&channel)?;
+            let (_, created) = self.engine.ensure_subscription(&scope)?;
             if created {
-                self.engine.mark_subscription(&channel);
+                self.engine.mark_subscription(&scope);
             }
             Ok(())
         } else {
-            if self.engine.unsubscribe(&channel)? {
-                self.engine.mark_subscription(&channel);
+            if self.engine.unsubscribe(&scope)? {
+                self.engine.mark_subscription(&scope);
             }
             Ok(())
         }

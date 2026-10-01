@@ -1,0 +1,7 @@
+model Note {
+  id String
+  text String
+  @@id(id)
+}
+
+mutation AddNote(note Note.create)

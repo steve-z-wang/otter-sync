@@ -66,6 +66,7 @@ fn repeated_identities_select_occurrences_and_preserve_known_failures() {
             authority_of("valid", Some("good"), 2),
             authority(None, 4),
         ],
+        memberships: Vec::new(),
     };
     client.begin_session().unwrap();
     let prepared = client
@@ -152,7 +153,7 @@ fn admitted_page_applies_after_unsubscribe_without_restoring_cursor() {
         .prepare_store(StoreDelivery::Page(page("a", 0, 1, Some("server"))))
         .unwrap();
     client
-        .session(|tx| tx.set_channel("a".into(), false))
+        .session(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     let report = client.apply_prepared_store(prepared).unwrap();
     assert_eq!(report.as_page().unwrap().applied, 1);
@@ -309,7 +310,7 @@ fn bootstrap_preflight_retains_partial_failure_rules() {
     let mut bad = authority_of("bad", Some("bad"), 1);
     bad.state = json!({"text": 42});
     let page = BootstrapPage {
-        channel: "a".into(),
+        scope: "a".into(),
         from: 0,
         to: 1,
         until: 2,
@@ -362,7 +363,7 @@ fn bootstrap_authority_survives_unsubscribe_without_recreating_run() {
         .request_bootstrap("a", registration.subscription_id)
         .unwrap();
     let page = BootstrapPage {
-        channel: "a".into(),
+        scope: "a".into(),
         from: 0,
         to: 1,
         until: 1,
@@ -380,7 +381,7 @@ fn bootstrap_authority_survives_unsubscribe_without_recreating_run() {
         })
         .unwrap();
     client
-        .session(|tx| tx.set_channel("a".into(), false))
+        .session(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     client.apply_prepared_store(prepared).unwrap();
     client.commit_session().unwrap();
@@ -416,7 +417,7 @@ fn preflight_does_not_consume_outstanding_pull_identity() {
         .unwrap();
     client.rollback_session().unwrap();
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let report = client
@@ -452,7 +453,7 @@ fn rolled_back_caller_savepoint_does_not_consume_prepared_pull() {
     assert_eq!(client.cursor("a").unwrap(), Some(0));
     assert!(!client.last_changed().contains("Entry"));
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let report = client
@@ -481,7 +482,7 @@ fn released_caller_savepoint_keeps_prepared_pull_for_commit() {
     client.commit_session().unwrap();
     assert_eq!(client.read(&key()).unwrap().unwrap()["text"], "first");
     client
-        .transaction(|tx| tx.set_channel("a".into(), false))
+        .transaction(|tx| tx.set_scope("a".into(), false))
         .unwrap();
     subscribe(&mut client, "a");
     let mut second = page("a", 0, 1, Some("second"));
@@ -583,6 +584,7 @@ fn failed_record_savepoint_discards_held_key_before_later_record() {
             authority(Some("server"), 2),
             authority_of("valid", Some("good"), 3),
         ],
+        memberships: Vec::new(),
     };
     client.begin_session().unwrap();
     let prepared = client
@@ -704,7 +706,7 @@ fn fetch_delivery_prepares_its_one_change_and_refuses_a_conflict_before_the_hook
 }
 
 /// A record the local store cannot write is reported and skipped in a
-/// channel delivery, but a Fetch rejects instead of succeeding from the
+/// scope delivery, but a Fetch rejects instead of succeeding from the
 /// server envelope alone, and nothing it staged remains.
 #[test]
 fn fetch_refuses_a_record_the_store_cannot_write_and_keeps_the_row() {
@@ -794,4 +796,191 @@ fn a_store_session_submits_no_mutation_and_records_no_companion() {
     };
     assert_eq!(client.read(&local).unwrap().unwrap()["text"], "hook");
     assert_eq!(client.cursor("a").unwrap(), Some(1));
+}
+
+#[test]
+fn scope_release_notifies_local_observers_only_after_commit() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = open(&dir.path().join("db"));
+    subscribe(&mut client, "a");
+    client
+        .apply_scope_page(ScopePullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
+                cursor: 1,
+                record: authority(Some("base"), 7),
+            }],
+        })
+        .unwrap();
+    let observer = client.watch(BTreeSet::from(["Entry".into()]));
+    client.begin_session().unwrap();
+    let prepared = client
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
+            cursors: BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            )]),
+            changes: vec![ScopeChange::Remove {
+                scope: "a".into(),
+                cursor: 2,
+                key: key(),
+            }],
+        }))
+        .unwrap();
+    assert!(prepared.accepted().is_empty());
+    assert!(prepared.changes().is_empty());
+    assert!(observer.try_recv().is_err());
+    client.apply_prepared_store(prepared).unwrap();
+    assert!(observer.try_recv().is_err());
+    assert!(client.read(&key()).unwrap().is_some());
+    client.commit_session().unwrap();
+    assert!(observer.try_recv().is_ok());
+    assert!(client.read(&key()).unwrap().is_none());
+}
+
+#[test]
+fn prepared_scope_bootstrap_detaches_after_hook_replaces_registration() {
+    for removal_only in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = open(&dir.path().join("db"));
+        c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
+        acknowledge(&mut c, &[("a", 1)]);
+        let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
+        let run = c.request_bootstrap("a", old).unwrap().run;
+        if removal_only {
+            c.apply_page(page("a", 1, 2, Some("cached"))).unwrap();
+        }
+        c.begin_session().unwrap();
+        let change = if removal_only {
+            ScopeChange::Remove {
+                scope: "a".into(),
+                cursor: 1,
+                key: key(),
+            }
+        } else {
+            ScopeChange::Upsert {
+                scope: "a".into(),
+                cursor: 1,
+                record: authority(Some("admitted"), 7),
+            }
+        };
+        let prepared = c
+            .prepare_store(StoreDelivery::ScopeBootstrap {
+                scope: "a".into(),
+                subscription_id: old,
+                run,
+                expected_after: 0,
+                page: ScopeBootstrapPage {
+                    scope: "a".into(),
+                    from: 0,
+                    to: 1,
+                    until: 1,
+                    head: 2,
+                    changes: vec![change],
+                },
+            })
+            .unwrap();
+        assert_eq!(prepared.accepted().len(), usize::from(!removal_only));
+        c.session(|tx| {
+            tx.set_scope("a".into(), false)?;
+            tx.set_scope("a".into(), true)?;
+            tx.direct(create(
+                "Entry",
+                "hook",
+                json!({"text":"hook committed","note":null}),
+            ))
+        })
+        .unwrap();
+        let result = c.apply_prepared_store(prepared).unwrap();
+        c.commit_session().unwrap();
+        assert!(matches!(
+            result,
+            StoreResult::Bootstrap(BootstrapApply::Detached { .. })
+        ));
+        let new = c.subscription_state("a").unwrap().unwrap();
+        assert_ne!(new.subscription_id, old);
+        assert_eq!(new.cursor, None);
+        assert_eq!(new.starting_cursor, None);
+        let state = c.bootstrap_state("a", new.subscription_id).unwrap();
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.barrier, None);
+        assert_eq!(state.state, BootstrapPhase::NotRequested);
+        assert!(c.bootstrap_state("a", old).is_err());
+        let member = c
+            .read_sql(
+                "SELECT cursor,present FROM axton_scope_member WHERE scope='a'",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(member[0]["cursor"], 1);
+        assert_eq!(member[0]["present"], u8::from(!removal_only));
+        assert!(
+            c.read(&schema().record_key("Entry", &json!({"id":"hook"})).unwrap())
+                .unwrap()
+                .is_some()
+        );
+        if removal_only {
+            assert!(c.read(&key()).unwrap().is_none());
+        } else {
+            assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "admitted");
+        }
+    }
+}
+#[test]
+fn prepared_scope_page_keeps_admitted_authority_after_hook_replaces_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    let old = c.subscription_state("a").unwrap().unwrap().subscription_id;
+    c.begin_session().unwrap();
+    let prepared = c
+        .prepare_store(StoreDelivery::ScopePage(ScopePullPage {
+            cursors: std::collections::BTreeMap::from([(
+                "a".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            )]),
+            changes: vec![ScopeChange::Upsert {
+                scope: "a".into(),
+                cursor: 1,
+                record: authority(Some("admitted"), 7),
+            }],
+        }))
+        .unwrap();
+    c.session(|tx| {
+        tx.set_scope("a".into(), false)?;
+        tx.set_scope("a".into(), true)
+    })
+    .unwrap();
+    let result = c.apply_prepared_store(prepared).unwrap();
+    c.commit_session().unwrap();
+    assert!(result.as_page().unwrap().cursors.is_empty());
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "admitted");
+    let new = c.subscription_state("a").unwrap().unwrap();
+    assert_ne!(new.subscription_id, old);
+    assert_eq!(new.cursor, None);
+    let member = c
+        .read_sql(
+            "SELECT cursor,present FROM axton_scope_member WHERE scope='a'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(member[0]["cursor"], 1);
+    assert_eq!(member[0]["present"], 1);
 }

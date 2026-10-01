@@ -94,9 +94,12 @@ fn nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill() {
     w.wake();
     let eight = dispatch(&mut w, &mut c, 0).unwrap();
     assert_eq!(loads(&eight), started[..8]);
-    let request: LoadBatchRequest = serde_json::from_str(&eight.body).unwrap();
+    let request = LoadBatchRequest::decode_envelope(eight.body.as_bytes()).unwrap();
     assert_eq!(
-        String::from_utf8(request.encode().unwrap()).unwrap(),
+        String::from_utf8(
+            with_capabilities(&request.encode().unwrap(), &[SCOPE_MEMBERSHIP_CAPABILITY]).unwrap()
+        )
+        .unwrap(),
         eight.body,
         "the canonical request body"
     );
@@ -481,4 +484,288 @@ fn unsendable_failures_count_against_the_slots_like_answers() {
     for id in &oversized {
         assert_eq!(c.get_load(id).unwrap().unwrap().phase, LoadPhase::Failed);
     }
+}
+
+#[test]
+fn delayed_load_page_keeps_epoch_across_restart_and_advances_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    subscribe(&mut c, "a");
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 0,
+                to: 1,
+                head: 1,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Upsert {
+            scope: "a".into(),
+            cursor: 1,
+            record: authority(Some("base"), 7),
+        }],
+    })
+    .unwrap();
+    let id = start(&mut c);
+    let job = c.get_load(&id).unwrap().unwrap();
+    let fence = LoadFence {
+        replica: c.replica_generation(),
+        load_id: id.clone(),
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 1,
+                to: 2,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
+            cursor: 2,
+            key: key(),
+        }],
+    })
+    .unwrap();
+    let retry = c
+        .record_load_failure(
+            &fence,
+            &LoadFailure::Retryable {
+                class: LoadRetryClass::Transport,
+                message: "lost response".into(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.store_token.epoch, 0);
+    assert_eq!(retry.call_id.as_deref(), Some(fence.call_id.as_str()));
+    assert_eq!(retry.attempts, 1);
+    drop(c);
+    let mut c = open_db(&path);
+    let retry = c.get_load(&id).unwrap().unwrap();
+    assert_eq!(retry.store_token.epoch, 0);
+    assert_eq!(retry.call_id.as_deref(), Some(fence.call_id.as_str()));
+    let stored = c
+        .store_load_page(
+            &fence,
+            reply(load_page(&fence, &[("e", "late", 99)], Some(json!("next")))),
+        )
+        .unwrap();
+    let LoadStored::Applied { job, report } = stored else {
+        panic!("page should settle")
+    };
+    assert_eq!(report.applied, 0, "old Load positive must be fenced");
+    assert_eq!(job.pages, 1);
+    assert_eq!(job.continuation.unwrap().state, json!("next"));
+    assert!(c.read(&key()).unwrap().is_none());
+    assert_eq!(c.record_stamp(&key()).unwrap(), 7);
+    // The continuation is a new logical page, captured after the release.
+    let next = LoadFence {
+        replica: c.replica_generation(),
+        load_id: id,
+        run: job.run,
+        call_id: job.call_id.unwrap(),
+    };
+    c.store_load_page(&next, reply(load_page(&next, &[("e", "fresh", 7)], None)))
+        .unwrap();
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
+}
+
+#[test]
+fn legacy_load_and_queue_receive_epoch_zero_without_rewriting_saved_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    c.transaction(|tx| {
+        tx.direct(Operation {
+            model: "Entry".into(),
+            identity: key().identity,
+            op: OperationKind::Create,
+            values: Some(json!({"text":"local","note":null})),
+        })
+    })
+    .unwrap();
+    c.transaction(|tx| tx.enqueue(mutation("pending"))).unwrap();
+    let frozen = c.freeze().unwrap().unwrap();
+    let id = start(&mut c);
+    let saved = c.get_load(&id).unwrap().unwrap();
+    drop(c);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_mutation DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch;").unwrap();
+    drop(conn);
+    let mut c = open_db(&path);
+    let job = c.get_load(&id).unwrap().unwrap();
+    assert_eq!(job, saved);
+    assert_eq!(job.store_token.epoch, 0);
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+    assert_eq!(c.pending_count().unwrap(), 1);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "pending");
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_client", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    assert_eq!(
+        c.read_sql("SELECT store_epoch FROM axton_mutation", &[])
+            .unwrap()[0]["store_epoch"],
+        0
+    );
+    drop(c);
+    let mut c = open_db(&path);
+    assert_eq!(c.get_load(&id).unwrap().unwrap(), saved);
+    assert_eq!(c.freeze().unwrap().unwrap(), frozen);
+}
+
+#[test]
+fn native_load_dispatch_advertises_scope_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    start(&mut c);
+    let mut w = LoadWorker::default();
+    w.wake();
+    let batch = dispatch(&mut w, &mut c, 0).unwrap();
+    let envelope: Value = serde_json::from_str(&batch.body).unwrap();
+    assert!(
+        read_capabilities(&envelope)
+            .unwrap()
+            .contains(SCOPE_MEMBERSHIP_CAPABILITY)
+    );
+}
+
+#[test]
+fn a_saved_exact_limit_page_reopens_with_its_identity_and_negotiation_headroom() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open_db(&path);
+    let empty = c
+        .start_load("Tagged", 1, &json!({"tags":[""]}), LoadOptions::default())
+        .unwrap()
+        .job;
+    let ready = c
+        .load_ready_pages(1, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .remove(0);
+    let overhead = LoadBatchRequest {
+        loads: vec![ready.intent],
+    }
+    .encode()
+    .unwrap()
+    .len();
+    c.cancel_load(&empty.id).unwrap();
+    let args = json!({"tags":["x".repeat(limits::LOAD_REQUEST_BYTES - overhead)]});
+    let saved = c
+        .start_load("Tagged", 1, &args, LoadOptions::default())
+        .unwrap()
+        .job;
+    let ready = c
+        .load_ready_pages(1, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .remove(0);
+    let logical = LoadBatchRequest {
+        loads: vec![ready.intent.clone()],
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(logical.len(), limits::LOAD_REQUEST_BYTES);
+    // A pre-upgrade frozen page carries no negotiation and retains its epoch.
+    let before = c
+        .read_sql(
+            "SELECT call_id, intent, store_epoch FROM axton_load WHERE load_id=?",
+            &[json!(saved.id)],
+        )
+        .unwrap();
+    drop(c);
+    let mut raw = SqliteStore::open(&path).unwrap();
+    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN scope_membership_version; ALTER TABLE axton_client DROP COLUMN store_epoch; ALTER TABLE axton_load DROP COLUMN store_epoch").unwrap();
+    drop(raw);
+    let mut c = open_db(&path);
+    let mut w = LoadWorker::default();
+    w.wake();
+    let sent = dispatch(&mut w, &mut c, 0).expect("a valid saved page must remain sendable");
+    assert_eq!(loads(&sent), std::slice::from_ref(&saved.id));
+    assert_eq!(sent.pages[0].fence, ready.fence);
+    assert_eq!(sent.body.len(), limits::LOAD_REQUEST_BYTES + 39);
+    assert_eq!(
+        LoadBatchRequest::decode_envelope(sent.body.as_bytes())
+            .unwrap()
+            .loads[0],
+        ready.intent
+    );
+    assert_eq!(
+        c.read_sql(
+            "SELECT call_id, intent, store_epoch FROM axton_load WHERE load_id=?",
+            &[json!(saved.id)]
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(c.get_load(&saved.id).unwrap().unwrap().phase, saved.phase);
+    assert!(w.next_outcome().is_none());
+}
+
+#[test]
+fn multiple_pages_partition_at_the_final_wire_bound_without_single_page_headroom() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open_db(&dir.path().join("db"));
+    let probes: Vec<_> = (0..2)
+        .map(|_| {
+            c.start_load("Tagged", 1, &json!({"tags":[""]}), LoadOptions::default())
+                .unwrap()
+                .job
+        })
+        .collect();
+    let intents = c
+        .load_ready_pages(2, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .into_iter()
+        .map(|p| p.intent)
+        .collect();
+    let overhead = LoadBatchRequest { loads: intents }.encode().unwrap().len();
+    for job in probes {
+        c.cancel_load(&job.id).unwrap();
+    }
+    let remaining = limits::LOAD_REQUEST_BYTES - overhead;
+    let ids: Vec<_> = [remaining / 2, remaining - remaining / 2]
+        .into_iter()
+        .map(|size| {
+            c.start_load(
+                "Tagged",
+                1,
+                &json!({"tags":["x".repeat(size)]}),
+                LoadOptions::default(),
+            )
+            .unwrap()
+            .job
+            .id
+        })
+        .collect();
+    let intents = c
+        .load_ready_pages(2, &std::collections::BTreeSet::new())
+        .unwrap()
+        .pages
+        .into_iter()
+        .map(|p| p.intent)
+        .collect();
+    assert_eq!(
+        LoadBatchRequest { loads: intents }.encode().unwrap().len(),
+        limits::LOAD_REQUEST_BYTES
+    );
+    let mut w = LoadWorker::default();
+    w.wake();
+    let first = dispatch(&mut w, &mut c, 0).unwrap();
+    let second = dispatch(&mut w, &mut c, 0).unwrap();
+    assert_eq!(loads(&first), ids[..1]);
+    assert_eq!(loads(&second), ids[1..]);
+    assert!(first.body.len() <= limits::LOAD_REQUEST_BYTES);
+    assert!(second.body.len() <= limits::LOAD_REQUEST_BYTES);
 }

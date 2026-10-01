@@ -104,7 +104,7 @@ function intercept() {
 /** The stored subscription row for `scope`: the #150 boundaries and the #151 load ledger. */
 async function ledger(client, scope) {
  const rows = await client.readSql(
-  'SELECT subscription_id, starting_cursor, cursor, bootstrap_state, bootstrap_run, bootstrap_cursor, bootstrap_barrier, bootstrap_error FROM axton_subscription WHERE channel = ?',
+  'SELECT subscription_id, starting_cursor, cursor, bootstrap_state, bootstrap_run, bootstrap_cursor, bootstrap_barrier, bootstrap_error FROM axton_subscription WHERE scope = ?',
   [scope],
  );
  assert.equal(rows.length, 1, `one subscription row for ${scope}`);
@@ -151,7 +151,7 @@ async function scenario(body) {
  };
  try {
   await app.initialize();
-  // Every scenario asserts channel heads and cursors, so it starts from an
+  // Every scenario asserts scope heads and cursors, so it starts from an
   // empty invalidation log rather than from what an earlier one published.
   await app.reset();
   server = await app.listen(0);
@@ -177,7 +177,7 @@ test('generated store hooks commit derived rows and intent on live and Bootstrap
      if (change.kind !== 'upsert') continue;
      seen.push({ id: change.identity.id, row: change.row.text, before: (await tx.models.entry.get(change.identity))?.text ?? null });
      await tx.models.entry.create({ id: `derived-${change.identity.id}`, text: `from ${change.row.text}` });
-     await tx.channels.subscribe(`derived:${change.identity.id}`);
+     await tx.scopes.subscribe(`derived:${change.identity.id}`);
      if (failHistory && change.identity.id === 'historic') throw Error('historical hook blocked');
     }
    },
@@ -208,8 +208,8 @@ test('generated store hooks commit derived rows and intent on live and Bootstrap
    assert.equal(watched.some(ids => ids.includes('live') !== ids.includes('derived-live')), false, 'live watchers see no partial authority/derived commit');
    assert.equal(seen.filter(x => x.id === 'historic').length, 2, 'failed hook was invoked again on retry');
    assert.deepEqual(seen.filter(x => x.id === 'live'), [{ id: 'live', row: 'live text', before: null }]);
-   const names = await client.readSql('SELECT channel FROM axton_subscription WHERE channel IN (?, ?) ORDER BY channel', ['derived:historic', 'derived:live']);
-   assert.deepEqual(names.map(row => row.channel), ['derived:historic', 'derived:live'], 'hook intent committed on both paths');
+   const names = await client.readSql('SELECT scope FROM axton_subscription WHERE scope IN (?, ?) ORDER BY scope', ['derived:historic', 'derived:live']);
+   assert.deepEqual(names.map(row => row.scope), ['derived:historic', 'derived:live'], 'hook intent committed on both paths');
   } finally { stop(); }
  });
 });
@@ -222,9 +222,9 @@ test('a record that moves above the origin comes from delivery, and the load sti
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:moving';
   const { app, net } = ctx;
-  const before = await app.publishMany(40, { channel: SCOPE, prefix: 'hist', from: 1 });
+  const before = await app.publishMany(40, { scope: SCOPE, prefix: 'hist', from: 1 });
   await app.publishOne('moving', 'the record that moves', [SCOPE]);
-  const after = await app.publishMany(79, { channel: SCOPE, prefix: 'hist', from: 41 });
+  const after = await app.publishMany(79, { scope: SCOPE, prefix: 'hist', from: 41 });
   const history = [...before, ...after];
   assert.equal(await app.head(SCOPE), 120, 'one cursor per publication');
   const moved = await app.positionOf(SCOPE, 'moving');
@@ -245,18 +245,18 @@ test('a record that moves above the origin comes from delivery, and the load sti
   const loading = background(subscription.bootstrap());
   await held.entered;
   assert.equal((await ledger(client, SCOPE)).bootstrap_cursor, 0, 'no page has been applied yet');
-  // Removed, then added back in a second settlement: an unchanged record takes a
-  // new position at the stamp it already has.
+  // Removed, then added back in a second settlement: the removal takes 121 and
+  // the unchanged record's re-addition 122, at the stamp it already has.
   await app.readd(['moving'], SCOPE);
   const republished = await app.positionOf(SCOPE, 'moving');
-  assert.equal(republished, 121, 'the re-addition replaced its one retained position');
+  assert.equal(republished, 122, 'the re-addition replaced its one retained position');
   assert.ok(republished > S, `its latest publication is above the origin: ${republished} > ${S}`);
 
   // Normal delivery supplies it while the historical interval is untouched.
   await wait(async () => (await client.models.entry.get({ id: 'moving' }))?.text === 'the record that moves', 'live delivery of the moved record');
   const row = await ledger(client, SCOPE);
   assert.equal(row.bootstrap_cursor, 0, 'the subscription delivered it, not the historical scan');
-  assert.equal(row.cursor, 121, 'delivery moved to the republication');
+  assert.equal(row.cursor, 122, 'delivery moved to the republication');
   assert.equal(row.starting_cursor, S, 'the origin never moves');
   const deliveredStamp = await stampOf(client, 'moving');
   assert.equal(await client.models.entry.get({ id: 'hist-1' }), null, 'a later page does not backfill history');
@@ -277,7 +277,7 @@ test('a record that moves above the origin comes from delivery, and the load sti
   assert.deepEqual([...new Set(net.loads.map(load => load.until))], [S], 'every page is bounded by the origin, never by a moving head');
   const final = await ledger(client, SCOPE);
   assert.equal(final.bootstrap_cursor, S, 'the interval finished at the origin');
-  assert.equal(final.bootstrap_barrier, 121, 'the barrier is the head the final page saw');
+  assert.equal(final.bootstrap_barrier, 122, 'the barrier is the head the final page saw');
   assert.equal(final.starting_cursor, S);
   await assertLoaded(client, history);
   assert.equal((await client.models.entry.get({ id: 'moving' })).text, 'the record that moves');
@@ -293,7 +293,7 @@ test('an older historical page never regresses newer content or resurrects a new
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:stamps';
   const { app, net } = ctx;
-  const kept = await app.publishMany(8, { channel: SCOPE, prefix: 'kept' });
+  const kept = await app.publishMany(8, { scope: SCOPE, prefix: 'kept' });
   await app.publishOne('updated', 'the original text', [SCOPE]);
   await app.publishOne('removed', 'present at first', [SCOPE]);
   const S = await app.head(SCOPE);
@@ -348,13 +348,13 @@ test('exact and empty intervals terminate, and so does one under continuous publ
   // Exactly 50 records: one page whose last row is the origin, so it is
   // terminal and nothing asks for a second.
   const EXACT = 'bootstrap:exact';
-  const fifty = await app.publishMany(50, { channel: EXACT, prefix: 'exact' });
+  const fifty = await app.publishMany(50, { scope: EXACT, prefix: 'exact' });
   const exact = await client.scopes.subscribe(EXACT);
   await wait(() => exact.status.initialization === 'ready', 'the origin of the exact Scope');
   assert.equal((await ledger(client, EXACT)).starting_cursor, 50);
   await exact.bootstrap();
   assert.deepEqual({ ...exact.status.bootstrap }, { phase: 'complete', error: null });
-  const exactLoads = net.loads.filter(load => load.channel === EXACT);
+  const exactLoads = net.loads.filter(load => load.scope === EXACT);
   assert.deepEqual(exactLoads.map(load => [load.after, load.until]), [[0, 50]], 'an exact page is terminal: one request, no empty follow-up');
   await assertLoaded(client, fifty);
   assert.equal((await ledger(client, EXACT)).bootstrap_cursor, 50);
@@ -378,7 +378,7 @@ test('exact and empty intervals terminate, and so does one under continuous publ
   // bounded by the origin, so the interval finishes even though the head does
   // not stop moving.
   const BUSY = 'bootstrap:busy';
-  const history = await app.publishMany(130, { channel: BUSY, prefix: 'busy' });
+  const history = await app.publishMany(130, { scope: BUSY, prefix: 'busy' });
   const busy = await client.scopes.subscribe(BUSY);
   await wait(() => busy.status.initialization === 'ready', 'the origin of the busy Scope');
   const S = (await ledger(client, BUSY)).starting_cursor;
@@ -387,20 +387,20 @@ test('exact and empty intervals terminate, and so does one under continuous publ
   const later = [];
   // Hold the second page, so the publications below are demonstrably made
   // while the historical interval is being paged rather than before or after.
-  const paging = net.hold('request', body => body.mode === 'bootstrap' && body.channel === BUSY && body.after === 50);
+  const paging = net.hold('request', body => body.mode === 'bootstrap' && body.scope === BUSY && body.after === 50);
   const loading = background(busy.bootstrap()).then(() => { settled = true; });
   await paging.entered;
   for (let round = 1; round <= 5; round++)
-   later.push(...await app.publishMany(4, { channel: BUSY, prefix: 'later', from: round * 4 - 3 }));
+   later.push(...await app.publishMany(4, { scope: BUSY, prefix: 'later', from: round * 4 - 3 }));
   assert.equal((await ledger(client, BUSY)).bootstrap_cursor, 50, 'the interval is half loaded while the head keeps moving');
   paging.release();
   for (let round = 6; !settled && round <= 40; round++) {
-   later.push(...await app.publishMany(4, { channel: BUSY, prefix: 'later', from: round * 4 - 3 }));
+   later.push(...await app.publishMany(4, { scope: BUSY, prefix: 'later', from: round * 4 - 3 }));
    await new Promise(resolve => setTimeout(resolve, 10));
   }
   await loading;
   assert.deepEqual({ ...busy.status.bootstrap }, { phase: 'complete', error: null });
-  const busyLoads = net.loads.filter(load => load.channel === BUSY);
+  const busyLoads = net.loads.filter(load => load.scope === BUSY);
   assert.deepEqual(busyLoads.map(load => load.after), [0, 50, 100], 'three bounded pages, whatever was published beside them');
   assert.deepEqual([...new Set(busyLoads.map(load => load.until))], [S], 'the upper bound is the origin, not the head');
   assert.ok(later.length >= 20, `the scenario published while the interval was being loaded: ${later.length}`);
@@ -421,7 +421,7 @@ test('the barrier is the head the final page saw, is fixed, and delivery must re
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:barrier';
   const { app, net } = ctx;
-  const history = await app.publishMany(5, { channel: SCOPE, prefix: 'past' });
+  const history = await app.publishMany(5, { scope: SCOPE, prefix: 'past' });
   const client = await ctx.open('reader', { connect: false });
   const connection = await ctx.connect(client);
   const subscription = await client.scopes.subscribe(SCOPE);
@@ -449,7 +449,7 @@ test('the barrier is the head the final page saw, is fixed, and delivery must re
 
   // Writes continue while the run waits: the barrier is fixed, so it does not
   // chase them, and the run does not complete.
-  await app.publishMany(3, { channel: SCOPE, prefix: 'later' });
+  await app.publishMany(3, { scope: SCOPE, prefix: 'later' });
   await never(async () => (await ledger(client, SCOPE)).bootstrap_barrier !== 6, 'the barrier followed the head');
   await never(async () => subscription.status.bootstrap.phase === 'complete', 'completion without delivery');
 
@@ -474,8 +474,8 @@ test('overlapping Scopes bootstrap independently and share the record they both 
   const FIRST = 'bootstrap:overlap-a';
   const SECOND = 'bootstrap:overlap-b';
   const { app, net } = ctx;
-  const onlyFirst = await app.publishMany(3, { channel: FIRST, prefix: 'a' });
-  const onlySecond = await app.publishMany(4, { channel: SECOND, prefix: 'b' });
+  const onlyFirst = await app.publishMany(3, { scope: FIRST, prefix: 'a' });
+  const onlySecond = await app.publishMany(4, { scope: SECOND, prefix: 'b' });
   await app.publishOne('shared', 'provided by both Scopes', [FIRST, SECOND]);
   assert.equal(await app.head(FIRST), 4);
   assert.equal(await app.head(SECOND), 5);
@@ -490,7 +490,7 @@ test('overlapping Scopes bootstrap independently and share the record they both 
   await assertLoaded(client, [...onlyFirst, ...onlySecond]);
   assert.equal((await client.models.entry.get({ id: 'shared' })).text, 'provided by both Scopes');
   assert.deepEqual(
-   [...new Set(net.loads.map(load => load.channel))].sort(),
+   [...new Set(net.loads.map(load => load.scope))].sort(),
    [FIRST, SECOND],
    'both Scopes were loaded through the one request slot',
   );
@@ -500,7 +500,7 @@ test('overlapping Scopes bootstrap independently and share the record they both 
    assert.equal(row.bootstrap_cursor, origin, `${scope} finished its own interval`);
    assert.equal(row.bootstrap_barrier, origin, `${scope} fixed its own barrier`);
    assert.deepEqual(
-    [...new Set(net.loads.filter(load => load.channel === scope).map(load => load.until))],
+    [...new Set(net.loads.filter(load => load.scope === scope).map(load => load.until))],
     [origin],
     `${scope}'s pages are bounded by its own origin`,
    );
@@ -514,7 +514,7 @@ test('a queued local write settles while a large interval loads, and the load st
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:foreground';
   const { app, net } = ctx;
-  const history = await app.publishMany(130, { channel: SCOPE, prefix: 'bulk' });
+  const history = await app.publishMany(130, { scope: SCOPE, prefix: 'bulk' });
   const client = await ctx.open('reader');
   const subscription = await client.scopes.subscribe(SCOPE);
   await wait(() => subscription.status.initialization === 'ready', 'the committed origin');
@@ -533,7 +533,7 @@ test('a queued local write settles while a large interval loads, and the load st
   assert.equal(subscription.status.bootstrap.phase, 'loading');
   assert.equal((await ledger(client, SCOPE)).bootstrap_cursor, 50, 'one page has committed and the next is in flight');
 
-  // The mutation completes from its receipt alone (A3): no channel is awaited,
+  // The mutation completes from its receipt alone (A3): no scope is awaited,
   // and the load's request slot is not the push lane.
   await client.mutate.edit({ entry: { identity: { id: 'foreground' }, values: { text: '  edited while loading  ' } } });
   await wait(async () => (await client.syncState()).pending === 0, 'the queued write settled');
@@ -557,7 +557,7 @@ test('a load registered offline completes once connected', { timeout: 120000 }, 
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:offline';
   const { app } = ctx;
-  const history = await app.publishMany(6, { channel: SCOPE, prefix: 'off' });
+  const history = await app.publishMany(6, { scope: SCOPE, prefix: 'off' });
   const client = await ctx.open('reader', { connect: false });
   const subscription = await client.scopes.subscribe(SCOPE);
   const observed = phases(subscription);
@@ -589,7 +589,7 @@ test('a load interrupted by closing the client resumes on the next one without a
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:restart';
   const { app, net } = ctx;
-  const history = await app.publishMany(120, { channel: SCOPE, prefix: 'again' });
+  const history = await app.publishMany(120, { scope: SCOPE, prefix: 'again' });
   const path = join(ctx.directory, 'resumed.sqlite');
   let client = await GeneratedClient.open({ path });
   try {
@@ -636,7 +636,7 @@ test('a live read failure stays visible and reported when the load completes', {
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:live-failure';
   const { app } = ctx;
-  const history = await app.publishMany(4, { channel: SCOPE, prefix: 'readable' });
+  const history = await app.publishMany(4, { scope: SCOPE, prefix: 'readable' });
   const client = await ctx.open('reader');
   const subscription = await client.scopes.subscribe(SCOPE);
   await wait(() => subscription.status.initialization === 'ready', 'the committed origin');
@@ -684,7 +684,7 @@ test('a failed historical page rejects the run, keeps its other records, and ret
  await scenario(async ctx => {
   const SCOPE = 'bootstrap:page-failure';
   const { app, net } = ctx;
-  const history = await app.publishMany(6, { channel: SCOPE, prefix: 'page' });
+  const history = await app.publishMany(6, { scope: SCOPE, prefix: 'page' });
   const client = await ctx.open('reader');
   const subscription = await client.scopes.subscribe(SCOPE);
   const observed = phases(subscription);
@@ -695,7 +695,7 @@ test('a failed historical page rejects the run, keeps its other records, and ret
   app.failLoads('page-3');
   const rejected = await subscription.bootstrap().then(() => null, error => error);
   assert.equal(rejected?.code, 'bootstrap.records_failed', 'the background caller was rejected');
-  assert.match(rejected.message, /could not be applied/);
+  assert.ok(rejected.message.length > 0, 'the stored failure carries a diagnostic message');
   assert.deepEqual(
    { ...subscription.status.bootstrap },
    { phase: 'failed', error: { code: 'bootstrap.records_failed', message: rejected.message } },

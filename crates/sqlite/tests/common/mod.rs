@@ -32,18 +32,18 @@ pub fn update(text: &str) -> Operation {
 pub fn mutation(text: &str) -> Mutation {
     Mutation::new("Edit", vec![update(text)])
 }
-/// A one-channel page moving `channel` from `from` to `to` (its head) with
+/// A one-scope page moving `scope` from `from` to `to` (its head) with
 /// `Entry e` at stamp `to`.
-pub fn page(channel: &str, from: u64, to: u64, text: Option<&str>) -> PullPage {
+pub fn page(scope: &str, from: u64, to: u64, text: Option<&str>) -> PullPage {
     PullPage {
-        cursors: BTreeMap::from([(channel.to_string(), CursorRange { from, to, head: to })]),
+        cursors: BTreeMap::from([(scope.to_string(), CursorRange { from, to, head: to })]),
         changes: vec![authority(text, to)],
     }
 }
-/// A page for several channels at once, each `(channel, from, to, head)`, with `changes`.
-pub fn multi(channels: &[(&str, u64, u64, u64)], changes: Vec<AuthorityRecord>) -> PullPage {
+/// A page for several scopes at once, each `(scope, from, to, head)`, with `changes`.
+pub fn multi(scopes: &[(&str, u64, u64, u64)], changes: Vec<AuthorityRecord>) -> PullPage {
     PullPage {
-        cursors: channels
+        cursors: scopes
             .iter()
             .map(|(c, from, to, head)| {
                 (
@@ -89,6 +89,7 @@ pub fn receipt(
         rejections: vec![],
         completions: vec![],
         records,
+        memberships: Vec::new(),
     }
 }
 /// A receipt rejecting `ordinals` with `code` and returning `records` for the rest.
@@ -124,21 +125,21 @@ pub fn acknowledge(c: &mut Client<SqliteStore>, heads: &[(&str, u64)]) -> Initia
     let heads = heads.iter().map(|(c, h)| (c.to_string(), *h)).collect();
     c.initialize_subscriptions(&expected, &heads).unwrap()
 }
-/// Only a subscribed channel may be pulled: `apply_page` drops a page for any
+/// Only a subscribed scope may be pulled: `apply_page` drops a page for any
 /// other. Registration alone has no delivery position, so this fixture also
 /// commits the boundary a first acknowledgement at head zero establishes -
 /// where these tests measure their pages from.
-pub fn subscribe(c: &mut Client<SqliteStore>, channel: &str) {
-    c.transaction(|tx| tx.set_channel(channel.into(), true))
+pub fn subscribe(c: &mut Client<SqliteStore>, scope: &str) {
+    c.transaction(|tx| tx.set_scope(scope.into(), true))
         .unwrap();
-    acknowledge(c, &[(channel, 0)]);
+    acknowledge(c, &[(scope, 0)]);
 }
 /// Unsubscribe and subscribe again: a new identity, initialized at zero as its
 /// own first acknowledgement would leave it.
-pub fn resubscribe(c: &mut Client<SqliteStore>, channel: &str) {
-    c.transaction(|tx| tx.set_channel(channel.into(), false))
+pub fn resubscribe(c: &mut Client<SqliteStore>, scope: &str) {
+    c.transaction(|tx| tx.set_scope(scope.into(), false))
         .unwrap();
-    subscribe(c, channel);
+    subscribe(c, scope);
 }
 pub fn seed(c: &mut Client<SqliteStore>, text: &str) {
     c.transaction(|tx| {
@@ -232,6 +233,7 @@ pub fn load_page(
             .iter()
             .map(|(id, text, stamp)| authority_of(id, Some(text), *stamp))
             .collect(),
+        memberships: Vec::new(),
     }
 }
 /// The correlated reply a decoded response carries for a well-formed `page`.
@@ -329,4 +331,53 @@ pub fn oversized_next_page<S: ClientStore>(c: &mut Client<S>) -> String {
         "the next frozen page exceeds the request bound"
     );
     job.id
+}
+
+/// Upgrade the old authority-only fixture vocabulary at the test host boundary.
+/// Production decoders stay strict; these fixtures now state scope provenance.
+pub fn scope_fixture(mut value: Value) -> Value {
+    let ranges = value.get("cursors").and_then(Value::as_object).cloned();
+    if let Some(ranges) = ranges {
+        if let Some(records) = value["changes"].as_array().cloned() {
+            if records.iter().any(|r| r.get("kind").is_some()) {
+                return value;
+            }
+            let mut changes = vec![];
+            for (scope, range) in ranges {
+                let from = range["from"].as_u64().unwrap_or(0);
+                let to = range["to"].as_u64().unwrap_or(0);
+                if to <= from {
+                    continue;
+                }
+                for (i, record) in records.iter().enumerate() {
+                    let mut record = record.clone();
+                    record["kind"] = json!("upsert");
+                    record["scope"] = json!(scope);
+                    record["cursor"] =
+                        json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
+                    changes.push(record);
+                }
+            }
+            value["changes"] = json!(changes);
+        }
+    } else if value["mode"] == "bootstrap"
+        && let Some(records) = value["records"].as_array().cloned()
+    {
+        let to = value["to"].as_u64().unwrap();
+        let changes: Vec<Value> = records
+            .iter()
+            .enumerate()
+            .map(|(i, record)| {
+                let mut record = record.clone();
+                record["kind"] = json!("upsert");
+                record["scope"] = value["scope"].clone();
+                record["cursor"] =
+                    json!(to.saturating_sub(records.len().saturating_sub(i + 1) as u64));
+                record
+            })
+            .collect();
+        value.as_object_mut().unwrap().remove("records");
+        value["changes"] = json!(changes);
+    }
+    value
 }

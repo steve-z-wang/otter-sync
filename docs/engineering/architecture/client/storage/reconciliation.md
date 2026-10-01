@@ -12,7 +12,7 @@ Callers are [`Client::open_at`](../frontend-interface.md) (the [runtime](../runt
 
 ## 5. Building Block View
 
-Per model there are two tables with identical columns: the visible table named after the model and `axton_before_<Model>` for before images ([Writes](../engine/local-operations/writes.md)). Column types follow [Types](../../schema/types.md); the identity is the primary key in `@@id` order; each `@@unique` becomes a unique index on the visible table. Thirteen framework tables (`axton_schema`, `axton_client`, `axton_record`, `axton_subscription`, the four queue tables, the local write journal `axton_local_write`, `axton_rejection`, `axton_query_cache`, and the native Load ledger `axton_load` and `axton_load_once`, owned by [Loads](../engine/loads.md#5-building-block-view)) are created with `IF NOT EXISTS`, so an existing database gains a missing one in place without a rebuild; `axton_query_cache` holds Query `once` snapshots (key, contract, name, version, canonical args and store, generation, and a nullable result where SQL NULL is an invalidated tombstone), and opening deletes its rows of any other contract fingerprint ([frontend interface](../frontend-interface.md)); `axton_schema` holds one row, the canonical JSON of the descriptor and when it was written; `axton_client` carries `last_completed_push`, `push_models` and the `next_subscription` allocator ([Settlement](../engine/settlement.md)).
+Per model there are two tables with identical columns: the visible table named after the model and `axton_before_<Model>` for before images ([Writes](../engine/local-operations/writes.md)). Column types follow [Types](../../schema/types.md); the identity is the primary key in `@@id` order; each `@@unique` becomes a unique index on the visible table. Framework tables (`axton_schema`, `axton_client`, `axton_record`, `axton_subscription`, the four queue tables, the local write journal `axton_local_write`, `axton_rejection`, `axton_query_cache`, and the native Load ledger `axton_load` and `axton_load_once`, owned by [Loads](../engine/loads.md#5-building-block-view)) are created with `IF NOT EXISTS`, so an existing database gains a missing one in place without a rebuild; `axton_query_cache` holds Query `once` snapshots (key, contract, name, version, canonical args and store, generation, and a nullable result where SQL NULL is an invalidated tombstone), and opening deletes its rows of any other contract fingerprint ([frontend interface](../frontend-interface.md)); `axton_schema` holds one row, the canonical JSON of the descriptor and when it was written; `axton_client` carries `last_completed_push`, `push_models` and the `next_subscription` allocator ([Settlement](../engine/settlement.md)).
 
 The local write journal keeps settled local writes in a dirty record's local order until no earlier pending operation needs them ([Writes](../engine/local-operations/writes.md#5-building-block-view)):
 
@@ -38,7 +38,7 @@ The subscription ledger is one row per followed Scope ([#150](https://github.com
 
 ```sql
 CREATE TABLE axton_subscription (
-  channel           TEXT PRIMARY KEY,  -- the Scope name; renamed by #152
+  scope           TEXT PRIMARY KEY,  -- the Scope name
   subscription_id   INTEGER NOT NULL UNIQUE,
   starting_cursor   INTEGER,           -- the boundary the first initialization committed
   cursor            INTEGER,           -- how far delivery has committed
@@ -130,3 +130,47 @@ Executed 2026-09-16: `cargo test -p axton-core -p axton-client -p axton-sqlite -
 **Accepted limitation: a non-nullable field cannot be added without a rebuild.** Creation defaults never supply historical values ([Models](../../schema/models.md#9-architecture-decisions)), so every required field rebuilds the local database. Evidence: [sqlite/tests/defaults.rs](../../../../../crates/sqlite/tests/defaults.rs) `a_creation_default_never_backfills_a_new_required_column`, `a_default_only_change_opens_in_place_and_rewrites_nothing`.
 
 **Accepted limitation.** Old files accumulate until the application deletes them; the runtime removes only an abandoned partial rebuild. A direct record in an old file is reported, never carried. A legacy checkpoint-era queue is counted as left behind, not sent.
+
+## Scope membership upgrade
+
+The 0.2 framework upgrade is additive and separate from incompatible application-schema rebuilding. It retains client identity, pending operations, subscriptions/cursors and existing data. The holding ledger records current presence and latest membership cursor per Scope/record; record metadata distinguishes materialized, authoritative absent, legacy and evicted bases. Retained stamp and eviction evidence prevent stale restoration. No client tag table is introduced.
+
+Clean device-local operations are retained in a bounded internal layer, separate from replication. Release replays pending and local operations over an absent base without sending a write. Legacy stamped cache cannot be promoted to local authorship; old unstamped local creates can survive conservatively. Lost direct-write provenance is not reconstructed.
+
+The opening transaction adds `axton_client.scope_membership_version` and the subscription columns below. An old file receives marker zero, schedules each retained registration once, then commits marker one with the upgrade. A fresh file starts at marker one and keeps ordinary first-subscription semantics. Resubscribing a Scope with retained membership evidence also schedules reconciliation; the upgrade fabricates no holds.
+
+| Subscription column | Meaning |
+| --- | --- |
+| `reconcile_state` | `not_requested`, `requested`, `loading`, `catching_up`, `complete` or `failed` |
+| `reconcile_run` | Own run identity, fencing retries and stale responses |
+| `reconcile_cursor` | Committed historical progress, initially zero |
+| `reconcile_bound` | Own fixed history bound, initially null |
+| `reconcile_barrier` | Fixed terminal-page head that ordinary delta delivery must reach |
+| `reconcile_error` | Bounded saved failure for a failed run |
+
+A valid acknowledgement, or the first valid current HTTP delta head when no acknowledgement exists, fixes `reconcile_bound` once. The separate walk processes retained history through that bound, including removals below already saved delivery progress. Its terminal page fixes the delta barrier; completion waits for ordinary delivery to reach it. Reopen retains bound, run, progress and barrier. Stale responses and replaced registrations cannot choose or advance a replacement's bound. Prepared pages keep their admitted authority and holds after callback subscription edits, but cannot update replacement progress.
+
+This lane never rewinds `cursor`, changes `starting_cursor`, or completes the user's separate `bootstrap_*` task or waiters. Hidden failed reconciliation uses the worker's bounded historical retry timer: a new own run clears the failure while keeping bound, progress and barrier. HTTP-only `SyncCycle` cannot report completion with reconciliation pending; a failed cycle requires explicit restart, which reactivates failed work.
+
+New logical requests freeze store epochs; retry/restart and saved legacy responses keep their original token. Migration cannot infer holdings for records absent from both retained membership and log, so unrelated one-shot cache is not wiped. Claims are never fabricated for legacy responses. [Cutover](../../../../../website/docs/backend/deployment.md#scope-membership-cutover) owns deployment sequencing. Source: [framework upgrade](../../../../../crates/client/src/ddl.rs), [reconciliation scheduling](../../../../../crates/client/src/bootstrap.rs) and [ledger](../../../../../crates/client/src/bootstrap_ledger.rs).
+
+Low-level hosts keep the opaque `BootstrapTask` returned by `bootstrap_schedule` and send its `encode_request(models)` bytes. Apply the response through `Client::apply_scope_bootstrap_task(task, &page) -> Result<BootstrapApply>` so the task routes its own ordinary or reconciliation lane and fences registration, run and progress. `apply_scope_bootstrap_page` remains explicitly ordinary bootstrap only; it is not a replacement for task-aware application.
+
+### Frozen request ownership
+
+`StoreToken { epoch }` is client-local and never encoded into requests or Models. The shared predicate is `held || request_epoch >= evicted_at`, before stamp staging; null authority is not suppressed. Each newly accepted final unheld identity advances the durable epoch, including already absent/untracked cache. Duplicate/stale evidence or another current hold does not. Prepared preflight rolls metadata back, and committed replay advances it once.
+
+| Work | Token owner |
+| --- | --- |
+| Direct Query/Mutation | New prepared call ID; retry keeps it, completion/failure/cancellation retires it |
+| Query once | Miss/refresh owns a flight; joins use its token, cache hits apply no authority |
+| Stored Model Fetch | Owning prepared call; coalesced callers join it, unused candidate tokens retire |
+| Prepared store | Copies the transient token so later owner retirement cannot refresh it |
+| Native Load | Durable logical page; continuation or explicit retry captures anew, automatic retry/reopen keeps it |
+| Queued Mutation/Query | Durable enqueue row, before push freezing or network; receipt uses that original token |
+
+A receipt contains batch authority without per-call record provenance. Push selection therefore groups only calls with the same epoch (as well as the existing shape grouping), so unrelated old work cannot suppress fresh authority. Mixed-epoch receipts are refused rather than guessed. Legacy durable rows and unknown historical transient IDs use epoch zero. Additive columns on client, queue and Load rows preserve saved IDs, intent and frozen push bytes. Transient tokens are bounded by outstanding owners; manually abandoning a low-level request requires `Client::retire_request(call_id)`, while runtime lifecycle retires them automatically. The unrelated downlink delivery-ownership token is not repurposed.
+
+### Scope metadata rename
+
+The subsequent Scope cutover is a transactional forward rename of `axton_channel_member` to `axton_scope_member`, ownership columns from `channel` to `scope`, and `channel_membership_version` to `scope_membership_version`. These old spellings are migration inputs only. Opening storage rewrites framework membership claims in saved outcomes while preserving application fields, frozen requests, records, subscriptions, cursors and pending work. It commits before network scheduling, is idempotent on reopen, and rolls back an inconsistent layout without parallel old/new tables. This is separate from the earlier 0.2 membership reconciliation and from application-schema rebuilds.

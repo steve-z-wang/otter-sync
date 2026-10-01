@@ -1,0 +1,483 @@
+# Builds, verifies and publishes the release a version tag names. Every
+# artifact comes from the tagged commit and is published from the bytes
+# attached to its GitHub Release, recorded in release-manifest.json. To retry,
+# re-run the failed jobs of this tag's run; an artifact already published is
+# skipped only when it matches the manifest. See docs/engineering/releasing.md.
+name: Release publish
+on:
+  push:
+    tags: ['v*']
+permissions: {}
+concurrency:
+  group: release-publish-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  NODE_VERSION: '26.4.0'
+  DART_VERSION: '3.12.1'
+  RUST_VERSION: '1.98.1'
+  TAG: ${{ github.ref_name }}
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: The tag names this commit's version, on main
+        id: version
+        run: |
+          node scripts/release/version.mjs check
+          version="$(node -p 'require("./.release-please-manifest.json")["."]')"
+          if [[ "$TAG" != "v$version" ]]; then
+            echo "::error::$TAG does not name version $version"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::$TAG ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  verify:
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify.yml
+
+  build-host:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-14
+            container: ''
+            library: libaxton_dart.dylib
+          # Debian 12 keeps the Linux artifacts' glibc requirement at 2.36.
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+            container: node:22-bookworm
+            library: libaxton_dart.so
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      LIBRARY: ${{ matrix.library }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.container == ''
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: npm ci
+      - name: Node addon, compiler and Dart library
+        run: |
+          node_modules/.bin/napi build --platform --release --cwd packages/native \
+            --manifest-path ../../bindings/node/Cargo.toml --output-dir "$PWD/artifacts" \
+            --js index.js --dts index.d.ts -- --locked
+          mkdir -p "artifacts/loader-$TARGET" "artifacts/$TARGET"
+          mv artifacts/index.js artifacts/index.d.ts "artifacts/loader-$TARGET/"
+          cargo build --release --locked -p axton-compiler -p axton-dart
+          cp target/release/axton "artifacts/$TARGET/axton"
+          cp "target/release/$LIBRARY" "artifacts/libaxton_dart-$VERSION-$TARGET.${LIBRARY##*.}"
+      - name: The addon and compiler run here
+        run: |
+          node -e 'require(process.argv[1])' "$PWD/artifacts/axton-node.$TARGET.node"
+          "artifacts/$TARGET/axton" --version
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-${{ matrix.target }}
+          path: artifacts/
+          if-no-files-found: error
+
+  build-ios:
+    needs: version
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      IPHONEOS_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Dart libraries for the iOS device and simulators
+        run: |
+          mkdir artifacts
+          # shellcheck disable=SC2016 # single-quoted JavaScript
+          for target in $(node -p 'require("./scripts/release/targets.json").mobile.filter((t) => t.platform.startsWith("ios")).map((t) => `${t.name}:${t.rust}`).join(" ")'); do
+            name="${target%%:*}" triple="${target#*:}"
+            rustup target add "$triple"
+            cargo build --release --locked -p axton-dart --target "$triple"
+            cp "target/$triple/release/libaxton_dart.dylib" "artifacts/libaxton_dart-$VERSION-$name.dylib"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-ios
+          path: artifacts/
+          if-no-files-found: error
+
+  build-android:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Dart libraries for the Android ABIs
+        run: |
+          # shellcheck disable=SC2016 # single-quoted JavaScript
+          targets="$(node -p 'require("./scripts/release/targets.json").mobile.filter((t) => t.platform === "android").map((t) => `${t.name}:${t.abi}:${t.rust}`).join(" ")')"
+          abis=()
+          for target in $targets; do
+            IFS=: read -r name abi triple <<<"$target"
+            rustup target add "$triple"
+            abis+=(-t "$abi")
+          done
+          cargo ndk "${abis[@]}" -o ndk build --release --locked -p axton-dart
+          mkdir artifacts
+          for target in $targets; do
+            IFS=: read -r name abi triple <<<"$target"
+            cp "ndk/$abi/libaxton_dart.so" "artifacts/libaxton_dart-$VERSION-$name.so"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-android
+          path: artifacts/
+          if-no-files-found: error
+
+  pack:
+    needs: [version, build-host, build-ios, build-android]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: build-*
+          path: artifacts
+          merge-multiple: true
+      - name: Pack every package and write the manifest
+        run: |
+          # napi-rs generates the same loader on every host.
+          cmp artifacts/loader-darwin-arm64/index.js artifacts/loader-linux-x64-gnu/index.js
+          cmp artifacts/loader-darwin-arm64/index.d.ts artifacts/loader-linux-x64-gnu/index.d.ts
+          cp artifacts/loader-linux-x64-gnu/index.js artifacts/loader-linux-x64-gnu/index.d.ts packages/native/
+          rm -r artifacts/loader-*
+          bash scripts/release/pack.sh dist/release artifacts
+          mkdir release
+          cp dist/release/*.tgz "dist/release/axton-dart-$VERSION.tar.gz" artifacts/libaxton_dart-* release/
+          node scripts/release/manifest.mjs write release --packed dist/release/packed.json --commit "$GITHUB_SHA"
+      - name: The Dart package passes pub's checks
+        run: |
+          package="$RUNNER_TEMP/axton"
+          mkdir "$package"
+          tar -xzf "release/axton-dart-$VERSION.tar.gz" -C "$package"
+          dart pub publish --dry-run --directory "$package"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  verify-staged:
+    needs: [version, pack]
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - name: PostgreSQL tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+      - name: PostgreSQL tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: release
+      - run: bash integration/release/verify-installed.sh release
+      - run: bash integration/release/verify-dart.sh release
+
+  assets:
+    needs: [version, verify, verify-staged]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: release
+      - name: A public prerelease for the tag
+        run: |
+          # release-please created it; a tag pushed by hand has none yet.
+          if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            if [[ "$draft" != *"release not found"* ]]; then
+              echo "$draft"
+              exit 1
+            fi
+            gh release create "$TAG" --verify-tag --prerelease --title "$TAG" --notes "AXTON $VERSION"
+          elif [[ "$draft" == true ]]; then
+            echo "::error::the $TAG release is a draft; its assets must be public"
+            exit 1
+          fi
+      - name: Attach the release files
+        run: |
+          attached="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          attach() {
+            if grep -qxF "$1" <<<"$attached"; then
+              gh release download "$TAG" --pattern "$1" --dir "$RUNNER_TEMP/attached"
+              if ! cmp -s "$1" "$RUNNER_TEMP/attached/$1"; then
+                echo "::error::$TAG already has a different $1; a retry must not rebuild (re-run failed jobs only)"
+                exit 1
+              fi
+              echo "already attached: $1"
+            else
+              gh release upload "$TAG" "$1"
+            fi
+          }
+          cd release
+          for file in *; do
+            [[ "$file" == release-manifest.json ]] || attach "$file"
+          done
+          # The manifest goes last: once it is attached, every file is.
+          attach release-manifest.json
+      - name: Anyone can download them
+        run: |
+          file="libaxton_dart-$VERSION-linux-x64-gnu.so"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/anonymous" \
+            "https://github.com/$GH_REPO/releases/download/$TAG/$file"
+          cmp "$RUNNER_TEMP/anonymous" "release/$file"
+
+  publish-npm:
+    needs: [version, assets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - name: npm supports trusted publishing
+        run: |
+          # shellcheck disable=SC2016 # single-quoted JavaScript
+          node -e '
+            const [major, minor, patch] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+              console.error(`npm ${process.argv[1]} cannot publish with trusted publishing; it needs 11.5.1 or later`);
+              process.exit(1);
+            }' "$(npm --version)"
+      - name: The release's files
+        run: |
+          gh release download "$TAG" --dir release
+          node scripts/release/manifest.mjs verify release
+      - name: Publish in dependency order under the alpha tag
+        run: |
+          node scripts/release/manifest.mjs npm release >"$RUNNER_TEMP/plan"
+          cat "$RUNNER_TEMP/plan"
+          while read -r action file; do
+            [[ "$action" == publish ]] || continue
+            # ./ keeps npm from reading release/<file> as a GitHub repository.
+            if ! npm publish "./release/$file" --tag alpha --access public; then
+              echo "::error::npm publish $file failed. Before a package's first release, configure trusted publishing: publish this release's archives by hand, add the trusted publisher, then re-run this job (docs/engineering/releasing.md)."
+              exit 1
+            fi
+          done <"$RUNNER_TEMP/plan"
+
+  publish-dart:
+    needs: [version, assets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      # With id-token: write, setup-dart provisions the pub.dev token.
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - name: The release's files
+        run: |
+          gh release download "$TAG" --dir release
+          node scripts/release/manifest.mjs verify release
+      - name: Publish the staged package
+        run: |
+          state="$(node scripts/release/manifest.mjs pub release)"
+          echo "$state axton $VERSION"
+          [[ "$state" == publish ]] || exit 0
+          package="$RUNNER_TEMP/axton"
+          mkdir "$package"
+          tar -xzf "release/axton-dart-$VERSION.tar.gz" -C "$package"
+          if ! dart pub publish --force --directory "$package"; then
+            echo "::error::dart pub publish failed. Before the package's first release, configure automated publishing: publish this release's package by hand, enable automated publishing on pub.dev, then re-run this job (docs/engineering/releasing.md)."
+            exit 1
+          fi
+
+  verify-published:
+    needs: [version, publish-npm, publish-dart]
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: ${{ env.DART_VERSION }}
+      - name: PostgreSQL tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+      - name: PostgreSQL tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          echo /usr/lib/postgresql/16/bin >> "$GITHUB_PATH"
+      - name: Wait until the registries serve the version
+        run: |
+          # shellcheck disable=SC2016 # single-quoted JavaScript
+          packages="$(node -p 'require("./scripts/release/targets.json").host.flatMap((t) => [`native-${t.name}`, `cli-${t.name}`]).concat(["native", "cli", "server", "client", "postgres"]).join(" ")')"
+          # A new version can take npm well over ten minutes to serve.
+          for _ in $(seq 90); do
+            missing=""
+            for package in $packages; do
+              npm view --prefer-online "@axtonjs/$package@$VERSION" version >/dev/null 2>&1 || missing+=" @axtonjs/$package"
+            done
+            curl --fail --silent --output /dev/null "https://pub.dev/api/packages/axton/versions/$VERSION" || missing+=" axton (pub.dev)"
+            [[ -z "$missing" ]] && exit 0
+            echo "waiting for:$missing"
+            sleep 20
+          done
+          echo "::error::not served after 30 minutes:$missing"
+          exit 1
+      - run: bash integration/release/verify-installed.sh --registry "$VERSION"
+      - run: bash integration/release/verify-dart.sh --registry "$VERSION"
+
+  complete:
+    needs: [version, verify-published]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: gh release edit "$TAG" --prerelease=false

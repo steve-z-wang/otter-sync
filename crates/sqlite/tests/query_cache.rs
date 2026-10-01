@@ -982,3 +982,163 @@ fn saved_results_survive_reopen_but_active_flights_do_not() {
     );
     assert_eq!(client.pending_count().unwrap(), 0);
 }
+
+#[test]
+fn delayed_query_once_stores_result_without_resurrecting_models_and_cache_hit_stays_inert() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = open(&path);
+    let record = AuthorityRecord {
+        model: "Todo".into(),
+        identity: json!({"id":"a"}),
+        stamp: 7,
+        state: json!({"title":"base"}),
+        error: None,
+    };
+    let todo = RecordKey {
+        model: "Todo".into(),
+        identity: json!({"id":"a"}),
+    };
+    let sub = c.ensure_subscription("a").unwrap();
+    c.initialize_subscriptions(
+        &[("a".into(), sub.subscription_id)].into(),
+        &[("a".into(), 0)].into(),
+    )
+    .unwrap();
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 0,
+                to: 1,
+                head: 1,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Upsert {
+            scope: "a".into(),
+            cursor: 1,
+            record,
+        }],
+    })
+    .unwrap();
+    let (flight, request) = fetch(begin(&mut c, false));
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 1,
+                to: 2,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
+            cursor: 2,
+            key: todo.clone(),
+        }],
+    })
+    .unwrap();
+    let report = c
+        .finish_query_once(&flight, &succeeded(&request, "late", 99))
+        .unwrap();
+    assert_eq!(report.applied, 0, "old Query body must be fenced");
+    assert_eq!(report.completions.len(), 1);
+    assert!(c.read(&todo).unwrap().is_none());
+    drop(c);
+    let mut c = open(&path);
+    assert_eq!(cached(begin(&mut c, false)), titled("late"));
+    assert!(
+        c.read(&todo).unwrap().is_none(),
+        "cache hit never replays authority"
+    );
+    let (flight, request) = fetch(begin(&mut c, true));
+    c.finish_query_once(&flight, &succeeded(&request, "fresh", 7))
+        .unwrap();
+    assert_eq!(c.read(&todo).unwrap().unwrap()["title"], "fresh");
+}
+
+#[test]
+fn plain_direct_query_uses_frozen_epoch_and_stale_claim_cannot_bypass_fresh_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    let sub = c.ensure_subscription("a").unwrap();
+    c.initialize_subscriptions(
+        &[("a".into(), sub.subscription_id)].into(),
+        &[("a".into(), 0)].into(),
+    )
+    .unwrap();
+    let todo = RecordKey {
+        model: "Todo".into(),
+        identity: json!({"id":"a"}),
+    };
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 0,
+                to: 1,
+                head: 1,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Upsert {
+            scope: "a".into(),
+            cursor: 1,
+            record: AuthorityRecord {
+                model: "Todo".into(),
+                identity: todo.identity.clone(),
+                stamp: 7,
+                state: json!({"title":"base"}),
+                error: None,
+            },
+        }],
+    })
+    .unwrap();
+    let old = c.prepare_action("GetTodos", 1, args()).unwrap();
+    c.apply_scope_page(ScopePullPage {
+        cursors: [(
+            "a".into(),
+            CursorRange {
+                from: 1,
+                to: 2,
+                head: 2,
+            },
+        )]
+        .into(),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
+            cursor: 2,
+            key: todo.clone(),
+        }],
+    })
+    .unwrap();
+    let report = c
+        .apply_action_response(&old, &succeeded(&old, "late", 99))
+        .unwrap();
+    assert_eq!(report.applied, 0);
+    assert_eq!(report.completions.len(), 1);
+    assert!(c.read(&todo).unwrap().is_none());
+    let fresh = c.prepare_action("GetTodos", 1, args()).unwrap();
+    let mut response: Value =
+        serde_json::from_slice(&succeeded(&fresh, "stale enrollment", 99)).unwrap();
+    response["memberships"] =
+        json!([{"scope":"a","cursor":1,"model":"Todo","identity":{"id":"a"}}]);
+    let report = c
+        .apply_action_response(&fresh, &serde_json::to_vec(&response).unwrap())
+        .unwrap();
+    assert_eq!(report.applied, 0);
+    assert!(c.read(&todo).unwrap().is_none());
+    let fresh = c.prepare_action("GetTodos", 1, args()).unwrap();
+    let mut response: Value = serde_json::from_slice(&succeeded(&fresh, "restored", 7)).unwrap();
+    response["memberships"] =
+        json!([{"scope":"a","cursor":3,"model":"Todo","identity":{"id":"a"}}]);
+    assert_eq!(
+        c.apply_action_response(&fresh, &serde_json::to_vec(&response).unwrap())
+            .unwrap()
+            .applied,
+        1
+    );
+    assert_eq!(c.read(&todo).unwrap().unwrap()["title"], "restored");
+}

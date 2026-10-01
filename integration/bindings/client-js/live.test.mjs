@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { WebSocketServer } from '../../../packages/server/node_modules/ws/wrapper.mjs';
+import { WebSocketServer } from 'ws';
 import * as runtime from '../../../packages/client-js/index.mts';
 import {createServerConnection} from '../../../packages/client-js/live.mts';
 
 const timeout = (p) => Promise.race([p, new Promise((_, reject) => { const t = setTimeout(() => reject(Error('timeout')), 3000); t.unref(); })]);
 
-const subscribe = JSON.stringify({type:'subscribe',channels:['scope']});
-// The acknowledgement carries every channel's head; `heads` is the fake server's state.
-const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.channels.map(c=>[c,heads[c]??0]))});
+const subscribe = JSON.stringify({type:'subscribe',scopes:['scope']});
+// The acknowledgement carries every scope's head; `heads` is the fake server's state.
+const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.scopes.map(c=>[c,heads[c]??0]))});
 const handlers = (over = {}) => ({ message: async () => {}, overflow: async () => {}, closed: () => {}, ...over });
 
 test('internal socket sends the subscribe frame, delivers frames in order, and cancellation ends the socket', async () => {
@@ -25,7 +25,7 @@ test('internal socket sends the subscribe frame, delivers frames in order, and c
     const [socket, request] = await timeout(connected);
     assert.equal(request.headers.authorization,'Bearer secret');
     const [message] = await timeout(once(socket,'message'));
-    assert.deepEqual(JSON.parse(message),{type:'subscribe',channels:['scope']});
+    assert.deepEqual(JSON.parse(message),{type:'subscribe',scopes:['scope']});
     const closed = once(socket,'close');
     socket.send(ack(JSON.parse(message)));
     socket.send(JSON.stringify({cursors:{scope:{from:12,to:13,head:13}},changes:[]}));
@@ -65,8 +65,8 @@ async function openClient() {
 }
 // `stamp` defaults to the cursor; a page for a record the client already holds at that
 // stamp must carry a newer one, because retained content is compared by stamp alone.
-const page = (text, cursor=0, stamp=cursor+1, head=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head}},changes:[{model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
-// An HTTP answer that moves every requested channel to `head` with no changes.
+const page = (text, cursor=0, stamp=cursor+1, head=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head}},changes:[{scope:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
+// An HTTP answer that moves every requested scope to `head` with no changes.
 const emptyPage=(b,head)=>({cursors:Object.fromEntries(Object.entries(b.cursors).map(([c,n])=>[c,{from:n,to:Math.max(n,head?.[c]??n),head:Math.max(n,head?.[c]??n)}])),changes:[]});
 // A fake push receipt in the wire shape the client accepts: it answers the batch it
 // was asked (clientId and batchSequence echoed) and carries the authoritative state
@@ -94,8 +94,10 @@ async function until(predicate) {
 test('client replaces subscriptions from saved cursors and guards queued obsolete pages', async()=>{
  const fixture=await openClient(); const {client}=fixture; const errors=[];
  const pulls=[];let answer='empty';const heads={scope:0};
- const http=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));pulls.push(body);
-  if(answer==='published')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:3,head:3}},changes:[{model:'Entry',identity:{id:'live'},stamp:4,state:{text:'published while offline',note:null}}]}));
+ const http=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));
+  if(body.mode==='bootstrap'){res.end(JSON.stringify({mode:'bootstrap',scope:body.scope,from:body.after,to:body.until,until:body.until,head:heads.scope,changes:body.until>body.after?[page('first').changes[0]]:[]}));return;}
+  pulls.push(body);
+  if(answer==='published')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:3,head:3}},changes:[{scope:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:4,state:{text:'published while offline',note:null}}]}));
   else if(answer==='recovered')res.end(JSON.stringify({cursors:{scope:{from:body.cursors.scope,to:11,head:11}},changes:[page('recovered',10).changes[0]]}));
   else res.end(JSON.stringify(emptyPage(body,heads)));});
  await new Promise(r=>http.listen(0,'127.0.0.1',r));
@@ -303,16 +305,16 @@ test('HTTP catch-up failures surface and retry without treating the failure as a
  }finally{await fixture.close();await network.close();}
 });
 
-test('a reusable server config isolates cancellation and no-channel clients only push',async()=>{
+test('a reusable server config isolates cancellation and no-scope clients only push',async()=>{
  const a=await openClient(),b=await openClient();const network=await syncFixture((body,res)=>res.end(JSON.stringify(emptyPage(body))),{scope:0});
  try{
   const ca=await a.client.connect(network.config);await b.client.subscribe('scope');const cb=await b.client.connect(network.config);
   await until(()=>network.handshakes.length===1,'only the client with a Scope opens a socket, and its page follows the acknowledgement');
   network.sockets[0].send(JSON.stringify(page('shared')));
   await until(async()=>(await b.client.read('Entry',{id:'live'}))?.text==='shared');assert.equal(network.sockets.length,1);
-  await a.client.mutate({name:'Create',operations:[{model:'Entry',op:'create',identity:{id:'local'},values:{text:'  push without channels  ',note:null}}]});
+  await a.client.mutate({name:'Create',operations:[{model:'Entry',op:'create',identity:{id:'local'},values:{text:'  push without scopes  ',note:null}}]});
   await until(async()=>(await a.client.syncState()).pending===0);assert.equal(network.requests.filter(r=>r.url==='/sync/mutations').length,1);assert.equal(network.sockets.length,1);
-  assert.equal((await a.client.read('Entry',{id:'local'})).text,'push without channels','the receipt alone completes the batch and the row shows the server-returned state; no channel is involved');
+  assert.equal((await a.client.read('Entry',{id:'local'})).text,'push without scopes','the receipt alone completes the batch and the row shows the server-returned state; no scope is involved');
   assert.deepEqual(network.requests.find(r=>r.url==='/sync/mutations').body.models,{Entry:1},'the push declares the read contracts its receipt is served at');
   await ca.close();network.sockets[0].send(JSON.stringify(page('still connected',1)));
   await until(async()=>(await b.client.read('Entry',{id:'live'}))?.text==='still connected');await cb.close();
@@ -340,7 +342,7 @@ test('an unsubscribe waiting on SQLite leaves the socket alone; the committed ch
   await until(()=>network.sockets.every(s=>s.readyState===s.CLOSED),'the committed change ends the session');
   await new Promise(r=>setTimeout(r,50));
   assert.equal(network.sockets.length,1,'with no Scope left the lane opens nothing');
-  assert.deepEqual((await fixture.client.syncState()).channels,[]);
+  assert.deepEqual((await fixture.client.syncState()).scopes,[]);
  }finally{gate.resolve();token.resolve('secret');await fixture.close();await network.close();}
 });
 
@@ -405,7 +407,7 @@ test('a 401 on both lanes at once shares one refreshAuth; both lanes recover wit
  let token='expired',refreshes=0,unauthorized=0,pushes=0,accepted=0,release;const gate=new Promise(r=>{release=r;});const stamps={next:0};
  const server=createServer(async(req,res)=>{const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));
   if(req.headers.authorization!=='Bearer valid'){unauthorized++;res.statusCode=401;res.end();return;}
-  // The receipt names no channel: the push completes on its own, whatever the live lane is doing.
+  // The receipt names no scope: the push completes on its own, whatever the live lane is doing.
   if(req.url==='/sync/mutations'){pushes++;res.end(JSON.stringify(receiptFor(body,stamps)));return;}
   res.end(JSON.stringify(emptyPage(body)));});
  const ws=new WebSocketServer({noServer:true});
@@ -445,7 +447,7 @@ test('a socket the server closes is reconnected after the backoff, resubscribed,
   assert.ok(waited>=180,`the reconnect waited ${waited} ms; the first retry is due 250 ms later, minus 20% jitter`);
   assert.ok(errors.some(e=>/live disconnected: 1001/.test(String(e.message))),`the close reaches onError: ${errors.map(e=>e.message)}`);
   await until(()=>subscribes.length===2);
-  assert.deepEqual(subscribes[1],{type:'subscribe',channels:['scope'],models:{Entry:1}},'the new socket subscribes again without an application event, declaring its read contracts');
+  assert.deepEqual(subscribes[1],{type:'subscribe',scopes:['scope'],models:{Entry:1},capabilities:['scope-membership-v1']},'the new socket subscribes again without an application event, declaring its read contracts');
   sockets[1].send(JSON.stringify(page('after reconnect',0)));
   await until(async()=>(await client.read('Entry',{id:'live'}))?.text==='after reconnect');
   assert.equal(upgrades.length,2,'one reconnect; no busy loop');
@@ -479,8 +481,8 @@ test('what a page cannot apply reaches onError as an AxtonReport: read failures,
   network.sockets[0].send(JSON.stringify(page('first')));
   await until(async()=>(await client.read('Entry',{id:'live'}))?.text==='first');
   network.sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:3,head:3}},changes:[
-   {model:'Entry',identity:{id:'live'},stamp:9,error:'loader.failed'},
-   {model:'Entry',identity:{id:'bad'},stamp:2,state:{text:5,note:null}},
+   {scope:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:9,error:'loader.failed'},
+   {scope:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'bad'},stamp:2,state:{text:5,note:null}},
   ]}));
   await until(()=>errors.length===2);
   assert.ok(errors.every(e=>e instanceof runtime.AxtonReport));
@@ -507,7 +509,7 @@ test('a queued edit whose replay fails over new authority is reported as diverge
   await client.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'live'},values:{text:'edited offline'}}]});
   assert.equal((await client.read('Entry',{id:'live'})).text,'edited offline');
   // The server deleted the record: the update cannot replay over nothing.
-  sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:2,head:2}},changes:[{model:'Entry',identity:{id:'live'},stamp:2,state:null}]}));
+  sockets[0].send(JSON.stringify({cursors:{scope:{from:1,to:2,head:2}},changes:[{scope:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:2,state:null}]}));
   await until(()=>errors.some(e=>e instanceof runtime.AxtonReport));
   const diverged=errors.find(e=>e instanceof runtime.AxtonReport);
   assert.equal(diverged.kind,'diverged');assert.equal(typeof diverged.ordinal,'number');assert.deepEqual(diverged.identity,{id:'live'});

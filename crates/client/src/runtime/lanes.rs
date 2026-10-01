@@ -746,6 +746,21 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
             }
             DownlinkAction::Bootstrap(state) => self.observe_run(state),
+            DownlinkAction::Reconciliation(state) => {
+                if state.state == crate::BootstrapPhase::Complete
+                    && self.lanes.downlink.stream_acknowledged()
+                    && self
+                        .client
+                        .subscription_state(&state.scope)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|subscription| {
+                            subscription.subscription_id == state.subscription_id
+                        })
+                {
+                    self.acknowledged(vec![state.scope]);
+                }
+            }
             // The replica was rebuilt: the runtime already cancelled the old
             // replica's lane effects when it reset the worker; whatever is
             // still held for it goes now, before the worker opens or requests
@@ -763,8 +778,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // A stored Bootstrap row the ledger cannot decode: the application
             // hears about the contained registration once per unchanged
             // defect; no status transition accompanies it (#163).
-            DownlinkAction::LedgerIssue { channel, message } => {
-                self.error(format!("bootstrap ledger {channel}: {message}"));
+            DownlinkAction::LedgerIssue { scope, message } => {
+                self.error(format!("bootstrap ledger {scope}: {message}"));
             }
             DownlinkAction::Wake { .. } => self.wake_push(),
             DownlinkAction::Report { reports } => self.report(Diagnostic::Records { reports }),

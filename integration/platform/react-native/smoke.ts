@@ -90,7 +90,7 @@ export async function runSmoke(show: (message: string) => void) {
     // ([#150](https://github.com/zanminwang/axton/issues/150)). The explicit
     // load is what brings it ([#151](https://github.com/zanminwang/axton/issues/151));
     // it registers its work when the call is made and runs in the background.
-    const subscription = await current.channels.subscribe("book:demo");
+    const subscription = await current.scopes.subscribe("book:demo");
     subscription
       .bootstrap()
       .catch((error) => console.log("bootstrap:", String(error)));

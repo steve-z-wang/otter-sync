@@ -112,11 +112,6 @@ class TxModels { final WritePort port; TxModels(this.port);
 class Scopes { final Client client; Scopes(this.client);
  Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);
 }
-/// The retained `channels` spelling of the same registrations; `scopes` is the current one.
-class Channels { final Client client; Channels(this.client);
- Future<Subscription> subscribe(String channel) => client.subscribe(channel);
- Future<void> unsubscribe(String channel) => client.unsubscribe(channel);
-}
 /// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Entry?> entry(EntryIdentity identity, {bool store = true}) => _client.fetchModel('Entry', 1, identity.toRecord(), Entry.fromRecord, store: store);
@@ -129,12 +124,11 @@ class StoreHooks {
  final StoreHandler<EntryIdentity,Entry>? entry;
  const StoreHooks({this.entry});
 }
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final channels = transaction.channels; GeneratedTransaction(this.transaction); }
+class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final scopes = transaction.scopes; GeneratedTransaction(this.transaction); }
 class GeneratedClient {
  /// The runtime handle (internal); application code uses the members below.
  final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
  late final Scopes scopes = Scopes(client);
- late final Channels channels = Channels(client);
  /// Each legacy mutation runs in its own local transaction and returns its ordinal.
  late final Mutate mutate = Mutate(client);
  /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.

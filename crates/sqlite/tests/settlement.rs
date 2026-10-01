@@ -1,6 +1,6 @@
 //! Completion from the receipt ([#55]): a successful response carries the
 //! authoritative records the framework read back, so the batch completes on
-//! arrival and no channel is awaited. Each test asserts the visible records,
+//! arrival and no scope is awaited. Each test asserts the visible records,
 //! the pending work and the retained stamp evidence.
 //!
 //! [#55]: https://github.com/zanminwang/axton/issues/55
@@ -32,7 +32,7 @@ fn assert_quiet(c: &mut Client<axton_sqlite::SqliteStore>) {
 }
 
 /// The plan's acceptance test: an update completes from its response alone,
-/// with the server's normalized value, while the client follows no channel.
+/// with the server's normalized value, while the client follows no scope.
 #[test]
 fn response_completes_without_a_subscription() {
     let dir = tempfile::tempdir().unwrap();
@@ -129,11 +129,11 @@ fn clean_extra_authority_is_written_and_kept() {
     assert_quiet(&mut c);
 }
 
-/// Channel first: the page delivers the same authority before the response.
+/// Scope first: the page delivers the same authority before the response.
 /// The response compares equal against the held base, not the optimistic
 /// row, so it reports no conflict and still clears the completed operation.
 #[test]
-fn channel_first_then_receipt_dedups_and_still_completes() {
+fn scope_first_then_receipt_dedups_and_still_completes() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "book");
@@ -161,7 +161,7 @@ fn channel_first_then_receipt_dedups_and_still_completes() {
 /// Receipt first: the later page carries the same stamp and content and
 /// rewrites nothing; its cursor still advances.
 #[test]
-fn receipt_first_then_channel_is_a_no_op_that_advances_the_cursor() {
+fn receipt_first_then_scope_is_a_no_op_that_advances_the_cursor() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "book");
@@ -184,10 +184,10 @@ fn receipt_first_then_channel_is_a_no_op_that_advances_the_cursor() {
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "B");
 }
 
-/// Newer authority that arrived through a channel before the response is not
+/// Newer authority that arrived through a scope before the response is not
 /// replaced by the response's older stamp; the operation still completes.
 #[test]
-fn newer_channel_authority_is_not_regressed_by_an_older_response() {
+fn newer_scope_authority_is_not_regressed_by_an_older_response() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "book");
@@ -1361,8 +1361,7 @@ fn a_wire_cascade_keeps_its_place_before_later_operations_of_the_same_call() {
 fn a_pending_wire_delete_still_hides_a_delivered_child_of_a_parent_recreated_by_a_later_call() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = family_start(&dir.path().join("db"));
-    c.transaction(|tx| tx.set_channel("a".into(), true))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
     acknowledge(&mut c, &[("a", 0)]);
     let mut delete = Mutation::new("Delete", vec![book_delete("b")]);
     delete.prerequisites.push("hold".into());

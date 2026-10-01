@@ -6,6 +6,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
 import { prisma } from "../../../packages/postgres/index.mts";
+import { sqlStatements } from "../../../packages/postgres/src/statements.mts";
 import {
   createBackend,
   devAuth,
@@ -17,11 +18,11 @@ import {
 const db = new PrismaClient();
 const calls = { add: 0, edit: 0 };
 const handlers: Handlers<Prisma.TransactionClient> = {
-  async addEntry({ input, tx, channel }) {
+  async addEntry({ input, tx, scope: scope }) {
     calls.add++;
     await tx.entry.create({ data: input.entry });
-    // A new Entry joins the Channel once; its later edits reach it with no enrollment.
-    channel("book:demo").entry.add(input.entry);
+    // A new Entry joins the Scope once; its later edits reach it with no enrollment.
+    scope("book:demo").add.entry(input.entry);
   },
   async edit({ input, tx }) {
     calls.edit++;
@@ -53,22 +54,19 @@ const migration = await readFile(
   ),
   "utf8",
 );
-for (const sql of migration
-  .split(";")
-  .map((x) => x.trim())
-  .filter(Boolean))
-  await db.$executeRawUnsafe(sql);
+// Prisma runs one statement per call.
+for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
 await db.$executeRawUnsafe(
   'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
 );
-await backend.transaction(async ({ tx, channel, touch }) => {
+await backend.transaction(async ({ tx, scope: scope, touch }) => {
   await tx.entry.upsert({
     where: { id: "entry-1" },
     create: { id: "entry-1", text: "seed", note: null },
     update: {},
   });
   touch.entry({ id: "entry-1" });
-  channel("book:demo").entry.add({ id: "entry-1" });
+  scope("book:demo").add.entry({ id: "entry-1" });
 });
 const started = await backend.listen({ port: 0, host: "127.0.0.1" });
 const target = new URL(started.url);

@@ -1,5 +1,6 @@
 //! Per-invocation `store` policy: which explicit Model outputs contribute
 //! additional authority, on both routes, with saved replay and identity.
+mod capability;
 use axton_server::{Config, Host, HostResult, process_action, process_action_push};
 use serde_json::{Value, json};
 use std::{
@@ -155,7 +156,7 @@ impl Host for StoreHost {
                     state.stamps.insert(key, stamp);
                     json!(stamp)
                 }
-                // No Todo belongs to a Channel here.
+                // No Todo belongs to a Scope here.
                 "memberships" => json!([]),
                 "load" => {
                     let version = request["version"].as_u64().unwrap();
@@ -231,7 +232,7 @@ fn push(host: &StoreHost, sequence: u64, calls: Vec<Value>) -> Value {
         &run(process_action_push(
             &config(),
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             host,
         ))
         .unwrap(),
@@ -411,7 +412,7 @@ fn saved_replay_returns_original_result_and_changed_policy_conflicts() {
         &run(process_action_push(
             &config(),
             "alice",
-            raw.as_bytes(),
+            &crate::capability::request(raw.as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -482,7 +483,7 @@ fn invalid_store_key_rejects_only_its_own_call_before_the_handler() {
         run(process_action_push(
             &config(),
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host
         ))
         .is_err()
@@ -501,7 +502,7 @@ fn direct_route_honours_store_and_replays_saved_authority() {
         &run(process_action(
             &config(),
             "alice",
-            direct(Some(json!({"mainTodo":false}))).as_bytes(),
+            &crate::capability::request(direct(Some(json!({"mainTodo":false}))).as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -517,7 +518,7 @@ fn direct_route_honours_store_and_replays_saved_authority() {
         &run(process_action(
             &config(),
             "alice",
-            direct(Some(json!({"mainTodo":false}))).as_bytes(),
+            &crate::capability::request(direct(Some(json!({"mainTodo":false}))).as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -529,7 +530,7 @@ fn direct_route_honours_store_and_replays_saved_authority() {
         &run(process_action(
             &config(),
             "alice",
-            direct(None).as_bytes(),
+            &crate::capability::request(direct(None).as_bytes()),
             &host,
         ))
         .unwrap(),

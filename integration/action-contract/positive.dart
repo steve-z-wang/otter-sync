@@ -265,7 +265,7 @@ Future<void> useTransactions(GeneratedClient client) async {
   // A business input named `store` stays apart from the store selector.
   final Call<OpenTodoOutput> opened = await client.transaction((tx) => tx.mutations.openTodo(store: 'business', outputStore: const OpenTodoStore.none()));
   final Call<PingOutput> pinged = await client.transaction((tx) => tx.mutations.ping(store: const PingStore.none()));
-  final int plain = await client.transaction((tx) async { await tx.channels.subscribe('todos'); return 1; });
+  final int plain = await client.transaction((tx) async { await tx.scopes.subscribe('todos'); return 1; });
   await client.transaction((tx) => tx.models.todo.delete(identity));
   final CallOutcome<AddTodoOutput> outcome = await one.wait();
   if (outcome is CallSuccess<AddTodoOutput>) outcome.result.count;

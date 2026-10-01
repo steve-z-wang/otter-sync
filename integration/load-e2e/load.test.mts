@@ -75,7 +75,7 @@ const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
 const post = async (body: unknown) => {
-  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["scope-membership-v1"] }) });
   assert.equal(response.status, 200);
   return (await response.json()) as { loads: LoadResponseItem[] };
 };
@@ -582,6 +582,279 @@ test("a failed refresh stays failed for once callers, never the earlier completi
   }
 });
 
+// ---- Scope enrollment from a Load ----
+// Items seeded here bypass every Mutation, so they belong to no Scope until
+// a Load that `fixture.enrolling` names adds the records it returns to
+// `items:${project}`. Each reader subscribes first and waits for the
+// subscription's persisted initialization before loading: `subscribe()` alone
+// is local intent, and the first handshake is the gap-free boundary.
+
+/** A client subscribed to `scope`, once its first handshake is persisted. */
+const subscribed = async (name: string, scope: string) => {
+  const directory = await scratch(name);
+  const client = await GeneratedClient.open({ path: directory.path, server: server(), onStore: hooks });
+  const subscription = await client.scopes.subscribe(scope);
+  await wait(() => subscription.status.initialization === "ready", `${scope} initialized`);
+  return { client, cleanup: async () => { await client.close(); await directory.cleanup(); } };
+};
+const titleOf = async (client: GeneratedClient, id: string) => (await client.models.item.get({ id }))?.title;
+/** Exchanges that could carry records other than a Scope's: Loads and Fetches. */
+const reads = () => proxy.exchanges.filter((exchange) => exchange.path === "/sync/loads" || exchange.path === "/sync/fetch").length;
+
+test("a Load enrolls the records it returns; a later touch or Mutation reaches the subscribed client through its Scope with no second add", async () => {
+  const ids = await fixture.seed("enr", 3);
+  const [tag] = await fixture.seedTags("enr", ["red"]);
+  fixture.enrolling.add("enr");
+  const reader = await subscribed("enroll", "items:enr");
+  const writerPath = await scratch("enroll-writer");
+  let writer: GeneratedClient | undefined;
+  const snapshots: string[][] = [];
+  let stop = () => {};
+  try {
+    const { client } = reader;
+    stop = client.models.item.watch({ where: { project: "enr" } }, (rows) => snapshots.push(rows.map((row) => `${row.id}:${row.title}`).sort()));
+    const load = await client.loads.projectItems({ project: "enr" });
+    await load.wait();
+    assert.deepEqual(await titles(client, "enr"), ids.map((id) => `${id}:${id} title`));
+    const before = reads();
+
+    await fixture.retitle("enr-2", "touched");
+    await wait(() => snapshots.at(-1)?.includes("enr-2:touched") === true, "the touch through the Scope and the Model watch");
+    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
+    await writer.mutations.call.renameItem({ item: { id: "enr-3", title: "renamed" } });
+    await wait(() => snapshots.at(-1)?.includes("enr-3:renamed") === true, "the Mutation's inferred change through the Scope");
+    await fixture.relabel(tag!, "blue");
+    await wait(async () => (await client.models.tag.get({ id: tag! }))?.label === "blue", "the Tag the mixed-list add enrolled");
+    assert.equal(reads(), before, "no Load or Fetch carried them: only the Scope");
+    assert.deepEqual(snapshots.at(-1), ["enr-1:enr-1 title", "enr-2:touched", "enr-3:renamed"]);
+    assert.deepEqual(await seen(client), { "enr-1": 1, "enr-2": 2, "enr-3": 2 }, "a record the page and its enrollment both delivered was stored once; each later change once more");
+  } finally {
+    fixture.enrolling.delete("enr");
+    stop();
+    await writer?.close();
+    await reader.cleanup();
+    await writerPath.cleanup();
+  }
+});
+
+test("native Load enrollment releases live content durably and a second Scope hold prevents eviction", async () => {
+  const directory = await scratch("load-release");
+  await fixture.seed("release", 2);
+  fixture.enrolling.add("release");
+  fixture.enrollmentTags.set("release", [["X"]]);
+  let client = await GeneratedClient.open({ path: directory.path, server: server() });
+  try {
+    const first = await client.scopes.subscribe("items:release");
+    const second = await client.scopes.subscribe("items:release-other");
+    await wait(() => first.status.initialization === "ready" && second.status.initialization === "ready", "both Scopes initialized");
+    await (await client.loads.projectItems({ project: "release" })).wait();
+    await fixture.membership("release-2", "items:release-other", true);
+    await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
+    const hooks = await seen(client);
+    await fixture.backend.transaction(async ({scope}) => {
+      scope("items:release").where({tags: {only: ["X"]}}).remove();
+      scope("items:release").tag("X").remove();
+    });
+    await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
+    await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Scope removals persisted before checking the second hold");
+    assert.ok(await client.models.item.get({ id: "release-2" }), "second Scope keeps content");
+    assert.deepEqual(await seen(client), hooks, "withdrawals do not invoke onStore");
+    await fixture.backend.transaction(async ({scope}) => scope("items:release-other").where({tags: {only: []}}).remove());
+    await wait(async () => (await client.models.item.get({ id: "release-2" })) === null, "last Scope release evicts B");
+    await client.close();
+    client = await GeneratedClient.open({ path: directory.path });
+    assert.equal(await client.models.item.get({ id: "release-1" }), null, "release persists across offline reopen");
+    assert.equal(await client.models.item.get({ id: "release-2" }), null, "last hold release persists offline");
+  } finally {
+    fixture.enrolling.delete("release");
+    fixture.enrollmentTags.delete("release");
+    await client.close();
+    await directory.cleanup();
+  }
+});
+
+test("a delayed enrolled Load response and its durable replay cannot restore or re-enroll a released member", async () => {
+  await fixture.seed("released-page", 2);
+  fixture.enrolling.add("released-page");
+  fixture.enrollmentTags.set("released-page", [["X"], ["Y"]]);
+  const reader = await subscribed("released-page", "items:released-page");
+  const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "released-page" && item.continuation === null));
+  try {
+    const { client } = reader;
+    const load = await client.loads.projectItems({ project: "released-page" });
+    const exchange = await held.arrived;
+    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Scope enrollment delivered while the Load response was held");
+    await fixture.backend.transaction(async ({scope}) => {
+      scope("items:released-page").where({tags: {only: ["X", "Y"]}}).remove();
+      scope("items:released-page").tag("X").remove();
+    });
+    await wait(async () => (await client.models.item.get({ id: "released-page-1" })) === null, "newer live removal committed before the old claim");
+    const runs = fixture.handled.length;
+    const head = await fixture.head("items:released-page");
+    held.release();
+    await load.wait();
+    assert.equal(await client.models.item.get({ id: "released-page-1" }), null, "older enrolled page cannot resurrect released content");
+    // Replay the same committed first-page HTTP request through production admission.
+    const replay = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer alice" }, body: exchange.body });
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), JSON.parse(exchange.response!), "saved reply retains its original claims");
+    assert.equal(fixture.handled.length, runs + 1, "only the traversal's final empty page ran; durable replay ran no handler");
+    assert.equal(await fixture.head("items:released-page"), head, "replayed page did not re-enroll or publish");
+    const members = await fixture.pool.query("SELECT 1 FROM axton_scope_member AS m JOIN axton_record AS r ON r.id=m.record_id WHERE m.scope=$1 AND r.model='Item' AND r.identity_key=$2", ["items:released-page", JSON.stringify({ id: "released-page-1" })]);
+    assert.equal(members.rowCount, 0, "server membership remains released");
+    assert.deepEqual(await fixture.taggedMembers("items:released-page"), [], "saved replay did not restore labels");
+    const fresh = await client.loads.projectItems({project: "released-page"});
+    assert.notEqual(fresh.id, load.id);
+    await fresh.wait();
+    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "fresh traversal re-enrolls the released row");
+    const labeled = await fixture.pool.query("SELECT r.identity_key,t.name FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id JOIN axton_scope_member_tag mt ON mt.member_id=m.id JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 ORDER BY r.identity_key,t.name", ["items:released-page"]);
+    assert.deepEqual(labeled.rows, [
+      {identity_key: JSON.stringify({id: "released-page-1"}), name: "X"},
+      {identity_key: JSON.stringify({id: "released-page-1"}), name: "Y"},
+      {identity_key: JSON.stringify({id: "released-page-2"}), name: "X"},
+      {identity_key: JSON.stringify({id: "released-page-2"}), name: "Y"},
+    ]);
+    await fixture.retitle("released-page-1", "fresh touch");
+    await wait(async () => (await titleOf(client, "released-page-1")) === "fresh touch", "fresh enrollment receives later touches");
+  } finally {
+    held.release();
+    fixture.enrolling.delete("released-page");
+    fixture.enrollmentTags.delete("released-page");
+    await reader.cleanup();
+  }
+});
+
+test("a newer Scope update of an enrolled record arrives before its held Load page: no regression, duplicates are harmless and a pending edit stays", async () => {
+  const ids = await fixture.seed("gate", 2);
+  fixture.enrolling.add("gate");
+  const reader = await subscribed("gate", "items:gate");
+  const writerPath = await scratch("gate-writer");
+  let writer: GeneratedClient | undefined;
+  try {
+    const { client } = reader;
+    // The backend commits page 1 and its enrollment; the client does not get it yet.
+    const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "gate" && item.continuation === null));
+    const load = await client.loads.projectItems({ project: "gate" });
+    const exchange = await held.arrived;
+    writer = await GeneratedClient.open({ path: writerPath.path, server: server() });
+    await writer.mutations.call.renameItem({ item: { id: "gate-1", title: "v2" } });
+    await wait(async () => (await titleOf(client, "gate-1")) === "v2", "the newer update through the Scope, before the page");
+    assert.equal((await statusOf(client, load.id))?.pages, 0, "the page is still held");
+
+    // A pending edit of the other record, its Mutation request held before the backend sees it.
+    const pushed = proxy.holdRequest((candidate) => candidate.path === "/sync/mutations" && candidate.body.includes('"mine"'));
+    const mine = await client.mutations.renameItem({ item: { id: "gate-2", title: "mine" } });
+    await pushed.arrived;
+    await wait(async () => (await titleOf(client, "gate-2")) === "mine", "the optimistic edit");
+
+    held.release();
+    await load.wait();
+    const answer = (JSON.parse(exchange.response!).loads as LoadResponseItem[]).find((item) => item.loadId === load.id)!;
+    const older = answer.records.find((record) => record.identity.id === "gate-1")!;
+    assert.equal(older.state.title, "gate-1 title", "the page carried the older row");
+    const [current] = await stampsOf(["gate-1"]);
+    assert.ok(older.stamp < Number(current.stamp), `the page stamp ${older.stamp} is older than ${current.stamp}`);
+    assert.equal(await titleOf(client, "gate-1"), "v2", "the older page did not regress the Scope's newer row");
+    assert.equal(await titleOf(client, "gate-2"), "mine", "the pending edit is still replayed over the page and the Scope");
+    assert.equal((await seen(client))["gate-2"], 1, "the page and the Scope delivered gate-2 at one stamp: stored once");
+
+    pushed.release();
+    assert.equal((await mine.wait()).error, null);
+    assert.equal(await titleOf(client, "gate-2"), "mine", "and the backend accepted it");
+
+    // A fresh traversal adds the same members again: no stamp moves and nothing is published.
+    const stamps = await stampsOf(ids);
+    const head = await fixture.head("items:gate");
+    const again = await client.loads.projectItems({ project: "gate" });
+    await again.wait();
+    assert.notEqual(again.id, load.id);
+    assert.ok(handledCalls(again.id).length > 0, "its pages ran the handler, which added both records again");
+    assert.deepEqual(await stampsOf(ids), stamps, "re-adding existing members advanced no stamp");
+    assert.equal(await fixture.head("items:gate"), head, "and published nothing");
+    assert.deepEqual(await titles(client, "gate"), ["gate-1:v2", "gate-2:mine"]);
+  } finally {
+    fixture.enrolling.delete("gate");
+    await writer?.close();
+    await reader.cleanup();
+    await writerPath.cleanup();
+  }
+});
+
+test("a reused once Load enrolls nothing; a fresh traversal establishes the membership it missed", async () => {
+  await fixture.seed("old", 2);
+  const reader = await subscribed("once-enroll", "items:old");
+  try {
+    const { client } = reader;
+    // Completed by a handler that did not enroll yet.
+    const first = await client.loads.projectItems({ project: "old" }, { once: true });
+    await first.wait();
+    fixture.enrolling.add("old");
+    const requests = proxy.exchanges.length;
+    const runs = fixture.handled.length;
+    const hit = await client.loads.projectItems({ project: "old" }, { once: true });
+    assert.equal(hit.id, first.id, "the completed job");
+    await hit.wait();
+    assert.equal(proxy.exchanges.length, requests, "no request");
+    assert.equal(fixture.handled.length, runs, "no handler ran, so nothing was enrolled");
+
+    // A change to old-1, then a new Scope member: once the member arrives,
+    // old-1's change would have too had old-1 been a member.
+    await fixture.retitle("old-1", "unseen");
+    await fixture.create("old-marker", "old", "items:old");
+    await wait(async () => (await titleOf(client, "old-marker")) === "old-marker title", "the later Scope member");
+    assert.equal(await titleOf(client, "old-1"), "old-1 title", "the change of a record no Load enrolled did not reach the Scope");
+
+    const refreshed = await client.loads.projectItems({ project: "old" }, { once: true, refresh: true });
+    assert.notEqual(refreshed.id, first.id, "refresh is a fresh traversal");
+    await refreshed.wait();
+    assert.equal(await titleOf(client, "old-1"), "unseen", "its page carried the current row");
+    await fixture.retitle("old-1", "followed");
+    await wait(async () => (await titleOf(client, "old-1")) === "followed", "a change after the fresh traversal enrolled old-1");
+  } finally {
+    fixture.enrolling.delete("old");
+    await reader.cleanup();
+  }
+});
+
+test("cancelling and forgetting a Load keep its committed page's membership; records it never returned need their own enrollment", async () => {
+  await fixture.seed("cx", 3);
+  fixture.enrolling.add("cx");
+  const reader = await subscribed("cancel-enroll", "items:cx");
+  try {
+    const { client } = reader;
+    const second = fixture.holdHandler((page) => page.key === "cx" && page.continuation !== null);
+    const load = await client.loads.projectItems({ project: "cx" });
+    await second.arrived;
+    await wait(async () => (await statusOf(client, load.id))?.pages === 1, "page 1 committed on both sides");
+    const cancelling = load.cancel();
+    // The page 2 request in flight fails, so it enrolls nothing.
+    fixture.failing.add("cx");
+    second.release();
+    await cancelling;
+    assert.equal((await statusOf(client, load.id))?.phase, "cancelled");
+    await load.forget();
+    assert.equal(await client.loads.get(load.id), null);
+
+    await fixture.retitle("cx-3", "unseen");
+    await fixture.create("cx-4", "cx");
+    await fixture.retitle("cx-1", "after cancel");
+    await wait(async () => (await titleOf(client, "cx-1")) === "after cancel", "a member the cancelled Load's committed page enrolled");
+    assert.equal(await client.models.item.get({ id: "cx-3" }), null, "no committed page returned cx-3, so it was never enrolled");
+    assert.equal(await client.models.item.get({ id: "cx-4" }), null, "a record created later with no add is not enrolled");
+
+    fixture.failing.delete("cx");
+    const fresh = await client.loads.projectItems({ project: "cx" });
+    await fresh.wait();
+    await fixture.retitle("cx-3", "followed");
+    await fixture.retitle("cx-4", "followed");
+    await wait(async () => (await titleOf(client, "cx-3")) === "followed" && (await titleOf(client, "cx-4")) === "followed", "changes after a fresh Load returned them");
+  } finally {
+    fixture.failing.delete("cx");
+    fixture.enrolling.delete("cx");
+    await reader.cleanup();
+  }
+});
+
 // ---- Generated Dart client ----
 
 test("the generated Dart client pages, reuses a once Load offline and invalidates it", async () => {
@@ -596,4 +869,84 @@ test("the generated Dart client pages, reuses a once Load offline and invalidate
     assert.match(stdout, /Dart generated Loads: passed/);
     assert.ok(fixture.handled.some((page) => page.key === "dart"), "the Dart client reached the backend");
   } finally { await cleanup(); }
+});
+
+test("the generated Dart client receives a later change to a record its Load enrolled, through the Scope", async () => {
+  const { path, cleanup } = await scratch("dart-enroll");
+  try {
+    await fixture.seed("dart-enr", 3);
+    fixture.enrolling.add("dart-enr");
+    const root = join(here, "../..");
+    const { stdout } = await execFileAsync("dart", [
+      "run", "client.dart", proxy.url, path,
+      join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "enroll",
+    ], { cwd: here, timeout: 60_000 });
+    assert.match(stdout, /Dart Load enrollment: passed/);
+    assert.ok(fixture.handled.some((page) => page.key === "dart-enr"), "the Dart client's Load reached the backend");
+  } finally {
+    fixture.enrolling.delete("dart-enr");
+    await cleanup();
+  }
+});
+
+
+test("the generated Dart client releases Load enrollment and reopens offline with a second hold retained", async () => {
+  const { path, cleanup } = await scratch("dart-release");
+  await fixture.seed("dart-release", 2);
+  fixture.enrolling.add("dart-release");
+  const root = join(here, "../..");
+  const child = spawn("dart", ["run", "client.dart", proxy.url, path,
+    join(root, `target/debug/libaxton_dart.${process.platform === "darwin" ? "dylib" : "so"}`), "remove"], { cwd: here });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exited = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject); });
+  try {
+    await wait(() => stdout.includes("Dart release: loaded"), "Dart Load stored its enrolled rows");
+    await fixture.membership("dart-release-2", "items:dart-release-other", true);
+    await wait(() => stdout.includes("Dart release: second held"), "Dart persisted the second hold");
+    await fixture.membership("dart-release-1", "items:dart-release", false);
+    await fixture.membership("dart-release-2", "items:dart-release", false);
+    await wait(() => stdout.includes("Dart Load removal: passed"), `Dart offline removal: ${stderr}`);
+    assert.equal(await exited, 0, stderr);
+  } finally {
+    child.kill();
+    fixture.enrolling.delete("dart-release");
+    await cleanup();
+  }
+});
+
+
+test("native Load validates each tagged add separately, unions 65 labels once, and replays its saved page", async () => {
+  const tags = Array.from({ length: 65 }, (_, i) => `t${String(i).padStart(2, "0")}`);
+  await fixture.seed("tag-union", 1);
+  fixture.enrollmentTags.set("tag-union", [tags.slice(0, 64), [tags[0]!, tags[64]!]]);
+  const request: LoadRequestItem = { loadId: "01890f47-1234-7123-8123-00000000f001", callId: "01890f47-1234-7123-8123-00000000f002", name: "ProjectItems", version: 1, args: { project: "tag-union" }, continuation: null, models: { Item: 1, Tag: 1 } };
+  const result = (await post({ loads: [request] })).loads;
+  assert.equal(result[0]!.outcome.status, "succeeded", JSON.stringify(result));
+  const members = await fixture.taggedMembers("items:tag-union");
+  assert.equal(members.length, 1);
+  assert.deepEqual(members[0]!.tags, tags);
+  assert.equal(await fixture.head("items:tag-union"), 1, "one pair takes one position");
+  const runs = fixture.handled.length;
+  assert.deepEqual((await post({ loads: [request] })).loads, result);
+  assert.equal(fixture.handled.length, runs);
+  assert.deepEqual(await fixture.taggedMembers("items:tag-union"), members);
+  assert.equal(await fixture.head("items:tag-union"), 1);
+
+  await fixture.seed("tag-overflow", 1);
+  fixture.enrollmentTags.set("tag-overflow", [tags]);
+  const invalid = { ...request, loadId: "01890f47-1234-7123-8123-00000000f003", callId: "01890f47-1234-7123-8123-00000000f004", args: { project: "tag-overflow" } };
+  const refused = (await post({ loads: [invalid] })).loads;
+  assert.equal(refused[0]!.outcome.status, "failed");
+  if (refused[0]!.outcome.status === "failed") {
+    assert.equal(refused[0]!.outcome.error.code, "handler.failed", "the collector refuses inside the handler");
+    assert.equal(refused[0]!.outcome.error.message, "handler.failed");
+  }
+  assert.deepEqual(await fixture.taggedMembers("items:tag-overflow"), []);
+  assert.equal(await fixture.head("items:tag-overflow"), 0);
+  assert.deepEqual((await post({ loads: [invalid] })).loads, refused);
+  fixture.enrollmentTags.delete("tag-union");
+  fixture.enrollmentTags.delete("tag-overflow");
 });

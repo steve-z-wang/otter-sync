@@ -1,0 +1,8 @@
+model Todo {
+ id String
+ title String
+ channel String
+ @@id(id)
+}
+mutation Edit(todo Todo.update<channel>)
+load Scan(channel String) { todos Todo[] }

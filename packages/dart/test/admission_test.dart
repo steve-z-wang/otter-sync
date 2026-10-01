@@ -21,6 +21,7 @@ class AdmissionServer {
   final HttpServer _server;
   final seen = <(String, String?, String?)>[];
   final sockets = <WebSocket>[];
+  final envelopes = <Map>[];
   var stamps = 0;
   var acknowledged = 0;
   bool Function(HttpRequest) marked = (_) => true;
@@ -57,17 +58,19 @@ class AdmissionServer {
       sockets.add(socket);
       socket.listen((message) {
         final sub = jsonDecode(message as String) as Map;
+        envelopes.add(sub);
         acknowledged++;
         socket.add(
           jsonEncode({
             'type': 'subscribed',
-            'cursors': {for (final c in sub['channels'] as List) c: 0},
+            'cursors': {for (final c in sub['scopes'] as List) c: 0},
           }),
         );
       });
       return;
     }
     final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+    envelopes.add(body);
     request.response.write(
       jsonEncode(
         request.uri.path == '/sync/mutations'
@@ -157,7 +160,7 @@ void main() {
     session.open(
       jsonEncode({
         'type': 'subscribe',
-        'channels': ['scope'],
+        'scopes': ['scope'],
       }),
       cancel.future,
       events(message: (_) async => opened.complete()),
@@ -288,6 +291,10 @@ void main() {
       );
       await client.connect(config('8'), onError: errors.add);
       await until(() => server.acknowledged == 2, 'the later socket');
+      expect(server.envelopes, isNotEmpty);
+      for (final envelope in server.envelopes) {
+        expect(envelope['capabilities'], contains('scope-membership-v1'));
+      }
       expect(errors, hasLength(1));
       expect(
         server.seen.map((s) => s.$2).toSet(),

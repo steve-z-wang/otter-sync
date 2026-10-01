@@ -1,0 +1,78 @@
+# Keeps one release PR open for the unreleased commits on main. Merging it
+# makes release-please tag vV and create its GitHub Release, which starts
+# release-publish.yml. See docs/engineering/releasing.md.
+name: Release Please
+on:
+  push:
+    branches: [main]
+permissions: {}
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+jobs:
+  release-please:
+    # Idle until the release App is configured.
+    if: vars.AXTON_RELEASE_APP_CLIENT_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      prs_created: ${{ steps.release.outputs.prs_created }}
+      pr: ${{ steps.release.outputs.pr }}
+    steps:
+      # A tag pushed with the default GITHUB_TOKEN would not start the tag workflow.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.AXTON_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AXTON_RELEASE_APP_PRIVATE_KEY }}
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+        with:
+          token: ${{ steps.app.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # release-please rewrites manifests but not Cargo.lock or pubspec.lock, which
+  # record V for AXTON's own packages; refresh them on the release PR's branch.
+  lockfiles:
+    needs: release-please
+    if: needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.AXTON_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AXTON_RELEASE_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.4.0'
+          package-manager-cache: false
+      - uses: dart-lang/setup-dart@6afc89df92d6eb3834022f73cd65adc8cdfcb92d # v1.8.1
+        with:
+          sdk: '3.12.1'
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: '1.98.1'
+      - name: Refresh lockfiles
+        run: |
+          cargo update --workspace
+          cargo update --workspace --manifest-path bindings/node/Cargo.toml
+          git ls-files '*pubspec.lock' | xargs -n1 dirname | xargs -I{} dart pub get --directory {}
+          node scripts/release/version.mjs check
+      - name: Commit to the release PR
+        env:
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          git diff --quiet && exit 0
+          bot="${APP_SLUG}[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "/users/$bot" --jq .id)+$bot@users.noreply.github.com"
+          git commit --all --message "chore: refresh lockfiles for the release"
+          git push

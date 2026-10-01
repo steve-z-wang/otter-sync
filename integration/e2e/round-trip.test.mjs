@@ -147,8 +147,8 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   // one page over HTTP from the cursor it committed.
   await connection.pause();
   await wait(async()=>readerSubscription.status.connection==='offline','the reader lane is offline');
-  await app.backend.transaction(async({tx,channel,touch})=>{
-   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});touch.entry({id:`paged-${i}`});channel('book:demo').entry.add({id:`paged-${i}`});}
+  await app.backend.transaction(async({tx,scope: scope,touch})=>{
+   for(let i=0;i<55;i++){await tx.entry.upsert({where:{id:`paged-${i}`},create:{id:`paged-${i}`,text:`record ${i}`},update:{text:`record ${i}`}});touch.entry({id:`paged-${i}`});scope('book:demo').add.entry({id:`paged-${i}`});}
    // The seeded record, already a member, is touched inside the burst too: it is
    // above both origins there, so the live writer and the catching-up reader both hold it.
    touch.entry({id:'entry-1'});
@@ -176,10 +176,10 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   assert.ok(observed.some(rows=>rows.length>=56));
   assert.ok(pullRequests.length>=2,'more than 50 records catch up via HTTP pages');
   assert.deepEqual(pullRequests[0].cursors,{'book:demo':origin},'catch-up starts at the committed cursor');
-  assert.equal((await reader.readSql('SELECT starting_cursor FROM axton_subscription WHERE channel=?',['book:demo']))[0].starting_cursor,origin,'catching up did not move the origin');
+  assert.equal((await reader.readSql('SELECT starting_cursor FROM axton_subscription WHERE scope=?',['book:demo']))[0].starting_cursor,origin,'catching up did not move the origin');
   const caughtUpPulls=pullRequests.length;
   // Queue two edits to the same record. Each batch completes from its own receipt
-  // (no channel page is awaited); the second push must follow the first without
+  // (no scope page is awaited); the second push must follow the first without
   // another application event, and the row ends at the server's normalized value.
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' first dependent '}}]});
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' second dependent '}}]});
@@ -189,7 +189,7 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   assert.equal(pullRequests.length,caughtUpPulls,'ordinary live updates do not trigger HTTP polling');
   // A client with no subscription at all: its push's response alone corrects the
   // local row, leaves nothing pending, and the result survives a reopen. The reader,
-  // subscribed to the channel, receives the same record at the same stamp.
+  // subscribed to the scope, receives the same record at the same stamp.
   const stampOf=async(client,id)=>{const rows=await client.readSql('SELECT stamp FROM axton_record WHERE model = ? AND identity = ?',['Entry',JSON.stringify({id})]);assert.equal(rows.length,1,`${id} has stamp evidence`);return rows[0].stamp;};
   const lonePath=join(directory,'lone.sqlite');
   let lone=await Client.open({path:lonePath,schema:app.schema});
@@ -198,7 +198,7 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
    await lone.transaction(tx=>tx.direct({model:'Entry',op:'create',identity:{id:'entry-1'},values:{text:'stale local copy',note:null}}));
    await lone.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:'  lone push  '}}]});
    assert.equal((await lone.read('Entry',{id:'entry-1'})).text,'  lone push  ','the prediction is visible before the push');
-   assert.deepEqual((await lone.syncState()).channels,[],'the lone client follows no channel');
+   assert.deepEqual((await lone.syncState()).scopes,[],'the lone client follows no scope');
    const loneConnection=await lone.connect(config,{onError:e=>errors.push(e)});
    try{
     await wait(async()=>(await lone.syncState()).pending===0,'lone push completion');
@@ -213,9 +213,9 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
    assert.equal((await lone.syncState()).pending,0);
    assert.equal(await stampOf(lone,'entry-1'),loneStamp,'the stamp evidence survives a reopen');
   }finally{await lone.close();}
-  await wait(async()=>(await reader.read('Entry',{id:'entry-1'}))?.text==='lone push','the subscribed reader receives the lone push through the channel');
-  assert.equal(await stampOf(reader,'entry-1'),loneStamp,'the channel delivers the same record at the same stamp the receipt carried');
-  assert.equal(pullRequests.length,caughtUpPulls,'the channel delivery did not trigger HTTP polling');
+  await wait(async()=>(await reader.read('Entry',{id:'entry-1'}))?.text==='lone push','the subscribed reader receives the lone push through the scope');
+  assert.equal(await stampOf(reader,'entry-1'),loneStamp,'the scope delivers the same record at the same stamp the receipt carried');
+  assert.equal(pullRequests.length,caughtUpPulls,'the scope delivery did not trigger HTTP polling');
   const saved=(await reader.syncState()).cursors['book:demo'];
   await connection.pause();
   await reader.mutate({name:'Edit',operations:[{model:'Entry',op:'update',identity:{id:'entry-1'},values:{text:' offline reconciled '}}]});
@@ -230,4 +230,94 @@ test('built-in live catch-up pages, dependent pushes, watches, offline reconnect
   // 56 records again for them.
   await runDartClient('dart_live_client.dart',[server.url,directory],()=>app.notify(['entry-1',...Array.from({length:55},(_,i)=>`paged-${i}`)]));
  }finally{globalThis.fetch=fetchOriginal;await reader?.close();await writer?.close();await app.close();await rm(directory,{recursive:true,force:true});}
+});
+
+
+test('exact-only-X cleanup delivers one withdrawal while labels stay server-only and other Scope holds survive', async () => {
+ const app = await createExample();
+ const directory = await mkdtemp(join(tmpdir(), 'axton-scope-cleanup-'));
+ const path = join(directory, 'client.sqlite');
+ let client;
+ try {
+  await app.initialize();
+  await app.reset();
+  const server = await app.listen(0);
+  client = await Client.open({path, schema: app.schema});
+  const subscriptions = await Promise.all(['U', 'V'].map(name => client.subscribe(name)));
+  const live = await client.connect({url: server.url, token: 'demo-user'});
+  for (let i = 0; i < 1000 && subscriptions.some(s => s.status.initialization !== 'ready'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(subscriptions.every(s => s.status.initialization === 'ready'));
+  await live.close();
+  const transport = async (kind, body) => {
+   const response = await fetch(`${server.url}/sync/${kind === 'push' ? 'mutations' : 'pull'}`, {method: 'POST', headers: {authorization: 'Bearer demo-user', 'content-type': 'application/json'}, body});
+   assert.equal(response.status, 200);
+   return response.text();
+  };
+  for (const id of ['A', 'B', 'C', 'D']) await app.publishOne(id, `${id} text`, ['U']);
+  await app.backend.transaction(({scope}) => {
+   const s = scope('U');
+   s.add.entry('A').tag('X').tag('Y');
+   s.add.entry('B').tag('X');
+   s.add.entry('C').tag('Y');
+  });
+  await syncProtocol(client, transport, declaredModels(app.schema));
+  assert.deepEqual(await app.members('U'), [['A', ['X', 'Y']], ['B', ['X']], ['C', ['Y']], ['D', []]]);
+  const before = await app.head('U');
+  const stamps = await app.db.$queryRawUnsafe('SELECT identity_key, stamp FROM axton_record ORDER BY identity_key');
+  const rows = await app.db.entry.findMany({orderBy: {id: 'asc'}});
+  const loaded = app.loaderCalls;
+  await app.backend.transaction(({scope}) => {
+   const s = scope('U');
+   s.where({tags: {only: ['X']}}).remove();
+   s.tag('X').remove();
+  });
+  assert.equal(app.loaderCalls, loaded, 'withdrawal and label detachment never invoke the Loader');
+  assert.deepEqual(await app.members('U'), [['A', ['Y']], ['C', ['Y']], ['D', []]]);
+  const page = JSON.parse(await transport('pull', JSON.stringify({capabilities: ['scope-membership-v1'], cursors: {U: before}, models: declaredModels(app.schema)})));
+  assert.deepEqual(page.changes, [{kind: 'remove', scope: 'U', cursor: before + 1, model: 'Entry', identity: {id: 'B'}}], 'the wire contains only identity removal, no labels or predicate');
+  await client.applyPull(page);
+  assert.equal(await client.read('Entry', {id: 'B'}), null);
+  for (const id of ['A', 'C', 'D']) assert.equal((await client.read('Entry', {id})).text, `${id} text`);
+  assert.deepEqual(await app.db.entry.findMany({orderBy: {id: 'asc'}}), rows, 'withdrawal leaves business rows intact');
+  assert.deepEqual(await app.db.$queryRawUnsafe('SELECT identity_key, stamp FROM axton_record ORDER BY identity_key'), stamps);
+  await app.backend.transaction(({scope}) => scope('U').tag('Y').remove());
+  assert.deepEqual(await app.members('U'), [['A', []], ['C', []], ['D', []]], 'the last label is not a hold');
+  assert.equal(await app.head('U'), before + 1);
+  assert.equal(app.loaderCalls, loaded);
+  // Evaluate a previously constructed selection after earlier label declarations.
+  await app.backend.transaction(({scope}) => {
+   const s = scope('U');
+   const selected = s.where.entry({tags: {only: ['X', 'Z']}});
+   s.where({tags: {only: []}}).tag('Z').add();
+   s.tag('X').add.entry('D');
+   selected.remove();
+  });
+  assert.deepEqual(await app.members('U'), [['A', ['Z']], ['C', ['Z']]]);
+  await syncProtocol(client, transport, declaredModels(app.schema));
+  assert.equal(await client.read('Entry', {id: 'D'}), null);
+  await app.backend.transaction(({scope}) => {
+   scope('U').add.entry('B').tag('X');
+   scope('V').add.entry('B').tag('X');
+  });
+  await syncProtocol(client, transport, declaredModels(app.schema));
+  await app.backend.transaction(({scope}) => {
+   scope('U').where({tags: {only: ['X']}}).remove();
+   scope('U').tag('X').remove();
+  });
+  await syncProtocol(client, transport, declaredModels(app.schema));
+  assert.equal((await client.read('Entry', {id: 'B'})).text, 'B text', 'second Scope retains B');
+  const holds = await client.readSql("SELECT scope,present FROM axton_scope_member WHERE model='Entry' AND identity=? ORDER BY scope", [JSON.stringify({id: 'B'})]);
+  assert.deepEqual(holds, [{scope: 'U', present: 0}, {scope: 'V', present: 1}]);
+  await app.backend.transaction(({scope}) => scope('V').where({tags: {only: ['X']}}).remove());
+  await syncProtocol(client, transport, declaredModels(app.schema));
+  assert.equal(await client.read('Entry', {id: 'B'}), null);
+  await client.close();
+  client = await Client.open({path, schema: app.schema});
+  assert.equal(await client.read('Entry', {id: 'B'}), null, 'last hold withdrawal survives offline reopen');
+  for (const id of ['A', 'C']) assert.equal((await client.read('Entry', {id})).text, `${id} text`);
+ } finally {
+  await client?.close();
+  await app.close();
+  await rm(directory, {recursive: true, force: true});
+ }
 });

@@ -2,9 +2,10 @@
 //! Rust types, and a malformed request or response is refused per operation.
 use axton_server::host::{
     Acknowledged, Claimed, ClaimedCall, Handled, HandledAction, HandledLoad, Head, HostRequest,
-    Invalidation, Loaded, Locked, MembershipIntent, Memberships, OPERATIONS, Published, RecordRef,
-    Scanned, Stamped, Stamps,
+    Invalidation, Loaded, Locked, Memberships, OPERATIONS, Positions, RecordRef, Scanned,
+    ScopeIntent, ScopeMembers, Stamped, Stamps,
 };
+use axton_server::scope_members::{MemberDelta, MemberPosition, MemberState, PositionKind};
 use serde_json::{Value, json};
 
 fn fixture() -> Value {
@@ -26,7 +27,7 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
     match op {
         "claim" => round!(Claimed),
         "claimCall" => round!(ClaimedCall),
-        "saveReceipt" | "saveCall" | "savepoint" | "rollback" | "release" | "setMembership" => {
+        "saveReceipt" | "saveCall" | "savepoint" | "rollback" | "release" | "lockScopes" => {
             round!(Acknowledged)
         }
         "head" => round!(Head),
@@ -37,9 +38,10 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
         "load" => round!(Loaded),
         "advanceStamp" | "ensureStamp" => round!(Stamped),
         "readStamps" => round!(Stamps),
-        "publish" => round!(Published),
         "lockRecord" => round!(Locked),
         "memberships" => round!(Memberships),
+        "readScopeMembers" => round!(ScopeMembers),
+        "applyScopeMembers" => round!(Positions),
         other => panic!("no response type is wired for {other}"),
     }
 }
@@ -166,8 +168,9 @@ fn a_response_carrying_an_unknown_field_is_refused() {
                     Value::Object(fields)
                 }
                 Value::Array(rows) if !rows.is_empty() => {
-                    // `load` entries are opaque record state; `scan` rows are not.
-                    if op != "scan" {
+                    // `load` entries are opaque record state; `scan`, member
+                    // and position rows are not.
+                    if !["scan", "readScopeMembers", "applyScopeMembers"].contains(&op) {
                         continue;
                     }
                     let mut rows = rows.clone();
@@ -204,7 +207,7 @@ fn a_claimed_call_always_names_its_response_even_when_uncompleted() {
 #[test]
 fn a_response_of_the_wrong_type_is_refused_per_operation() {
     // One clearly wrong answer per operation, in the shape a host might drift into.
-    let wrong: [(&str, Value); 19] = [
+    let wrong: [(&str, Value); 20] = [
         ("claim", json!({"clientId":"c","owner":"o","sequence":-1})),
         ("saveReceipt", json!({"saved": true})),
         (
@@ -217,16 +220,24 @@ fn a_response_of_the_wrong_type_is_refused_per_operation() {
         ("savepoint", json!({})),
         ("rollback", json!({})),
         ("release", json!({})),
-        ("handle", json!({"channel": "shared"})),
+        ("handle", json!({"scope": "shared"})),
         ("handleLoad", json!({"next": null})),
         ("load", json!({"0": null})),
         ("advanceStamp", json!("4")),
         ("ensureStamp", json!(0)),
         ("readStamps", json!([1, 0])),
-        ("publish", json!({"cursor": 0, "stamp": 1})),
         ("lockRecord", json!(0)),
         ("memberships", json!(["shared", "shared"])),
-        ("setMembership", json!(false)),
+        ("lockScopes", json!(["shared"])),
+        (
+            "readScopeMembers",
+            json!([{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}]),
+        ),
+        (
+            "applyScopeMembers",
+            json!([{"scope": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}",
+                "cursor": 0, "kind": "upsert"}]),
+        ),
     ];
     for (op, value) in wrong {
         assert!(
@@ -242,24 +253,27 @@ fn a_handle_response_carries_changes_and_memberships_or_a_rejection_and_never_bo
         model: "Task".into(),
         identity: json!({"id": id}),
     };
-    let intent = |channel: &str, present: bool| MembershipIntent {
-        channel: channel.into(),
-        model: "Task".into(),
-        identity: json!({"id": "t-2"}),
-        present,
+    let add = |scope: &str| ScopeIntent::Add {
+        scope: scope.into(),
+        record: task("t-2"),
+        tags: vec![],
+    };
+    let remove = |scope: &str| ScopeIntent::Remove {
+        scope: scope.into(),
+        record: task("t-2"),
     };
     assert_eq!(
         serde_json::from_value::<Handled>(json!({
             "changes": [{"model":"Task","identity":{"id":"t-2"}}],
             "memberships": [
-                {"channel":"shared","model":"Task","identity":{"id":"t-2"},"present":true},
-                {"channel":"other","model":"Task","identity":{"id":"t-2"},"present":false}
+                {"kind":"add","scope":"shared","record":{"model":"Task","identity":{"id":"t-2"}},"tags":[]},
+                {"kind":"remove","scope":"other","record":{"model":"Task","identity":{"id":"t-2"}}}
             ]
         }))
         .unwrap(),
         Handled::Settled {
             changes: vec![task("t-2")],
-            memberships: vec![intent("shared", true), intent("other", false)]
+            memberships: vec![add("shared"), remove("other")]
         }
     );
     assert_eq!(
@@ -303,8 +317,7 @@ fn a_handle_response_carries_changes_and_memberships_or_a_rejection_and_never_bo
         .to_string();
     assert!(none.contains("invalid handler settlement"), "{none}");
     let member = |fields: Value| {
-        let mut intent =
-            json!({"channel":"shared","model":"Task","identity":{"id":"t"},"present":true});
+        let mut intent = json!({"kind":"add","scope":"shared","record":{"model":"Task","identity":{"id":"t"}},"tags":[]});
         for (name, value) in fields.as_object().unwrap() {
             if value.is_null() {
                 intent.as_object_mut().unwrap().remove(name);
@@ -318,24 +331,40 @@ fn a_handle_response_carries_changes_and_memberships_or_a_rejection_and_never_bo
         json!({}),
         json!({"changes": []}),
         json!({"memberships": []}),
-        json!({"channel": "shared"}),
+        json!({"scope": "shared"}),
         json!({"changes": null, "memberships": []}),
         json!({"changes": [], "memberships": null}),
         json!({"changes": [{"model":"","identity":{}}], "memberships": []}),
         json!({"changes": [{"model":"Task","identity":"t"}], "memberships": []}),
         // The retired publication shape: no implicit publish-all remains.
         json!({"changes": [], "publications": []}),
-        json!({"changes": [], "memberships": [], "publications": [{"channel":"shared"}]}),
-        member(json!({"channel": ""})),
-        member(json!({"channel": null})),
-        member(json!({"model": ""})),
-        member(json!({"model": null})),
-        member(json!({"identity": "t"})),
-        member(json!({"identity": null})),
-        member(json!({"present": null})),
-        member(json!({"present": "true"})),
-        member(json!({"present": 1})),
+        json!({"changes": [], "memberships": [], "publications": [{"scope":"shared"}]}),
+        member(json!({"scope": ""})),
+        member(json!({"scope": null})),
+        member(json!({"record": {"model":"","identity":{"id":"t"}}})),
+        member(json!({"record": {"identity":{"id":"t"}}})),
+        member(json!({"record": {"model":"Task","identity":"t"}})),
+        member(json!({"record": {"model":"Task"}})),
+        member(json!({"record": {"model":"Task","identity":{"id":"t"},"extra":1}})),
+        member(json!({"record": null})),
+        member(json!({"kind": null})),
+        member(json!({"kind": "Add"})),
+        member(json!({"kind": "present"})),
+        member(json!({"tags": null})),
+        member(json!({"tags": "X"})),
+        member(json!({"tags": [1]})),
+        // An add names tags, not a selector, and nothing of the retired shape.
+        member(json!({"tag": "X"})),
+        member(json!({"present": true})),
         member(json!({"records": []})),
+        // A removal carries no tags; a tag selector names one tag and no record.
+        member(json!({"kind": "remove", "tags": []})),
+        member(json!({"kind": "removeTag", "record": null, "tags": null})),
+        member(json!({"kind": "removeTag", "record": null, "tags": null, "tag": 1})),
+        member(json!({"kind": "removeTag", "tags": null, "tag": "X"})),
+        member(json!({"kind": "removeTag", "record": null, "tags": null, "tag": "X", "scope": ""})),
+        // The retired boolean shape.
+        json!({"changes": [], "memberships": [{"scope":"shared","model":"Task","identity":{"id":"t"},"present":true}]}),
         json!({"rejection": null}),
         json!({"rejection": "Not A Code"}),
         json!({"settled": "shared"}),
@@ -392,7 +421,7 @@ fn a_load_response_is_rows_or_a_refusal_code() {
 #[test]
 fn counters_keep_their_range_and_name_themselves() {
     let row = |stamp: Value| {
-        let mut row = json!({"channel":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"});
+        let mut row = json!({"scope":"a","cursor":1,"model":"Entry","identity":{"id":"e"},"identityKey":"{\"id\":\"e\"}"});
         row["stamp"] = stamp;
         serde_json::from_value::<Invalidation>(row).map_err(|error| error.to_string())
     };
@@ -462,7 +491,7 @@ fn an_unusable_response_names_its_operation_and_ordinal() {
     );
     assert_eq!(
         HostRequest::Head {
-            channel: "shared".into()
+            scope: "shared".into()
         }
         .invalid_response("x")
         .code,
@@ -487,12 +516,16 @@ fn an_unusable_response_names_its_operation_and_ordinal() {
             model: record().0,
             identity_key: record().1,
         },
-        HostRequest::SetMembership {
-            channel: "shared".into(),
-            model: record().0,
-            identity_key: record().1,
-            present: true,
+        HostRequest::LockScopes {
+            scopes: vec!["shared".into()],
         },
+        HostRequest::ReadScopeMembers {
+            scope: "shared".into(),
+            explicit_keys: vec![],
+            all: false,
+            tags: vec![],
+        },
+        HostRequest::ApplyScopeMembers { deltas: vec![] },
     ] {
         let error = request.invalid_response("x");
         assert_eq!(error.code, axton_server::code::HOST_INVALID);
@@ -504,48 +537,199 @@ fn an_unusable_response_names_its_operation_and_ordinal() {
     }
 }
 
+/// Every intent kind decodes in declaration order, tags as spelled, and
+/// encodes back to the same wire.
 #[test]
-fn membership_requests_name_a_valid_channel_and_a_required_boolean_presence() {
-    let set = |fields: Value| {
-        let mut request = json!({"op":"setMembership","channel":"shared","model":"Task","identityKey":"{\"id\":\"t-1\"}","present":false});
-        for (name, value) in fields.as_object().unwrap() {
-            if value.is_null() {
-                request.as_object_mut().unwrap().remove(name);
-            } else {
-                request[name] = value.clone();
-            }
+fn scope_intents_decode_every_kind_in_declaration_order() {
+    let wire = json!({"changes": [], "memberships": [
+        {"kind":"add","scope":"U","record":{"model":"Task","identity":{"id":"a"}},"tags":["X"," Y"]},
+        {"kind":"select","scope":"U","predicate":{"tags":{"any":["X"]}},"action":{"kind":"remove"}},
+        {"kind":"add","scope":"U","record":{"model":"Task","identity":{"id":"b"}},"tags":[]},
+        {"kind":"remove","scope":"V","record":{"model":"Task","identity":{"id":"a"}}}
+    ]});
+    let task = |id: &str| RecordRef {
+        model: "Task".into(),
+        identity: json!({"id": id}),
+    };
+    let decoded = serde_json::from_value::<Handled>(wire.clone()).unwrap();
+    assert_eq!(
+        decoded,
+        Handled::Settled {
+            changes: vec![],
+            memberships: vec![
+                ScopeIntent::Add {
+                    scope: "U".into(),
+                    record: task("a"),
+                    tags: vec!["X".into(), " Y".into()],
+                },
+                ScopeIntent::Select {
+                    scope: "U".into(),
+                    model: None,
+                    predicate: serde_json::from_value(json!({"tags":{"any":["X"]}})).unwrap(),
+                    action: axton_server::scope_members::SelectionAction::Remove
+                },
+                ScopeIntent::Add {
+                    scope: "U".into(),
+                    record: task("b"),
+                    tags: vec![],
+                },
+                ScopeIntent::Remove {
+                    scope: "V".into(),
+                    record: task("a"),
+                },
+            ],
         }
+    );
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+}
+
+/// Scope requests are canonical: `lockScopes` names distinct valid
+/// Scopes in byte order, the one lock order; `readScopeMembers` names a
+/// valid Scope, canonical record keys and distinct valid tags in byte order.
+#[test]
+fn scope_requests_are_canonical() {
+    let decode = |request: Value| {
         serde_json::from_value::<HostRequest>(request).map_err(|error| error.to_string())
     };
     assert_eq!(
-        set(json!({})).unwrap(),
-        HostRequest::SetMembership {
-            channel: "shared".into(),
-            model: "Task".into(),
-            identity_key: "{\"id\":\"t-1\"}".into(),
-            present: false,
-        },
-        "removal is an explicit false"
+        decode(json!({"op": "lockScopes", "scopes": ["Other", "a b", "shared"]})).unwrap(),
+        HostRequest::LockScopes {
+            scopes: vec!["Other".into(), "a b".into(), "shared".into()]
+        }
     );
-    for (fields, detail) in [
-        (json!({"present": null}), "present"),
-        (json!({"present": 1}), "boolean"),
-        (json!({"present": "false"}), "boolean"),
-        (json!({"channel": ""}), "channel"),
-        (json!({"channel": "  "}), "channel"),
-        (json!({"channel": 7}), "string"),
+    for (scopes, detail) in [
+        (json!([]), "no Scope"),
+        (json!(["shared", "other"]), "canonical byte order"),
+        (json!(["shared", "shared"]), "distinct"),
+        (json!(["shared", " "]), "scope"),
+        (json!("shared"), "invalid type"),
     ] {
-        let error = set(fields.clone()).unwrap_err();
+        let error = decode(json!({"op": "lockScopes", "scopes": scopes})).unwrap_err();
+        assert!(error.contains(detail), "{scopes}: {error}");
+    }
+    let read = |fields: Value| {
+        let mut request = json!({"op": "readScopeMembers", "scope": "shared",
+            "explicitKeys": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}], "tags": ["X", "Y"]});
+        for (name, value) in fields.as_object().unwrap() {
+            request[name] = value.clone();
+        }
+        decode(request)
+    };
+    assert!(read(json!({})).is_ok());
+    assert!(read(json!({"explicitKeys": [], "tags": []})).is_ok());
+    for (fields, detail) in [
+        (json!({"scope": "  "}), "scope"),
+        (json!({"tags": ["Y", "X"]}), "canonical byte order"),
+        (json!({"tags": ["X", "X"]}), "distinct"),
+        (json!({"tags": ["\u{feff}"]}), "blank"),
+        (json!({"tags": ["x".repeat(257)]}), "256"),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identityKey": "{ \"id\": \"t-1\" }"}]}),
+            "not canonical",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identityKey": "\"t-1\""}]}),
+            "not an object",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "", "identityKey": "{\"id\":\"t-1\"}"}]}),
+            "no Model",
+        ),
+        (
+            json!({"explicitKeys": [{"model": "Task", "identity": {"id": "t-1"}}]}),
+            "unknown field",
+        ),
+    ] {
+        let error = read(fields.clone()).unwrap_err();
         assert!(error.contains(detail), "{fields}: {error}");
     }
     for op in ["lockRecord", "memberships"] {
         assert!(
             serde_json::from_value::<HostRequest>(
-                json!({"op": op, "model": "Task", "identityKey": "{}", "channel": "shared"})
+                json!({"op": op, "model": "Task", "identityKey": "{}", "scope": "shared"})
             )
             .is_err(),
-            "{op} names a record, never a channel"
+            "{op} names a record, never a scope"
         );
+    }
+}
+
+/// A member answers its complete tags, as a set; a delta is a final state
+/// whose removal carries no tags and always publishes; a position names its
+/// pair, a positive safe cursor and its kind. Every record key is canonical.
+#[test]
+fn members_deltas_and_positions_decode_only_whole_and_canonical() {
+    let key = || json!({"model": "Task", "identityKey": "{\"id\":\"t-1\"}"});
+    let with = |base: Value, fields: Value| {
+        let mut value = base;
+        for (name, field) in fields.as_object().unwrap() {
+            if field.is_null() {
+                value.as_object_mut().unwrap().remove(name);
+            } else {
+                value[name] = field.clone();
+            }
+        }
+        value
+    };
+    let member = |fields: Value| {
+        serde_json::from_value::<MemberState>(with(
+            with(key(), json!({"tags": ["Y", "X"]})),
+            fields,
+        ))
+        .map_err(|error| error.to_string())
+    };
+    let decoded = member(json!({})).unwrap();
+    assert_eq!(
+        decoded.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["X", "Y"],
+        "tags are a set in any answered order, held in byte order"
+    );
+    assert_eq!(decoded.key.identity, json!({"id": "t-1"}));
+    for (fields, detail) in [
+        (json!({"tags": null}), "missing field `tags`"),
+        (json!({"tags": ["X", "X"]}), "duplicate tag"),
+        (json!({"tags": [" "]}), "blank"),
+        (json!({"identityKey": "{\"id\": \"t-1\"}"}), "not canonical"),
+        (json!({"model": null}), "missing field `model`"),
+        (json!({"stamp": 1}), "unknown field"),
+    ] {
+        let error = member(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
+    }
+    let delta = |fields: Value| {
+        let base = json!({"scope": "shared", "model": "Task", "identity": {"id": "t-1"},
+            "identityKey": "{\"id\":\"t-1\"}", "present": true, "tags": ["X"], "publish": false});
+        serde_json::from_value::<MemberDelta>(with(base, fields)).map_err(|error| error.to_string())
+    };
+    assert!(delta(json!({})).is_ok());
+    assert!(delta(json!({"present": false, "tags": [], "publish": true})).is_ok());
+    for (fields, detail) in [
+        (json!({"present": false, "publish": true}), "no tags"),
+        (json!({"present": false, "tags": []}), "always publishes"),
+        (json!({"identity": {"id": "t-2"}}), "different records"),
+        (json!({"scope": ""}), "scope"),
+        (json!({"publish": null}), "missing field `publish`"),
+    ] {
+        let error = delta(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
+    }
+    let position = |fields: Value| {
+        let base = json!({"scope": "shared", "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}", "cursor": 5, "kind": "remove"});
+        serde_json::from_value::<MemberPosition>(with(base, fields))
+            .map_err(|error| error.to_string())
+    };
+    assert_eq!(position(json!({})).unwrap().kind, PositionKind::Remove);
+    for (fields, detail) in [
+        (json!({"kind": "delete"}), "unknown variant"),
+        (json!({"kind": null}), "missing field `kind`"),
+        (json!({"cursor": 0}), "cursor"),
+        (json!({"cursor": 9007199254740992u64}), "cursor"),
+        (json!({"scope": " "}), "scope"),
+        (json!({"identity": {"id": "t-1"}}), "unknown field"),
+    ] {
+        let error = position(fields.clone()).unwrap_err();
+        assert!(error.contains(detail), "{fields}: {error}");
     }
 }
 
@@ -580,7 +764,7 @@ fn a_lock_answers_a_safe_positive_stamp_or_null_for_an_absent_record() {
 }
 
 #[test]
-fn memberships_are_unique_valid_channels_held_in_canonical_order() {
+fn memberships_are_unique_valid_scopes_held_in_canonical_order() {
     let decode = |value: Value| {
         serde_json::from_value::<Memberships>(value).map_err(|error| error.to_string())
     };
@@ -598,8 +782,8 @@ fn memberships_are_unique_valid_channels_held_in_canonical_order() {
     );
     for (bad, detail) in [
         (json!(["shared", "shared"]), "duplicate"),
-        (json!([""]), "channel"),
-        (json!([" "]), "channel"),
+        (json!([""]), "scope"),
+        (json!([" "]), "scope"),
         (json!([1]), "invalid type"),
         (json!(null), "invalid type"),
         (json!("shared"), "invalid type"),
@@ -610,13 +794,14 @@ fn memberships_are_unique_valid_channels_held_in_canonical_order() {
 }
 
 #[test]
-fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
+fn a_load_handler_answers_identity_data_and_a_continuation_and_never_changes() {
     let decode = |value: Value| serde_json::from_value::<HandledLoad>(value);
     assert_eq!(
         decode(json!({"data": {"tasks": []}, "next": {"state": null}})).unwrap(),
         HandledLoad::Settled {
             data: json!({"tasks": []}),
             next: Some(json!({"state": null})),
+            memberships: vec![],
         },
         "a null state is a continuation, not the end"
     );
@@ -634,13 +819,14 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
             decoded,
             HandledLoad::Settled {
                 data: answer["data"].clone(),
-                next
+                next,
+                memberships: vec![],
             }
         );
     }
     for refused in [
         json!({"data": {}, "next": null, "changes": []}),
-        json!({"data": {}, "next": null, "memberships": []}),
+        json!({"data": {}, "next": null, "changes": [], "memberships": []}),
         json!({"data": {}, "next": null, "outputs": {}}),
         json!({"next": null}),
         json!({"data": {}, "next": null, "rejection": "tasks.refused"}),
@@ -673,4 +859,141 @@ fn a_load_handler_answers_identity_data_and_a_continuation_and_never_effects() {
         stamps.invalid_response("x").code,
         axton_server::code::HOST_INVALID
     );
+}
+
+#[test]
+fn a_load_handler_answer_may_carry_membership_intents_and_nothing_else() {
+    let decode = |value: Value| serde_json::from_value::<HandledLoad>(value);
+    let intent = json!({"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []});
+    assert_eq!(
+        decode(json!({"data": {"tasks": [{"id": "t-1"}]}, "next": null, "memberships": [intent]}))
+            .unwrap(),
+        HandledLoad::Settled {
+            data: json!({"tasks": [{"id": "t-1"}]}),
+            next: Some(Value::Null),
+            memberships: vec![ScopeIntent::Add {
+                scope: "shared".into(),
+                record: RecordRef {
+                    model: "Task".into(),
+                    identity: json!({"id": "t-1"}),
+                },
+                tags: vec![],
+            }],
+        }
+    );
+    // An older host answers no member at all; an explicit empty list is the
+    // same answer. Both encode without the member, as older hosts wrote it.
+    for answer in [
+        json!({"data": {}, "next": null}),
+        json!({"data": {}, "next": null, "memberships": []}),
+    ] {
+        let decoded = decode(answer.clone()).unwrap();
+        assert_eq!(
+            decoded,
+            HandledLoad::Settled {
+                data: json!({}),
+                next: Some(Value::Null),
+                memberships: vec![],
+            },
+            "{answer}"
+        );
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            json!({"data": {}, "next": null})
+        );
+    }
+    // A removal and a tag selector decode: the engine, not the wire, refuses
+    // them for a Load, so every host's answer fails its page the same way.
+    let removal = json!({"kind": "remove", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}});
+    let selector = json!({"kind":"select","scope":"shared","predicate":{"tags":{"any":["X"]}},"action":{"kind":"remove"}});
+    assert!(decode(json!({"data": {}, "next": null, "memberships": [removal, selector]})).is_ok());
+    // Nor does the wire check coverage (`t-1` is not in this page's data), and
+    // memberships leave the continuation as answered: a missing or malformed
+    // `next` is still the engine's `load.invalid_continuation` to judge.
+    for (answer, next) in [
+        (json!({"data": {}, "memberships": [intent]}), None),
+        (
+            json!({"data": {}, "next": 1, "memberships": [intent]}),
+            Some(json!(1)),
+        ),
+    ] {
+        match decode(answer.clone()).unwrap() {
+            HandledLoad::Settled {
+                next: decoded,
+                memberships,
+                ..
+            } => {
+                assert_eq!(decoded, next, "{answer}");
+                assert_eq!(memberships.len(), 1, "{answer}");
+            }
+            other => panic!("{answer} decoded as {other:?}"),
+        }
+    }
+    for refused in [
+        json!({"data": {}, "next": null, "memberships": null}),
+        json!({"data": {}, "next": null, "memberships": {}}),
+        json!({"data": {}, "next": null, "memberships": "shared"}),
+        json!({"data": {}, "next": null, "memberships": [1]}),
+        json!({"data": {}, "next": null, "memberships": [{"scope": "shared", "model": "Task", "identity": {"id": "t-1"}}]}),
+        json!({"data": {}, "next": null, "memberships": [{"scope": "shared", "model": "Task", "identity": {"id": "t-1"}, "present": true}]}),
+        json!({"data": {}, "next": null, "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}}]}),
+        json!({"data": {}, "next": null, "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": [], "extra": 1}]}),
+        json!({"data": {}, "next": null, "memberships": [{"kind": "add", "scope": "", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []}]}),
+        json!({"data": {}, "next": null, "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "", "identity": {"id": "t-1"}}, "tags": []}]}),
+        json!({"data": {}, "next": null, "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": "t-1"}, "tags": []}]}),
+        json!({"data": {}, "next": null, "memberships": [intent], "changes": []}),
+        json!({"data": {}, "next": null, "memberships": [intent], "surprise": 1}),
+        json!({"memberships": [intent], "rejection": "tasks.refused"}),
+        json!({"memberships": [intent], "error": "boom"}),
+        json!({"memberships": [], "rejection": "tasks.refused"}),
+        json!({"memberships": [], "error": "boom"}),
+        json!({"data": {}, "next": null, "memberships": [intent], "rejection": "tasks.refused"}),
+        json!({"memberships": [intent]}),
+    ] {
+        assert!(decode(refused.clone()).is_err(), "accepted {refused}");
+    }
+}
+
+#[test]
+fn a_legacy_scan_row_without_kind_decodes_as_upsert() {
+    let row: axton_server::host::Invalidation = serde_json::from_value(json!({"scope":"c","cursor":1,"model":"Task","identity":{"id":"t"},"identityKey":"{\"id\":\"t\"}","stamp":1})).unwrap();
+    assert_eq!(row.kind, axton_server::scope_members::PositionKind::Upsert);
+}
+
+#[test]
+fn scope_intents_and_all_candidate_mode_round_trip_strictly() {
+    use axton_server::host::ScopeIntent;
+    for value in [
+        json!({"kind":"tagAdd","scope":"U","record":{"model":"Task","identity":{"id":"A"}},"tags":["X"]}),
+        json!({"kind":"tagRemove","scope":"U","record":{"model":"Task","identity":{"id":"A"}},"tags":["X"]}),
+        json!({"kind":"detachTags","scope":"U","tags":["X"]}),
+        json!({"kind":"select","scope":"U","model":"Task","predicate":{"tags":{"only":[]}},"action":{"kind":"remove"}}),
+    ] {
+        let intent: ScopeIntent = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(intent).unwrap(), value);
+    }
+    let baseline = json!({"op":"readScopeMembers","scope":"U","explicitKeys":[],"tags":[]});
+    let request: HostRequest = serde_json::from_value(baseline.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), baseline);
+    let mut all = baseline.clone();
+    all["all"] = json!(true);
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<HostRequest>(all.clone()).unwrap()).unwrap(),
+        all
+    );
+    for value in [json!(null), json!("true"), json!(1)] {
+        let mut bad = baseline.clone();
+        bad["all"] = value;
+        assert!(serde_json::from_value::<HostRequest>(bad).is_err());
+    }
+    for predicate in [
+        json!({"tags":null}),
+        json!({"and":null}),
+        json!({"or":null}),
+        json!({"not":null}),
+        json!({"tags":{"all":null}}),
+        json!({"unknown":true}),
+    ] {
+        assert!(serde_json::from_value::<ScopeIntent>(json!({"kind":"select","scope":"U","predicate":predicate,"action":{"kind":"remove"}})).is_err());
+    }
 }

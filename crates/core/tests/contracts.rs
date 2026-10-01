@@ -423,7 +423,7 @@ fn action_only_schema_still_checks_value_type_rules() {
 }
 
 #[test]
-fn identities_are_exact_normalized_and_independent_of_channels() {
+fn identities_are_exact_normalized_and_independent_of_scopes() {
     let schema = schema();
     let key = schema.record_key("Entry", &json!({"id":ID})).unwrap();
     assert_eq!(key.identity, json!({"id":ID.to_lowercase()}));
@@ -477,9 +477,9 @@ fn independent_schemas_load_without_business_rust_types() {
 }
 
 #[test]
-fn a_page_names_its_channels_and_keeps_unknown_fields_out_of_the_records() {
+fn a_page_names_its_scopes_and_keeps_unknown_fields_out_of_the_records() {
     let page=PullPage::decode(br#"{"cursors":{"book:1":{"from":0,"to":2,"head":2}},"changes":[{"model":"Entry","identity":{"id":"x"},"stamp":2,"state":null}],"future":true}"#).unwrap();
-    assert_eq!(page.channels().collect::<Vec<_>>(), ["book:1"]);
+    assert_eq!(page.scopes().collect::<Vec<_>>(), ["book:1"]);
     assert_eq!(page.cursors["book:1"].to, 2);
     let wire: Value = serde_json::from_slice(&page.encode().unwrap()).unwrap();
     assert!(wire.get("scope").is_none());
@@ -630,8 +630,8 @@ fn pull_page_fixture_cases_decode_as_declared() {
     let canonical = &fixture["canonical"];
     let page = PullPage::decode(canonical["wire"].as_str().unwrap().as_bytes()).unwrap();
     assert_eq!(
-        page.channels().collect::<Vec<_>>(),
-        canonical["channels"]
+        page.scopes().collect::<Vec<_>>(),
+        canonical["scopes"]
             .as_array()
             .unwrap()
             .iter()
@@ -905,7 +905,7 @@ fn push_requests_refuse_a_blank_client_id_and_pulls_carry_none() {
 }
 
 #[test]
-fn shared_limits_are_defined_once_and_apply_per_channel() {
+fn shared_limits_are_defined_once_and_apply_per_scope() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../fixtures/protocol/live-messages.json"
     ))
@@ -913,13 +913,13 @@ fn shared_limits_are_defined_once_and_apply_per_channel() {
     assert_eq!(fixture["limits"]["pushMutations"], limits::PUSH_MUTATIONS);
     assert_eq!(fixture["limits"]["pushBytes"], limits::PUSH_BYTES);
     assert_eq!(fixture["limits"]["pullChanges"], limits::PULL_CHANGES);
-    let page = |channels: usize, count: usize| {
+    let page = |scopes: usize, count: usize| {
         let changes: Vec<Value> = (1..=count)
             .map(
                 |i| json!({"model":"Entry","identity":{"id":i.to_string()},"stamp":i,"state":null}),
             )
             .collect();
-        let cursors: serde_json::Map<String, Value> = (0..channels)
+        let cursors: serde_json::Map<String, Value> = (0..scopes)
             .map(|c| {
                 (
                     format!("c{c}"),
@@ -934,13 +934,13 @@ fn shared_limits_are_defined_once_and_apply_per_channel() {
     assert!(err.to_string().contains("exceeds 50"), "{err}");
     assert!(
         PullPage::decode(page(2, limits::PULL_CHANGES * 2).as_bytes()).is_ok(),
-        "the cap is per channel"
+        "the cap is per scope"
     );
     assert!(PullPage::decode(page(2, limits::PULL_CHANGES * 2 + 1).as_bytes()).is_err());
 }
 
 #[test]
-fn live_frames_decode_as_acknowledgement_or_page_and_channels_normalize() {
+fn live_frames_decode_as_acknowledgement_or_page_and_scopes_normalize() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../fixtures/protocol/live-messages.json"
     ))
@@ -950,12 +950,7 @@ fn live_frames_decode_as_acknowledgement_or_page_and_channels_normalize() {
         match SubscribeRequest::decode(wire) {
             Ok(request) => {
                 assert_eq!(case["valid"], true, "{}", case["name"]);
-                assert_eq!(
-                    json!(request.channels),
-                    case["channels"],
-                    "{}",
-                    case["name"]
-                );
+                assert_eq!(json!(request.scopes), case["scopes"], "{}", case["name"]);
                 assert_eq!(json!(request.models), case["models"], "{}", case["name"]);
                 let again = SubscribeRequest::decode(&request.encode().unwrap()).unwrap();
                 assert_eq!(again, request, "encoding is canonical: {}", case["name"]);
@@ -1033,7 +1028,7 @@ fn pull_and_subscribe_declare_the_read_contracts_and_refuse_a_missing_or_bad_dec
             PullRequest::decode(pull.to_string().as_bytes()).is_err(),
             "pull {name}"
         );
-        let mut subscribe = json!({"type":"subscribe","channels":["a"],"models":{"Task":1}});
+        let mut subscribe = json!({"type":"subscribe","scopes":["a"],"models":{"Task":1}});
         if models.is_null() {
             subscribe.as_object_mut().unwrap().remove("models");
         } else {
@@ -1272,7 +1267,7 @@ fn bootstrap_request_fixture_cases_decode_as_declared() {
     .unwrap();
     let canonical = &fixture["canonical"];
     let request = BootstrapRequest::decode(canonical["wire"].as_str().unwrap().as_bytes()).unwrap();
-    assert_eq!(request.channel, canonical["channel"].as_str().unwrap());
+    assert_eq!(request.scope, canonical["scope"].as_str().unwrap());
     assert_eq!(request.after, canonical["after"].as_u64().unwrap());
     assert_eq!(request.until, canonical["until"].as_u64().unwrap());
     assert_eq!(
@@ -1315,7 +1310,7 @@ fn bootstrap_page_fixture_cases_decode_as_declared() {
     .unwrap();
     let canonical = &fixture["canonical"];
     let page = BootstrapPage::decode(canonical["wire"].as_str().unwrap().as_bytes()).unwrap();
-    assert_eq!(page.channel, canonical["channel"].as_str().unwrap());
+    assert_eq!(page.scope, canonical["scope"].as_str().unwrap());
     assert_eq!(page.from, canonical["from"].as_u64().unwrap());
     assert_eq!(page.to, canonical["to"].as_u64().unwrap());
     assert_eq!(page.until, canonical["until"].as_u64().unwrap());
@@ -1361,7 +1356,7 @@ fn bootstrap_page_fixture_cases_decode_as_declared() {
     let over = fixture["overLimit"]["records"].as_u64().unwrap() as usize;
     assert_eq!(over, limits::PULL_CHANGES + 1);
     let wire = |count: usize| {
-        json!({"mode":"bootstrap","channel":"a","from":0,"to":50,"until":100,"head":100,
+        json!({"mode":"bootstrap","scope":"a","from":0,"to":50,"until":100,"head":100,
                "records":(0..count).map(record).collect::<Vec<_>>()})
         .to_string()
     };
@@ -1374,13 +1369,13 @@ fn bootstrap_page_fixture_cases_decode_as_declared() {
 #[test]
 fn a_bootstrap_page_answers_only_the_request_it_continues() {
     let request = |after: u64, until: u64| BootstrapRequest {
-        channel: "a".into(),
+        scope: "a".into(),
         models: [("Entry".to_string(), 1)].into(),
         after,
         until,
     };
-    let page = |channel: &str, from: u64, to: u64, until: u64| BootstrapPage {
-        channel: channel.into(),
+    let page = |scope: &str, from: u64, to: u64, until: u64| BootstrapPage {
+        scope: scope.into(),
         from,
         to,
         until,
@@ -1393,9 +1388,9 @@ fn a_bootstrap_page_answers_only_the_request_it_continues() {
     assert!(terminal.answers(&asked) && terminal.terminal());
     let nonterminal = page("a", 40, 60, 100);
     assert!(nonterminal.answers(&asked) && !nonterminal.terminal());
-    // Another channel, another origin, or another starting point is not an
+    // Another scope, another origin, or another starting point is not an
     // answer to this request.
-    assert!(!page("b", 40, 100, 100).answers(&asked), "another channel");
+    assert!(!page("b", 40, 100, 100).answers(&asked), "another scope");
     assert!(!page("a", 40, 100, 120).answers(&asked), "another origin");
     assert!(!page("a", 0, 100, 100).answers(&asked), "another `from`");
     // A nonterminal page must advance: repeating `from` would loop the client.
@@ -2116,5 +2111,678 @@ fn fetch_snapshot_follows_same_version_compatible_field_rules() {
             .is_err(),
             "{result} {state}"
         );
+    }
+}
+
+fn scope_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/scope-membership.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn scope_membership_pages_decode_as_declared_and_never_as_record_only_pages() {
+    let fixture = scope_fixture();
+    assert_eq!(fixture["capability"], SCOPE_MEMBERSHIP_CAPABILITY);
+    let canonical = &fixture["canonical"];
+    let page = ScopePullPage::decode(canonical["wire"].as_str().unwrap().as_bytes()).unwrap();
+    assert_eq!(
+        json!(page.scopes().collect::<Vec<_>>()),
+        canonical["scopes"]
+    );
+    assert_eq!(
+        json!(
+            page.changes
+                .iter()
+                .map(ScopeChange::kind)
+                .collect::<Vec<_>>()
+        ),
+        canonical["kinds"]
+    );
+    match &page.changes[0] {
+        ScopeChange::Upsert {
+            scope,
+            cursor,
+            record,
+        } => {
+            assert_eq!((scope.as_str(), *cursor), ("U", 2));
+            assert_eq!(
+                record,
+                &AuthorityRecord {
+                    model: "Entry".into(),
+                    identity: json!({"id":"a"}),
+                    stamp: 1,
+                    state: json!({"text":"A"}),
+                    error: None,
+                }
+            );
+        }
+        other => panic!("expected an upsert: {other:?}"),
+    }
+    assert_eq!(
+        page.changes[1],
+        ScopeChange::Remove {
+            scope: "U".into(),
+            cursor: 3,
+            key: RecordKey {
+                model: "Entry".into(),
+                identity: json!({"id":"b"}),
+            },
+        }
+    );
+    assert_eq!(
+        String::from_utf8(page.encode().unwrap()).unwrap(),
+        canonical["wire"].as_str().unwrap(),
+        "the canonical bytes are stable"
+    );
+    let cases = fixture["page"].as_array().unwrap();
+    // The first case is the canonical example as the server may send it.
+    assert_eq!(
+        ScopePullPage::decode(cases[0]["wire"].as_str().unwrap().as_bytes()).unwrap(),
+        page
+    );
+    for case in cases {
+        let wire = case["wire"].as_str().unwrap().as_bytes();
+        let decoded = ScopePullPage::decode(wire);
+        assert_eq!(
+            decoded.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}: {decoded:?}",
+            case["name"]
+        );
+        if let Ok(page) = decoded {
+            assert_eq!(
+                ScopePullPage::decode(&page.encode().unwrap()).unwrap(),
+                page,
+                "{}",
+                case["name"]
+            );
+            if !page.changes.is_empty() {
+                assert!(
+                    PullPage::decode(wire).is_err(),
+                    "a scope page never passes the record-only decoder: {}",
+                    case["name"]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn scope_changes_flatten_authority_and_removals_carry_only_identity() {
+    let upsert = ScopeChange::Upsert {
+        scope: "U".into(),
+        cursor: 2,
+        record: AuthorityRecord {
+            model: "Entry".into(),
+            identity: json!({"id":"a"}),
+            stamp: 5,
+            state: Value::Null,
+            error: Some("loader.failed".into()),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&upsert).unwrap(),
+        json!({"scope":"U","cursor":2,"kind":"upsert","model":"Entry","identity":{"id":"a"},"stamp":5,"state":null,"error":"loader.failed"})
+    );
+    let remove = ScopeChange::Remove {
+        scope: "U".into(),
+        cursor: 3,
+        key: RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"b"}),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&remove).unwrap(),
+        json!({"scope":"U","cursor":3,"kind":"remove","model":"Entry","identity":{"id":"b"}})
+    );
+    for change in [&upsert, &remove] {
+        let wire = serde_json::to_value(change).unwrap();
+        assert_eq!(&ScopeChange::decode(&wire).unwrap(), change);
+        assert_eq!(
+            &serde_json::from_value::<ScopeChange>(wire).unwrap(),
+            change,
+            "serde decoding validates like decode"
+        );
+    }
+    assert_eq!((upsert.scope(), upsert.cursor()), ("U", 2));
+    assert_eq!(upsert.key().identity, json!({"id":"a"}));
+    assert!(upsert.record().is_some() && remove.record().is_none());
+    assert_eq!(remove.key().model, "Entry");
+    // Serde decoding refuses what `decode` refuses.
+    assert!(
+        serde_json::from_value::<ScopeChange>(
+            json!({"scope":"U","cursor":3,"kind":"remove","model":"Entry","identity":{"id":"b"},"stamp":1})
+        )
+        .is_err()
+    );
+    // A non-scope receipt still carries a plain authority record.
+    assert!(
+        PushReceipt::decode(
+            br#"{"clientId":"c","batchSequence":1,"rejections":[],"records":[{"model":"Entry","identity":{"id":"a"},"stamp":1,"state":null}]}"#
+        )
+        .is_ok()
+    );
+    assert!(
+        PushReceipt::decode(
+            br#"{"clientId":"c","batchSequence":1,"rejections":[],"records":[{"scope":"U","cursor":1,"kind":"upsert","model":"Entry","identity":{"id":"a"},"stamp":1,"state":null}]}"#
+        )
+        .is_err(),
+        "authority records name no scope"
+    );
+}
+
+#[test]
+fn scope_pages_hold_at_most_fifty_changes_per_scope() {
+    let change = |scope: &str, i: usize| json!({"scope":scope,"cursor":i,"kind":"remove","model":"Entry","identity":{"id":i.to_string()}});
+    let page = |counts: &[usize]| {
+        let mut cursors = serde_json::Map::new();
+        let mut changes = vec![];
+        for (c, count) in counts.iter().enumerate() {
+            let scope = format!("c{c}");
+            cursors.insert(scope.clone(), json!({"from":0,"to":100,"head":100}));
+            changes.extend((1..=*count).map(|i| change(&scope, i)));
+        }
+        json!({"cursors":cursors,"changes":changes}).to_string()
+    };
+    assert!(ScopePullPage::decode(page(&[limits::PULL_CHANGES]).as_bytes()).is_ok());
+    let err = ScopePullPage::decode(page(&[limits::PULL_CHANGES + 1]).as_bytes()).unwrap_err();
+    assert!(err.to_string().contains("exceeds 50"), "{err}");
+    assert!(
+        ScopePullPage::decode(page(&[limits::PULL_CHANGES, limits::PULL_CHANGES]).as_bytes())
+            .is_ok(),
+        "the cap is per scope"
+    );
+    assert!(
+        ScopePullPage::decode(page(&[limits::PULL_CHANGES + 1, 0]).as_bytes()).is_err(),
+        "an idle scope lends no capacity to another"
+    );
+    let bootstrap = |count: usize| {
+        json!({"mode":"bootstrap","scope":"c0","from":0,"to":100,"until":100,"head":100,
+               "changes":(1..=count).map(|i| change("c0", i)).collect::<Vec<_>>()})
+        .to_string()
+    };
+    assert!(ScopeBootstrapPage::decode(bootstrap(limits::PULL_CHANGES).as_bytes()).is_ok());
+    assert!(ScopeBootstrapPage::decode(bootstrap(limits::PULL_CHANGES + 1).as_bytes()).is_err());
+}
+
+#[test]
+fn scope_bootstrap_page_fixture_cases_decode_as_declared() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/bootstrap-page.json"
+    ))
+    .unwrap();
+    for case in fixture["scopePage"].as_array().unwrap() {
+        let wire = case["wire"].as_str().unwrap().as_bytes();
+        let decoded = ScopeBootstrapPage::decode(wire);
+        assert_eq!(
+            decoded.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}: {decoded:?}",
+            case["name"]
+        );
+        if let Ok(page) = decoded {
+            assert_eq!(
+                ScopeBootstrapPage::decode(&page.encode().unwrap()).unwrap(),
+                page,
+                "{}",
+                case["name"]
+            );
+            assert_eq!(page.terminal(), case["terminal"].as_bool().unwrap());
+            assert!(
+                BootstrapPage::decode(wire).is_err(),
+                "never a record-only page: {}",
+                case["name"]
+            );
+        }
+    }
+    // The page answers the same bounded request a record-only page answers.
+    let first = &fixture["scopePage"][0]["wire"];
+    let page = ScopeBootstrapPage::decode(first.as_str().unwrap().as_bytes()).unwrap();
+    let request = |after: u64, until: u64| BootstrapRequest {
+        scope: "project:123".into(),
+        models: [("Entry".to_string(), 1)].into(),
+        after,
+        until,
+    };
+    assert!(page.answers(&request(40, 100)));
+    assert!(!page.answers(&request(0, 100)), "another `from`");
+    assert!(!page.answers(&request(40, 120)), "another origin");
+    assert_eq!(page.changes.len(), 4);
+    assert!(matches!(
+        &page.changes[3],
+        ScopeChange::Remove { cursor: 99, .. }
+    ));
+}
+
+#[test]
+fn scope_live_frames_decode_as_acknowledgement_or_scope_page() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/live-messages.json"
+    ))
+    .unwrap();
+    for case in fixture["scopeFrame"].as_array().unwrap() {
+        let kind = match ScopeLiveMessage::decode(case["wire"].as_str().unwrap().as_bytes()) {
+            Ok(ScopeLiveMessage::Acknowledged(_)) => "acknowledged",
+            Ok(ScopeLiveMessage::Page(_)) => "page",
+            Err(_) => "invalid",
+        };
+        assert_eq!(kind, case["kind"], "{}", case["name"]);
+    }
+}
+
+#[test]
+fn membership_claims_are_unique_pairs_tied_to_returned_records() {
+    let fixture = scope_fixture();
+    for case in fixture["claims"].as_array().unwrap() {
+        let response = &case["response"];
+        let records: Vec<AuthorityRecord> =
+            serde_json::from_value(response["records"].clone()).unwrap();
+        let decoded = read_memberships(response, &records);
+        assert_eq!(
+            decoded.is_ok(),
+            case["valid"].as_bool().unwrap(),
+            "{}: {decoded:?}",
+            case["name"]
+        );
+        if let Ok(claims) = decoded {
+            let expected = response
+                .get("memberships")
+                .map_or(0, |m| m.as_array().unwrap().len());
+            assert_eq!(claims.len(), expected, "{}", case["name"]);
+            validate_memberships(&claims, &records).unwrap();
+            for claim in &claims {
+                let wire = serde_json::to_value(claim).unwrap();
+                assert_eq!(
+                    &serde_json::from_value::<MembershipClaim>(wire).unwrap(),
+                    claim
+                );
+            }
+        }
+    }
+    let claim = MembershipClaim {
+        scope: "project:p1".into(),
+        cursor: 10,
+        model: "Todo".into(),
+        identity: json!({"id":"t1"}),
+    };
+    assert_eq!(
+        canonical_json(&serde_json::to_value(&claim).unwrap()).unwrap(),
+        r#"{"cursor":10,"identity":{"id":"t1"},"model":"Todo","scope":"project:p1"}"#
+    );
+    assert_eq!(
+        claim.key(),
+        RecordKey {
+            model: "Todo".into(),
+            identity: json!({"id":"t1"}),
+        }
+    );
+    assert!(
+        validate_memberships(std::slice::from_ref(&claim), &[]).is_err(),
+        "a claim needs its returned record"
+    );
+}
+
+#[test]
+fn capability_negotiation_refuses_with_stable_codes() {
+    assert_eq!(SCOPE_MEMBERSHIP_CAPABILITY, "scope-membership-v1");
+    assert_eq!(PROTOCOL_UNSUPPORTED, "protocol.unsupported");
+    let fixture = scope_fixture();
+    for case in fixture["negotiation"].as_array().unwrap() {
+        let wire = case["wire"].as_str().unwrap().as_bytes();
+        let outcome = match require_capability(wire, SCOPE_MEMBERSHIP_CAPABILITY) {
+            Ok(()) => "supported",
+            Err(refusal) => refusal.code(),
+        };
+        assert_eq!(outcome, case["outcome"], "{}", case["name"]);
+        // Each route's decoder agrees on what is malformed; the capability
+        // gate, not the decoder, refuses an absent or unsupported one.
+        let Ok(envelope) = serde_json::from_slice::<Value>(wire) else {
+            continue;
+        };
+        let decodes = if envelope.get("type").is_some() {
+            SubscribeRequest::decode(wire).is_ok()
+        } else if envelope.get("mode").is_some() {
+            BootstrapRequest::decode(wire).is_ok()
+        } else if envelope.get("cursors").is_some() {
+            PullRequest::decode(wire).is_ok()
+        } else {
+            continue;
+        };
+        assert_eq!(decodes, outcome != "request.invalid", "{}", case["name"]);
+    }
+    let refusal =
+        require_capability(br#"{"models":{"Entry":1},"cursors":{"a":0}}"#, "x").unwrap_err();
+    assert!(matches!(refusal, NegotiationRefusal::Unsupported(_)));
+    assert!(
+        read_capabilities(&json!({"capabilities":["b","a"]}))
+            .unwrap()
+            .into_iter()
+            .eq(["a", "b"])
+    );
+    assert!(read_capabilities(&json!({})).unwrap().is_empty());
+}
+
+#[test]
+fn negotiation_metadata_is_not_part_of_the_logical_request() {
+    let caps = [SCOPE_MEMBERSHIP_CAPABILITY];
+    let upgrade = |plain: &[u8]| {
+        let upgraded = with_capabilities(plain, &caps).unwrap();
+        assert!(require_capability(&upgraded, SCOPE_MEMBERSHIP_CAPABILITY).is_ok());
+        let (plain_value, upgraded_value): (Value, Value) = (
+            serde_json::from_slice(plain).unwrap(),
+            serde_json::from_slice(&upgraded).unwrap(),
+        );
+        assert_ne!(plain_value, upgraded_value);
+        assert_eq!(
+            logical_request(&upgraded_value).unwrap(),
+            logical_request(&plain_value).unwrap()
+        );
+        upgraded
+    };
+    // The advertised form is canonical envelope bytes.
+    let pull = br#"{"models":{"Entry":1},"cursors":{"a":0}}"#;
+    assert_eq!(
+        String::from_utf8(with_capabilities(pull, &caps).unwrap()).unwrap(),
+        r#"{"capabilities":["scope-membership-v1"],"cursors":{"a":0},"models":{"Entry":1}}"#
+    );
+    assert_eq!(
+        PullRequest::decode(&upgrade(pull)).unwrap(),
+        PullRequest::decode(pull).unwrap()
+    );
+    let subscribe = SubscribeRequest::new(vec!["a".into()], [("Task".to_string(), 1)].into())
+        .unwrap()
+        .encode()
+        .unwrap();
+    assert_eq!(
+        SubscribeRequest::decode(&upgrade(&subscribe)).unwrap(),
+        SubscribeRequest::decode(&subscribe).unwrap()
+    );
+    let bootstrap = br#"{"mode":"bootstrap","scope":"a","models":{"Entry":1},"after":0,"until":3}"#;
+    assert_eq!(
+        BootstrapRequest::decode(&upgrade(bootstrap)).unwrap(),
+        BootstrapRequest::decode(bootstrap).unwrap()
+    );
+    // Saved calls: a retry that now advertises the capability decodes to the
+    // same logical request the server fingerprints and stored.
+    let load = json!({"loads":[{"loadId":ID,"callId":FETCH_CALL,"name":"ProjectTodos","version":1,
+        "args":{},"continuation":null,"models":{"Todo":1}}]})
+    .to_string();
+    assert_eq!(
+        LoadBatchRequest::decode_envelope(&upgrade(load.as_bytes())).unwrap(),
+        LoadBatchRequest::decode_envelope(load.as_bytes()).unwrap()
+    );
+    let fetch =
+        json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":ID}}).to_string();
+    assert_eq!(
+        FetchRequest::decode_envelope(&upgrade(fetch.as_bytes())).unwrap(),
+        FetchRequest::decode_envelope(fetch.as_bytes()).unwrap()
+    );
+    let direct =
+        json!({"call":{"callId":ID,"name":"Send","version":1,"args":{"to":"a"}},"models":{}})
+            .to_string();
+    assert_eq!(
+        DirectActionRequest::decode_envelope(&upgrade(direct.as_bytes()))
+            .unwrap()
+            .encode()
+            .unwrap(),
+        DirectActionRequest::decode_envelope(direct.as_bytes())
+            .unwrap()
+            .encode()
+            .unwrap()
+    );
+    let push = json!({"clientId":"device","batchSequence":1,"models":{},
+        "mutations":[{"callId":ID,"name":"Send","version":1,"args":{"to":"a"},"ordinal":1}]})
+    .to_string();
+    assert_eq!(
+        PushRequest::decode_action_envelope(&upgrade(push.as_bytes()))
+            .unwrap()
+            .encode()
+            .unwrap(),
+        PushRequest::decode_action_envelope(push.as_bytes())
+            .unwrap()
+            .encode()
+            .unwrap(),
+        "the frozen batch bytes exclude negotiation"
+    );
+    // Every request decoder refuses a malformed capabilities member.
+    let malformed = |wire: &str| {
+        let mut value: Value = serde_json::from_str(wire).unwrap();
+        value["capabilities"] = json!("scope-membership-v1");
+        value.to_string().into_bytes()
+    };
+    assert!(PullRequest::decode(&malformed(std::str::from_utf8(pull).unwrap())).is_err());
+    assert!(
+        SubscribeRequest::decode(&malformed(std::str::from_utf8(&subscribe).unwrap())).is_err()
+    );
+    assert!(BootstrapRequest::decode(&malformed(std::str::from_utf8(bootstrap).unwrap())).is_err());
+    assert!(LoadBatchRequest::decode_envelope(&malformed(&load)).is_err());
+    assert!(FetchRequest::decode_envelope(&malformed(&fetch)).is_err());
+    assert!(DirectActionRequest::decode_envelope(&malformed(&direct)).is_err());
+    assert!(PushRequest::decode_action_envelope(&malformed(&push)).is_err());
+    assert!(PushRequest::decode(&malformed(&push)).is_err());
+    assert!(logical_request(&json!({"capabilities":7})).is_err());
+    assert!(with_capabilities(b"[]", &caps).is_err());
+}
+
+#[test]
+fn enrollment_responses_carry_memberships_beside_their_records() {
+    let fixture = scope_fixture();
+    let envelopes = &fixture["envelopes"];
+    // The member sits at the envelope's top level and is omitted when empty.
+    let frozen = |name: &str, response: &Value, encoded: Value| {
+        assert_eq!(
+            encoded.get("memberships"),
+            response
+                .get("memberships")
+                .filter(|m| !m.as_array().unwrap().is_empty()),
+            "{name}"
+        );
+    };
+    for case in envelopes["loadPage"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded = LoadPageResponse::decode_item(response);
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(page) = decoded {
+            let expected = response
+                .get("memberships")
+                .map_or(0, |m| m.as_array().unwrap().len());
+            assert_eq!(page.memberships.len(), expected, "{name}");
+            frozen(name, response, serde_json::to_value(&page).unwrap());
+        }
+    }
+    for case in envelopes["pushReceipt"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded = PushReceipt::decode(response.to_string().as_bytes());
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(receipt) = decoded {
+            let encoded: Value = serde_json::from_slice(&receipt.encode().unwrap()).unwrap();
+            frozen(name, response, encoded);
+            assert_eq!(
+                PushReceipt::decode(&receipt.encode().unwrap()).unwrap(),
+                receipt
+            );
+        }
+    }
+    let schema = action_schema();
+    let request = DirectActionRequest::decode(
+        envelopes["directActionRequest"].to_string().as_bytes(),
+        &schema,
+    )
+    .unwrap();
+    for case in envelopes["directAction"].as_array().unwrap() {
+        let (name, response) = (case["name"].as_str().unwrap(), &case["response"]);
+        let decoded =
+            DirectActionResponse::decode(response.to_string().as_bytes(), &request, &schema);
+        assert_eq!(decoded.is_ok(), case["valid"], "{name}: {decoded:?}");
+        if let Ok(direct) = decoded {
+            let encoded: Value = serde_json::from_slice(&direct.encode().unwrap()).unwrap();
+            frozen(name, response, encoded);
+            assert!(
+                DirectActionResponse::decode(&direct.encode().unwrap(), &request, &schema).is_ok(),
+                "{name}"
+            );
+        }
+    }
+}
+
+fn at_request_limit(mut request: Value, pointer: &str, limit: usize) -> Vec<u8> {
+    *request.pointer_mut(pointer).unwrap() = json!("");
+    let base = canonical_json(&request).unwrap().len();
+    *request.pointer_mut(pointer).unwrap() = json!("x".repeat(limit - base));
+    let bytes = canonical_json(&request).unwrap().into_bytes();
+    assert_eq!(bytes.len(), limit);
+    bytes
+}
+
+#[test]
+fn frozen_requests_at_payload_limit_accept_required_negotiation() {
+    type RequestCase = (Value, &'static str, usize, fn(&[u8]) -> bool);
+    let cases: Vec<RequestCase> = vec![
+        (
+            json!({"clientId":"device","batchSequence":1,"models":{},"mutations":[{"callId":ID,"name":"Send","version":1,"args":{"to":""},"ordinal":1}]}),
+            "/mutations/0/args/to",
+            limits::PUSH_BYTES,
+            |b| PushRequest::decode_action_envelope(b).is_ok(),
+        ),
+        (
+            json!({"call":{"callId":ID,"name":"Send","version":1,"args":{"to":""}},"models":{}}),
+            "/call/args/to",
+            limits::PUSH_BYTES,
+            |b| DirectActionRequest::decode_envelope(b).is_ok(),
+        ),
+        (
+            json!({"callId":FETCH_CALL,"model":"Entry","version":1,"identity":{"id":""}}),
+            "/identity/id",
+            limits::PUSH_BYTES,
+            |b| FetchRequest::decode_envelope(b).is_ok(),
+        ),
+        (
+            json!({"loads":[{"loadId":ID,"callId":FETCH_CALL,"name":"ProjectTodos","version":1,"args":{"to":""},"continuation":null,"models":{"Todo":1}}]}),
+            "/loads/0/args/to",
+            limits::LOAD_REQUEST_BYTES,
+            |b| LoadBatchRequest::decode_envelope(b).is_ok(),
+        ),
+    ];
+    for (request, pointer, limit, decode) in cases {
+        let frozen = at_request_limit(request, pointer, limit);
+        assert!(
+            decode(&frozen),
+            "legacy request decodes at its original limit"
+        );
+        let upgraded = with_capabilities(&frozen, &[SCOPE_MEMBERSHIP_CAPABILITY]).unwrap();
+        assert!(
+            decode(&upgraded),
+            "required negotiation must not strand a frozen request"
+        );
+    }
+}
+
+#[test]
+fn negotiation_headroom_does_not_expand_logical_payload_or_accept_unbounded_metadata() {
+    let original = canonical_json(&json!({"body":"x".repeat(100)}))
+        .unwrap()
+        .into_bytes();
+    let limit = original.len();
+    let upgraded = with_capabilities(&original, &[SCOPE_MEMBERSHIP_CAPABILITY]).unwrap();
+    assert_eq!(upgraded.len() - limit, 39);
+    assert!(check_request_size(&upgraded, limit).is_ok());
+    // Even one extra semantic byte cannot borrow the metadata allowance.
+    let mut oversized: Value = serde_json::from_slice(&upgraded).unwrap();
+    oversized["body"] = json!("x".repeat(101));
+    assert!(check_request_size(canonical_json(&oversized).unwrap().as_bytes(), limit).is_err());
+    assert!(check_request_size(&original, limit - 1).is_err());
+    // A shorter logical payload cannot grant arbitrary negotiation headroom.
+    let excessive =
+        with_capabilities(&original, &[SCOPE_MEMBERSHIP_CAPABILITY, &"z".repeat(1000)]).unwrap();
+    assert!(check_request_size(&excessive, limit).is_err());
+    for capabilities in [
+        json!(null),
+        json!(SCOPE_MEMBERSHIP_CAPABILITY),
+        json!([SCOPE_MEMBERSHIP_CAPABILITY, SCOPE_MEMBERSHIP_CAPABILITY]),
+        json!(["unrecognized"]),
+    ] {
+        let malformed = json!({"body":"x".repeat(100),"capabilities":capabilities});
+        assert!(check_request_size(canonical_json(&malformed).unwrap().as_bytes(), limit).is_err());
+    }
+    // Every semantic extension remains part of the logical body.
+    let extension =
+        json!({"body":"x".repeat(100),"extra":true,"capabilities":[SCOPE_MEMBERSHIP_CAPABILITY]});
+    assert!(check_request_size(canonical_json(&extension).unwrap().as_bytes(), limit).is_err());
+    let mut whitespace = upgraded;
+    whitespace.push(b' ');
+    assert!(check_request_size(&whitespace, limit).is_err());
+    // This helper keeps the legacy raw-size path; ingress decoders validate shape.
+    assert!(check_request_size(b"legacy", 6).is_ok());
+}
+
+#[test]
+fn scope_wire_is_required_and_legacy_ownership_is_refused() {
+    let scope = br#"{"mode":"bootstrap","scope":"U","after":0,"until":1,"models":{"Entry":1}}"#;
+    let decoded = BootstrapRequest::decode(scope).expect("Scope bootstrap ownership");
+    let encoded: serde_json::Value = serde_json::from_slice(&decoded.encode().unwrap()).unwrap();
+    assert_eq!(encoded["scope"], "U");
+    assert!(encoded.get("channel").is_none());
+    assert!(
+        BootstrapRequest::decode(
+            br#"{"mode":"bootstrap","channel":"U","after":0,"until":1,"models":{"Entry":1}}"#
+        )
+        .is_err()
+    );
+    assert!(
+        SubscribeRequest::decode(br#"{"type":"subscribe","channels":["U"],"models":{"Entry":1}}"#)
+            .is_err()
+    );
+    assert_eq!(SCOPE_MEMBERSHIP_CAPABILITY, "scope-membership-v1");
+}
+
+#[test]
+fn old_framework_ownership_is_refused_even_beside_scope_and_new_capability() {
+    let capability = json!([SCOPE_MEMBERSHIP_CAPABILITY]);
+    for old in ["channel", "channels"] {
+        let mut bootstrap = json!({"mode":"bootstrap","scope":"U","after":0,"until":1,"models":{"Entry":1},"capabilities":capability});
+        bootstrap[old] = json!("U");
+        assert!(
+            BootstrapRequest::decode(bootstrap.to_string().as_bytes()).is_err(),
+            "{old}"
+        );
+        let mut subscribe = json!({"type":"subscribe","scopes":["U"],"models":{"Entry":1},"capabilities":capability});
+        subscribe[old] = json!(["U"]);
+        assert!(
+            SubscribeRequest::decode(subscribe.to_string().as_bytes()).is_err(),
+            "{old}"
+        );
+        for kind in ["upsert", "remove"] {
+            let mut change = json!({"scope":"U","cursor":1,"kind":kind,"model":"Channel","identity":{"channel":"opaque"}});
+            if kind == "upsert" {
+                change["stamp"] = json!(1);
+                change["state"] = json!({"channel":"opaque","channels":["value"]});
+            }
+            assert!(ScopeChange::decode(&change).is_ok());
+            change[old] = json!("U");
+            assert!(ScopeChange::decode(&change).is_err(), "{kind}/{old}");
+        }
+        let mut claim =
+            json!({"scope":"U","cursor":1,"model":"Channel","identity":{"channel":"opaque"}});
+        assert!(serde_json::from_value::<MembershipClaim>(claim.clone()).is_ok());
+        claim[old] = json!("U");
+        assert!(
+            serde_json::from_value::<MembershipClaim>(claim).is_err(),
+            "claim/{old}"
+        );
+    }
+}
+
+#[test]
+fn new_capability_admission_refuses_old_wire_before_effects() {
+    let marker = SCOPE_MEMBERSHIP_CAPABILITY;
+    assert!(require_capability(br#"{"capabilities":["channel-membership-v1"]}"#, marker).is_err());
+    for old in ["channel", "channels"] {
+        let mut envelope = json!({"capabilities":[marker,"future-extension"],"args":{"channel":"business","channels":["value"]}});
+        assert!(require_capability(envelope.to_string().as_bytes(), marker).is_ok());
+        envelope[old] = json!("legacy");
+        assert!(require_capability(envelope.to_string().as_bytes(), marker).is_err());
     }
 }

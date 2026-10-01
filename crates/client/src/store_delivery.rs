@@ -29,6 +29,21 @@ pub enum StoreChange {
 #[derive(Clone)]
 pub enum StoreDelivery {
     Page(PullPage),
+    ScopePage(axton_core::ScopePullPage),
+    ScopeBootstrap {
+        scope: String,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: axton_core::ScopeBootstrapPage,
+    },
+    ScopeReconciliation {
+        scope: String,
+        subscription_id: u64,
+        run: u64,
+        expected_after: u64,
+        page: axton_core::ScopeBootstrapPage,
+    },
     Bootstrap {
         scope: String,
         subscription_id: u64,
@@ -82,6 +97,7 @@ impl StoreResult {
 #[doc(hidden)]
 pub struct PreparedStore {
     delivery: StoreDelivery,
+    request_token: crate::StoreToken,
     entries: Vec<StageEntry>,
     accepted: Vec<usize>,
     changes: BTreeMap<String, Vec<StoreChange>>,
@@ -125,13 +141,81 @@ impl<S: ClientStore> Client<S> {
         })
     }
 
+    fn delivery_token(&self, delivery: &StoreDelivery) -> crate::StoreToken {
+        match delivery {
+            StoreDelivery::Direct { response, .. } => {
+                self.request_token(&response.completion.call_id)
+            }
+            StoreDelivery::Fetch { response } => self.request_token(&response.completion.call_id),
+            _ => crate::StoreToken::default(),
+        }
+    }
+
     fn run_store(
         &mut self,
         delivery: &StoreDelivery,
         mode: StageMode,
         prepared: Option<&PreparedStore>,
     ) -> Result<(StoreResult, StageMode)> {
+        let token = prepared
+            .map(|p| p.request_token)
+            .unwrap_or_else(|| self.delivery_token(delivery));
         match delivery {
+            StoreDelivery::ScopePage(page) => {
+                page.validate()?;
+                let legacy = PullPage {
+                    cursors: page.cursors.clone(),
+                    changes: vec![],
+                };
+                if prepared.is_none() && self.stale_subscription_page(&legacy) {
+                    return Ok((
+                        StoreResult::Page(ApplyReport {
+                            stale: true,
+                            ..Default::default()
+                        }),
+                        mode,
+                    ));
+                }
+                self.staged(mode, |e| {
+                    e.apply_scope_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
+                        .map(StoreResult::Page)
+                })
+            }
+            StoreDelivery::ScopeBootstrap {
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
+            }
+            | StoreDelivery::ScopeReconciliation {
+                scope,
+                subscription_id,
+                run,
+                expected_after,
+                page,
+            } => self.staged(mode, |e| {
+                e.reconciliation = matches!(delivery, StoreDelivery::ScopeReconciliation { .. });
+                let outcome = if let Some(prepared) = prepared {
+                    e.apply_scope_bootstrap_prepared_body(
+                        scope,
+                        *subscription_id,
+                        *run,
+                        *expected_after,
+                        page,
+                        prepared.bootstrap_admitted.as_ref(),
+                    )?
+                } else {
+                    e.apply_scope_bootstrap_body(
+                        scope,
+                        *subscription_id,
+                        *run,
+                        *expected_after,
+                        page,
+                    )?
+                };
+                Ok(StoreResult::Bootstrap(outcome))
+            }),
             StoreDelivery::Page(page) => {
                 page.validate()?;
                 if prepared.is_none() && self.stale_subscription_page(page) {
@@ -181,6 +265,7 @@ impl<S: ClientStore> Client<S> {
                     snapshot
                         .as_ref()
                         .map(|(key, generation)| (key, generation.as_deref())),
+                    token,
                 )
                 .map(StoreResult::Direct)
             }),
@@ -195,7 +280,7 @@ impl<S: ClientStore> Client<S> {
                 })
             }
             StoreDelivery::Fetch { response } => self.staged(mode, |e| {
-                e.apply_fetch_body(response).map(StoreResult::Fetch)
+                e.apply_fetch_body(response, token).map(StoreResult::Fetch)
             }),
         }
     }
@@ -241,12 +326,12 @@ impl<S: ClientStore> Client<S> {
                 report
                     .cursors
                     .iter()
-                    .map(|(channel, to)| {
+                    .map(|(scope, to)| {
                         let state = tx
                             .engine
-                            .subscription(channel)?
+                            .subscription(scope)?
                             .ok_or_else(|| invalid("prepared subscription disappeared"))?;
-                        Ok((channel.clone(), state.subscription_id, *to))
+                        Ok((scope.clone(), state.subscription_id, *to))
                     })
                     .collect::<Result<Vec<_>>>()
             })?
@@ -267,8 +352,10 @@ impl<S: ClientStore> Client<S> {
         } else {
             None
         };
+        let request_token = self.delivery_token(&delivery);
         Ok(PreparedStore {
             delivery,
+            request_token,
             entries,
             accepted,
             changes,
@@ -316,9 +403,14 @@ impl<S: ClientStore> Client<S> {
             let _ = self.rollback_session();
             return Err(invalid("prepared delivery did not replay all occurrences"));
         }
-        if let StoreDelivery::Page(page) = &prepared.delivery {
+        let cursors = match &prepared.delivery {
+            StoreDelivery::Page(page) => Some(&page.cursors),
+            StoreDelivery::ScopePage(page) => Some(&page.cursors),
+            _ => None,
+        };
+        if let Some(cursors) = cursors {
             self.session.as_mut().unwrap().pull_pages.push(
-                page.cursors
+                cursors
                     .iter()
                     .map(|(name, range)| (name.clone(), range.from))
                     .collect(),

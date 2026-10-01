@@ -6,9 +6,11 @@
 //! [#205](https://github.com/zanminwang/axton/issues/205),
 //! [#204](https://github.com/zanminwang/axton/issues/204)). The test is the
 //! host over a real SQLite store; no sleeps, no threads.
+mod common;
 use axton_client::runtime::{ClientRuntime, Input};
 use axton_client::*;
 use axton_sqlite::SqliteStore;
+use common::scope_fixture;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -761,7 +763,7 @@ fn neither_a_store_hook_nor_a_local_callback_resolves_unsent_work() {
     // The onStore transaction resolves nothing either.
     h.task(
         "sub",
-        json!({"kind":"channel","channel":"feed","subscribed":true}),
+        json!({"kind":"scope","scope":"feed","subscribed":true}),
     );
     h.run();
     let client = h.runtime.client();
@@ -774,7 +776,7 @@ fn neither_a_store_hook_nor_a_local_callback_resolves_unsent_work() {
         .unwrap();
     let page = json!({"cursors":{"feed":{"from":0,"to":1,"head":1}},"changes":[
         {"model":"Note","identity":{"id":"o"},"stamp":1,"state":{"text":"server","blob":null}}]});
-    h.task("pull", json!({"kind":"pull","page":page}));
+    h.task("pull", json!({"kind":"pull","page":scope_fixture(page)}));
     let events = h.run();
     let hook = events
         .iter()

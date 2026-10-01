@@ -6,14 +6,19 @@ import type {
   HostRequest,
   Invalidation,
   Locked,
+  MemberPosition,
+  MemberState,
   Memberships,
-  Published,
   Stamped,
   Stamps,
-} from "../../server/host-contract.mts";
-import type { Database, Persistence } from "../../server/index.mts";
+  Database,
+  Persistence,
+} from "@axtonjs/server";
 import type { PostgresDriver } from "./driver.mts";
 import * as SQL from "./sql.mts";
+
+/** The bound of every stamp, cursor and head: `Number.MAX_SAFE_INTEGER`. */
+const MAX_COUNTER = 9007199254740991;
 
 const safe = (n: unknown): number => {
   const number = Number(n);
@@ -31,26 +36,25 @@ const storedStamp = (n: unknown): number => {
 };
 
 /**
- * A Channel name is a string that is non-empty after JS `trim()`. The engine
- * applies its own check (`check_channel` in crates/core, Rust `trim()`) at
+ * A Scope name is a string that is non-empty after JS `trim()`. The engine
+ * applies its own check (`check_scope` in crates/core, Rust `trim()`) at
  * settlement; the two trims differ on a few code points such as U+FEFF and
  * U+0085, so this is a guard, not the same rule.
  */
-const channelName = (channel: unknown): string => {
-  if (typeof channel !== "string" || channel.trim() === "")
-    throw new Error(`Invalid membership channel ${JSON.stringify(channel)}`);
-  return channel;
+const scopeName = (scope: unknown): string => {
+  if (typeof scope !== "string" || scope.trim() === "")
+    throw new Error(`Invalid membership scope ${JSON.stringify(scope)}`);
+  return scope;
 };
 
 /**
- * The membership operations name exactly these fields: a request carrying
+ * The record operations name exactly these fields: a request carrying
  * another, or an empty or non-string model or identity key, is refused before
  * any SQL runs.
  */
 const MEMBERSHIP_FIELDS = {
   lockRecord: ["op", "model", "identityKey"],
   memberships: ["op", "model", "identityKey"],
-  setMembership: ["op", "channel", "model", "identityKey", "present"],
 } as const;
 const checkMembershipRequest = (
   r: { op: keyof typeof MEMBERSHIP_FIELDS } & Record<string, unknown>,
@@ -63,12 +67,252 @@ const checkMembershipRequest = (
     throw new Error(`${r.op}: model must be a non-empty string`);
   if (typeof r.identityKey !== "string" || r.identityKey === "")
     throw new Error(`${r.op}: identityKey must be a non-empty string`);
-  if (r.op === "setMembership") {
-    channelName(r.channel);
-    if (typeof r.present !== "boolean")
-      throw new Error("setMembership: present must be a boolean");
-  }
 };
+
+type Query = (
+  sql: string,
+  ...params: unknown[]
+) => Promise<Record<string, unknown>[]>;
+
+/** `items` in groups of at most `SQL.SCOPE_BATCH`, in order. */
+const batches = <T,>(items: readonly T[]): T[][] => {
+  const groups: T[][] = [];
+  for (let at = 0; at < items.length; at += SQL.SCOPE_BATCH)
+    groups.push(items.slice(at, at + SQL.SCOPE_BATCH));
+  return groups;
+};
+
+/** Canonical Scope order: UTF-8 byte order, which is code point order. */
+const byteOrder = (a: string, b: string): number => {
+  const x = [...a].map((c) => c.codePointAt(0)!);
+  const y = [...b].map((c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i++)
+    if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return x.length - y.length;
+};
+
+/** A request object naming exactly `fields`; another field is refused before any SQL runs. */
+const fieldsOf = (
+  value: unknown,
+  fields: readonly string[],
+  what: string,
+): Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error(`${what} must be an object`);
+  for (const field of Object.keys(value))
+    if (!fields.includes(field))
+      throw new Error(`Unknown ${what} field ${field}`);
+  return value as Record<string, unknown>;
+};
+const nonEmpty = (value: unknown, what: string): string => {
+  if (typeof value !== "string" || value === "")
+    throw new Error(`${what} must be a non-empty string`);
+  return value;
+};
+const strings = (value: unknown, what: string): string[] => {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+    throw new Error(`${what} must be an array of strings`);
+  if (new Set(value).size !== value.length)
+    throw new Error(`${what} repeats an entry`);
+  return value as string[];
+};
+/** A JSON column: drivers hand back parsed values; a string is parsed. */
+const json = (value: unknown): unknown =>
+  typeof value === "string" ? JSON.parse(value) : value;
+
+async function lockScopes(q: Query, r: unknown): Promise<Acknowledged> {
+  const request = fieldsOf(r, ["op", "scopes"], "lockScopes");
+  const scopes = strings(request.scopes, "lockScopes scopes");
+  if (scopes.length === 0)
+    throw new Error("lockScopes needs at least one Scope");
+  scopes.forEach(scopeName);
+  await q(SQL.LOCK_SCOPES, JSON.stringify(scopes));
+  return null;
+}
+
+async function readScopeMembers(q: Query, r: unknown): Promise<MemberState[]> {
+  const request = fieldsOf(
+    r,
+    ["op", "scope", "explicitKeys", "tags", "all"],
+    "readScopeMembers",
+  );
+  const scope = scopeName(request.scope);
+  if (!Array.isArray(request.explicitKeys))
+    throw new Error("readScopeMembers explicitKeys must be an array");
+  const keys = request.explicitKeys.map((value) => {
+    const key = fieldsOf(value, ["model", "identityKey"], "member key");
+    return {
+      model: nonEmpty(key.model, "member key model"),
+      identityKey: nonEmpty(key.identityKey, "member key identityKey"),
+    };
+  });
+  const tags = strings(request.tags, "readScopeMembers tags");
+  if (request.all !== undefined && typeof request.all !== "boolean")
+    throw new Error("readScopeMembers all must be a boolean");
+  const all = request.all ?? false;
+  // The tags are selected once, with the first group of keys; a member
+  // reached twice is answered once.
+  const members = new Map<string, MemberState>();
+  const groups = keys.length ? batches(keys) : tags.length || all ? [[]] : [];
+  for (const [index, group] of groups.entries())
+    for (const row of await q(
+      SQL.READ_SCOPE_MEMBERS,
+      scope,
+      JSON.stringify(group),
+      JSON.stringify(index === 0 ? tags : []),
+      index === 0 && all,
+    ))
+      members.set(String(row.member_id), {
+        model: String(row.model),
+        identityKey: String(row.identity_key),
+        tags: strings(json(row.tags), "stored member tags"),
+      });
+  return [...members.values()];
+}
+
+type Delta = {
+  scope: string;
+  model: string;
+  identityKey: string;
+  present: boolean;
+  tags: string[];
+  publish: boolean;
+};
+const DELTA_FIELDS = [
+  "scope",
+  "model",
+  "identity",
+  "identityKey",
+  "present",
+  "tags",
+  "publish",
+] as const;
+const deltaOf = (value: unknown): Delta => {
+  const delta = fieldsOf(value, DELTA_FIELDS, "member delta");
+  if (typeof delta.present !== "boolean" || typeof delta.publish !== "boolean")
+    throw new Error("member delta present and publish must be booleans");
+  const tags = strings(delta.tags, "member delta tags");
+  if (!delta.present && (tags.length > 0 || !delta.publish))
+    throw new Error("an absent member delta has no tags and publishes");
+  return {
+    scope: scopeName(delta.scope),
+    model: nonEmpty(delta.model, "member delta model"),
+    identityKey: nonEmpty(delta.identityKey, "member delta identityKey"),
+    present: delta.present,
+    tags,
+    publish: delta.publish,
+  };
+};
+
+/**
+ * Persist final member states, in statement groups over batches of
+ * `SQL.SCOPE_BATCH` deltas: one head reservation per Scope, the log
+ * (published positions written, kept ones read), live members and their
+ * tags, deleted members, then unused tags. Every statement runs in the
+ * caller's transaction; a failure anywhere leaves it to roll back whole.
+ */
+async function applyScopeMembers(
+  q: Query,
+  r: unknown,
+): Promise<MemberPosition[]> {
+  const request = fieldsOf(r, ["op", "deltas"], "applyScopeMembers");
+  if (!Array.isArray(request.deltas))
+    throw new Error("applyScopeMembers deltas must be an array");
+  const deltas = request.deltas.map(deltaOf);
+  const pairs = new Set(
+    deltas.map((d) => JSON.stringify([d.scope, d.model, d.identityKey])),
+  );
+  if (pairs.size !== deltas.length)
+    throw new Error("applyScopeMembers names a pair twice");
+
+  // 1. One `head += N` per Scope, in canonical order.
+  const counts = new Map<string, number>();
+  for (const delta of deltas)
+    if (delta.publish)
+      counts.set(delta.scope, (counts.get(delta.scope) ?? 0) + 1);
+  const next = new Map<string, number>();
+  for (const group of batches(
+    [...counts].sort(([a], [b]) => byteOrder(a, b)),
+  )) {
+    const rows = await q(
+      SQL.RESERVE_HEADS,
+      JSON.stringify(group.map(([scope, count]) => ({ scope, count }))),
+    );
+    const heads = new Map(rows.map((row) => [String(row.scope), row.head]));
+    for (const [scope, count] of group) {
+      if (!heads.has(scope))
+        throw new Error(
+          `Scope ${scope} cannot take ${count} more positions: its head would pass ${MAX_COUNTER} (counter overflow)`,
+        );
+      next.set(scope, safe(heads.get(scope)) - count + 1);
+    }
+  }
+
+  // 2. The log: consecutive cursors per Scope in delta order.
+  const positions: MemberPosition[] = [];
+  const records: string[] = [];
+  for (const group of batches(deltas)) {
+    const payload = group.map((d) => {
+      const cursor = d.publish ? next.get(d.scope)! : null;
+      if (cursor !== null) next.set(d.scope, cursor + 1);
+      const kind = d.present ? "upsert" : "remove";
+      return {
+        scope: d.scope,
+        model: d.model,
+        identityKey: d.identityKey,
+        cursor,
+        kind,
+      };
+    });
+    const rows = await q(SQL.WRITE_SCOPE_LOG, JSON.stringify(payload));
+    if (rows.length !== group.length)
+      throw new Error("The Scope log answered a different number of positions");
+    group.forEach((d, i) => {
+      const row = rows[i]!;
+      if (row.record_id === null || row.record_id === undefined)
+        throw new Error(
+          `Record metadata missing for ${d.model} ${d.identityKey}`,
+        );
+      if (!d.publish && row.kind !== "upsert")
+        throw new Error(
+          `${d.model} ${d.identityKey} keeps no upsert position in Scope ${d.scope}`,
+        );
+      records.push(String(row.record_id));
+      positions.push({
+        scope: d.scope,
+        model: d.model,
+        identityKey: d.identityKey,
+        cursor: safe(row.cursor),
+        kind: d.present ? "upsert" : "remove",
+      });
+    });
+  }
+
+  // 3. Live members with exactly their tags; 4. deleted members.
+  const dropped = new Set<string>();
+  const present = deltas.flatMap((d, i) =>
+    d.present ? [{ scope: d.scope, recordId: records[i]!, tags: d.tags }] : [],
+  );
+  for (const group of batches(present)) {
+    await q(
+      SQL.INSERT_SCOPE_MEMBERS,
+      JSON.stringify(group.map(({ scope, recordId }) => ({ scope, recordId }))),
+    );
+    for (const row of await q(SQL.SET_MEMBER_TAGS, JSON.stringify(group)))
+      dropped.add(String(row.tag_id));
+  }
+  const absent = deltas.flatMap((d, i) =>
+    d.present ? [] : [{ scope: d.scope, recordId: records[i]! }],
+  );
+  for (const group of batches(absent))
+    for (const row of await q(SQL.DELETE_SCOPE_MEMBERS, JSON.stringify(group)))
+      dropped.add(String(row.tag_id));
+
+  // 5. Tags nobody carries any more; no log or record refers to a tag.
+  for (const group of batches([...dropped]))
+    await q(SQL.COLLECT_TAGS, JSON.stringify(group));
+  return positions;
+}
 
 /**
  * The position of the last fresh claim made through each transaction object,
@@ -182,24 +426,32 @@ export async function answer<Tx>(
       return acknowledged;
     }
     case "head": {
-      const rows = await q(SQL.HEAD, r.channel);
+      const rows = await q(SQL.HEAD, r.scope);
       const head: Head = rows.length ? safe(rows[0]!.head) : 0;
       return head;
     }
     case "scan": {
-      const rows = await q(SQL.SCAN, r.channel, BigInt(r.after), r.limit);
+      const rows = await q(SQL.SCAN, r.scope, BigInt(r.after), r.limit);
       const scanned: Invalidation[] = rows.map((row) => {
-        if (row.stamp === null || row.stamp === undefined)
+        if (row.kind !== "upsert" && row.kind !== "remove")
+          throw new Error("Invalid scope log kind");
+        if (
+          row.model === null ||
+          row.identity === null ||
+          (row.kind === "upsert" &&
+            (row.stamp === null || row.stamp === undefined))
+        )
           throw new Error(
-            `Record metadata missing for ${row.model} ${row.identity_key} on channel ${row.channel}`,
+            `Record metadata missing for record ${row.record_id} on scope ${row.scope}`,
           );
         return {
-          channel: String(row.channel),
+          scope: String(row.scope),
+          kind: row.kind,
           cursor: safe(row.cursor),
           model: String(row.model),
           identityKey: String(row.identity_key),
-          identity: row.identity as Record<string, unknown>,
-          stamp: safe(row.stamp),
+          identity: json(row.identity) as Record<string, unknown>,
+          ...(row.kind === "upsert" ? { stamp: safe(row.stamp) } : {}),
         };
       });
       return scanned;
@@ -245,34 +497,6 @@ export async function answer<Tx>(
       });
       return stamps as Stamps;
     }
-    case "publish": {
-      // Distribution allocates only the channel cursor. The record row is
-      // locked and must carry the stamp the request names: a stale one is a
-      // defect of the caller's ordering, never silently re-stamped.
-      const locked = await q(SQL.LOCK_STAMP, r.model, r.identityKey);
-      if (locked.length !== 1)
-        throw new Error(
-          `Record metadata missing for ${r.model} ${r.identityKey}: publish needs its stamp first`,
-        );
-      const stamp = safe(locked[0]!.stamp);
-      if (stamp !== r.stamp)
-        throw new Error(
-          `Publication names stamp ${r.stamp} but ${r.model} ${r.identityKey} is at stamp ${stamp}`,
-        );
-      const rows = await q(SQL.ADVANCE_HEAD, r.channel);
-      const cursor = safe(rows[0]!.head);
-      await q(
-        SQL.UPSERT_INVALIDATION,
-        r.channel,
-        r.model,
-        r.identityKey,
-        JSON.stringify(r.identity),
-        BigInt(cursor),
-        BigInt(stamp),
-      );
-      const published: Published = { cursor, stamp };
-      return published;
-    }
     case "lockRecord": {
       checkMembershipRequest(r);
       const rows = await q(SQL.LOCK_RECORD, r.model, r.identityKey);
@@ -286,28 +510,19 @@ export async function answer<Tx>(
     case "memberships": {
       checkMembershipRequest(r);
       const rows = await q(SQL.MEMBERSHIPS, r.model, r.identityKey);
-      const memberships: Memberships = rows.map((row) =>
-        channelName(row.channel),
-      );
+      const memberships: Memberships = rows.map((row) => scopeName(row.scope));
       if (new Set(memberships).size !== memberships.length)
         throw new Error(
-          `Duplicate membership channel for ${r.model} ${r.identityKey}`,
+          `Duplicate membership scope for ${r.model} ${r.identityKey}`,
         );
       return memberships;
     }
-    case "setMembership": {
-      // Membership never allocates a cursor: adding ensures the Channel row
-      // at head zero, removing leaves the Channel and its history alone.
-      checkMembershipRequest(r);
-      if (r.present) {
-        await q(SQL.ENSURE_CHANNEL, r.channel);
-        await q(SQL.INSERT_MEMBERSHIP, r.channel, r.model, r.identityKey);
-      } else {
-        await q(SQL.DELETE_MEMBERSHIP, r.channel, r.model, r.identityKey);
-      }
-      const acknowledged: Acknowledged = null;
-      return acknowledged;
-    }
+    case "lockScopes":
+      return lockScopes(q, r);
+    case "readScopeMembers":
+      return readScopeMembers(q, r);
+    case "applyScopeMembers":
+      return applyScopeMembers(q, r);
     case "savepoint":
     case "rollback":
     case "release": {

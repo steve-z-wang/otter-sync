@@ -1,0 +1,6 @@
+{
+  "extends": "../../scripts/release/tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "outDir": "dist" },
+  "include": ["*.mts", "src/*.mts"],
+  "references": [{ "path": "../server" }]
+}

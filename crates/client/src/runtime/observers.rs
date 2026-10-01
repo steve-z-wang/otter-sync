@@ -347,21 +347,21 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     self.forget(scope);
                 }
             }
-            Command::Channel {
-                channel,
+            Command::Scope {
+                scope,
                 subscribed: false,
             } => {
                 let ids: Vec<u64> = self
                     .observers
                     .registrations
                     .iter()
-                    .filter(|(_, r)| &r.scope == channel)
+                    .filter(|(_, r)| &r.scope == scope)
                     .map(|(id, _)| *id)
                     .collect();
                 for id in ids {
                     self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
                 }
-                self.forget(channel);
+                self.forget(scope);
             }
             _ => {}
         }
@@ -371,7 +371,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             covered.remove(scope);
         }
     }
-    /// A callback may edit Channels through transaction commands. Reconcile
+    /// A callback may edit Scopes through transaction commands. Reconcile
     /// observer ownership after its commit from durable subscription identity,
     /// including remove-and-recreate under the same name.
     pub(super) fn reconcile_registrations(&mut self) {

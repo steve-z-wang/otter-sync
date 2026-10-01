@@ -13,7 +13,7 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.fetch.<model>` | Read one record from the backend through its Loader, stored locally by default | [Fetch a record](frontend/client-api.md#fetch-a-record-from-the-backend) |
 | `client.transaction` | Commit local reads, direct writes and queued Mutations together | [Transactions](frontend/client-api.md#transactions) |
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |
-| `tx.channels.subscribe / unsubscribe` | Change local Channel intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
+| `tx.scopes.subscribe / unsubscribe` | Change local Scope intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `tx.mutations.<name>(args, { local })` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
 | `client.mutations.call.<name>` | Run a Mutation directly and await its final result | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
@@ -23,25 +23,25 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.loads.invalidate.<name>`, `client.loads.get`, `client.loads.list` | Forget a recorded `once` job, reattach to a job by ID, list recent jobs | [Fresh start, once and reattach](frontend/loads.md#fresh-start-once-and-reattach) |
 | `LoadError`, Dart `LoadException` | Read the `code` and `message` of a failed, cancelled or refused Load | [Errors](frontend/loads.md#errors) |
 | `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` / `CallStore` | Read a durable outcome, handle failures and choose which Model outputs are stored | [Storing Model results](frontend/client-api.md#storing-model-results) |
-| `client.scopes`, `Subscription` | Subscribe to a named channel and follow that registration's status | [Channels](frontend/client-api.md#channels) |
-| `subscription.bootstrap()`, `status.bootstrap` | Load what the channel held before this subscription started, and follow that load | [Channels](frontend/client-api.md#channels) |
-| `client.channels` | The retained spelling: subscribe or unsubscribe by channel name | [Channels](frontend/client-api.md#channels) |
+| `client.scopes`, `Subscription` | Subscribe to a named scope and follow that registration's status | [Scopes](frontend/client-api.md#scopes) |
+| `subscription.bootstrap()`, `status.bootstrap` | Load what the scope held before this subscription started, and follow that load | [Scopes](frontend/client-api.md#scopes) |
 | `client.connection` | Pause, resume or wake background sync | [Connections](frontend/runtime.md#connection-controls) |
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |
 | Dart `toAxtonPrecision()` (`AxtonDateTime`) | Get the UTC, millisecond `DateTime` AXTON stores for a value, to compare it with one read back | [Dates and times](frontend/client-api.md#dates-and-times) |
 | `Mutations<Tx>`, `Queries<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>` | Implement each operation's authoritative business logic | [Handlers](backend/api.md#handlers) |
-| `Loads<Tx>`, `LoadContext<Tx>`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
+| `Loads<Tx>`, `LoadContext<Tx>`, `LoadScope`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration, optionally adding the records it returns to Scopes | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
 | `Loaders<Tx>`, `LoaderCall` | Return current records for synchronization | [Loaders](backend/api.md#loaders) |
-| `touch`, `Touch` | Declare a record a handler changed beyond its Model inputs, so it is stamped and delivered to its Channels (not returned to the caller) | [Channels](backend/api.md#channels) |
-| `channel(name)`, `Channel`, `ModelMembership`, `RecordRef`, Model reference functions | Add records to a Channel once, or remove them, so every later change reaches its subscribers | [Channels](backend/api.md#channels) |
+| `touch`, `Touch` | Declare a record a handler changed beyond its Model inputs, so it is stamped and delivered to its Scopes (not returned to the caller) | [Scopes](backend/api.md#scopes) |
+| `scope(name)`, `Scope`, `LoadScope`, `AddDeclaration`, `RecordRef`, Model reference functions | Add records to a Scope once, or remove them, so every later change reaches its subscribers | [Scopes](backend/api.md#scopes) |
+| `scope.tag(labels)`, `scope.where(predicate)`, `ScopePredicate` | Obtain a label editor or selection handle for current members | [Labels](backend/api.md#add-declarations-and-label-editors), [Selection](backend/api.md#select-members) |
 | `createBackend`, `Options<Tx>` | Connect your implementations to the backend runtime | [Backend setup](backend/api.md#createbackend), [What your backend owns](backend/api.md#what-your-backend-owns) |
 | `backend.listen` | Serve sync requests and close the listener | [Listener](backend/api.md#listener), [Deploy the backend](backend/deployment.md) |
 | `Authenticate`, `devAuth` | Identify the caller | [Authentication](backend/api.md#authentication) |
 | `admit`, `Admit`, `AdmissionRefusal` | Refuse an outdated or unwanted client with your own status and body | [Admission](backend/api.md#admission) |
 | `CallRejected`, `translateRejection`, `onError`, `EngineError` | Reject business operations and diagnose failures | [Errors](backend/api.md#errors) |
-| `backend.transaction`, `TransactionCall` | Write outside a handler with the same `touch` and `channel`; subscribers wake after commit | [Background writes](backend/api.md#background-writes) |
-| `backend.publish` | Settle the same `touch` and `channel` inside a transaction your code already owns; call the returned wake after it commits | [In a transaction you own](backend/api.md#in-a-transaction-you-own) |
+| `backend.transaction`, `TransactionCall` | Write outside a handler with the same `touch` and `scope`; subscribers wake after commit | [Background writes](backend/api.md#background-writes) |
+| `backend.publish` | Settle the same `touch` and `scope` inside a transaction your code already owns; call the returned wake after it commits | [In a transaction you own](backend/api.md#in-a-transaction-you-own) |
 | `pg`, `prisma`, `drizzle`, `PostgresDriver`, `persistence` | Run business and sync storage in one PostgreSQL transaction through your own access tool | [Database](backend/database.md) |
 
 ## Advanced interfaces

@@ -7,9 +7,9 @@
  "subscribe": [
   {
    "name": "normalized: deduplicated and sorted by UTF-16 units",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"b\",\"a\",\"b\",\"\\ud83d\\ude00\",\"\\uffff\"],\"models\":{\"Task\":1,\"Note\":2}}",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"b\",\"a\",\"b\",\"\\ud83d\\ude00\",\"\\uffff\"],\"models\":{\"Task\":1,\"Note\":2}}",
    "valid": true,
-   "channels": [
+   "scopes": [
     "a",
     "b",
     "\ud83d\ude00",
@@ -21,10 +21,10 @@
    }
   },
   {
-   "name": "one channel",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"only\"],\"models\":{\"Task\":1,\"Note\":2}}",
+   "name": "one scope",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"only\"],\"models\":{\"Task\":1,\"Note\":2}}",
    "valid": true,
-   "channels": [
+   "scopes": [
     "only"
    ],
    "models": {
@@ -33,54 +33,76 @@
    }
   },
   {
-   "name": "no channels",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[],\"models\":{\"Task\":1}}",
+   "name": "no scopes",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[],\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
-   "name": "empty channel",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\",\"\"],\"models\":{\"Task\":1}}",
+   "name": "empty scope",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\",\"\"],\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
    "name": "cursors are refused",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\"],\"cursors\":{\"a\":1},\"models\":{\"Task\":1}}",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"cursors\":{\"a\":1},\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
-   "name": "legacy scopes are refused",
-   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"models\":{\"Task\":1}}",
+   "name": "legacy channels are refused",
+   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\"],\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
    "name": "wrong type",
-   "wire": "{\"type\":\"subscribed\",\"channels\":[\"a\"],\"models\":{\"Task\":1}}",
+   "wire": "{\"type\":\"subscribed\",\"scopes\":[\"a\"],\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
-   "name": "channel must be a string",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[1],\"models\":{\"Task\":1}}",
+   "name": "scope must be a string",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[1],\"models\":{\"Task\":1}}",
    "valid": false
   },
   {
    "name": "models are required",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\"]}",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"]}",
    "valid": false
   },
   {
    "name": "a model version must be positive",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\"],\"models\":{\"Task\":0}}",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"models\":{\"Task\":0}}",
    "valid": false
   },
   {
    "name": "models must be an object",
-   "wire": "{\"type\":\"subscribe\",\"channels\":[\"a\"],\"models\":[]}",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"models\":[]}",
+   "valid": false
+  },
+  {
+   "name": "capabilities are negotiation metadata, not part of the subscription",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"b\",\"a\"],\"models\":{\"Task\":1},\"capabilities\":[\"scope-membership-v1\"]}",
+   "valid": true,
+   "scopes": [
+    "a",
+    "b"
+   ],
+   "models": {
+    "Task": 1
+   }
+  },
+  {
+   "name": "capabilities must be an array",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"models\":{\"Task\":1},\"capabilities\":\"scope-membership-v1\"}",
+   "valid": false
+  },
+  {
+   "name": "a capability must be a string",
+   "wire": "{\"type\":\"subscribe\",\"scopes\":[\"a\"],\"models\":{\"Task\":1},\"capabilities\":[1]}",
    "valid": false
   }
  ],
  "acknowledgement": [
   {
-   "name": "carries every channel's head",
+   "name": "carries every scope's head",
    "wire": "{\"type\":\"subscribed\",\"cursors\":{\"a\":47,\"b\":0}}",
    "valid": true,
    "cursors": {
@@ -107,13 +129,13 @@
    "valid": false
   },
   {
-   "name": "no channels",
+   "name": "no scopes",
    "wire": "{\"type\":\"subscribed\",\"cursors\":{}}",
    "valid": false
   },
   {
-   "name": "legacy scopes are refused",
-   "wire": "{\"type\":\"subscribed\",\"scopes\":[\"a\"],\"rejections\":[]}",
+   "name": "legacy channels are refused",
+   "wire": "{\"type\":\"subscribed\",\"channels\":[\"a\"],\"rejections\":[]}",
    "valid": false
   },
   {
@@ -141,6 +163,48 @@
   {
    "name": "a malformed page",
    "wire": "{\"cursors\":{\"a\":{\"from\":4,\"to\":3,\"head\":3}},\"changes\":[]}",
+   "kind": "invalid"
+  },
+  {
+   "name": "not an object",
+   "wire": "[]",
+   "kind": "invalid"
+  },
+  {
+   "name": "a scope page is not a record-only page",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":4,\"head\":4}},\"changes\":[{\"scope\":\"a\",\"cursor\":4,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null}]}",
+   "kind": "invalid"
+  }
+ ],
+ "scopeFrame": [
+  {
+   "name": "acknowledgement carries a type",
+   "wire": "{\"type\":\"subscribed\",\"cursors\":{\"a\":3}}",
+   "kind": "acknowledged"
+  },
+  {
+   "name": "a scope page with a removal",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":5,\"head\":5}},\"changes\":[{\"scope\":\"a\",\"cursor\":4,\"kind\":\"upsert\",\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":2,\"state\":{\"text\":\"E\"}},{\"scope\":\"a\",\"cursor\":5,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"}}]}",
+   "kind": "page"
+  },
+  {
+   "name": "an empty page",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":3,\"head\":3}},\"changes\":[]}",
+   "kind": "page"
+  },
+  {
+   "name": "a record-only page is not a scope page",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":4,\"head\":4}},\"changes\":[{\"model\":\"Entry\",\"identity\":{\"id\":\"e\"},\"stamp\":1,\"state\":null}]}",
+   "kind": "invalid"
+  },
+  {
+   "name": "a removal outside its scope range",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":4,\"head\":4}},\"changes\":[{\"scope\":\"a\",\"cursor\":5,\"kind\":\"remove\",\"model\":\"Entry\",\"identity\":{\"id\":\"f\"}}]}",
+   "kind": "invalid"
+  },
+  {
+   "name": "a typed page is not a page",
+   "wire": "{\"cursors\":{\"a\":{\"from\":3,\"to\":3,\"head\":3}},\"changes\":[],\"type\":\"page\"}",
    "kind": "invalid"
   },
   {

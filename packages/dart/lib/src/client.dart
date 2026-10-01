@@ -603,12 +603,12 @@ class Client implements WritePort, MutatePort {
   Future<Subscription> subscribeScope(String scope) => _inTransaction
       ? Future.error(StateError('transaction_active'))
       : _subscriptions.subscribe(scope);
-  Future<Subscription> subscribe(String channel) => subscribeScope(channel);
+  Future<Subscription> subscribe(String scope) => subscribeScope(scope);
 
   /// Remove whatever registration this Scope name has; its handle stops.
-  Future<void> unsubscribe(String channel) => _inTransaction
+  Future<void> unsubscribe(String scope) => _inTransaction
       ? Future.error(StateError('transaction_active'))
-      : _subscriptions.unsubscribeScope(channel);
+      : _subscriptions.unsubscribeScope(scope);
 
   /// Connect to [server]: the runtime runs both lanes and every direct call
   /// from here on, and this client only executes the effects it asks for.
@@ -869,7 +869,7 @@ class Transaction implements WritePort, SubmitMutationPort {
   Transaction._(this._client, this._transactionId);
   void _cancel() => _open = false;
 
-  late final channels = TransactionChannels._(this);
+  late final scopes = TransactionScopes._(this);
 
   /// Dismiss a refusal as part of this transaction.
   late final TransactionRejections rejections = TransactionRejections._(this);
@@ -1150,7 +1150,7 @@ class Transaction implements WritePort, SubmitMutationPort {
 
 /// The handle a Mutation's `local` callback receives: local Model reads and
 /// direct writes through the callback's own capability, nothing else - no
-/// Mutation, Channel, watch or savepoint. Its writes are the submitting call's
+/// Mutation, Scope, watch or savepoint. Its writes are the submitting call's
 /// local companions. It expires when the callback returns: a later command is
 /// refused, and poisons the transaction while it is still open. The
 /// unawaited-work rule is the transaction's, and a failed command it caught
@@ -1273,22 +1273,22 @@ class LocalTransaction implements WritePort {
   }
 }
 
-/// Local Channel intent in a transaction; no live Subscription handle.
-class TransactionChannels {
+/// Local Scope intent in a transaction; no live Subscription handle.
+class TransactionScopes {
   final Transaction _tx;
-  const TransactionChannels._(this._tx);
-  Future<void> subscribe(String channel) async {
+  const TransactionScopes._(this._tx);
+  Future<void> subscribe(String scope) async {
     await _tx._send({
-      'kind': 'channel',
-      'channel': channel,
+      'kind': 'scope',
+      'scope': scope,
       'subscribed': true,
     });
   }
 
-  Future<void> unsubscribe(String channel) async {
+  Future<void> unsubscribe(String scope) async {
     await _tx._send({
-      'kind': 'channel',
-      'channel': channel,
+      'kind': 'scope',
+      'scope': scope,
       'subscribed': false,
     });
   }

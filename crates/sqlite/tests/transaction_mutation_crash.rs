@@ -165,6 +165,7 @@ fn receipt(client_id: &str, request: &PushRequest, accepted: bool) -> PushReceip
         rejections: vec![],
         completions: vec![],
         records: vec![],
+        memberships: Vec::new(),
     };
     if accepted {
         let mut state = call["args"]["entry"].clone();

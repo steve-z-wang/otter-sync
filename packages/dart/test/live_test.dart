@@ -7,13 +7,13 @@ import 'package:test/test.dart';
 
 final subscribeFrame = jsonEncode({
   'type': 'subscribe',
-  'channels': ['scope'],
+  'scopes': ['scope'],
 });
 
-/// The acknowledgement: every subscribed channel at `head`.
+/// The acknowledgement: every subscribed scope at `head`.
 String ack(Map sub, [int head = 0]) => jsonEncode({
   'type': 'subscribed',
-  'cursors': {for (final channel in sub['channels'] as List) channel: head},
+  'cursors': {for (final scope in sub['scopes'] as List) scope: head},
 });
 Map<String, dynamic> range(int from, int to, [int? head]) => {
   'from': from,
@@ -21,7 +21,7 @@ Map<String, dynamic> range(int from, int to, [int? head]) => {
   'head': head ?? to,
 };
 
-/// An HTTP answer that moves nothing: every requested channel stays where it is.
+/// An HTTP answer that moves nothing: every requested scope stays where it is.
 Map<String, dynamic> emptyPage(Map pull) => {
   'cursors': {
     for (final entry in (pull['cursors'] as Map).entries)
@@ -139,7 +139,7 @@ void main() {
       try {
         expect(await handshake.future.timeout(const Duration(seconds: 2)), {
           'type': 'subscribe',
-          'channels': ['scope'],
+          'scopes': ['scope'],
         });
         await second.future.timeout(const Duration(seconds: 2));
         expect(
@@ -330,7 +330,7 @@ void main() {
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
         expect(subscribes, hasLength(1));
-        expect((await client.syncState())['channels'], isEmpty);
+        expect((await client.syncState())['scopes'], isEmpty);
         expect(errors, isEmpty);
       } finally {
         if (!held.isCompleted) held.complete();
@@ -450,7 +450,7 @@ void main() {
         throw StateError('condition timed out: $errors');
       }
 
-      // A resubscribed channel restarts at cursor 0 while the record it
+      // A resubscribed scope restarts at cursor 0 while the record it
       // delivered before is retained at its stamp, so pages of the fresh
       // session carry newer stamps than the first session's did.
       var stampBase = 0;
@@ -458,6 +458,9 @@ void main() {
         'cursors': {'scope': range(cursor, cursor + 1)},
         'changes': [
           {
+            'kind': 'upsert',
+            'scope': 'scope',
+            'cursor': cursor + 1,
             'model': 'Entry',
             'identity': {'id': 'live'},
             'stamp': stampBase + cursor + 1,
@@ -469,8 +472,23 @@ void main() {
       Map<String, dynamic> Function(int from)? recovery;
       server.listen((r) async {
         if (r.uri.path == '/sync/pull') {
-          pulls++;
           final pull = jsonDecode(await utf8.decoder.bind(r).join()) as Map;
+          if (pull['mode'] == 'bootstrap') {
+            r.response.write(
+              jsonEncode({
+                'mode': 'bootstrap',
+                'scope': pull['scope'],
+                'from': pull['after'],
+                'to': pull['until'],
+                'until': pull['until'],
+                'head': pull['until'],
+                'changes': [],
+              }),
+            );
+            await r.response.close();
+            return;
+          }
+          pulls++;
           r.response.write(
             jsonEncode(
               recovery?.call((pull['cursors'] as Map)['scope'] as int) ??
@@ -524,7 +542,7 @@ void main() {
         // belonged to became stale.
         expect((await client.read('Entry', {'id': 'live'}))?['text'], 'first');
         expect(handshakes.last.containsKey('cursors'), isFalse);
-        // The resubscribed channel restarts at cursor 0, but the record is
+        // The resubscribed scope restarts at cursor 0, but the record is
         // retained at stamp 1: the fresh session's pages need newer stamps.
         stampBase = 10;
         sockets.last.add(jsonEncode(page('fresh', 0)));
@@ -577,6 +595,26 @@ void main() {
               'recovered',
         );
         expect(pulls, greaterThan(before));
+        // Identity-only membership removal crosses the real socket and native
+        // store path; no fabricated null authority or stamp is supplied.
+        sockets.last.add(
+          jsonEncode({
+            'cursors': {'scope': range(11, 12)},
+            'changes': [
+              {
+                'kind': 'remove',
+                'scope': 'scope',
+                'cursor': 12,
+                'model': 'Entry',
+                'identity': {'id': 'live'},
+              },
+            ],
+          }),
+        );
+        await until(
+          () async => (await client.syncState())['cursors']['scope'] == 12,
+        );
+        expect(await client.read('Entry', {'id': 'live'}), isNull);
         expect(errors, isEmpty);
         await connection.close();
       } finally {
@@ -627,6 +665,9 @@ void main() {
         'changes': [
           for (var cursor = from + 1; cursor <= to; cursor++)
             {
+              'kind': 'upsert',
+              'scope': 'scope',
+              'cursor': cursor,
               'model': 'Entry',
               'identity': {'id': 'e$cursor'},
               'stamp': stampBase + cursor,
@@ -648,6 +689,24 @@ void main() {
           expect(acknowledged, isTrue, reason: 'listeners must precede HTTP');
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+          if (body['mode'] == 'bootstrap') {
+            final from = body['after'] as int;
+            final bound = body['until'] as int;
+            final to = from + 50 < bound ? from + 50 : bound;
+            request.response.write(
+              jsonEncode({
+                'mode': 'bootstrap',
+                'scope': body['scope'],
+                'from': from,
+                'to': to,
+                'until': bound,
+                'head': serverHead,
+                'changes': page(from, to, version)['changes'],
+              }),
+            );
+            await request.response.close();
+            return;
+          }
           final from = (body['cursors'] as Map)['scope'] as int;
           requests.add(from);
           final result = page(
@@ -725,8 +784,8 @@ void main() {
         stampBase = 100;
         await client.subscribe('scope');
         hold.complete();
-        // The recreated subscription starts over at the head its own handshake
-        // acknowledges and loads no history; the stream is the truth from there.
+        // Retained holds require a fixed-bound reconciliation. Its fresh
+        // authority replaces earlier content; the obsolete HTTP page stays inert.
         await until(() async => sockets.length >= 4);
         await until(
           () async => (await client.syncState())['cursors']['scope'] == 57,
@@ -738,21 +797,21 @@ void main() {
         );
         await Future<void>.delayed(const Duration(milliseconds: 30));
         expect(
-          await client.read('Entry', {'id': 'e57'}),
-          isNull,
-          reason: 'the obsolete HTTP completion applied nothing',
+          (await client.read('Entry', {'id': 'e57'}))?['text'],
+          'fresh',
+          reason: 'fresh reconciliation wins over the obsolete HTTP completion',
         );
         expect(
           (await client.read('Entry', {'id': 'e1'}))?['text'],
-          'initial',
-          reason: 'unsubscribing retains what was delivered',
+          'fresh',
+          reason: 'retained membership is reconciled before catching up',
         );
         expect(
           (await client.read('Entry', {'id': 'e56'}))?['text'],
-          'live',
-          reason: 'the page the old session streamed is retained too',
+          'fresh',
+          reason: 'reconciliation refreshes the old live delivery too',
         );
-        expect((await client.query('Entry')).length, 57);
+        expect((await client.query('Entry')).length, 58);
         expect((await client.syncState())['cursors']['scope'], 58);
         expect(errors, isEmpty);
         await connection.close();
@@ -769,7 +828,7 @@ void main() {
   );
 
   test(
-    'shared live factory isolates cancellation and pushes with no subscribed channels',
+    'shared live factory isolates cancellation and pushes with no subscribed scopes',
     () async {
       final dir = await Directory.systemTemp.createTemp('axton-shared-live-');
       final schema =
@@ -932,6 +991,9 @@ void moreTests() {
               'cursors': {'scope': range(from, from + 1)},
               'changes': [
                 {
+                  'kind': 'upsert',
+                  'scope': 'scope',
+                  'cursor': from + 1,
                   'model': 'Entry',
                   'identity': {'id': 'live'},
                   'stamp': stamps.next + 1,
@@ -1062,6 +1124,9 @@ void moreTests() {
         'cursors': {'scope': range(cursor, to)},
         'changes': [
           {
+            'kind': 'upsert',
+            'scope': 'scope',
+            'cursor': to,
             'model': 'Entry',
             'identity': {'id': 'live'},
             'stamp': to,
@@ -1199,7 +1264,7 @@ void moreTests() {
         }
         if (request.uri.path == '/sync/mutations') {
           pushes++;
-          // The receipt names no channel: the push completes on its own,
+          // The receipt names no scope: the push completes on its own,
           // whatever the live lane is doing.
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
@@ -1405,14 +1470,18 @@ void moreTests() {
         await until(() => subscribes.length == 2, 'second subscribe');
         expect(subscribes[1], {
           'type': 'subscribe',
-          'channels': ['scope'],
+          'scopes': ['scope'],
           'models': {'Entry': 1},
+          'capabilities': ['scope-membership-v1'],
         });
         sockets[1].add(
           jsonEncode({
             'cursors': {'scope': range(0, 1)},
             'changes': [
               {
+                'kind': 'upsert',
+                'scope': 'scope',
+                'cursor': 1,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
                 'stamp': 1,
@@ -1644,7 +1713,11 @@ void moreTests() {
         String id,
         int stamp,
         Map<String, dynamic>? state,
+        int cursor,
       ) => {
+        'kind': 'upsert',
+        'scope': 'scope',
+        'cursor': cursor,
         'model': 'Entry',
         'identity': {'id': id},
         'stamp': stamp,
@@ -1666,7 +1739,7 @@ void moreTests() {
           jsonEncode({
             'cursors': {'scope': range(0, 1)},
             'changes': [
-              record('live', 1, {'text': 'first', 'note': null}),
+              record('live', 1, {'text': 'first', 'note': null}, 1),
             ],
           }),
         );
@@ -1681,12 +1754,15 @@ void moreTests() {
             'cursors': {'scope': range(1, 3)},
             'changes': [
               {
+                'kind': 'upsert',
+                'scope': 'scope',
+                'cursor': 2,
                 'model': 'Entry',
                 'identity': {'id': 'live'},
                 'stamp': 9,
                 'error': 'loader.failed',
               },
-              record('bad', 2, {'text': 5, 'note': null}),
+              record('bad', 2, {'text': 5, 'note': null}, 3),
             ],
           }),
         );
@@ -1722,7 +1798,7 @@ void moreTests() {
         sockets.first.add(
           jsonEncode({
             'cursors': {'scope': range(3, 4)},
-            'changes': [record('live', 2, null)],
+            'changes': [record('live', 2, null, 4)],
           }),
         );
         await until(() => errors.whereType<AxtonReport>().isNotEmpty);

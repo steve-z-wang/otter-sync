@@ -1,6 +1,6 @@
 //! One applier for authoritative records, whichever path delivered them: a
-//! push receipt or a channel page. Content is ordered by record stamp alone;
-//! channels and cursors never enter here
+//! push receipt or a scope page. Content is ordered by record stamp alone;
+//! scopes and cursors never enter here
 //! ([Settlement](../../../docs/engineering/architecture/client/engine/settlement.md)).
 use crate::engine::Engine;
 use crate::rows::merge_identity;
@@ -76,7 +76,7 @@ impl<S: ClientStore> Engine<'_, S> {
         if record.stamp < local {
             return Ok(Disposition::Older);
         }
-        if record.stamp == local {
+        if record.stamp == local && !self.replica_evicted(&key)? {
             // The held base is the last authority this client applied; the
             // visible row may carry optimism on top of it.
             let current = self.truth(&key)?;
@@ -96,12 +96,24 @@ impl<S: ClientStore> Engine<'_, S> {
             }
         }
         self.set_record_stamp(&key, record.stamp)?;
+        self.set_base_state(
+            &key,
+            if incoming.is_some() {
+                "materialized"
+            } else {
+                "absent"
+            },
+        )?;
         Ok(Disposition::Applied)
     }
     /// New authority replaces the base, and with it the settled local writes
     /// retained on that base: later server authority may replace a direct
     /// write or an accepted companion (L4). Pending operations replay on it.
     fn stage_one(&mut self, key: &RecordKey, value: Option<&Value>, held: &mut Held) -> Result<()> {
+        self.clear_local_layer(key)?;
+        if value.is_none() {
+            self.set_base_state(key, "absent")?;
+        }
         if self.dirty(key)? {
             self.before_set(key, value)?;
             self.delete_local_writes(key)?;

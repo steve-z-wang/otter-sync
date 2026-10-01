@@ -80,7 +80,7 @@ void main() {
       final handlers = <String, StoreHook>{
         'Entry': (tx, changes) async {
           observed.add(changes);
-          await tx.channels.subscribe('project:p1');
+          await tx.scopes.subscribe('project:p1');
         },
       };
       final client = await Client.open(
@@ -121,7 +121,7 @@ void main() {
       expect(
         carrier.commands,
         equals([
-          {'kind': 'channel', 'channel': 'project:p1', 'subscribed': true},
+          {'kind': 'scope', 'scope': 'project:p1', 'subscribed': true},
         ]),
       );
       expect(
@@ -212,7 +212,7 @@ void main() {
             );
             final id = (changes.single['identity'] as Map)['id'];
             if (id == 'unawaited') {
-              unawaited(tx.channels.subscribe('x'));
+              unawaited(tx.scopes.subscribe('x'));
             } else {
               await tx.savepoint(
                 () => tx.savepoint<void>(

@@ -1,5 +1,7 @@
 // The generated Dart client against the Load end-to-end backend:
-// `dart run client.dart URL PATH LIBRARY`. The backend holds Items dart-1..3.
+// `dart run client.dart URL PATH LIBRARY [enroll]`. The backend holds the
+// Items dart-1..3; with `enroll`, the Items dart-enr-1..3 that its
+// ProjectItems handler adds to Scope `items:dart-enr`.
 import 'dart:io';
 import 'package:axton/axton.dart' as sdk;
 
@@ -33,9 +35,70 @@ Future<sdk.LoadStatus?> statusOf(app.GeneratedClient client, String id) async {
   return null;
 }
 
+/// Subscribe and wait for the first handshake, then Load records its handler
+/// enrolls: a later change by another client arrives through the Scope with
+/// no second add.
+Future<void> enrollment(sdk.SyncServer server, String path, String libraryPath) async {
+  final reader = await app.GeneratedClient.open(path: '$path.reader', libraryPath: libraryPath, server: server);
+  final writer = await app.GeneratedClient.open(path: '$path.writer', libraryPath: libraryPath, server: server);
+  try {
+    final subscription = await reader.scopes.subscribe('items:dart-enr');
+    await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
+    final load = await reader.loads.projectItems(project: 'dart-enr');
+    await load.wait();
+    load.dispose();
+    final loaded = await reader.models.item.query(where: const app.ItemFilter(project: app.Present('dart-enr')));
+    check(loaded.length == 3 && loaded.every((item) => item.title == '${item.id} title'), 'the Load stored its page rows: $loaded');
+    final renamed = reader.models.item
+        .watch(where: const app.ItemFilter(project: app.Present('dart-enr')))
+        .firstWhere((items) => items.any((item) => item.id == 'dart-enr-2' && item.title == 'renamed'));
+    await writer.mutations.call.renameItem(item: const app.RenameItemItemUpdate(id: 'dart-enr-2', title: app.Present('renamed')));
+    await renamed.timeout(const Duration(seconds: 20));
+    stdout.writeln('Dart Load enrollment: passed');
+  } finally {
+    await writer.close();
+    await reader.close();
+  }
+}
+
+Future<void> removal(sdk.SyncServer server, String path, String libraryPath) async {
+  var reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath, server: server);
+  try {
+    final first = await reader.scopes.subscribe('items:dart-release');
+    final second = await reader.scopes.subscribe('items:dart-release-other');
+    for (final subscription in [first, second]) {
+      await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
+    }
+    await (await reader.loads.projectItems(project: 'dart-release')).wait();
+    stdout.writeln('Dart release: loaded');
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while ((await reader.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=1", parameters: ['items:dart-release-other'])).isEmpty) {
+      check(DateTime.now().isBefore(deadline), 'second hold arrived');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    stdout.writeln('Dart release: second held');
+    await reader.models.item.watch(where: const app.ItemFilter(project: app.Present('dart-release')))
+      .firstWhere((items) => items.length == 1 && items.single.id == 'dart-release-2')
+      .timeout(const Duration(seconds: 20));
+    final releaseDeadline = DateTime.now().add(const Duration(seconds: 20));
+    while ((await reader.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", parameters: ['items:dart-release'])).length != 2) {
+      check(DateTime.now().isBefore(releaseDeadline), 'both first-Scope removals persisted before checking the second hold');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Scope keeps content after first hold release');
+    await reader.close();
+    reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath);
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-1')) == null, 'released content stays absent offline');
+    check(await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-2')) != null, 'second Scope hold survives offline');
+    stdout.writeln('Dart Load removal: passed');
+  } finally { await reader.close(); }
+}
+
 Future<void> main(List<String> args) async {
-  final [url, path, libraryPath] = args;
+  final [url, path, libraryPath, ...mode] = args;
   final server = sdk.SyncServer(url: url, token: () => 'alice');
+  if (mode case ['enroll']) return enrollment(server, path, libraryPath);
+  if (mode case ['remove']) return removal(server, path, libraryPath);
   var hookRuns = 0;
   Future<void> hook(app.GeneratedTransaction tx, List<app.StoreChange<app.ItemIdentity, app.Item>> changes) async {
     hookRuns++;

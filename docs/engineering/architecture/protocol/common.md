@@ -6,7 +6,7 @@ Three runtimes exchange the same messages: Rust, TypeScript and Dart. The protoc
 
 ## 2. Architecture Constraints
 
-Wire names are short and stable: `channels` and `cursors` name channels and their positions, `stamp` is a record's version. Every counter (cursor, stamp, batch sequence, ordinal, version) is an integer in `0..=2^53−1` so JavaScript reads it exactly.
+Wire names are short and stable: `scopes` and `cursors` name scopes and their positions, `stamp` is a record's version. Every counter (cursor, stamp, batch sequence, ordinal, version) is an integer in `0..=2^53−1` so JavaScript reads it exactly.
 
 ## 5. Building Block View
 
@@ -28,7 +28,7 @@ Code: [core/lib.rs](../../../../crates/core/src/lib.rs) (`canonical_json`), [cor
 
 ## 8. Crosscutting Concepts
 
-Three limits are shared by both sides but not negotiated on the wire: 20 mutations and 256 KiB per push, 50 changes per channel in a pull page. They are defined once, in `limits` of [core/protocol.rs](../../../../crates/core/src/protocol.rs), and every consumer reads them from there: the push request decoder and the client's [batching](../client/engine/push/batching.md), the per-channel continuation rule (`CursorRange::continues`) and the [server pull](../server/engine/pull.md) scan. A page with more than 50 changes per named channel is refused by `PullPage::validate`. Making the limits configurable is [#11](https://github.com/zanminwang/axton/issues/11).
+Three limits are shared by both sides but not negotiated on the wire: 20 mutations and 256 KiB per push, 50 changes per scope in a pull page. They are defined once, in `limits` of [core/protocol.rs](../../../../crates/core/src/protocol.rs), and every consumer reads them from there: the push request decoder and the client's [batching](../client/engine/push/batching.md), the per-scope continuation rule (`CursorRange::continues`) and the [server pull](../server/engine/pull.md) scan. A page with more than 50 changes per named scope is refused by `PullPage::validate`. Making the limits configurable is [#11](https://github.com/zanminwang/axton/issues/11).
 
 Native Load pages have their own item, identity, state and byte bounds, owned by [Protocol / Loads](loads.md#6-runtime-view).
 
@@ -38,7 +38,7 @@ Host resource limits are not protocol rules and stay with each transport: 1 MiB 
 
 ## 10. Quality Requirements
 
-- **Encoding is byte-identical to JavaScript's: key order, number spelling and unknown-field preservation**. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `canonical_numbers_match_javascript_and_utf16_key_order`, `a_page_names_its_channels_and_keeps_unknown_fields_out_of_the_records`, `server_pull_request_accepts_js_integer_number_spellings`, `shared_wire_fixtures_preserve_counter_boundaries`.
+- **Encoding is byte-identical to JavaScript's: key order, number spelling and unknown-field preservation**. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `canonical_numbers_match_javascript_and_utf16_key_order`, `a_page_names_its_scopes_and_keeps_unknown_fields_out_of_the_records`, `server_pull_request_accepts_js_integer_number_spellings`, `shared_wire_fixtures_preserve_counter_boundaries`.
 - **A received state tolerates extra fields and refuses missing required ones**. Evidence: `received_state_supports_additive_schema_evolution`, `state_is_complete_but_patch_preserves_absent_and_null`.
 
 Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests above.
@@ -46,3 +46,15 @@ Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests a
 ## 11. Risks and Technical Debt
 
 **Accepted limitation.** Client-direction errors cross the bindings as message text, with a machine-readable `details.code` only where the client runtime provides one; nothing branches on the wording. Owned by [SDKs / Bindings](../sdks/bindings.md).
+
+## Scope membership capability and claims
+
+New requests advertise `capabilities: ["scope-membership-v1"]`. This envelope metadata is excluded from saved-call logical equality, so adding capability does not change a frozen call's identity. Valid unsupported requests are refused before handler execution or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md#scope-membership-cutover) upgrades all runtimes together.
+
+Load pages, accepted receipts and direct Mutation responses may carry `memberships: [{scope, cursor, model, identity}]` for explicit Add pairs whose normalized identity the response returns. Claims preserve the original saved cursor on replay and never re-enroll. Failed items, ordinary Fetches, Queries and extra outputs fabricate no claims. A claim updates the same local holding ledger as a Scope upsert; it never advances delivery progress. Tags are server-only.
+
+Positive content is admitted before stamp comparison only when currently held or when its logical request's frozen store epoch is at least the record's eviction epoch. Retries and restarts preserve the original token. This prevents delayed saved Load, Fetch, Query or receipt bodies from restoring released replication while preserving result/continuation and queue settlement. Fresh authorized reads may cache again; authoritative null and Loader diagnostics retain their own meanings.
+
+The gate runs on native/server envelopes before principal validation, claims, handlers, Loaders or progress. HTTP uses 426 for unsupported capability and 400 for malformed metadata; live closes with 1002 and `protocol.unsupported` before acknowledgement. Authentication and application `admit` remain separate. Historical persisted push bytes remain unchanged: capable outgoing transport copies add negotiation only after the last typed encoding. Saved logical equality excludes negotiation alone. Production SDK/native transports and custom runtime effect executors receive negotiated bytes. `freeze`, `downlink_request`, `LoadWorker.dispatch`, `BootstrapTask.encode_request` and `LiveSession.begin` export capable carrier bytes directly. Lower-level `prepare_action`/`prepare_fetch` return typed logical requests: applications sending their bare core encoding must wrap final bytes with `with_capabilities` themselves.
+
+Request size checks retain the original logical payload bound and allow only 41 bytes of known capability metadata above it. This permits a retained full-limit request to advertise negotiation without changing its saved identity or original frozen bytes; arbitrary capability names grant no extra allowance. New batch selection measures the final capable envelope. A single frozen Load page may use this exact metadata allowance; multi-page Load batches must still fit within the 1 MiB final wire limit.

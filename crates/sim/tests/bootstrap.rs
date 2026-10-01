@@ -39,7 +39,7 @@ fn declare(sim: &mut Sim, key: &str, touch: Option<Option<&str>>, memberships: &
         touch: touch.map(|text| text.map(str::to_string)),
         memberships: memberships
             .iter()
-            .map(|(channel, present)| (channel.to_string(), *present))
+            .map(|(scope, present)| (scope.to_string(), *present))
             .collect(),
     })
     .unwrap();
@@ -50,15 +50,15 @@ fn load(sim: &mut Sim, client: usize) {
     sim.drain();
 }
 /// The committed historical progress of one registration.
-fn progress(sim: &mut Sim, client: usize, channel: &str) -> u64 {
+fn progress(sim: &mut Sim, client: usize, scope: &str) -> u64 {
     let id = sim
         .client(client)
-        .subscription_state(channel)
+        .subscription_state(scope)
         .unwrap()
         .unwrap()
         .subscription_id;
     sim.client(client)
-        .bootstrap_state(channel, id)
+        .bootstrap_state(scope, id)
         .unwrap()
         .cursor
 }
@@ -73,7 +73,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
     for client in [0, 1] {
         sim.apply(Action::Subscribe {
             client,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
     }
@@ -90,7 +90,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
     // starts after it (D9).
     sim.apply(Action::SubscribeAtHead {
         client: 2,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert_eq!(sim.client(2).cursor("a").unwrap(), Some(origin));
@@ -103,7 +103,7 @@ fn a_from_now_client_bootstraps_its_history_while_others_keep_publishing() {
 
     sim.apply(Action::Bootstrap {
         client: 2,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert_eq!(sim.bootstrap_phase(2, "a"), BootstrapPhase::Requested);
@@ -187,7 +187,7 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
     let mut sim = Sim::new(3, 2);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     create(&mut sim, 0, "moving", "the record that moves");
@@ -199,12 +199,12 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 
     sim.apply(Action::SubscribeAtHead {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Bootstrap {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     // Before the scan runs, the record is removed and re-added in separate
@@ -242,19 +242,20 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 }
 
 /// Bootstrap covers membership in each page's snapshot. Sixty removed records
-/// (more than a page) sit below sixty-five members: the walk skips them, pages
-/// the members in two bounded pages, and terminates at its origin. A crash
+/// (more than a page) sit below sixty-five members: the walk delivers their
+/// identity-only releases and the members in three bounded pages, then terminates
+/// at its origin. A crash
 /// and restart between pages resumes from committed progress, and a
 /// duplicated page request and page change nothing. A record removed and
 /// re-added before its page runs moves above the origin and arrives through
-/// ordinary delivery; the removed records never reach the new client, and the
-/// client that already held them keeps them.
+/// ordinary delivery; retained identity-only removals count toward bounded
+/// pages and release both existing and historical holds.
 #[test]
-fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates() {
+fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicates() {
     let mut sim = Sim::new(9, 2);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     for i in 0..125 {
@@ -270,15 +271,15 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
         declare(&mut sim, &format!("Entry:e{i:03}"), None, &[("a", false)]);
     }
     let origin = sim.host.head("a");
-    assert_eq!(origin, 125, "removal allocated no position");
+    assert_eq!(origin, 185, "one removal position per removed member");
     sim.apply(Action::SubscribeAtHead {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Bootstrap {
         client: 1,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
 
@@ -300,6 +301,12 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
     sim.apply(Action::Restart { client: 1 }).unwrap();
     assert_eq!(progress(&mut sim, 1, "a"), first);
     load(&mut sim, 1);
+    assert_eq!(
+        progress(&mut sim, 1, "a"),
+        161,
+        "identity-only removals count toward the 50-event page bound"
+    );
+    load(&mut sim, 1);
     assert_eq!(progress(&mut sim, 1, "a"), origin);
     sim.settle();
     assert_eq!(sim.bootstrap_phase(1, "a"), BootstrapPhase::Complete);
@@ -308,16 +315,46 @@ fn bootstrap_skips_removed_members_across_pages_through_restart_and_duplicates()
         let expected = (i >= 60).then(|| format!("text {i}"));
         assert_eq!(
             sim.read_text(1, &key),
-            expected,
+            expected.clone(),
             "e{i:03} on the new client"
         );
         assert_eq!(
             sim.read_text(0, &key),
-            Some(format!("text {i}")),
-            "e{i:03} kept by the client that already held it"
+            expected,
+            "e{i:03} on the existing client after scope releases"
         );
     }
     sim.check().unwrap();
     assert_eq!(sim.conflicts, 0);
     assert!(sim.reports.is_empty(), "{:?}", sim.reports);
+}
+
+#[test]
+fn resumed_scope_reconciles_removed_history_through_the_public_scheduler() {
+    let mut sim = Sim::new(91, 1);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        scope: "a".into(),
+    })
+    .unwrap();
+    declare(&mut sim, "Entry:e", Some(Some("held")), &[("a", true)]);
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("e")), Some("held".into()));
+    sim.apply(Action::Unsubscribe {
+        client: 0,
+        scope: "a".into(),
+    })
+    .unwrap();
+    declare(&mut sim, "Entry:e", None, &[("a", false)]);
+    sim.apply(Action::SubscribeAtHead {
+        client: 0,
+        scope: "a".into(),
+    })
+    .unwrap();
+    let origin = sim.client(0).cursor("a").unwrap();
+    load(&mut sim, 0);
+    assert_eq!(sim.read_text(0, &entry_key("e")), None);
+    assert_eq!(sim.client(0).cursor("a").unwrap(), origin);
+    assert_eq!(sim.bootstrap_phase(0, "a"), BootstrapPhase::NotRequested);
+    assert!(sim.client(0).bootstrap_schedule(None).unwrap().is_none());
 }

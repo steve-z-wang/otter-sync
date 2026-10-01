@@ -87,7 +87,7 @@ Future<void> main(List<String> args) async {
       ],
       'pending': status['pending'],
       'beforeImages': status['beforeImages'],
-      'channels': status['channels'],
+      'scopes': status['scopes'],
       'rejections': status['rejections'],
       'entry1': await client.recordSyncState('Entry', {'id': 'entry-1'}),
       'localOnly': await client.recordSyncState('Entry', {'id': 'local-only'}),

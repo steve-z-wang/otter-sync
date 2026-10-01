@@ -9,6 +9,7 @@ pub struct Engine<'a, S: ClientStore> {
     pub schema: &'a Schema,
     pub changed: &'a mut BTreeSet<String>,
     pub committed: bool,
+    pub(crate) reconciliation: bool,
     pub(crate) stage_mode: crate::authority::StageMode,
 }
 
@@ -24,8 +25,16 @@ impl<'a, S: ClientStore> Engine<'a, S> {
             schema,
             changed,
             committed,
+            reconciliation: false,
             stage_mode: crate::authority::StageMode::Normal,
         }
+    }
+    pub(crate) fn reconciled<T>(&mut self, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let previous = self.reconciliation;
+        self.reconciliation = true;
+        let result = body(self);
+        self.reconciliation = previous;
+        result
     }
     pub fn rows(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
         if self.committed {

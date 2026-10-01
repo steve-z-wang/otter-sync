@@ -8,8 +8,8 @@ use axton_compiler::{parse, validate};
 fn generated_actions_bind_to_shared_runtime_and_backend() {
     let descriptor = compile("model Todo { id String at DateTime @@id(id) } mutation Touch(todo Todo.update<at>, when DateTime) { echoed DateTime }").unwrap();
     let model = axton_compiler::typescript(&descriptor);
-    let client = axton_compiler::client_typescript(&descriptor, "@axton/client");
-    let backend = axton_compiler::backend_typescript(&descriptor, "@axton/server");
+    let client = axton_compiler::client_typescript(&descriptor, "@axtonjs/client");
+    let backend = axton_compiler::backend_typescript(&descriptor, "@axtonjs/server");
     assert!(model.contains("import type { Call, CallOptions, OnceOptions } from './client.ts'"));
     assert!(client.contains("type CallOutcome"));
     assert!(client.contains("readonly mutations:"));
@@ -28,7 +28,7 @@ fn retained_loader_identity_uses_its_own_datetime_contract() {
     old["version"] = serde_json::json!(1);
     descriptor["backendModels"] =
         serde_json::json!([old, descriptor["schema"]["models"][0].clone()]);
-    let backend = axton_compiler::backend_typescript(&descriptor, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&descriptor, "@axtonjs/server");
     assert!(backend.contains("v1(call: LoaderCall<Tx, MomentV1Identity>)"));
 }
 
@@ -377,7 +377,7 @@ fn duplicate_outputs_and_duplicate_inputs_fail_independently() {
 fn explicit_results_generate_separate_client_and_handler_types() {
     let descriptor = compile(EXPLICIT_RESULTS).unwrap();
     let ts = axton_compiler::typescript(&descriptor);
-    let backend = axton_compiler::backend_typescript(&descriptor, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&descriptor, "@axtonjs/server");
     let dart = axton_compiler::dart(&descriptor);
     for expected in [
         "export type EditOutput = void;",
@@ -482,8 +482,8 @@ fn singular_inverse_requires_a_unique_foreign_key() {
 #[test]
 fn backend_emitter_declares_handlers_loaders_and_references() {
     let v = compile(include_str!("../../../fixtures/compiler/relations.model")).unwrap();
-    let ts = axton_compiler::backend_typescript(&v, "@axton/server");
-    assert!(ts.contains("from \"@axton/server\""));
+    let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
+    assert!(ts.contains("from \"@axtonjs/server\""));
     assert!(ts.contains("export interface Handlers<Tx> {"));
     assert!(ts.contains(
         " addBook: { v1(call: HandlerCall<Tx, AddBookInput>): Promise<void> } | ((call: HandlerCall<Tx, AddBookInput>) => Promise<void>);"
@@ -504,34 +504,42 @@ fn backend_emitter_declares_handlers_loaders_and_references() {
     assert!(!axton_compiler::typescript(&v).contains("backendConfig"));
 }
 #[test]
-fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
+fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     let v = compile("model Todo { id String @@id(id) }\nmodel Pin { todo String at DateTime @@id(todo, at) }\nmutation Edit(todo Todo.update)\nquery Look(id String) { todo Todo? }\nmutation Legacy { todo Todo.delete }").unwrap();
-    let ts = axton_compiler::backend_typescript(&v, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     // A discriminated reference per Model, and constructors narrowed to their own variant.
     assert!(ts.contains("export type RecordRef = { readonly model: \"Todo\"; readonly identity: TodoIdentity } | { readonly model: \"Pin\"; readonly identity: PinIdentity };\n"), "{ts}");
     assert!(ts.contains("export function Todo(identity: TodoIdentity): Extract<RecordRef, { model: \"Todo\" }> { return { model: \"Todo\", identity }; }"), "{ts}");
     assert!(ts.contains("export function Pin(identity: PinIdentity): Extract<RecordRef, { model: \"Pin\" }> { return { model: \"Pin\", identity }; }"), "{ts}");
-    assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Touch {\n todo(identity: TodoIdentity): void;\n pin(identity: PinIdentity): void;\n}\n"), "{ts}");
+    for retired in [
+        "interface Channel",
+        "interface ModelMembership",
+        "type MembershipOptions",
+        "type TagSelector",
+        "channel(name:",
+    ] {
+        assert!(!ts.contains(retired), "{retired}: {ts}");
+    }
+    assert!(ts.contains("export interface Scope {"), "{ts}");
+    assert!(ts.contains("export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     assert!(
         ts.contains(
             "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
         ),
         "{ts}"
     );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n touch: Touch;\n}\n"), "{ts}");
     // `backend.transaction` hands its body the same generated handles.
     assert!(
         ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
         "{ts}"
     );
     // The broad runtime contexts and the retired helpers are not re-exported.
-    assert!(ts.contains("export { CallRejected, MutationRejected, devAuth, type LoaderCall } from \"@axton/server\";\n"), "{ts}");
+    assert!(ts.contains("export { CallRejected, MutationRejected, devAuth, type LoaderCall } from \"@axtonjs/server\";\n"), "{ts}");
     for retired in [
         "type MutationContext,",
         "type HandlerCall,",
@@ -543,15 +551,20 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    // Without Models, a Channel has only its mixed verbs and nothing to name.
+    // Without Models, a Scope has only its mixed verbs and nothing to name.
     let empty =
-        axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axton/server");
+        axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axtonjs/server");
     assert!(
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[]): void;\n remove(records: readonly RecordRef[]): void;\n}\n"), "{empty}");
-    assert!(empty.contains("export interface Touch {\n}\n"), "{empty}");
+    assert!(empty.contains("export interface Scope {"), "{empty}");
+    assert!(
+        empty.contains(
+            "export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
+        ),
+        "{empty}"
+    );
 }
 
 #[test]
@@ -561,7 +574,7 @@ fn backend_emitter_groups_handler_versions_under_the_mutation_name() {
     let mut old = v["mutations"][0].clone();
     old["version"] = serde_json::json!(1);
     with_history["backendMutations"] = serde_json::json!([old, v["mutations"][0].clone()]);
-    let ts = axton_compiler::backend_typescript(&with_history, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&with_history, "@axtonjs/server");
     assert!(
         ts.contains(
             " edit: { v1(call: HandlerCall<Tx, EditV1Input>): Promise<void>; v2(call: HandlerCall<Tx, EditInput>): Promise<void> };\n"
@@ -575,7 +588,7 @@ fn backend_emitter_groups_handler_versions_under_the_mutation_name() {
 fn backend_emitter_accepts_a_bare_function_only_for_a_v1_only_mutation() {
     let v = compile("model A { id String title String @@id(id) } mutation Save { a A.create }")
         .unwrap();
-    let ts = axton_compiler::backend_typescript(&v, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     assert!(
         ts.contains(
             " save: { v1(call: HandlerCall<Tx, SaveInput>): Promise<void> } | ((call: HandlerCall<Tx, SaveInput>) => Promise<void>);\n"
@@ -586,7 +599,7 @@ fn backend_emitter_accepts_a_bare_function_only_for_a_v1_only_mutation() {
         "model A { id String title String @@id(id) } mutation Save { a A.create @@version(2) }",
     )
     .unwrap();
-    let ts = axton_compiler::backend_typescript(&later, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&later, "@axtonjs/server");
     assert!(
         ts.contains(" save: { v2(call: HandlerCall<Tx, SaveInput>): Promise<void> };\n"),
         "{ts}"
@@ -774,7 +787,7 @@ fn generated_transaction_facades_are_local_only() {
 fn generated_store_hooks_are_typed_and_decode_incoming_records() {
     let schema = compile("enum Status { active closed } model Entry { tenant String id String at DateTime status Status @@id(tenant, id) }").unwrap();
     let ts = axton_compiler::typescript(&schema);
-    let client = axton_compiler::client_typescript(&schema, "@axton/client");
+    let client = axton_compiler::client_typescript(&schema, "@axtonjs/client");
     let dart = axton_compiler::dart(&schema);
     assert!(
         ts.contains("export type StoreChange<Identity, Model>"),
@@ -792,7 +805,7 @@ fn generated_store_hooks_are_typed_and_decode_incoming_records() {
         ts.contains("id: row.id as string"),
         "composite identity decoder: {ts}"
     );
-    assert!(ts.contains("readonly channels:"), "{ts}");
+    assert!(ts.contains("readonly scopes:"), "{ts}");
     assert!(client.contains("onStore?: StoreHooks"), "{client}");
     assert!(
         client.contains("decodeEntryIdentity(change.identity)"),
@@ -819,7 +832,7 @@ fn store_hooks_emit_for_model_only_and_model_free_schemas() {
         let schema = compile(source).unwrap();
         assert!(axton_compiler::typescript(&schema).contains("export interface StoreHooks"));
         assert!(
-            axton_compiler::client_typescript(&schema, "@axton/client")
+            axton_compiler::client_typescript(&schema, "@axtonjs/client")
                 .contains("onStore?: StoreHooks")
         );
         assert!(axton_compiler::dart(&schema).contains("class StoreHooks"));
@@ -981,9 +994,7 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
     for name in [
         "MutationContext",
         "QueryContext",
-        "Channel",
         "Touch",
-        "ModelMembership",
         "RecordRef",
         "HandlerCall",
         "TransactionCall",
@@ -1010,7 +1021,6 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "ActionCall",
         "Calls",
         "Order",
-        "Scope",
         "Subscriptions",
     ] {
         assert!(
@@ -1021,8 +1031,8 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
 }
 
 #[test]
-fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
-    // `ctx.touch.todo` and `ctx.channel(name).todo` use the lower-first
+fn model_accessors_are_unique_and_leave_the_scope_verbs_free() {
+    // `ctx.touch.todo` and `ctx.scope(name).todo` use the lower-first
     // accessor, so two Models must not share one.
     let e = compile("model Todo { id String @@id(id) }\n\nmodel todo { id String @@id(id) }\n\n")
         .unwrap_err();
@@ -1031,20 +1041,18 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "{e}"
     );
     assert_eq!(line_of(&e), 3, "{e}");
-    // A Channel keeps `add` and `remove` for mixed record lists.
-    for name in ["Add", "add", "Remove", "remove"] {
-        let e = compile(&format!(
-            "model Other {{ id UUID @@id(id) }}\n\nmodel {name} {{ id UUID @@id(id) }}\n\n"
-        ))
-        .unwrap_err();
-        assert!(
-            e.contains(&format!(
-                "model {name} generates the accessor {}, which a Channel reserves for mixed record lists",
-                name.to_ascii_lowercase()
-            )),
-            "{name}: {e}"
-        );
-        assert_eq!(line_of(&e), 3, "{name}: {e}");
+    for name in [
+        "Add",
+        "add",
+        "Remove",
+        "remove",
+        "Channel",
+        "ModelMembership",
+        "MembershipOptions",
+        "TagSelector",
+        "LoadChannel",
+    ] {
+        compile(&format!("model {name} {{ id UUID @@id(id) }}")).unwrap();
     }
     // No other accessor is reserved: dictionary keys are own properties.
     for name in [
@@ -1054,7 +1062,7 @@ fn model_accessors_are_unique_and_leave_the_channel_verbs_free() {
         "__proto__",
         "ToString",
         "Publish",
-        // A Channel handle is no function, so function members stay free too.
+        // A Scope handle is no function, so function members stay free too.
         "Name",
         "Length",
         "Bind",
@@ -1189,7 +1197,7 @@ fn model_versions_reach_every_generated_surface() {
     let mut with_history = v.clone();
     let old = serde_json::json!({"name":"Task","version":1,"identity":["id"],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"enums":[]});
     with_history["backendModels"] = serde_json::json!([old]);
-    let backend = axton_compiler::backend_typescript(&with_history, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&with_history, "@axtonjs/server");
     assert!(backend.contains(r#""models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}}],"identity":["id"],"name":"Task","version":1}]"#), "{backend}");
     assert!(!backend.contains("backendModels"), "{backend}");
 }
@@ -1204,7 +1212,7 @@ fn backend_emitter_groups_loader_versions_under_the_model_name() {
     current["enums"] = v["schema"]["enums"].clone();
     let note = serde_json::json!({"name":"Note","version":1,"identity":["id"],"fields":v["schema"]["models"][1]["fields"],"enums":[]});
     with_history["backendModels"] = serde_json::json!([note, old, current]);
-    let ts = axton_compiler::backend_typescript(&with_history, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&with_history, "@axtonjs/server");
     // An older contract is its own record type, with the enum values of its time inline.
     assert!(
         ts.contains(
@@ -1227,7 +1235,7 @@ fn backend_emitter_groups_loader_versions_under_the_model_name() {
     );
     // Without a history the schema's own version is the only retained one; a
     // single non-v1 version has no shorthand.
-    let ts = axton_compiler::backend_typescript(&v, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     assert!(
         ts.contains(" task?: { v2(call: LoaderCall<Tx, TaskIdentity>): Promise<readonly (Task | null)[]> } | undefined;\n"),
         "{ts}"
@@ -1264,7 +1272,7 @@ fn deprecations_reach_every_generated_surface_and_leave_the_descriptors_alone() 
     );
     assert!(ts.contains("/** @deprecated \"archived\": use closed */\nexport type Status = \"active\" | \"archived\" | \"closed\";"), "{ts}");
     assert!(ts.contains("export interface EditArgs {\n task: { identity:TaskIdentity; values:Pick<TaskPatch, \"title\"> };\n /** @deprecated use task */\n old?: { identity:TaskIdentity; values:Pick<TaskPatch, \"name\"> };\n}"), "{ts}");
-    let backend = axton_compiler::backend_typescript(&v, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     assert!(backend.contains("export interface EditInput {\n task: { identity: TaskIdentity; patch: Pick<TaskPatch, \"title\"> };\n /** @deprecated use task */\n old: { identity: TaskIdentity; patch: Pick<TaskPatch, \"name\"> } | null;\n}"), "{backend}");
     let dart = axton_compiler::dart(&v);
     assert!(
@@ -1447,7 +1455,7 @@ fn action_backend_emits_versioned_handler_identity_contracts_with_factory() {
     let mut current = v["actions"][0].clone();
     current["version"] = serde_json::json!(2);
     retained["actions"] = serde_json::json!([old, current]);
-    let ts = axton_compiler::backend_typescript(&retained, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&retained, "@axtonjs/server");
     assert!(
         ts.contains("export type AddTodoV1HandlerOutput = void;"),
         "{ts}"
@@ -1478,7 +1486,7 @@ fn action_backend_emits_versioned_handler_identity_contracts_with_factory() {
 #[test]
 fn mixed_action_and_legacy_backend_keeps_handler_context_in_scope() {
     let v = compile("model Todo { id String @@id(id) } mutation Legacy { todo Todo.delete } mutation New(todo Todo.delete)").unwrap();
-    let ts = axton_compiler::backend_typescript(&v, "@axton/server");
+    let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     assert!(
         ts.contains("legacy: { v1(call: HandlerCall<Tx, LegacyInput>)"),
         "{ts}"
@@ -1717,7 +1725,7 @@ fn backend_enum_list_handler_outputs_preserve_latest_and_retained_union_cardinal
             .cloned()
             .collect(),
     );
-    let emitted = axton_compiler::backend_typescript(&latest, "@axton/server");
+    let emitted = axton_compiler::backend_typescript(&latest, "@axtonjs/server");
     let interface = |name: &str| {
         let marker = format!("export interface {name} {{");
         emitted
@@ -1752,10 +1760,10 @@ fn action_only_and_model_only_clients_have_no_legacy_mutate_facade() {
         assert!(!ts.contains("export interface MutatePort"), "{ts}");
         assert!(!dart.contains("class Mutate"), "{dart}");
         assert!(!dart.contains("late final Mutate mutate"), "{dart}");
-        let client = axton_compiler::client_typescript(&v, "@axton/client");
+        let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
         assert!(!client.contains("readonly mutate"), "{client}");
         assert!(!client.contains("new Mutate(client)"), "{client}");
-        let backend = axton_compiler::backend_typescript(&v, "@axton/server");
+        let backend = axton_compiler::backend_typescript(&v, "@axtonjs/server");
         assert!(!backend.contains("MutationRejected"), "{backend}");
     }
 }
@@ -1773,7 +1781,6 @@ fn generated_clients_expose_the_scope_facade() {
         " subscribe(scope: string): Promise<Subscription> { return this.#client.subscribeScope(scope); }",
         " readonly scopes: Scopes;",
         "this.scopes = new Scopes(client);",
-        " subscribe(channel: string): Promise<Subscription> { return this.#client.subscribe(channel); }",
     ] {
         assert!(ts.contains(line), "{line} missing from {ts}");
     }
@@ -1787,7 +1794,6 @@ fn generated_clients_expose_the_scope_facade() {
         "class Scopes { final Client client; Scopes(this.client);",
         " Future<Subscription> subscribe(String scope) => client.subscribeScope(scope);",
         " late final Scopes scopes = Scopes(client);",
-        " Future<Subscription> subscribe(String channel) => client.subscribe(channel);",
     ] {
         assert!(dart.contains(line), "{line} missing from {dart}");
     }
@@ -1814,7 +1820,7 @@ fn action_store_options_name_only_explicit_model_outputs_in_both_languages() {
         ts.contains("export type OpenOptions = CallOptions<'main'>;"),
         "{ts}"
     );
-    let client = axton_compiler::client_typescript(&v, "@axton/client");
+    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
     assert!(client.contains("type CallOptions"), "{client}");
     // Both routes of each kind take the same typed store options; the
     // direct Query route adds its once controls.
@@ -2016,7 +2022,7 @@ fn a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind() {
         .collect();
     retained["actions"] = serde_json::json!(versions);
     retained["schema"]["actions"] = retained["actions"].clone();
-    let backend = axton_compiler::backend_typescript(&retained, "@axton/server");
+    let backend = axton_compiler::backend_typescript(&retained, "@axtonjs/server");
     let section = |name: &str| {
         let start = backend
             .find(&format!("export interface {name}<Tx> {{"))
@@ -2076,7 +2082,7 @@ fn direct_queries_generate_once_options_and_typed_invalidators() {
         ..ts.find("export function makeQueries").unwrap()];
     assert!(!mutations.contains("OnceOptions"), "{mutations}");
     assert!(!mutations.contains("invokeQuery"), "{mutations}");
-    let client = axton_compiler::client_typescript(&v, "@axton/client");
+    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
     assert!(client.contains("type OnceOptions"), "{client}");
     let dart = axton_compiler::dart(&v);
     let class = |name: &str| {
@@ -2197,7 +2203,7 @@ fn model_fetch_generates_one_typed_method_per_model_in_both_languages() {
         ),
         "{ts}"
     );
-    let client = axton_compiler::client_typescript(&v, "@axton/client");
+    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
     for line in [
         "import { fetchModels, type FetchModels } from \"./generated.ts\";",
         " readonly fetch: FetchModels;",
@@ -2237,7 +2243,7 @@ fn model_fetch_is_generated_for_model_only_schemas_and_omitted_without_models() 
             .contains("export function fetchModels(port:FetchPort):FetchModels")
     );
     assert!(
-        axton_compiler::client_typescript(&only, "@axton/client")
+        axton_compiler::client_typescript(&only, "@axtonjs/client")
             .contains(" readonly fetch: FetchModels;")
     );
     assert!(
@@ -2246,7 +2252,7 @@ fn model_fetch_is_generated_for_model_only_schemas_and_omitted_without_models() 
     );
     let free = compile("query Ping() { value String }").unwrap();
     let ts = axton_compiler::typescript(&free);
-    let client = axton_compiler::client_typescript(&free, "@axton/client");
+    let client = axton_compiler::client_typescript(&free, "@axtonjs/client");
     let dart = axton_compiler::dart(&free);
     for text in [&ts, &client, &dart] {
         assert!(!text.contains("FetchModels"), "{text}");
@@ -2423,5 +2429,33 @@ fn dotted_argument_names_are_refused_outside_a_sequence() {
     ] {
         let err = compile(source).unwrap_err();
         assert!(err.starts_with(needle), "{source}: {err}");
+    }
+}
+
+#[test]
+fn canonical_scope_type_names_refuse_model_and_enum_collisions() {
+    for name in [
+        "Scope",
+        "LoadScope",
+        "ScopeAdd",
+        "ScopeRecords",
+        "ScopeWhere",
+        "ScopeSelection",
+        "ScopeTagRemoval",
+        "ScopePredicate",
+        "AddDeclaration",
+    ] {
+        for source in [
+            format!("model {name} {{ id String @@id(id) }}"),
+            format!("enum {name} {{ A B }}"),
+        ] {
+            assert!(
+                compile(&source).unwrap_err().contains("generated backend"),
+                "{source}"
+            );
+        }
+    }
+    for name in ["Tag", "Name", "Length", "Prototype"] {
+        assert!(compile(&format!("model {name} {{ id String @@id(id) }}")).is_ok());
     }
 }

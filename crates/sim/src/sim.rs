@@ -7,8 +7,10 @@ use crate::{
     schema,
 };
 use axton_client::{BootstrapPhase, Client, Operation, OperationKind, Report, ReportKind};
-use axton_core::{BootstrapPage, PullPage, PushReceipt, PushRequest, RecordKey};
-use axton_server::host::{MembershipIntent, RecordRef};
+use axton_core::{
+    PushReceipt, PushRequest, RecordKey, ScopeBootstrapPage, ScopeChange, ScopePullPage,
+};
+use axton_server::host::{RecordRef, ScopeIntent};
 use axton_sqlite::SqliteStore;
 use serde_json::json;
 use std::{
@@ -81,25 +83,25 @@ pub enum Action {
     },
     Subscribe {
         client: usize,
-        channel: String,
+        scope: String,
     },
-    /// Subscribe from now: the registration initializes at the channel's
+    /// Subscribe from now: the registration initializes at the scope's
     /// current head, so everything already published is history this client
     /// only reaches through Bootstrap
     /// ([#151](https://github.com/zanminwang/axton/issues/151)).
     SubscribeAtHead {
         client: usize,
-        channel: String,
+        scope: String,
     },
     Unsubscribe {
         client: usize,
-        channel: String,
+        scope: String,
     },
-    /// Register the durable load of everything published to `channel` before
+    /// Register the durable load of everything published to `scope` before
     /// this subscription's origin, as `bootstrap()` does.
     Bootstrap {
         client: usize,
-        channel: String,
+        scope: String,
     },
     /// Ask for the next historical page of whichever run's turn it is. Nothing
     /// schedulable: nothing to ask for.
@@ -109,7 +111,7 @@ pub enum Action {
     Freeze {
         client: usize,
     },
-    /// One pull for every channel the client subscribes to, from its cursors.
+    /// One pull for every scope the client subscribes to, from its cursors.
     Pull {
         client: usize,
     },
@@ -128,28 +130,27 @@ pub enum Action {
         client: usize,
     },
     /// A business change to `key` (`None` deletes it) distributed to
-    /// `channels` by low-level publication: the record is enrolled in each of
+    /// `scopes` by low-level publication: the record is enrolled in each of
     /// them first, since a scan answers members only, and its other
     /// memberships are not published to.
     ServerChange {
         key: String,
         text: Option<String>,
-        channels: Vec<String>,
+        scopes: Vec<String>,
     },
-    /// A record's real membership legitimately moves to `channels`: every new member
+    /// A record's real membership legitimately moves to `scopes`: every new member
     /// is told about the record at its current stamp (a republication, which never
-    /// advances a version). The channels it leaves hear nothing: loads are
-    /// channel-blind, so a client that only follows a vacated channel keeps its last
-    /// content as legitimately retained data.
+    /// advances a version). Departed Scopes deliver identity-only releases;
+    /// another current hold or device-local work may retain the row.
     MoveMembership {
         key: String,
-        channels: Vec<String>,
+        scopes: Vec<String>,
     },
     /// One application transaction outside any push (`backend.transaction`)
     /// for `key`, settled by the engine. `touch` is the business change it
     /// declares: `Some(Some(text))` writes that text, `Some(None)` deletes the
     /// record (an Entry takes its Comments with it, each touched too), `None`
-    /// changes nothing. `memberships` are the record's ordered Channel add
+    /// changes nothing. `memberships` are the record's ordered Scope add
     /// (`true`) and remove (`false`) intents; the engine reduces them to the
     /// final relationship. The record's routing follows the stored result, so
     /// later handler calls keep it.
@@ -157,6 +158,10 @@ pub enum Action {
         key: String,
         touch: Option<Option<String>>,
         memberships: Vec<(String, bool)>,
+    },
+    /// Ordered tag declarations reduced by the production server.
+    ScopeTags {
+        intents: Vec<ScopeIntent>,
     },
     RejectNext {
         code: String,
@@ -195,7 +200,7 @@ pub struct Slot {
     /// `completed_work_had_a_matching_response` compares this record with the live
     /// queue and the completion counter.
     pub pushes: BTreeMap<u64, Vec<u64>>,
-    /// Subscription generation per channel: bumped every time the client goes from
+    /// Subscription generation per scope: bumped every time the client goes from
     /// unsubscribed to subscribed.
     pub generations: BTreeMap<String, u64>,
     /// The Scope whose historical page was asked for last: the rotation's
@@ -227,23 +232,23 @@ pub struct Sim {
     /// (client, encoded key) pairs that received a direct write since the last
     /// authoritative content for that key landed on that client. A direct write
     /// diverges from the server by design (N4/L4); `no_pending_means_converged`
-    /// exempts exactly these pairs rather than the whole client or channel.
+    /// exempts exactly these pairs rather than the whole client or scope.
     pub direct_writes: BTreeSet<(usize, String)>,
     /// Whether the random stepper (`step.rs::choose`) may generate `Action::Direct`.
     /// Defaults to true; tests/invariants.rs runs the R2 runner both ways.
     pub generate_direct: bool,
     /// Whether `Action::ServerChange` (`step.rs::choose`) may publish to (and so
-    /// enroll the record in) a channel outside a record's real, explicitly-set
+    /// enroll the record in) a scope outside a record's real, explicitly-set
     /// routing. Defaults to false: an application's handler publishes to the
-    /// channels that provide a record, and the random runner generates what
-    /// applications do. Since loads are channel-blind, the extra channel is
+    /// scopes that provide a record, and the random runner generates what
+    /// applications do. Since loads are scope-blind, the extra scope is
     /// harmless to the engine - it simply delivers the same content at the same
     /// stamp until the next handler call removes it - so a test may turn this on
     /// to prove exactly that.
     pub generate_membership_faults: bool,
     /// Count of actual (client, key) content comparisons `no_pending_means_converged`
     /// has made across the run - the checks it skips (not at head, exempted by a
-    /// direct write, membership or channel-stamp gate) do not count. The R2 runner
+    /// direct write, membership or scope-stamp gate) do not count. The R2 runner
     /// asserts a floor on the sum across seeds so this coverage cannot silently drop.
     pub comparisons: usize,
     /// Equal-stamp content conflicts every receipt and page reported across the run
@@ -298,11 +303,14 @@ pub fn parse_key(s: &str) -> RecordKey {
 
 impl Sim {
     pub fn new(seed: u64, clients: usize) -> Sim {
+        Self::new_with_schema(seed, clients, schema::schema())
+    }
+    pub fn new_with_schema(seed: u64, clients: usize, client_schema: axton_core::Schema) -> Sim {
         let dir = tempfile::tempdir().unwrap();
         let clients = (0..clients)
             .map(|i| {
                 let path = dir.path().join(format!("client-{i}.sqlite"));
-                let schema = schema::schema();
+                let schema = client_schema.clone();
                 Slot {
                     client: Some(open(&path, &schema, false)),
                     path,
@@ -408,7 +416,7 @@ impl Sim {
         if self.host.has_membership(&key) {
             return;
         }
-        let channels = match spec {
+        let scopes = match spec {
             MutationSpec::CreateComment { entry, .. } => {
                 let parent = self.host.membership(&schema::entry_key(entry));
                 if parent.is_empty() {
@@ -419,22 +427,22 @@ impl Sim {
             }
             _ => vec!["a".to_string()],
         };
-        let refs: Vec<&str> = channels.iter().map(String::as_str).collect();
+        let refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
         self.host.set_membership(&key, &refs);
     }
-    /// Move `key`'s real membership to exactly `channels` in one external
-    /// settlement: a removal for every stored Channel it leaves, an add for
-    /// every one it names. The engine publishes it to each newly joined Channel
+    /// Move `key`'s real membership to exactly `scopes` in one external
+    /// settlement: a removal for every stored Scope it leaves, an add for
+    /// every one it names. The engine publishes it to each newly joined Scope
     /// at its current stamp (initializing a missing one, never advancing it);
-    /// Channels it stays in or leaves are told nothing.
-    fn move_membership(&mut self, key: &RecordKey, channels: &[String]) -> Result<(), String> {
+    /// Scopes it stays in or leaves are told nothing.
+    fn move_membership(&mut self, key: &RecordKey, scopes: &[String]) -> Result<(), String> {
         let stored = self.host.stored_memberships(key);
         let mut intents: Vec<(String, bool)> = stored
             .iter()
-            .filter(|channel| !channels.contains(channel))
-            .map(|channel| (channel.clone(), false))
+            .filter(|scope| !scopes.contains(scope))
+            .map(|scope| (scope.clone(), false))
             .collect();
-        intents.extend(channels.iter().map(|channel| (channel.clone(), true)));
+        intents.extend(scopes.iter().map(|scope| (scope.clone(), true)));
         self.declare(key, &[], vec![], &intents)
     }
     /// One external settlement of `changes` and `key`'s ordered membership
@@ -449,11 +457,21 @@ impl Sim {
     ) -> Result<(), String> {
         let memberships = intents
             .iter()
-            .map(|(channel, present)| MembershipIntent {
-                channel: channel.clone(),
-                model: key.model.clone(),
-                identity: key.identity.clone(),
-                present: *present,
+            .map(|(scope, present)| {
+                let scope = scope.clone();
+                let record = RecordRef {
+                    model: key.model.clone(),
+                    identity: key.identity.clone(),
+                };
+                if *present {
+                    ScopeIntent::Add {
+                        scope,
+                        record,
+                        tags: vec![],
+                    }
+                } else {
+                    ScopeIntent::Remove { scope, record }
+                }
             })
             .collect();
         let changes = changes
@@ -494,15 +512,15 @@ impl Sim {
                     .map_err(|e| e.to_string())?;
                 self.direct_writes.insert((client, key.encoded().unwrap()));
             }
-            Action::Subscribe { client, channel } => {
+            Action::Subscribe { client, scope } => {
                 let fresh = self
                     .client(client)
                     .subscriptions()
                     .map_err(|e| e.to_string())?
                     .iter()
-                    .all(|(c, _)| c != &channel);
+                    .all(|(c, _)| c != &scope);
                 self.client(client)
-                    .transaction(|tx| tx.set_channel(channel.clone(), true))
+                    .transaction(|tx| tx.set_scope(scope.clone(), true))
                     .map_err(|e| e.to_string())?;
                 // Registration is intent only; the simulated client is one whose
                 // session acknowledged head zero, so the whole published log is
@@ -510,61 +528,61 @@ impl Sim {
                 // ([#150](https://github.com/zanminwang/axton/issues/150)).
                 let state = self
                     .client(client)
-                    .subscription_state(&channel)
+                    .subscription_state(&scope)
                     .map_err(|e| e.to_string())?
                     .ok_or("the registration left no subscription")?;
                 if state.starting_cursor.is_none() {
                     self.client(client)
                         .initialize_subscriptions(
-                            &BTreeMap::from([(channel.clone(), state.subscription_id)]),
-                            &BTreeMap::from([(channel.clone(), 0)]),
+                            &BTreeMap::from([(scope.clone(), state.subscription_id)]),
+                            &BTreeMap::from([(scope.clone(), 0)]),
                         )
                         .map_err(|e| e.to_string())?;
                 }
                 if fresh {
-                    *self.clients[client].generations.entry(channel).or_insert(0) += 1;
+                    *self.clients[client].generations.entry(scope).or_insert(0) += 1;
                 }
             }
-            Action::SubscribeAtHead { client, channel } => {
+            Action::SubscribeAtHead { client, scope } => {
                 let fresh = self
                     .client(client)
                     .subscriptions()
                     .map_err(|e| e.to_string())?
                     .iter()
-                    .all(|(c, _)| c != &channel);
+                    .all(|(c, _)| c != &scope);
                 self.client(client)
-                    .transaction(|tx| tx.set_channel(channel.clone(), true))
+                    .transaction(|tx| tx.set_scope(scope.clone(), true))
                     .map_err(|e| e.to_string())?;
                 // The acknowledgement this client's session would get names the
                 // head as it is now, so nothing published before it is delivered
                 // by subscribing (D9).
                 let state = self
                     .client(client)
-                    .subscription_state(&channel)
+                    .subscription_state(&scope)
                     .map_err(|e| e.to_string())?
                     .ok_or("the registration left no subscription")?;
                 if state.starting_cursor.is_none() {
-                    let head = self.host.head(&channel);
+                    let head = self.host.head(&scope);
                     self.client(client)
                         .initialize_subscriptions(
-                            &BTreeMap::from([(channel.clone(), state.subscription_id)]),
-                            &BTreeMap::from([(channel.clone(), head)]),
+                            &BTreeMap::from([(scope.clone(), state.subscription_id)]),
+                            &BTreeMap::from([(scope.clone(), head)]),
                         )
                         .map_err(|e| e.to_string())?;
                 }
                 if fresh {
-                    *self.clients[client].generations.entry(channel).or_insert(0) += 1;
+                    *self.clients[client].generations.entry(scope).or_insert(0) += 1;
                 }
             }
-            Action::Bootstrap { client, channel } => {
+            Action::Bootstrap { client, scope } => {
                 let id = self
                     .client(client)
-                    .subscription_state(&channel)
+                    .subscription_state(&scope)
                     .map_err(|e| e.to_string())?
                     .ok_or("a load needs a registered subscription")?
                     .subscription_id;
                 self.client(client)
-                    .request_bootstrap(&channel, id)
+                    .request_bootstrap(&scope, id)
                     .map_err(|e| e.to_string())?;
             }
             Action::LoadPull { client } => {
@@ -580,25 +598,21 @@ impl Sim {
                     return Ok(());
                 };
                 let models = self.client(client).declared_models();
-                let request = task.request(models);
-                let bytes = request.encode().map_err(|e| e.to_string())?;
+                let bytes = task.encode_request(models).map_err(|e| e.to_string())?;
                 self.clients[client].bootstrap_rotation = Some(task.state.scope.clone());
                 self.net.send(Message::Load {
                     client,
-                    scope: task.state.scope.clone(),
-                    subscription_id: task.state.subscription_id,
-                    run: task.state.run,
-                    after: task.state.cursor,
+                    task,
                     bytes,
                 });
             }
-            Action::Unsubscribe { client, channel } => {
-                // A channel is a delivery path, not an owner: unsubscribing must
+            Action::Unsubscribe { client, scope } => {
+                // A scope is a delivery path, not an owner: unsubscribing must
                 // leave every visible row, every stamp and every pending operation
                 // exactly as it found them.
                 let before = crate::invariants::content_snapshot(self, client)?;
                 self.client(client)
-                    .transaction(|tx| tx.set_channel(channel, false))
+                    .transaction(|tx| tx.set_scope(scope, false))
                     .map_err(|e| e.to_string())?;
                 crate::invariants::unsubscribe_cannot_remove_content(self, client, &before)?;
             }
@@ -614,7 +628,7 @@ impl Sim {
             }
             Action::Pull { client } => {
                 // Issued through the client so it can tell a page from an earlier
-                // subscription of a channel apart from a gap (A2). Nothing
+                // subscription of a scope apart from a gap (A2). Nothing
                 // subscribed: nothing to pull.
                 let Some(body) = self
                     .client(client)
@@ -663,11 +677,7 @@ impl Sim {
                     }
                 }
             }
-            Action::ServerChange {
-                key,
-                text,
-                channels,
-            } => {
+            Action::ServerChange { key, text, scopes } => {
                 let k = parse_key(&key);
                 let id = k.identity["id"].clone();
                 let state = text.map(|t| {
@@ -683,7 +693,7 @@ impl Sim {
                 // Nulling an Entry here without also removing its Comments would leave
                 // the server holding a Comment the client is bound to cascade-drop, a
                 // state the real handler never produces - so mirror the cascade,
-                // publishing each dropped Comment on its own real channels.
+                // publishing each dropped Comment on its own real scopes.
                 if state.is_none() && k.model == "Entry" {
                     for (encoded_key, value) in self.host.records() {
                         if !encoded_key.starts_with("[\"Comment\"") || value["entryId"] != id {
@@ -696,7 +706,7 @@ impl Sim {
                         self.host.set_state(&child_key, None);
                         let membership = self.host.membership(&child_key);
                         let child_refs: Vec<&str> = if membership.is_empty() {
-                            channels.iter().map(String::as_str).collect()
+                            scopes.iter().map(String::as_str).collect()
                         } else {
                             membership.iter().map(String::as_str).collect()
                         };
@@ -704,14 +714,14 @@ impl Sim {
                     }
                 }
                 self.host.set_state(&k, state);
-                let refs: Vec<&str> = channels.iter().map(String::as_str).collect();
+                let refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
                 self.host.notify(&k, &refs);
             }
-            Action::MoveMembership { key, channels } => {
+            Action::MoveMembership { key, scopes } => {
                 let k = parse_key(&key);
-                self.move_membership(&k, &channels)?;
+                self.move_membership(&k, &scopes)?;
                 // Child membership follows the parent: a moved Entry takes its
-                // Comments to the same channels, so a client that follows the
+                // Comments to the same scopes, so a client that follows the
                 // destination sees the pair together rather than a parent whose
                 // children it can never receive.
                 if k.model == "Entry" {
@@ -724,7 +734,7 @@ impl Sim {
                         .filter_map(|(_, v)| v["id"].as_str().map(str::to_string))
                         .collect();
                     for comment_id in child_ids {
-                        self.move_membership(&schema::comment_key(&comment_id), &channels)?;
+                        self.move_membership(&schema::comment_key(&comment_id), &scopes)?;
                     }
                 }
             }
@@ -768,6 +778,16 @@ impl Sim {
                     }
                 }
                 self.declare(&k, &writes, changes, &memberships)?;
+            }
+            Action::ScopeTags { intents } => {
+                self.host.transact(&[], vec![], intents)?;
+                for key in self.host.stamped_keys() {
+                    let scopes = self.host.stored_memberships(&key);
+                    self.host.set_membership(
+                        &key,
+                        &scopes.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                }
             }
             Action::RejectNext { code } => self.host.reject_next(&code),
             Action::FailNext => self.host.fail_next(),
@@ -835,47 +855,27 @@ impl Sim {
             // Both pull modes go through the same public entry point, so the
             // simulated backend dispatches a bootstrap request exactly as the
             // HTTP adapter does ([#151](https://github.com/zanminwang/axton/issues/151)).
-            Message::Load {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::Load { task, bytes, .. } => {
                 let page = self.host.pull(OWNER, &bytes)?;
                 self.net.send(Message::LoadPage {
                     client,
-                    scope,
-                    subscription_id,
-                    run,
-                    after,
+                    task,
                     bytes: page.into_bytes(),
                 });
             }
-            Message::LoadPage {
-                scope,
-                subscription_id,
-                run,
-                after,
-                bytes,
-                ..
-            } => {
+            Message::LoadPage { task, bytes, .. } => {
                 if !self.is_up(client) {
                     self.net.send(Message::LoadPage {
                         client,
-                        scope,
-                        subscription_id,
-                        run,
-                        after,
+                        task,
                         bytes,
                     });
                     return Ok(());
                 }
-                let page = BootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let page = ScopeBootstrapPage::decode(&bytes).map_err(|e| e.to_string())?;
                 let applied = self
                     .client(client)
-                    .apply_bootstrap_page(&scope, subscription_id, run, after, &page)
+                    .apply_scope_bootstrap_task(task, &page)
                     .map_err(|e| e.to_string())?;
                 let reports = applied
                     .report()
@@ -904,9 +904,14 @@ impl Sim {
                     self.net.send(Message::Page { client, bytes });
                     return Ok(());
                 }
-                let mut page = PullPage::decode(&bytes).map_err(|e| e.to_string())?;
+                let mut page = ScopePullPage::decode(&bytes).map_err(|e| e.to_string())?;
                 if self.corrupt_next_page
-                    && let Some(first) = page.changes.iter_mut().find(|c| c.error.is_none())
+                    && let Some(first) = page.changes.iter_mut().find_map(|change| match change {
+                        ScopeChange::Upsert { record, .. } if record.error.is_none() => {
+                            Some(record)
+                        }
+                        _ => None,
+                    })
                 {
                     // A change without its required `text`: the schema refuses it.
                     self.corrupt_next_page = false;
@@ -916,6 +921,16 @@ impl Sim {
                         first.state = json!({});
                     }
                 }
+                let content_changes: Vec<_> = page
+                    .changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        ScopeChange::Upsert { scope, record, .. } => {
+                            Some((scope.clone(), record.clone()))
+                        }
+                        ScopeChange::Remove { .. } => None,
+                    })
+                    .collect();
                 // A key this page carries a newer authoritative change for is no
                 // longer shadowed by an earlier direct write on this client. Newer
                 // is the client's own rule (D2): the change's stamp beats the
@@ -928,7 +943,7 @@ impl Sim {
                 // applied without a report, the client holds the server's content.
                 let mut confirmed = vec![];
                 let mut before = BTreeMap::new();
-                for change in &page.changes {
+                for (_, change) in &content_changes {
                     let Ok(key) = schema::schema().record_key(&change.model, &change.identity)
                     else {
                         continue;
@@ -955,22 +970,21 @@ impl Sim {
                 let ranges = page.cursors.clone();
                 // Entries this page deletes: their comments cascade locally, so a
                 // comment's row may go even when its own change was not applied.
-                let deleted_entries: BTreeSet<String> = page
-                    .changes
+                let deleted_entries: BTreeSet<String> = content_changes
                     .iter()
-                    .filter(|c| c.model == "Entry" && c.error.is_none() && c.state.is_null())
-                    .filter_map(|c| c.identity["id"].as_str().map(str::to_string))
+                    .filter(|(_, c)| c.model == "Entry" && c.error.is_none() && c.state.is_null())
+                    .filter_map(|(_, c)| c.identity["id"].as_str().map(str::to_string))
                     .collect();
                 let report = self
                     .client(client)
-                    .apply_page(page)
+                    .apply_scope_page(page)
                     .map_err(|e| e.to_string())?;
                 self.conflicts += report.conflicts();
-                // A page moves a channel to its `to` or not at all.
-                for (channel, cursor) in &report.cursors {
-                    if ranges.get(channel).map(|r| r.to) != Some(*cursor) {
+                // A page moves a scope to its `to` or not at all.
+                for (scope, cursor) in &report.cursors {
+                    if ranges.get(scope).map(|r| r.to) != Some(*cursor) {
                         return Err(format!(
-                            "client {client} channel {channel} cursor {cursor} landed inside the page"
+                            "client {client} scope {scope} cursor {cursor} landed inside the page"
                         ));
                     }
                 }
@@ -998,11 +1012,48 @@ impl Sim {
                                 .as_ref()
                                 .and_then(|row| row["entryId"].as_str())
                                 .is_some_and(|parent| deleted_entries.contains(parent));
-                        if now_stamp != then_stamp || (now != then && !cascaded) {
+                        // Scope frames preserve occurrences: another Scope in
+                        // this same page may successfully deliver the same identity
+                        // even when this occurrence was skipped or failed.
+                        let sibling_applied = content_changes.iter().any(|(scope, candidate)| {
+                            report.cursors.contains_key(scope)
+                                && candidate.model == key.model
+                                && candidate.identity == key.identity
+                                && candidate.error.is_none()
+                                && candidate.stamp == now_stamp
+                                && (candidate.stamp > then_stamp || now != then)
+                                && if candidate.state.is_null() {
+                                    now.is_none()
+                                } else {
+                                    schema::schema()
+                                        .validate_state(&candidate.model, &candidate.state)
+                                        .ok()
+                                        .map(|mut state| {
+                                            state.as_object_mut().unwrap().extend(
+                                                candidate
+                                                    .identity
+                                                    .as_object()
+                                                    .cloned()
+                                                    .unwrap_or_default(),
+                                            );
+                                            state
+                                        })
+                                        .as_ref()
+                                        == now.as_ref()
+                                }
+                        });
+                        if !sibling_applied
+                            && (now_stamp != then_stamp || (now != then && !cascaded))
+                        {
                             return Err(format!(
-                                "client {client} {encoded}: a {:?} change changed local content or stamp",
+                                "client {client} {encoded}: a {:?} change changed local content or stamp: before=({then_stamp},{then:?}) after=({now_stamp},{now:?}) candidates={content_changes:?}",
                                 entry.kind
                             ));
+                        }
+                        if sibling_applied {
+                            // The failed occurrence remains reported, but the
+                            // successful sibling already refreshed this pair.
+                            continue;
                         }
                         touched.retain(|k| k != &encoded);
                         confirmed.retain(|k| k != &encoded);
@@ -1064,8 +1115,8 @@ impl Sim {
                 }
             }
             // A record a client could not read is corrected the next time it is
-            // published: settle republishes it on its channels at its stamp, once.
-            // A client that does not follow those channels keeps its retained copy
+            // published: settle republishes it on its scopes at its stamp, once.
+            // A client that does not follow those scopes keeps its retained copy
             // (still exempt from the convergence check).
             let stale: BTreeSet<String> = self.stale_reads.iter().map(|(_, k)| k.clone()).collect();
             for encoded in stale {
@@ -1073,8 +1124,8 @@ impl Sim {
                     continue;
                 }
                 let key = schema::key_from_encoded(&encoded);
-                for channel in self.host.stored_memberships(&key) {
-                    self.host.ensure_publish(&key, &channel);
+                for scope in self.host.stored_memberships(&key) {
+                    self.host.ensure_publish(&key, &scope);
                 }
             }
             self.drain();
@@ -1107,15 +1158,15 @@ impl Sim {
         out
     }
     /// The committed phase of one registration's durable load.
-    pub fn bootstrap_phase(&mut self, client: usize, channel: &str) -> BootstrapPhase {
+    pub fn bootstrap_phase(&mut self, client: usize, scope: &str) -> BootstrapPhase {
         let id = self
             .client(client)
-            .subscription_state(channel)
+            .subscription_state(scope)
             .unwrap()
             .expect("a registered subscription")
             .subscription_id;
         self.client(client)
-            .bootstrap_state(channel, id)
+            .bootstrap_state(scope, id)
             .unwrap()
             .state
     }
@@ -1131,7 +1182,7 @@ mod tests {
         let mut sim = Sim::new(1, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
         sim.apply(Action::Enqueue {
@@ -1171,7 +1222,7 @@ mod tests {
         let mut sim = Sim::new(2, 1);
         sim.apply(Action::Subscribe {
             client: 0,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
         sim.apply(Action::Enqueue {

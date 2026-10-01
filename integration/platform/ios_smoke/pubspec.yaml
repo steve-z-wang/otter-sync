@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # run_ios_simulator_smoke.sh overrides this with a staged package whose
+  # build hook bundles the simulator library from build/axton-libraries.
   axton:
     path: ../../../packages/dart
 
@@ -19,3 +21,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+hooks:
+  user_defines:
+    axton:
+      local_artifacts: build/axton-libraries

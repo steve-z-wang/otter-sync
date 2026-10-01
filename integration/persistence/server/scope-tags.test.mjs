@@ -1,0 +1,922 @@
+// Scope tags and synchronized removal against real PostgreSQL: the
+// eight-table schema and its association trigger, the Scope operations as
+// settlement drives them, rollback, concurrency with real barriers, the
+// forward upgrade from the six-table schema and a 10,000-member removal.
+// Every assertion reads the committed tables through a separate pool.
+import test,{before,after} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
+import {Client as DeviceClient} from '../../../packages/client-js/index.mts';
+import {createRequire} from 'node:module';
+import {Pool,Client} from 'pg';
+import {createBackend} from '../../../packages/server/index.mts';
+import {pg,prisma,answer,persistence} from '../../../packages/postgres/index.mts';
+import {drizzle} from '../../../packages/postgres/src/drizzle.mts';
+import {drizzle as drizzleOrm} from 'drizzle-orm/node-postgres';
+import * as SQL from '../../../packages/postgres/src/sql.mts';
+import {sqlStatements} from '../../../packages/postgres/src/statements.mts';
+const require=createRequire(import.meta.url);
+const native=require('../../../bindings/node/axton-node.node');
+const url=process.env.DATABASE_URL;
+const check=new Pool({connectionString:url});
+const q=async(sql,params=[])=>(await check.query(sql,params)).rows;
+const pool=new Pool({connectionString:url});
+const database=pg(pool);
+const {driver}=database;
+const MAX=9007199254740991;
+const source=path=>readFile(new URL(`../../../packages/postgres/${path}`,import.meta.url),'utf8');
+const string=name=>({name,type:{kind:'scalar',name:'string'},nullable:false});
+const fields=[string('id'),string('title')];
+const config={schema:{enums:[],
+ models:[{name:'Todo',version:1,identity:['id'],fields}],
+ resultModels:[{name:'Todo',version:1,identity:['id'],fields,enums:[]}],
+ actions:[{name:'Mark',version:1,inputs:[{kind:'model',name:'todo',model:'Todo',operation:'update',cardinality:'single',allowedPatchFields:['title']}],outputs:[]}]},
+ mutations:[],loaders:['Todo']};
+let loaderCalls=0;
+const loader=async({tx,ids})=>{
+ loaderCalls++;
+ const rows=await driver.query(tx,'SELECT id,title FROM tag_todo WHERE id = ANY($1)',[ids.map(i=>i.id)]);
+ return ids.map(({id})=>{const row=rows.find(r=>r.id===id);return row?{title:row.title}:null;});
+};
+const make=db=>createBackend({config,native,database:db,authenticate:()=>'alice',onError:()=>{},
+ mutations:{async mark(){}},loaders:{todo:loader}});
+const backend=make(database);
+/** A backend whose every statement passes `seen(sql)` first; a throw there fails the statement. */
+const watched=seen=>make(persistence({transaction:body=>driver.transaction(body),query:(tx,sql,params)=>{seen(sql);return driver.query(tx,sql,params);}}));
+const key=id=>JSON.stringify({id});
+const write=(tx,id,title)=>driver.query(tx,'INSERT INTO tag_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
+const add=(scope,id,tags)=>backend.transaction(({scope: c})=>{const added=c(scope).add.todo({id});if(tags?.length)added.tag(tags);});
+const removeTag=(scope,tag)=>backend.transaction(({scope: c})=>{c(scope).where({ tags: { all: [tag] } }).remove();});
+const remove=(scope,id)=>backend.transaction(({scope: c})=>{c(scope).remove.todo({id});});
+const touch=(id,title)=>backend.transaction(async({tx,touch})=>{await write(tx,id,title);touch.todo({id});});
+/** The adapter itself, in one transaction: `call` answers a host request. */
+const adapter=body=>driver.transaction(tx=>body(request=>answer(driver,tx,request),(sql,params=[])=>driver.query(tx,sql,params)));
+const delta=(scope,id,{present=true,tags=[],publish=true}={})=>({scope,model:'Todo',identity:{id},identityKey:key(id),present,tags,publish});
+
+/** The live members of `scope` with their sorted tags, by identity. */
+const members=async scope=>(await q(
+ `SELECT r.identity_key AS key,COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL),'{}') AS tags
+  FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id
+  LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id
+  WHERE m.scope=$1 GROUP BY r.identity_key ORDER BY r.identity_key`,[scope])).map(r=>[JSON.parse(r.key).id,r.tags]);
+/** The compacted log of `scope` in cursor order. */
+const log=async scope=>(await q('SELECT r.identity_key AS key,l.cursor::text AS cursor,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope=$1 ORDER BY l.cursor',[scope])).map(r=>[JSON.parse(r.key).id,Number(r.cursor),r.kind]);
+const head=async scope=>Number((await q('SELECT head FROM axton_scope WHERE scope=$1',[scope]))[0]?.head??0);
+const tagNames=async scope=>(await q('SELECT name FROM axton_scope_tag WHERE scope=$1 ORDER BY name',[scope])).map(r=>r.name);
+const state=async scope=>({members:await members(scope),log:await log(scope),head:await head(scope),tags:await tagNames(scope)});
+const stamps=async ids=>(await q("SELECT identity_key,stamp::text FROM axton_record WHERE model='Todo' AND identity_key = ANY($1) ORDER BY identity_key",[ids.map(key)])).map(r=>({identity_key:r.identity_key,stamp:Number(r.stamp)}));
+const seed=(id,title='v1')=>q('INSERT INTO tag_todo(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[id,title]);
+
+before(async()=>{
+ // One simple-protocol call: the file holds dollar-quoted trigger functions.
+ await q(await source('migration.sql'));
+ await q('CREATE TABLE IF NOT EXISTS tag_todo(id text PRIMARY KEY,title text NOT NULL)');
+});
+after(async()=>{await pool.end();await check.end();});
+
+// ---- Pairs, tags and removal ----------------------------------------------
+
+test('a pair is one member whose adds union their tags; a tag-only change publishes nothing; same-named tags of two Scopes are distinct rows',async()=>{
+ await add('u-C','u-a',['X']);
+ await add('u-C','u-a',['Y']);
+ await backend.transaction(({scope: scope})=>{scope('u-C').add.todo({id:'u-a'}).tag(['X']);scope('u-C').add.todo({id:'u-a'});});
+ assert.deepEqual(await state('u-C'),{members:[['u-a',['X','Y']]],log:[['u-a',1,'upsert']],head:1,tags:['X','Y']});
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',['u-C']),[{n:1}],'membership is unique per pair');
+ await add('u-D','u-a',['X']);
+ const ids=await q("SELECT scope,id::text FROM axton_scope_tag WHERE scope IN ('u-C','u-D') AND name='X' ORDER BY scope");
+ assert.equal(ids.length,2);assert.notEqual(ids[0].id,ids[1].id,'a tag belongs to its Scope');
+ await removeTag('u-D','X');
+ assert.deepEqual(await state('u-C'),{members:[['u-a',['X','Y']]],log:[['u-a',1,'upsert']],head:1,tags:['X','Y']},'removing X in D leaves C untouched');
+ assert.deepEqual(await state('u-D'),{members:[],log:[['u-a',2,'remove']],head:2,tags:[]});
+});
+
+test('removing X from A (X, Y) and B (X) removes both whole memberships: no member, no association, two remove rows and no Loader call',async()=>{
+ const scope='x-bob';
+ for(const id of ['x-A','x-B'])await seed(id);
+ await backend.transaction(({scope: c})=>{c(scope).add.todo({id:'x-A'}).tag(['X','Y']);c(scope).add.todo({id:'x-B'}).tag(['X']);});
+ const before=await stamps(['x-A','x-B']);
+ loaderCalls=0;
+ await removeTag(scope,'X');
+ assert.equal(loaderCalls,0,'a removal loads nothing');
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',[scope]),[{n:0}]);
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM axton_scope_member_tag mt JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE t.scope=$1',[scope]),[{n:0}]);
+ assert.deepEqual(await q('SELECT kind,count(*)::int AS n FROM axton_scope_log WHERE scope=$1 GROUP BY kind',[scope]),[{kind:'remove',n:2}]);
+ assert.deepEqual(await log(scope),[['x-A',3,'remove'],['x-B',4,'remove']],'positions in record-key order above the head');
+ assert.equal(await head(scope),4);
+ assert.deepEqual(await tagNames(scope),[],'unused tags are collected');
+ assert.deepEqual(await stamps(['x-A','x-B']),before,'record metadata and stamps remain');
+ assert.deepEqual(await q('SELECT count(*)::int AS n FROM tag_todo WHERE id IN ($1,$2)',['x-A','x-B']),[{n:2}],'business rows remain');
+});
+
+test('the specification example: removing X keeps C (Y) at its old position; A goes despite its Y label',async()=>{
+ const scope='User:bob';
+ await backend.transaction(({scope: c})=>{
+  c(scope).add.todo({id:'ex-A'}).tag(['X','Y']);c(scope).add.todo({id:'ex-B'}).tag(['X']);c(scope).add.todo({id:'ex-C'}).tag(['Y']);
+ });
+ await removeTag(scope,'X');
+ assert.deepEqual(await state(scope),{members:[['ex-C',['Y']]],log:[['ex-C',3,'upsert'],['ex-A',4,'remove'],['ex-B',5,'remove']],head:5,tags:['Y']});
+});
+
+test('removing an absent record or an unmatched tag, twice, allocates no cursor, creates no Scope and calls no Loader',async()=>{
+ await add('idem','idem-a',['X']);
+ loaderCalls=0;
+ for(let n=0;n<2;n++){
+  await remove('idem','idem-nobody');
+  await removeTag('idem','nothing');
+  await remove('idem-none','idem-a');
+  await removeTag('idem-none','X');
+ }
+ assert.deepEqual(await state('idem'),{members:[['idem-a',['X']]],log:[['idem-a',1,'upsert']],head:1,tags:['X']});
+ assert.deepEqual(await q('SELECT scope FROM axton_scope WHERE scope=$1',['idem-none']),[]);
+ assert.equal(loaderCalls,0);
+ await remove('idem','idem-a');
+ await remove('idem','idem-a');
+ assert.deepEqual(await state('idem'),{members:[],log:[['idem-a',2,'remove']],head:2,tags:[]},'a second removal of the same record is a no-op');
+});
+
+test('a whole-member removal discards every tag; a later add starts with only its own tags; the log keeps one compacted row per pair',async()=>{
+ await add('whole','w-a',['X','Y']);
+ await remove('whole','w-a');
+ assert.deepEqual(await state('whole'),{members:[],log:[['w-a',2,'remove']],head:2,tags:[]});
+ await add('whole','w-a',['Z']);
+ assert.deepEqual(await state('whole'),{members:[['w-a',['Z']]],log:[['w-a',3,'upsert']],head:3,tags:['Z']},'old tags do not revive');
+ await remove('whole','w-a');
+ assert.deepEqual(await log('whole'),[['w-a',4,'remove']],'one row per pair: the latest position replaced the others');
+ assert.deepEqual(await q("SELECT count(*)::int AS n FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope='whole' AND r.identity_key=$1",[key('w-a')]),[{n:1}]);
+});
+
+test('declarations reduce in order inside one transaction: a selector sees earlier adds, a removed and re-added member publishes one upsert',async()=>{
+ await add('ord','ord-E',['X','Y']);
+ await backend.transaction(({scope: scope})=>{
+  const c=scope('ord');
+  c.add.todo({id:'ord-A'}).tag(['X']);
+  c.where({ tags: { all: ['X'] } }).remove();
+  c.add.todo({id:'ord-B'}).tag(['X']);
+  c.add.todo({id:'ord-E'}).tag(['Z']);
+ });
+ assert.deepEqual(await state('ord'),{members:[['ord-B',['X']],['ord-E',['Z']]],log:[['ord-B',2,'upsert'],['ord-E',3,'upsert']],head:3,tags:['X','Z']},
+  'A was never a lasting member and got no position; E was released and re-added with only Z');
+});
+
+test('the reverse lookup answers every Scope of a record, and a touch reaches exactly those, keeping their tags',async()=>{
+ await seed('rev-a');
+ await backend.transaction(({scope: scope})=>{scope('rev-1').add.todo({id:'rev-a'}).tag(['X']);scope('rev-2').add.todo({id:'rev-a'});});
+ assert.deepEqual(await adapter(call=>call({op:'memberships',model:'Todo',identityKey:key('rev-a')})),['rev-1','rev-2']);
+ await touch('rev-a','v2');
+ assert.deepEqual([await log('rev-1'),await log('rev-2')],[[['rev-a',2,'upsert']],[['rev-a',2,'upsert']]]);
+ assert.deepEqual(await members('rev-1'),[['rev-a',['X']]],'a touch keeps the tags');
+ await removeTag('rev-1','X');
+ assert.deepEqual(await adapter(call=>call({op:'memberships',model:'Todo',identityKey:key('rev-a')})),['rev-2']);
+ await touch('rev-a','v3');
+ assert.deepEqual([await head('rev-1'),await head('rev-2')],[3,3],'the removed Scope hears nothing more');
+ assert.ok((await q("SELECT indexdef FROM pg_indexes WHERE indexname='axton_scope_member_record'"))[0].indexdef.includes('(record_id, scope)'),'the lookup has its index');
+});
+
+test('a rolled-back transaction leaves every member, tag, association, log row and head as it was',async()=>{
+ await add('rb','rb-a',['X']);
+ const before=await state('rb');
+ await assert.rejects(()=>backend.transaction(async({tx,scope: scope})=>{await write(tx,'rb-b','never');scope('rb').add.todo({id:'rb-b'}).tag(['X','N']);throw new Error('cancel add');}),/cancel add/);
+ await assert.rejects(()=>backend.transaction(async({scope: scope})=>{scope('rb').where({ tags: { all: ['X'] } }).remove();scope('rb-new').add.todo({id:'rb-a'});throw new Error('cancel removal');}),/cancel removal/);
+ assert.deepEqual(await state('rb'),before);
+ assert.deepEqual(await q("SELECT scope FROM axton_scope WHERE scope='rb-new'"),[]);
+ assert.deepEqual(await q("SELECT id FROM tag_todo WHERE id='rb-b'"),[]);
+ assert.deepEqual(await stamps(['rb-b']),[],'the rolled-back add initialised no stamp');
+});
+
+// ---- Schema guarantees, by direct SQL ---------------------------------------
+
+/** The SQLSTATE of a refused statement, whichever layer wrapped it. */
+const refused=async(sql,params=[])=>{try{await q(sql,params);}catch(error){return error.code;}return 'accepted';};
+
+test('the association trigger refuses a tag of another Scope on insert and update; Scope ownership of members and tags is immutable',async()=>{
+ await q("INSERT INTO axton_scope(scope,head) VALUES('own-P',0),('own-Q',0)");
+ await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[key('own-a')]);
+ const [{id:record}]=await q("SELECT id::text FROM axton_record WHERE model='Todo' AND identity_key=$1",[key('own-a')]);
+ const [{id:member}]=await q("INSERT INTO axton_scope_member(scope,record_id) VALUES('own-P',$1) RETURNING id::text",[record]);
+ const [{id:tagP}]=await q("INSERT INTO axton_scope_tag(scope,name) VALUES('own-P','X') RETURNING id::text");
+ const [{id:tagQ}]=await q("INSERT INTO axton_scope_tag(scope,name) VALUES('own-Q','X') RETURNING id::text");
+ assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagQ]),'23514','a member cannot carry a tag of another Scope');
+ assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagP]),'accepted');
+ assert.equal(await refused('UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1 AND tag_id=(SELECT min(tag_id) FROM axton_scope_member_tag WHERE member_id=$1)',[member,tagQ]),'23514','nor be moved onto one');
+ assert.equal(await refused("UPDATE axton_scope_member SET scope='own-Q' WHERE id=$1",[member]),'23514','a member never changes Scope');
+ assert.equal(await refused("UPDATE axton_scope_tag SET scope='own-Q', name='moved' WHERE id=$1",[tagP]),'23514','a tag never changes Scope');
+ assert.equal(await refused("INSERT INTO axton_scope_member(scope,record_id) VALUES('own-P',$1)",[record]),'23505','one member per pair');
+ assert.equal(await refused("INSERT INTO axton_scope_tag(scope,name) VALUES('own-P','X')"),'23505','one tag per name in a Scope');
+ assert.equal(await refused("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,1,'touch')",[record]),'23514','kind is upsert or remove');
+ assert.equal(await refused("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,$2,'upsert')",[record,String(MAX+1)]),'23514','cursors stay safe integers');
+ await q("INSERT INTO axton_scope_log(scope,record_id,cursor,kind) VALUES('own-P',$1,1,'upsert')",[record]);
+ assert.equal(await refused('DELETE FROM axton_record WHERE id=$1',[record]),'23503','a record referenced by a member or log row stays');
+ await q('DELETE FROM axton_scope_member WHERE id=$1',[member]);
+ assert.deepEqual(await q('SELECT * FROM axton_scope_member_tag WHERE member_id=$1',[member]),[],'deleting a member cascades to its associations');
+ assert.deepEqual(await q("SELECT name FROM axton_scope_tag WHERE scope='own-P'"),[{name:'X'}],'but keeps the tag row for collection by the adapter');
+ assert.equal(await refused('DELETE FROM axton_record WHERE id=$1',[record]),'23503','the log row still holds the record');
+});
+
+test('applyScopeMembers reserves one range per Scope, keeps unpublished deltas cursor-neutral, and refuses head overflow before commit',async()=>{
+ for(const id of ['rng-a','rng-b','rng-c'])await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[key(id)]);
+ const first=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['X']}),delta('rng-1','rng-b'),delta('rng-2','rng-c')]}));
+ assert.deepEqual(first.map(p=>[p.scope,JSON.parse(p.identityKey).id,p.cursor,p.kind]),[['rng-1','rng-a',1,'upsert'],['rng-1','rng-b',2,'upsert'],['rng-2','rng-c',1,'upsert']]);
+ const kept=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['Y'],publish:false}),delta('rng-1','rng-b',{present:false,tags:[]})]}));
+ assert.deepEqual(kept.map(p=>[p.cursor,p.kind]),[[1,'upsert'],[3,'remove']],'the kept delta answers its existing position');
+ assert.deepEqual(await state('rng-1'),{members:[['rng-a',['Y']]],log:[['rng-a',1,'upsert'],['rng-b',3,'remove']],head:3,tags:['Y']},'set with exactly its tags; X collected');
+ const cursorNeutral=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-1','rng-a',{tags:['Y','Z'],publish:false})]}));
+ assert.deepEqual(cursorNeutral.map(p=>p.cursor),[1]);assert.equal(await head('rng-1'),3,'a metadata-only change moves no head');
+ // Overflow: two positions do not fit below the bound; one does.
+ await q("INSERT INTO axton_scope(scope,head) VALUES('rng-max',$1)",[String(MAX-1)]);
+ await assert.rejects(()=>adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-max','rng-a'),delta('rng-max','rng-b')]})),/overflow|9007199254740991/);
+ assert.deepEqual(await state('rng-max'),{members:[],log:[],head:MAX-1,tags:[]},'nothing of the refused call committed');
+ const last=await adapter(call=>call({op:'applyScopeMembers',deltas:[delta('rng-max','rng-a')]}));
+ assert.deepEqual(last.map(p=>p.cursor),[MAX],'the last safe cursor is usable');
+ await q("UPDATE axton_record SET stamp=$2 WHERE model='Todo' AND identity_key=$1",[key('rng-c'),String(MAX)]);
+ await assert.rejects(()=>adapter(call=>call({op:'advanceStamp',model:'Todo',identityKey:key('rng-c')})),error=>error.code==='23514','a content stamp never passes the bound');
+ assert.deepEqual(await stamps(['rng-c']),[{identity_key:key('rng-c'),stamp:MAX}]);
+});
+
+test('readScopeMembers answers named and tagged members once with complete tags, whatever the order or repetition of its keys',async()=>{
+ await backend.transaction(({scope: scope})=>{const c=scope('read');c.add.todo({id:'read-a'}).tag(['X','Y']);c.add.todo({id:'read-b'}).tag(['X']);c.add.todo({id:'read-c'});});
+ const read=(explicitKeys,tags)=>adapter(call=>call({op:'readScopeMembers',scope:'read',explicitKeys:explicitKeys.map(id=>({model:'Todo',identityKey:key(id)})),tags}));
+ const sorted=rows=>rows.map(r=>[JSON.parse(r.identityKey).id,[...r.tags].sort()]).sort((a,b)=>a[0]<b[0]?-1:1);
+ assert.deepEqual(sorted(await read(['read-c','read-a','read-c','read-z'],['X'])),[['read-a',['X','Y']],['read-b',['X']],['read-c',[]]]);
+ assert.deepEqual(sorted(await read([],['nothing'])),[]);
+ assert.deepEqual(sorted(await read(['read-c'],[])),[['read-c',[]]]);
+ assert.deepEqual(sorted(await adapter(call=>call({op:'readScopeMembers',scope:'read-none',explicitKeys:[{model:'Todo',identityKey:key('read-a')}],tags:['X']}))),[],'another Scope answers none of them');
+});
+
+// ---- Forward upgrade from the six-table schema ------------------------------
+
+/** `packages/postgres/migration.sql` as released in 0.1.x: the schema the upgrade starts from. */
+const PREVIOUS_SCHEMA=`
+CREATE TABLE IF NOT EXISTS axton_client (
+ client_id text PRIMARY KEY,
+ owner_id text NOT NULL,
+ sequence bigint NOT NULL DEFAULT 0 CHECK(sequence >= 0 AND sequence <= 9007199254740991),
+ receipt text
+);
+CREATE TABLE IF NOT EXISTS axton_call (
+ owner_id text NOT NULL,
+ call_id text NOT NULL,
+ request text NOT NULL,
+ response text,
+ claim_tx xid8 NOT NULL DEFAULT pg_current_xact_id(),
+ PRIMARY KEY(owner_id,call_id)
+);
+CREATE TABLE IF NOT EXISTS axton_channel (
+ channel text PRIMARY KEY,
+ head bigint NOT NULL CHECK(head >= 0 AND head <= 9007199254740991)
+);
+CREATE TABLE IF NOT EXISTS axton_record (
+ model text NOT NULL,
+ identity_key text NOT NULL,
+ stamp bigint NOT NULL CHECK(stamp > 0 AND stamp <= 9007199254740991),
+ PRIMARY KEY(model,identity_key)
+);
+CREATE TABLE IF NOT EXISTS axton_invalidation (
+ channel text NOT NULL REFERENCES axton_channel(channel),
+ model text NOT NULL,
+ identity_key text NOT NULL,
+ identity jsonb NOT NULL,
+ cursor bigint NOT NULL CHECK(cursor > 0 AND cursor <= 9007199254740991),
+ stamp bigint NOT NULL CHECK(stamp > 0 AND stamp <= 9007199254740991),
+ PRIMARY KEY(channel,model,identity_key),
+ UNIQUE(channel,cursor)
+);
+CREATE TABLE IF NOT EXISTS axton_membership (
+ channel text NOT NULL REFERENCES axton_channel(channel),
+ model text NOT NULL,
+ identity_key text NOT NULL,
+ PRIMARY KEY(model, identity_key, channel),
+ FOREIGN KEY(model, identity_key) REFERENCES axton_record(model, identity_key)
+);
+CREATE INDEX IF NOT EXISTS axton_membership_channel
+ ON axton_membership(channel, model, identity_key);
+`;
+const EIGHT=['axton_client','axton_call','axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log'];
+const databaseUrl=name=>{const u=new URL(url);u.pathname=`/${name}`;return u.toString();};
+/** A fresh database in the cluster and a client on it. */
+const scratch=async name=>{
+ await q(`DROP DATABASE IF EXISTS ${name}`);await q(`CREATE DATABASE ${name}`);
+ const client=new Client({connectionString:databaseUrl(name)});await client.connect();return client;
+};
+/** Apply the upgrade file as one simple-protocol call; a failure leaves the explicit transaction to roll back. */
+const upgrade=async client=>{
+ try{
+  if((await client.query("SELECT to_regclass('axton_channel') AS old,to_regclass('axton_channel_member') AS member")).rows[0].old && !(await client.query("SELECT to_regclass('axton_channel_member') AS member")).rows[0].member)
+   await client.query(await source('migrations/2026-09-30-channel-members.sql'));
+  await client.query(await source('migrations/2026-09-30-scopes.sql'));
+ }
+ catch(error){await client.query('ROLLBACK');throw error;}
+};
+/** Everything the eight tables are made of, independent of column order and sequence positions. */
+const catalog=async client=>{
+ const rows=async sql=>(await client.query(sql,[EIGHT])).rows;
+ return {
+  indexColumns:await rows(`SELECT c.relname,a.attnum,a.attname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_class t ON t.oid=i.indrelid JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped WHERE t.relname=ANY($1) ORDER BY 1,2`),
+  sequences:await rows(`SELECT s.relname AS name,t.relname AS tbl,a.attname AS column,seq.seqstart::text,seq.seqincrement::text,seq.seqmin::text,seq.seqmax::text,seq.seqcache::text,seq.seqcycle FROM pg_class s JOIN pg_sequence seq ON seq.seqrelid=s.oid JOIN pg_depend d ON d.objid=s.oid AND d.deptype IN ('a','i') JOIN pg_class t ON t.oid=d.refobjid JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=d.refobjsubid WHERE t.relname=ANY($1) ORDER BY 1`),
+  columns:await rows(`SELECT table_name,column_name,data_type,is_nullable,column_default,is_identity,identity_generation,is_generated,generation_expression FROM information_schema.columns WHERE table_schema='public' AND table_name=ANY($1) ORDER BY 1,2`),
+  constraints:await rows(`SELECT conrelid::regclass::text AS tbl,conname,pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid::regclass::text=ANY($1) ORDER BY 1,2`),
+  indexes:await rows(`SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename=ANY($1) ORDER BY 1,2`),
+  triggers:await rows(`SELECT tgrelid::regclass::text AS tbl,tgname,pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE NOT tgisinternal AND tgrelid::regclass::text=ANY($1) ORDER BY 1,2`),
+  functions:(await client.query(`SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton%' ORDER BY 1`)).rows,
+ };
+};
+/** Every row of every framework table, old and new, with its row version. */
+const contents=async client=>{
+ const out={};
+ for(const table of [...EIGHT,'axton_membership','axton_invalidation']){
+  const exists=(await client.query('SELECT to_regclass($1) AS t',[table])).rows[0].t;
+  if(exists)out[table]=(await client.query(`SELECT xmin::text AS version,to_jsonb(t) AS row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows;
+ }
+ return out;
+};
+/** An old database holding memberships and retained invalidations of both kinds, and unlogged members. */
+const seedPrevious=async client=>{
+ await client.query(PREVIOUS_SCHEMA);
+ const k=id=>JSON.stringify({id});
+ await client.query("INSERT INTO axton_channel(channel,head) VALUES('m-A',5),('m-B',2),('m-E',0)");
+ await client.query(`INSERT INTO axton_record(model,identity_key,stamp) VALUES
+  ('Todo',$1,3),('Todo',$2,1),('Todo',$3,2),('Todo',$4,1),('Todo',$5,1),('Todo',$6,4),('Note',$1,1)`,[k('a'),k('b'),k('c'),k('d'),k('aa'),k('e')]);
+ await client.query(`INSERT INTO axton_membership(channel,model,identity_key) VALUES
+  ('m-A','Todo',$1),('m-A','Todo',$3),('m-A','Todo',$4),('m-A','Todo',$5),('m-A','Note',$1),('m-B','Todo',$2),('m-E','Todo',$1)`,[k('a'),k('b'),k('c'),k('d'),k('aa')]);
+ await client.query(`INSERT INTO axton_invalidation(channel,model,identity_key,identity,cursor,stamp) VALUES
+  ('m-A','Todo',$1,$1::text::jsonb,5,3),('m-A','Todo',$2,$2::text::jsonb,4,1),('m-A','Todo',$3,$3::text::jsonb,2,2),('m-B','Todo',$2,$2::text::jsonb,2,1)`,[k('a'),k('b'),k('c')]);
+};
+const logOf=async(client,scope)=>(await client.query('SELECT r.model,r.identity->>\'id\' AS id,l.cursor::int,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope=$1 ORDER BY l.cursor',[scope])).rows.map(r=>[r.model,r.id,r.cursor,r.kind]);
+const headsOf=async client=>Object.fromEntries((await client.query('SELECT scope,head::int FROM axton_scope ORDER BY scope')).rows.map(r=>[r.scope,r.head]));
+
+test('the forward upgrade copies memberships, maps invalidations to current presence, logs unlogged members above the head and converges with a fresh install',async()=>{
+ const fresh=await scratch('axton_fresh'),old=await scratch('axton_upgraded');
+ try{
+  await fresh.query(await source('migration.sql'));
+  await seedPrevious(old);
+  const legacy=async(column='channel')=>({memberships:(await old.query(`SELECT * FROM axton_membership ORDER BY ${column},model,identity_key`)).rows,invalidations:(await old.query(`SELECT * FROM axton_invalidation ORDER BY ${column},cursor`)).rows});
+  const kept=await legacy();
+  await upgrade(old);
+  assert.deepEqual(await catalog(old),await catalog(fresh),'fresh and upgraded schemas converge');
+  assert.deepEqual(await legacy('scope'),JSON.parse(JSON.stringify(kept).replaceAll('\"channel\":','\"scope\":')),'retained legacy rows survive under Scope ownership');
+  assert.deepEqual((await old.query("SELECT identity FROM axton_record WHERE model='Todo' AND identity_key='{\"id\":\"aa\"}'")).rows,[{identity:{id:'aa'}}],'identity is the decoded key');
+  assert.deepEqual(await logOf(old,'m-A'),[['Todo','c',2,'upsert'],['Todo','b',4,'remove'],['Todo','a',5,'upsert'],['Note','a',6,'upsert'],['Todo','aa',7,'upsert'],['Todo','d',8,'upsert']],
+   'retained cursors are preserved; a non-member is a remove; unlogged members follow the old head in record-key order');
+  assert.deepEqual(await logOf(old,'m-B'),[['Todo','b',2,'upsert']]);
+  assert.deepEqual(await logOf(old,'m-E'),[['Todo','a',1,'upsert']]);
+  assert.deepEqual(await headsOf(old),{'m-A':8,'m-B':2,'m-E':1});
+  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_scope_member')).rows,[{n:7}]);
+  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_scope_tag')).rows,[{n:0}],'tags start empty');
+  // The upgraded database serves the runtime.
+  const upgradedPool=new Pool({connectionString:databaseUrl('axton_upgraded')});
+  try{
+   const d=pg(upgradedPool).driver;
+   const call=r=>d.transaction(tx=>answer(d,tx,r));
+   assert.deepEqual((await call({op:'scan',scope:'m-A',after:0,limit:50})).map(r=>[r.model,r.identity.id,r.cursor,r.kind,r.stamp??null]),[['Todo','c',2,'upsert',2],['Todo','b',4,'remove',null],['Todo','a',5,'upsert',3],['Note','a',6,'upsert',1],['Todo','aa',7,'upsert',1],['Todo','d',8,'upsert',1]]);
+   const removed=await call({op:'applyScopeMembers',deltas:[{scope:'m-A',model:'Todo',identity:{id:'c'},identityKey:JSON.stringify({id:'c'}),present:false,tags:[],publish:true}]});
+   assert.deepEqual(removed.map(p=>[p.cursor,p.kind]),[[9,'remove']]);
+  }finally{await upgradedPool.end();}
+  // A repeated upgrade verifies and changes nothing, even after runtime writes: the removal is not undone from the old tables.
+  const before=await contents(old);
+  await upgrade(old);
+  assert.deepEqual(await contents(old),before,'no row was written or rewritten');
+  assert.deepEqual(await catalog(old),await catalog(fresh));
+  await upgrade(fresh);
+  assert.deepEqual((await fresh.query('SELECT count(*)::int AS n FROM axton_scope_log')).rows,[{n:0}],'on a fresh install the upgrade is a verified no-op too');
+ }finally{await fresh.end();await old.end();}
+});
+
+test('migration.sql split into single statements, as the Prisma consumers run it, installs the same schema; the splitter keeps quoted and dollar-quoted semicolons and drops comments',async()=>{
+ assert.deepEqual(sqlStatements("-- a; comment\nSELECT 'a;b' AS \"x;y\"; /* c; */ SELECT $$d;e$$;\nDO $f$ BEGIN PERFORM 1; END $f$;\n-- trailing; comment\n"),
+  ["SELECT 'a;b' AS \"x;y\"","SELECT $$d;e$$","DO $f$ BEGIN PERFORM 1; END $f$"]);
+ const {PrismaClient}=require('../../bindings/node/generated/client');
+ const whole=await scratch('axton_whole'),split=await scratch('axton_split');
+ const prisma=new PrismaClient({datasourceUrl:databaseUrl('axton_split')});
+ try{
+  const text=await source('migration.sql');
+  await whole.query(text);
+  const statements=sqlStatements(text);
+  assert.ok(statements.length>=13&&statements.every(sql=>/^(CREATE|DO)\s/.test(sql)),`every chunk is one DDL statement: ${statements.map(sql=>sql.slice(0,24)).join(' | ')}`);
+  // Prisma prepares each call, so a chunk holding two statements or a stray comment fragment fails here.
+  for(let round=0;round<2;round++)for(const sql of statements)await prisma.$executeRawUnsafe(sql);
+  assert.deepEqual(await catalog(split),await catalog(whole),'one statement at a time, twice, installs exactly the whole-file schema');
+ }finally{await prisma.$disconnect();await whole.end();await split.end();}
+});
+
+test('an upgrade whose data disagrees fails whole: a mismatched identity, a key that is not JSON, a position without metadata or above its head',async()=>{
+ const k=id=>JSON.stringify({id});
+ const cases=[
+  ['identity',async c=>{await c.query("INSERT INTO axton_channel VALUES('c',1)");await c.query("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[k('y')]);await c.query("INSERT INTO axton_invalidation VALUES('c','Todo',$1,$2::text::jsonb,1,1)",[k('y'),k('x')]);},/disagree/],
+  ['json',async c=>{await c.query("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo','not json',1)");},/json/i],
+  ['metadata',async c=>{await c.query("INSERT INTO axton_channel VALUES('c',1)");await c.query("INSERT INTO axton_invalidation VALUES('c','Todo',$1,$1::text::jsonb,1,1)",[k('ghost')]);},/metadata/],
+  ['head',async c=>{await c.query("INSERT INTO axton_channel VALUES('c',1)");await c.query("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Todo',$1,1)",[k('y')]);await c.query("INSERT INTO axton_membership VALUES('c','Todo',$1)",[k('y')]);await c.query("INSERT INTO axton_invalidation VALUES('c','Todo',$1,$1::text::jsonb,4,1)",[k('y')]);},/head/],
+ ];
+ for(const [label,prepare,pattern] of cases){
+  const c=await scratch('axton_refused');
+  try{
+   await c.query(PREVIOUS_SCHEMA);await prepare(c);
+   const before=await contents(c);
+   await assert.rejects(()=>upgrade(c),pattern,label);
+   assert.deepEqual(await contents(c),before,`${label}: nothing changed`);
+   assert.deepEqual((await c.query("SELECT to_regclass('axton_channel_member') AS t,(SELECT count(*)::int FROM pg_attribute WHERE attrelid='axton_record'::regclass AND attname='id') AS id")).rows,[{t:null,id:0}],`${label}: no schema change survived`);
+  }finally{await c.end();}
+ }
+ const empty=await scratch('axton_refused');
+ try{await assert.rejects(()=>upgrade(empty),/migration\.sql/,'an empty database is installed from migration.sql');}finally{await empty.end();}
+});
+
+// ---- Concurrency with a real barrier ----------------------------------------
+
+/**
+ * Both transactions fix their snapshots, then wait until both have, then
+ * declare. Answers how many attempts each body made: the driver retries the
+ * one that lost the race whole.
+ */
+const together=async(first,second)=>{
+ const runs=[0,0];let arrived=0,open;const both=new Promise(resolve=>{open=resolve;});
+ const run=(n,body)=>backend.transaction(async call=>{
+  runs[n]++;
+  await driver.query(call.tx,'SELECT 1',[]);
+  if(runs[n]===1){if(++arrived===2)open();await both;}
+  await body(call);
+ });
+ await Promise.all([run(0,first),run(1,second)]);
+ return runs;
+};
+/**
+ * The committed state must be the serial outcome of the order the retry
+ * reveals: the body that ran once committed first. A retry commits no extra
+ * cursor, so heads and positions equal that serial outcome exactly.
+ */
+const serial=(runs,[firstThenSecond,secondThenFirst])=>{
+ assert.deepEqual([...runs].sort(),[1,2],`exactly one transaction retried: ${runs}`);
+ return runs[0]===1?{order:'first',expected:firstThenSecond}:{order:'second',expected:secondThenFirst};
+};
+
+test('add versus tag removal: one serial outcome, and the retried transaction adds no cursor',async t=>{
+ const orders=[];
+ for(let trial=0;trial<3;trial++){
+  const scope=`cc-add-${trial}`;
+  await backend.transaction(({scope: c})=>{c(scope).add.todo({id:`${scope}-A`}).tag(['X']);c(scope).add.todo({id:`${scope}-B`}).tag(['X']);});
+  const [A,B,N]=['A','B','N'].map(s=>`${scope}-${s}`);
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:N}).tag(['X']);},({scope: c})=>{c(scope).where({ tags: { all: ['X'] } }).remove();});
+  const {order,expected}=serial(runs,[
+   {members:[],log:[[A,4,'remove'],[B,5,'remove'],[N,6,'remove']],head:6,tags:[]},
+   {members:[[N,['X']]],log:[[A,3,'remove'],[B,4,'remove'],[N,5,'upsert']],head:5,tags:['X']},
+  ]);
+  orders.push(order);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}: ${order} committed first`);
+ }
+ t.diagnostic(`add committed first in: ${orders.map(o=>o==='first'?'yes':'no').join(' ')}`);
+});
+
+test('a tag union versus an empty selector: one serial outcome',async()=>{
+ for(let trial=0;trial<3;trial++){
+  const scope=`cc-union-${trial}`,A=`${scope}-A`;
+  await add(scope,A,['X']);
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:A}).tag(['Y']);},({scope: c})=>{c(scope).where({ tags: { all: ['Y'] } }).remove();});
+  const {order,expected}=serial(runs,[
+   {members:[],log:[[A,2,'remove']],head:2,tags:[]},
+   {members:[[A,['X','Y']]],log:[[A,1,'upsert']],head:1,tags:['X','Y']},
+  ]);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}: ${order === 'first' ? 'the union' : 'the empty selector'} committed first`);
+ }
+});
+
+test('a touch versus a tag removal: one serial outcome, never an upsert of an absent member',async()=>{
+ for(let trial=0;trial<3;trial++){
+  const K=`cc-touch-K-${trial}`,L=`cc-touch-L-${trial}`,A=`cc-touch-${trial}`;
+  await seed(A);
+  await backend.transaction(({scope: scope})=>{scope(K).add.todo({id:A}).tag(['X']);scope(L).add.todo({id:A});});
+  const runs=await together(async({tx,touch})=>{await write(tx,A,'touched');touch.todo({id:A});},({scope: scope})=>{scope(K).where({ tags: { all: ['X'] } }).remove();});
+  const {order,expected}=serial(runs,[
+   {K:{members:[],log:[[A,3,'remove']],head:3,tags:[]},L:[[A,2,'upsert']],stamp:2},
+   {K:{members:[],log:[[A,2,'remove']],head:2,tags:[]},L:[[A,2,'upsert']],stamp:2},
+  ]);
+  assert.deepEqual({K:await state(K),L:await log(L),stamp:(await stamps([A]))[0].stamp},expected,`trial ${trial}: ${order}`);
+  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{[K]:0},models:{Todo:1}})));
+  assert.deepEqual(page.changes,[{scope:K,cursor:expected.K.head,kind:'remove',model:'Todo',identity:{id:A}}],'K delivers only identity removal');
+ }
+});
+
+test('two first writers to a Scope with no row serialize on its insert: distinct consecutive cursors, or one member with both tags',async()=>{
+ for(let trial=0;trial<3;trial++){
+  const scope=`cc-new-${trial}`,[A,B]=[`${scope}-A`,`${scope}-B`];
+  const runs=await together(({scope: c})=>{c(scope).add.todo({id:A}).tag(['X']);},({scope: c})=>{c(scope).add.todo({id:B}).tag(['X']);});
+  const {expected}=serial(runs,[
+   {members:[[A,['X']],[B,['X']]],log:[[A,1,'upsert'],[B,2,'upsert']],head:2,tags:['X']},
+   {members:[[A,['X']],[B,['X']]],log:[[B,1,'upsert'],[A,2,'upsert']],head:2,tags:['X']},
+  ]);
+  assert.deepEqual(await state(scope),expected,`trial ${trial}`);
+  const same=`cc-same-${trial}`,S=`${same}-S`;
+  const again=await together(({scope: c})=>{c(same).add.todo({id:S}).tag(['X']);},({scope: c})=>{c(same).add.todo({id:S}).tag(['Y']);});
+  const {expected:joined}=serial(again,[
+   {members:[[S,['X','Y']]],log:[[S,1,'upsert']],head:1,tags:['X','Y']},
+   {members:[[S,['X','Y']]],log:[[S,1,'upsert']],head:1,tags:['X','Y']},
+  ]);
+  assert.deepEqual(await state(same),joined,`trial ${trial}: the second add unions its tag without a position`);
+ }
+});
+
+// ---- 10,000 members ---------------------------------------------------------
+
+test('removing 10,000 tagged members: a failure after the log writes rolls everything back; the committed removal calls no Loader and runs bounded statement groups',async t=>{
+ const scope='bulk',N=10000;
+ const ids=Array.from({length:N},(_,i)=>`bulk-${String(i).padStart(5,'0')}`);
+ const counted=()=>{const seen=new Map();let total=0;return {seen,get total(){return total;},hook:sql=>{total++;seen.set(sql,(seen.get(sql)??0)+1);}};};
+ const named=seen=>Object.fromEntries([...seen].map(([sql,n])=>[Object.entries(SQL).find(([,text])=>text===sql)?.[0]??sql.slice(0,40),n]));
+ const adding=counted();
+ let started=performance.now();
+ await watched(adding.hook).transaction(({scope: c})=>{c(scope).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X','keep']);});
+ const addMs=performance.now()-started;
+ assert.equal(await head(scope),N);
+ const snapshot=async()=>({
+  members:(await q('SELECT count(*)::int AS n FROM axton_scope_member WHERE scope=$1',[scope]))[0].n,
+  associations:(await q('SELECT count(*)::int AS n FROM axton_scope_member_tag mt JOIN axton_scope_member m ON m.id=mt.member_id WHERE m.scope=$1',[scope]))[0].n,
+  tags:await tagNames(scope),
+  log:(await q('SELECT kind,count(*)::int AS n,sum(cursor)::text AS sum FROM axton_scope_log WHERE scope=$1 GROUP BY kind',[scope])),
+  head:await head(scope),
+  business:(await q("SELECT count(*)::int AS n FROM tag_todo WHERE id='bulk-domain'"))[0].n,
+ });
+ const before=await snapshot();
+ assert.deepEqual(before.log,[{kind:'upsert',n:N,sum:String(N*(N+1)/2)}]);
+ // Fail after the log statements ran and before the members are deleted.
+ const failing=counted();let logged=false;
+ const injected=watched(sql=>{failing.hook(sql);if(sql===SQL.WRITE_SCOPE_LOG)logged=true;if(sql===SQL.DELETE_SCOPE_MEMBERS)throw new Error('injected before member deletion');});
+ await assert.rejects(()=>injected.transaction(async({tx,scope: c})=>{await write(tx,'bulk-domain','never');c(scope).where({ tags: { all: ['X'] } }).remove();}),/injected before member deletion/);
+ assert.equal(logged,true,'the log writes had run');
+ assert.deepEqual(await snapshot(),before,'no partial domain, member, tag, log or head change');
+ // The committed removal.
+ const removing=counted();loaderCalls=0;
+ started=performance.now();
+ await watched(removing.hook).transaction(({scope: c})=>{c(scope).where({ tags: { all: ['X'] } }).remove();});
+ const removeMs=performance.now()-started;
+ assert.equal(loaderCalls,0,'zero Loader calls');
+ assert.deepEqual(await snapshot(),{members:0,associations:0,tags:[],log:[{kind:'remove',n:N,sum:String((N+1+2*N)*N/2)}],head:2*N,business:0});
+ const batches=Math.ceil(N/SQL.SCOPE_BATCH);
+ // lockScopes, one tag read, one reservation, then per batch a log write
+ // and a member deletion, and one collection of the dropped tags.
+ assert.ok(removing.total<=4+2*batches,`bounded statement groups: ${removing.total} statements for ${N} members`);
+ assert.ok(removing.total>=batches,'not an unrealistically constant number of row writes');
+ t.diagnostic(`add ${N}: ${adding.total} statements, ${Math.round(addMs)} ms: ${JSON.stringify(named(adding.seen))}`);
+ t.diagnostic(`remove ${N}: ${removing.total} statements, ${Math.round(removeMs)} ms: ${JSON.stringify(named(removing.seen))}`);
+});
+
+// Task 1 exercises raw host effects; generated Scope collectors arrive later.
+const rawEffects=(memberships,body=async()=>{})=>driver.transaction(async tx=>{
+ await body(tx);
+ // The native callback transports only text. Preserve the original SQLSTATE
+ // for the driver's retry loop, as the production host's Session does.
+ let hostError;
+ try {
+  return await native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships}),async request=>{
+   try{return JSON.stringify(await answer(driver,tx,JSON.parse(request)));}
+   catch(error){hostError=error;throw error;}
+  });
+ } catch(error){throw hostError??error;}
+});
+const label=(kind,scope,id,tags)=>({kind,scope,record:{model:'Todo',identity:{id}},tags});
+const select=(scope,predicate,action,model)=>({kind:'select',scope,predicate,action,...(model?{model}:{})});
+
+test('exact-only-X removal preserves X/Y and X/Z, detaches labels without stamps, and all-mode selects untagged members',async()=>{
+ const scope='scope-effects';
+ for(const [id,tags] of [['scope-A',['X','Y']],['scope-B',['X']],['scope-C',[]],['scope-D',['X','Z']]])await add(scope,id,tags);
+ const before=await stamps(['scope-A','scope-B','scope-C','scope-D']);
+ const logs=await log(scope);
+ loaderCalls=0;
+ await backend.transaction(({scope: scoped})=>{scoped(scope).where({tags:{only:['X']}}).remove();scoped(scope).tag('X').remove();});
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-C',[]],['scope-D',['Z']]]);
+ assert.equal(await head(scope),5);
+ assert.deepEqual(await stamps(['scope-A','scope-B','scope-C','scope-D']),before);
+ assert.equal(loaderCalls,0);
+ assert.deepEqual((await log(scope)).filter(r=>r[2]==='upsert'),logs.filter(r=>r[0]!=='scope-B'));
+ const stable=await log(scope);
+ await backend.transaction(({scope: scoped})=>scoped(scope).where({tags:{only:[]}}).tag('T').add());
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-C',['T']],['scope-D',['Z']]]);
+ assert.deepEqual(await log(scope),stable);
+ assert.equal(await head(scope),5);
+ await backend.transaction(({scope: scoped})=>{scoped(scope).tag('X').add.todo('scope-C');scoped(scope).where.todo({tags:{only:['T','X']}}).remove();});
+ assert.deepEqual(await members(scope),[['scope-A',['Y']],['scope-D',['Z']]]);
+});
+
+test('last label removal retains membership and a missing-member label add rolls back business and membership effects',async()=>{
+ const scope='scope-rollback';
+ await seed('scope-kept');
+ await add(scope,'scope-kept',['X']);
+ const before=await state(scope);
+ const beforeStamps=await stamps(['scope-kept']);
+ await assert.rejects(()=>backend.transaction(async({tx,scope: scoped})=>{await write(tx,'scope-kept','rolled back');scoped(scope).tag('X').remove.todo('scope-kept');scoped(scope).tag('Y').add.todo('scope-missing');}),/absent member/);
+ assert.deepEqual(await state(scope),before);
+ assert.deepEqual(await q('SELECT title FROM tag_todo WHERE id=$1',['scope-kept']),[{title:'v1'}]);
+ assert.deepEqual(await stamps(['scope-kept']),beforeStamps);
+ await backend.transaction(({scope: scoped})=>scoped(scope).tag('X').remove.todo('scope-kept'));
+ assert.deepEqual(await members(scope),[['scope-kept',[]]]);
+ assert.deepEqual(await log(scope),before.log);
+ assert.equal(await head(scope),before.head);
+ const untagged=await state(scope);
+ await rawEffects([label('tagRemove',scope,'scope-kept',['missing']),label('tagRemove',scope,'scope-missing',['X'])]);
+ assert.deepEqual(await state(scope),untagged);
+});
+
+test('reversing detachment and selection changes their result, and reads union all-mode with explicit and tagged candidates',async()=>{
+ const scope='scope-order';
+ await add(scope,'scope-order-A',['X']);
+ await add(scope,'scope-order-B',[]);
+ await rawEffects([{kind:'detachTags',scope,tags:['X']},select(scope,{tags:{only:['X']}},{kind:'remove'})]);
+ assert.deepEqual(await members(scope),[['scope-order-A',[]],['scope-order-B',[]]]);
+ const request={op:'readScopeMembers',scope,explicitKeys:[{model:'Todo',identityKey:key('scope-order-A')}],tags:[]};
+ await adapter(async call=>{
+  assert.equal((await call(request)).length,1,'absent all flag defaults false');
+  assert.equal((await call({...request,all:true})).length,2,'all includes untagged members');
+ });
+});
+
+test('detachment racing selection commits one ordered serial outcome without allocating a content stamp or cursor',async()=>{
+ const scope='scope-race',id='scope-race-A';
+ await add(scope,id,['X']);
+ const runs=[0,0];let arrived=0,open;const both=new Promise(resolve=>{open=resolve;});
+ const run=(n,intents)=>rawEffects(intents,async tx=>{
+  runs[n]++;
+  await driver.query(tx,'SELECT 1',[]);
+  if(runs[n]===1){if(++arrived===2)open();await both;}
+ });
+ await Promise.all([run(0,[{kind:'detachTags',scope,tags:['X']}]),run(1,[select(scope,{tags:{only:['X']}},{kind:'tagAdd',tags:['Y']})])]);
+ const {expected}=serial(runs,[[[id,[]]],[[id,['Y']]]]);
+ assert.deepEqual(await members(scope),expected);
+ assert.equal(await head(scope),1);
+ assert.deepEqual(await log(scope),[[id,1,'upsert']]);
+ assert.deepEqual(await stamps([id]),[{identity_key:key(id),stamp:1}]);
+});
+
+test('bulk selection label edits reuse final snapshot batches rather than per-association SQL',async()=>{
+ const scope='scope-bulk-labels',N=1100;
+ const ids=Array.from({length:N},(_,i)=>`scope-bulk-labels-${i}`);
+ await backend.transaction(({scope: c})=>c(scope).add(ids.map(id=>({model:'Todo',identity:{id}}))).tag(['X']));
+ const statements=[];
+ const observing={...driver,query:async(tx,sql,params)=>{statements.push(sql);return driver.query(tx,sql,params);}};
+ await driver.transaction(tx=>native.settleExternal(JSON.stringify(config),JSON.stringify({changes:[],memberships:[select(scope,{tags:{all:['X']}},{kind:'tagAdd',tags:['Y']})]}),async request=>JSON.stringify(await answer(observing,tx,JSON.parse(request)))));
+ assert.equal((await members(scope)).length,N);
+ assert.ok((await members(scope)).every(([,tags])=>JSON.stringify(tags)===JSON.stringify(['X','Y'])));
+ assert.equal(await head(scope),N);
+ assert.equal(statements.filter(sql=>sql===SQL.READ_SCOPE_MEMBERS).length,1);
+ assert.ok(statements.length<=3+6*Math.ceil(N/SQL.SCOPE_BATCH),`${statements.length} statements for ${N} members`);
+});
+
+test('fresh Scope catalog contains exact framework objects and no retired ownership',async()=>{
+ const tables=['axton_call','axton_client','axton_record','axton_scope','axton_scope_log','axton_scope_member','axton_scope_member_tag','axton_scope_tag'];
+ assert.deepEqual((await q("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY tablename")).map(r=>r.tablename),tables);
+ assert.deepEqual((await q("SELECT relname FROM pg_class WHERE relkind='S' AND relname LIKE 'axton_%' ORDER BY relname")).map(r=>r.relname),['axton_record_id_seq','axton_scope_member_id_seq','axton_scope_tag_id_seq']);
+ assert.deepEqual((await q("SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE 'axton_%' ORDER BY tgname")).map(r=>r.tgname),['axton_scope_member_fixed','axton_scope_member_tag_same_scope','axton_scope_tag_fixed']);
+ assert.deepEqual((await q("SELECT proname FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname")).map(r=>r.proname),['axton_scope_member_tag_same_scope','axton_scope_owner_fixed']);
+ const catalog={
+  columns:await q("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' ORDER BY 1,2"),
+  constraints:await q("SELECT conname,pg_get_constraintdef(oid) AS body FROM pg_constraint WHERE conrelid::regclass::text LIKE 'axton_%' ORDER BY conname"),
+  indexes:await q("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY indexname"),
+  functions:await q("SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname"),
+ };
+ assert.equal(JSON.stringify(catalog).includes('channel'),false);
+ for(const table of ['axton_scope','axton_scope_member','axton_scope_tag','axton_scope_log'])assert.ok(catalog.columns.some(r=>r.table_name===table&&r.column_name==='scope'));
+ const before=JSON.stringify(catalog);
+ await q(await source('migration.sql'));
+ assert.equal(JSON.stringify({
+  columns:await q("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' ORDER BY 1,2"),
+  constraints:await q("SELECT conname,pg_get_constraintdef(oid) AS body FROM pg_constraint WHERE conrelid::regclass::text LIKE 'axton_%' ORDER BY conname"),
+  indexes:await q("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY indexname"),
+  functions:await q("SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname"),
+ }),before,'repeat installation keeps the catalog');
+});
+
+// Genuine released v0.2 input: never derive it by renaming a fresh schema.
+const originalFixture=name=>readFile(new URL(`fixtures/${name}`,import.meta.url),'utf8');
+const scopeUpgrade=async c=>{try{await c.query(await source('migrations/2026-09-30-scopes.sql'));}catch(e){await c.query('ROLLBACK');throw e;}};
+test('original v0.2 Scope cutover preserves saved work, memberships and opaque application channel data',async()=>{
+ const c=await scratch('axton_scope_cutover');
+ try{
+  await c.query(await originalFixture('v02-framework.sql'));
+  await c.query(await originalFixture('postgres-state.sql'));
+  await c.query(await originalFixture('postgres-optional-retained-v01.sql'));
+  const composite={completion:{callId:'composite',outcome:{status:'succeeded',result:{channel:'opaque result',memberships:[{channel:'nested result'}]}}},records:[{model:'Composite',identity:{channel:'tenant',id:'x'},stamp:4,state:{channel:'opaque state',memberships:[{channel:'nested state'}]}}],memberships:[{channel:'Other',cursor:3,model:'Composite',identity:{channel:'tenant',id:'x'}}]};
+  await c.query('INSERT INTO axton_call(owner_id,call_id,request,response) VALUES($1,$2,$3,$4)',['alice','composite',' {"args":{"channel":"opaque request"}} ',JSON.stringify(composite)]);
+  const requests=(await c.query('SELECT call_id,request FROM axton_call ORDER BY call_id')).rows;
+  const before=await frameworkSnapshot(c);
+  const expectedRows=Object.fromEntries(Object.entries(before.rows).map(([table,rows])=>[table.replace(/^axton_channel/,'axton_scope'),rows.map(({xmin,row})=>({xmin,row:Object.fromEntries(Object.entries(row).map(([k,v])=>[k==='channel'?'scope':k,v]))}))]));
+  const owned=['axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log','axton_membership','axton_invalidation'];
+  const responses=(await c.query('SELECT call_id,response FROM axton_call ORDER BY call_id')).rows;
+  await scopeUpgrade(c);
+  assert.equal((await c.query("SELECT to_regclass('axton_channel_member') AS t")).rows[0].t,null);
+  const migrated = await frameworkSnapshot(c);
+  for (const t of owned)
+    assert.deepEqual(
+      migrated.rows[t]?.sort((a, b) =>
+        JSON.stringify(Object.entries(a.row).sort()).localeCompare(
+          JSON.stringify(Object.entries(b.row).sort())
+        )
+      ),
+      expectedRows[t]?.sort((a, b) =>
+        JSON.stringify(Object.entries(a.row).sort()).localeCompare(
+          JSON.stringify(Object.entries(b.row).sort())
+        )
+      ),
+      `${t}: identities, associations and evidence preserved`
+    );
+  assert.equal(migrated.catalog.filter(r=>r.relname.includes('channel')||r.attname==='channel').length,0);
+  assert.equal(migrated.functions.some(r=>r.proname.includes('channel')||r.prosrc.includes('axton_channel')||r.prosrc.includes('OLD.channel')),false);
+  const fresh=await scratch('axton_scope_catalog');try{await fresh.query(await source('migration.sql'));assert.deepEqual(await catalog(c),await catalog(fresh));}finally{await fresh.end();}
+  assert.deepEqual((await c.query('SELECT call_id,request FROM axton_call ORDER BY call_id')).rows,requests);
+  for(const saved of responses){
+   const expected=JSON.parse(saved.response);for(const m of expected.memberships??[]){m.scope=m.channel;delete m.channel;}
+   assert.deepEqual(JSON.parse((await c.query('SELECT response FROM axton_call WHERE call_id=$1',[saved.call_id])).rows[0].response),expected);
+  }
+  assert.deepEqual((await c.query('SELECT scope,head::int FROM axton_scope ORDER BY scope')).rows,[{scope:'Channel:business-scope',head:11},{scope:'Empty',head:0},{scope:'Other',head:3}]);
+  assert.equal((await c.query('SELECT count(*)::int AS n FROM axton_scope_member')).rows[0].n,2);
+  const versions=(await c.query('SELECT xmin::text,response FROM axton_call ORDER BY call_id')).rows;
+  const settled=await frameworkSnapshot(c);
+  await scopeUpgrade(c);
+  assert.deepEqual((await c.query('SELECT xmin::text,response FROM axton_call ORDER BY call_id')).rows,versions);
+  assert.deepEqual(await frameworkSnapshot(c),settled,'second cutover rewrites neither rows nor persistent catalog objects');
+  assert.equal((await c.query("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' AND column_name='channel'")).rows[0].n,0);
+ }finally{await c.end();}
+});
+
+const frameworkSnapshot=async c=>{
+ const names=(await c.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY tablename")).rows;
+ const rows={};for(const {tablename} of names)rows[tablename]=(await c.query(`SELECT xmin::text,to_jsonb(t) AS row FROM ${tablename} t ORDER BY to_jsonb(t)::text`)).rows;
+ return {rows,catalog:(await c.query("SELECT c.relname,c.relkind,a.attname,pg_get_expr(d.adbin,d.adrelid) AS default FROM pg_class c LEFT JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum WHERE c.relnamespace='public'::regnamespace AND c.relname LIKE 'axton_%' ORDER BY 1,2,3")).rows,
+ functions:(await c.query("SELECT xmin::text,proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY 1")).rows,
+ triggers:(await c.query("SELECT tgname,pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE NOT tgisinternal ORDER BY 1")).rows};
+};
+const seedV02=async c=>{await c.query(await originalFixture('v02-framework.sql'));await c.query(await originalFixture('postgres-state.sql'));};
+test('Scope cutover conflicts and late malformed claims roll back schema and every earlier valid rewrite',async()=>{
+ for(const sql of ["CREATE TABLE axton_scope(scope text)","CREATE TABLE axton_scope_member(scope text)","ALTER TABLE axton_channel_member ADD COLUMN scope text","DROP TABLE axton_channel_log",
+  `UPDATE axton_call SET response='{"memberships":{}}' WHERE call_id LIKE '%003'`,
+  `UPDATE axton_call SET response='{"memberships":[{"channel":"x","scope":"x","model":"Todo","identity":{},"cursor":10}]}' WHERE call_id LIKE '%003'`,
+  `UPDATE axton_call SET response='{"memberships":[{"channel":"x","identity":{},"cursor":10}]}' WHERE call_id LIKE '%003'`]){
+  const c=await scratch('axton_scope_refused');try{
+   await seedV02(c);await c.query(sql);const before=await frameworkSnapshot(c);
+   await assert.rejects(()=>scopeUpgrade(c));assert.deepEqual(await frameworkSnapshot(c),before,sql);
+  }finally{await c.end();}
+ }
+ const c=await scratch('axton_scope_guard');try{
+  await seedV02(c);const before=await frameworkSnapshot(c);
+  const bootstrap=await source('migration.sql');await assert.rejects(()=>c.query(bootstrap),/legacy/);
+  assert.deepEqual(await frameworkSnapshot(c),before);
+ }finally{await c.end();}
+});
+
+test('migrated direct, alternate batch, exact receipt and Load replay bypass poisoned handlers and Loaders on every shim',async()=>{
+ const c=await scratch('axton_scope_replay');
+ const schema=JSON.parse(await originalFixture('schema.json'));
+ const input=JSON.parse(await originalFixture('envelopes.json'));
+ const pool=new Pool({connectionString:databaseUrl('axton_scope_replay')});
+ const {PrismaClient}=require('../../bindings/node/generated/client');
+ const pr=new PrismaClient({datasourceUrl:databaseUrl('axton_scope_replay')});
+ try{
+  await seedV02(c);
+  const noClaimRequest=JSON.stringify(input.loadRequest).replaceAll('000000000003','000000000005');
+  const noClaimResponse=JSON.stringify(input.noClaimLoadResponse).replaceAll('000000000003','000000000005');
+  await c.query('INSERT INTO axton_call(owner_id,call_id,request,response) VALUES($1,$2,$3,$4)',['alice','01890f47-1234-7123-8123-000000000005',noClaimRequest,noClaimResponse]);
+  await scopeUpgrade(c);
+  let invoked=0;
+  const poison=()=>{invoked++;throw new Error('poisoned fresh execution');};
+  const state=async()=>{const o={};for(const t of ['axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log'])o[t]=(await c.query(`SELECT xmin::text,to_jsonb(t) AS row FROM ${t} t ORDER BY to_jsonb(t)::text`)).rows;return o;};
+  const before=await state();
+  for(const [name,database] of [['pg',pg(pool)],['prisma',prisma(pr)],['drizzle',drizzle(drizzleOrm(pool))]]){
+   const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database,authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
+   const action=input.actionRequest;
+   const direct=JSON.parse(await app.action('alice',JSON.stringify({capabilities:['scope-membership-v1'],call:{callId:action.callId,name:action.name,version:action.version,args:action.args},models:action.models})));
+   assert.equal(direct.records[0].state.title,'saved snapshot',name);
+   assert.deepEqual(direct.memberships,[{scope:'Channel:business-scope',model:'Todo',identity:{id:'live'},cursor:10}]);
+   const body=clientId=>JSON.stringify({capabilities:['scope-membership-v1'],clientId,batchSequence:1,models:action.models,mutations:[{ordinal:1,callId:action.callId,name:action.name,version:1,args:action.args}]});
+   const alternate=JSON.parse(await app.push('alice',body(`alternate-${name}`)));
+   assert.deepEqual(alternate.records,direct.records);assert.deepEqual(alternate.memberships,direct.memberships);
+   const receipt=JSON.parse(await app.push('alice',body('fixture-client')));
+   assert.deepEqual(receipt.records,direct.records);assert.deepEqual(receipt.memberships,direct.memberships);
+   const load=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['scope-membership-v1'],loads:[input.loadIntent]}))).loads[0];
+   assert.equal(load.records[0].state.title,'saved snapshot');assert.deepEqual(load.outcome.next,input.loadResponse.outcome.next);assert.deepEqual(load.memberships,direct.memberships);
+   const noClaim=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['scope-membership-v1'],loads:[{...input.loadIntent,callId:'01890f47-1234-7123-8123-000000000005'}]}))).loads[0];
+   assert.equal(Object.hasOwn(noClaim,'memberships'),false,'saved no-claim response has no fabricated claims');
+   assert.deepEqual(noClaim.outcome.next,input.noClaimLoadResponse.outcome.next);
+   assert.equal(invoked,0,`${name}: saved state executes no handler/Loader`);
+   assert.deepEqual(await state(),before,`${name}: replay never reenrolls withdrawn pair or rewrites head/stamp/log/tag`);
+  }
+  const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database:pg(pool),authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
+  await app.action('alice',JSON.stringify({capabilities:['scope-membership-v1'],call:{callId:'01890f47-1234-7123-8123-000000000099',name:'Edit',version:1,args:input.actionRequest.args},models:{Todo:1}}));
+  assert.equal(invoked,1,'a fresh call really reaches the poisoned handler');
+ }finally{await pr.$disconnect();await pool.end();await c.end();}
+});
+
+test('migrated original catalog retains trigger, FK, uniqueness and sequence ownership behavior',async()=>{
+ const c=await scratch('axton_scope_constraints');try{
+  await seedV02(c);await scopeUpgrade(c);
+  const m=(await c.query("SELECT id FROM axton_scope_member WHERE scope='Other'")).rows[0].id;
+  const t=(await c.query("SELECT id FROM axton_scope_tag WHERE scope='Channel:business-scope'")).rows[0].id;
+  for(const [sql,params,code] of [
+   ['INSERT INTO axton_scope_member_tag VALUES($1,$2)',[m,t],'23514'],
+   ['UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1 AND tag_id=(SELECT min(tag_id) FROM axton_scope_member_tag WHERE member_id=$1)',[m,t],'23514'],
+   ["UPDATE axton_scope_member SET scope='Empty' WHERE id=$1",[m],'23514'],
+   ["UPDATE axton_scope_tag SET scope='Empty' WHERE id=$1",[t],'23514'],
+   ["INSERT INTO axton_scope_tag(scope,name) VALUES('Other','X')",[],'23505'],
+   ["UPDATE axton_scope_log SET cursor=0 WHERE scope='Other'",[],'23514'],
+   ["UPDATE axton_scope_log SET kind='bad' WHERE scope='Other'",[],'23514'],
+   ["UPDATE axton_scope_log SET record_id=999999 WHERE scope='Other'",[],'23503']
+  ])await assert.rejects(()=>c.query(sql,params),e=>e.code===code,sql);
+  const max=Number((await c.query('SELECT max(id) FROM axton_scope_tag')).rows[0].max);
+  const next=Number((await c.query("INSERT INTO axton_scope_tag(scope,name) VALUES('Empty','future') RETURNING id")).rows[0].id);assert.ok(next>max);
+  await c.query('DELETE FROM axton_scope_member WHERE id=$1',[m]);
+  assert.equal((await c.query('SELECT count(*)::int AS n FROM axton_scope_member_tag WHERE member_id=$1',[m])).rows[0].n,0);
+ }finally{await c.end();}
+});
+
+test('disconnect during actual cutover rolls back renames and earlier receipt rewrite, then retry succeeds',async()=>{
+ const c=await scratch('axton_scope_interrupted');c.on('error',()=>{});
+ let reopened;
+ try{
+  await seedV02(c);
+  await c.query(`CREATE FUNCTION fixture_delay_cutover() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER fixture_delay BEFORE UPDATE ON axton_call FOR EACH ROW EXECUTE FUNCTION fixture_delay_cutover()`);
+  const before=await frameworkSnapshot(c);
+  const pid=(await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+  const sql=await source('migrations/2026-09-30-scopes.sql');
+  const running=c.query(sql).then(()=>null,error=>error);
+  let waiting=false;
+  for(let n=0;n<150;n++){
+   waiting=(await q("SELECT wait_event='PgSleep' AS sleeping FROM pg_stat_activity WHERE pid=$1",[pid]))[0]?.sleeping===true;
+   if(waiting)break;await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  assert.ok(waiting,'migration reached saved-call rewrite after catalog renames and receipt rewrite');
+  await q('SELECT pg_terminate_backend($1)',[pid]);assert.ok(await running);
+  reopened=new Client({connectionString:databaseUrl('axton_scope_interrupted')});await reopened.connect();
+  assert.deepEqual(await frameworkSnapshot(reopened),before,'connection loss rolls back the complete cutover');
+  await reopened.query('DROP TRIGGER fixture_delay ON axton_call; DROP FUNCTION fixture_delay_cutover()');
+  await scopeUpgrade(reopened);
+  assert.equal((await reopened.query("SELECT to_regclass('axton_scope_member') AS t")).rows[0].t,'axton_scope_member');
+ }finally{await reopened?.end();await c.end();}
+});
+
+test('original frozen device batch settles migrated saved receipt and younger work keeps its call ID and one accepted effect',async()=>{
+ const c=await scratch('axton_scope_queue');
+ const dir=await mkdtemp(join(tmpdir(),'axton-scope-queue-'));
+ const pool=new Pool({connectionString:databaseUrl('axton_scope_queue')});
+ let device;
+ try{
+  await seedV02(c);
+  // Acceptance variant corrects the prepared void-result fixture BEFORE
+  // migration. Production migration never repairs arbitrary result payloads.
+  await c.query(`UPDATE axton_client SET receipt=jsonb_set(receipt::jsonb,'{completions,0,outcome,result}','null')::text;
+   UPDATE axton_call SET response=jsonb_set(response::jsonb,'{completion,outcome,result}','null')::text WHERE call_id LIKE '%001'`);
+  await scopeUpgrade(c);
+  const schema=JSON.parse(await originalFixture('schema.json'));
+  const path=join(dir,'device.sqlite');
+  execFileSync('python3',[fileURLToPath(new URL('../client/seed.py',import.meta.url)),path]);
+  device=await DeviceClient.open({path,schema});
+  const frozen=await device.freeze();
+  const logical=JSON.parse(frozen);delete logical.capabilities;
+  assert.deepEqual(logical,JSON.parse(await readFile(new URL('../../../crates/sqlite/tests/fixtures/frozen-push-logical.json',import.meta.url),'utf8')));
+  await device.close();device=await DeviceClient.open({path,schema});assert.equal(await device.freeze(),frozen);
+  const database=pg(pool);let effects=0,reads=0;
+  const app = createBackend({
+    config: {schema, mutations: [], loaders: ['Todo']},
+    native,
+    database,
+    authenticate: () => 'alice',
+    onError: () => {},
+    mutations: {
+      async edit({ctx, args}) {
+        effects++;
+        await database.driver.query(
+          ctx.tx,
+          'UPDATE fixture_todo SET channel=$2 WHERE id=$1',
+          [args.todo.id, args.todo.channel]
+        );
+      }
+    },
+    loads: {
+      async scan() {
+        throw Error('unexpected load');
+      }
+    },
+    loaders: {
+      async todo({tx, ids}) {
+        reads++;
+        return Promise.all(ids.map(async ({id}) =>
+          (await database.driver.query(
+            tx,
+            'SELECT id,title,channel FROM fixture_todo WHERE id=$1',
+            [id]
+          ))[0] ?? null
+        ));
+      }
+    }
+  });
+  const receipt=JSON.parse(await app.push('alice',frozen));
+  assert.equal(effects,0);assert.equal(reads,0);
+  assert.equal(receipt.completions[0].callId,logical.mutations[0].callId);
+  await device.acknowledge(1,receipt);
+  assert.equal((await device.syncState()).pending,1);
+  const next=await device.freeze();const nextBody=JSON.parse(next);
+  assert.equal(nextBody.batchSequence,2);assert.equal(nextBody.mutations.length,1);assert.equal(nextBody.mutations[0].ordinal,2);
+  assert.equal(nextBody.mutations[0].callId,'01890f47-1234-7123-8123-000000000004');
+  const accepted=JSON.parse(await app.push('alice',next));await device.acknowledge(2,accepted);
+  assert.equal(effects,1);assert.equal((await device.syncState()).pending,0);
+  assert.equal((await c.query("SELECT channel FROM fixture_todo WHERE id='live'")).rows[0].channel,'second queued Channel');
+  assert.deepEqual(JSON.parse(await app.push('alice',next)),accepted);assert.equal(effects,1,'retry never repeats accepted business effects');
+  assert.equal(await device.freeze(),null);
+ }finally{await device?.close();await pool.end();await c.end();await rm(dir,{recursive:true,force:true});}
+});

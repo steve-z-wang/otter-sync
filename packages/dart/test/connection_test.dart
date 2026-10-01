@@ -1216,7 +1216,7 @@ void main() {
           socket.add(
             jsonEncode({
               'type': 'subscribed',
-              'cursors': {for (final c in sub['channels'] as List) c: 0},
+              'cursors': {for (final c in sub['scopes'] as List) c: 0},
             }),
           );
         }, onError: (Object _) {});

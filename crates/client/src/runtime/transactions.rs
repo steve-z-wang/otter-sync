@@ -887,7 +887,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.abort_authority_session();
         }
         self.committed_since(generation);
-        // A Load page changes no queue, Channel or cursor: the lanes have
+        // A Load page changes no queue, Scope or cursor: the lanes have
         // nothing new to look at.
         if self.client.generation() != generation
             && !matches!(continuation, StoreContinuation::Load { .. })

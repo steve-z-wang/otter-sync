@@ -1,0 +1,141 @@
+{
+  "enums": [],
+  "models": [
+    {
+      "name": "Todo",
+      "version": 1,
+      "identity": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "channel",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ]
+    }
+  ],
+  "resultModels": [
+    {
+      "name": "Todo",
+      "version": 1,
+      "identity": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "channel",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "enums": []
+    }
+  ],
+  "actions": [
+    {
+      "name": "Edit",
+      "version": 1,
+      "inputs": [
+        {
+          "kind": "model",
+          "name": "todo",
+          "model": "Todo",
+          "operation": "update",
+          "cardinality": "single",
+          "allowedPatchFields": [
+            "channel"
+          ]
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "loads": [
+    {
+      "name": "Scan",
+      "version": 1,
+      "inputs": [
+        {
+          "kind": "value",
+          "name": "channel",
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          },
+          "nullable": false,
+          "list": false,
+          "required": true,
+          "cardinality": "single"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "todos",
+          "kind": "model",
+          "cardinality": "list",
+          "source": "handlerIdentity",
+          "model": "Todo",
+          "modelReadVersion": 1,
+          "handlerType": {
+            "kind": "identity",
+            "model": "Todo",
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "input": {
+        "models": [],
+        "enums": []
+      },
+      "outputEnums": []
+    }
+  ]
+}

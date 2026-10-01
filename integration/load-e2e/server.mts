@@ -2,13 +2,13 @@
 // PostgreSQL, and an HTTP/WebSocket proxy in front of it that every client
 // (in-process, child process and Dart) talks through. The handlers record
 // every page they executed; the proxy records every exchange and can hold a
-// response, drop one, or cut the network.
+// request or a response, drop one, or cut the network.
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { connect, type Socket } from "node:net";
 import { Pool } from "pg";
 import { pg, type PgClient } from "../../packages/postgres/index.mts";
-import { CallRejected, createBackend, devAuth, type Loaders, type Loads, type LoadNext, type Mutations } from "./backend.ts";
+import { CallRejected, createBackend, devAuth, Item, Tag, type Loaders, type Loads, type LoadNext, type Mutations } from "./backend.ts";
 
 /** One page as a handler executed it. */
 /** One handler run; `xact` is its transaction's ID, so a run retried after a serialization failure is told apart from its committed run. */
@@ -51,6 +51,8 @@ export async function createFixture() {
   const handled: Handled[] = [];
   const pings: string[] = [];
   const failing = new Set<string>();
+  const enrolling = new Set<string>();
+  const enrollmentTags = new Map<string, string[][]>();
   const handlerHolds = new Holds<Handled>();
   const loaderHolds = new Holds<string[]>();
   const xact = async (tx: PgClient) => String((await tx.query("SELECT pg_current_xact_id()::text AS xact")).rows[0].xact);
@@ -60,7 +62,7 @@ export async function createFixture() {
   const mutations: Mutations<PgClient> = {
     async addItem({ ctx, args }) {
       await ctx.tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [args.item.id, args.item.project, args.item.title]);
-      ctx.channel(`items:${args.item.project}`).item.add(args.item);
+      ctx.scope(`items:${args.item.project}`).add.item(args.item);
     },
     async renameItem({ ctx, args }) {
       const changed = await ctx.tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1 RETURNING id", [args.item.id, args.item.title]);
@@ -87,8 +89,20 @@ export async function createFixture() {
       const tags = await itemIds(ctx.tx, "SELECT id FROM load_e2e_tag WHERE project=$1 ORDER BY id", [args.project]);
       if (items.length === 0) return { data: { items, tags: [] }, next: null };
       const pageNumber = (state?.page ?? 0) + 1;
+      const pageTags = pageNumber === 1 ? tags : [];
+      if (enrolling.has(args.project)) {
+        // Only what this page returns, in both forms; an Item declared twice is one addition.
+        const scope = ctx.scope(`items:${args.project}`);
+        for (const item of items) scope.add.item(item);
+        scope.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
+      }
+      const labelGroups = enrollmentTags.get(args.project);
+      if (labelGroups) for (const item of items) {
+        const added = ctx.scope(`items:${args.project}`).add.item(item);
+        for (const labels of labelGroups) if (labels.length) added.tag(labels);
+      }
       return {
-        data: { items, tags: pageNumber === 1 ? tags : [] },
+        data: { items, tags: pageTags },
         next: { state: { after: items.at(-1)!.id, page: pageNumber, trail: [...(state?.trail ?? []), ...items.map((item) => item.id)], meta: { size: PAGE, nested: { flags: [true, false, null], label: `p${pageNumber}` } } } },
       };
     },
@@ -136,6 +150,12 @@ export async function createFixture() {
     pings,
     /** Projects whose ProjectItems pages reject with `project.closed`. */
     failing,
+    /** Projects whose ProjectItems pages add what they return to Scope `items:${project}`. */
+    enrolling,
+    enrollmentTags,
+    async taggedMembers(scope: string) {
+      return (await pool.query("SELECT m.id::text, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_scope_member m LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 GROUP BY m.id", [scope])).rows;
+    },
     /** Pause a handler at its first matching page, before it reads. */
     holdHandler: (match: (page: Handled) => boolean) => handlerHolds.arm(match),
     /** Pause the Item Loader after it read the rows, at its first matching identity list. */
@@ -143,7 +163,7 @@ export async function createFixture() {
     get proxy() { return proxy!; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
-      for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
+      await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
       await pool.query("CREATE TABLE load_e2e_item(id text PRIMARY KEY, project text NOT NULL, title text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_tag(id text PRIMARY KEY, project text NOT NULL, label text NOT NULL)");
       await pool.query("CREATE TABLE load_e2e_ping(id bigserial PRIMARY KEY, note text NOT NULL)");
@@ -159,6 +179,38 @@ export async function createFixture() {
       const ids = labels.map((_, n) => `${project}-tag-${n + 1}`);
       for (const [n, id] of ids.entries()) await pool.query("INSERT INTO load_e2e_tag(id,project,label) VALUES($1,$2,$3)", [id, project, labels[n]]);
       return ids;
+    },
+    /** Retitle an Item in a backend transaction that `touch`es it: no Mutation and no Scope declaration. */
+    async retitle(id: string, title: string) {
+      await backend.transaction(async ({ tx, touch }) => {
+        await tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1", [id, title]);
+        touch.item({ id });
+      });
+    },
+    /** Relabel a Tag the same way. */
+    async relabel(id: string, label: string) {
+      await backend.transaction(async ({ tx, touch }) => {
+        await tx.query("UPDATE load_e2e_tag SET label=$2 WHERE id=$1", [id, label]);
+        touch.tag({ id });
+      });
+    },
+    /** Create an Item in a backend transaction, adding it to `scope` only when one is named. */
+    async create(id: string, project: string, scope?: string) {
+      await backend.transaction(async ({ tx, touch, scope: join }) => {
+        await tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [id, project, `${id} title`]);
+        touch.item({ id });
+        if (scope !== undefined) join(scope).add.item({ id });
+      });
+    },
+    async membership(id: string, scopeName: string, present: boolean) {
+      await backend.transaction(async ({ scope: scope }) => {
+        const membership = scope(scopeName);
+        if (present) membership.add.item({ id }); else membership.remove.item({ id });
+      });
+    },
+    /** A Scope's head: it moves only when something is published to it. */
+    async head(scope: string) {
+      return Number((await pool.query("SELECT head FROM axton_scope WHERE scope=$1", [scope])).rows[0]?.head ?? 0);
     },
     async listen() {
       listener = await backend.listen({ port: 0 });
@@ -199,6 +251,7 @@ async function createProxy(target: string) {
   const sockets = new Set<Socket>();
   const rules: Rule[] = [];
   const waiters = new Set<() => void>();
+  const requestHolds: { match: (exchange: Exchange) => boolean; used: boolean; arrive: () => void; released: Promise<void> }[] = [];
   let down = false;
   const changed = () => { for (const wake of [...waiters]) wake(); };
   const cut = () => { for (const socket of sockets) socket.destroy(); sockets.clear(); };
@@ -208,6 +261,8 @@ async function createProxy(target: string) {
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const exchange: Exchange = { path: request.url?.split("?")[0] ?? "", body: Buffer.concat(chunks).toString("utf8") };
     exchanges.push(exchange);
+    const held = requestHolds.find((candidate) => !candidate.used && candidate.match(exchange));
+    if (held) { held.used = true; held.arrive(); await held.released; }
     if (down) {
       exchange.dropped = "request";
       request.socket.destroy();
@@ -297,6 +352,16 @@ async function createProxy(target: string) {
         await released;
       });
       return { arrived, release, clientGone };
+    },
+    /** Hold the first matching request before the backend sees it, until released. */
+    holdRequest(match: (exchange: Exchange) => boolean) {
+      let arrive!: () => void;
+      let release!: () => void;
+      const arrived = new Promise<void>((resolve) => { arrive = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      releases.add(release);
+      requestHolds.push({ match, used: false, arrive, released });
+      return { arrived, release };
     },
     /** Answer nothing for the first matching exchange and cut the network (`down()`). */
     dropResponseAndGoDown(match: (exchange: Exchange) => boolean) {

@@ -25,8 +25,8 @@ export async function createFixture() {
     async addTodo({ ctx, args }) {
       handlerCalls++;
       await ctx.tx.query("INSERT INTO action_e2e_todo(id,title) VALUES($1,$2)", [args.todo.id, args.todo.title.trim()]);
-      // Joins its Channel once: this change and every later one reach its subscribers.
-      ctx.channel("todos:demo").todo.add(args.todo);
+      // Joins its Scope once: this change and every later one reach its subscribers.
+      ctx.scope("todos:demo").add.todo(args.todo);
     },
     async updateTodo({ ctx, args }) {
       handlerCalls++;
@@ -98,7 +98,7 @@ export async function createFixture() {
     async retitleTodos({ ctx, args }) {
       handlerCalls++;
       const rows = (await ctx.tx.query("UPDATE action_e2e_todo SET title=$2 WHERE title ILIKE '%' || $1 || '%' RETURNING id", [args.query, args.title])).rows.map((row) => ({ id: String(row.id) })).sort((a, b) => a.id.localeCompare(b.id));
-      // Explicit extra touches: distributed to their Channels, not caller authority.
+      // Explicit extra touches: distributed to their Scopes, not caller authority.
       for (const todo of rows) ctx.touch.todo(todo);
       return { todos: rows, first: rows[0] ?? null };
     },
@@ -196,7 +196,7 @@ export async function createFixture() {
     set conflictUpdates(value: number) { conflictUpdates = value; },
     async initialize() {
       const migration = await readFile(new URL("../../packages/postgres/migration.sql", import.meta.url), "utf8");
-      for (const sql of migration.split(";").map((statement) => statement.trim()).filter(Boolean)) await pool.query(sql);
+      await pool.query(migration); // one simple-protocol call: the file holds dollar-quoted functions
       await pool.query("CREATE TABLE action_e2e_todo(id text PRIMARY KEY,title text NOT NULL)");
       await pool.query("CREATE TABLE action_e2e_note(id text PRIMARY KEY,body text NOT NULL,mood text NOT NULL,created_at text NOT NULL,tag text)");
       await pool.query("CREATE TABLE action_e2e_outbox(id bigserial PRIMARY KEY,recipient text NOT NULL,subject text NOT NULL,body text NOT NULL)");

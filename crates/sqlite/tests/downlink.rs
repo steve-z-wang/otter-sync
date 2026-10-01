@@ -5,17 +5,17 @@ use common::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-fn stamped(channel: &str, from: u64, to: u64, stamp: u64, text: Option<&str>) -> PullPage {
-    let mut p = page(channel, from, to, text);
+fn stamped(scope: &str, from: u64, to: u64, stamp: u64, text: Option<&str>) -> PullPage {
+    let mut p = page(scope, from, to, text);
     p.changes[0].stamp = stamp;
     p
 }
 
-/// A delete applies across channels by stamp: the record goes on the first
-/// channel that delivers it and the stamp stays as evidence; the other
-/// channel's copy of the delete is a no-op that still advances its cursor.
+/// A delete applies across scopes by stamp: the record goes on the first
+/// scope that delivers it and the stamp stays as evidence; the other
+/// scope's copy of the delete is a no-op that still advances its cursor.
 #[test]
-fn cross_channel_delete_applies_by_stamp_and_retains_the_stamp() {
+fn cross_scope_delete_applies_by_stamp_and_retains_the_stamp() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -26,7 +26,7 @@ fn cross_channel_delete_applies_by_stamp_and_retains_the_stamp() {
     c.apply_page(stamped("a", 1, 2, 3, None)).unwrap();
     assert!(
         c.read(&key()).unwrap().is_none(),
-        "a stamped delete applies across channels"
+        "a stamped delete applies across scopes"
     );
     assert_eq!(c.record_stamp(&key()).unwrap(), 3);
     assert_eq!(table_count(&mut c, "axton_record"), 1);
@@ -35,7 +35,7 @@ fn cross_channel_delete_applies_by_stamp_and_retains_the_stamp() {
     assert_eq!(
         table_count(&mut c, "axton_record"),
         1,
-        "the stamp is retained after every channel confirmed the delete"
+        "the stamp is retained after every scope confirmed the delete"
     );
     assert_eq!(c.cursor("a").unwrap(), Some(2));
     assert_eq!(c.cursor("b").unwrap(), Some(2));
@@ -82,11 +82,7 @@ fn equal_stamp_is_idempotent_or_a_diagnostic() {
     assert_eq!(conflict.reports[0].stamp, 5);
     assert_eq!(conflict.reports[0].model, "Entry");
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "X");
-    assert_eq!(
-        c.cursor("b").unwrap(),
-        Some(2),
-        "the channel is not stalled"
-    );
+    assert_eq!(c.cursor("b").unwrap(), Some(2), "the scope is not stalled");
 }
 
 #[test]
@@ -213,9 +209,9 @@ fn delete_cascades_to_descendants_and_keeps_their_stamps() {
     );
 }
 
-/// Unsubscribing stops the channel's delivery and nothing else: rows, stamps,
+/// Unsubscribing stops the scope's delivery and nothing else: rows, stamps,
 /// before images and pending edits stay; a page still in flight for the
-/// channel is dropped without writing anything.
+/// scope is dropped without writing anything.
 #[test]
 fn unsubscribing_retains_records_and_later_pages_are_dropped() {
     let dir = tempfile::tempdir().unwrap();
@@ -227,8 +223,7 @@ fn unsubscribing_retains_records_and_later_pages_are_dropped() {
     c.apply_page(clean).unwrap();
     c.transaction(|tx| tx.enqueue(mutation("B"))).unwrap();
     c.freeze().unwrap().unwrap();
-    c.transaction(|tx| tx.set_channel("a".into(), false))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
     assert_eq!(table_count(&mut c, "axton_subscription"), 0);
     assert_eq!(
         c.read(&key()).unwrap().unwrap()["text"],
@@ -254,7 +249,7 @@ fn unsubscribing_retains_records_and_later_pages_are_dropped() {
     let report = c.apply_page(stamped("a", 2, 3, 7, Some("X"))).unwrap();
     assert!(
         report.stale,
-        "a page for an unsubscribed channel is dropped whole"
+        "a page for an unsubscribed scope is dropped whole"
     );
     assert_eq!(table_count(&mut c, "axton_subscription"), 0);
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "B");
@@ -265,22 +260,20 @@ fn unsubscribing_retains_records_and_later_pages_are_dropped() {
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "B");
 }
 
-/// Retained content is still updated by another active channel, and the
+/// Retained content is still updated by another active scope, and the
 /// last subscription going away removes nothing. Everything survives reopen.
 #[test]
-fn another_channel_updates_retained_content_and_restart_keeps_it() {
+fn another_scope_updates_retained_content_and_restart_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut c = open(&path);
     subscribe(&mut c, "a");
     subscribe(&mut c, "b");
     c.apply_page(stamped("a", 0, 1, 1, Some("from a"))).unwrap();
-    c.transaction(|tx| tx.set_channel("a".into(), false))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
     c.apply_page(stamped("b", 0, 1, 2, Some("from b"))).unwrap();
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "from b");
-    c.transaction(|tx| tx.set_channel("b".into(), false))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
     assert!(c.subscriptions().unwrap().is_empty());
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "from b");
     drop(c);
@@ -296,7 +289,7 @@ fn another_channel_updates_retained_content_and_restart_keeps_it() {
     assert_eq!(c.record_stamp(&key()).unwrap(), 3);
 }
 
-/// A channel cursor and a record stamp are independent counters: a page whose
+/// A scope cursor and a record stamp are independent counters: a page whose
 /// cursors are far ahead of the stamp, and one whose stamp is far ahead of
 /// the cursors, both apply by their own rule.
 #[test]
@@ -321,7 +314,7 @@ fn cursor_and_stamp_are_independent() {
     assert_eq!(c.cursor("a").unwrap(), Some(101));
 }
 
-/// A2: a page answering a pull issued before the channel was unsubscribed and
+/// A2: a page answering a pull issued before the scope was unsubscribed and
 /// subscribed again is stale, not a gap, on every incoming path (issue #32). A page
 /// the client never requested that starts beyond its cursor is still a gap.
 #[test]
@@ -377,7 +370,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
         .unwrap();
     assert_eq!(progress.disposition, "covered");
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
-    // Back to a clean channel for the SyncCycle steps below.
+    // Back to a clean scope for the SyncCycle steps below.
     resubscribe(&mut c, "a");
     // An unrequested page beyond the cursor is still a gap to recover from.
     let progress = c
@@ -392,10 +385,7 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     assert_eq!(action.kind, "pull");
     resubscribe(&mut c, "a");
     cycle
-        .complete(
-            &mut c,
-            &stamped("a", 0, 1, 5, Some("old")).encode().unwrap(),
-        )
+        .complete(&mut c, text(&stamped("a", 0, 1, 5, Some("old"))).as_bytes())
         .unwrap();
     assert_eq!(
         c.cursor("a").unwrap(),
@@ -404,16 +394,15 @@ fn page_from_a_previous_subscription_is_stale_not_a_gap() {
     );
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "fresh");
 
-    // Subscribing another channel does not make channel a's pull stale.
+    // Subscribing another scope does not make scope a's pull stale.
     cycle.restart();
     let action = cycle.next(&mut c).unwrap().unwrap();
     assert_eq!(action.kind, "pull");
-    c.transaction(|tx| tx.set_channel("b".into(), true))
-        .unwrap();
+    c.transaction(|tx| tx.set_scope("b".into(), true)).unwrap();
     cycle
         .complete(
             &mut c,
-            &stamped("a", 0, 1, 6, Some("kept")).encode().unwrap(),
+            text(&stamped("a", 0, 1, 6, Some("kept"))).as_bytes(),
         )
         .unwrap();
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "kept");
@@ -447,10 +436,10 @@ fn read(c: &mut Client<SqliteStore>, id: &str) -> Option<Value> {
     c.read(&key).unwrap()
 }
 
-/// One page names every channel: each channel's cursor moves, and a record
-/// changed in two channels is in the page once and lands once.
+/// One page names every scope: each scope's cursor moves, and a record
+/// changed in two scopes is in the page once and lands once.
 #[test]
-fn a_page_moves_every_channel_it_names_and_a_shared_record_lands_once() {
+fn a_page_moves_every_scope_it_names_and_a_shared_record_lands_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -475,11 +464,11 @@ fn a_page_moves_every_channel_it_names_and_a_shared_record_lands_once() {
     assert_eq!(read(&mut c, "only-a").unwrap()["text"], "A");
 }
 
-/// Gating is per channel: a channel already covered contributes nothing while
-/// the others move; a channel with a gap keeps the whole page out. An
-/// unsubscribed channel's part is ignored.
+/// Gating is per scope: a scope already covered contributes nothing while
+/// the others move; a scope with a gap keeps the whole page out. An
+/// unsubscribed scope's part is ignored.
 #[test]
-fn channels_are_gated_one_by_one_and_a_gap_holds_the_whole_page() {
+fn scopes_are_gated_one_by_one_and_a_gap_holds_the_whole_page() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
     subscribe(&mut c, "a");
@@ -515,9 +504,8 @@ fn channels_are_gated_one_by_one_and_a_gap_holds_the_whole_page() {
         .unwrap();
     assert!(covered.stale);
     assert_eq!(read(&mut c, "e").unwrap()["text"], "B");
-    // An unsubscribed channel's part is ignored; the other channel still moves.
-    c.transaction(|tx| tx.set_channel("b".into(), false))
-        .unwrap();
+    // An unsubscribed scope's part is ignored; the other scope still moves.
+    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
     let report = c
         .apply_page(multi(
             &[("a", 5, 6, 6), ("b", 2, 3, 3)],
@@ -595,7 +583,7 @@ fn a_conflict_is_reported_through_receive_downlink() {
     );
     assert!(progress.continues.is_empty());
     assert!(progress.gaps.is_empty());
-    // A gap on one channel names it; nothing is applied.
+    // A gap on one scope names it; nothing is applied.
     subscribe(&mut c, "b");
     let progress = c
         .receive_downlink(
@@ -651,4 +639,44 @@ fn a_record_that_violates_a_local_constraint_is_skipped_alone() {
     assert_eq!(c.record_stamp(&c2).unwrap(), 0, "no stamp without content");
     assert_eq!(c.query("Comment", &json!({})).unwrap().len(), 2);
     assert_eq!(c.cursor("lib").unwrap(), Some(3));
+}
+
+#[test]
+fn scope_membership_page_ignores_unsubscribed_changes_without_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = open(&dir.path().join("db"));
+    subscribe(&mut c, "a");
+    subscribe(&mut c, "b");
+    c.apply_page(page("a", 0, 1, Some("cached"))).unwrap();
+    c.transaction(|tx| tx.set_scope("a".into(), false)).unwrap();
+    c.apply_scope_page(ScopePullPage {
+        cursors: BTreeMap::from([
+            (
+                "a".into(),
+                CursorRange {
+                    from: 1,
+                    to: 2,
+                    head: 2,
+                },
+            ),
+            (
+                "b".into(),
+                CursorRange {
+                    from: 0,
+                    to: 1,
+                    head: 1,
+                },
+            ),
+        ]),
+        changes: vec![ScopeChange::Remove {
+            scope: "a".into(),
+            cursor: 2,
+            key: key(),
+        }],
+    })
+    .unwrap();
+    assert_eq!(c.cursor("a").unwrap(), None);
+    assert_eq!(c.cursor("b").unwrap(), Some(1));
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "cached");
+    assert_eq!(table_count(&mut c, "axton_scope_member"), 0);
 }

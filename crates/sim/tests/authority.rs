@@ -1,4 +1,4 @@
-//! Authority on the simulation: a push completes from its receipt, channel pages and
+//! Authority on the simulation: a push completes from its receipt, scope pages and
 //! receipts carry the same stamps, and neither can regress the other.
 use axton_sim::{Action, MutationSpec, Sim, schema::entry_key};
 
@@ -6,7 +6,7 @@ fn setup(seed: u64) -> Sim {
     let mut sim = Sim::new(seed, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -71,7 +71,7 @@ fn a1_server_value_overrides_optimism_and_later_edits_replay() {
     sim.check().unwrap();
 }
 
-/// A2: a page whose channel range is already covered is stale and does not move the cursor back;
+/// A2: a page whose scope range is already covered is stale and does not move the cursor back;
 /// a page ahead is refused.
 #[test]
 fn a2_pages_apply_only_in_cursor_order() {
@@ -79,7 +79,7 @@ fn a2_pages_apply_only_in_cursor_order() {
     sim.apply(Action::ServerChange {
         key: "Entry:e1".into(),
         text: Some("v2".into()),
-        channels: vec!["a".into()],
+        scopes: vec!["a".into()],
     })
     .unwrap();
     sim.apply(Action::Pull { client: 0 }).unwrap();
@@ -92,7 +92,7 @@ fn a2_pages_apply_only_in_cursor_order() {
     sim.check().unwrap();
 }
 
-/// The receipt and the channel page for the same change carry the same stamp and
+/// The receipt and the scope page for the same change carry the same stamp and
 /// content. Whichever arrives first, the receipt completes the batch, the page moves
 /// the cursor, nothing conflicts and the row is the server's.
 #[test]
@@ -128,7 +128,7 @@ fn reordered_receipt_and_page_agree_in_either_order() {
     }
 }
 
-/// HTTP-only completion: a client that follows no channel at all still completes
+/// HTTP-only completion: a client that follows no scope at all still completes
 /// its push from the receipt, with the server's row and the server's stamp.
 #[test]
 fn a_push_completes_from_its_receipt_with_zero_subscriptions() {
@@ -166,14 +166,14 @@ fn a_push_completes_from_its_receipt_with_zero_subscriptions() {
     sim.check().unwrap();
 }
 
-/// A handler that publishes nowhere (a record with no channel membership) is a
-/// legal outcome: the change is stamped, read back and returned; no channel moves.
+/// A handler that publishes nowhere (a record with no scope membership) is a
+/// legal outcome: the change is stamped, read back and returned; no scope moves.
 #[test]
-fn a_change_published_to_no_channel_still_completes() {
+fn a_change_published_to_no_scope_still_completes() {
     let mut sim = Sim::new(35, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.host.set_membership(&entry_key("e9"), &[]);
@@ -188,13 +188,13 @@ fn a_change_published_to_no_channel_still_completes() {
     sim.settle();
     assert_eq!(sim.client(0).pending_count().unwrap(), 0);
     assert_eq!(sim.read_text(0, &entry_key("e9")).as_deref(), Some("quiet"));
-    assert_eq!(sim.host.head("a"), 0, "no channel was told");
+    assert_eq!(sim.host.head("a"), 0, "no scope was told");
     assert_eq!(sim.client(0).record_stamp(&entry_key("e9")).unwrap(), 1);
     sim.check().unwrap();
 }
 
-/// A2: a page pulled from channel "a" before an Unsubscribe/Subscribe cycle can
-/// still be in flight when the resubscribe resets the channel's cursor to 0; it is
+/// A2: a page pulled from scope "a" before an Unsubscribe/Subscribe cycle can
+/// still be in flight when the resubscribe resets the scope's cursor to 0; it is
 /// dropped as stale, a page from a previous subscription, rather than treated as a
 /// gap or applied against the reset cursor. The nine-action repro from issue #32.
 #[test]
@@ -202,7 +202,7 @@ fn a2_page_from_a_previous_subscription_is_stale_not_a_gap() {
     let mut sim = Sim::new(36, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Enqueue {
@@ -230,12 +230,12 @@ fn a2_page_from_a_previous_subscription_is_stale_not_a_gap() {
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Unsubscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     assert!(
@@ -251,7 +251,7 @@ fn a2_page_from_a_previous_subscription_is_stale_not_a_gap() {
     sim.check().unwrap();
 }
 
-/// Completion never waits for a channel: two batches on channels the client does
+/// Completion never waits for a scope: two batches on scopes the client does
 /// not pull (one it follows, one it does not) both complete on their receipts, in
 /// sequence, while every cursor stays where it was.
 #[test]
@@ -259,7 +259,7 @@ fn batches_complete_on_their_receipts_without_any_page() {
     let mut sim = Sim::new(37, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        channel: "slow".into(),
+        scope: "slow".into(),
     })
     .unwrap();
     sim.host.set_membership(&entry_key("s"), &["slow"]);
@@ -307,14 +307,14 @@ fn batches_complete_on_their_receipts_without_any_page() {
 
 /// Deletion through a receipt: the deleting client's row goes and its stamp is
 /// retained; a subscribed peer receives the same deletion at the same stamp through
-/// the channel.
+/// the scope.
 #[test]
 fn deletion_completes_from_the_receipt_and_reaches_a_peer_at_the_same_stamp() {
     let mut sim = Sim::new(38, 2);
     for i in 0..2 {
         sim.apply(Action::Subscribe {
             client: i,
-            channel: "a".into(),
+            scope: "a".into(),
         })
         .unwrap();
     }
@@ -360,14 +360,14 @@ fn deletion_completes_from_the_receipt_and_reaches_a_peer_at_the_same_stamp() {
     sim.check().unwrap();
 }
 
-/// Restart keeps retained rows: a record delivered by a channel the client has
+/// Restart keeps retained rows: a record delivered by a scope the client has
 /// since left survives a crash, stamp included.
 #[test]
 fn restart_keeps_rows_retained_after_unsubscribe() {
     let mut sim = setup(39);
     sim.apply(Action::Unsubscribe {
         client: 0,
-        channel: "a".into(),
+        scope: "a".into(),
     })
     .unwrap();
     sim.apply(Action::Crash { client: 0 }).unwrap();

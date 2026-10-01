@@ -43,10 +43,10 @@ void main(){
      final DateTime at=change.row.at;
      final Status status=change.row.status;
      await tx.models.entry.get(EntryIdentity(id:id));
-     await tx.channels.subscribe('entry:$id');
+     await tx.scopes.subscribe('entry:$id');
      expect(at,isA<DateTime>());expect(status,isA<Status>());
     }else if(change is StoreDelete<EntryIdentity,Entry>){
-     await tx.channels.unsubscribe('entry:$id');
+     await tx.scopes.unsubscribe('entry:$id');
     }
    }
   });
@@ -254,7 +254,7 @@ void main(){
  });
  // The generated Scope facade ([#150](https://github.com/zanminwang/axton/issues/150)):
  // one handle per registration, typed handle members, and the retained
- // `channels` spelling on that same ledger path.
+ // `scopes` spelling on that same ledger path.
  test('generated scopes facade answers with one handle per registration',()async{
   final temp=await Directory.systemTemp.createTemp('generated-api-scopes-');
   final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY'] ?? '../../target/debug/libaxton_dart.dylib');
@@ -278,11 +278,10 @@ void main(){
    await pumpEventQueue();
    await observer.cancel();
    expect(seen.map((s)=>s.connection),[SubscriptionConnection.offline],reason:'the current snapshot arrives first');
-   // The retained spelling registers through the same ledger: with no server it
-   // has durable intent and no boundary.
-   final Subscription retained=await client.channels.subscribe('project:456');
+   // A second Scope registers durable intent before any server boundary.
+   final Subscription retained=await client.scopes.subscribe('project:456');
    expect(retained.status.initialization,SubscriptionInitialization.pending);
-   await client.channels.unsubscribe('project:456');
+   await retained.unsubscribe();
    expect(retained.status.active,isFalse);
    await c.unsubscribe();
   }finally{await client.close();await temp.delete(recursive:true);}
@@ -303,14 +302,14 @@ void main(){
     // Only a bootstrap page is expected here, and the test transport holds it.
     loads.add(body);
     await held.future;
-    request.response.write(jsonEncode({'mode':'bootstrap','channel':body['channel'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'records':<Object>[]}));
+    request.response.write(jsonEncode({'mode':'bootstrap','scope':body['scope'],'from':body['after'],'to':body['until'],'until':body['until'],'head':body['until'],'changes':<Object>[]}));
     await request.response.close();
     return;
    }
    final socket=await WebSocketTransformer.upgrade(request);
    socket.listen((message){
     final subscribe=jsonDecode(message as String) as Map;
-    socket.add(jsonEncode({'type':'subscribed','cursors':{for(final channel in subscribe['channels'] as List) channel:0}}));
+    socket.add(jsonEncode({'type':'subscribed','cursors':{for(final scope in subscribe['scopes'] as List) scope:0}}));
    },onError:(Object _){});
   });
   final client=await GeneratedClient.open(path:'${temp.path}/state.sqlite',libraryPath:Platform.environment['AXTON_DART_LIBRARY'] ?? '../../target/debug/libaxton_dart.dylib');

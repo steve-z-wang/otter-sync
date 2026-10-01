@@ -141,7 +141,7 @@ fn an_earlier_framework_layout_is_rebuilt_beside_not_refused() {
     let path = dir.path().join("db");
     let mut s = SqliteStore::open(&path).unwrap();
     s.execute_batch(ddl::FRAMEWORK_DDL).unwrap();
-    s.execute_batch("CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, channel TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, channel)); INSERT INTO axton_push_checkpoint VALUES (1,'a',1); INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES ('old',1,1,1,8); INSERT INTO axton_subscription (channel, subscription_id, starting_cursor, cursor) VALUES ('a', 7, 9, 9)").unwrap();
+    s.execute_batch("CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, scope TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, scope)); INSERT INTO axton_push_checkpoint VALUES (1,'a',1); INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES ('old',1,1,1,8); INSERT INTO axton_subscription (scope, subscription_id, starting_cursor, cursor) VALUES ('a', 7, 9, 9)").unwrap();
     drop(s);
     assert!(
         Client::open(SqliteStore::open(&path).unwrap(), schema()).is_err(),
@@ -182,7 +182,7 @@ fn a_subscription_table_without_identities_is_rebuilt_beside() {
     let mut s = SqliteStore::open(&path).unwrap();
     s.execute_batch(
         "CREATE TABLE axton_client (client_id TEXT PRIMARY KEY, next_ordinal INTEGER NOT NULL, next_push INTEGER NOT NULL, generation INTEGER NOT NULL, last_completed_push INTEGER NOT NULL DEFAULT 0, push_models TEXT, push_results TEXT);
-         CREATE TABLE axton_subscription (channel TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
+         CREATE TABLE axton_subscription (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL);
          INSERT INTO axton_client (client_id, next_ordinal, next_push, generation) VALUES ('old', 1, 1, 1);
          INSERT INTO axton_subscription VALUES ('a', 9);
          INSERT INTO axton_subscription VALUES ('b', 4);",
@@ -211,11 +211,8 @@ fn a_subscription_table_without_identities_is_rebuilt_beside() {
             .contains("next_subscription")
     );
     let mut identities = vec![];
-    for channel in ["a", "b"] {
-        let carried = c
-            .subscription_state(channel)
-            .unwrap()
-            .expect("carried over");
+    for scope in ["a", "b"] {
+        let carried = c.subscription_state(scope).unwrap().expect("carried over");
         assert_eq!(
             (carried.starting_cursor, carried.cursor),
             (None, None),
@@ -233,15 +230,12 @@ fn a_subscription_table_without_identities_is_rebuilt_beside() {
 
     let mut s = SqliteStore::open(&path).unwrap();
     assert_eq!(
-        s.query_committed(
-            "SELECT cursor FROM axton_subscription ORDER BY channel",
-            &[]
-        )
-        .unwrap()
-        .rows
-        .iter()
-        .map(|r| r[0].clone())
-        .collect::<Vec<_>>(),
+        s.query_committed("SELECT cursor FROM axton_subscription ORDER BY scope", &[])
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r[0].clone())
+            .collect::<Vec<_>>(),
         vec![json!(9), json!(4)],
         "the old file keeps its own cursors"
     );
@@ -482,7 +476,7 @@ fn a_rebuild_resets_the_bootstrap_state_with_the_fresh_identity() {
             .subscription_id;
         c.request_bootstrap("book", id).unwrap();
         let page = BootstrapPage {
-            channel: "book".into(),
+            scope: "book".into(),
             from: 0,
             to: 0,
             until: 0,

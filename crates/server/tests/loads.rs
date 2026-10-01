@@ -1,16 +1,17 @@
 //! Native Load pages on the server: one page is one owner-scoped durable call
 //! executed in the caller's transaction, resolved through batched stamp and
 //! Loader reads, and replayed from its saved outcome.
+mod capability;
 mod support;
 
-use axton_core::{Continuation, LoadBatchRequest, LoadBatchResponse, limits};
+use axton_core::{Continuation, LoadBatchRequest, LoadBatchResponse, canonical_json, limits};
 use axton_server::{
     Config, Host, HostResult, LoadFault, LoadItemAnswer, code, encode_load_batch,
-    host::HostRequest, process_action, process_load, validate_load_batch,
+    host::HostRequest, load_fault_outcome, process_action, process_load, validate_load_batch,
 };
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
-use support::{Backend, run};
+use support::{Backend, Tables, add, reference, remove, run};
 
 fn field(name: &str) -> Value {
     json!({"name":name,"type":{"kind":"scalar","name":"string"},"nullable":false})
@@ -61,7 +62,7 @@ fn page_as(host: &impl Host, config: &Config, owner: &str, item: &Value) -> Valu
     let text = run(process_load(
         config,
         owner,
-        item.to_string().as_bytes(),
+        &crate::capability::request(item.to_string().as_bytes()),
         host,
     ))
     .unwrap();
@@ -432,8 +433,7 @@ fn the_load_context_is_read_only_and_a_forged_settlement_is_refused() {
     seed_todos(&backend, 1);
     let mut forged = answer(ids(&["t1"]), json!([]), Value::Null);
     forged["changes"] = json!([{"model":"Todo","identity":{"id":"t1"}}]);
-    forged["memberships"] =
-        json!([{"channel":"c","model":"Todo","identity":{"id":"t1"},"present":true}]);
+    forged["memberships"] = json!([{"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]}]);
     backend.script("ProjectTodos", forged);
     let refused = page(&backend, &item(1, Value::Null));
     assert_eq!(outcome_code(&refused), code::HANDLER_INVALID);
@@ -627,7 +627,7 @@ fn a_reused_call_id_with_another_request_or_kind_conflicts_without_saving() {
         let text = run(process_action(
             &config(),
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &backend,
         ))
         .unwrap();
@@ -673,7 +673,7 @@ fn the_claim_is_owner_scoped() {
     let error = run(process_load(
         &config(),
         " ",
-        item(2, Value::Null).to_string().as_bytes(),
+        &crate::capability::request(item(2, Value::Null).to_string().as_bytes()),
         &backend,
     ))
     .unwrap_err();
@@ -760,7 +760,7 @@ fn infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes() {
         let error = run(process_load(
             &config(),
             "alice",
-            item(1, Value::Null).to_string().as_bytes(),
+            &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
             &host,
         ))
         .unwrap_err();
@@ -776,7 +776,7 @@ fn infrastructure_faults_and_host_defects_are_errors_never_saved_outcomes() {
     let error = run(process_load(
         &config(),
         "alice",
-        item(1, Value::Null).to_string().as_bytes(),
+        &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
         &backend,
     ))
     .unwrap_err();
@@ -794,8 +794,10 @@ fn the_batch_validator_is_structural_and_answers_canonical_items_in_order() {
     unknown["loadId"] = json!(id(0xbbb));
     unknown["name"] = json!("Unknown");
     unknown["args"] = json!({"anything":true});
-    let items =
-        validate_load_batch(json!({"loads":[first, unknown]}).to_string().as_bytes()).unwrap();
+    let items = validate_load_batch(&crate::capability::request(
+        json!({"loads":[first, unknown]}).to_string().as_bytes(),
+    ))
+    .unwrap();
     assert_eq!(items.len(), 2);
     let decoded: Vec<Value> = items
         .iter()
@@ -829,7 +831,9 @@ fn the_batch_validator_is_structural_and_answers_canonical_items_in_order() {
         json!({"loads":[item(1, Value::Null)],"extra":1}),
         json!({"loads":[{"loadId":"not-a-uuid"}]}),
     ] {
-        let error = validate_load_batch(refused.to_string().as_bytes()).unwrap_err();
+        let error =
+            validate_load_batch(&crate::capability::request(refused.to_string().as_bytes()))
+                .unwrap_err();
         assert_eq!(error.code, code::REQUEST_INVALID, "{refused}");
     }
 }
@@ -878,12 +882,18 @@ fn batch_items(count: u64) -> (Vec<String>, LoadBatchRequest) {
         .collect();
     let body = json!({ "loads": items }).to_string();
     (
-        validate_load_batch(body.as_bytes()).unwrap(),
+        validate_load_batch(&crate::capability::request(body.as_bytes())).unwrap(),
         LoadBatchRequest::decode_envelope(body.as_bytes()).unwrap(),
     )
 }
 fn process(backend: &Backend, item: &str) -> String {
-    run(process_load(&config(), "alice", item.as_bytes(), backend)).unwrap()
+    run(process_load(
+        &config(),
+        "alice",
+        &crate::capability::request(item.as_bytes()),
+        backend,
+    ))
+    .unwrap()
 }
 fn decoded(response: &str) -> Vec<Value> {
     serde_json::from_str::<Value>(response).unwrap()["loads"]
@@ -1019,5 +1029,977 @@ fn the_response_holds_eight_full_pages_within_its_bound_and_an_oversized_page_fa
             .iter()
             .enumerate()
             .all(|(n, load)| n == 3 || load["outcome"]["status"] == "succeeded")
+    );
+}
+
+/// A settled answer whose add-only Scope handles declared `memberships`.
+fn enrolling(todos: Value, projects: Value, memberships: Vec<Value>) -> Value {
+    let mut answered = answer(todos, projects, Value::Null);
+    answered["memberships"] = Value::Array(memberships);
+    answered
+}
+/// Everything a page may change besides its own saved call: rows, stamps,
+/// heads, positions and memberships.
+fn durable(backend: &Backend) -> Tables {
+    let mut tables = backend.tables();
+    tables.calls.clear();
+    tables
+}
+/// The operations shared settlement issued, by name.
+fn settlement_ops(backend: &Backend) -> Vec<String> {
+    let settlement = [
+        "advanceStamp",
+        "ensureStamp",
+        "lockRecord",
+        "memberships",
+        "lockScopes",
+        "readScopeMembers",
+        "applyScopeMembers",
+    ];
+    backend
+        .ops()
+        .into_iter()
+        .filter(|op| settlement.contains(&op.as_str()))
+        .collect()
+}
+fn repeated(op: &str, count: usize) -> Vec<String> {
+    vec![op.to_string(); count]
+}
+fn strings(ops: &[&str]) -> Vec<String> {
+    ops.iter().map(|op| op.to_string()).collect()
+}
+
+#[test]
+fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
+    let backend = Backend::new();
+    seed_todos(&backend, 2);
+    backend.seed("Todo", "t1", json!({"id":"t1","title":"T1"}), Some(5));
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1", "t2"]),
+            json!([]),
+            vec![add("c", "Todo", "t1"), add("c", "Todo", "t2")],
+        ),
+    );
+    let first = page(&backend, &item(1, Value::Null));
+    assert_eq!(first["outcome"]["status"], "succeeded", "{first}");
+    assert_eq!(
+        first["outcome"]["data"],
+        json!({"todos":[{"id":"t1"},{"id":"t2"}],"projects":[]}),
+        "the page answers exactly what it answered before enrollment existed"
+    );
+    assert_eq!(
+        first["memberships"],
+        json!([
+            {"scope":"c","cursor":1,"model":"Todo","identity":{"id":"t1"}},
+            {"scope":"c","cursor":2,"model":"Todo","identity":{"id":"t2"}}
+        ])
+    );
+    assert_eq!(saved(&backend, 1), Some(first.clone()));
+    assert_eq!(backend.members("Todo", "t1"), ["c"]);
+    assert_eq!(backend.members("Todo", "t2"), ["c"]);
+    // A loaded record keeps its stamp; one without evidence starts at 1. Each
+    // position carries exactly the stamp the page's own record carries.
+    assert_eq!(backend.stamp("Todo", "t1"), Some(5));
+    assert_eq!(backend.stamp("Todo", "t2"), Some(1));
+    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 5)));
+    assert_eq!(backend.invalidation("c", "Todo", "t2"), Some((2, 1)));
+    for record in first["records"].as_array().unwrap() {
+        let id = record["identity"]["id"].as_str().unwrap();
+        let (_, stamp) = backend.invalidation("c", "Todo", id).unwrap();
+        assert_eq!(record["stamp"], json!(stamp), "{id}");
+    }
+    assert_eq!(backend.head("c"), 2);
+    assert_eq!(
+        backend.ops(),
+        [
+            strings(&[
+                "claimCall",
+                "savepoint",
+                "handleLoad",
+                "lockScopes",
+                "readStamps",
+                "load"
+            ]),
+            repeated("ensureStamp", 2),
+            strings(&["readScopeMembers", "applyScopeMembers"]),
+            strings(&["release", "saveCall"]),
+        ]
+        .concat(),
+        "the Scopes lock before the page's reads; settlement runs after them and before its release; nothing advances a stamp"
+    );
+
+    // A fresh page re-adding existing members publishes nothing more: each
+    // unchanged member keeps, and answers, its existing position.
+    backend.clear_log();
+    let before = durable(&backend);
+    let again = page(&backend, &item(2, Value::Null));
+    assert_eq!(again["outcome"]["status"], "succeeded");
+    assert_eq!(durable(&backend), before);
+    assert_eq!(
+        settlement_ops(&backend),
+        [
+            strings(&["lockScopes"]),
+            repeated("ensureStamp", 2),
+            strings(&["readScopeMembers", "applyScopeMembers"]),
+        ]
+        .concat()
+    );
+    assert!(backend.deltas().iter().all(|delta| !delta.publish));
+}
+
+/// An enrolling page locks exactly its Scopes, once and in byte order,
+/// before `readStamps` may insert a record row; a page that enrolls nothing
+/// locks none.
+#[test]
+fn an_enrolling_page_locks_its_scopes_before_any_record_row() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("d", "Todo", "t1"), add("c", "Todo", "t1")],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    let ops = backend.ops();
+    let at = |op: &str| ops.iter().position(|name| name == op).unwrap();
+    assert!(at("lockScopes") < at("readStamps"), "{ops:?}");
+    assert_eq!(backend.count("lockScopes"), 1, "{ops:?}");
+    assert!(backend.log().contains(&HostRequest::LockScopes {
+        scopes: vec!["c".into(), "d".into()]
+    }));
+
+    backend.clear_log();
+    backend.script("ProjectTodos", answer(ids(&["t1"]), json!([]), Value::Null));
+    let quiet = page(&backend, &item(2, Value::Null));
+    assert_eq!(quiet["outcome"]["status"], "succeeded", "{quiet}");
+    assert_eq!(backend.count("lockScopes"), 0);
+}
+
+/// A Load's add carries tags like a Mutation's: a repeated pair unions its
+/// tags into the first, and the pair still takes one position.
+#[test]
+fn a_page_enrolls_with_tags_and_a_repeated_pair_unions_them() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![
+                support::add_tagged("c", "Todo", "t1", &["X"]),
+                support::add_tagged("c", "Todo", "t1", &["Y", "X"]),
+            ],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".to_string(), vec!["X".to_string(), "Y".to_string()])]
+    );
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
+}
+
+#[test]
+fn valid_load_declarations_can_union_more_than_64_tags_and_replay() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let tags: Vec<String> = (0..64).map(|i| format!("t{i:02}")).collect();
+    let refs: Vec<&str> = tags.iter().map(String::as_str).collect();
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![
+                support::add_tagged("c", "Todo", "t1", &refs),
+                support::add_tagged("c", "Todo", "t1", &["t00", "t64"]),
+            ],
+        ),
+    );
+    let request = item(1, Value::Null);
+    let result = page(&backend, &request);
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    let expected: Vec<String> = (0..65).map(|i| format!("t{i:02}")).collect();
+    assert_eq!(backend.tagged_members("c"), [("t1".to_string(), expected)]);
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
+    assert_eq!(page(&backend, &request), result);
+    assert_eq!(backend.positions("c"), [(1, "t1".into(), "upsert")]);
+}
+
+#[test]
+fn one_record_joins_several_scopes_without_republishing_to_its_existing_ones() {
+    let backend = Backend::new();
+    backend.seed("Todo", "t1", json!({"id":"t1","title":"T1"}), Some(3));
+    backend.enroll("b", "Todo", "t1", 7);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("a", "Todo", "t1"), add("c", "Todo", "t1")],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    assert_eq!(backend.members("Todo", "t1"), ["a", "b", "c"]);
+    assert_eq!(backend.invalidation("a", "Todo", "t1"), Some((1, 3)));
+    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 3)));
+    assert_eq!(backend.invalidation("b", "Todo", "t1"), Some((8, 3)));
+    assert_eq!(backend.head("b"), 8, "an existing Scope is not republished");
+    assert_eq!(backend.stamp("Todo", "t1"), Some(3));
+    assert_eq!(
+        settlement_ops(&backend),
+        strings(&[
+            "lockScopes",
+            "ensureStamp",
+            "readScopeMembers",
+            "readScopeMembers",
+            "applyScopeMembers"
+        ])
+    );
+}
+
+#[test]
+fn repeated_declarations_across_outputs_and_mixed_lists_are_one_effect_per_pair() {
+    let backend = Backend::new();
+    seed_todos(&backend, 2);
+    backend.seed("Project", "p1", json!({"id":"p1","name":"P"}), None);
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1", "t2", "t1"]),
+            ids(&["p1", "p1"]),
+            vec![
+                add("c", "Todo", "t1"),
+                add("c", "Project", "p1"),
+                add("c", "Todo", "t1"),
+                add("c", "Todo", "t2"),
+                add("d", "Project", "p1"),
+                add("c", "Project", "p1"),
+            ],
+        ),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded", "{result}");
+    assert_eq!(backend.members("Todo", "t1"), ["c"]);
+    assert_eq!(backend.members("Todo", "t2"), ["c"]);
+    assert_eq!(backend.members("Project", "p1"), ["c", "d"]);
+    assert_eq!(backend.head("c"), 3, "one position per distinct pair");
+    assert_eq!(backend.head("d"), 1);
+    assert_eq!(backend.count("ensureStamp"), 3, "one guard per record");
+    assert_eq!(backend.count("memberships"), 0, "nothing is touched");
+    assert_eq!(backend.count("readScopeMembers"), 2, "one read per Scope");
+    assert_eq!(backend.deltas().len(), 4, "one final state per pair");
+    assert_eq!(backend.publishes().len(), 4);
+    assert_eq!(backend.count("advanceStamp"), 0);
+}
+
+/// A page that must fail with `expected` before any stamp or Loader read,
+/// saved as a terminal rejection that keeps nothing it did.
+fn refused_before_resolution(backend: &Backend, config: &Config, expected: &str, case: &str) {
+    let before = durable(backend);
+    let failed = page_as(backend, config, "alice", &item(1, Value::Null));
+    assert_eq!(outcome_code(&failed), expected, "{case}");
+    assert_eq!(saved(backend, 1), Some(failed), "{case}");
+    assert_eq!(durable(backend), before, "{case}: nothing is kept");
+    assert_eq!(backend.count("rollback"), 1, "{case}");
+    assert_eq!(backend.count("readStamps"), 0, "{case}");
+    assert_eq!(backend.count("load"), 0, "{case}");
+    assert_eq!(settlement_ops(backend), Vec::<String>::new(), "{case}");
+}
+
+#[test]
+fn enrollment_a_load_may_not_declare_is_a_saved_handler_failure_that_keeps_nothing() {
+    let intent = |scope: &str, model: &str, identity: Value| json!({"kind":"add","scope":scope,"record":{"model":model,"identity":identity},"tags":[]});
+    let cases = [
+        ("a removal", vec![remove("c", "Todo", "t1")]),
+        (
+            "a removal after an addition",
+            vec![add("c", "Todo", "t1"), remove("d", "Todo", "t1")],
+        ),
+        ("a record outside the page", vec![add("c", "Todo", "t9")]),
+        (
+            "an identity of another Model",
+            vec![add("c", "Project", "t1")],
+        ),
+        ("a Model outside the schema", vec![add("c", "Ghost", "t1")]),
+        (
+            "65 tags in one declaration",
+            vec![
+                json!({"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags": (0..65).map(|i| format!("t{i}")).collect::<Vec<_>>()}),
+            ],
+        ),
+        ("a blank Scope", vec![add("  ", "Todo", "t1")]),
+        (
+            "a mistyped identity",
+            vec![intent("c", "Todo", json!({"id":7}))],
+        ),
+        (
+            "an identity with extra members",
+            vec![intent("c", "Todo", json!({"id":"t1","title":"T1"}))],
+        ),
+        (
+            "an invalid declaration after a valid one",
+            vec![add("c", "Todo", "t1"), add("c", "Todo", "t9")],
+        ),
+        (
+            "label add outside output",
+            vec![json!({"kind":"tagAdd","scope":"c","record":reference("Todo","t9"),"tags":["X"]})],
+        ),
+        (
+            "label remove",
+            vec![
+                json!({"kind":"tagRemove","scope":"c","record":reference("Todo","t1"),"tags":["X"]}),
+            ],
+        ),
+        (
+            "bulk label detach",
+            vec![json!({"kind":"detachTags","scope":"c","tags":["X"]})],
+        ),
+        (
+            "selection",
+            vec![
+                json!({"kind":"select","scope":"c","predicate":{"tags":{"only":[]}},"action":{"kind":"tagAdd","tags":["X"]}}),
+            ],
+        ),
+        // A Load has no tag selector, and its tags follow the add rules:
+        // each is refused before any read, never dropped.
+        (
+            "a tag selector",
+            vec![json!({"kind":"removeTag","scope":"c","tag":"X"})],
+        ),
+        (
+            "a blank tag",
+            vec![support::add_tagged("c", "Todo", "t1", &["\u{feff}"])],
+        ),
+        (
+            "a tag past 256 bytes",
+            vec![support::add_tagged("c", "Todo", "t1", &[&"x".repeat(257)])],
+        ),
+        (
+            "a repeated pair adding a blank tag",
+            vec![
+                add("c", "Todo", "t1"),
+                support::add_tagged("c", "Todo", "t1", &[" "]),
+            ],
+        ),
+    ];
+    for (case, memberships) in cases {
+        let backend = Backend::new();
+        seed_todos(&backend, 1);
+        backend.seed("Project", "p1", json!({"id":"p1","name":"P"}), Some(2));
+        backend.script(
+            "ProjectTodos",
+            enrolling(ids(&["t1"]), ids(&["p1"]), memberships),
+        );
+        refused_before_resolution(&backend, &config(), code::HANDLER_INVALID, case);
+    }
+}
+
+#[test]
+fn an_empty_page_cannot_enroll_and_an_invalid_page_fails_before_its_enrollment() {
+    let cases = [
+        (
+            "an empty page",
+            enrolling(json!([]), json!([]), vec![add("c", "Todo", "t1")]),
+            code::HANDLER_INVALID,
+        ),
+        (
+            "an invalid continuation",
+            {
+                let mut answered = enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]);
+                answered["next"] = json!({"state":1,"more":2});
+                answered
+            },
+            code::LOAD_INVALID_CONTINUATION,
+        ),
+        (
+            "invalid data",
+            json!({"data":{"todos":[{"id":7}],"projects":[]},"next":null,
+                "memberships":[add("c", "Todo", "t1")]}),
+            code::HANDLER_INVALID,
+        ),
+    ];
+    for (case, answered, expected) in cases {
+        let backend = Backend::new();
+        seed_todos(&backend, 1);
+        backend.script("ProjectTodos", answered);
+        refused_before_resolution(&backend, &config(), expected, case);
+    }
+}
+
+#[test]
+fn enrolling_a_model_without_a_registered_loader_is_loader_unregistered_before_any_read() {
+    let mut unregistered = config();
+    unregistered.loaders.retain(|model| model != "Project");
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.seed("Project", "p1", json!({"id":"p1","name":"P"}), Some(2));
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&["t1"]), json!([]), vec![add("c", "Project", "p1")]),
+    );
+    refused_before_resolution(
+        &backend,
+        &unregistered,
+        code::LOADER_UNREGISTERED,
+        "device-only",
+    );
+}
+
+#[test]
+fn enrollment_is_bounded_by_distinct_pairs_after_deduplication() {
+    let scopes: Vec<String> = (0..limits::LOAD_ENROLLMENT_PAIRS)
+        .map(|n| format!("c{n}"))
+        .collect();
+    // Exactly the bound, each pair declared twice.
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let twice: Vec<Value> = scopes
+        .iter()
+        .chain(&scopes)
+        .map(|scope| add(scope, "Todo", "t1"))
+        .collect();
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), twice));
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded");
+    assert_eq!(
+        backend.members("Todo", "t1").len(),
+        limits::LOAD_ENROLLMENT_PAIRS
+    );
+    assert_eq!(backend.publishes().len(), limits::LOAD_ENROLLMENT_PAIRS);
+
+    // One distinct pair more is a saved size failure that keeps nothing.
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let over: Vec<Value> = scopes
+        .iter()
+        .map(String::as_str)
+        .chain(["one-more"])
+        .map(|scope| add(scope, "Todo", "t1"))
+        .collect();
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), over));
+    refused_before_resolution(
+        &backend,
+        &config(),
+        code::LOAD_PAGE_TOO_LARGE,
+        "one pair over",
+    );
+}
+
+/// The encoded bytes of one `t1` enrollment into `scope`, as the shared
+/// fixture defines them.
+fn pair_bytes(scope: &str) -> usize {
+    canonical_json(&add(scope, "Todo", "t1")).unwrap().len()
+}
+
+#[test]
+fn enrollment_is_bounded_by_its_encoded_bytes_after_deduplication() {
+    // 256 distinct Scopes whose pairs encode to exactly the bound.
+    let count = 256;
+    let each = limits::LOAD_ENROLLMENT_BYTES / count;
+    assert_eq!(each * count, limits::LOAD_ENROLLMENT_BYTES);
+    let scopes: Vec<String> = (0..count)
+        .map(|n| {
+            let name = format!("{n:03}");
+            let pad = each - pair_bytes(&name);
+            format!("{name}{}", "x".repeat(pad))
+        })
+        .collect();
+    assert_eq!(
+        scopes.iter().map(|c| pair_bytes(c)).sum::<usize>(),
+        limits::LOAD_ENROLLMENT_BYTES
+    );
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let mut at_bound: Vec<Value> = scopes.iter().map(|c| add(c, "Todo", "t1")).collect();
+    at_bound.push(add(&scopes[0], "Todo", "t1"));
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), at_bound));
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(
+        result["outcome"]["status"], "succeeded",
+        "a repeated pair counts once"
+    );
+    assert_eq!(backend.members("Todo", "t1").len(), count);
+
+    // One byte more is a saved size failure.
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let mut over = scopes.clone();
+    over[count - 1].push('x');
+    let over = over.iter().map(|c| add(c, "Todo", "t1")).collect();
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), over));
+    refused_before_resolution(
+        &backend,
+        &config(),
+        code::LOAD_PAGE_TOO_LARGE,
+        "one byte over",
+    );
+
+    // A repeated pair's unioned tag is measured again: three bytes over.
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    let mut tagged: Vec<Value> = scopes.iter().map(|c| add(c, "Todo", "t1")).collect();
+    tagged.push(support::add_tagged(&scopes[0], "Todo", "t1", &["y"]));
+    backend.script("ProjectTodos", enrolling(ids(&["t1"]), json!([]), tagged));
+    refused_before_resolution(
+        &backend,
+        &config(),
+        code::LOAD_PAGE_TOO_LARGE,
+        "a unioned tag over",
+    );
+}
+
+#[test]
+fn the_enrollment_bounds_are_the_shared_cross_language_fixture() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/load-enrollment-limits.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["pairs"], json!(limits::LOAD_ENROLLMENT_PAIRS));
+    assert_eq!(fixture["bytes"], json!(limits::LOAD_ENROLLMENT_BYTES));
+    let intents = fixture["intents"].as_array().unwrap();
+    assert!(!intents.is_empty());
+    for case in intents {
+        let encoded = canonical_json(&case["intent"]).unwrap();
+        assert_eq!(
+            encoded,
+            case["encoded"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(json!(encoded.len()), case["bytes"], "{}", case["name"]);
+    }
+    assert_eq!(pair_bytes("project:p1"), 94, "the helper measures alike");
+}
+
+#[test]
+fn a_page_that_fails_after_validation_keeps_no_enrollment_or_initialized_stamp() {
+    type Arrange = fn(&Backend);
+    let cases: [(&str, Arrange, Option<Value>, &str); 5] = [
+        (
+            "an absent row",
+            |backend| backend.with(|s| s.tables.rows.clear()),
+            None,
+            code::LOAD_RECORD_UNAVAILABLE,
+        ),
+        (
+            "a Loader refusal",
+            |backend| backend.refuse_load("Todo", "t2"),
+            None,
+            "todo.forbidden",
+        ),
+        (
+            "a Loader throw",
+            |_| {},
+            Some(json!({"error":"TypeError: boom"})),
+            code::LOADER_FAILED,
+        ),
+        (
+            "an invalid row",
+            |backend| backend.seed("Todo", "t2", json!({"id":"t2","title":7}), None),
+            None,
+            code::LOADER_INVALID,
+        ),
+        (
+            "an oversized page",
+            |backend| {
+                for n in 1..=2 {
+                    backend.seed(
+                        "Todo",
+                        &todo(n),
+                        json!({"id":todo(n),"title":"x".repeat(600 * 1024)}),
+                        None,
+                    );
+                }
+            },
+            None,
+            code::LOAD_PAGE_TOO_LARGE,
+        ),
+    ];
+    for (case, arrange, loaded, expected) in cases {
+        let backend = Backend::new();
+        seed_todos(&backend, 2);
+        arrange(&backend);
+        backend.script(
+            "ProjectTodos",
+            enrolling(
+                ids(&["t1", "t2"]),
+                json!([]),
+                vec![add("c", "Todo", "t1"), add("c", "Todo", "t2")],
+            ),
+        );
+        let before = durable(&backend);
+        let failed = match loaded {
+            Some(loaded) => page_as(
+                &Replacing {
+                    backend: &backend,
+                    op: "load",
+                    answer: Ok(loaded),
+                },
+                &config(),
+                "alice",
+                &item(1, Value::Null),
+            ),
+            None => page(&backend, &item(1, Value::Null)),
+        };
+        assert_eq!(outcome_code(&failed), expected, "{case}");
+        assert!(
+            failed.get("memberships").is_none(),
+            "{case}: a failed Loader never claims enrollment"
+        );
+        assert_eq!(saved(&backend, 1), Some(failed), "{case}");
+        assert_eq!(
+            durable(&backend),
+            before,
+            "{case}: no membership, position or stamp"
+        );
+        // Only the Scope locks taken before the reads; no settlement ran.
+        assert_eq!(settlement_ops(&backend), strings(&["lockScopes"]), "{case}");
+    }
+}
+
+#[test]
+fn a_host_fault_during_enrollment_escapes_the_page_transaction_and_a_retry_enrolls_once() {
+    let cases = [
+        (
+            "ensureStamp",
+            Err("connection reset".to_string()),
+            code::HOST,
+        ),
+        (
+            "lockScopes",
+            Err("connection reset".to_string()),
+            code::HOST,
+        ),
+        (
+            "readScopeMembers",
+            Err("serialization failure".to_string()),
+            code::HOST,
+        ),
+        (
+            "applyScopeMembers",
+            Err("deadlock detected".to_string()),
+            code::HOST,
+        ),
+        ("saveCall", Err("connection reset".to_string()), code::HOST),
+        (
+            "applyScopeMembers",
+            Ok(
+                json!([{"scope":"c","model":"Todo","identityKey":"{\"id\":\"t1\"}",
+                "cursor":1,"kind":"remove"}]),
+            ),
+            code::HOST_INVALID,
+        ),
+    ];
+    for (op, answer, expected) in cases {
+        let backend = Backend::new();
+        seed_todos(&backend, 1);
+        backend.script(
+            "ProjectTodos",
+            enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]),
+        );
+        let committed = backend.tables();
+        let host = Replacing {
+            backend: &backend,
+            op,
+            answer,
+        };
+        let error = run(process_load(
+            &config(),
+            "alice",
+            &crate::capability::request(item(1, Value::Null).to_string().as_bytes()),
+            &host,
+        ))
+        .unwrap_err();
+        assert_eq!(error.code, expected, "{op}");
+        assert_eq!(saved(&backend, 1), None, "{op}: no success is saved");
+        let outcome = load_fault_outcome(&LoadFault::Engine {
+            code: error.code.clone(),
+            message: error.message.clone(),
+        });
+        let retryable = matches!(outcome, axton_core::LoadOutcome::Retryable { .. });
+        assert_eq!(retryable, expected == code::HOST, "{op}: {outcome:?}");
+
+        // The host rolls the whole transaction back; resending the same call
+        // ID then executes the page afresh and enrolls it once.
+        backend.with(|s| s.tables = committed);
+        let retried = page(&backend, &item(1, Value::Null));
+        assert_eq!(retried["outcome"]["status"], "succeeded", "{op}");
+        assert_eq!(backend.members("Todo", "t1"), ["c"], "{op}");
+        assert_eq!(
+            backend.invalidation("c", "Todo", "t1"),
+            Some((1, 1)),
+            "{op}"
+        );
+    }
+    // A settlement whose Scope locks went stale, once the carrier's own
+    // retries ran out, is retryable like a serialization conflict.
+    let outcome = load_fault_outcome(&LoadFault::Engine {
+        code: code::TRANSACTION_CONFLICT.into(),
+        message: "Todo joined Scope d after settlement locked its Scopes".into(),
+    });
+    assert!(
+        matches!(&outcome, axton_core::LoadOutcome::Retryable { error } if error.code == code::TRANSACTION_CONFLICT),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_replayed_page_neither_enrolls_nor_undoes_a_later_removal_and_a_fresh_page_re_adds() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]),
+    );
+    let first = page(&backend, &item(1, Value::Null));
+    assert_eq!(
+        first["memberships"],
+        json!([{ "scope":"c", "cursor":1, "model":"Todo", "identity":{"id":"t1"} }])
+    );
+    assert_eq!(backend.members("Todo", "t1"), ["c"]);
+    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 1)));
+
+    // An application later removes the record from the Scope.
+    support::settle(&backend, vec![], vec![remove("c", "Todo", "t1")]);
+    assert!(backend.members("Todo", "t1").is_empty());
+    let removed = durable(&backend);
+
+    backend.clear_log();
+    assert_eq!(page(&backend, &item(1, Value::Null)), first);
+    assert_eq!(
+        backend.ops(),
+        ["claimCall"],
+        "no handler, Loader or settlement"
+    );
+    assert_eq!(durable(&backend), removed, "the removal stands");
+
+    // A fresh page may add it again, at a new position and the same stamp.
+    let fresh = page(&backend, &item(2, Value::Null));
+    assert_eq!(fresh["outcome"]["status"], "succeeded");
+    assert_eq!(backend.members("Todo", "t1"), ["c"]);
+    assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((3, 1)));
+    assert_eq!(backend.stamp("Todo", "t1"), Some(1));
+}
+
+#[test]
+fn batch_siblings_enroll_or_fail_independently() {
+    let (items, request) = batch_items(3);
+    let backend = Backend::new();
+    seed_todos(&backend, 2);
+    let answers: Vec<LoadItemAnswer> = [
+        enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]),
+        enrolling(ids(&["t1"]), json!([]), vec![add("x", "Todo", "t2")]),
+        enrolling(ids(&["t2"]), json!([]), vec![add("d", "Todo", "t2")]),
+    ]
+    .into_iter()
+    .zip(&items)
+    .map(|(answered, item)| {
+        backend.script("ProjectTodos", answered);
+        LoadItemAnswer::Page(process(&backend, item))
+    })
+    .collect();
+    let response = encode_load_batch(&items, answers).unwrap();
+    let loads = decoded(&response);
+    assert_eq!(loads[0]["outcome"]["status"], "succeeded");
+    assert_eq!(outcome_code(&loads[1]), code::HANDLER_INVALID);
+    assert_eq!(loads[2]["outcome"]["status"], "succeeded");
+    assert_eq!(backend.members("Todo", "t1"), ["c"]);
+    assert_eq!(backend.members("Todo", "t2"), ["d"]);
+    assert_eq!(backend.head("x"), 0);
+    let replies = LoadBatchResponse::decode(response.as_bytes(), &request).unwrap();
+    assert!(replies.iter().all(|reply| reply.page.is_ok()));
+}
+
+#[test]
+fn enrollment_adds_per_record_guards_and_one_read_per_scope_and_one_write_to_the_fixed_page_path() {
+    let fixed_page = |settlement: Vec<String>| {
+        [
+            strings(&[
+                "claimCall",
+                "savepoint",
+                "handleLoad",
+                "lockScopes",
+                "readStamps",
+                "load",
+            ]),
+            settlement,
+            strings(&["release", "saveCall"]),
+        ]
+        .concat()
+    };
+    let backend = Backend::new();
+    seed_todos(&backend, 1000);
+    let all: Vec<String> = (1..=1000).map(todo).collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let into = |scope: &str, ids: &[&str]| -> Vec<Value> {
+        ids.iter().map(|id| add(scope, "Todo", id)).collect()
+    };
+
+    // 1,000 records newly joining one Scope: per record one ensureStamp,
+    // then one member read and one write for the whole page.
+    let settled = |guards: usize, reads: usize| {
+        [
+            repeated("ensureStamp", guards),
+            repeated("readScopeMembers", reads),
+            strings(&["applyScopeMembers"]),
+        ]
+        .concat()
+    };
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&all), json!([]), into("c", &all)),
+    );
+    let result = page(&backend, &item(1, Value::Null));
+    assert_eq!(result["outcome"]["status"], "succeeded");
+    assert_eq!(backend.ops(), fixed_page(settled(1000, 1)));
+    assert_eq!(backend.publishes().len(), 1000);
+
+    // The same 1,000 re-added by a fresh page: the same operations, and the
+    // write only answers their existing positions.
+    backend.clear_log();
+    page(&backend, &item(2, Value::Null));
+    assert_eq!(backend.ops(), fixed_page(settled(1000, 1)));
+    assert_eq!(backend.publishes().len(), 0);
+
+    // 500 records joining two new Scopes: the per-record work is shared.
+    backend.clear_log();
+    let half = &all[..500];
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(half),
+            json!([]),
+            [into("a", half), into("b", half)].concat(),
+        ),
+    );
+    page(&backend, &item(3, Value::Null));
+    assert_eq!(backend.ops(), fixed_page(settled(500, 2)));
+    assert_eq!(backend.publishes().len(), 1000);
+}
+
+#[test]
+fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cursors() {
+    let lower = "01890f47-1234-7123-8123-123456789abc";
+    let upper = lower.to_uppercase();
+    let original_config = config();
+    let mut schema = serde_json::to_value(&original_config.schema).unwrap();
+    schema["models"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    schema["resultModels"][0]["fields"][0]["type"]["name"] = json!("uuid");
+    schema["loads"][0]["outputs"][0]["handlerType"]["fields"][0]["type"]["name"] = json!("uuid");
+    let cfg = Config::decode(json!({"schema":schema,"loaders":["Todo","Project"],"mutations":[]}))
+        .unwrap();
+    let backend = Backend::new();
+    backend.seed("Todo", lower, json!({"id":lower,"title":"T"}), Some(1));
+    backend.with(|s| {
+        s.tables.heads.insert("c".into(), 9);
+    });
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&[lower]), json!([]), vec![add("c", "Todo", &upper)]),
+    );
+    let first = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
+    assert_eq!(
+        first["memberships"],
+        json!([{ "scope":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
+    );
+    support::settle(&backend, vec![], vec![remove("c", "Todo", lower)]);
+    let removed = durable(&backend);
+    // A saved legacy representation uses the equivalent noncanonical UUID.
+    backend.with(|s| {
+        let response = s.tables.calls.get_mut(&id(1)).unwrap().1.as_mut().unwrap();
+        let mut value: Value = serde_json::from_str(response).unwrap();
+        value["records"][0]["identity"]["id"] = json!(upper);
+        value["memberships"][0]["identity"]["id"] = json!(upper);
+        *response = value.to_string();
+    });
+    backend.clear_log();
+    let replay = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
+    assert_eq!(replay["records"][0]["identity"]["id"], lower);
+    assert_eq!(replay["memberships"], first["memberships"]);
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(durable(&backend), removed);
+}
+
+#[test]
+fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_claims() {
+    let backend = Backend::new();
+    backend.seed("Todo", "t1", json!({"title":"first"}), None);
+    backend.script("ProjectTodos", json!({"data":{"todos":[{"id":"t1"}],"projects":[]},"next":null,"memberships":[add("room","Todo","t1")]}));
+    let first = page(&backend, &item(1, Value::Null));
+    assert!(!first["memberships"].as_array().unwrap().is_empty());
+    {
+        let mut state = backend.0.lock().unwrap();
+        let saved = state.tables.calls.get_mut(&id(1)).unwrap();
+        let mut request: Value = serde_json::from_str(&saved.0).unwrap();
+        request["capabilities"] = json!(["scope-membership-v1"]);
+        saved.0 = request.to_string();
+        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
+        response.as_object_mut().unwrap().remove("memberships");
+        saved.1 = Some(response.to_string());
+        state.tables.memberships.clear();
+        state.log.clear();
+    }
+    let before = backend.0.lock().unwrap().tables.clone();
+    let replay = page(&backend, &item(1, Value::Null));
+    assert_eq!(replay["outcome"], first["outcome"]);
+    assert!(replay.get("memberships").is_none());
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(backend.0.lock().unwrap().tables, before);
+}
+
+#[test]
+fn load_label_add_is_bounded_by_output_and_replay_has_no_effects_or_inferred_claims() {
+    let backend = Backend::new();
+    seed_todos(&backend, 1);
+    support::settle(&backend, vec![], vec![add("c", "Todo", "t1")]);
+    let labels = json!({"kind":"tagAdd","scope":"c","record":reference("Todo","t1"),"tags":["X"]});
+    backend.script(
+        "ProjectTodos",
+        enrolling(ids(&["t1"]), json!([]), vec![labels.clone()]),
+    );
+    let request = item(1, Value::Null);
+    let first = page(&backend, &request);
+    assert_eq!(first["outcome"]["status"], "succeeded", "{first}");
+    assert!(
+        first.get("memberships").is_none(),
+        "labels alone never claim enrollment"
+    );
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
+    );
+    assert_eq!(backend.head("c"), 1);
+    support::settle(&backend, vec![], vec![remove("c", "Todo", "t1")]);
+    backend.clear_log();
+    assert_eq!(page(&backend, &request), first);
+    assert!(settlement_ops(&backend).is_empty());
+    assert!(backend.tagged_members("c").is_empty());
+    let missing = page(&backend, &item(2, Value::Null));
+    assert_eq!(missing["outcome"]["error"]["code"], code::HANDLER_INVALID);
+    assert!(backend.tagged_members("c").is_empty());
+    backend.script(
+        "ProjectTodos",
+        enrolling(
+            ids(&["t1"]),
+            json!([]),
+            vec![add("c", "Todo", "t1"), labels],
+        ),
+    );
+    let fresh = page(&backend, &item(3, Value::Null));
+    assert_eq!(fresh["outcome"]["status"], "succeeded", "{fresh}");
+    assert_eq!(fresh["memberships"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        backend.tagged_members("c"),
+        [("t1".into(), vec!["X".into()])]
     );
 }

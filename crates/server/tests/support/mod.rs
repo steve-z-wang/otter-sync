@@ -1,8 +1,9 @@
 //! An in-memory backend for settlement regressions: business rows, record
-//! stamps, Channel heads, invalidations, persistent memberships, saved calls
-//! and receipts, all restored together by a savepoint rollback. Handlers are
-//! scripted by name; every request is logged in order.
+//! stamps, Scope heads, positions, tagged persistent memberships, saved
+//! calls and receipts, all restored together by a savepoint rollback.
+//! Handlers are scripted by name; every request is logged in order.
 #![allow(dead_code)]
+use crate::capability;
 use axton_core::RecordKey;
 use axton_server::{Config, Host, HostResult, host::HostRequest};
 use serde_json::{Map, Value, json};
@@ -35,11 +36,17 @@ pub fn record(model: &str, id: &str) -> (String, String) {
 pub fn reference(model: &str, id: &str) -> Value {
     json!({"model":model,"identity":{"id":id}})
 }
-pub fn add(channel: &str, model: &str, id: &str) -> Value {
-    json!({"channel":channel,"model":model,"identity":{"id":id},"present":true})
+pub fn add(scope: &str, model: &str, id: &str) -> Value {
+    json!({"kind":"add","scope":scope,"record":{"model":model,"identity":{"id":id}},"tags":[]})
 }
-pub fn remove(channel: &str, model: &str, id: &str) -> Value {
-    json!({"channel":channel,"model":model,"identity":{"id":id},"present":false})
+pub fn remove(scope: &str, model: &str, id: &str) -> Value {
+    json!({"kind":"remove","scope":scope,"record":{"model":model,"identity":{"id":id}}})
+}
+pub fn add_tagged(scope: &str, model: &str, id: &str, tags: &[&str]) -> Value {
+    json!({"kind":"add","scope":scope,"record":{"model":model,"identity":{"id":id}},"tags":tags})
+}
+pub fn remove_tag(scope: &str, tag: &str) -> Value {
+    json!({"kind":"select","scope":scope,"predicate":{"tags":{"any":[tag]}},"action":{"kind":"remove"}})
 }
 
 /// A business row to set (`Some`) or delete (`None`) by `(model, identity key)`.
@@ -52,10 +59,13 @@ pub struct Tables {
     pub rows: BTreeMap<(String, String), Value>,
     pub stamps: BTreeMap<(String, String), u64>,
     pub heads: BTreeMap<String, u64>,
-    /// `(channel, model, identity key)` to `(cursor, stamp)`.
-    pub invalidations: BTreeMap<(String, String, String), (u64, u64)>,
-    /// `(model, identity key, channel)`, the primary key order of `axton_membership`.
-    pub memberships: BTreeSet<(String, String, String)>,
+    /// `(scope, model, identity key)` to its latest position: the cursor
+    /// and, for an upsert, the record's stamp when it was positioned (test
+    /// evidence only; the contract's positions carry no stamp); `None` for a
+    /// removal.
+    pub invalidations: BTreeMap<(String, String, String), (u64, Option<u64>)>,
+    /// `(model, identity key, scope)` to the member's tags.
+    pub memberships: BTreeMap<(String, String, String), BTreeSet<String>>,
     /// Saved calls: request and response.
     pub calls: BTreeMap<String, (String, Option<String>)>,
 }
@@ -72,6 +82,11 @@ pub struct State {
     writes: BTreeMap<String, Vec<Write>>,
     /// Records whose loader refuses the caller.
     refused: BTreeSet<(String, String)>,
+    /// A competing writer's committed enrollment `(scope, model, id)`, made
+    /// visible when the next `lockScopes` is granted.
+    intrusion: Option<(String, String, String)>,
+    /// Rewrites the real answer of one operation, to test conformance checks.
+    tampered: BTreeMap<String, fn(Value) -> Value>,
 }
 
 pub struct Backend(pub Mutex<State>);
@@ -98,17 +113,19 @@ impl Backend {
             }
         });
     }
-    /// A persistent membership that already exists, at head `head` if new.
-    pub fn enroll(&self, channel: &str, model: &str, id: &str, head: u64) {
-        self.with(|s| {
-            let (model, key) = record(model, id);
-            assert!(
-                s.tables.stamps.contains_key(&(model.clone(), key.clone())),
-                "membership needs record metadata"
-            );
-            s.tables.heads.entry(channel.into()).or_insert(head);
-            s.tables.memberships.insert((model, key, channel.into()));
-        });
+    /// A persistent, untagged membership that already exists, positioned
+    /// at the next cursor of a Scope at head `head` if new.
+    pub fn enroll(&self, scope: &str, model: &str, id: &str, head: u64) {
+        self.with(|s| enroll(&mut s.tables, scope, model, id, head));
+    }
+    /// A competing writer enrolls `id` in `scope` and commits while this
+    /// settlement waits for its `lockScopes`.
+    pub fn intrude_at_lock(&self, scope: &str, model: &str, id: &str) {
+        self.with(|s| s.intrusion = Some((scope.into(), model.into(), id.into())));
+    }
+    /// Answer `op` with `f` applied to the answer it would have given.
+    pub fn tamper(&self, op: &str, f: fn(Value) -> Value) {
+        self.with(|s| s.tampered.insert(op.into(), f));
     }
     pub fn script(&self, name: &str, answer: Value) {
         self.with(|s| s.scripts.insert(name.into(), answer));
@@ -133,28 +150,64 @@ impl Backend {
     pub fn stamp(&self, model: &str, id: &str) -> Option<u64> {
         self.with(|s| s.tables.stamps.get(&record(model, id)).copied())
     }
-    pub fn head(&self, channel: &str) -> u64 {
-        self.with(|s| s.tables.heads.get(channel).copied().unwrap_or(0))
+    pub fn head(&self, scope: &str) -> u64 {
+        self.with(|s| s.tables.heads.get(scope).copied().unwrap_or(0))
     }
     pub fn members(&self, model: &str, id: &str) -> Vec<String> {
         let (model, key) = record(model, id);
         self.with(|s| {
             s.tables
                 .memberships
-                .iter()
+                .keys()
                 .filter(|(m, k, _)| *m == model && *k == key)
-                .map(|(_, _, channel)| channel.clone())
+                .map(|(_, _, scope)| scope.clone())
                 .collect()
         })
     }
-    /// The `(cursor, stamp)` of the record's invalidation on `channel`.
-    pub fn invalidation(&self, channel: &str, model: &str, id: &str) -> Option<(u64, u64)> {
+    /// The `(cursor, stamp)` of the record's latest position on `scope`
+    /// when it is an upsert; `None` when there is none or it is a removal.
+    pub fn invalidation(&self, scope: &str, model: &str, id: &str) -> Option<(u64, u64)> {
         let (model, key) = record(model, id);
         self.with(|s| {
             s.tables
                 .invalidations
-                .get(&(channel.into(), model, key))
-                .copied()
+                .get(&(scope.into(), model, key))
+                .and_then(|(cursor, stamp)| stamp.map(|stamp| (*cursor, stamp)))
+        })
+    }
+    /// The live members of `scope` as `(id, tags)`, in canonical key order.
+    pub fn tagged_members(&self, scope: &str) -> Vec<(String, Vec<String>)> {
+        self.with(|s| {
+            s.tables
+                .memberships
+                .iter()
+                .filter(|((_, _, c), _)| c == scope)
+                .map(|((_, key, _), tags)| {
+                    let identity: Value = serde_json::from_str(key).unwrap();
+                    (
+                        identity["id"].as_str().unwrap().to_string(),
+                        tags.iter().cloned().collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+    /// Every retained position of `scope` as `(cursor, id, kind)`, in cursor order.
+    pub fn positions(&self, scope: &str) -> Vec<(u64, String, &'static str)> {
+        self.with(|s| {
+            let mut rows: Vec<(u64, String, &'static str)> = s
+                .tables
+                .invalidations
+                .iter()
+                .filter(|((c, _, _), _)| c == scope)
+                .map(|((_, _, key), (cursor, stamp))| {
+                    let identity: Value = serde_json::from_str(key).unwrap();
+                    let kind = if stamp.is_some() { "upsert" } else { "remove" };
+                    (*cursor, identity["id"].as_str().unwrap().to_string(), kind)
+                })
+                .collect();
+            rows.sort();
+            rows
         })
     }
     pub fn log(&self) -> Vec<HostRequest> {
@@ -176,8 +229,8 @@ impl Backend {
     pub fn count(&self, op: &str) -> usize {
         self.ops().iter().filter(|name| *name == op).count()
     }
-    /// The settlement's own requests: guards, membership reads and writes, and
-    /// publications, in the order issued.
+    /// The settlement's own requests: touch recipients, Scope locks, record
+    /// guards, member reads and the one write, in the order issued.
     pub fn settlement_log(&self) -> Vec<HostRequest> {
         self.log()
             .into_iter()
@@ -188,9 +241,46 @@ impl Backend {
                         | HostRequest::EnsureStamp { .. }
                         | HostRequest::LockRecord { .. }
                         | HostRequest::Memberships { .. }
-                        | HostRequest::SetMembership { .. }
-                        | HostRequest::Publish { .. }
+                        | HostRequest::LockScopes { .. }
+                        | HostRequest::ReadScopeMembers { .. }
+                        | HostRequest::ApplyScopeMembers { .. }
                 )
+            })
+            .collect()
+    }
+    /// The deltas every logged `applyScopeMembers` carried, in order.
+    pub fn deltas(&self) -> Vec<axton_server::scope_members::MemberDelta> {
+        self.log()
+            .into_iter()
+            .flat_map(|request| match request {
+                HostRequest::ApplyScopeMembers { deltas } => deltas,
+                _ => vec![],
+            })
+            .collect()
+    }
+    /// The logged published upserts as `(scope, id, stamp)`: the stamp is
+    /// the one recorded at the pair's latest position.
+    pub fn publishes(&self) -> Vec<(String, String, u64)> {
+        self.deltas()
+            .into_iter()
+            .filter(|delta| delta.publish && delta.present)
+            .map(|delta| {
+                let id = delta.key.identity["id"].as_str().unwrap().to_string();
+                let (_, stamp) = self
+                    .invalidation(&delta.scope, &delta.key.model, &id)
+                    .expect("a published upsert is positioned");
+                (delta.scope, id, stamp)
+            })
+            .collect()
+    }
+    /// The logged published removals as `(scope, id)`.
+    pub fn removals(&self) -> Vec<(String, String)> {
+        self.deltas()
+            .into_iter()
+            .filter(|delta| !delta.present)
+            .map(|delta| {
+                let id = delta.key.identity["id"].as_str().unwrap().to_string();
+                (delta.scope, id)
             })
             .collect()
     }
@@ -246,6 +336,15 @@ impl Backend {
     }
 
     fn answer(&self, raw: Value) -> HostResult<Value> {
+        let op = raw["op"].as_str().unwrap_or_default().to_string();
+        let answer = self.answer_request(raw)?;
+        Ok(match self.with(|s| s.tampered.get(&op).copied()) {
+            Some(tamper) => tamper(answer),
+            None => answer,
+        })
+    }
+
+    fn answer_request(&self, raw: Value) -> HostResult<Value> {
         let request: HostRequest = serde_json::from_value(raw)
             .map_err(|error| format!("unsupported host request: {error}"))?;
         let mut s = self.0.lock().unwrap();
@@ -285,31 +384,20 @@ impl Backend {
                     .1 = Some(response);
                 Value::Null
             }
-            HostRequest::Head { channel } => {
-                json!(s.tables.heads.get(&channel).copied().unwrap_or(0))
+            HostRequest::Head { scope } => {
+                json!(s.tables.heads.get(&scope).copied().unwrap_or(0))
             }
             HostRequest::Scan {
-                channel,
+                scope,
                 after,
                 limit,
             } => {
-                // `SQL.SCAN`: the Channel's positions after `after` whose record
-                // is still a member, in cursor order, each with the record's
-                // current stamp, at most `limit`. Membership filters before the
-                // limit, so removed positions never fill a page.
+                // Scan the compacted log, including retained removals.
                 let mut rows: Vec<(u64, String, String)> = s
                     .tables
                     .invalidations
                     .iter()
-                    .filter(|((c, model, key), (cursor, _))| {
-                        *c == channel
-                            && *cursor > after
-                            && s.tables.memberships.contains(&(
-                                model.clone(),
-                                key.clone(),
-                                channel.clone(),
-                            ))
-                    })
+                    .filter(|((c, _, _), (cursor, _))| *c == scope && *cursor > after)
                     .map(|((_, model, key), (cursor, _))| (*cursor, model.clone(), key.clone()))
                     .collect();
                 rows.sort();
@@ -322,8 +410,19 @@ impl Backend {
                         .get(&(model.clone(), key.clone()))
                         .ok_or_else(|| format!("Record metadata missing for {model} {key}"))?;
                     let identity: Value = serde_json::from_str(&key).map_err(|e| e.to_string())?;
-                    scanned.push(json!({"channel":channel,"cursor":cursor,"model":model,
-                        "identity":identity,"identityKey":key,"stamp":stamp}));
+                    let kind = if s.tables.memberships.contains_key(&(
+                        model.clone(),
+                        key.clone(),
+                        scope.clone(),
+                    )) {
+                        "upsert"
+                    } else {
+                        "remove"
+                    };
+                    scanned.push(
+                        json!({"kind":kind,"scope":scope,"cursor":cursor,"model":model,
+                        "identity":identity,"identityKey":key,"stamp":stamp}),
+                    );
                 }
                 Value::Array(scanned)
             }
@@ -424,31 +523,6 @@ impl Backend {
                     .map(|key| json!(*s.tables.stamps.entry((model.clone(), key)).or_insert(1)))
                     .collect(),
             ),
-            HostRequest::Publish {
-                channel,
-                model,
-                identity_key,
-                stamp,
-                ..
-            } => {
-                let current = s
-                    .tables
-                    .stamps
-                    .get(&(model.clone(), identity_key.clone()))
-                    .copied();
-                if current != Some(stamp) {
-                    return Err(format!(
-                        "publish of {model} {identity_key} at {stamp}, record is at {current:?}"
-                    ));
-                }
-                let head = s.tables.heads.entry(channel.clone()).or_insert(0);
-                *head += 1;
-                let cursor = *head;
-                s.tables
-                    .invalidations
-                    .insert((channel, model, identity_key), (cursor, stamp));
-                json!({"cursor":cursor,"stamp":stamp})
-            }
             HostRequest::LockRecord {
                 model,
                 identity_key,
@@ -459,36 +533,112 @@ impl Backend {
             } => json!(
                 s.tables
                     .memberships
-                    .iter()
+                    .keys()
                     .filter(|(m, k, _)| *m == model && *k == identity_key)
-                    .map(|(_, _, channel)| channel.clone())
+                    .map(|(_, _, scope)| scope.clone())
                     .collect::<Vec<_>>()
             ),
-            HostRequest::SetMembership {
-                channel,
-                model,
-                identity_key,
-                present,
-            } => {
-                if present {
-                    if !s
-                        .tables
-                        .stamps
-                        .contains_key(&(model.clone(), identity_key.clone()))
-                    {
-                        return Err(format!(
-                            "membership of {model} {identity_key} needs its record metadata"
-                        ));
-                    }
-                    s.tables.heads.entry(channel.clone()).or_insert(0);
-                    s.tables.memberships.insert((model, identity_key, channel));
-                } else {
-                    s.tables.memberships.remove(&(model, identity_key, channel));
+            // One process: the lock is the order check the decoder already
+            // made. A scripted competing writer commits while it is awaited.
+            HostRequest::LockScopes { .. } => {
+                if let Some((scope, model, id)) = s.intrusion.take() {
+                    enroll(&mut s.tables, &scope, &model, &id, 0);
                 }
                 Value::Null
             }
+            HostRequest::ReadScopeMembers {
+                scope,
+                explicit_keys,
+                tags,
+                all,
+            } => {
+                let named: BTreeSet<(String, String)> = explicit_keys
+                    .iter()
+                    .map(|key| (key.model.clone(), key.encoded_identity().unwrap()))
+                    .collect();
+                Value::Array(
+                    s.tables
+                        .memberships
+                        .iter()
+                        .filter(|((model, key, c), held)| {
+                            *c == scope
+                                && (all || named.contains(&(model.clone(), key.clone()))
+                                    || tags.iter().any(|tag| held.contains(tag)))
+                        })
+                        .map(|((model, key, _), held)| {
+                            json!({"model":model,"identityKey":key,"tags":held})
+                        })
+                        .collect(),
+                )
+            }
+            // `SQL.APPLY_SCOPE_MEMBERS`: final states, as given. Each
+            // published delta takes its Scope's next cursor; an unpublished
+            // one keeps its member's position.
+            HostRequest::ApplyScopeMembers { deltas } => {
+                let mut positions = vec![];
+                for delta in deltas {
+                    let model = delta.key.model.clone();
+                    let key = delta.key.encoded_identity().unwrap();
+                    let member = (model.clone(), key.clone(), delta.scope.clone());
+                    let pair = (delta.scope.clone(), model.clone(), key.clone());
+                    let stamp = s.tables.stamps.get(&(model.clone(), key.clone())).copied();
+                    let Some(stamp) = stamp else {
+                        return Err(format!("Record metadata missing for {model} {key}"));
+                    };
+                    let was_member = s.tables.memberships.contains_key(&member);
+                    if !delta.present && !was_member {
+                        return Err(format!("{model} {key} is no member to remove"));
+                    }
+                    if delta.present {
+                        s.tables.memberships.insert(member, delta.tags.clone());
+                    } else {
+                        s.tables.memberships.remove(&member);
+                    }
+                    let head = s.tables.heads.entry(delta.scope.clone()).or_insert(0);
+                    let (cursor, kind) = if delta.publish {
+                        *head += 1;
+                        let cursor = *head;
+                        let kept = delta.present.then_some(stamp);
+                        s.tables.invalidations.insert(pair, (cursor, kept));
+                        (cursor, if delta.present { "upsert" } else { "remove" })
+                    } else {
+                        match s.tables.invalidations.get(&pair) {
+                            Some((cursor, Some(_))) if was_member => (*cursor, "upsert"),
+                            _ => {
+                                return Err(format!(
+                                    "{model} {key} keeps no position in {}",
+                                    delta.scope
+                                ));
+                            }
+                        }
+                    };
+                    positions.push(json!({"scope":delta.scope,"model":model,
+                        "identityKey":key,"cursor":cursor,"kind":kind}));
+                }
+                Value::Array(positions)
+            }
         })
     }
+}
+
+/// An untagged member positioned at its Scope's next cursor, the Scope
+/// starting at `head` if new.
+fn enroll(tables: &mut Tables, scope: &str, model: &str, id: &str, head: u64) {
+    let (model, key) = record(model, id);
+    let stamp = *tables
+        .stamps
+        .get(&(model.clone(), key.clone()))
+        .expect("membership needs record metadata");
+    let head = tables.heads.entry(scope.into()).or_insert(head);
+    *head += 1;
+    let cursor = *head;
+    tables.invalidations.insert(
+        (scope.into(), model.clone(), key.clone()),
+        (cursor, Some(stamp)),
+    );
+    tables
+        .memberships
+        .insert((model, key, scope.into()), BTreeSet::new());
 }
 
 impl Host for Backend {
@@ -557,7 +707,7 @@ pub fn push(backend: &Backend, sequence: u64, models: Value, calls: Vec<Value>) 
     let text = run(axton_server::process_action_push(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
@@ -578,7 +728,7 @@ pub fn legacy_push(
     let text = run(axton_server::process_push(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
@@ -605,36 +755,36 @@ pub fn authority(receipt: &Value) -> Vec<(String, String, u64)> {
 pub fn pull(backend: &Backend, cursors: &[(&str, u64)]) -> axton_core::PullPage {
     let cursors: Map<String, Value> = cursors
         .iter()
-        .map(|(channel, cursor)| ((*channel).to_string(), json!(cursor)))
+        .map(|(scope, cursor)| ((*scope).to_string(), json!(cursor)))
         .collect();
     let request = json!({"cursors":cursors,"models":{"Todo":1,"Project":1}});
     let text = run(axton_server::process_pull(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
-    axton_core::PullPage::decode(text.as_bytes()).unwrap()
+    capability::pull(text.as_bytes()).unwrap()
 }
 
-/// One bounded Bootstrap page of `channel`'s interval `(after, until]`.
+/// One bounded Bootstrap page of `scope`'s interval `(after, until]`.
 pub fn bootstrap(
     backend: &Backend,
-    channel: &str,
+    scope: &str,
     after: u64,
     until: u64,
 ) -> axton_core::BootstrapPage {
-    let request = json!({"mode":"bootstrap","channel":channel,"models":{"Todo":1,"Project":1},
+    let request = json!({"mode":"bootstrap","scope":scope,"models":{"Todo":1,"Project":1},
         "after":after,"until":until});
     let text = run(axton_server::process_pull(
         &config(),
         "alice",
-        request.to_string().as_bytes(),
+        &capability::request(request.to_string().as_bytes()),
         backend,
     ))
     .unwrap();
-    axton_core::BootstrapPage::decode(text.as_bytes()).unwrap()
+    capability::bootstrap(text.as_bytes()).unwrap()
 }
 
 /// One external settlement (`backend.transaction`): the records it reports

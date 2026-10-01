@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import WebSocket, { WebSocketServer } from '../../../packages/client-js/node_modules/ws/wrapper.mjs';
+import WebSocket, { WebSocketServer } from 'ws';
 import { createClient } from '../../../packages/client-js/runtime.mts';
 import { Transaction } from '../../../packages/client-react-native/transaction.mts';
 import { createServerConnection } from '../../../packages/client-react-native/live.mts';
@@ -41,7 +41,7 @@ test('mobile transport authenticates real HTTP/WS and streams without polling',a
     peer=socket;authorization=request.headers.authorization;
     socket.on('message',message=>{
       const sub=JSON.parse(message);
-      socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.channels.map(c=>[c,head]))}));
+      socket.send(JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.scopes.map(c=>[c,head]))}));
     });
   });
   try{
@@ -61,7 +61,7 @@ test('mobile transport authenticates real HTTP/WS and streams without polling',a
     assert.equal(requests[0].url,'/sync/pull');
     assert.deepEqual(requests[0].body.cursors,{scope:0},'the catch-up starts at the committed cursor');
     await until(async()=>(await client.syncState()).cursors.scope===1);
-    const change={cursors:{scope:{from:1,to:2,head:2}},changes:[{model:'Entry',identity:{id:'one'},stamp:1,state:{text:'live',note:null}}]};
+    const change={cursors:{scope:{from:1,to:2,head:2}},changes:[{scope:'scope',cursor:2,kind:'upsert',model:'Entry',identity:{id:'one'},stamp:1,state:{text:'live',note:null}}]};
     peer.send(JSON.stringify(change));
     await until(async()=>(await client.read('Entry',{id:'one'}))?.text==='live');
     peer.send(JSON.stringify(change));

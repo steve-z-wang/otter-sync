@@ -23,7 +23,6 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
-import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
@@ -80,9 +79,48 @@ abstract interface class Carrier {
   void detach(int runtime);
 }
 
+// The code asset `package:axton/axton_dart` that hook/build.dart bundles.
+const _asset = 'package:axton/axton_dart';
+@Native<_OpenNative>(symbol: 'axton_runtime_open', assetId: _asset)
+external int _bundledOpen(
+  Pointer<Utf8> request,
+  Pointer<NativeFunction<_WakeNative>> wake,
+  Pointer<Void> context,
+  Pointer<Pointer<Utf8>> errorOut,
+);
+@Native<_SubmitNative>(symbol: 'axton_runtime_submit', assetId: _asset)
+external int _bundledSubmit(
+  int runtime,
+  Pointer<Utf8> message,
+  Pointer<Pointer<Utf8>> errorOut,
+);
+@Native<_DrainNative>(symbol: 'axton_runtime_drain', assetId: _asset)
+external Pointer<Utf8> _bundledDrain(int runtime);
+@Native<_DetachNative>(symbol: 'axton_runtime_detach', assetId: _asset)
+external void _bundledDetach(int runtime);
+@Native<_FreeNative>(symbol: 'axton_free', assetId: _asset)
+external void _bundledFree(Pointer<Utf8> output);
+@Native<Void Function(Pointer<Void>)>(
+  symbol: 'axton_runtime_finalize',
+  assetId: _asset,
+)
+external void _bundledFinalize(Pointer<Void> token);
+
 /// The runtime functions of one loaded library. Every `char*` the library
 /// returns is copied into Dart and freed here exactly once.
 class _Abi implements Carrier {
+  /// The library the package's build hook bundled. Resolving the finalizer
+  /// resolves the asset, so a missing library fails here.
+  _Abi.bundled()
+    : _open = _bundledOpen,
+      _submit = _bundledSubmit,
+      _drain = _bundledDrain,
+      _detach = _bundledDetach,
+      _free = _bundledFree,
+      finalizer = NativeFinalizer(
+        Native.addressOf<NativeFinalizerFunction>(_bundledFinalize),
+      );
+
   _Abi(DynamicLibrary library)
     : _open = library.lookupFunction<_OpenNative, _Open>('axton_runtime_open'),
       _submit = library.lookupFunction<_SubmitNative, _Submit>(
@@ -120,22 +158,23 @@ class _Abi implements Carrier {
 
   static final _loaded = <String?, _Abi>{};
 
-  /// The library at [libraryPath], or the process's own symbols on iOS,
-  /// loaded once per isolate.
+  /// The library at [libraryPath], or the bundled one, loaded once per
+  /// isolate.
   static _Abi load(String? libraryPath) {
     final loaded = _loaded[libraryPath];
     if (loaded != null) return loaded;
-    if (libraryPath == null && !Platform.isIOS) {
-      throw StateError('libraryPath is required outside iOS');
-    }
     try {
-      return _loaded[libraryPath] = _Abi(
-        libraryPath != null
-            ? DynamicLibrary.open(libraryPath)
-            : DynamicLibrary.process(),
-      );
+      return _loaded[libraryPath] = libraryPath != null
+          ? _Abi(DynamicLibrary.open(libraryPath))
+          : _Abi.bundled();
     } catch (error) {
-      throw StateError('$error');
+      throw StateError(
+        libraryPath != null
+            ? '$error'
+            : 'axton: no bundled native library ($error). An installed '
+                  'package bundles one for each supported target; from a '
+                  'checkout, pass libraryPath.',
+      );
     }
   }
 
@@ -516,7 +555,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   /// it. A failed open throws its reason as a [StateError], after the runtime
   /// announced its end and was detached. [migration] is accepted for API
   /// compatibility; the row-based client keeps none. [carrier] is a test
-  /// seam; the C ABI of [libraryPath] otherwise.
+  /// seam; otherwise the C ABI of [libraryPath], or of the library the
+  /// package bundled when it is null.
   static Future<Bridge> open({
     required String path,
     required Map<String, dynamic> schema,

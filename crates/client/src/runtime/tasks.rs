@@ -263,15 +263,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                         .as_array()
                         .into_iter()
                         .flatten()
+                        .filter(|record| record["kind"] == "upsert")
                         .filter_map(|record| record["model"].as_str().map(str::to_string)),
                 ) =>
             {
                 match serde_json::to_vec(page)
                     .map_err(|e| crate::invalid(e.to_string()))
-                    .and_then(|bytes| crate::PullPage::decode(&bytes))
+                    .and_then(|bytes| crate::ScopePullPage::decode(&bytes))
                 {
                     Ok(page) => self.open_store(
-                        crate::StoreDelivery::Page(page),
+                        crate::StoreDelivery::ScopePage(page),
                         StoreContinuation::Pull { request_id },
                         now,
                         entropy,

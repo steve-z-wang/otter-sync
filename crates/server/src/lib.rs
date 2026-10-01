@@ -9,15 +9,14 @@ pub mod live;
 mod loading;
 mod loads;
 mod readback;
+pub mod scope_members;
+pub mod scope_predicate;
 mod settlement;
 pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
-use axton_core::{
-    CursorRange, PullPage, PullRequest, PushReceipt, PushRequest, RecordKey, Rejection, Schema,
-    limits, read_counter,
-};
+use axton_core::{PushReceipt, PushRequest, RecordKey, Rejection, Schema, read_counter};
 pub use error::{Error, code};
 pub use fetch::process_fetch;
-use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest, Invalidation};
+use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest};
 pub use loads::{
     LoadFault, LoadItemAnswer, encode_load_batch, load_fault_outcome, process_load,
     validate_load_batch,
@@ -369,6 +368,12 @@ fn internal(e: impl std::fmt::Display) -> Error {
 fn storage_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::STORAGE_INVALID, e.to_string())
 }
+/// Framework protocol admission precedes every external host operation.
+pub(crate) fn admit_protocol(bytes: &[u8]) -> Result<()> {
+    axton_core::require_capability(bytes, axton_core::SCOPE_MEMBERSHIP_CAPABILITY)
+        .map_err(|error| Error::new(error.code(), error.to_string()))
+}
+
 fn request_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::REQUEST_INVALID, e.to_string())
 }
@@ -547,16 +552,16 @@ fn principal(owner: &str) -> Result<()> {
         Ok(())
     }
 }
-async fn head(host: &impl Host, channel: &str) -> Result<u64> {
+async fn head(host: &impl Host, scope: &str) -> Result<u64> {
     let Head(cursor) = host
         .call_typed(HostRequest::Head {
-            channel: channel.into(),
+            scope: scope.into(),
         })
         .await?;
     Ok(cursor)
 }
 /// Process one push: every mutation runs in its own savepoint, its changed
-/// records are settled (stamped and distributed to their Channels) and its
+/// records are settled (stamped and distributed to their Scopes) and its
 /// uploaded targets read back by the loaders in that savepoint, and the
 /// receipt carries the final authority of every record a successful
 /// mutation's operations targeted. An unsupported mutation version, a
@@ -571,6 +576,7 @@ pub async fn process_push(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    admit_protocol(bytes)?;
     principal(owner)?;
     let request = PushRequest::decode(bytes).map_err(request_invalid)?;
     let locked: Claimed = host
@@ -600,7 +606,9 @@ pub async fn process_push(
     let mut rejections = vec![];
     // The last successful authority per record, in canonical key order.
     let mut results: BTreeMap<String, axton_core::AuthorityRecord> = BTreeMap::new();
+    let mut claims = BTreeMap::new();
     for m in &request.mutations {
+        let mut enrolled = vec![];
         // A mutation naming a version this backend does not serve rejects
         // only itself; its handler never runs.
         if let (Some(name), Some(v)) = (m.raw["name"].as_str(), version(&m.raw))
@@ -671,7 +679,7 @@ pub async fn process_push(
                 }
                 let stamps =
                     settlement::settle_changes(config, &changed, &memberships, host).await?;
-                readback::read_back(
+                let outcome = readback::read_back(
                     config,
                     &request.models,
                     owner,
@@ -679,7 +687,11 @@ pub async fn process_push(
                     &stamps,
                     host,
                 )
-                .await?
+                .await?;
+                if let Outcome::Records(records) = &outcome {
+                    enrolled = stamps.claims(config, &memberships, records)?;
+                }
+                outcome
             }
         };
         match outcome {
@@ -693,6 +705,18 @@ pub async fn process_push(
                 });
             }
             Outcome::Records(records) => {
+                for claim in enrolled {
+                    let key = (
+                        claim.scope.clone(),
+                        claim.key().encoded().map_err(internal)?,
+                    );
+                    if claims
+                        .get(&key)
+                        .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
+                    {
+                        claims.insert(key, claim);
+                    }
+                }
                 for record in records {
                     let key = config
                         .schema
@@ -712,6 +736,7 @@ pub async fn process_push(
         rejections,
         completions: vec![],
         records: results.into_values().collect(),
+        memberships: claims.into_values().collect(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host
@@ -726,7 +751,7 @@ pub async fn process_push(
 }
 /// The one pull entry point every binding, route and direct backend caller
 /// shares. The request's `mode` selects what it serves, before either mode
-/// decodes: an absent mode is the ordinary delta pull over every channel a
+/// decodes: an absent mode is the ordinary delta pull over every scope a
 /// client follows, `"bootstrap"` is one bounded page of a Scope's historical
 /// interval (`loading::process_bootstrap`), and any other present value is
 /// refused.
@@ -738,89 +763,12 @@ pub async fn process_pull(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
-    principal(owner)?;
-    match axton_core::pull_mode(bytes).as_deref() {
-        None => process_delta(config, owner, bytes, host).await,
-        Some(axton_core::BOOTSTRAP_MODE) => {
-            loading::process_bootstrap(config, owner, bytes, host).await
-        }
-        Some(_) => Err(request_invalid("pull mode must be absent or \"bootstrap\"")),
-    }
-}
-/// Serve one pull for every channel it names: scan each channel after its
-/// cursor, load every changed record once at the version the client
-/// declared, and answer a page whose changes are receipt-shaped records. A
-/// record one loader call cannot read fails alone: the call is retried one
-/// identity at a time and the failing identities become `error` changes.
-async fn process_delta(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    let request = PullRequest::decode(bytes).map_err(request_invalid)?;
-    config.check_declared(&request.models)?;
-    let mut cursors: BTreeMap<String, CursorRange> = BTreeMap::new();
-    // Every changed record once, keyed canonically, at its current stamp.
-    let mut records: BTreeMap<String, (RecordKey, u64)> = BTreeMap::new();
-    for (channel, from) in &request.cursors {
-        let maximum = head(host, channel).await?;
-        if *from > maximum {
-            return Err(request_invalid(format!(
-                "cursor ahead of head on {channel}"
-            )));
-        }
-        let rows: Vec<Invalidation> = host
-            .call_typed(HostRequest::Scan {
-                channel: channel.clone(),
-                after: *from,
-                limit: limits::PULL_CHANGES as u64,
-            })
-            .await?;
-        if rows.len() > limits::PULL_CHANGES {
-            return Err(storage_invalid("invalid scan size"));
-        }
-        let mut previous = *from;
-        for row in &rows {
-            let key = loading::validate_row(config, channel, maximum, previous, row)?;
-            previous = row.cursor;
-            loading::insert(&mut records, key, row.stamp)?;
-        }
-        // The scan answers only rows whose record is still a member of the
-        // Channel, filtered before the limit, so a removed position is a hole
-        // no page returns. A short scan means no eligible row remains up to the
-        // head, and the range ends there even when every position in it was a
-        // hole: an empty page that still advances. A full scan ends at its last
-        // eligible cursor, which is past `from`.
-        let to = if rows.len() == limits::PULL_CHANGES {
-            previous
-        } else {
-            maximum
-        };
-        cursors.insert(
-            channel.clone(),
-            CursorRange {
-                from: *from,
-                to,
-                head: maximum,
-            },
-        );
-    }
-    let changes = loading::resolve_records(
-        config,
-        owner,
-        &request.models,
-        records.into_values().collect(),
-        host,
-    )
-    .await?;
-    let page = PullPage { cursors, changes };
-    String::from_utf8(page.encode().map_err(internal)?).map_err(internal)
+    process_scope_pull(config, owner, bytes, host).await
 }
 /// Settle a business change made outside a handler, in the application's
 /// transaction: the same `{changes, memberships}` shape a handler answers
 /// with, through the same settlement. Every changed record gets its next
-/// stamp and reaches its Channels at that stamp; nothing is read back, since
+/// stamp and reaches its Scopes at that stamp; nothing is read back, since
 /// no client is waiting for a receipt. Answers `[{model, identity, stamp}]`
 /// for the changed records.
 pub async fn settle_external(
@@ -853,4 +801,22 @@ pub async fn settle_external(
             })
             .collect(),
     ))
+}
+
+/// Scope-aware pull delivery.
+pub async fn process_scope_pull(
+    config: &Config,
+    owner: &str,
+    bytes: &[u8],
+    host: &impl Host,
+) -> Result<String> {
+    admit_protocol(bytes)?;
+    principal(owner)?;
+    match axton_core::pull_mode(bytes).as_deref() {
+        None => loading::process_scope_delta(config, owner, bytes, host).await,
+        Some(axton_core::BOOTSTRAP_MODE) => {
+            loading::process_scope_bootstrap(config, owner, bytes, host).await
+        }
+        Some(_) => Err(request_invalid("pull mode must be absent or bootstrap")),
+    }
 }

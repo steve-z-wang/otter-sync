@@ -14,7 +14,7 @@ const client = await GeneratedClient.open({
 });
 // A subscription is durable and starts at the first head the server
 // acknowledges: it delivers what is published from then on, not the records the
-// channel already held (#150; the explicit whole-Scope load is #151's
+// scope already held (#150; the explicit whole-Scope load is #151's
 // `bootstrap()`). The status line shows when this client is live.
 const subscription = await client.scopes.subscribe("book:demo");
 subscription.watch((status) =>

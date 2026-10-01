@@ -11,6 +11,8 @@ if [[ $status -eq 0 ]]; then
   exit 1
 fi
 expected=(
+  "The getter 'channels' isn't defined for the type 'GeneratedClient'"
+  "The getter 'channels' isn't defined for the type 'GeneratedTransaction'"
   "The named parameter 'tags' isn't defined"          # list as a query predicate, and in a mutation patch
   "There's no constant named 'byStatus' in 'EntryOrderField'"
   "The argument type 'String' can't be assigned to the parameter type 'DateTime'"
@@ -55,7 +57,7 @@ expected=(
   "A value of type 'Call<PublishEntryOutput>' can't be assigned to a variable of type 'Call<String>'"
   "The named parameter 'local' isn't defined"
   "The getter 'mutations' isn't defined for the type 'CompanionContext'"
-  "The getter 'channels' isn't defined for the type 'CompanionContext'"
+  "The getter 'scopes' isn't defined for the type 'CompanionContext'"
   "The getter 'transaction' isn't defined for the type 'CompanionContext'"
   "The method 'watch' isn't defined for the type 'CompositionTxModel'"
 )

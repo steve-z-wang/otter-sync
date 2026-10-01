@@ -279,7 +279,19 @@ impl LoadWorker {
                     fence: page.fence,
                     attempts: page.attempts,
                 };
-                match request.encode() {
+                match request.encode().and_then(|bytes| {
+                    let capable = axton_core::with_capabilities(
+                        &bytes,
+                        &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY],
+                    )?;
+                    if request.loads.len() == 1 {
+                        // Frozen single pages retain the logical limit across negotiation upgrades.
+                        axton_core::check_request_size(&capable, limits::LOAD_REQUEST_BYTES)?;
+                    } else if capable.len() > limits::LOAD_REQUEST_BYTES {
+                        return Err(axton_core::invalid("Load request exceeds byte limit"));
+                    }
+                    Ok(capable)
+                }) {
                     Ok(_) => {}
                     Err(error) if pages.is_empty() => {
                         // Not even alone: this job fails, the others go on.
@@ -330,8 +342,11 @@ impl LoadWorker {
         let body = if pages.is_empty() {
             String::new()
         } else {
-            String::from_utf8(request.encode()?)
-                .map_err(|_| axton_core::invalid("Load request is not UTF-8"))?
+            String::from_utf8(axton_core::with_capabilities(
+                &request.encode()?,
+                &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY],
+            )?)
+            .map_err(|_| axton_core::invalid("Load request is not UTF-8"))?
         };
         self.issued += 1;
         let batch = self.issued;

@@ -2,7 +2,7 @@ import type { Call, CallOutcome, GeneratedClient, Load, LoadOptions, LoadPhase, 
 import { LoadError } from './client.ts';
 import { Project, Todo } from './backend.ts';
 import type { NoteCreate, OpenTodoOutput, AddTodoInput, AddTodoOutput, EditOutput, EditAndReadOutput, FindTodosOutput, TodoCreate, TodoUpdate, TodoDelete, TodoIdentity, ProjectIdentity, PingOutput } from './generated.ts';
-import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
+import type { AddTodoHandlerOutput, AddTodoV1Input, EditAndReadHandlerOutput, EditHandlerOutput, AddTodoV1HandlerOutput, FindTodosHandlerOutput, GetTodosV1HandlerOutput, JsonValue, LoadScope, LoadContext, LoadHandlerCall, LoadNext, Loads, MutationContext, PingHandlerOutput, ProjectTodosHandlerOutput, ProjectTodosInput, QueryContext, RemoveTodoHandlerOutput, Mutations, Queries, Loaders, StateListHandlerOutput, StateListV1HandlerOutput } from './backend.ts';
 import { createBackend } from './backend.ts';
 import type { Database } from '../../packages/server/index.mts';
 
@@ -161,7 +161,7 @@ async function transactionContract(client: GeneratedClient) {
   // A business input named `store` stays apart from the store option.
   const opened: Call<OpenTodoOutput> = await client.transaction(tx => tx.mutations.openTodo({ store: 'business' }, { store: { suggestions: false } }));
   const pinged: Call<PingOutput> = await client.transaction(tx => tx.mutations.ping({}, { store: false }));
-  const plain: number = await client.transaction(async tx => { await tx.channels.subscribe('todos'); return 1; });
+  const plain: number = await client.transaction(async tx => { await tx.scopes.subscribe('todos'); return 1; });
   const nothing: void = await client.transaction(async tx => { await tx.models.todo.delete(identity); });
   const outcome: CallOutcome<AddTodoOutput> = await one.wait();
   const count: number | undefined = outcome.result?.count;
@@ -175,7 +175,7 @@ const editHandlerResult: EditHandlerOutput = undefined;
 // The handler supplies the output identity; input A and output B are independent.
 const output: EditAndReadHandlerOutput = { todo: { id: "B" } };
 // A composite identity names every component; a mixed list takes explicit references.
-const mutationContext = (ctx: MutationContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.channel('tenant:t').project.add({ tenantId: 't', id: 'p' }), ctx.touch.todo({ id: 't' }), ctx.channel('tenant:t').remove([Project({ tenantId: 't', id: 'p' }), Todo({ id: 't' })])];
+const mutationContext = (ctx: MutationContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.scope('tenant:t').add.project({ tenantId: 't', id: 'p' }), ctx.touch.todo({ id: 't' }), ctx.scope('tenant:t').remove([Project({ tenantId: 't', id: 'p' }), Todo({ id: 't' })])];
 const queryContext = (ctx: QueryContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId];
 const findOutput: FindTodosHandlerOutput = { todos: [{ id: 't' }], nextCursor: null };
 const oldGetTodos: GetTodosV1HandlerOutput = { todos: [] };
@@ -208,6 +208,8 @@ const loaders: Loaders<Tx> = {
 };
 // Loads (#173): a page answers every declared identity list and a portable continuation.
 const loadContext = (ctx: LoadContext<Tx>) => [ctx.tx, ctx.userId, ctx.callId, ctx.loadId];
+// A Load enrolls records into a Scope, add only: by the lower-first Model accessor or a mixed reference list; a composite identity names every component.
+const loadScope = (ctx: LoadContext<Tx>): void => { const scope: LoadScope = ctx.scope('tenant:t'); scope.add.todo({ id: 't' }); scope.add.project({ tenantId: 't', id: 'p' }); scope.add([Todo({ id: 't' }), Project({ tenantId: 't', id: 'p' })]); scope.add.todo({ id: 't' }).tag(['X']); scope.add([Todo({ id: 't' })]).tag(['X']); scope.add([]); };
 const firstPage: ProjectTodosHandlerOutput = { data: { todos: [{ id: 't' }, { id: 't' }], projects: [{ tenantId: 't', id: 'p' }] }, next: { state: { after: 't', seen: [1, 2.5, true, null, 'x'], nested: { deep: [] } } } };
 const nullState: LoadNext = { state: null };
 const loads: Loads<Tx> = {
@@ -217,7 +219,7 @@ const loads: Loads<Tx> = {
     const status: 'open' | 'closed' | 'archived' | null = args.status;
     const tags: string[] = args.tags;
     void [projectId, status, tags];
-    if (continuation === null) return firstPage;
+    if (continuation === null) { ctx.scope(`project:${projectId}`).add.todo({ id: 't' }); return firstPage; }
     const state: JsonValue = continuation.state;
     void state;
     return { data: { todos: [], projects: [] }, next: null };
@@ -226,10 +228,27 @@ const loads: Loads<Tx> = {
   async flaggedTodos({ args }) { const once: boolean = args.once; const refresh: string = args.refresh; void [once, refresh]; return { data: { todos: [] }, next: null }; },
   async clientTodos({ args }) { const client: string = args.client; void client; return { data: { todos: [] }, next: null }; },
 };
-const projectTodos = async ({ args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => ({ data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState });
+const projectTodos = async ({ ctx, args }: LoadHandlerCall<Tx, ProjectTodosInput>): Promise<ProjectTodosHandlerOutput> => { ctx.scope('tags').add(args.tags.map(id => Todo({ id }))); return { data: { todos: args.tags.map(id => ({ id })), projects: [] }, next: nullState }; };
 const versionedLoads: Loads<Tx> = { projectTodos: { v1: projectTodos }, recentTodos: { async v1() { return { data: { todos: [] }, next: null }; } }, flaggedTodos: loads.flaggedTodos, clientTodos: loads.clientTodos };
 declare const database: Database<Tx>;
 const startBackend = () => createBackend({ database, authenticate: () => 'alice', mutations: handlers, queries, loaders, loads });
 // A Model without a Loader is device-only (#187): the map may omit it, and the backend refuses at startup a Mutation that names it on the wire.
 const deviceOnlyLoaders: Loaders<Tx> = { todo: loaders.todo, project: loaders.project };
-void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, versionedLoads, startBackend];
+void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, loadScope, versionedLoads, startBackend];
+
+function canonicalScopeContract(ctx:MutationContext<object>, load:LoadContext<object>) {
+ const scope=ctx.scope('U');
+ scope.add.todo('A').tag(['X','Y']);
+ scope.add.todo(['A',{id:'B'}]);
+ scope.add.project({tenantId:'T',id:'P'});
+ scope.add([Todo({id:'A'}),Project({tenantId:'T',id:'P'})]);
+ scope.remove(Todo({id:'A'}));
+ scope.tag('X').remove();
+ scope.tag('X').add.todo('A');
+ scope.where.todo({tags:{only:[]}}).tag('X').add();
+ scope.where({not:{tags:{any:['X']}}}).remove();
+ ctx.touch.todo(['A',{id:'B'}]);
+ ctx.touch(Todo({id:'A'}));
+ load.scope('U').add.todo('A').tag('X');
+ load.scope('U').tag('X').add(Todo({id:'A'}));
+}

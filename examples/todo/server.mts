@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { prisma } from "../../packages/postgres/index.mts";
+import { sqlStatements } from "../../packages/postgres/src/statements.mts";
 import {
   createBackend,
   CallRejected,
@@ -10,7 +11,7 @@ import {
   type Loaders,
 } from "./generated/node/backend.ts";
 import { schema } from "./generated/node/generated.ts";
-import { CHANNEL, seed } from "./seed.mts";
+import { SCOPE, seed } from "./seed.mts";
 
 type Tx = Prisma.TransactionClient;
 
@@ -73,9 +74,9 @@ export async function createExample() {
       }
       await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
       // The created input is already a change the caller receives authority for.
-      // Joining the demo Channel once is what distributes it, and every later
+      // Joining the demo Scope once is what distributes it, and every later
       // change to it, to the other subscribers.
-      ctx.channel(CHANNEL).todo.add({ id: todo.id });
+      ctx.scope(SCOPE).add.todo({ id: todo.id });
     },
     async setTodoDone({ args, ctx }) {
       const { tx } = ctx;
@@ -83,7 +84,7 @@ export async function createExample() {
       const { id, done } = args.todo;
       // An empty patch is a no-op (#49): the record is still read back and
       // distributed at a new stamp, but nothing is written. The Todo is already
-      // a member of the demo Channel, so no enrollment is needed here.
+      // a member of the demo Scope, so no enrollment is needed here.
       if (typeof done === "boolean") {
         try {
           await tx.todo.update({ where: { id }, data: { done } });
@@ -128,8 +129,8 @@ export async function createExample() {
         new URL("../../packages/postgres/migration.sql", import.meta.url),
         "utf8",
       );
-      for (const sql of migration.split(";").map((s) => s.trim()).filter(Boolean))
-        await db.$executeRawUnsafe(sql);
+      // Prisma runs one statement per call.
+      for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "User" (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
       );

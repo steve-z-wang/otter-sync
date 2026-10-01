@@ -203,14 +203,14 @@ pub(crate) fn dart_client(v: &Value, o: &mut String) {
 // --- TypeScript backend -------------------------------------------------------
 
 /// The backend handler contracts: portable JSON state, `LoadNext`, the
-/// read-only `LoadContext`, and per retained version `{Name}Input` and
-/// `{Name}HandlerOutput` (`V{n}`-prefixed when retained), grouped in
-/// `Loads<Tx>` like `Queries<Tx>`.
+/// `LoadContext` whose only effect is the add-only `LoadScope`, and per
+/// retained version `{Name}Input` and `{Name}HandlerOutput` (`V{n}`-prefixed
+/// when retained), grouped in `Loads<Tx>` like `Queries<Tx>`.
 pub(crate) fn backend(v: &Value, models: &[Value], o: &mut String) {
     let loads = arr(v, "loads");
     o.push_str("/** Portable JSON: no undefined, functions, cycles, non-finite numbers, BigInt or class instances. Encode integers outside the safe range and dates as strings. */\nexport type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n");
     o.push_str("/** A page's `continuation` is `null` on the first page, and answering `next: null` completes the Load; `{ state }` continues it, and `{ state: null }` is a legitimate state. At most 64 KiB encoded and 64 levels deep. */\nexport type LoadNext = null | { state: JsonValue };\n");
-    o.push_str("/** A Load page's context: like a Query it has no `channel` or `touch`. `callId` is the page's durable call ID and `loadId` its job. */\nexport interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n}\n");
+    o.push_str("/** A Load page's context: it has no `touch`, and its `scope` only adds. `callId` is the page's durable call ID and `loadId` its job. */\nexport interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n scope(name: string): LoadScope;\n}\n");
     o.push_str("/** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */\nexport type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n");
     let latest = latest(v);
     for load in loads {

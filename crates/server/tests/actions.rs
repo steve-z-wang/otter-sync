@@ -1,3 +1,4 @@
+mod capability;
 use axton_server::{Config, Host, HostResult, process_action_push};
 use serde_json::{Value, json};
 use std::{
@@ -49,7 +50,7 @@ fn ordinary_action_returns_its_handler_result_and_saves_it() {
     let receipt = run(process_action_push(
         &config,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();
@@ -82,7 +83,7 @@ fn ordinary_list_nullable_void_and_missing_explicit_outputs_are_independent() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -126,7 +127,7 @@ fn void_action_rejects_undeclared_handler_output_without_rejecting_next_call() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -184,7 +185,7 @@ fn explicit_model_output_uses_old_result_loader_and_current_authority_loader() {
     let receipt = run(process_action_push(
         &config,
         "alice",
-        request.to_string().as_bytes(),
+        &crate::capability::request(request.to_string().as_bytes()),
         &host,
     ))
     .unwrap();
@@ -313,7 +314,7 @@ impl Host for StatefulHost {
                     state.stamp += 1;
                     json!(state.stamp)
                 }
-                // The one Todo belongs to no Channel.
+                // The one Todo belongs to no Scope.
                 "memberships" => json!([]),
                 "ensureStamp" => {
                     if state.stamp == 0 {
@@ -503,7 +504,7 @@ fn unequal_content_at_equal_stamp_is_a_storage_fault() {
     let error = run(process_action_push(
         &config,
         "alice",
-        body.to_string().as_bytes(),
+        &crate::capability::request(body.to_string().as_bytes()),
         &host,
     ))
     .unwrap_err();
@@ -527,7 +528,7 @@ fn stateful_push(config: &Config, host: &StatefulHost, sequence: u64, calls: Vec
         &run(process_action_push(
             config,
             "alice",
-            body.to_string().as_bytes(),
+            &crate::capability::request(body.to_string().as_bytes()),
             host,
         ))
         .unwrap(),
@@ -619,8 +620,7 @@ impl Host for ForgedQueryHost {
         Box::pin(async move {
             self.0.lock().unwrap().push(request.clone());
             let todo = json!({"model":"Todo","identity":{"id":"t1"}});
-            let membership =
-                json!({"channel":"c","model":"Todo","identity":{"id":"t1"},"present":true});
+            let membership = json!({"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]});
             Ok(match request["op"].as_str().unwrap() {
                 "claim" => json!({"clientId":"device","owner":"alice","sequence":0,"receipt":null}),
                 "claimCall" => json!({"fresh":true,"request":request["request"],"response":null}),
@@ -676,7 +676,7 @@ fn forged_query_effects_reject_only_that_call_before_framework_handling() {
         &run(process_action_push(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -712,9 +712,10 @@ fn forged_query_effects_reject_only_that_call_before_framework_handling() {
         "advanceStamp",
         "lockRecord",
         "memberships",
-        "setMembership",
+        "lockScopes",
+        "readScopeMembers",
+        "applyScopeMembers",
         "load",
-        "publish",
     ] {
         assert!(!ops.iter().any(|request| request["op"] == op), "{op}");
     }
@@ -737,7 +738,7 @@ fn forged_query_effects_are_rejected_on_the_direct_path_too() {
         &run(axton_server::process_action(
             &config,
             "alice",
-            request.to_string().as_bytes(),
+            &crate::capability::request(request.to_string().as_bytes()),
             &host,
         ))
         .unwrap(),
@@ -750,10 +751,9 @@ fn forged_query_effects_are_rejected_on_the_direct_path_too() {
     assert_eq!(response["records"], json!([]));
     let ops = host.0.lock().unwrap();
     assert!(ops.iter().any(|op| op["op"] == "rollback"));
-    assert!(
-        !ops.iter()
-            .any(|op| op["op"] == "ensureStamp" || op["op"] == "load" || op["op"] == "publish")
-    );
+    assert!(!ops.iter().any(|op| op["op"] == "ensureStamp"
+        || op["op"] == "load"
+        || op["op"] == "applyScopeMembers"));
 }
 
 #[test]
@@ -853,7 +853,7 @@ fn no_declared_outputs_answer_null_and_keep_input_authority() {
 }
 
 /// An extra touch of a Model the caller never declared succeeds: the Project
-/// advances and fans out to its Channel, its Loader is not invoked for the
+/// advances and fans out to its Scope, its Loader is not invoked for the
 /// caller, and it is absent from the caller's authority.
 #[test]
 fn an_extra_touch_of_an_undeclared_model_fans_out_without_caller_authority() {
@@ -874,10 +874,10 @@ fn an_extra_touch_of_an_undeclared_model_fans_out_without_caller_authority() {
     assert_eq!(receipt["rejections"], json!([]));
     assert_eq!(authority(&receipt), [("Todo".into(), "a".into(), 1)]);
     assert_eq!(backend.stamp("Project", "p"), Some(3));
-    assert_eq!(backend.head("project:p"), 8);
+    assert_eq!(backend.head("project:p"), 9);
     assert_eq!(
         backend.invalidation("project:p", "Project", "p"),
-        Some((8, 3))
+        Some((9, 3))
     );
     assert_eq!(
         backend.loaded_models(),
@@ -993,4 +993,112 @@ fn a_duplicate_or_inferred_touch_allocates_one_stamp() {
     assert_eq!(backend.stamp("Todo", "a"), Some(2));
     assert_eq!(backend.stamp("Project", "p"), Some(7));
     assert_eq!(authority(&receipt), [("Todo".into(), "a".into(), 2)]);
+}
+
+#[test]
+fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_positions() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.seed("Todo", "extra", todo("extra", "hidden"), Some(1));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a"),support::add("c","Todo","extra")]}));
+    let first = support::push(
+        &backend,
+        1,
+        json!({"Todo":1}),
+        vec![edit(1, 80, "EditAndRead", "a", "new")],
+    );
+    assert_eq!(
+        first["memberships"],
+        json!([{ "scope":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+    );
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    let state = backend.tables();
+    let replay = support::push(
+        &backend,
+        2,
+        json!({"Todo":1}),
+        vec![edit(1, 80, "EditAndRead", "a", "new")],
+    );
+    assert_eq!(replay["memberships"], first["memberships"]);
+    assert_eq!(backend.tables(), state);
+}
+
+#[test]
+fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_replay() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    let request = json!({"call":{"callId":support::call_id(81),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string();
+    let first: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &crate::capability::request(request.as_bytes()),
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        first["memberships"],
+        json!([{ "scope":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+    );
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    let state = backend.tables();
+    let replay: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &crate::capability::request(request.as_bytes()),
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(backend.tables(), state);
+}
+
+#[test]
+fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claims() {
+    let backend = Backend::new();
+    backend.seed("Todo", "a", todo("a", "old"), Some(1));
+    backend.script("EditAndRead", json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    let request = crate::capability::request(json!({"call":{"callId":support::call_id(91),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string().as_bytes());
+    let first: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &request,
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    backend.with(|state| {
+        let saved = state.tables.calls.get_mut(&support::call_id(91)).unwrap();
+        let mut logical: Value = serde_json::from_str(&saved.0).unwrap();
+        logical["capabilities"] = json!(["scope-membership-v1"]);
+        saved.0 = logical.to_string();
+        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
+        response.as_object_mut().unwrap().remove("memberships");
+        saved.1 = Some(response.to_string());
+    });
+    let before = backend.tables();
+    backend.clear_log();
+    let replay: Value = serde_json::from_str(
+        &support::run(axton_server::process_action(
+            &support::config(),
+            "alice",
+            &request,
+            &backend,
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay["completion"], first["completion"]);
+    assert!(replay.get("memberships").is_none());
+    assert_eq!(backend.ops(), ["claimCall"]);
+    assert_eq!(backend.tables(), before);
 }

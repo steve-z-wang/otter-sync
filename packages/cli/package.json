@@ -1,0 +1,27 @@
+{
+  "name": "@axtonjs/cli",
+  "version": "0.2.0",
+  "description": "The axton schema compiler, as a prebuilt executable for this platform.",
+  "license": "MIT",
+  "author": "Zanmin Wang (https://zanminwang.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zanminwang/axton.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/zanminwang/axton#readme",
+  "type": "commonjs",
+  "bin": {
+    "axton": "bin/axton.cjs"
+  },
+  "files": [
+    "bin/axton.cjs"
+  ],
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

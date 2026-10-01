@@ -1,0 +1,91 @@
+{
+  "description": "Bounds on the Scope enrollment one Load page declares, after deduplicating repeated Scope/record pairs (a repeated pair unions its tags into the first). A pair's bytes are the UTF-8 length of the canonical JSON of its add intent {scope, kind, record: {identity, model}, tags} with its canonical identity.",
+  "pairs": 1000,
+  "bytes": 1048576,
+  "intents": [
+    {
+      "name": "an ASCII pair",
+      "intent": {
+        "kind": "add",
+        "scope": "project:p1",
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t1"
+          }
+        },
+        "tags": []
+      },
+      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"scope\":\"project:p1\",\"tags\":[]}",
+      "bytes": 94
+    },
+    {
+      "name": "multibyte UTF-8 counts bytes, not characters",
+      "intent": {
+        "kind": "add",
+        "scope": "équipe",
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "日本"
+          }
+        },
+        "tags": []
+      },
+      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"日本\"},\"model\":\"Todo\"},\"scope\":\"équipe\",\"tags\":[]}",
+      "bytes": 95
+    },
+    {
+      "name": "escapes and an astral character",
+      "intent": {
+        "kind": "add",
+        "scope": "a\"b\n😀",
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t\\1"
+          }
+        },
+        "tags": []
+      },
+      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t\\\\1\"},\"model\":\"Todo\"},\"scope\":\"a\\\"b\\n😀\",\"tags\":[]}",
+      "bytes": 96
+    },
+    {
+      "name": "identity members in canonical order",
+      "intent": {
+        "kind": "add",
+        "scope": "org",
+        "record": {
+          "model": "Member",
+          "identity": {
+            "userId": "u1",
+            "orgId": "o1"
+          }
+        },
+        "tags": []
+      },
+      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"orgId\":\"o1\",\"userId\":\"u1\"},\"model\":\"Member\"},\"scope\":\"org\",\"tags\":[]}",
+      "bytes": 106
+    },
+    {
+      "name": "tags count as spelled, in declaration order",
+      "intent": {
+        "kind": "add",
+        "scope": "project:p1",
+        "record": {
+          "model": "Todo",
+          "identity": {
+            "id": "t1"
+          }
+        },
+        "tags": [
+          "Journal:1",
+          "équipe"
+        ]
+      },
+      "encoded": "{\"kind\":\"add\",\"record\":{\"identity\":{\"id\":\"t1\"},\"model\":\"Todo\"},\"scope\":\"project:p1\",\"tags\":[\"Journal:1\",\"équipe\"]}",
+      "bytes": 115
+    }
+  ]
+}

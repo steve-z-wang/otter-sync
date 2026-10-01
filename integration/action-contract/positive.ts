@@ -235,3 +235,20 @@ const startBackend = () => createBackend({ database, authenticate: () => 'alice'
 // A Model without a Loader is device-only (#187): the map may omit it, and the backend refuses at startup a Mutation that names it on the wire.
 const deviceOnlyLoaders: Loaders<Tx> = { todo: loaders.todo, project: loaders.project };
 void [deviceOnlyLoaders, transactionContract, loadContract, handlers, queries, mutationContext, queryContext, loaders, clientContract, composite, oldInput, oldOutput, pingHandlerResult, removeHandlerResult, editHandlerResult, oldStateListOutput, loadContext, loadChannel, versionedLoads, startBackend];
+
+function canonicalScopeContract(ctx:MutationContext<object>, load:LoadContext<object>) {
+ const scope=ctx.scope('U');
+ scope.add.todo('A').tag(['X','Y']);
+ scope.add.todo(['A',{id:'B'}]);
+ scope.add.project({tenantId:'T',id:'P'});
+ scope.add([Todo({id:'A'}),Project({tenantId:'T',id:'P'})]);
+ scope.remove(Todo({id:'A'}));
+ scope.tag('X').remove();
+ scope.tag('X').add.todo('A');
+ scope.where.todo({tags:{only:[]}}).tag('X').add();
+ scope.where({not:{tags:{any:['X']}}}).remove();
+ ctx.touch.todo(['A',{id:'B'}]);
+ ctx.touch(Todo({id:'A'}));
+ load.scope('U').add.todo('A').tag('X');
+ load.scope('U').tag('X').add(Todo({id:'A'}));
+}

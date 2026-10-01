@@ -1,3 +1,10 @@
+import {
+  scopeHandle,
+  scopeTouch,
+  type RuntimeScope,
+  type RuntimeLoadScope,
+  type RuntimeScopeTouch,
+} from "./scope.mts";
 /**
  * The declarations one handler, legacy handler or `backend.transaction` body
  * makes while it runs: changed records (`touch`) and ordered Channel intents
@@ -57,11 +64,10 @@ export type RuntimeChannel = {
   remove(selector: TagSelector): void;
 };
 /** One change declaration per Model under its lower-first accessor: `touch.todo(identity)`. */
-export type RuntimeTouch = {
-  readonly [model: string]: (identity: object) => void;
-};
+export type RuntimeTouch = RuntimeScopeTouch;
 export interface EffectCollector {
-  readonly touch: RuntimeTouch;
+  readonly touch: RuntimeTouch & RuntimeScopeTouch;
+  scope(name: string): RuntimeScope;
   /** Selects a Channel by name. Creates nothing: the name is only validated. */
   channel(name: string): RuntimeChannel;
   /** Owned copies of the declarations, readable after `close`. */
@@ -94,6 +100,7 @@ export type LoadEffectFailure = {
   error: unknown;
 };
 export interface LoadEffectCollector {
+  scope(name: string): RuntimeLoadScope;
   /** Selects a Channel by name. Creates nothing: the name is only validated. */
   channel(name: string): RuntimeLoadChannel;
   /** Owned copies of the distinct additions, in first-declaration order. */
@@ -130,6 +137,7 @@ type Identity = Readonly<Record<string, unknown>>;
 type Entry = {
   name: string;
   key: string;
+  scalar?: string;
   snapshot(value: unknown, caller: string): Identity;
   /** A snapshot as the engine canonicalizes it (`Schema::record_key`). */
   canonical(identity: Identity): Identity;
@@ -342,7 +350,13 @@ function entriesOf(
       }
       return Object.freeze(copy);
     };
-    return { name, key, snapshot, canonical };
+    return {
+      name,
+      key,
+      ...(model.identity.length === 1 ? { scalar: model.identity[0] } : {}),
+      snapshot,
+      canonical,
+    };
   });
 }
 
@@ -552,15 +566,20 @@ export function effectsFor(
           record: Object.freeze({ model, identity }) as HostRecordRef,
         }),
       );
-    const touch = Object.create(null);
-    for (const entry of entries)
-      define(touch, entry.key, (identity: object) => {
-        const caller = `touch.${entry.key}`;
-        assertOpen(caller);
-        publishable(entry.name, caller);
-        change(entry.name, entry.snapshot(identity, caller));
-      });
-    Object.freeze(touch);
+    const canonical = {
+      guard: <T,>(body: () => T) => body(),
+      entries,
+      publishable,
+      list,
+      name: channelName,
+      check: assertOpen,
+      record: (intents: readonly ChannelIntent[]) => {
+        memberships.push(...intents);
+      },
+    };
+    const touch = scopeTouch(canonical, (record) =>
+      change(record.model, record.identity),
+    );
     const channel = (name: string): RuntimeChannel => {
       assertOpen("channel");
       channelName(name);
@@ -612,7 +631,8 @@ export function effectsFor(
       return Object.freeze(handle) as RuntimeChannel;
     };
     return Object.freeze({
-      touch: touch as RuntimeTouch,
+      touch: touch as RuntimeTouch & RuntimeScopeTouch,
+      scope: (name: string) => scopeHandle(canonical, name) as RuntimeScope,
       channel,
       settlement: (): SettlementEffects => ({
         changes: [...changes],
@@ -682,7 +702,7 @@ export function loadEffectsFor(
     /** Distinct additions by their canonical pair, in first-declaration order, with their bytes. */
     const pairs = new Map<string, { intent: AddIntent; bytes: number }>();
     let bytes = 0;
-    const declarations: AddIntent[] = [];
+    const declarations: ChannelIntent[] = [];
     /** Runs one declaration, keeping its refusal even if the handler catches it. */
     const declare = <R,>(body: () => R): R => {
       try {
@@ -711,6 +731,7 @@ export function loadEffectsFor(
       declared: Declared[],
       tags: readonly string[],
       caller: string,
+      kind: "add" | "tagAdd" = "add",
     ) => {
       for (const { entry, identity } of declared)
         for (const [field, value] of Object.entries(identity))
@@ -721,7 +742,7 @@ export function loadEffectsFor(
       const fresh = new Map<string, { intent: AddIntent; bytes: number }>();
       let added = 0;
       let more = 0;
-      const additions: AddIntent[] = [];
+      const additions: ChannelIntent[] = [];
       for (const { entry, identity } of declared) {
         const canonical = entry.canonical(identity);
         const key = canonicalJson([channel, entry.name, canonical]);
@@ -744,7 +765,12 @@ export function loadEffectsFor(
         );
         more += size - (prior?.bytes ?? 0);
         fresh.set(key, { intent, bytes: size });
-        additions.push(addIntent(channel, entry.name, identity, contribution));
+        additions.push(
+          Object.freeze({
+            ...addIntent(channel, entry.name, identity, contribution),
+            kind,
+          }),
+        );
         if (pairs.size + added > LOAD_ENROLLMENT_PAIRS)
           throw new EnrollmentOverflow(
             `${caller}: the Load page enrolls more than ${LOAD_ENROLLMENT_PAIRS} Channel/record pairs`,
@@ -758,6 +784,39 @@ export function loadEffectsFor(
       bytes += more;
       // Keep each validated add boundary: the union may exceed 64 tags.
       declarations.push(...additions);
+    };
+    const canonical = {
+      guard: declare,
+      entries,
+      publishable,
+      list,
+      name: (name: unknown) => {
+        channelName(name);
+        if (LONE_SURROGATE.test(name as string))
+          throw new Error(
+            "scope: a Scope name must be Unicode text, without a lone surrogate",
+          );
+      },
+      check: (caller: string) => declare(() => assertOpen(caller)),
+      record: (intents: readonly ChannelIntent[], caller: string) =>
+        declare(() => {
+          if (intents.length === 0) return;
+          const first = intents[0]!;
+          if (first.kind !== "add" && first.kind !== "tagAdd")
+            throw new Error("Load scopes only add membership and labels");
+          const declared = intents.map((intent) => {
+            if (
+              intent.kind !== first.kind ||
+              (intent.kind !== "add" && intent.kind !== "tagAdd")
+            )
+              throw new Error("Load scopes only add membership and labels");
+            const entry = entries.find(
+              (entry) => entry.name === intent.record.model,
+            )!;
+            return { entry, identity: intent.record.identity };
+          });
+          enroll(first.channel, declared, first.tags, caller, first.kind);
+        }),
     };
     const channel = (name: string): RuntimeLoadChannel =>
       declare(() => {
@@ -801,6 +860,8 @@ export function loadEffectsFor(
         return Object.freeze(handle) as RuntimeLoadChannel;
       });
     return Object.freeze({
+      scope: (name: string) =>
+        declare(() => scopeHandle(canonical, name, true) as RuntimeLoadScope),
       channel,
       memberships: (): readonly ChannelIntent[] => [...declarations],
       failure: () => failed,

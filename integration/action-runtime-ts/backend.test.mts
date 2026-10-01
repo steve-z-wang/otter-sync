@@ -34,13 +34,13 @@ test("generated backend decodes Date values and declares canonical identities th
     moment.at = new Date(second);
     ctx.touch.moment(moment);
     ctx.touch.moment({ at: new Date(second) });
-    const channel = ctx.channel("todos");
-    channel.todo.add(args.todo);
-    channel.add([
+    const scope = ctx.scope("todos");
+    scope.add.todo(args.todo);
+    scope.add([
       Moment({ at: new Date("2026-01-03T00:00:00.000Z") }),
       Pin({ todo: args.todo.id, at: args.todo.at }),
     ]);
-    channel.pin.remove({ todo: args.todo.id, at: args.todo.at });
+    scope.remove.pin({ todo: args.todo.id, at: args.todo.at });
     return {
       todo: { id: args.todo.id },
       echoed: new Date(args.when.getTime()),
@@ -331,7 +331,7 @@ test("Query handlers receive no effect capabilities and settle without effects",
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "channel", "touch", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "channel", "scope", "touch", "tx", "userId"] },
     { kind: "query", keys: ["callId", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
@@ -625,7 +625,7 @@ test("Load handlers take decoded args and a context with a channel and no touch,
       userId,
     })),
     requests.map(() => ({
-      keys: ["callId", "channel", "loadId", "tx", "userId"],
+      keys: ["callId", "channel", "loadId", "scope", "tx", "userId"],
       since: at,
       statuses: ["open", "closed"],
       loadId: "load-1",

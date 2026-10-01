@@ -134,11 +134,11 @@ test('every fixture request replays through the TypeScript host to the fixture a
  assert.equal(paged.length,1);
  assert.deepEqual(paged[0].continuation,loadRequest.continuation);
  assert.deepEqual(paged[0].args,loadRequest.arguments);
- assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','channel','loadId','tx','userId'],'a Load context adds to Channels and declares no change: no touch');
+ assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','channel','loadId','scope','tx','userId'],'a Load context adds to Channels and declares no change: no touch');
  assert.equal(typeof paged[0].ctx.channel,'function');
  // A Mutation keeps its full declaration handles.
  assert.equal(sent.length,1);
- assert.deepEqual(Object.keys(sent[0]).sort(),['callId','channel','touch','tx','userId']);
+ assert.deepEqual(Object.keys(sent[0]).sort(),['callId','channel','scope','touch','tx','userId']);
  assert.equal(typeof sent[0].touch.task,'function');
  assert.deepEqual([paged[0].ctx.userId,paged[0].ctx.callId,paged[0].ctx.loadId],[loadRequest.owner,loadRequest.callId,loadRequest.loadId]);
 });
@@ -447,7 +447,7 @@ test('a Query context and a Loader call carry no channel or touch; an external t
   handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
   loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
  await backend.transaction(async call=>{
-  assert.deepEqual(Object.keys(call).sort(),['channel','touch','tx']);
+  assert.deepEqual(Object.keys(call).sort(),['channel','scope','touch','tx']);
   assert.equal(typeof call.channel('c').remove,'function');
   assert.equal(typeof call.channel('c').task.remove,'function');
   assert.equal(typeof call.touch.task,'function');

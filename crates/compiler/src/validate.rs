@@ -886,9 +886,18 @@ const GENERATED_NAMES: &[&str] = &[
 ];
 
 /// Top-level type names the generated TypeScript backend declares for handler
-/// calls, Channel membership and touch. A model or enum with one of these names
+/// calls, Scope membership and touch. A model or enum with one of these names
 /// would collide with them in the generated backend file.
 const GENERATED_BACKEND_NAMES: &[&str] = &[
+    "Scope",
+    "LoadScope",
+    "ScopeAdd",
+    "ScopeRecords",
+    "ScopeWhere",
+    "ScopeSelection",
+    "ScopeTagRemoval",
+    "ScopePredicate",
+    "AddDeclaration",
     "Channel",
     "HandlerCall",
     "MembershipOptions",

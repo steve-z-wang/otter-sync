@@ -363,3 +363,30 @@ client.queries.enqueue.findTodos({ text: 'x', cursor: null }, { local: async () 
 void storeTransaction.mutations;
 // @ts-expect-error onStore starts no Load.
 void storeTransaction.loads;
+
+function invalidCanonicalScope(ctx: import('./backend.ts').MutationContext<object>, load: import('./backend.ts').LoadContext<object>, query: import('./backend.ts').QueryContext<object>) {
+ // @ts-expect-error wrong scalar identity
+ ctx.scope('U').add.todo(3);
+ // @ts-expect-error composite requires every field
+ ctx.scope('U').add.project({id:'P'});
+ // @ts-expect-error mixed operands name their model
+ ctx.scope('U').add({id:'A'});
+ // @ts-expect-error root add needs explicit operands
+ ctx.scope('U').add();
+ // @ts-expect-error root remove needs explicit operands
+ ctx.scope('U').remove();
+ // @ts-expect-error label add needs explicit operands
+ ctx.scope('U').tag('X').add();
+ // @ts-expect-error existing selection cannot enroll
+ ctx.scope('U').where({tags:{only:[]}}).add();
+ // @ts-expect-error Load cannot remove
+ load.scope('U').remove.todo('A');
+ // @ts-expect-error Load cannot select
+ load.scope('U').where({tags:{only:[]}});
+ // @ts-expect-error Load cannot detach labels
+ load.scope('U').tag('X').remove();
+ // @ts-expect-error Load has no touch
+ load.touch.todo('A');
+ // @ts-expect-error Query has no scope
+ query.scope('U');
+}

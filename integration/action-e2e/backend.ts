@@ -40,18 +40,52 @@ export interface Channel {
  remove(records: readonly RecordRef[]): void;
  remove(selector: TagSelector): void;
 }
-export interface Touch {
- todo(identity: TodoIdentity): void;
- note(identity: NoteIdentity): void;
- composition(identity: CompositionIdentity): void;
- entry(identity: EntryIdentity): void;
- media(identity: MediaIdentity): void;
- placement(identity: PlacementIdentity): void;
+export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
+export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
+export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
+export interface ScopeAdd {
+ (records: RecordRef | readonly RecordRef[]): AddDeclaration;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): AddDeclaration;
+ note(ids: NoteIdentity | NoteIdentity["id"] | readonly (NoteIdentity | NoteIdentity["id"])[]): AddDeclaration;
+ composition(ids: CompositionIdentity | CompositionIdentity["id"] | readonly (CompositionIdentity | CompositionIdentity["id"])[]): AddDeclaration;
+ entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): AddDeclaration;
+ media(ids: MediaIdentity | MediaIdentity["id"] | readonly (MediaIdentity | MediaIdentity["id"])[]): AddDeclaration;
+ placement(ids: PlacementIdentity | PlacementIdentity["id"] | readonly (PlacementIdentity | PlacementIdentity["id"])[]): AddDeclaration;
 }
+export interface ScopeRecords {
+ (records: RecordRef | readonly RecordRef[]): void;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
+ note(ids: NoteIdentity | NoteIdentity["id"] | readonly (NoteIdentity | NoteIdentity["id"])[]): void;
+ composition(ids: CompositionIdentity | CompositionIdentity["id"] | readonly (CompositionIdentity | CompositionIdentity["id"])[]): void;
+ entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
+ media(ids: MediaIdentity | MediaIdentity["id"] | readonly (MediaIdentity | MediaIdentity["id"])[]): void;
+ placement(ids: PlacementIdentity | PlacementIdentity["id"] | readonly (PlacementIdentity | PlacementIdentity["id"])[]): void;
+}
+export interface Touch {
+ (records: RecordRef | readonly RecordRef[]): void;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
+ note(ids: NoteIdentity | NoteIdentity["id"] | readonly (NoteIdentity | NoteIdentity["id"])[]): void;
+ composition(ids: CompositionIdentity | CompositionIdentity["id"] | readonly (CompositionIdentity | CompositionIdentity["id"])[]): void;
+ entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
+ media(ids: MediaIdentity | MediaIdentity["id"] | readonly (MediaIdentity | MediaIdentity["id"])[]): void;
+ placement(ids: PlacementIdentity | PlacementIdentity["id"] | readonly (PlacementIdentity | PlacementIdentity["id"])[]): void;
+}
+export interface ScopeTagRemoval extends ScopeRecords { (): void }
+export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
+ todo(predicate: ScopePredicate): ScopeSelection;
+ note(predicate: ScopePredicate): ScopeSelection;
+ composition(predicate: ScopePredicate): ScopeSelection;
+ entry(predicate: ScopePredicate): ScopeSelection;
+ media(predicate: ScopePredicate): ScopeSelection;
+ placement(predicate: ScopePredicate): ScopeSelection;
+}
+export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
+export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }
@@ -64,11 +98,13 @@ export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }

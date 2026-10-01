@@ -223,7 +223,7 @@ pub(crate) fn backend(v: &Value, models: &[Value], o: &mut String) {
         .unwrap();
     }
     o.push_str(" add(records: readonly RecordRef[], options?: MembershipOptions): void;\n}\n");
-    o.push_str("/** A Load page's context: it has no `touch`, and its `channel` only adds. `callId` is the page's durable call ID and `loadId` its job. */\nexport interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n channel(name: string): LoadChannel;\n}\n");
+    o.push_str("/** A Load page's context: it has no `touch`, and its `channel` only adds. `callId` is the page's durable call ID and `loadId` its job. */\nexport interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n scope(name: string): LoadScope;\n channel(name: string): LoadChannel;\n}\n");
     o.push_str("/** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */\nexport type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n");
     let latest = latest(v);
     for load in loads {

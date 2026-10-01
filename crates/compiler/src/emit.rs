@@ -1490,18 +1490,13 @@ fn ts_declarations(models: &[Value], o: &mut String) {
         writeln!(o, " {}: ModelMembership<{n}Identity>;", lower(n)).unwrap();
     }
     o.push_str(" add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n");
-    o.push_str("export interface Touch {\n");
-    for m in models {
-        let n = s(m, "name");
-        writeln!(o, " {}(identity: {n}Identity): void;", lower(n)).unwrap();
-    }
-    o.push_str("}\n");
-    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
+    crate::emit_scope::backend(models, o);
+    o.push_str("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
     o.push_str(
         "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n",
     );
-    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
-    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
+    o.push_str("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
+    o.push_str("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n");
 }
 fn dart_action_type(ty_value: &Value) -> String {
     ty(ty_value, true)

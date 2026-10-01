@@ -569,18 +569,18 @@ test('exact-only-X removal preserves X/Y and X/Z, detaches labels without stamps
  const before=await stamps(['scope-A','scope-B','scope-C','scope-D']);
  const logs=await log(channel);
  loaderCalls=0;
- await rawEffects([select(channel,{tags:{only:['X']}},{kind:'remove'}),{kind:'detachTags',channel,tags:['X']}]);
+ await backend.transaction(({scope})=>{scope(channel).where({tags:{only:['X']}}).remove();scope(channel).tag('X').remove();});
  assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',[]],['scope-D',['Z']]]);
  assert.equal(await head(channel),5);
  assert.deepEqual(await stamps(['scope-A','scope-B','scope-C','scope-D']),before);
  assert.equal(loaderCalls,0);
  assert.deepEqual((await log(channel)).filter(r=>r[2]==='upsert'),logs.filter(r=>r[0]!=='scope-B'));
  const stable=await log(channel);
- await rawEffects([select(channel,{tags:{only:[]}},{kind:'tagAdd',tags:['T']})]);
+ await backend.transaction(({scope})=>scope(channel).where({tags:{only:[]}}).tag('T').add());
  assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-C',['T']],['scope-D',['Z']]]);
  assert.deepEqual(await log(channel),stable);
  assert.equal(await head(channel),5);
- await rawEffects([label('tagAdd',channel,'scope-C',['X']),select(channel,{tags:{only:['T','X']}},{kind:'remove'},'Todo')]);
+ await backend.transaction(({scope})=>{scope(channel).tag('X').add.todo('scope-C');scope(channel).where.todo({tags:{only:['T','X']}}).remove();});
  assert.deepEqual(await members(channel),[['scope-A',['Y']],['scope-D',['Z']]]);
 });
 
@@ -590,11 +590,11 @@ test('last label removal retains membership and a missing-member label add rolls
  await add(channel,'scope-kept',['X']);
  const before=await state(channel);
  const beforeStamps=await stamps(['scope-kept']);
- await assert.rejects(()=>rawEffects([label('tagRemove',channel,'scope-kept',['X']),label('tagAdd',channel,'scope-missing',['Y'])],tx=>write(tx,'scope-kept','rolled back')),/absent member/);
+ await assert.rejects(()=>backend.transaction(async({tx,scope})=>{await write(tx,'scope-kept','rolled back');scope(channel).tag('X').remove.todo('scope-kept');scope(channel).tag('Y').add.todo('scope-missing');}),/absent member/);
  assert.deepEqual(await state(channel),before);
  assert.deepEqual(await q('SELECT title FROM tag_todo WHERE id=$1',['scope-kept']),[{title:'v1'}]);
  assert.deepEqual(await stamps(['scope-kept']),beforeStamps);
- await rawEffects([label('tagRemove',channel,'scope-kept',['X'])]);
+ await backend.transaction(({scope})=>scope(channel).tag('X').remove.todo('scope-kept'));
  assert.deepEqual(await members(channel),[['scope-kept',[]]]);
  assert.deepEqual(await log(channel),before.log);
  assert.equal(await head(channel),before.head);

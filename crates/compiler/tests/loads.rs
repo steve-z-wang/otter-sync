@@ -338,7 +338,7 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
         // An add-only Channel handle: the same lower-first accessors and
         // mixed RecordRef list as a Mutation's Channel, without remove.
         "export interface LoadChannel {\n todo: { add(identity: TodoIdentity, options?: MembershipOptions): void };\n note: { add(identity: NoteIdentity, options?: MembershipOptions): void };\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n}\n",
-        "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n channel(name: string): LoadChannel;\n}\n",
+        "export interface LoadContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n loadId: string;\n scope(name: string): LoadScope;\n channel(name: string): LoadChannel;\n}\n",
         "export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };\n",
         "export interface ProjectTodosInput {\n projectId: string;\n status: Status | null;\n tags: string[];\n at: Date;\n}\n",
         "export interface ProjectTodosHandlerOutput {\n data: {\n  todos: TodoIdentity[];\n  notes: NoteIdentity[];\n };\n next: LoadNext;\n}\n",
@@ -364,7 +364,7 @@ fn the_backend_declares_typed_load_handlers_beside_loaders() {
     }
     // The Mutation Channel keeps both verbs.
     assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n note: ModelMembership<NoteIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
     // Handler types belong to the backend artifact only.
     assert!(!axton_compiler::typescript(&config).contains("LoadHandlerCall"));
 }

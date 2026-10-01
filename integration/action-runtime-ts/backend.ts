@@ -28,15 +28,40 @@ export interface Channel {
  remove(records: readonly RecordRef[]): void;
  remove(selector: TagSelector): void;
 }
-export interface Touch {
- todo(identity: TodoIdentity): void;
- moment(identity: MomentIdentity): void;
- pin(identity: PinIdentity): void;
+export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
+export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
+export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
+export interface ScopeAdd {
+ (records: RecordRef | readonly RecordRef[]): AddDeclaration;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): AddDeclaration;
+ moment(ids: MomentIdentity | MomentIdentity["at"] | readonly (MomentIdentity | MomentIdentity["at"])[]): AddDeclaration;
+ pin(ids: PinIdentity | readonly (PinIdentity)[]): AddDeclaration;
 }
+export interface ScopeRecords {
+ (records: RecordRef | readonly RecordRef[]): void;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
+ moment(ids: MomentIdentity | MomentIdentity["at"] | readonly (MomentIdentity | MomentIdentity["at"])[]): void;
+ pin(ids: PinIdentity | readonly (PinIdentity)[]): void;
+}
+export interface Touch {
+ (records: RecordRef | readonly RecordRef[]): void;
+ todo(ids: TodoIdentity | TodoIdentity["id"] | readonly (TodoIdentity | TodoIdentity["id"])[]): void;
+ moment(ids: MomentIdentity | MomentIdentity["at"] | readonly (MomentIdentity | MomentIdentity["at"])[]): void;
+ pin(ids: PinIdentity | readonly (PinIdentity)[]): void;
+}
+export interface ScopeTagRemoval extends ScopeRecords { (): void }
+export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
+ todo(predicate: ScopePredicate): ScopeSelection;
+ moment(predicate: ScopePredicate): ScopeSelection;
+ pin(predicate: ScopePredicate): ScopeSelection;
+}
+export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
+export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }
@@ -49,11 +74,13 @@ export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
+ scope(name: string): Scope;
  channel(name: string): Channel;
  touch: Touch;
 }
@@ -169,6 +196,7 @@ export interface LoadContext<Tx> {
  userId: string;
  callId: string;
  loadId: string;
+ scope(name: string): LoadScope;
  channel(name: string): LoadChannel;
 }
 /** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */

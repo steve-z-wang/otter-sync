@@ -1,3 +1,10 @@
+import type { RuntimeScope, RuntimeLoadScope } from "./scope.mts";
+export type {
+  RuntimeScope,
+  RuntimeLoadScope,
+  AddDeclaration,
+  ScopePredicate,
+} from "./scope.mts";
 import { createRequire } from "node:module";
 import { createServer, STATUS_CODES } from "node:http";
 import type { IncomingMessage, RequestListener, Server } from "node:http";
@@ -320,6 +327,7 @@ export { MutationRejected as CallRejected };
  */
 export interface TransactionCall<Tx> {
   tx: Tx;
+  scope(name: string): RuntimeScope;
   channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
@@ -328,6 +336,7 @@ export interface HandlerCall<Tx, Input> {
   input: Input;
   tx: Tx;
   userId: string;
+  scope(name: string): RuntimeScope;
   channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
@@ -356,6 +365,7 @@ export interface MutationContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
+  scope(name: string): RuntimeScope;
   channel(name: string): RuntimeChannel;
   touch: RuntimeTouch;
 }
@@ -383,6 +393,7 @@ export interface LoadContext<Tx> {
   userId: string;
   callId: string;
   loadId: string;
+  scope(name: string): RuntimeLoadScope;
   channel(name: string): RuntimeLoadChannel;
 }
 /**
@@ -1049,6 +1060,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               input,
               tx,
               userId: req.owner,
+              scope: effects.scope,
               channel: effects.channel,
               touch: effects.touch,
             });
@@ -1103,6 +1115,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                     tx,
                     userId: req.owner,
                     callId: req.callId,
+                    scope: effects.scope,
                     channel: effects.channel,
                     touch: effects.touch,
                   }
@@ -1164,6 +1177,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                   userId: req.owner,
                   callId: req.callId,
                   loadId: req.loadId,
+                  scope: effects.scope,
                   channel: effects.channel,
                 },
                 args,
@@ -1384,6 +1398,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     try {
       const call: TransactionCall<T> = {
         tx,
+        scope: effects.scope,
         channel: effects.channel,
         touch: effects.touch,
       };

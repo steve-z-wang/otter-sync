@@ -504,7 +504,7 @@ fn backend_emitter_declares_handlers_loaders_and_references() {
     assert!(!axton_compiler::typescript(&v).contains("backendConfig"));
 }
 #[test]
-fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
+fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     let v = compile("model Todo { id String @@id(id) }\nmodel Pin { todo String at DateTime @@id(todo, at) }\nmutation Edit(todo Todo.update)\nquery Look(id String) { todo Todo? }\nmutation Legacy { todo Todo.delete }").unwrap();
     let ts = axton_compiler::backend_typescript(&v, "@axtonjs/server");
     // A discriminated reference per Model, and constructors narrowed to their own variant.
@@ -521,18 +521,18 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
     );
     assert!(ts.contains("export interface ModelMembership<Identity> {\n add(identity: Identity, options?: MembershipOptions): void;\n remove(identity: Identity): void;\n}\n"), "{ts}");
     assert!(ts.contains("export interface Channel {\n todo: ModelMembership<TodoIdentity>;\n pin: ModelMembership<PinIdentity>;\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface Touch {\n todo(identity: TodoIdentity): void;\n pin(identity: PinIdentity): void;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
     // Concrete contexts: a Mutation, a legacy handler and an external
     // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
     assert!(
         ts.contains(
             "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
         ),
         "{ts}"
     );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
+    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n scope(name: string): Scope;\n channel(name: string): Channel;\n touch: Touch;\n}\n"), "{ts}");
     // `backend.transaction` hands its body the same generated handles.
     assert!(
         ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
@@ -559,7 +559,12 @@ fn backend_emitter_generates_channel_touch_and_contexts_per_schema() {
         "{empty}"
     );
     assert!(empty.contains("export interface Channel {\n add(records: readonly RecordRef[], options?: MembershipOptions): void;\n remove(records: readonly RecordRef[]): void;\n remove(selector: TagSelector): void;\n}\n"), "{empty}");
-    assert!(empty.contains("export interface Touch {\n}\n"), "{empty}");
+    assert!(
+        empty.contains(
+            "export interface Touch {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
+        ),
+        "{empty}"
+    );
 }
 
 #[test]
@@ -1020,7 +1025,6 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "ActionCall",
         "Calls",
         "Order",
-        "Scope",
         "Subscriptions",
     ] {
         assert!(
@@ -2433,5 +2437,33 @@ fn dotted_argument_names_are_refused_outside_a_sequence() {
     ] {
         let err = compile(source).unwrap_err();
         assert!(err.starts_with(needle), "{source}: {err}");
+    }
+}
+
+#[test]
+fn canonical_scope_type_names_refuse_model_and_enum_collisions() {
+    for name in [
+        "Scope",
+        "LoadScope",
+        "ScopeAdd",
+        "ScopeRecords",
+        "ScopeWhere",
+        "ScopeSelection",
+        "ScopeTagRemoval",
+        "ScopePredicate",
+        "AddDeclaration",
+    ] {
+        for source in [
+            format!("model {name} {{ id String @@id(id) }}"),
+            format!("enum {name} {{ A B }}"),
+        ] {
+            assert!(
+                compile(&source).unwrap_err().contains("generated backend"),
+                "{source}"
+            );
+        }
+    }
+    for name in ["Tag", "Name", "Length", "Prototype"] {
+        assert!(compile(&format!("model {name} {{ id String @@id(id) }}")).is_ok());
     }
 }

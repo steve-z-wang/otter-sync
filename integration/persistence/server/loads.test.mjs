@@ -116,7 +116,7 @@ test('each batch item is its own transaction: a rejected handler rolls back its 
     assert.equal(runsIn(seen.handled.filter(call => call.callId === bad.callId), badTx), 1, name);
     assert.notEqual(goodTx, badTx, `${name}: batch items share no transaction`);
     assert.equal(runsIn(seen.loaded, badTx), 0, `${name}: the rejected page read nothing`);
-    assert.deepEqual(seen.handled[0].keys, ['callId', 'channel', 'loadId', 'tx', 'userId'], `${name}: a Load context adds to Channels and has no touch`);
+    assert.deepEqual(seen.handled[0].keys, ['callId', 'channel', 'loadId', 'scope', 'tx', 'userId'], `${name}: a Load context adds to Channels and has no touch`);
     assert.equal(seen.handled.find(call => call.callId === good.callId).loadId, good.loadId);
   }
 });
@@ -351,8 +351,9 @@ test('a Load enrolls the records it declares on every shim, waking the Channel a
     const app = enrolling(database, ({ ctx, rows }) => {
       runs++;
       // Only the declared subset: the third returned row is not enrolled.
-      ctx.channel(channel).todo.add({ id: rows[0].id });
-      ctx.channel(channel).add([{ model: 'Todo', identity: { id: rows[1].id } }, { model: 'Todo', identity: { id: rows[0].id } }]);
+      ctx.scope(channel).add.todo(rows[0].id).tag('page');
+      ctx.scope(channel).add([{ model: 'Todo', identity: { id: rows[1].id } }, { model: 'Todo', identity: { id: rows[0].id } }]).tag('page');
+      ctx.scope(channel).tag('explicit').add.todo(rows[1].id);
     });
     const wakes = listen(app, [channel]);
     const item = page(project);

@@ -657,3 +657,76 @@ test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-
  assert.deepEqual(effects.memberships(),[add('c','Todo',{id:'1'},tags.slice(0,64)),add('c','Todo',{id:'1'},[tags[64]])]);
  assert.equal(effects.failure(),undefined);
 });
+
+test('canonical scope declarations preserve invocation order without content changes',()=>{
+ const effects=fresh(), scope=effects.scope('U');
+ scope.add.todo(['A','B']).tag(['X','Y']);
+ scope.tag('X').remove.todo('A');
+ scope.where({tags:{only:['X']}}).remove();
+ assert.deepEqual(effects.settlement().memberships.map(x=>x.kind),['add','add','tagAdd','tagAdd','tagRemove','select']);
+ assert.deepEqual(effects.settlement().changes,[]);
+});
+
+test('canonical scope captures lists, identities, labels and nested predicates; late tags stay late',()=>{
+ const effects=fresh(), scope=effects.scope('U');
+ const ids=[{id:'A'}],tags=['X'],predicate={and:[{tags:{only:['X']}}]};
+ const added=scope.add.todo(ids);
+ ids[0].id='B';ids.push({id:'C'});
+ scope.remove.todo('A');added.tag(tags);tags[0]='Y';
+ const selection=scope.where(predicate);predicate.and[0].tags.only[0]='Y';selection.remove();
+ assert.deepEqual(effects.settlement().memberships.map(x=>x.kind),['add','remove','tagAdd','select']);
+ assert.equal(effects.settlement().memberships[2].record.identity.id,'A');
+ assert.deepEqual(effects.settlement().memberships[2].tags,['X']);
+ assert.deepEqual(effects.settlement().memberships[3].predicate,{and:[{tags:{only:['X']}}]});
+ effects.close();
+ for(const call of [()=>added.tag('Z'),()=>selection.remove(),()=>scope.tag('Z'),()=>scope.add.todo('B'),()=>effects.touch(Todo({id:'A'}))])assert.throws(call,/closed/);
+});
+
+test('canonical invalid operands and predicates record no prefix',()=>{
+ const effects=fresh(),scope=effects.scope('U');
+ assert.throws(()=>scope.add([Todo({id:'A'}),{model:'Missing',identity:{id:'B'}}]));
+ assert.throws(()=>scope.add.todo(['A',{}]));
+ for(const predicate of [{},null,{tags:null},{tags:{only:null}},{tags:{all:[]}},{and:[]},{unknown:true},{not:null},{tags:{only:[],unknown:[]}}])assert.throws(()=>scope.where(predicate));
+ for(const label of [[],null,' ',['X',null],['x'.repeat(257)]])assert.throws(()=>scope.tag(label));
+ assert.deepEqual(effects.settlement(),empty);
+ scope.where({tags:{only:[]}}).remove();
+});
+
+test('canonical callable namespaces permit function-property Models',()=>{
+ const names=['Tag','Name','Length','Call','Prototype'];
+ const effects=createEffects(names.map(name=>({name,identity:['id'],fields:[{name:'id',type:{kind:'scalar',name:'string'}}]})));
+ const scope=effects.scope('U');
+ for(const name of names){const key=name[0].toLowerCase()+name.slice(1);scope.add[key]('A').tag('X');scope.tag('X').remove[key]('A');scope.where[key]({tags:{only:['X']}}).remove();effects.touch[key]('A')}
+ assert.equal(effects.settlement().memberships.length,20);assert.equal(effects.settlement().changes.length,5);
+});
+
+test('Load scope only exposes add and explicit label add, preserves ordering and poisons failures',()=>{
+ const effects=createLoadEffects(models),scope=effects.scope('U');
+ scope.add.todo('A').tag('X');scope.tag('Y').add.todo('A');
+ assert.deepEqual(effects.memberships().map(x=>x.kind),['add','tagAdd','tagAdd']);
+ assert.equal(scope.remove,undefined);assert.equal(scope.where,undefined);assert.equal(scope.tag('X').remove,undefined);
+ assert.throws(()=>scope.add.todo(['B',{}]));assert.equal(effects.failure().kind,'invalid');
+ effects.close();assert.throws(()=>scope.tag('Z'),/closed/);
+});
+
+test('canonical predicate bounds agree with host limits',()=>{
+ const scope=fresh().scope('U'),leaf={tags:{only:[]}};
+ let depth=leaf;for(let i=1;i<16;i++)depth={not:depth};scope.where(depth);
+ assert.throws(()=>scope.where({not:depth}));
+ scope.where({and:Array.from({length:127},()=>leaf)});
+ assert.throws(()=>scope.where({and:Array.from({length:128},()=>leaf)}));
+ scope.where({tags:{all:Array.from({length:64},(_,i)=>String(i))}});
+ assert.throws(()=>scope.where({tags:{all:Array.from({length:65},(_,i)=>String(i))}}));
+ assert.throws(()=>scope.where({tags:{all:Array(300).fill('X'.repeat(256))}}));
+});
+
+test('only argument-free tag remove detaches and Load label failures poison',()=>{
+ const effects=fresh(),tag=effects.scope('U').tag('X');
+ assert.throws(()=>tag.remove(undefined));assert.deepEqual(effects.settlement(),empty);
+ assert.throws(()=>tag.remove([{model:'Todo',identity:{id:'A'}},undefined]));assert.deepEqual(effects.settlement(),empty);
+ tag.remove();assert.deepEqual(effects.settlement().memberships,[{kind:'detachTags',channel:'U',tags:['X']}]);
+ for(const call of [scope=>scope.tag([]),scope=>scope.tag('X').add(undefined),scope=>scope.add.todo('A').tag([])]){
+  const load=createLoadEffects(models);assert.throws(()=>call(load.scope('U')));assert.equal(load.failure().kind,'invalid');
+ }
+ const load=createLoadEffects(models);assert.throws(()=>load.scope('\ud800'));assert.equal(load.failure().kind,'invalid');
+});

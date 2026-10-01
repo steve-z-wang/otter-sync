@@ -194,7 +194,7 @@ A Model whose Loader you leave out is device-only: a composer's working copy or 
 
 - **On the client** the Model works like any other for local `create`, `update`, `delete`, `get`, `query` and `watch`, and inside transactions and local companions. Those writes stay in local SQLite and are never sent.
 - **At startup** `createBackend` throws when a retained Mutation would carry the Model on the wire, or a Mutation, Query or Load would return it, because each needs its Loader: `Mutation SaveDraft v1 slot draft names Model Draft, which has no Loader; a Model without a Loader is device-only and never on the wire`.
-- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `touch.draft(…)`, `scope(name).draft.add/remove(…)` and a mixed `scope(name).add/remove([...])` naming it throw at the call: `touch.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
+- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `touch.draft(…)`, `scope(name).add.draft(…)` / `scope(name).remove.draft(…)` and a mixed `scope(name).add/remove([...])` naming it throw at the call: `touch.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
 - **`client.fetch.draft(…)`** fails with `loader.unregistered`.
 
 A backend that registers a Loader for every Model, including one that always answers `null` for a device-only Model, keeps working unchanged.

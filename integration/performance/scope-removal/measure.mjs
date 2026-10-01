@@ -81,5 +81,5 @@ try {
    response:{pages,pageEventCounts,events,wireBytes,identityBytes,pullMs,sha256:hash.digest('hex'),...(sample===1?{firstPageRaw,terminalPageRaw}:{})}});
   console.error(JSON.stringify({members:n,sample,publicMs,transactionMs:removal.transactionMs,statements:Object.values(removal.statements).reduce((a,b)=>a+b,0),walBytes,pages,wireBytes,identityBytes,loaderCalls}));
  }
- await writeFile(process.argv[2]??new URL('evidence.json',import.meta.url),JSON.stringify(metadata,null,2)+'\n');
+ await writeFile(process.argv[2]??'/tmp/scope-removal-evidence.json',JSON.stringify(metadata,null,2)+'\n');
 }finally{await pool.end();}

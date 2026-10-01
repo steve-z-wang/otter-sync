@@ -5,52 +5,16 @@ use crate::host::{
 };
 use crate::stream_members::{MemberDelta, MemberPosition, PositionKind};
 use crate::{Config, Error, Host, Result, code, internal};
-use axton_core::{AuthorityRecord, MembershipClaim, RecordKey};
+use axton_core::{MembershipClaim, RecordKey};
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) type Changes = BTreeMap<String, RecordKey>;
 pub(crate) struct Settlement {
     pub stamps: BTreeMap<String, u64>,
-    pub positions: Vec<MemberPosition>,
 }
 impl std::ops::Deref for Settlement {
     type Target = BTreeMap<String, u64>;
     fn deref(&self) -> &Self::Target {
         &self.stamps
-    }
-}
-impl Settlement {
-    pub fn claims(
-        &self,
-        config: &Config,
-        intents: &[StreamIntent],
-        records: &[AuthorityRecord],
-    ) -> Result<Vec<MembershipClaim>> {
-        let mut claims = BTreeMap::new();
-        for intent in intents {
-            if let StreamIntent::Track { stream, record } = intent {
-                let key = resolve(config, record)?;
-                for p in &self.positions {
-                    if p.kind == PositionKind::Upsert
-                        && &p.stream == stream
-                        && p.key == key
-                        && records
-                            .iter()
-                            .any(|r| r.model == key.model && r.identity == key.identity)
-                    {
-                        claims.insert(
-                            (stream.clone(), key.encoded().map_err(internal)?),
-                            MembershipClaim {
-                                stream: stream.clone(),
-                                cursor: p.cursor,
-                                model: key.model.clone(),
-                                identity: key.identity.clone(),
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        Ok(claims.into_values().collect())
     }
 }
 pub(crate) fn unregistered(model: &str) -> Error {
@@ -158,7 +122,6 @@ pub(crate) async fn settle_locked(
     if records.is_empty() {
         return Ok(Settlement {
             stamps: BTreeMap::new(),
-            positions: vec![],
         });
     }
     let globals: Vec<MemberKey> = invalidations
@@ -262,15 +225,12 @@ pub(crate) async fn settle_locked(
             key,
         })
         .collect();
-    let positions = if deltas.is_empty() {
-        vec![]
-    } else {
+    if !deltas.is_empty() {
         let request = HostRequest::ApplyStreamMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
         check_positions(&request, &positions)?;
-        positions
-    };
-    Ok(Settlement { stamps, positions })
+    }
+    Ok(Settlement { stamps })
 }
 fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Result<()> {
     let HostRequest::ApplyStreamMembers { deltas } = request else {

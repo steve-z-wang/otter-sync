@@ -10,7 +10,7 @@ fn capable(body: &str) {
     assert!(
         read_capabilities(&value)
             .unwrap()
-            .contains(STREAM_MEMBERSHIP_CAPABILITY),
+            .contains(STREAM_AUTHORITY_CAPABILITY),
         "missing capability in {body}"
     );
 }

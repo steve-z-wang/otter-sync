@@ -1088,13 +1088,7 @@ fn a_page_enrolls_loaded_records_at_their_unchanged_stamps_once_per_new_pair() {
         json!({"todos":[{"id":"t1"},{"id":"t2"}],"projects":[]}),
         "the page answers exactly what it answered before enrollment existed"
     );
-    assert_eq!(
-        first["memberships"],
-        json!([
-            {"stream":"c","cursor":1,"model":"Todo","identity":{"id":"t1"}},
-            {"stream":"c","cursor":2,"model":"Todo","identity":{"id":"t2"}}
-        ])
-    );
+    assert!(first.get("memberships").is_none());
     assert_eq!(saved(&backend, 1), Some(first.clone()));
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
     assert_eq!(backend.members("Todo", "t2"), ["c"]);
@@ -1711,10 +1705,7 @@ fn a_replayed_page_preserves_saved_removal_and_fresh_tracking_creates_a_new_posi
         enrolling(ids(&["t1"]), json!([]), vec![add("c", "Todo", "t1")]),
     );
     let first = page(&backend, &item(1, Value::Null));
-    assert_eq!(
-        first["memberships"],
-        json!([{ "stream":"c", "cursor":1, "model":"Todo", "identity":{"id":"t1"} }])
-    );
+    assert!(first.get("memberships").is_none());
     assert_eq!(backend.members("Todo", "t1"), ["c"]);
     assert_eq!(backend.invalidation("c", "Todo", "t1"), Some((1, 1)));
 
@@ -1857,10 +1848,7 @@ fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cu
         enrolling(ids(&[lower]), json!([]), vec![add("c", "Todo", &upper)]),
     );
     let first = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
-    assert_eq!(
-        first["memberships"],
-        json!([{ "stream":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
-    );
+    assert!(first.get("memberships").is_none());
     backend.saved_removal("c", "Todo", lower);
     let removed = durable(&backend);
     // A saved legacy representation uses the equivalent noncanonical UUID.
@@ -1868,40 +1856,46 @@ fn enrollment_normalizes_intent_and_saved_claim_identities_without_refreshing_cu
         let response = s.tables.calls.get_mut(&id(1)).unwrap().1.as_mut().unwrap();
         let mut value: Value = serde_json::from_str(response).unwrap();
         value["records"][0]["identity"]["id"] = json!(upper);
-        value["memberships"][0]["identity"]["id"] = json!(upper);
+        value["memberships"] =
+            json!([{ "stream":"c","cursor":10,"model":"Todo","identity":{"id":upper} }]);
         *response = value.to_string();
     });
     backend.clear_log();
     let replay = page_as(&backend, &cfg, "alice", &item(1, Value::Null));
     assert_eq!(replay["records"][0]["identity"]["id"], lower);
-    assert_eq!(replay["memberships"], first["memberships"]);
+    assert_eq!(
+        replay["memberships"],
+        json!([{ "stream":"c","cursor":10,"model":"Todo","identity":{"id":lower} }])
+    );
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(durable(&backend), removed);
 }
 
 #[test]
-fn upgraded_retry_compares_saved_logical_load_without_reenrolling_or_inventing_claims() {
+fn upgraded_load_retry_preserves_historical_claims_and_nested_continuation() {
     let backend = Backend::new();
     backend.seed("Todo", "t1", json!({"title":"first"}), None);
     backend.script("ProjectTodos", json!({"data":{"todos":[{"id":"t1"}],"projects":[]},"next":null,"tracking":[add("room","Todo","t1")]}));
-    let first = page(&backend, &item(1, Value::Null));
-    assert!(!first["memberships"].as_array().unwrap().is_empty());
+    let mut first = page(&backend, &item(1, Value::Null));
+    assert!(first.get("memberships").is_none());
+    first["memberships"] =
+        json!([{ "stream":"room","cursor":1,"model":"Todo","identity":{"id":"t1"} }]);
+    first["outcome"]["next"] =
+        json!({"state":{"memberships":[{"scope":"business"}],"stream":"business"}});
     {
         let mut state = backend.0.lock().unwrap();
         let saved = state.tables.calls.get_mut(&id(1)).unwrap();
         let mut request: Value = serde_json::from_str(&saved.0).unwrap();
         request["capabilities"] = json!(["scope-membership-v1"]);
         saved.0 = request.to_string();
-        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
-        response.as_object_mut().unwrap().remove("memberships");
-        saved.1 = Some(response.to_string());
+        saved.1 = Some(first.to_string());
         state.tables.memberships.clear();
         state.log.clear();
     }
     let before = backend.0.lock().unwrap().tables.clone();
     let replay = page(&backend, &item(1, Value::Null));
     assert_eq!(replay["outcome"], first["outcome"]);
-    assert!(replay.get("memberships").is_none());
+    assert_eq!(replay, first);
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(backend.0.lock().unwrap().tables, before);
 }

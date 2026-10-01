@@ -1142,7 +1142,7 @@ impl<S: ClientStore> Client<S> {
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         self.write(|e| e.freeze(max_bytes))?
-            .map(|bytes| with_capabilities(&bytes, &[STREAM_MEMBERSHIP_CAPABILITY]))
+            .map(|bytes| with_capabilities(&bytes, &[STREAM_AUTHORITY_CAPABILITY]))
             .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority

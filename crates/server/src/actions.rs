@@ -264,7 +264,7 @@ async fn execute_fresh(
             call_id: call.call_id.clone(),
             outcome: ActionOutcome::Succeeded { result },
         },
-        memberships: stamps.claims(config, &declarations, &records)?,
+        memberships: Vec::new(),
         records,
     })
 }
@@ -351,7 +351,6 @@ pub async fn process_action_push(
     }
     let mut rejections = vec![];
     let mut completions = vec![];
-    let mut claims = BTreeMap::new();
     let mut authority: BTreeMap<String, AuthorityRecord> = BTreeMap::new();
     for mutation in &request.mutations {
         let mut call: ActionIntent =
@@ -371,18 +370,6 @@ pub async fn process_action_push(
                 ordinal: mutation.ordinal,
                 code: code.clone(),
             });
-        }
-        for claim in settlement::current_claims(config, response.memberships)? {
-            let key = (
-                claim.stream.clone(),
-                claim.key().encoded().map_err(internal)?,
-            );
-            if claims
-                .get(&key)
-                .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
-            {
-                claims.insert(key, claim);
-            }
         }
         completions.push(response.completion);
         for record in response.records {
@@ -410,7 +397,7 @@ pub async fn process_action_push(
         rejections,
         completions,
         records: authority.into_values().collect(),
-        memberships: claims.into_values().collect(),
+        memberships: Vec::new(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host

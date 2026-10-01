@@ -12,6 +12,7 @@ fn every_external_ingress_refuses_missing_capability_before_host_effects() {
     let host = Backend::new();
     for bytes in [
         b"{}".as_slice(),
+        br#"{"capabilities":["stream-membership-v1"]}"#.as_slice(),
         b"{\"capabilities\":[\"scope-membership-v1\"]}".as_slice(),
     ] {
         let errors: Vec<Error> = vec![
@@ -79,4 +80,20 @@ fn public_live_progress_refuses_record_only_new_pages() {
             .code,
         "live.invalid_page"
     );
+}
+
+#[test]
+fn capable_helper_advertises_authority_only_transport() {
+    let request = capability::request(br#"{"models":{"Entry":1},"cursors":{"room":0}}"#);
+    let value: serde_json::Value = serde_json::from_slice(&request).unwrap();
+    assert_eq!(value["capabilities"], json!(["stream-authority-v1"]));
+    axton_core::require_capability(&request, "stream-authority-v1").unwrap();
+    let host = Backend::new();
+    run(axton_server::process_stream_pull(
+        &config(),
+        "alice",
+        &request,
+        &host,
+    ))
+    .unwrap();
 }

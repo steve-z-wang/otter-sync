@@ -282,7 +282,7 @@ impl LoadWorker {
                 match request.encode().and_then(|bytes| {
                     let capable = axton_core::with_capabilities(
                         &bytes,
-                        &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
+                        &[axton_core::STREAM_AUTHORITY_CAPABILITY],
                     )?;
                     if request.loads.len() == 1 {
                         // Frozen single pages retain the logical limit across negotiation upgrades.
@@ -344,7 +344,7 @@ impl LoadWorker {
         } else {
             String::from_utf8(axton_core::with_capabilities(
                 &request.encode()?,
-                &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
+                &[axton_core::STREAM_AUTHORITY_CAPABILITY],
             )?)
             .map_err(|_| axton_core::invalid("Load request is not UTF-8"))?
         };

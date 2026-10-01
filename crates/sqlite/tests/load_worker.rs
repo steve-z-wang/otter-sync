@@ -97,7 +97,7 @@ fn nine_ready_jobs_make_a_batch_of_eight_and_one_without_waiting_to_fill() {
     let request = LoadBatchRequest::decode_envelope(eight.body.as_bytes()).unwrap();
     assert_eq!(
         String::from_utf8(
-            with_capabilities(&request.encode().unwrap(), &[STREAM_MEMBERSHIP_CAPABILITY]).unwrap()
+            with_capabilities(&request.encode().unwrap(), &[STREAM_AUTHORITY_CAPABILITY]).unwrap()
         )
         .unwrap(),
         eight.body,
@@ -635,7 +635,7 @@ fn native_load_dispatch_advertises_scope_membership() {
     assert!(
         read_capabilities(&envelope)
             .unwrap()
-            .contains(STREAM_MEMBERSHIP_CAPABILITY)
+            .contains(STREAM_AUTHORITY_CAPABILITY)
     );
 }
 
@@ -694,7 +694,7 @@ fn a_saved_exact_limit_page_reopens_with_its_identity_and_negotiation_headroom()
     assert_eq!(loads(&sent), std::slice::from_ref(&saved.id));
     assert_eq!(sent.pages[0].fence, ready.fence);
     let negotiation_bytes =
-        serde_json::to_vec(&json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY]}))
+        serde_json::to_vec(&json!({"capabilities":[STREAM_AUTHORITY_CAPABILITY]}))
             .unwrap()
             .len()
             - 1;

@@ -50,11 +50,9 @@ pub fn validate_load_batch(bytes: &[u8]) -> Result<Vec<String>> {
         .iter()
         .map(|item| {
             let encoded = serde_json::to_vec(item).map_err(internal)?;
-            let capable = axton_core::with_capabilities(
-                &encoded,
-                &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
-            )
-            .map_err(internal)?;
+            let capable =
+                axton_core::with_capabilities(&encoded, &[axton_core::STREAM_AUTHORITY_CAPABILITY])
+                    .map_err(internal)?;
             String::from_utf8(capable).map_err(internal)
         })
         .collect()
@@ -281,7 +279,7 @@ async fn execute_fresh(
     for (model, keys) in groups {
         records.extend(resolve(config, owner, intent, &model, keys, host).await?);
     }
-    let mut page = LoadPageResponse {
+    let page = LoadPageResponse {
         load_id: intent.load_id.clone(),
         call_id: intent.call_id.clone(),
         outcome: LoadOutcome::Succeeded { data, next },
@@ -316,11 +314,7 @@ async fn execute_fresh(
     // one publishes nothing. No loaded record is touched. Its Streams are
     // already locked, before the page's reads. A host fault here escapes the
     // page transaction like any other.
-    let settled = settle_locked(config, &Changes::new(), &tracking, &streams, host).await?;
-    page.memberships = settled.claims(config, &tracking, &page.records)?;
-    page.clone()
-        .normalize(&config.schema, intent)
-        .map_err(|e| Error::new(code::LOAD_PAGE_TOO_LARGE, e.message))?;
+    settle_locked(config, &Changes::new(), &tracking, &streams, host).await?;
     Ok(page)
 }
 

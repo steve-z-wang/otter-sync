@@ -271,7 +271,7 @@ impl BootstrapTask {
     ) -> Result<Vec<u8>> {
         axton_core::with_capabilities(
             &self.request(models).encode()?,
-            &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
+            &[axton_core::STREAM_AUTHORITY_CAPABILITY],
         )
     }
     /// The page this run asks for next: `(B, S]` with the client's declared

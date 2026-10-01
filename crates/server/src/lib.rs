@@ -369,7 +369,7 @@ fn storage_invalid(e: impl std::fmt::Display) -> Error {
 }
 /// Framework protocol admission precedes every external host operation.
 pub(crate) fn admit_protocol(bytes: &[u8]) -> Result<()> {
-    axton_core::require_capability(bytes, axton_core::STREAM_MEMBERSHIP_CAPABILITY)
+    axton_core::require_capability(bytes, axton_core::STREAM_AUTHORITY_CAPABILITY)
         .map_err(|error| Error::new(error.code(), error.to_string()))
 }
 
@@ -605,9 +605,7 @@ pub async fn process_push(
     let mut rejections = vec![];
     // The last successful authority per record, in canonical key order.
     let mut results: BTreeMap<String, axton_core::AuthorityRecord> = BTreeMap::new();
-    let mut claims = BTreeMap::new();
     for m in &request.mutations {
-        let mut enrolled = vec![];
         // A mutation naming a version this backend does not serve rejects
         // only itself; its handler never runs.
         if let (Some(name), Some(v)) = (m.raw["name"].as_str(), version(&m.raw))
@@ -687,9 +685,6 @@ pub async fn process_push(
                     host,
                 )
                 .await?;
-                if let Outcome::Records(records) = &outcome {
-                    enrolled = stamps.claims(config, &declarations, records)?;
-                }
                 outcome
             }
         };
@@ -704,18 +699,6 @@ pub async fn process_push(
                 });
             }
             Outcome::Records(records) => {
-                for claim in enrolled {
-                    let key = (
-                        claim.stream.clone(),
-                        claim.key().encoded().map_err(internal)?,
-                    );
-                    if claims
-                        .get(&key)
-                        .is_none_or(|old: &axton_core::MembershipClaim| old.cursor < claim.cursor)
-                    {
-                        claims.insert(key, claim);
-                    }
-                }
                 for record in records {
                     let key = config
                         .schema
@@ -735,7 +718,7 @@ pub async fn process_push(
         rejections,
         completions: vec![],
         records: results.into_values().collect(),
-        memberships: claims.into_values().collect(),
+        memberships: Vec::new(),
     };
     let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
     let Acknowledged = host

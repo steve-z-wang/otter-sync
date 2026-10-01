@@ -982,11 +982,10 @@ impl LiveMessage {
     }
 }
 
-/// The capability a request advertises when its client applies stream
-/// membership changes: [`StreamChange`] pages, removals and enrollment
-/// [`MembershipClaim`]s. A package version never implies it; only the
-/// request's `capabilities` member does.
-pub const STREAM_MEMBERSHIP_CAPABILITY: &str = "stream-membership-v1";
+/// The capability a request advertises when its client applies stamped
+/// authority without Stream ownership. A package version never implies it;
+/// only the request's `capabilities` member does.
+pub const STREAM_AUTHORITY_CAPABILITY: &str = "stream-authority-v1";
 /// The stable refusal code of a request that does not advertise a capability
 /// the server requires. It is refused before any handler runs or cursor
 /// moves: HTTP 426, and a live subscribe before its acknowledgement.
@@ -1034,7 +1033,7 @@ pub fn logical_request(envelope: &Value) -> Result<Value> {
     Ok(logical)
 }
 /// Check a request's existing payload bound, allowing only the fixed wire
-/// overhead of advertising stream membership on an already frozen request.
+/// overhead of advertising stream authority on an already frozen request.
 /// Requests within the original raw bound retain their legacy size behavior.
 /// Above it, both the raw wire and canonical logical payload are bounded;
 /// arbitrary capability names never increase the allowance.
@@ -1042,12 +1041,12 @@ pub fn check_request_size(bytes: &[u8], limit: usize) -> Result<()> {
     if bytes.len() <= limit {
         return Ok(());
     }
-    const HEADROOM: usize = br#","capabilities":["stream-membership-v1"]"#.len();
+    const HEADROOM: usize = br#","capabilities":["stream-authority-v1"]"#.len();
     if bytes.len().saturating_sub(limit) > HEADROOM {
         return Err(invalid("request exceeds byte limit"));
     }
     let envelope: Value = serde_json::from_slice(bytes)?;
-    if !read_capabilities(&envelope)?.contains(STREAM_MEMBERSHIP_CAPABILITY)
+    if !read_capabilities(&envelope)?.contains(STREAM_AUTHORITY_CAPABILITY)
         || canonical_json(&logical_request(&envelope)?)?.len() > limit
     {
         return Err(invalid("request exceeds byte limit"));

@@ -87,11 +87,8 @@ impl SyncCycle {
         if let Some(bytes) = client.freeze()? {
             let action = TransportAction {
                 kind: "push".into(),
-                body: String::from_utf8(with_capabilities(
-                    &bytes,
-                    &[STREAM_MEMBERSHIP_CAPABILITY],
-                )?)
-                .map_err(|_| invalid("utf8"))?,
+                body: String::from_utf8(with_capabilities(&bytes, &[STREAM_AUTHORITY_CAPABILITY])?)
+                    .map_err(|_| invalid("utf8"))?,
             };
             self.active = Some(action.clone());
             return Ok(Some(action));
@@ -222,7 +219,7 @@ impl<S: ClientStore> Client<S> {
         Ok(Some(
             String::from_utf8(with_capabilities(
                 &request.encode()?,
-                &[STREAM_MEMBERSHIP_CAPABILITY],
+                &[STREAM_AUTHORITY_CAPABILITY],
             )?)
             .map_err(|_| invalid("utf8"))?,
         ))

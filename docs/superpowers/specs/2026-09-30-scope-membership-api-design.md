@@ -1,6 +1,6 @@
 # Scope membership API design
 
-Status: proposed implementation contract, approved in conversation and awaiting review of this written spec. None of the new APIs below is implemented by this document.
+Status: implementation contract approved in conversation. This document alone does not implement the new APIs below.
 
 Baseline: AXTON v0.2.0, commit `aba57d1441b8593724312b4d0a9ebdf7d4124d70`.
 
@@ -26,7 +26,8 @@ Names follow their roles rather than one grammatical form: `scope` names a colle
 - Preserve the viewer Loader as the permission authority. A Scope name or tag is not authorization.
 - Preserve named Mutations, transaction boundaries, saved-response replay and Load page atomicity.
 - Support generated Models without introducing new reserved names such as `Tag`, `Name` or `Length`.
-- Introduce the public spelling additively. Do not rename persisted tables, protocol fields or capability identifiers solely to rename Channel to Scope.
+- Rename the complete framework vocabulary to Scope: APIs, generated types, implementation concepts, protocol fields, database tables/columns and living documentation. Retain no Channel public aliases or old wire-field acceptance.
+- This is a coordinated breaking cutover. Use `scope-membership-v1` admission, reject old clients before handler/progress effects, and migrate existing PostgreSQL/SQLite framework state forward without wiping data, subscriptions, cursors, pending work or saved outcomes. Old names occur only as explicit legacy migration inputs and dated history. Application-owned Model names/fields/arguments are never renamed by a framework migration.
 - This spec does not authorize a release, merge, Most Days migration or removal of application hooks.
 
 ## 3. Context and interfaces
@@ -51,7 +52,7 @@ scope.remove([Todo({ id: 'A' }), Project({ id: 'P' })]);
 
 For a Model with one identity field, its generated method accepts that field's scalar value or the complete identity object. Composite identities require complete objects. Every record operation accepts one operand or a readonly array. Mixed operations require generated Model references, never an untyped `{ id }`.
 
-`ctx.scope(name)` creates a transaction-bound handle, not a persisted Scope, subscription or network request. Names retain current Channel name validation. Record and label declarations are synchronous; database effects settle with the enclosing operation.
+`ctx.scope(name)` creates a transaction-bound handle, not a persisted Scope, subscription or network request. Names retain the existing nonblank name validation. Record and label declarations are synchronous; database effects settle with the enclosing operation.
 
 `add` ensures membership and preserves existing labels. Repeated addition is idempotent. `remove` withdraws the whole membership and clears its labels; an absent membership is a no-op. Neither operation changes the business record. Root `scope.add()` and `scope.remove()` without operands are invalid; empty record arrays do nothing.
 
@@ -119,7 +120,7 @@ scope.where({ tags: { all: ['X'] } }).tag('X').remove();
 | `or: [predicate, ...]` | At least one child matches. |
 | `not: predicate` | The child does not match. |
 
-Sibling conditions combine with AND. Label order and duplicate labels do not affect matching. Reject empty predicates, empty `tags` objects, empty `and`/`or` groups and empty `all`/`any`/`none` lists. `only: []` remains the explicit valid selection of untagged members. Copy predicates at invocation. Reject malformed or excessively large inputs using a bounded, shared validator before recording effects; implementation must not allow unbounded predicate recursion or input bytes.
+Sibling conditions combine with AND. Label order and duplicate labels do not affect matching. Reject empty predicates, empty `tags` objects, empty `and`/`or` groups and empty `all`/`any`/`none` lists. `only: []` remains the explicit valid selection of untagged members. Copy predicates at invocation. Bound each predicate to depth 16 (root depth 1), 128 predicate nodes, 64 distinct labels per leaf operator and 65,536 UTF-8 bytes of JSON encoding; enforce these bounds consistently in the TypeScript collector and Rust host validation before recording or applying effects. Unknown keys, null conditions and malformed inputs are invalid.
 
 Selectors inspect membership and labels only. They do not query arbitrary Model fields, run application code, execute raw SQL or join business tables. There is no `where(...).add()` because its candidates are already held; `.tag(...).add()` edits their labels.
 
@@ -143,7 +144,7 @@ await followed.bootstrap(); // Only when this application wants retained history
 await followed.unsubscribe();
 ```
 
-`client.scopes` remains the canonical spelling already recommended in v0.2.0. Add `tx.scopes.subscribe/unsubscribe` as the corresponding spelling for local subscription intent, with the same transaction behavior as `tx.channels`. Client subscription operations neither edit server membership nor attach labels. `Subscription` handles and their existing status, bootstrap and lifecycle semantics remain unchanged.
+`client.scopes` remains the canonical spelling already recommended in v0.2.0. Add `tx.scopes.subscribe/unsubscribe` as the corresponding spelling for local subscription intent, with the existing local subscription-intent transaction behavior. Client subscription operations neither edit server membership nor attach labels. `Subscription` handles and their existing status, bootstrap and lifecycle semantics remain unchanged.
 
 Keep the rest of the framework's responsibility boundaries:
 
@@ -161,11 +162,11 @@ Subscribe initialization still establishes the future-update starting point, rat
 
 ## 4. Solution strategy
 
-Use the existing server record catalog, Scope membership, label dictionary/associations and retained per-record delivery evidence. Public Scope names map to existing Channel identifiers. Label-only editing changes associations; selection expands matched members on the backend. Withdrawals continue to produce per-record removal evidence, not a tag deletion command sent to clients.
+Use the existing server record catalog, Scope membership, label dictionary/associations and retained per-record delivery evidence. The opaque Scope name values retain their identity; framework identifiers and serialized fields use Scope. Label-only editing changes associations; selection expands matched members on the backend. Withdrawals continue to produce per-record removal evidence, not a tag deletion command sent to clients.
 
 The new server effects need generated TypeScript declarations, validation, host operations, reducer support and PostgreSQL adapter support. Bulk selection and label updates should use set-based database operations; do not invoke a Loader for withdrawals or issue one statement per association when a batch operation suffices. Matching and mutation must use the same application transaction and ordered effective membership state. Failures roll back the whole enclosing unit rather than committing an arbitrary prefix.
 
-The client wire target stays the v0.2.0 membership contract, including its existing `channel-membership-v1` capability. No new client tag table, expression evaluator, SQL execution surface, reference-counted labels, retention policy or extra cursor per label is introduced. Wire compatibility is a requirement to prove during implementation, not a tested claim of this design document.
+The client wire keeps the v0.2.0 membership semantics with Scope field/type names and the new `scope-membership-v1` capability. No new client tag table, expression evaluator, SQL execution surface, reference-counted labels, retention policy or extra cursor per label is introduced. A coordinated upgrade is required; old runtime wire shapes are unsupported. Forward migration and pending-work continuity are requirements to prove during implementation, not tested claims of this document.
 
 ## 6. Runtime view
 
@@ -200,17 +201,17 @@ Removing a record from one Scope releases only that holding. Another current Sco
 
 Load handlers have no remove, where, bulk label detach or touch surface. A replay of a saved Load page performs no new enrollment or label editing and cannot reverse a later withdrawal. A fresh traversal may enroll again. Preserve all current enrollment/page size limits and atomic output admission; new APIs do not broaden which identities a Load can enroll.
 
-## 9. Decisions and compatibility
+## 9. Decisions and coordinated cutover
 
 Prefer Scope for the public collection vocabulary, verb-first generated Model operations for clarity, and explicit label editing independent of membership. Chained `.tag(...)` makes enrollment with labels one expression without overloading standalone label-add with enrollment.
 
-Preserve the v0.2.0 spellings through compatibility facades:
+The canonical API exposes only the operations in this spec. Remove the old `ctx.channel`, Model-first membership surface, tag-selector removal overload, client/transaction `channels` facades and Channel generated types. Generated function namespaces must handle Models whose names overlap JavaScript function properties; do not introduce reserved Model names.
 
-- `ctx.channel(name)`, `channel.todo.add/remove`, mixed-array add/remove, and add options retain their current meanings. Legacy add options still enroll and union labels.
-- Legacy `channel.remove({ tag: 'X' })` continues to withdraw every whole member containing X, including members with additional labels. It is equivalent to a new `scope.where({ tags: { all: ['X'] } }).remove()`, never to label detachment.
-- `client.channels` and `tx.channels` remain subscription aliases. Existing status fields and saved/wire shapes are not silently renamed.
+Rename the PostgreSQL framework tables to `axton_scope`, `axton_scope_member`, `axton_scope_tag`, `axton_scope_member_tag` and `axton_scope_log`, their ownership columns to `scope`, and associated framework indexes, sequences, constraints, triggers and functions. Rename the SQLite membership table to `axton_scope_member`, ownership columns to `scope`, and the membership layout marker to `scope_membership_version`. Scope values, record/catalog IDs, tags, stamps, cursors, heads and association relationships remain unchanged.
 
-The new canonical `ctx.scope` facade exposes the operations in this spec. Compatibility does not require that legacy and canonical handles have identical object shapes, only that they address the same persisted membership and preserve old behavior. Generated function namespaces must handle Models whose names overlap JavaScript function properties; do not solve collisions by reserving new Model names.
+Upgrade existing storage through explicit forward migrations. Rename schema objects transactionally before applying current DDL. Rewrite only framework-owned membership claims in saved receipts/results/pages, preserving application data, args, identities, continuations, correlation IDs and opaque values. Frozen logical requests and queued business writes stay intact; transport capability metadata uses the new admission marker. A failed migration commits neither a partial layout nor progress. Reopening or reapplying a completed migration is idempotent. Do not accept both old and new layouts as ambiguous parallel sources of truth.
+
+Deployment requires stopping old writers, applying the server migration, rolling out coordinated server/tooling/JS/Dart clients and enforcing the Scope capability floor. New clients migrate their local databases before scheduling network work. Old clients receive `426 protocol.unsupported` before application handlers, receipts or cursors change. Package publication/version selection is separate; mark this implementation as breaking and do not publish it as an invisible 0.2.0 patch.
 
 Most Days adoption is separate. Its existing records may have no labels, and its publication and Load enrollment paths must apply one consistent backend policy before label-based cleanup replaces a hook. Backfill or explicit legacy handling is required. A fresh one-shot read without enrollment does not acquire a Scope holding; this design does not guarantee future cleanup of every such cache entry. Authoritative business-deletion hooks remain useful.
 
@@ -225,6 +226,6 @@ Implementation acceptance must cover:
 - Real PostgreSQL selection/label effects, rollback and concurrent membership/touch/label operations using the supported transaction contract.
 - Ordered final-event reduction, two-Scope holds, last-hold withdrawal, stale read fencing, pending/device-local preservation, reopen and duplicate/reordered delivery through the existing client machinery.
 - Load returned-identity restrictions, failed-page rollback and saved replay performing no effects.
-- v0.2.0 compatibility facades, unchanged capability/wire behavior, synchronized TypeScript/Dart subscription spelling, affected guide/snippet checks and appropriate e2e coverage.
+- New capability admission and old-wire rejection; PostgreSQL/SQLite forward upgrades with queued/frozen work, saved outcomes, subscription and holding state preserved; application fields named `channel` unchanged; synchronized TypeScript/Dart Scope surfaces, affected snippets and e2e coverage.
 
 This document records design and source inspection only. No implementation code, runtime tests, release work or Most Days changes have been performed for this proposal.

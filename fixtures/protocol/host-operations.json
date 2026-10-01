@@ -3,159 +3,643 @@
   "operations": [
     {
       "op": "claim",
-      "request": {"op": "claim", "owner": "alice", "clientId": "client-1"},
+      "request": {
+        "op": "claim",
+        "owner": "alice",
+        "clientId": "client-1"
+      },
       "responses": [
-        {"variant": "claimed", "value": {"clientId": "client-1", "owner": "alice", "sequence": 2, "receipt": "{\"batchSequence\":2,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":4,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"}},
-        {"variant": "unused", "value": {"clientId": "client-1", "owner": "alice", "sequence": 0, "receipt": null}}
+        {
+          "variant": "claimed",
+          "value": {
+            "clientId": "client-1",
+            "owner": "alice",
+            "sequence": 2,
+            "receipt": "{\"batchSequence\":2,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":4,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"
+          }
+        },
+        {
+          "variant": "unused",
+          "value": {
+            "clientId": "client-1",
+            "owner": "alice",
+            "sequence": 0,
+            "receipt": null
+          }
+        }
       ]
     },
     {
       "op": "saveReceipt",
-      "request": {"op": "saveReceipt", "owner": "alice", "clientId": "client-1", "sequence": 3, "receipt": "{\"batchSequence\":3,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":5,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"},
-      "responses": [{"variant": "acknowledged", "value": null}]
+      "request": {
+        "op": "saveReceipt",
+        "owner": "alice",
+        "clientId": "client-1",
+        "sequence": 3,
+        "receipt": "{\"batchSequence\":3,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":5,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
     },
     {
       "op": "claimCall",
-      "request": {"op": "claimCall", "owner": "alice", "callId": "call-1", "request": "{\"name\":\"edit\",\"version\":1}"},
+      "request": {
+        "op": "claimCall",
+        "owner": "alice",
+        "callId": "call-1",
+        "request": "{\"name\":\"edit\",\"version\":1}"
+      },
       "responses": [
-        {"variant": "fresh", "value": {"fresh": true, "request": "{\"name\":\"edit\",\"version\":1}", "response": null}},
-        {"variant": "replayed", "value": {"fresh": false, "request": "{\"name\":\"edit\",\"version\":1}", "response": "{\"status\":\"succeeded\"}"}}
+        {
+          "variant": "fresh",
+          "value": {
+            "fresh": true,
+            "request": "{\"name\":\"edit\",\"version\":1}",
+            "response": null
+          }
+        },
+        {
+          "variant": "replayed",
+          "value": {
+            "fresh": false,
+            "request": "{\"name\":\"edit\",\"version\":1}",
+            "response": "{\"status\":\"succeeded\"}"
+          }
+        }
       ]
     },
     {
       "op": "saveCall",
-      "request": {"op": "saveCall", "owner": "alice", "callId": "call-1", "response": "{\"status\":\"succeeded\"}"},
-      "responses": [{"variant": "acknowledged", "value": null}]
+      "request": {
+        "op": "saveCall",
+        "owner": "alice",
+        "callId": "call-1",
+        "response": "{\"status\":\"succeeded\"}"
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
     },
     {
       "op": "head",
-      "request": {"op": "head", "scope": "shared"},
+      "request": {
+        "op": "head",
+        "stream": "shared"
+      },
       "responses": [
-        {"variant": "cursor", "value": 6},
-        {"variant": "empty", "value": 0}
+        {
+          "variant": "cursor",
+          "value": 6
+        },
+        {
+          "variant": "empty",
+          "value": 0
+        }
       ]
     },
     {
       "op": "scan",
-      "request": {"op": "scan", "scope": "shared", "after": 4, "limit": 50},
+      "request": {
+        "op": "scan",
+        "after": 4,
+        "limit": 50,
+        "stream": "shared"
+      },
       "responses": [
-        {"variant": "rows", "value": [{"kind": "upsert", "scope": "shared", "cursor": 5, "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "stamp": 4}]},
-        {"variant": "none", "value": []}
+        {
+          "variant": "rows",
+          "value": [
+            {
+              "kind": "upsert",
+              "cursor": 5,
+              "model": "Task",
+              "identity": {
+                "id": "t-1"
+              },
+              "identityKey": "{\"id\":\"t-1\"}",
+              "stamp": 4,
+              "stream": "shared"
+            }
+          ]
+        },
+        {
+          "variant": "none",
+          "value": []
+        }
       ]
     },
     {
       "op": "savepoint",
-      "request": {"op": "savepoint", "ordinal": 1},
-      "responses": [{"variant": "acknowledged", "value": null}]
+      "request": {
+        "op": "savepoint",
+        "ordinal": 1
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
     },
     {
       "op": "rollback",
-      "request": {"op": "rollback", "ordinal": 1},
-      "responses": [{"variant": "acknowledged", "value": null}]
+      "request": {
+        "op": "rollback",
+        "ordinal": 1
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
     },
     {
       "op": "release",
-      "request": {"op": "release", "ordinal": 1},
-      "responses": [{"variant": "acknowledged", "value": null}]
+      "request": {
+        "op": "release",
+        "ordinal": 1
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
     },
     {
       "op": "handle",
-      "request": {"op": "handle", "name": "edit", "version": 1, "arguments": {"task": {"identity": {"id": "t-1"}, "patch": {"title": "typed"}}}, "owner": "alice", "ordinal": 1},
+      "request": {
+        "op": "handle",
+        "name": "edit",
+        "version": 1,
+        "arguments": {
+          "task": {
+            "identity": {
+              "id": "t-1"
+            },
+            "patch": {
+              "title": "typed"
+            }
+          }
+        },
+        "owner": "alice",
+        "ordinal": 1
+      },
       "responses": [
-        {"variant": "settled", "value": {"changes": [{"model": "Task", "identity": {"id": "t-1"}}, {"model": "Task", "identity": {"id": "t-2"}}], "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []}, {"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-2"}}, "tags": []}, {"kind": "add", "scope": "other", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []}]}},
-        {"variant": "withdrawn", "value": {"changes": [], "memberships": [{"kind": "remove", "scope": "other", "record": {"model": "Task", "identity": {"id": "t-1"}}}]}},
-        {"variant": "tagged", "value": {"changes": [], "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": ["Journal:1", "x"]}, {"kind": "select", "scope": "shared", "predicate": {"tags": {"any": ["Journal:1"]}}, "action": {"kind": "remove"}}]}},
-        {"variant": "quiet", "value": {"changes": [], "memberships": []}},
-        {"variant": "rejected", "value": {"rejection": "task.refused"}},
-        {"variant": "failed", "value": {"error": "TypeError: cannot read title of undefined"}}
+        {
+          "variant": "settled",
+          "value": {
+            "changes": [
+              {
+                "model": "Task",
+                "identity": {
+                  "id": "t-1"
+                }
+              },
+              {
+                "model": "Task",
+                "identity": {
+                  "id": "t-2"
+                }
+              }
+            ],
+            "declarations": [
+              {
+                "kind": "track",
+                "stream": "shared",
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-1"
+                  }
+                }
+              },
+              {
+                "kind": "track",
+                "stream": "shared",
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-2"
+                  }
+                }
+              },
+              {
+                "kind": "track",
+                "stream": "other",
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-1"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "variant": "quiet",
+          "value": {
+            "changes": [],
+            "declarations": []
+          }
+        },
+        {
+          "variant": "rejected",
+          "value": {
+            "rejection": "task.refused"
+          }
+        },
+        {
+          "variant": "failed",
+          "value": {
+            "error": "TypeError: cannot read title of undefined"
+          }
+        }
       ]
     },
     {
       "op": "handleAction",
-      "request": {"op": "handleAction", "name": "Send", "version": 1, "arguments": {}, "owner": "alice", "callId": "01890f47-1234-7123-8123-123456789abc", "ordinal": 1},
+      "request": {
+        "op": "handleAction",
+        "name": "Send",
+        "version": 1,
+        "arguments": {},
+        "owner": "alice",
+        "callId": "01890f47-1234-7123-8123-123456789abc",
+        "ordinal": 1
+      },
       "responses": [
-        {"variant": "settled", "value": {"outputs": {"message": "sent"}, "changes": [], "memberships": []}},
-        {"variant": "rejected", "value": {"rejection": "send.refused"}},
-        {"variant": "failed", "value": {"error": "handler failure"}}
+        {
+          "variant": "settled",
+          "value": {
+            "outputs": {
+              "message": "sent"
+            },
+            "changes": [],
+            "declarations": []
+          }
+        },
+        {
+          "variant": "rejected",
+          "value": {
+            "rejection": "send.refused"
+          }
+        },
+        {
+          "variant": "failed",
+          "value": {
+            "error": "handler failure"
+          }
+        }
       ]
     },
     {
       "op": "handleLoad",
-      "request": {"op": "handleLoad", "name": "Tasks", "version": 1, "arguments": {}, "continuation": {"state": {"after": "t-1"}}, "owner": "alice", "callId": "01890f47-1234-7123-8123-123456789abd", "loadId": "01890f47-1234-7123-8123-123456789abe"},
+      "request": {
+        "op": "handleLoad",
+        "name": "Tasks",
+        "version": 1,
+        "arguments": {},
+        "continuation": {
+          "state": {
+            "after": "t-1"
+          }
+        },
+        "owner": "alice",
+        "callId": "01890f47-1234-7123-8123-123456789abd",
+        "loadId": "01890f47-1234-7123-8123-123456789abe"
+      },
       "responses": [
-        {"variant": "settled", "value": {"data": {"tasks": [{"id": "t-1"}, {"id": "t-2"}]}, "next": {"state": {"after": "t-2"}}}},
-        {"variant": "completed", "value": {"data": {"tasks": []}, "next": null}},
-        {"variant": "enrolled", "value": {"data": {"tasks": [{"id": "t-1"}, {"id": "t-2"}]}, "next": null, "memberships": [{"kind": "add", "scope": "shared", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []}, {"kind": "add", "scope": "other", "record": {"model": "Task", "identity": {"id": "t-1"}}, "tags": []}]}},
-        {"variant": "rejected", "value": {"rejection": "tasks.refused"}},
-        {"variant": "failed", "value": {"error": "handler failure"}}
+        {
+          "variant": "settled",
+          "value": {
+            "data": {
+              "tasks": [
+                {
+                  "id": "t-1"
+                },
+                {
+                  "id": "t-2"
+                }
+              ]
+            },
+            "next": {
+              "state": {
+                "after": "t-2"
+              }
+            }
+          }
+        },
+        {
+          "variant": "completed",
+          "value": {
+            "data": {
+              "tasks": []
+            },
+            "next": null
+          }
+        },
+        {
+          "variant": "enrolled",
+          "value": {
+            "data": {
+              "tasks": [
+                {
+                  "id": "t-1"
+                },
+                {
+                  "id": "t-2"
+                }
+              ]
+            },
+            "next": null,
+            "tracking": [
+              {
+                "kind": "track",
+                "stream": "shared",
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-1"
+                  }
+                }
+              },
+              {
+                "kind": "track",
+                "stream": "other",
+                "record": {
+                  "model": "Task",
+                  "identity": {
+                    "id": "t-1"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "variant": "rejected",
+          "value": {
+            "rejection": "tasks.refused"
+          }
+        },
+        {
+          "variant": "failed",
+          "value": {
+            "error": "handler failure"
+          }
+        }
       ]
     },
     {
       "op": "load",
-      "request": {"op": "load", "model": "Task", "version": 1, "identities": [{"id": "t-1"}, {"id": "t-2"}], "owner": "alice"},
+      "request": {
+        "op": "load",
+        "model": "Task",
+        "version": 1,
+        "identities": [
+          {
+            "id": "t-1"
+          },
+          {
+            "id": "t-2"
+          }
+        ],
+        "owner": "alice"
+      },
       "responses": [
-        {"variant": "rows", "value": [{"id": "t-1", "title": "typed"}, null]},
-        {"variant": "refused", "value": {"rejection": "task.forbidden"}},
-        {"variant": "failed", "value": {"error": "connection reset while reading tasks"}}
+        {
+          "variant": "rows",
+          "value": [
+            {
+              "id": "t-1",
+              "title": "typed"
+            },
+            null
+          ]
+        },
+        {
+          "variant": "refused",
+          "value": {
+            "rejection": "task.forbidden"
+          }
+        },
+        {
+          "variant": "failed",
+          "value": {
+            "error": "connection reset while reading tasks"
+          }
+        }
       ]
     },
     {
       "op": "advanceStamp",
-      "request": {"op": "advanceStamp", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
-      "responses": [{"variant": "stamped", "value": 4}]
+      "request": {
+        "op": "advanceStamp",
+        "model": "Task",
+        "identityKey": "{\"id\":\"t-1\"}"
+      },
+      "responses": [
+        {
+          "variant": "stamped",
+          "value": 4
+        }
+      ]
     },
     {
       "op": "ensureStamp",
-      "request": {"op": "ensureStamp", "model": "Task", "identityKey": "{\"id\":\"t-2\"}"},
-      "responses": [{"variant": "stamped", "value": 1}]
+      "request": {
+        "op": "ensureStamp",
+        "model": "Task",
+        "identityKey": "{\"id\":\"t-2\"}"
+      },
+      "responses": [
+        {
+          "variant": "stamped",
+          "value": 1
+        }
+      ]
     },
     {
       "op": "readStamps",
-      "request": {"op": "readStamps", "model": "Task", "identityKeys": ["{\"id\":\"t-1\"}", "{\"id\":\"t-2\"}"]},
-      "responses": [{"variant": "stamped", "value": [4, 1]}]
+      "request": {
+        "op": "readStamps",
+        "model": "Task",
+        "identityKeys": [
+          "{\"id\":\"t-1\"}",
+          "{\"id\":\"t-2\"}"
+        ]
+      },
+      "responses": [
+        {
+          "variant": "stamped",
+          "value": [
+            4,
+            1
+          ]
+        }
+      ]
     },
     {
       "op": "lockRecord",
-      "request": {"op": "lockRecord", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
+      "request": {
+        "op": "lockRecord",
+        "model": "Task",
+        "identityKey": "{\"id\":\"t-1\"}"
+      },
       "responses": [
-        {"variant": "locked", "value": 4},
-        {"variant": "absent", "value": null}
+        {
+          "variant": "locked",
+          "value": 4
+        },
+        {
+          "variant": "absent",
+          "value": null
+        }
       ]
     },
     {
-      "op": "memberships",
-      "request": {"op": "memberships", "model": "Task", "identityKey": "{\"id\":\"t-1\"}"},
+      "op": "readTracking",
+      "request": {
+        "op": "readTracking",
+        "records": [
+          {
+            "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}"
+          }
+        ],
+        "pairs": []
+      },
       "responses": [
-        {"variant": "members", "value": ["other", "shared"]},
-        {"variant": "none", "value": []}
+        {
+          "variant": "holders",
+          "value": [
+            {
+              "model": "Task",
+              "identityKey": "{\"id\":\"t-1\"}",
+              "stream": "shared"
+            }
+          ]
+        },
+        {
+          "variant": "none",
+          "value": []
+        }
       ]
     },
     {
-      "op": "lockScopes",
-      "request": {"op": "lockScopes", "scopes": ["other", "shared"]},
-      "responses": [{"variant": "acknowledged", "value": null}]
-    },
-    {
-      "op": "readScopeMembers",
-      "request": {"op": "readScopeMembers", "scope": "shared", "explicitKeys": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}"}], "tags": ["Journal:1"]},
+      "op": "lockStreams",
+      "request": {
+        "op": "lockStreams",
+        "streams": [
+          "other",
+          "shared"
+        ]
+      },
       "responses": [
-        {"variant": "members", "value": [{"model": "Task", "identityKey": "{\"id\":\"t-1\"}", "tags": []}, {"model": "Task", "identityKey": "{\"id\":\"t-2\"}", "tags": ["Journal:1", "x"]}]},
-        {"variant": "none", "value": []}
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
       ]
     },
     {
-      "op": "applyScopeMembers",
-      "request": {"op": "applyScopeMembers", "deltas": [
-        {"scope": "shared", "model": "Task", "identity": {"id": "t-1"}, "identityKey": "{\"id\":\"t-1\"}", "present": true, "tags": ["x"], "publish": false},
-        {"scope": "shared", "model": "Task", "identity": {"id": "t-2"}, "identityKey": "{\"id\":\"t-2\"}", "present": false, "tags": [], "publish": true},
-        {"scope": "shared", "model": "Task", "identity": {"id": "t-3"}, "identityKey": "{\"id\":\"t-3\"}", "present": true, "tags": [], "publish": true}
-      ]},
+      "op": "guardRecords",
+      "request": {
+        "op": "guardRecords",
+        "records": [
+          {
+            "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}",
+            "mode": "advance"
+          },
+          {
+            "model": "Task",
+            "identityKey": "{\"id\":\"t-2\"}",
+            "mode": "lock"
+          }
+        ]
+      },
       "responses": [
-        {"variant": "positions", "value": [
-          {"scope": "shared", "model": "Task", "identityKey": "{\"id\":\"t-1\"}", "cursor": 5, "kind": "upsert"},
-          {"scope": "shared", "model": "Task", "identityKey": "{\"id\":\"t-2\"}", "cursor": 7, "kind": "remove"},
-          {"scope": "shared", "model": "Task", "identityKey": "{\"id\":\"t-3\"}", "cursor": 8, "kind": "upsert"}
-        ]}
+        {
+          "variant": "stamps",
+          "value": [
+            8,
+            null
+          ]
+        }
+      ]
+    },
+    {
+      "op": "applyStreamMembers",
+      "request": {
+        "op": "applyStreamMembers",
+        "deltas": [
+          {
+            "model": "Task",
+            "identity": {
+              "id": "t-1"
+            },
+            "identityKey": "{\"id\":\"t-1\"}",
+            "publish": false,
+            "stream": "shared"
+          },
+          {
+            "model": "Task",
+            "identity": {
+              "id": "t-2"
+            },
+            "identityKey": "{\"id\":\"t-2\"}",
+            "publish": true,
+            "stream": "shared"
+          },
+          {
+            "model": "Task",
+            "identity": {
+              "id": "t-3"
+            },
+            "identityKey": "{\"id\":\"t-3\"}",
+            "publish": true,
+            "stream": "shared"
+          }
+        ]
+      },
+      "responses": [
+        {
+          "variant": "positions",
+          "value": [
+            {
+              "model": "Task",
+              "identityKey": "{\"id\":\"t-1\"}",
+              "cursor": 5,
+              "kind": "upsert",
+              "stream": "shared"
+            },
+            {
+              "model": "Task",
+              "identityKey": "{\"id\":\"t-2\"}",
+              "cursor": 7,
+              "kind": "upsert",
+              "stream": "shared"
+            },
+            {
+              "model": "Task",
+              "identityKey": "{\"id\":\"t-3\"}",
+              "cursor": 8,
+              "kind": "upsert",
+              "stream": "shared"
+            }
+          ]
+        }
       ]
     }
   ]

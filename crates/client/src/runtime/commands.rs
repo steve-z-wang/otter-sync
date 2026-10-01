@@ -1,12 +1,12 @@
 //! The commands executed directly against the client: the local reads and
-//! writes, the Scope and Bootstrap registrations, the sync state, and the
+//! writes, the Stream and Bootstrap registrations, the sync state, and the
 //! protocol seams ([#134](https://github.com/zanminwang/axton/issues/134)).
 //!
 //! A task runs only while no application transaction is open, so its reads
 //! use the committed reader and each of its writes owns its own local
 //! transaction. A callback's commands run inside the session it owns. The
 //! lifecycles - `transaction`, `connect`, `connection`, `invoke`, `fetch`,
-//! `rebuild`, `scopeSubscribe`, `scopeBootstrap`, `watch`, `watchSql`
+//! `rebuild`, `streamSubscribe`, `streamBootstrap`, `watch`, `watchSql`
 //! and `unwatch` - are the runtime's own and never reach [`execute`].
 use super::protocol::{Command, TransactionCommand};
 use crate::*;
@@ -44,9 +44,9 @@ pub(super) fn execute<S: ClientStore + 'static>(
             client.transaction(|tx| tx.direct(operation))?;
             Value::Null
         }
-        Command::Scope { scope, subscribed } => {
-            let (scope, subscribed) = (scope.clone(), *subscribed);
-            client.transaction(|tx| tx.set_scope(scope, subscribed))?;
+        Command::Stream { stream, subscribed } => {
+            let (stream, subscribed) = (stream.clone(), *subscribed);
+            client.transaction(|tx| tx.set_stream(stream, subscribed))?;
             Value::Null
         }
         Command::SubmitAction {
@@ -59,27 +59,27 @@ pub(super) fn execute<S: ClientStore + 'static>(
                 client.submit_action_with_options(name, *version, args.clone(), options(store)?)?;
             json!({"callId":submitted.call_id,"ordinal":submitted.ordinal})
         }
-        // The Scope commands behind the SDK subscription handles: each owns its
+        // The Stream commands behind the SDK subscription handles: each owns its
         // own local transaction. An uninitialized boundary answers as `null`,
         // never as zero ([#150](https://github.com/zanminwang/axton/issues/150)).
-        Command::ScopeState { scope } => match client.subscription_state(scope)? {
+        Command::StreamState { stream } => match client.subscription_state(stream)? {
             Some(state) => serde_json::to_value(state)?,
             None => Value::Null,
         },
-        // The durable load of a Scope's history
+        // The durable load of a Stream's history
         // ([#151](https://github.com/zanminwang/axton/issues/151)).
-        Command::ScopeBootstrap {
-            scope,
+        Command::StreamBootstrap {
+            stream,
             subscription_id,
-        } => serde_json::to_value(client.request_bootstrap(scope, *subscription_id)?)?,
-        Command::ScopeBootstrapState {
-            scope,
+        } => serde_json::to_value(client.request_bootstrap(stream, *subscription_id)?)?,
+        Command::StreamBootstrapState {
+            stream,
             subscription_id,
-        } => serde_json::to_value(client.bootstrap_state(scope, *subscription_id)?)?,
-        Command::ScopeUnsubscribe {
-            scope,
+        } => serde_json::to_value(client.bootstrap_state(stream, *subscription_id)?)?,
+        Command::StreamUnsubscribe {
+            stream,
             subscription_id,
-        } => json!({"removed":client.remove_subscription(scope, *subscription_id)?}),
+        } => json!({"removed":client.remove_subscription(stream, *subscription_id)?}),
         Command::Freeze => match client.freeze()? {
             Some(bytes) => json!(String::from_utf8(bytes).map_err(|_| invalid("utf8"))?),
             None => Value::Null,
@@ -102,8 +102,8 @@ pub(super) fn execute<S: ClientStore + 'static>(
             serde_json::to_value(client.acknowledge(*sequence, receipt)?)?
         }
         Command::Pull { page } => {
-            let page = ScopePullPage::decode(serde_json::to_string(page)?.as_bytes())?;
-            serde_json::to_value(client.apply_scope_page(page)?)?
+            let page = StreamPullPage::decode(serde_json::to_string(page)?.as_bytes())?;
+            serde_json::to_value(client.apply_stream_page(page)?)?
         }
         Command::Readiness { key, state } => {
             client.set_readiness(key, *state)?;
@@ -123,7 +123,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         Command::RecordStatus { key } => client.record_status(key)?,
         Command::Tasks => json!(client.pending_tasks()?),
         Command::Status => {
-            json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"scopes":client.desired_scopes()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
+            json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"streams":client.desired_streams()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
         }
         Command::Malformed { error } => return Err(invalid(error.clone())),
         Command::Transaction
@@ -132,7 +132,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Invoke { .. }
         | Command::Fetch { .. }
         | Command::Rebuild { .. }
-        | Command::ScopeSubscribe { .. }
+        | Command::StreamSubscribe { .. }
         | Command::Watch { .. }
         | Command::WatchSql { .. }
         | Command::Unwatch { .. }
@@ -190,9 +190,9 @@ pub(super) fn execute_in_session<S: ClientStore>(
             let mutation = mutation.clone();
             json!(client.session(|tx| tx.enqueue(mutation))?)
         }
-        TransactionCommand::Scope { scope, subscribed } => {
-            let (scope, subscribed) = (scope.clone(), *subscribed);
-            client.session(|tx| tx.set_scope(scope, subscribed))?;
+        TransactionCommand::Stream { stream, subscribed } => {
+            let (stream, subscribed) = (stream.clone(), *subscribed);
+            client.session(|tx| tx.set_stream(stream, subscribed))?;
             Value::Null
         }
         TransactionCommand::Malformed { error } => return Err(invalid(error.clone())),

@@ -182,7 +182,7 @@ async fn execute_fresh(
         .map_err(|_| Error::code("action.invalid"))?;
     let store = call.store.clone().canonical();
     // Input targets are mandatory caller authority: each is reconciled
-    // whatever the outputs, `store` policy or Scopes say.
+    // whatever the outputs, `store` policy or Streams say.
     let mut input_targets = Changes::new();
     for input in &action.inputs {
         if let ActionInputDescriptor::Model { name, model, .. } = input {
@@ -214,19 +214,19 @@ async fn execute_fresh(
             ordinal,
         })
         .await?;
-    let (outputs, extra, memberships) = match settled {
+    let (outputs, extra, declarations) = match settled {
         HandledAction::Rejected { rejection } => return Err(Error::code(rejection)),
         HandledAction::Failed { .. } => return Err(Error::code(code::HANDLER_FAILED)),
         HandledAction::Settled {
             outputs,
             changes,
-            memberships,
-        } => (outputs, changes, memberships),
+            declarations,
+        } => (outputs, changes, declarations),
     };
     // A Query's contract has no business effects. A settlement that reports
     // any is refused before the framework stamps, reads back or publishes it,
     // whatever host produced it; the caller rolls back its savepoint.
-    if action.kind == CallKind::Query && (!extra.is_empty() || !memberships.is_empty()) {
+    if action.kind == CallKind::Query && (!extra.is_empty() || !declarations.is_empty()) {
         return Err(Error::code(code::QUERY_EFFECTS_FORBIDDEN));
     }
     // Changed records are the input targets plus extra touches. An extra
@@ -235,7 +235,7 @@ async fn execute_fresh(
     for record in &extra {
         settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
     }
-    let stamps = settlement::settle_changes(config, &changed, &memberships, host).await?;
+    let stamps = settlement::settle_changes(config, &changed, &declarations, host).await?;
     let mut records =
         match readback::read_back(config, models, owner, &input_targets, &stamps, host).await? {
             Outcome::Refused(code) => return Err(Error::code(code)),
@@ -264,7 +264,7 @@ async fn execute_fresh(
             call_id: call.call_id.clone(),
             outcome: ActionOutcome::Succeeded { result },
         },
-        memberships: stamps.claims(config, &memberships, &records)?,
+        memberships: stamps.claims(config, &declarations, &records)?,
         records,
     })
 }
@@ -374,7 +374,7 @@ pub async fn process_action_push(
         }
         for claim in settlement::current_claims(config, response.memberships)? {
             let key = (
-                claim.scope.clone(),
+                claim.stream.clone(),
                 claim.key().encoded().map_err(internal)?,
             );
             if claims
@@ -424,7 +424,7 @@ pub async fn process_action_push(
     Ok(text)
 }
 
-/// Explicit compatibility is confined to saved outcomes, never fresh scope
+/// Explicit compatibility is confined to saved outcomes, never fresh stream
 /// frames. Historical outcomes carry no enrollment evidence.
 fn decode_saved_action(saved: &str) -> Result<ActionResponse> {
     #[derive(Deserialize)]

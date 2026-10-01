@@ -137,7 +137,7 @@ impl Host for StoreHost {
                             todo["title"].as_str().unwrap().into(),
                         );
                     }
-                    json!({"outputs":state.outputs,"changes":state.extra,"memberships":[]})
+                    json!({"outputs":state.outputs,"changes":state.extra,"declarations":[]})
                 }
                 "advanceStamp" => {
                     state.next_stamp += 1;
@@ -156,8 +156,35 @@ impl Host for StoreHost {
                     state.stamps.insert(key, stamp);
                     json!(stamp)
                 }
+                "guardRecords" => {
+                    let mut stamps = vec![];
+                    for r in request["records"].as_array().unwrap() {
+                        let key = r["identityKey"].as_str().unwrap().to_string();
+                        let stamp = match r["mode"].as_str().unwrap() {
+                            "advance" => {
+                                state.next_stamp += 1;
+                                let stamp = state.next_stamp;
+                                state.stamps.insert(key, stamp);
+                                Some(stamp)
+                            }
+                            "ensure" => {
+                                let old = state.stamps.get(&key).copied();
+                                let stamp = old.unwrap_or_else(|| {
+                                    state.next_stamp += 1;
+                                    state.next_stamp
+                                });
+                                state.stamps.insert(key, stamp);
+                                Some(stamp)
+                            }
+                            "lock" => state.stamps.get(&key).copied(),
+                            _ => unreachable!(),
+                        };
+                        stamps.push(json!(stamp));
+                    }
+                    Value::Array(stamps)
+                }
                 // No Todo belongs to a Scope here.
-                "memberships" => json!([]),
+                "readTracking" => json!([]),
                 "load" => {
                     let version = request["version"].as_u64().unwrap();
                     let rows: Vec<Value> = request["identities"]
@@ -352,9 +379,13 @@ fn store_false_keeps_mandatory_input_authority_and_extra_touches_never_force_sto
     );
     assert!(host.stamped().is_empty());
     assert_eq!(
-        host.ops("advanceStamp").len(),
+        host.ops("guardRecords")
+            .iter()
+            .flat_map(|r| r["records"].as_array().unwrap())
+            .filter(|r| r["mode"] == "advance")
+            .count(),
         2,
-        "A and C each advance once"
+        "A and C each advance once in one bulk guard"
     );
     assert_eq!(
         receipt["completions"][0]["outcome"]["result"]["mainTodo"],
@@ -382,7 +413,14 @@ fn store_false_keeps_mandatory_input_authority_and_extra_touches_never_force_sto
         .collect();
     assert_eq!(stamps, [11, 13], "A, B and C advanced in key order");
     assert!(host.stamped().is_empty(), "no second stamp for touched C");
-    assert_eq!(host.ops("advanceStamp").len(), 3);
+    assert_eq!(
+        host.ops("guardRecords")
+            .iter()
+            .flat_map(|r| r["records"].as_array().unwrap())
+            .filter(|r| r["mode"] == "advance")
+            .count(),
+        3
+    );
 }
 
 #[test]

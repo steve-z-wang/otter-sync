@@ -7,7 +7,7 @@ pub struct TransportAction {
 }
 pub struct SyncCycle {
     push_only: bool,
-    /// Every subscribed scope reached its head in this cycle.
+    /// Every subscribed stream reached its head in this cycle.
     completed: bool,
     active: Option<TransportAction>,
     history: Option<BootstrapTask>,
@@ -87,8 +87,11 @@ impl SyncCycle {
         if let Some(bytes) = client.freeze()? {
             let action = TransportAction {
                 kind: "push".into(),
-                body: String::from_utf8(with_capabilities(&bytes, &[SCOPE_MEMBERSHIP_CAPABILITY])?)
-                    .map_err(|_| invalid("utf8"))?,
+                body: String::from_utf8(with_capabilities(
+                    &bytes,
+                    &[STREAM_MEMBERSHIP_CAPABILITY],
+                )?)
+                .map_err(|_| invalid("utf8"))?,
             };
             self.active = Some(action.clone());
             return Ok(Some(action));
@@ -101,7 +104,7 @@ impl SyncCycle {
         }
         if client.reconciliation_failed()? {
             return Err(invalid(
-                "scope reconciliation failed; restart the cycle to retry",
+                "stream reconciliation failed; restart the cycle to retry",
             ));
         }
         if let Some(task) = client.reconciliation_schedule()? {
@@ -117,7 +120,7 @@ impl SyncCycle {
         if self.completed && !client.any_reconciliation_pending()? {
             return Ok(None);
         }
-        // One pull covers every subscribed scope; a pull on any other scope
+        // One pull covers every subscribed stream; a pull on any other stream
         // would be discarded by `apply_page`.
         let Some(body) = client.downlink_request()? else {
             self.completed = true;
@@ -147,10 +150,10 @@ impl SyncCycle {
             self.completed = false;
             report
         } else if let Some(task) = &self.history {
-            let page = ScopeBootstrapPage::decode(bytes)?;
-            let applied = client.apply_scope_history_page(
+            let page = StreamBootstrapPage::decode(bytes)?;
+            let applied = client.apply_stream_history_page(
                 true,
-                &task.state.scope,
+                &task.state.stream,
                 task.state.subscription_id,
                 task.state.run,
                 task.state.cursor,
@@ -161,7 +164,7 @@ impl SyncCycle {
                 BootstrapApply::Failed { .. } => {
                     self.active = None;
                     self.history = None;
-                    return Err(invalid("scope reconciliation records failed"));
+                    return Err(invalid("stream reconciliation records failed"));
                 }
                 BootstrapApply::Applied { report, .. } | BootstrapApply::Detached { report } => {
                     report
@@ -170,14 +173,14 @@ impl SyncCycle {
             }
         } else {
             let request = PullRequest::decode(action.body.as_bytes())?;
-            let page = ScopePullPage::decode(bytes)?;
+            let page = StreamPullPage::decode(bytes)?;
             if !answers_cursors(&page.cursors, &request) {
                 return Err(invalid("response does not match pull request"));
             }
             let end = !page.cursors.values().any(CursorRange::continues);
-            let page_scopes = page.cursors.keys().cloned().collect::<Vec<_>>();
-            let report = client.apply_scope_page(page)?;
-            client.settle_bootstrap_barriers(&page_scopes)?;
+            let page_streams = page.cursors.keys().cloned().collect::<Vec<_>>();
+            let report = client.apply_stream_page(page)?;
+            client.settle_bootstrap_barriers(&page_streams)?;
             if end {
                 self.completed = !client.any_reconciliation_pending()?;
             }
@@ -189,7 +192,7 @@ impl SyncCycle {
     }
 }
 
-/// Whether a page answers a request: the same scopes, each from the cursor
+/// Whether a page answers a request: the same streams, each from the cursor
 /// the request named.
 fn answers(page: &PullPage, request: &PullRequest) -> bool {
     answers_cursors(&page.cursors, request)
@@ -219,14 +222,14 @@ impl<S: ClientStore> Client<S> {
         Ok(Some(
             String::from_utf8(with_capabilities(
                 &request.encode()?,
-                &[SCOPE_MEMBERSHIP_CAPABILITY],
+                &[STREAM_MEMBERSHIP_CAPABILITY],
             )?)
             .map_err(|_| invalid("utf8"))?,
         ))
     }
 
     /// Whether a page answers a pull this client issued under an earlier
-    /// subscription of one of its scopes. Such a page is stale: the
+    /// subscription of one of its streams. Such a page is stale: the
     /// resubscribe reset the cursor and a fresh pull from it delivers everything.
     pub(crate) fn stale_subscription_page(&mut self, page: &PullPage) -> bool {
         let cursors = page
@@ -237,9 +240,9 @@ impl<S: ClientStore> Client<S> {
         self.pulls.stale(&cursors)
     }
 
-    pub(crate) fn admit_scope_downlink(
+    pub(crate) fn admit_stream_downlink(
         &mut self,
-        page: &ScopePullPage,
+        page: &StreamPullPage,
         request: Option<&PullRequest>,
     ) -> Result<DownlinkProgress> {
         page.validate()?;
@@ -251,9 +254,9 @@ impl<S: ClientStore> Client<S> {
             request,
         )
     }
-    pub(crate) fn receive_scope_downlink(
+    pub(crate) fn receive_stream_downlink(
         &mut self,
-        page: ScopePullPage,
+        page: StreamPullPage,
         request: Option<PullRequest>,
     ) -> Result<DownlinkProgress> {
         page.validate()?;
@@ -265,15 +268,15 @@ impl<S: ClientStore> Client<S> {
             request.as_ref(),
         )?;
         if progress.disposition == "applied" {
-            progress.report = self.apply_scope_page(page)?;
+            progress.report = self.apply_stream_page(page)?;
         } else if !progress.report.stale && progress.disposition != "recover" && self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state='requested' AND reconcile_bound IS NULL LIMIT 1", &[])?.is_some()))? {
-            self.write(|e| e.observe_scope_heads(&page, None))?;
+            self.write(|e| e.observe_stream_heads(&page, None))?;
         }
         Ok(progress)
     }
 
     /// One incoming path for HTTP catch-up and WebSocket frames. Optional
-    /// request metadata only validates HTTP response identity; the per-scope
+    /// request metadata only validates HTTP response identity; the per-stream
     /// cursor policy is shared. Whatever the page could not apply is in the
     /// report, never an error.
     pub fn receive_downlink(
@@ -328,22 +331,22 @@ impl<S: ClientStore> Client<S> {
             progress.report.stale = true;
             return Ok(progress);
         }
-        let subscribed = self.desired_scopes()?;
+        let subscribed = self.desired_streams()?;
         let mut live = false;
-        for (scope, range) in &page.cursors {
-            if !subscribed.contains(scope) {
+        for (stream, range) in &page.cursors {
+            if !subscribed.contains(stream) {
                 continue;
             }
             // An uninitialized subscription has no position to compare: its
             // first boundary is not committed, so this page moves nothing.
-            let Some(cursor) = self.cursor(scope)? else {
+            let Some(cursor) = self.cursor(stream)? else {
                 continue;
             };
             if range.to <= cursor {
                 continue;
             }
             if range.from > cursor {
-                progress.gaps.push(scope.clone());
+                progress.gaps.push(stream.clone());
             } else {
                 live = true;
             }
@@ -358,9 +361,9 @@ impl<S: ClientStore> Client<S> {
 }
 
 /// What became of one incoming page: `applied`, `covered` (nothing new for
-/// any subscribed scope), or `recover` (`gaps` names the scopes whose
+/// any subscribed stream), or `recover` (`gaps` names the streams whose
 /// `from` is beyond the cursor; nothing was applied). `continues` names the
-/// scopes the page says hold more.
+/// streams the page says hold more.
 #[derive(Debug, Serialize)]
 pub struct DownlinkProgress {
     pub disposition: &'static str,

@@ -40,16 +40,16 @@ impl Sim {
             .filter(|&i| !self.is_up(i))
             .collect()
     }
-    fn pick_scope(&mut self) -> String {
+    fn pick_stream(&mut self) -> String {
         self.rng.pick(&SCOPES).to_string()
     }
-    /// A scope to notify for `Action::ServerChange`. Stays within the record's real
+    /// A stream to notify for `Action::ServerChange`. Stays within the record's real
     /// membership once it has one, so the generated state is always one that respects
     /// the application rule (see `generate_membership_faults`'s doc) unless a test has
     /// deliberately turned that flag on to exercise the rule being broken.
-    fn pick_notify_scope(&mut self, real_membership: &[String]) -> String {
+    fn pick_notify_stream(&mut self, real_membership: &[String]) -> String {
         if self.generate_membership_faults || real_membership.is_empty() {
-            self.pick_scope()
+            self.pick_stream()
         } else {
             self.rng.pick(real_membership).clone()
         }
@@ -76,19 +76,19 @@ impl Sim {
                     return Some(Action::Deliver);
                 }
                 let id = self.rng.pick(&self.known_entries).clone();
-                // A random non-empty subset of the three scopes: the record's new
+                // A random non-empty subset of the three streams: the record's new
                 // membership after this move.
-                let mut scopes: Vec<String> = SCOPES
+                let mut streams: Vec<String> = SCOPES
                     .iter()
                     .filter(|_| self.rng.chance(1, 2))
                     .map(|c| c.to_string())
                     .collect();
-                if scopes.is_empty() {
-                    scopes.push(self.pick_scope());
+                if streams.is_empty() {
+                    streams.push(self.pick_stream());
                 }
                 Action::MoveMembership {
                     key: format!("Entry:{id}"),
-                    scopes,
+                    streams,
                 }
             }
             68..72 => Action::Drop,
@@ -117,17 +117,17 @@ impl Sim {
                 }
             }
             90..92 => {
-                let scope = self.pick_scope();
+                let stream = self.pick_stream();
                 Action::Subscribe {
                     client: client?,
-                    scope,
+                    stream,
                 }
             }
             92 => {
-                let scope = self.pick_scope();
+                let stream = self.pick_stream();
                 Action::Unsubscribe {
                     client: client?,
-                    scope,
+                    stream,
                 }
             }
             93..96 => {
@@ -141,17 +141,17 @@ impl Sim {
                     Some(format!("s{}", self.rng.below(1000)))
                 };
                 let real_membership = self.host.membership(&crate::schema::entry_key(&id));
-                let mut scopes = vec![self.pick_notify_scope(&real_membership)];
+                let mut streams = vec![self.pick_notify_stream(&real_membership)];
                 if self.rng.chance(1, 2) {
-                    let c = self.pick_notify_scope(&real_membership);
-                    if !scopes.contains(&c) {
-                        scopes.push(c);
+                    let c = self.pick_notify_stream(&real_membership);
+                    if !streams.contains(&c) {
+                        streams.push(c);
                     }
                 }
                 Action::ServerChange {
                     key: format!("Entry:{id}"),
                     text,
-                    scopes,
+                    streams,
                 }
             }
             96..98 => Action::RejectNext {
@@ -207,7 +207,7 @@ impl Sim {
                     _ => Some(Some(format!("m{}", self.rng.below(1000)))),
                 };
                 let intents = (0..self.rng.below(4))
-                    .map(|_| (self.pick_scope(), self.rng.chance(1, 2)))
+                    .map(|_| (self.pick_stream(), self.rng.chance(1, 2)))
                     .collect();
                 Action::Declare {
                     key: format!("Entry:{id}"),
@@ -247,53 +247,35 @@ impl Sim {
                 }
             }
             roll => {
-                use axton_server::host::{RecordRef, ScopeIntent};
+                use axton_server::host::{RecordRef, StreamIntent};
                 let id = self.rng.pick(&self.known_entries).clone();
                 let record = RecordRef {
                     model: "Entry".into(),
                     identity: serde_json::json!({"id":id}),
                 };
-                let scope = self.pick_scope();
-                let tag = if self.rng.chance(1, 2) { "x" } else { "y" }.to_string();
+                let stream = self.pick_stream();
                 let intents = match roll {
-                    20 | 21 => vec![ScopeIntent::Add {
-                        scope,
+                    20 | 21 => vec![StreamIntent::Track { stream, record }],
+                    22 => vec![StreamIntent::Invalidate {
+                        streams: Some(vec![stream]),
                         record,
-                        tags: vec![tag],
                     }],
-                    22 => vec![ScopeIntent::Select {
-                        scope,
-                        model: None,
-                        predicate: serde_json::from_value(
-                            serde_json::json!({"tags":{"any":[tag]}}),
-                        )
-                        .unwrap(),
-                        action: axton_server::scope_members::SelectionAction::Remove,
+                    23 => vec![StreamIntent::Invalidate {
+                        streams: None,
+                        record,
                     }],
-                    23 => vec![ScopeIntent::Remove { scope, record }],
                     _ => vec![
-                        ScopeIntent::Add {
-                            scope: scope.clone(),
+                        StreamIntent::Track {
+                            stream: stream.clone(),
                             record: record.clone(),
-                            tags: vec![tag.clone()],
                         },
-                        ScopeIntent::Select {
-                            scope: scope.clone(),
-                            model: None,
-                            predicate: serde_json::from_value(
-                                serde_json::json!({"tags":{"any":[tag]}}),
-                            )
-                            .unwrap(),
-                            action: axton_server::scope_members::SelectionAction::Remove,
-                        },
-                        ScopeIntent::Add {
-                            scope,
+                        StreamIntent::Invalidate {
+                            streams: Some(vec![stream]),
                             record,
-                            tags: vec!["y".into()],
                         },
                     ],
                 };
-                Action::ScopeTags { intents }
+                Action::StreamDeclarations { intents }
             }
         })
     }
@@ -378,7 +360,7 @@ impl Sim {
     /// Runs the seeded sequence, checking every invariant after every step. Every
     /// `SETTLE_EVERY` steps also settles (a legal sequence of actions, so it appends to
     /// the trace and shrinking still applies) and checks again: a client is rarely at a
-    /// scope's head while the scope still holds records mid-run, so without this
+    /// stream's head while the stream still holds records mid-run, so without this
     /// `no_pending_means_converged`'s content comparison rarely fires - settling
     /// periodically forces convergence so that check to actually run. Returns the
     /// total number of content comparisons `no_pending_means_converged` made, on
@@ -395,7 +377,7 @@ impl Sim {
         for i in 0..clients {
             sim.apply(Action::Subscribe {
                 client: i,
-                scope: "a".into(),
+                stream: "a".into(),
             })
             .unwrap();
         }

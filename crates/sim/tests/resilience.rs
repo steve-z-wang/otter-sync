@@ -8,7 +8,7 @@ fn r1_writes_continue_while_unreachable_and_converge_after() {
     let mut sim = Sim::new(51, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "a".into(),
+        stream: "a".into(),
     })
     .unwrap();
     for i in 0..5 {
@@ -44,7 +44,7 @@ fn script() -> Vec<Action> {
     vec![
         Action::Subscribe {
             client: 0,
-            scope: "a".into(),
+            stream: "a".into(),
         },
         Action::Enqueue {
             client: 0,

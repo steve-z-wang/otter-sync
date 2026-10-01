@@ -1,7 +1,7 @@
 //! Transition tests for the per-socket live controller
 //! ([Server / Connection / Controller](../../../docs/engineering/architecture/server/connection/controller.md)).
 //! Pure state: no host, no socket, no database.
-use axton_core::{AuthorityRecord, CursorRange, ScopePullPage, limits};
+use axton_core::{AuthorityRecord, CursorRange, StreamPullPage, limits};
 use axton_server::live::{LiveAction, LiveEvent, Negotiation, Subscriptions};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -19,18 +19,18 @@ fn negotiation(heads: &[(&str, u64)]) -> Negotiation {
     }
 }
 
-/// A page for the given scopes: `(scope, from, to, head)`, holding one
-/// change per cursor in `from + 1 ..= to` of every scope, capped per scope.
+/// A page for the given streams: `(stream, from, to, head)`, holding one
+/// change per cursor in `from + 1 ..= to` of every stream, capped per stream.
 fn page(ranges: &[(&str, u64, u64, u64)]) -> String {
     let mut changes = vec![];
-    for (scope, from, to, _) in ranges {
+    for (stream, from, to, _) in ranges {
         for cursor in (*from + 1..=*to).take(limits::PULL_CHANGES) {
-            changes.push(axton_core::ScopeChange::Upsert {
-                scope: (*scope).into(),
+            changes.push(axton_core::StreamChange::Upsert {
+                stream: (*stream).into(),
                 cursor,
                 record: AuthorityRecord {
                     model: "Task".into(),
-                    identity: json!({"id": format!("{scope}-{cursor}")}),
+                    identity: json!({"id": format!("{stream}-{cursor}")}),
                     stamp: cursor,
                     state: json!(null),
                     error: None,
@@ -38,7 +38,7 @@ fn page(ranges: &[(&str, u64, u64, u64)]) -> String {
             });
         }
     }
-    let page = ScopePullPage {
+    let page = StreamPullPage {
         cursors: ranges
             .iter()
             .map(|(c, from, to, head)| {
@@ -67,9 +67,9 @@ fn pull(cursors: &[(&str, u64)]) -> LiveAction {
     }
 }
 
-fn committed(scope: &str) -> LiveEvent {
+fn committed(stream: &str) -> LiveEvent {
     LiveEvent::Committed {
-        scope: scope.into(),
+        stream: stream.into(),
     }
 }
 
@@ -78,13 +78,13 @@ fn pulled(page: &str) -> LiveEvent {
 }
 
 #[test]
-fn open_registers_every_scope_before_the_acknowledgement_then_pulls_all_once_from_their_heads() {
+fn open_registers_every_stream_before_the_acknowledgement_then_pulls_all_once_from_their_heads() {
     let (subscriptions, actions) = Subscriptions::open(negotiation(&[("a", 3), ("b", 0)]));
     assert_eq!(
         actions,
         vec![
-            LiveAction::Listen { scope: "a".into() },
-            LiveAction::Listen { scope: "b".into() },
+            LiveAction::Listen { stream: "a".into() },
+            LiveAction::Listen { stream: "b".into() },
             LiveAction::Send {
                 frame: r#"{"cursors":{},"type":"subscribed"}"#.into()
             },
@@ -140,11 +140,11 @@ fn two_commits_during_one_pull_produce_one_extra_pull_not_two() {
         .unwrap();
     assert_eq!(actions, vec![]);
     assert!(!subscriptions.is_pulling());
-    assert!(!subscriptions.scopes()[0].pending);
+    assert!(!subscriptions.streams()[0].pending);
 }
 
 #[test]
-fn a_scope_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
+fn a_stream_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 0)]));
     let full = limits::PULL_CHANGES as u64;
     let actions = subscriptions
@@ -169,7 +169,7 @@ fn a_scope_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
         }]
     );
     assert!(!subscriptions.is_pulling());
-    assert_eq!(subscriptions.scopes()[0].cursor, full + 1);
+    assert_eq!(subscriptions.streams()[0].cursor, full + 1);
     assert_eq!(
         subscriptions.handle(committed("a")).unwrap(),
         vec![pull(&[("a", full + 1)])],
@@ -178,7 +178,7 @@ fn a_scope_below_its_head_continues_and_one_at_its_head_ends_the_drain() {
 }
 
 #[test]
-fn commits_on_several_scopes_share_one_pull_and_the_frame_names_only_what_moved() {
+fn commits_on_several_streams_share_one_pull_and_the_frame_names_only_what_moved() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 0), ("b", 0)]));
     assert_eq!(
         subscriptions
@@ -223,7 +223,7 @@ fn after_closed_no_event_produces_an_action_and_a_late_page_is_not_sent() {
     assert_eq!(subscriptions.handle(committed("a")).unwrap(), vec![]);
     assert_eq!(subscriptions.handle(LiveEvent::Closed).unwrap(), vec![]);
     assert!(subscriptions.is_closed());
-    assert!(subscriptions.scopes().iter().all(|state| !state.pending));
+    assert!(subscriptions.streams().iter().all(|state| !state.pending));
     assert_eq!(
         subscriptions
             .handle(pulled(&page(&[("a", 0, 5, 5), ("b", 0, 0, 0)])))
@@ -236,15 +236,15 @@ fn after_closed_no_event_produces_an_action_and_a_late_page_is_not_sent() {
     assert_eq!(subscriptions.handle(LiveEvent::Closed).unwrap(), vec![]);
 }
 
-/// A scan filters removed Scope members before its limit, so a page can
-/// advance over positions whose records all left the Scope and carry no
+/// A scan filters removed Stream members before its limit, so a page can
+/// advance over positions whose records all left the Stream and carry no
 /// change. It is still progress: it is sent, it moves the cursor, and at the
 /// head it ends the drain, so removed positions cannot stall a live stream.
 #[test]
 fn a_page_that_advances_over_removed_positions_without_changes_is_progress() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
     let holes = String::from_utf8(
-        ScopePullPage {
+        StreamPullPage {
             cursors: BTreeMap::from([(
                 "a".to_string(),
                 CursorRange {
@@ -264,7 +264,7 @@ fn a_page_that_advances_over_removed_positions_without_changes_is_progress() {
         vec![LiveAction::Send { frame: holes }]
     );
     assert!(!subscriptions.is_pulling());
-    assert_eq!(subscriptions.scopes()[0].cursor, 9);
+    assert_eq!(subscriptions.streams()[0].cursor, 9);
 }
 
 #[test]
@@ -275,17 +275,17 @@ fn invalid_page_progression_is_an_error() {
         .unwrap_err();
     assert_eq!(wrong_cursor.code, axton_server::code::LIVE_INVALID_PAGE);
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
-    let wrong_scope = subscriptions
+    let wrong_stream = subscriptions
         .handle(pulled(&page(&[("b", 3, 5, 5)])))
         .unwrap_err();
-    assert_eq!(wrong_scope.code, axton_server::code::LIVE_INVALID_PAGE);
+    assert_eq!(wrong_stream.code, axton_server::code::LIVE_INVALID_PAGE);
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 3)]));
     let malformed = subscriptions.handle(pulled("{")).unwrap_err();
     assert_eq!(malformed.code, axton_server::code::LIVE_INVALID_PAGE);
 }
 
 #[test]
-fn an_unknown_scope_or_an_unrequested_page_is_a_host_defect() {
+fn an_unknown_stream_or_an_unrequested_page_is_a_host_defect() {
     let (mut subscriptions, _) = Subscriptions::open(negotiation(&[("a", 0)]));
     let unknown = subscriptions.handle(committed("zzz")).unwrap_err();
     assert_eq!(unknown.code, axton_server::code::LIVE_INVALID_EVENT);
@@ -309,18 +309,18 @@ fn events_and_actions_cross_the_boundary_as_tagged_json() {
         json!({"type":"pull","cursors":{"a":7},"models":{"Task":1}})
     );
     assert_eq!(
-        serde_json::to_value(LiveAction::Listen { scope: "a".into() }).unwrap(),
-        json!({"type":"listen","scope":"a"})
+        serde_json::to_value(LiveAction::Listen { stream: "a".into() }).unwrap(),
+        json!({"type":"listen","stream":"a"})
     );
 }
 
 #[test]
-fn a_scope_live_removal_advances_and_preserves_its_identity_only_frame() {
+fn a_stream_live_removal_advances_and_preserves_its_identity_only_frame() {
     let (mut session, _) = Subscriptions::open(negotiation(&[("a", 0)]));
-    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","scope":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
+    let page = json!({"cursors":{"a":{"from":0,"to":8,"head":8}},"changes":[{"kind":"remove","stream":"a","cursor":8,"model":"Task","identity":{"id":"gone"}}]}).to_string();
     let actions = session
-        .handle_scope(LiveEvent::Pulled { page: page.clone() })
+        .handle_stream(LiveEvent::Pulled { page: page.clone() })
         .unwrap();
     assert_eq!(actions, vec![LiveAction::Send { frame: page }]);
-    assert_eq!(session.scopes()[0].cursor, 8);
+    assert_eq!(session.streams()[0].cursor, 8);
 }

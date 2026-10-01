@@ -36,8 +36,8 @@ pub fn record(model: &str, id: &str) -> (String, String) {
 pub fn reference(model: &str, id: &str) -> Value {
     json!({"model":model,"identity":{"id":id}})
 }
-pub fn add(scope: &str, model: &str, id: &str) -> Value {
-    json!({"kind":"add","scope":scope,"record":{"model":model,"identity":{"id":id}},"tags":[]})
+pub fn add(stream: &str, model: &str, id: &str) -> Value {
+    json!({"kind":"track","stream":stream,"record":{"model":model,"identity":{"id":id}}})
 }
 pub fn remove(scope: &str, model: &str, id: &str) -> Value {
     json!({"kind":"remove","scope":scope,"record":{"model":model,"identity":{"id":id}}})
@@ -117,6 +117,20 @@ impl Backend {
     /// at the next cursor of a Scope at head `head` if new.
     pub fn enroll(&self, scope: &str, model: &str, id: &str, head: u64) {
         self.with(|s| enroll(&mut s.tables, scope, model, id, head));
+    }
+    /// Restore one historical server removal position; not a fresh application verb.
+    pub fn saved_removal(&self, stream: &str, model: &str, id: &str) {
+        self.with(|s| {
+            let (model, key) = record(model, id);
+            s.tables
+                .memberships
+                .remove(&(model.clone(), key.clone(), stream.into()));
+            let head = s.tables.heads.entry(stream.into()).or_default();
+            *head += 1;
+            s.tables
+                .invalidations
+                .insert((stream.into(), model, key), (*head, None));
+        });
     }
     /// A competing writer enrolls `id` in `scope` and commits while this
     /// settlement waits for its `lockScopes`.
@@ -240,20 +254,20 @@ impl Backend {
                     HostRequest::AdvanceStamp { .. }
                         | HostRequest::EnsureStamp { .. }
                         | HostRequest::LockRecord { .. }
-                        | HostRequest::Memberships { .. }
-                        | HostRequest::LockScopes { .. }
-                        | HostRequest::ReadScopeMembers { .. }
-                        | HostRequest::ApplyScopeMembers { .. }
+                        | HostRequest::LockStreams { .. }
+                        | HostRequest::ReadTracking { .. }
+                        | HostRequest::GuardRecords { .. }
+                        | HostRequest::ApplyStreamMembers { .. }
                 )
             })
             .collect()
     }
     /// The deltas every logged `applyScopeMembers` carried, in order.
-    pub fn deltas(&self) -> Vec<axton_server::scope_members::MemberDelta> {
+    pub fn deltas(&self) -> Vec<axton_server::stream_members::MemberDelta> {
         self.log()
             .into_iter()
             .flat_map(|request| match request {
-                HostRequest::ApplyScopeMembers { deltas } => deltas,
+                HostRequest::ApplyStreamMembers { deltas } => deltas,
                 _ => vec![],
             })
             .collect()
@@ -263,24 +277,13 @@ impl Backend {
     pub fn publishes(&self) -> Vec<(String, String, u64)> {
         self.deltas()
             .into_iter()
-            .filter(|delta| delta.publish && delta.present)
+            .filter(|delta| delta.publish)
             .map(|delta| {
                 let id = delta.key.identity["id"].as_str().unwrap().to_string();
                 let (_, stamp) = self
-                    .invalidation(&delta.scope, &delta.key.model, &id)
+                    .invalidation(&delta.stream, &delta.key.model, &id)
                     .expect("a published upsert is positioned");
-                (delta.scope, id, stamp)
-            })
-            .collect()
-    }
-    /// The logged published removals as `(scope, id)`.
-    pub fn removals(&self) -> Vec<(String, String)> {
-        self.deltas()
-            .into_iter()
-            .filter(|delta| !delta.present)
-            .map(|delta| {
-                let id = delta.key.identity["id"].as_str().unwrap().to_string();
-                (delta.scope, id)
+                (delta.stream, id, stamp)
             })
             .collect()
     }
@@ -384,11 +387,11 @@ impl Backend {
                     .1 = Some(response);
                 Value::Null
             }
-            HostRequest::Head { scope } => {
+            HostRequest::Head { stream: scope } => {
                 json!(s.tables.heads.get(&scope).copied().unwrap_or(0))
             }
             HostRequest::Scan {
-                scope,
+                stream: scope,
                 after,
                 limit,
             } => {
@@ -420,7 +423,7 @@ impl Backend {
                         "remove"
                     };
                     scanned.push(
-                        json!({"kind":kind,"scope":scope,"cursor":cursor,"model":model,
+                        json!({"kind":kind,"stream":scope,"cursor":cursor,"model":model,
                         "identity":identity,"identityKey":key,"stamp":stamp}),
                     );
                 }
@@ -454,9 +457,9 @@ impl Backend {
                 }
                 s.scripts.get(&name).cloned().unwrap_or_else(|| {
                     if action {
-                        json!({"outputs":{},"changes":[],"memberships":[]})
+                        json!({"outputs":{},"changes":[],"declarations":[]})
                     } else {
-                        json!({"changes":[],"memberships":[]})
+                        json!({"changes":[],"declarations":[]})
                     }
                 })
             }
@@ -527,92 +530,83 @@ impl Backend {
                 model,
                 identity_key,
             } => json!(s.tables.stamps.get(&(model, identity_key)).copied()),
-            HostRequest::Memberships {
-                model,
-                identity_key,
-            } => json!(
-                s.tables
-                    .memberships
-                    .keys()
-                    .filter(|(m, k, _)| *m == model && *k == identity_key)
-                    .map(|(_, _, scope)| scope.clone())
-                    .collect::<Vec<_>>()
+            HostRequest::GuardRecords { records } => Value::Array(
+                records
+                    .into_iter()
+                    .map(|r| {
+                        let key = (r.model, r.identity_key);
+                        match r.mode {
+                            axton_server::host::GuardMode::Advance => {
+                                let stamp = s.tables.stamps.entry(key).or_insert(0);
+                                *stamp += 1;
+                                json!(*stamp)
+                            }
+                            axton_server::host::GuardMode::Ensure => {
+                                json!(*s.tables.stamps.entry(key).or_insert(1))
+                            }
+                            axton_server::host::GuardMode::Lock => json!(s.tables.stamps.get(&key)),
+                        }
+                    })
+                    .collect(),
             ),
             // One process: the lock is the order check the decoder already
             // made. A scripted competing writer commits while it is awaited.
-            HostRequest::LockScopes { .. } => {
+            HostRequest::LockStreams { .. } => {
                 if let Some((scope, model, id)) = s.intrusion.take() {
                     enroll(&mut s.tables, &scope, &model, &id, 0);
                 }
                 Value::Null
             }
-            HostRequest::ReadScopeMembers {
-                scope,
-                explicit_keys,
-                tags,
-                all,
-            } => {
-                let named: BTreeSet<(String, String)> = explicit_keys
-                    .iter()
-                    .map(|key| (key.model.clone(), key.encoded_identity().unwrap()))
-                    .collect();
-                Value::Array(
-                    s.tables
-                        .memberships
-                        .iter()
-                        .filter(|((model, key, c), held)| {
-                            *c == scope
-                                && (all || named.contains(&(model.clone(), key.clone()))
-                                    || tags.iter().any(|tag| held.contains(tag)))
-                        })
-                        .map(|((model, key, _), held)| {
-                            json!({"model":model,"identityKey":key,"tags":held})
-                        })
-                        .collect(),
-                )
-            }
+            HostRequest::ReadTracking { records, pairs } => Value::Array(
+                s.tables
+                    .memberships
+                    .keys()
+                    .filter(|(m, k, c)| {
+                        records
+                            .iter()
+                            .any(|r| r.model == *m && r.identity_key == *k)
+                            || pairs
+                                .iter()
+                                .any(|p| p.model == *m && p.identity_key == *k && p.stream == *c)
+                    })
+                    .map(|(m, k, c)| json!({"stream":c,"model":m,"identityKey":k}))
+                    .collect(),
+            ),
             // `SQL.APPLY_SCOPE_MEMBERS`: final states, as given. Each
             // published delta takes its Scope's next cursor; an unpublished
             // one keeps its member's position.
-            HostRequest::ApplyScopeMembers { deltas } => {
+            HostRequest::ApplyStreamMembers { deltas } => {
                 let mut positions = vec![];
                 for delta in deltas {
                     let model = delta.key.model.clone();
                     let key = delta.key.encoded_identity().unwrap();
-                    let member = (model.clone(), key.clone(), delta.scope.clone());
-                    let pair = (delta.scope.clone(), model.clone(), key.clone());
+                    let member = (model.clone(), key.clone(), delta.stream.clone());
+                    let pair = (delta.stream.clone(), model.clone(), key.clone());
                     let stamp = s.tables.stamps.get(&(model.clone(), key.clone())).copied();
                     let Some(stamp) = stamp else {
                         return Err(format!("Record metadata missing for {model} {key}"));
                     };
                     let was_member = s.tables.memberships.contains_key(&member);
-                    if !delta.present && !was_member {
-                        return Err(format!("{model} {key} is no member to remove"));
-                    }
-                    if delta.present {
-                        s.tables.memberships.insert(member, delta.tags.clone());
-                    } else {
-                        s.tables.memberships.remove(&member);
-                    }
-                    let head = s.tables.heads.entry(delta.scope.clone()).or_insert(0);
+                    s.tables.memberships.insert(member, BTreeSet::new());
+                    let head = s.tables.heads.entry(delta.stream.clone()).or_insert(0);
                     let (cursor, kind) = if delta.publish {
                         *head += 1;
                         let cursor = *head;
-                        let kept = delta.present.then_some(stamp);
+                        let kept = Some(stamp);
                         s.tables.invalidations.insert(pair, (cursor, kept));
-                        (cursor, if delta.present { "upsert" } else { "remove" })
+                        (cursor, "upsert")
                     } else {
                         match s.tables.invalidations.get(&pair) {
                             Some((cursor, Some(_))) if was_member => (*cursor, "upsert"),
                             _ => {
                                 return Err(format!(
                                     "{model} {key} keeps no position in {}",
-                                    delta.scope
+                                    delta.stream
                                 ));
                             }
                         }
                     };
-                    positions.push(json!({"scope":delta.scope,"model":model,
+                    positions.push(json!({"stream":delta.stream,"model":model,
                         "identityKey":key,"cursor":cursor,"kind":kind}));
                 }
                 Value::Array(positions)
@@ -775,7 +769,7 @@ pub fn bootstrap(
     after: u64,
     until: u64,
 ) -> axton_core::BootstrapPage {
-    let request = json!({"mode":"bootstrap","scope":scope,"models":{"Todo":1,"Project":1},
+    let request = json!({"mode":"bootstrap","stream":scope,"models":{"Todo":1,"Project":1},
         "after":after,"until":until});
     let text = run(axton_server::process_pull(
         &config(),
@@ -792,7 +786,7 @@ pub fn bootstrap(
 pub fn settle(backend: &Backend, changes: Vec<Value>, memberships: Vec<Value>) {
     run(axton_server::settle_external(
         &config(),
-        &json!({"changes":changes,"memberships":memberships}),
+        &json!({"changes":changes,"declarations":memberships}),
         backend,
     ))
     .unwrap();

@@ -29,23 +29,23 @@ pub enum StoreChange {
 #[derive(Clone)]
 pub enum StoreDelivery {
     Page(PullPage),
-    ScopePage(axton_core::ScopePullPage),
-    ScopeBootstrap {
-        scope: String,
+    StreamPage(axton_core::StreamPullPage),
+    StreamBootstrap {
+        stream: String,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: axton_core::ScopeBootstrapPage,
+        page: axton_core::StreamBootstrapPage,
     },
-    ScopeReconciliation {
-        scope: String,
+    StreamReconciliation {
+        stream: String,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
-        page: axton_core::ScopeBootstrapPage,
+        page: axton_core::StreamBootstrapPage,
     },
     Bootstrap {
-        scope: String,
+        stream: String,
         subscription_id: u64,
         run: u64,
         expected_after: u64,
@@ -161,7 +161,7 @@ impl<S: ClientStore> Client<S> {
             .map(|p| p.request_token)
             .unwrap_or_else(|| self.delivery_token(delivery));
         match delivery {
-            StoreDelivery::ScopePage(page) => {
+            StoreDelivery::StreamPage(page) => {
                 page.validate()?;
                 let legacy = PullPage {
                     cursors: page.cursors.clone(),
@@ -177,28 +177,28 @@ impl<S: ClientStore> Client<S> {
                     ));
                 }
                 self.staged(mode, |e| {
-                    e.apply_scope_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
+                    e.apply_stream_page_body(page, prepared.map(|p| p.page_guards.as_slice()))
                         .map(StoreResult::Page)
                 })
             }
-            StoreDelivery::ScopeBootstrap {
-                scope,
+            StoreDelivery::StreamBootstrap {
+                stream,
                 subscription_id,
                 run,
                 expected_after,
                 page,
             }
-            | StoreDelivery::ScopeReconciliation {
-                scope,
+            | StoreDelivery::StreamReconciliation {
+                stream,
                 subscription_id,
                 run,
                 expected_after,
                 page,
             } => self.staged(mode, |e| {
-                e.reconciliation = matches!(delivery, StoreDelivery::ScopeReconciliation { .. });
+                e.reconciliation = matches!(delivery, StoreDelivery::StreamReconciliation { .. });
                 let outcome = if let Some(prepared) = prepared {
-                    e.apply_scope_bootstrap_prepared_body(
-                        scope,
+                    e.apply_stream_bootstrap_prepared_body(
+                        stream,
                         *subscription_id,
                         *run,
                         *expected_after,
@@ -206,8 +206,8 @@ impl<S: ClientStore> Client<S> {
                         prepared.bootstrap_admitted.as_ref(),
                     )?
                 } else {
-                    e.apply_scope_bootstrap_body(
-                        scope,
+                    e.apply_stream_bootstrap_body(
+                        stream,
                         *subscription_id,
                         *run,
                         *expected_after,
@@ -233,7 +233,7 @@ impl<S: ClientStore> Client<S> {
                 })
             }
             StoreDelivery::Bootstrap {
-                scope,
+                stream,
                 subscription_id,
                 run,
                 expected_after,
@@ -241,7 +241,7 @@ impl<S: ClientStore> Client<S> {
             } => self.staged(mode, |e| {
                 let outcome = if let Some(prepared) = prepared {
                     e.apply_bootstrap_prepared_body(
-                        scope,
+                        stream,
                         *subscription_id,
                         *run,
                         *expected_after,
@@ -250,7 +250,7 @@ impl<S: ClientStore> Client<S> {
                     )?
                 } else {
                     e.apply_bootstrap_page_body(
-                        scope,
+                        stream,
                         *subscription_id,
                         *run,
                         *expected_after,
@@ -326,12 +326,12 @@ impl<S: ClientStore> Client<S> {
                 report
                     .cursors
                     .iter()
-                    .map(|(scope, to)| {
+                    .map(|(stream, to)| {
                         let state = tx
                             .engine
-                            .subscription(scope)?
+                            .subscription(stream)?
                             .ok_or_else(|| invalid("prepared subscription disappeared"))?;
-                        Ok((scope.clone(), state.subscription_id, *to))
+                        Ok((stream.clone(), state.subscription_id, *to))
                     })
                     .collect::<Result<Vec<_>>>()
             })?
@@ -405,7 +405,7 @@ impl<S: ClientStore> Client<S> {
         }
         let cursors = match &prepared.delivery {
             StoreDelivery::Page(page) => Some(&page.cursors),
-            StoreDelivery::ScopePage(page) => Some(&page.cursors),
+            StoreDelivery::StreamPage(page) => Some(&page.cursors),
             _ => None,
         };
         if let Some(cursors) = cursors {

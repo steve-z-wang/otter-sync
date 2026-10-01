@@ -34,7 +34,7 @@ impl Host for HostState {
                         "Values" => json!({"maybe":null,"items":["a","b"]}),
                         _ => json!({"message":"ok"}),
                     };
-                    json!({"outputs":outputs,"changes":[],"memberships":[]})
+                    json!({"outputs":outputs,"changes":[],"declarations":[]})
                 }
                 _ => Value::Null,
             })
@@ -154,7 +154,7 @@ impl Host for ModelHost {
                 }
                 "claimCall" => json!({"fresh":true,"request":request["request"],"response":null}),
                 "handleAction" => {
-                    json!({"outputs":{"todo":{"id":"01890f47-1234-7123-8123-123456789abc"}},"changes":[],"memberships":[]})
+                    json!({"outputs":{"todo":{"id":"01890f47-1234-7123-8123-123456789abc"}},"changes":[],"declarations":[]})
                 }
                 "ensureStamp" => json!(1),
                 "load" if request["version"] == 1 => {
@@ -287,26 +287,26 @@ impl Host for StatefulHost {
                     state.handlers += 1;
                     if request["name"] == "Read" {
                         return Ok(
-                            json!({"outputs":{"todo":{"id":"t"}},"changes":[],"memberships":[]}),
+                            json!({"outputs":{"todo":{"id":"t"}},"changes":[],"declarations":[]}),
                         );
                     }
                     if request["name"] == "Delete" {
                         if state.delete_on_handle {
                             state.row = None;
                         }
-                        return Ok(json!({"outputs":{},"changes":[],"memberships":[]}));
+                        return Ok(json!({"outputs":{},"changes":[],"declarations":[]}));
                     }
                     if request["arguments"]["todo"].is_null() {
-                        return Ok(json!({"outputs":{},"changes":[],"memberships":[]}));
+                        return Ok(json!({"outputs":{},"changes":[],"declarations":[]}));
                     }
                     let title = request["arguments"]["todo"]["title"].as_str().unwrap();
                     match title {
                         "refuse" => json!({"rejection":"todo.refused"}),
                         "crash" => json!({"error":"application fault"}),
-                        "missing" => json!({"outputs":{},"changes":[],"memberships":[]}),
+                        "missing" => json!({"outputs":{},"changes":[],"declarations":[]}),
                         _ => {
                             state.row = Some(title.into());
-                            json!({"outputs":{},"changes":[],"memberships":[]})
+                            json!({"outputs":{},"changes":[],"declarations":[]})
                         }
                     }
                 }
@@ -314,8 +314,21 @@ impl Host for StatefulHost {
                     state.stamp += 1;
                     json!(state.stamp)
                 }
+                "guardRecords" => {
+                    let records = request["records"].as_array().unwrap();
+                    let mut stamps = vec![];
+                    for r in records {
+                        match r["mode"].as_str().unwrap() {
+                            "advance" => state.stamp += 1,
+                            "ensure" if state.stamp == 0 => state.stamp = 1,
+                            _ => {}
+                        }
+                        stamps.push(json!(state.stamp));
+                    }
+                    Value::Array(stamps)
+                }
                 // The one Todo belongs to no Scope.
-                "memberships" => json!([]),
+                "readTracking" => json!([]),
                 "ensureStamp" => {
                     if state.stamp == 0 {
                         state.stamp = 1;
@@ -620,21 +633,21 @@ impl Host for ForgedQueryHost {
         Box::pin(async move {
             self.0.lock().unwrap().push(request.clone());
             let todo = json!({"model":"Todo","identity":{"id":"t1"}});
-            let membership = json!({"kind":"add","scope":"c","record":{"model":"Todo","identity":{"id":"t1"}},"tags":[]});
+            let membership = json!({"kind":"track","stream":"c","record":{"model":"Todo","identity":{"id":"t1"}}});
             Ok(match request["op"].as_str().unwrap() {
                 "claim" => json!({"clientId":"device","owner":"alice","sequence":0,"receipt":null}),
                 "claimCall" => json!({"fresh":true,"request":request["request"],"response":null}),
                 "handleAction" => match request["name"].as_str().unwrap() {
                     "Changes" => {
-                        json!({"outputs":{"message":"x"},"changes":[todo],"memberships":[]})
+                        json!({"outputs":{"message":"x"},"changes":[todo],"declarations":[]})
                     }
                     "Enrolls" => {
-                        json!({"outputs":{"message":"x"},"changes":[],"memberships":[membership]})
+                        json!({"outputs":{"message":"x"},"changes":[],"declarations":[membership]})
                     }
                     "Both" => {
-                        json!({"outputs":{"message":"x"},"changes":[todo],"memberships":[membership]})
+                        json!({"outputs":{"message":"x"},"changes":[todo],"declarations":[membership]})
                     }
-                    _ => json!({"outputs":{"message":"ok"},"changes":[],"memberships":[]}),
+                    _ => json!({"outputs":{"message":"ok"},"changes":[],"declarations":[]}),
                 },
                 "ensureStamp" | "advanceStamp" => json!(1),
                 "load" => json!([{"id":"t1"}]),
@@ -711,10 +724,11 @@ fn forged_query_effects_reject_only_that_call_before_framework_handling() {
         "ensureStamp",
         "advanceStamp",
         "lockRecord",
-        "memberships",
-        "lockScopes",
-        "readScopeMembers",
-        "applyScopeMembers",
+        "readTracking",
+        "guardRecords",
+        "lockStreams",
+        "readTracking",
+        "applyStreamMembers",
         "load",
     ] {
         assert!(!ops.iter().any(|request| request["op"] == op), "{op}");
@@ -753,7 +767,7 @@ fn forged_query_effects_are_rejected_on_the_direct_path_too() {
     assert!(ops.iter().any(|op| op["op"] == "rollback"));
     assert!(!ops.iter().any(|op| op["op"] == "ensureStamp"
         || op["op"] == "load"
-        || op["op"] == "applyScopeMembers"));
+        || op["op"] == "applyStreamMembers"));
 }
 
 #[test]
@@ -786,7 +800,7 @@ fn an_input_and_a_same_name_output_are_independent_and_a_missing_output_never_fa
     backend.seed("Todo", "b", todo("b", "other"), None);
     backend.script(
         "EditAndRead",
-        json!({"outputs":{"todo":{"id":"b"}},"changes":[],"memberships":[]}),
+        json!({"outputs":{"todo":{"id":"b"}},"changes":[],"declarations":[]}),
     );
     let receipt = support::push(
         &backend,
@@ -814,7 +828,7 @@ fn an_input_and_a_same_name_output_are_independent_and_a_missing_output_never_fa
     // The handler omits its declared output: the call fails and rolls back.
     backend.script(
         "EditAndRead",
-        json!({"outputs":{},"changes":[],"memberships":[]}),
+        json!({"outputs":{},"changes":[],"declarations":[]}),
     );
     let receipt = support::push(
         &backend,
@@ -863,7 +877,7 @@ fn an_extra_touch_of_an_undeclared_model_fans_out_without_caller_authority() {
     backend.enroll("project:p", "Project", "p", 7);
     backend.script(
         "Edit",
-        json!({"outputs":{},"changes":[reference("Project","p")],"memberships":[]}),
+        json!({"outputs":{},"changes":[reference("Project","p")],"declarations":[]}),
     );
     let receipt = support::push(
         &backend,
@@ -899,7 +913,7 @@ fn a_touched_output_is_an_actual_read_and_its_failure_rolls_back_the_mutation() 
         backend.enroll("project:p", "Project", "p", 7);
         backend.script(
             "EditAndReadProject",
-            json!({"outputs":{"project":{"id":"p"}},"changes":[reference("Project","p")],"memberships":[]}),
+            json!({"outputs":{"project":{"id":"p"}},"changes":[reference("Project","p")],"declarations":[]}),
         );
         backend
     };
@@ -922,7 +936,7 @@ fn a_touched_output_is_an_actual_read_and_its_failure_rolls_back_the_mutation() 
             ("Todo".into(), "a".into(), 2)
         ]
     );
-    assert_eq!(backend.count("advanceStamp"), 2);
+    assert_eq!(backend.count("guardRecords"), 1);
     assert_eq!(
         backend.count("ensureStamp"),
         0,
@@ -980,7 +994,7 @@ fn a_duplicate_or_inferred_touch_allocates_one_stamp() {
     backend.script(
         "Edit",
         json!({"outputs":{},"changes":[
-            reference("Todo","a"),reference("Project","p"),reference("Project","p")],"memberships":[]}),
+            reference("Todo","a"),reference("Project","p"),reference("Project","p")],"declarations":[]}),
     );
     let receipt = support::push(
         &backend,
@@ -989,7 +1003,7 @@ fn a_duplicate_or_inferred_touch_allocates_one_stamp() {
         vec![edit(1, 1, "Edit", "a", "typed")],
     );
     assert_eq!(receipt["rejections"], json!([]));
-    assert_eq!(backend.count("advanceStamp"), 2);
+    assert_eq!(backend.count("guardRecords"), 1);
     assert_eq!(backend.stamp("Todo", "a"), Some(2));
     assert_eq!(backend.stamp("Project", "p"), Some(7));
     assert_eq!(authority(&receipt), [("Todo".into(), "a".into(), 2)]);
@@ -1000,7 +1014,7 @@ fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
     backend.seed("Todo", "extra", todo("extra", "hidden"), Some(1));
-    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a"),support::add("c","Todo","extra")]}));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"declarations":[support::add("c","Todo","a"),support::add("c","Todo","extra")]}));
     let first = support::push(
         &backend,
         1,
@@ -1009,9 +1023,9 @@ fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_
     );
     assert_eq!(
         first["memberships"],
-        json!([{ "scope":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+        json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
     );
-    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    backend.saved_removal("c", "Todo", "a");
     let state = backend.tables();
     let replay = support::push(
         &backend,
@@ -1027,7 +1041,7 @@ fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_
 fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_replay() {
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
-    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"declarations":[support::add("c","Todo","a")]}));
     let request = json!({"call":{"callId":support::call_id(81),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string();
     let first: Value = serde_json::from_str(
         &support::run(axton_server::process_action(
@@ -1041,9 +1055,9 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
     .unwrap();
     assert_eq!(
         first["memberships"],
-        json!([{ "scope":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
+        json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
     );
-    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    backend.saved_removal("c", "Todo", "a");
     let state = backend.tables();
     let replay: Value = serde_json::from_str(
         &support::run(axton_server::process_action(
@@ -1063,7 +1077,7 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
 fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claims() {
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
-    backend.script("EditAndRead", json!({"outputs":{"todo":{"id":"a"}},"changes":[],"memberships":[support::add("c","Todo","a")]}));
+    backend.script("EditAndRead", json!({"outputs":{"todo":{"id":"a"}},"changes":[],"declarations":[support::add("c","Todo","a")]}));
     let request = crate::capability::request(json!({"call":{"callId":support::call_id(91),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string().as_bytes());
     let first: Value = serde_json::from_str(
         &support::run(axton_server::process_action(
@@ -1075,7 +1089,7 @@ fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claim
         .unwrap(),
     )
     .unwrap();
-    support::settle(&backend, vec![], vec![support::remove("c", "Todo", "a")]);
+    backend.saved_removal("c", "Todo", "a");
     backend.with(|state| {
         let saved = state.tables.calls.get_mut(&support::call_id(91)).unwrap();
         let mut logical: Value = serde_json::from_str(&saved.0).unwrap();

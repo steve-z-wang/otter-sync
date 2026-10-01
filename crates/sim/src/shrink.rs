@@ -122,7 +122,7 @@ mod tests {
         let failing = vec![
             Action::Subscribe {
                 client: 0,
-                scope: "a".into(),
+                stream: "a".into(),
             },
             Action::Enqueue {
                 client: 0,

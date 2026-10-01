@@ -122,7 +122,7 @@ pub enum Input {
 /// The command of one task: everything an SDK asks of its runtime outside an
 /// application callback. Reads run on the committed state; every write owns
 /// its own local transaction; the lifecycles (`connect`, `invoke`,
-/// `transaction`, `scopeBootstrap`, `watch`) are decided
+/// `transaction`, `streamBootstrap`, `watch`) are decided
 /// by the runtime. A counter the engine validates (`version` of a durable
 /// call, `subscriptionId`, `ordinal`, `sequence`) must be a positive safe
 /// integer and is refused otherwise.
@@ -166,8 +166,8 @@ pub enum Command {
     Enqueue { mutation: Mutation },
     /// Apply one local-only operation.
     Direct { operation: crate::Operation },
-    /// Subscribe or unsubscribe a Scope.
-    Scope { scope: String, subscribed: bool },
+    /// Subscribe or unsubscribe a Stream.
+    Stream { stream: String, subscribed: bool },
     /// Submit a durable Action call; answers `{callId, ordinal}`. `store` is
     /// the call's store policy, beside its arguments, never inside them.
     SubmitAction {
@@ -222,31 +222,31 @@ pub enum Command {
     /// Apply one pull page.
     Pull { page: Value },
 
-    // --- Scope and Bootstrap ---
-    /// Register durable intent to follow `scope`; answers the stored state
+    // --- Stream and Bootstrap ---
+    /// Register durable intent to follow `stream`; answers the stored state
     /// and the observer publishing its status.
-    ScopeSubscribe { scope: String },
-    /// The stored state of `scope`, or `null`.
-    ScopeState { scope: String },
+    StreamSubscribe { stream: String },
+    /// The stored state of `stream`, or `null`.
+    StreamState { stream: String },
     /// Register (or retry) the durable load of one identity and wait for the
     /// run it answered with.
     #[serde(rename_all = "camelCase")]
-    ScopeBootstrap {
-        scope: String,
+    StreamBootstrap {
+        stream: String,
         #[serde(deserialize_with = "counter")]
         subscription_id: u64,
     },
     /// The stored run of one identity's load.
     #[serde(rename_all = "camelCase")]
-    ScopeBootstrapState {
-        scope: String,
+    StreamBootstrapState {
+        stream: String,
         #[serde(deserialize_with = "counter")]
         subscription_id: u64,
     },
     /// Remove exactly the registration `subscriptionId` names.
     #[serde(rename_all = "camelCase")]
-    ScopeUnsubscribe {
-        scope: String,
+    StreamUnsubscribe {
+        stream: String,
         #[serde(deserialize_with = "counter")]
         subscription_id: u64,
     },
@@ -488,8 +488,8 @@ pub enum TransactionCommand {
     Direct {
         operation: crate::Operation,
     },
-    Scope {
-        scope: String,
+    Stream {
+        stream: String,
         subscribed: bool,
     },
     /// Submit a named durable Mutation as part of the transaction; answers
@@ -677,7 +677,7 @@ pub enum Event {
         /// object whose `code` the SDK maps to its public error instead of
         /// matching `error`. Absent otherwise. A failure of a registration
         /// this client no longer holds carries `{"code":"subscription.closed"}`;
-        /// a `scopeBootstrap` waiter fails with `{"code":"bootstrap.superseded"}`,
+        /// a `streamBootstrap` waiter fails with `{"code":"bootstrap.superseded"}`,
         /// `{"code":"subscription.closed"}`, `{"code":"client_closed"}`, or the
         /// stored failure of its run, `{"code", "message"}` (`error` is then
         /// that stored message). A direct call that fails once it was sent
@@ -726,8 +726,8 @@ pub enum Event {
     /// delivers it to the language-level listeners; a listener's exception
     /// changes nothing here. `snapshot` is one of:
     ///
-    /// - a subscription observer (`scopeSubscribe`):
-    ///   `{"kind":"subscription","scope","subscriptionId","status":{"active",
+    /// - a subscription observer (`streamSubscribe`):
+    ///   `{"kind":"subscription","stream","subscriptionId","status":{"active",
     ///   "initialization":"pending"|"ready","connection":"offline"|"connecting"|
     ///   "catching-up"|"live"|"stopped","bootstrap":{"phase":"not-requested"|
     ///   "waiting-for-initialization"|"loading"|"catching-up"|"complete"|
@@ -1077,7 +1077,7 @@ mod tests {
             (json!({"read":true}), "missing field `kind`"),
             (json!({"kind":"read"}), "missing field `key`"),
             (
-                json!({"kind":"scopeUnsubscribe","scope":"book","subscriptionId":0}),
+                json!({"kind":"streamUnsubscribe","stream":"book","subscriptionId":0}),
                 "invalid counter",
             ),
             (

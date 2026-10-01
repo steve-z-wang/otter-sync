@@ -188,7 +188,7 @@ impl Report {
         }
     }
 }
-/// What applying a receipt or a page came to. `cursors` are the scope
+/// What applying a receipt or a page came to. `cursors` are the stream
 /// cursors the page moved, at their new values.
 #[derive(Debug, Default, Serialize)]
 pub struct ApplyReport {
@@ -317,15 +317,15 @@ pub struct AbandonedCall {
 }
 
 /// Marker a transaction leaves in its changed set when it subscribes or
-/// unsubscribes a scope; stripped before the set reaches watchers.
+/// unsubscribes a stream; stripped before the set reaches watchers.
 pub(crate) const SUBSCRIPTION_MARK: &str = "axton_subscription:";
-/// Marker a transaction leaves in its changed set when it changes a Scope's
+/// Marker a transaction leaves in its changed set when it changes a Stream's
 /// bootstrap state ([#151](https://github.com/zanminwang/axton/issues/151)).
 /// A load request changes no membership, so - unlike [`SUBSCRIPTION_MARK`] - it
-/// bumps neither the subscription generation nor a scope epoch: registering a
+/// bumps neither the subscription generation nor a stream epoch: registering a
 /// load must not make the open live session stale or a pull in flight. It is
-/// stripped like the other mark, and the Scopes it named are read back through
-/// [`Client::last_bootstrap_scopes`].
+/// stripped like the other mark, and the Streams it named are read back through
+/// [`Client::last_bootstrap_streams`].
 pub(crate) const BOOTSTRAP_MARK: &str = "axton_bootstrap:";
 
 /// Take every mark with `prefix` out of `changed` and answer with the names
@@ -347,8 +347,8 @@ fn strip_marks(changed: &mut BTreeSet<String>, prefix: &str) -> BTreeSet<String>
 }
 
 /// In-memory memory of the pulls this client issued and of how many times each
-/// scope's subscription changed since open. A page whose request predates the
-/// current subscription of any scope it names is stale, not a gap: the
+/// stream's subscription changed since open. A page whose request predates the
+/// current subscription of any stream it names is stale, not a gap: the
 /// resubscribe reset the cursor, and the next pull from that cursor delivers
 /// everything. Nothing here is durable; a process restart cannot have a
 /// request in flight.
@@ -360,8 +360,8 @@ struct PullLedger {
     /// session compares it with the value it started under.
     generation: u64,
 }
-/// One request: the cursor it asked from on every scope, and the epoch each
-/// scope's subscription was at.
+/// One request: the cursor it asked from on every stream, and the epoch each
+/// stream's subscription was at.
 #[derive(Clone)]
 struct IssuedPull {
     cursors: BTreeMap<String, u64>,
@@ -369,13 +369,13 @@ struct IssuedPull {
 }
 impl PullLedger {
     const CAPACITY: usize = 1024;
-    fn epoch(&self, scope: &str) -> u64 {
-        self.epochs.get(scope).copied().unwrap_or(0)
+    fn epoch(&self, stream: &str) -> u64 {
+        self.epochs.get(stream).copied().unwrap_or(0)
     }
     /// Apply the subscription changes a committed transaction recorded.
     fn absorb(&mut self, changed: &mut BTreeSet<String>) {
-        for scope in strip_marks(changed, SUBSCRIPTION_MARK) {
-            *self.epochs.entry(scope).or_insert(0) += 1;
+        for stream in strip_marks(changed, SUBSCRIPTION_MARK) {
+            *self.epochs.entry(stream).or_insert(0) += 1;
             self.generation += 1;
         }
     }
@@ -393,7 +393,7 @@ impl PullLedger {
         cursors.keys().map(|c| (c.clone(), self.epoch(c))).collect()
     }
     /// Whether the page answering a request from `cursors` was requested under
-    /// an earlier subscription of one of its scopes. Consumes the matching
+    /// an earlier subscription of one of its streams. Consumes the matching
     /// request. A page this client never requested is not judged here.
     fn stale(&mut self, cursors: &BTreeMap<String, u64>) -> bool {
         let current = self.current_epochs(cursors);
@@ -404,7 +404,7 @@ impl PullLedger {
             .position(|p| matches(p) && p.epochs == current)
         {
             self.issued.remove(i);
-            // The wire identifies requests only by scopes and cursors. If old
+            // The wire identifies requests only by streams and cursors. If old
             // and current subscriptions issued the same request, this response
             // could belong to either one. Let every indistinguishable answer use
             // the cursor gate; otherwise the fresh answer can be dropped as stale
@@ -580,7 +580,7 @@ impl<S: ClientStore> Client<S> {
         Ok(client)
     }
     /// Create `<path>.<n>`, initialise it for `schema`, carry the old file's
-    /// subscribed Scopes over as fresh uninitialized subscriptions, and point
+    /// subscribed Streams over as fresh uninitialized subscriptions, and point
     /// the sidecar at it. The replacement resets every delivery boundary and
     /// allocates identities above the replaced file's counter, so no handle,
     /// acknowledgement or request of the old replica matches one of them.
@@ -604,7 +604,7 @@ impl<S: ClientStore> Client<S> {
         }
         let new_file = schema_store::next_free_file(path);
         let mut old = factory(old_file)?;
-        let scopes: Vec<String> = old
+        let streams: Vec<String> = old
             .query_committed("SELECT scope FROM axton_subscription ORDER BY scope", &[])
             .map(|rows| {
                 rows.rows
@@ -633,13 +633,13 @@ impl<S: ClientStore> Client<S> {
         };
         let abandoned_loads = abandoned_loads(&mut old)?;
         let mut client = Self::open(factory(&new_file)?, schema.clone())?;
-        if !scopes.is_empty() || next_subscription.is_some() {
+        if !streams.is_empty() || next_subscription.is_some() {
             client.write(|e| {
                 if let Some(next) = next_subscription {
                     e.carry_subscription_allocator(next)?;
                 }
-                for scope in &scopes {
-                    e.ensure_subscription(scope)?;
+                for stream in &streams {
+                    e.ensure_subscription(stream)?;
                 }
                 Ok(())
             })?;
@@ -708,10 +708,10 @@ impl<S: ClientStore> Client<S> {
     pub fn last_changed(&self) -> &BTreeSet<String> {
         &self.last_changed
     }
-    /// The Scopes whose bootstrap state the last committed transaction changed.
+    /// The Streams whose bootstrap state the last committed transaction changed.
     /// The scheduler reads its work from [`Client::bootstrap_tasks`]; this says
     /// whether a commit touched any of it at all.
-    pub fn last_bootstrap_scopes(&self) -> &BTreeSet<String> {
+    pub fn last_bootstrap_streams(&self) -> &BTreeSet<String> {
         &self.last_bootstrap
     }
     pub fn session_active(&self) -> bool {
@@ -1130,12 +1130,12 @@ impl<S: ClientStore> Client<S> {
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         self.write(|e| e.freeze(max_bytes))?
-            .map(|bytes| with_capabilities(&bytes, &[SCOPE_MEMBERSHIP_CAPABILITY]))
+            .map(|bytes| with_capabilities(&bytes, &[STREAM_MEMBERSHIP_CAPABILITY]))
             .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority
     /// lands, the completed operations leave the queue and what remains
-    /// replays, in one transaction. Nothing waits for a scope.
+    /// replays, in one transaction. Nothing waits for a stream.
     pub fn acknowledge(&mut self, sequence: u64, receipt: PushReceipt) -> Result<ApplyReport> {
         self.write(|e| e.acknowledge(sequence, &receipt))
     }
@@ -1343,23 +1343,23 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             }
         }
     }
-    /// Subscribe or unsubscribe `scope` in this transaction. Subscribing
+    /// Subscribe or unsubscribe `stream` in this transaction. Subscribing
     /// registers durable intent with no delivery position; subscribing an
-    /// already subscribed scope is not a membership change: it touches no
+    /// already subscribed stream is not a membership change: it touches no
     /// cursor and leaves the subscription generation alone.
-    pub fn set_scope(&mut self, scope: String, subscribed: bool) -> Result<()> {
+    pub fn set_stream(&mut self, stream: String, subscribed: bool) -> Result<()> {
         if subscribed {
             // Registration is intent only: the first delivery boundary is the
             // head the Downlink worker's next handshake acknowledges, not zero
             // ([#150](https://github.com/zanminwang/axton/issues/150)).
-            let (_, created) = self.engine.ensure_subscription(&scope)?;
+            let (_, created) = self.engine.ensure_subscription(&stream)?;
             if created {
-                self.engine.mark_subscription(&scope);
+                self.engine.mark_subscription(&stream);
             }
             Ok(())
         } else {
-            if self.engine.unsubscribe(&scope)? {
-                self.engine.mark_subscription(&scope);
+            if self.engine.unsubscribe(&stream)? {
+                self.engine.mark_subscription(&stream);
             }
             Ok(())
         }

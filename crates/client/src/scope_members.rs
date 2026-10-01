@@ -1,16 +1,16 @@
-//! Durable per-scope ownership evidence. A removal releases a replica base;
+//! Durable per-stream ownership evidence. A removal releases a replica base;
 //! it is never authoritative absence or a cascading domain delete.
 use crate::authority::{Held, StageEntry, StageMode};
 use crate::engine::{Engine, as_u64};
 use crate::store::ClientStore;
 use crate::{ApplyReport, Operation};
-use axton_core::{MAX_SAFE_INTEGER, MembershipClaim, RecordKey, Result, ScopeChange, invalid};
+use axton_core::{MAX_SAFE_INTEGER, MembershipClaim, RecordKey, Result, StreamChange, invalid};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct MemberEvidence {
-    pub scope: String,
+    pub stream: String,
     pub key: RecordKey,
     pub cursor: u64,
     pub present: bool,
@@ -24,14 +24,15 @@ pub enum MembershipMerge {
 
 impl<S: ClientStore> Engine<'_, S> {
     pub fn merge_member(&mut self, evidence: MemberEvidence) -> Result<MembershipMerge> {
-        if evidence.scope.is_empty() || evidence.cursor == 0 || evidence.cursor > MAX_SAFE_INTEGER {
+        if evidence.stream.is_empty() || evidence.cursor == 0 || evidence.cursor > MAX_SAFE_INTEGER
+        {
             return Err(invalid("invalid membership evidence"));
         }
         let key = self
             .schema
             .record_key(&evidence.key.model, &evidence.key.identity)?;
         let parameters = [
-            json!(evidence.scope),
+            json!(evidence.stream),
             json!(key.model),
             json!(key.encoded_identity()?),
         ];
@@ -55,7 +56,7 @@ impl<S: ClientStore> Engine<'_, S> {
         for claim in claims {
             claim.validate()?;
             self.merge_member(MemberEvidence {
-                scope: claim.scope.clone(),
+                stream: claim.stream.clone(),
                 key: claim.key(),
                 cursor: claim.cursor,
                 present: true,
@@ -263,30 +264,34 @@ impl<S: ClientStore> Engine<'_, S> {
         report.reports.extend(self.rebuild_held(&pending)?);
         Ok(report)
     }
-    pub(crate) fn apply_scope_changes(&mut self, changes: &[ScopeChange]) -> Result<ApplyReport> {
+    pub(crate) fn apply_stream_changes(&mut self, changes: &[StreamChange]) -> Result<ApplyReport> {
         let mut releases = BTreeMap::new();
         // Merge the complete delivery before staging any body or release.
         for change in changes {
-            let (scope, cursor, key, present) = match change {
-                ScopeChange::Upsert {
-                    scope,
+            let (stream, cursor, key, present) = match change {
+                StreamChange::Upsert {
+                    stream,
                     cursor,
                     record,
                 } => (
-                    scope,
+                    stream,
                     *cursor,
                     self.schema.record_key(&record.model, &record.identity)?,
                     true,
                 ),
-                ScopeChange::Remove { scope, cursor, key } => (
-                    scope,
+                StreamChange::Remove {
+                    stream,
+                    cursor,
+                    key,
+                } => (
+                    stream,
                     *cursor,
                     self.schema.record_key(&key.model, &key.identity)?,
                     false,
                 ),
             };
             let merged = self.merge_member(MemberEvidence {
-                scope: scope.clone(),
+                stream: stream.clone(),
                 cursor,
                 key: key.clone(),
                 present,
@@ -298,7 +303,7 @@ impl<S: ClientStore> Engine<'_, S> {
         let mut report = ApplyReport::default();
         let mut held = Held::new();
         for change in changes {
-            if let ScopeChange::Upsert { record, .. } = change {
+            if let StreamChange::Upsert { record, .. } = change {
                 let key = self.schema.record_key(&record.model, &record.identity)?;
                 if !record.state.is_null() && !self.held(&key)? {
                     self.skip_authority_occurrence()?;

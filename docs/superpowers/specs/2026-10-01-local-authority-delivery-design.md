@@ -1,7 +1,7 @@
 # Local authority delivery
 
 Date: 2026-10-01
-Status: Proposed design; no runtime changes implemented.
+Status: Approved for implementation by the user on 2026-10-01.
 Baseline: `134294d0e7b0d6161e9c9a8dfed85eee02ca1d1b`.
 
 ## Decision

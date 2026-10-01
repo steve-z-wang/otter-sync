@@ -793,11 +793,23 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
   assert.deepEqual([before.stamps, before.members, before.heads, before.positions], [
     [{ identity_key: key(member), stamp: 1 }], [{ scope: B, identity_key: key(member) }], [{ scope: B, head: 1 }], [{ scope: B, identity_key: key(member), cursor: 1, stamp: 1 }],
   ], 'one record is a member of B; the other has no metadata');
-  const both = scope => { scope(A).add.todo({ id: member }); scope(A).add.todo({ id: bare }); };
+  const both = scope => {
+    scope(A).add.todo({ id: member }).tag('X').tag('Y');
+    scope(A).add.todo({ id: bare }).tag('X');
+  };
+  const labels = () => q('SELECT m.scope,r.identity_key,t.name FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id JOIN axton_scope_member_tag mt ON mt.member_id=m.id JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=ANY($1::text[]) ORDER BY m.scope,r.identity_key,t.name', [[A, B]]);
+  const beforeLabels = await labels();
   const cases = [
     // Resolution initializes the bare record's stamp before the Loader refuses it.
     ['a Loader denial after the declarations', () => { refused = bare; declare = both; }, 'todo.forbidden'],
     ['an enrollment outside the page', () => { returned = [member]; declare = both; }, 'handler.invalid'],
+    ['label add outside the returned page', () => {
+      returned = [bare];
+      declare = scope => { scope(A).add.todo(bare).tag('X'); scope(B).tag('Y').add.todo(member); };
+    }, 'handler.invalid'],
+    ['label add without membership for a returned identity', () => {
+      declare = scope => { scope(A).add.todo(member).tag('X'); scope(A).tag('Y').add.todo(bare); };
+    }, 'handler.invalid'],
     ['a forged remove beside a valid add', () => {
       declare = scope => scope(A).add.todo({ id: member });
       tamper = answered => ({ ...answered, memberships: [...answered.memberships, { kind: 'remove', scope: B, record: { model: 'Todo', identity: { id: member } } }] });
@@ -826,6 +838,7 @@ test('a Loader denial, an out-of-page enrollment and a forged remove or change a
     assert.deepEqual(failed.records, [], label);
     assert.deepEqual((await claimed(item.callId))[0].response, failed, `${label}: the failure is the saved outcome`);
     assert.deepEqual(await tables(ids, [A, B]), before, `${label}: no business row, stamp, membership, head or position changed`);
+    assert.deepEqual(await labels(), beforeLabels, `${label}: label associations rolled back`);
     assert.deepEqual(await q('SELECT note FROM load_audit WHERE note=$1', [`deny:${item.callId}`]), [], `${label}: the handler's own write rolled back`);
     assert.deepEqual(wakes.woken, [], `${label}: no wake`);
   }

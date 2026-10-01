@@ -641,6 +641,7 @@ test("native Load enrollment releases live content durably and a second Scope ho
   const directory = await scratch("load-release");
   await fixture.seed("release", 2);
   fixture.enrolling.add("release");
+  fixture.enrollmentTags.set("release", [["X"]]);
   let client = await GeneratedClient.open({ path: directory.path, server: server() });
   try {
     const first = await client.scopes.subscribe("items:release");
@@ -649,17 +650,24 @@ test("native Load enrollment releases live content durably and a second Scope ho
     await (await client.loads.projectItems({ project: "release" })).wait();
     await fixture.membership("release-2", "items:release-other", true);
     await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item'", ["items:release-other"]))?.length === 1, "the second hold persisted");
-    await fixture.membership("release-1", "items:release", false);
-    await fixture.membership("release-2", "items:release", false);
+    const hooks = await seen(client);
+    await fixture.backend.transaction(({scope}) => {
+      scope("items:release").where({tags: {only: ["X"]}}).remove();
+      scope("items:release").tag("X").remove();
+    });
     await wait(async () => (await client.models.item.get({ id: "release-1" })) === null, "live release evicts without an application hook");
     await wait(async () => (await client.readSql("SELECT present FROM axton_scope_member WHERE scope=? AND model='Item' AND present=0", ["items:release"]))?.length === 2, "both first-Scope removals persisted before checking the second hold");
     assert.ok(await client.models.item.get({ id: "release-2" }), "second Scope keeps content");
+    assert.deepEqual(await seen(client), hooks, "withdrawals do not invoke onStore");
+    await fixture.backend.transaction(({scope}) => scope("items:release-other").where({tags: {only: []}}).remove());
+    await wait(async () => (await client.models.item.get({ id: "release-2" })) === null, "last Scope release evicts B");
     await client.close();
     client = await GeneratedClient.open({ path: directory.path });
     assert.equal(await client.models.item.get({ id: "release-1" }), null, "release persists across offline reopen");
-    assert.ok(await client.models.item.get({ id: "release-2" }), "second hold persists offline");
+    assert.equal(await client.models.item.get({ id: "release-2" }), null, "last hold release persists offline");
   } finally {
     fixture.enrolling.delete("release");
+    fixture.enrollmentTags.delete("release");
     await client.close();
     await directory.cleanup();
   }
@@ -668,6 +676,7 @@ test("native Load enrollment releases live content durably and a second Scope ho
 test("a delayed enrolled Load response and its durable replay cannot restore or re-enroll a released member", async () => {
   await fixture.seed("released-page", 2);
   fixture.enrolling.add("released-page");
+  fixture.enrollmentTags.set("released-page", [["X"], ["Y"]]);
   const reader = await subscribed("released-page", "items:released-page");
   const held = proxy.holdResponse((exchange) => exchange.path === "/sync/loads" && (JSON.parse(exchange.body).loads as LoadRequestItem[]).some((item) => item.args.project === "released-page" && item.continuation === null));
   try {
@@ -675,7 +684,10 @@ test("a delayed enrolled Load response and its durable replay cannot restore or 
     const load = await client.loads.projectItems({ project: "released-page" });
     const exchange = await held.arrived;
     await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "Scope enrollment delivered while the Load response was held");
-    await fixture.membership("released-page-1", "items:released-page", false);
+    await fixture.backend.transaction(({scope}) => {
+      scope("items:released-page").where({tags: {only: ["X", "Y"]}}).remove();
+      scope("items:released-page").tag("X").remove();
+    });
     await wait(async () => (await client.models.item.get({ id: "released-page-1" })) === null, "newer live removal committed before the old claim");
     const runs = fixture.handled.length;
     const head = await fixture.head("items:released-page");
@@ -685,14 +697,29 @@ test("a delayed enrolled Load response and its durable replay cannot restore or 
     // Replay the same committed first-page HTTP request through production admission.
     const replay = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer alice" }, body: exchange.body });
     assert.equal(replay.status, 200);
-    await replay.json();
+    assert.deepEqual(await replay.json(), JSON.parse(exchange.response!), "saved reply retains its original claims");
     assert.equal(fixture.handled.length, runs + 1, "only the traversal's final empty page ran; durable replay ran no handler");
     assert.equal(await fixture.head("items:released-page"), head, "replayed page did not re-enroll or publish");
     const members = await fixture.pool.query("SELECT 1 FROM axton_scope_member AS m JOIN axton_record AS r ON r.id=m.record_id WHERE m.scope=$1 AND r.model='Item' AND r.identity_key=$2", ["items:released-page", JSON.stringify({ id: "released-page-1" })]);
     assert.equal(members.rowCount, 0, "server membership remains released");
+    assert.deepEqual(await fixture.taggedMembers("items:released-page"), [], "saved replay did not restore labels");
+    const fresh = await client.loads.projectItems({project: "released-page"});
+    assert.notEqual(fresh.id, load.id);
+    await fresh.wait();
+    await wait(async () => (await titleOf(client, "released-page-1")) === "released-page-1 title", "fresh traversal re-enrolls the released row");
+    const labeled = await fixture.pool.query("SELECT r.identity_key,t.name FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id JOIN axton_scope_member_tag mt ON mt.member_id=m.id JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 ORDER BY r.identity_key,t.name", ["items:released-page"]);
+    assert.deepEqual(labeled.rows, [
+      {identity_key: JSON.stringify({id: "released-page-1"}), name: "X"},
+      {identity_key: JSON.stringify({id: "released-page-1"}), name: "Y"},
+      {identity_key: JSON.stringify({id: "released-page-2"}), name: "X"},
+      {identity_key: JSON.stringify({id: "released-page-2"}), name: "Y"},
+    ]);
+    await fixture.retitle("released-page-1", "fresh touch");
+    await wait(async () => (await titleOf(client, "released-page-1")) === "fresh touch", "fresh enrollment receives later touches");
   } finally {
     held.release();
     fixture.enrolling.delete("released-page");
+    fixture.enrollmentTags.delete("released-page");
     await reader.cleanup();
   }
 });

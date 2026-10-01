@@ -96,11 +96,11 @@ export async function createFixture() {
         for (const item of items) scope.add.item(item);
         scope.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
       }
-      for (const tags of enrollmentTags.get(args.project) ?? [])
-        for (const item of items) {
-          const added = ctx.scope(`items:${args.project}`).add.item(item);
-          if (tags.length) added.tag(tags);
-        }
+      const labelGroups = enrollmentTags.get(args.project);
+      if (labelGroups) for (const item of items) {
+        const added = ctx.scope(`items:${args.project}`).add.item(item);
+        for (const labels of labelGroups) if (labels.length) added.tag(labels);
+      }
       return {
         data: { items, tags: pageTags },
         next: { state: { after: items.at(-1)!.id, page: pageNumber, trail: [...(state?.trail ?? []), ...items.map((item) => item.id)], meta: { size: PAGE, nested: { flags: [true, false, null], label: `p${pageNumber}` } } } },

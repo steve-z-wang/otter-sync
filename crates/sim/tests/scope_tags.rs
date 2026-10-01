@@ -12,12 +12,26 @@ fn add(scope: &str, tags: &[&str]) -> ScopeIntent {
         tags: tags.iter().map(|v| v.to_string()).collect(),
     }
 }
-fn remove_tag(scope: &str, tag: &str) -> ScopeIntent {
+fn withdraw_matching(scope: &str, tag: &str) -> ScopeIntent {
     ScopeIntent::Select {
         scope: scope.into(),
         model: None,
         predicate: serde_json::from_value(serde_json::json!({"tags":{"any":[tag]}})).unwrap(),
         action: axton_server::scope_members::SelectionAction::Remove,
+    }
+}
+fn select(scope: &str, predicate: serde_json::Value) -> ScopeIntent {
+    ScopeIntent::Select {
+        scope: scope.into(),
+        model: None,
+        predicate: serde_json::from_value(predicate).unwrap(),
+        action: axton_server::scope_members::SelectionAction::Remove,
+    }
+}
+fn detach(scope: &str, tag: &str) -> ScopeIntent {
+    ScopeIntent::DetachTags {
+        scope: scope.into(),
+        tags: vec![tag.into()],
     }
 }
 fn tags(sim: &mut Sim, intents: Vec<ScopeIntent>) {
@@ -47,7 +61,7 @@ fn seeded(seed: u64, scopes: &[&str]) -> Sim {
 fn removing_x_releases_the_whole_member_including_y_and_survives_offline_reopen() {
     let mut sim = seeded(9100, &["u"]);
     tags(&mut sim, vec![add("u", &["x", "y"])]);
-    tags(&mut sim, vec![remove_tag("u", "x")]);
+    tags(&mut sim, vec![withdraw_matching("u", "x")]);
     assert!(sim.host.stored_memberships(&entry_key("a")).is_empty());
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
@@ -61,10 +75,10 @@ fn second_scope_hold_preserves_content_until_its_own_release() {
     let mut sim = seeded(9101, &["u", "v"]);
     tags(&mut sim, vec![add("u", &["x"]), add("v", &["y"])]);
     sim.settle();
-    tags(&mut sim, vec![remove_tag("u", "x")]);
+    tags(&mut sim, vec![withdraw_matching("u", "x")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
-    tags(&mut sim, vec![remove_tag("v", "y")]);
+    tags(&mut sim, vec![withdraw_matching("v", "y")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
 }
@@ -75,12 +89,12 @@ fn compacted_final_upsert_replaces_hidden_tag_history_then_final_remove_evicts()
     // The host keeps one final position per identity, exactly like production compaction.
     sim.apply(Action::Crash { client: 0 }).unwrap();
     tags(&mut sim, vec![add("u", &["x"])]);
-    tags(&mut sim, vec![remove_tag("u", "x")]);
+    tags(&mut sim, vec![withdraw_matching("u", "x")]);
     tags(&mut sim, vec![add("u", &["y"])]);
     sim.apply(Action::Restart { client: 0 }).unwrap();
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
-    tags(&mut sim, vec![remove_tag("u", "y")]);
+    tags(&mut sim, vec![withdraw_matching("u", "y")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
 }
@@ -93,12 +107,18 @@ fn reproducible_tag_histories_converge_after_reordered_delivery_and_restart() {
         for step in 0..80 {
             let scope = if rng.chance(1, 2) { "u" } else { "v" };
             let tag = if rng.chance(1, 2) { "x" } else { "y" };
-            let action = match rng.below(8) {
+            let action = match rng.below(10) {
                 0..=2 => Action::ScopeTags {
                     intents: vec![add(scope, &[tag])],
                 },
                 3 => Action::ScopeTags {
-                    intents: vec![remove_tag(scope, tag)],
+                    intents: vec![withdraw_matching(scope, tag)],
+                },
+                8 => Action::ScopeTags {
+                    intents: vec![detach(scope, tag)],
+                },
+                9 => Action::ScopeTags {
+                    intents: vec![select(scope, serde_json::json!({"tags":{"only":[]}}))],
                 },
                 4 => Action::Pull { client: 0 },
                 5 => Action::Deliver,
@@ -135,7 +155,14 @@ fn delayed_old_scope_page_cannot_restore_a_released_replica() {
     .unwrap();
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Deliver).unwrap(); // Snapshot the upsert, leave its response queued.
-    tags(&mut sim, vec![add("u", &["x"]), remove_tag("u", "x")]);
+    tags(
+        &mut sim,
+        vec![
+            add("u", &["x"]),
+            select("u", serde_json::json!({"tags":{"only":["x"]}})),
+            detach("u", "x"),
+        ],
+    );
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Swap { i: 0, j: 1 }).unwrap();
     sim.apply(Action::Deliver).unwrap();
@@ -148,7 +175,9 @@ fn delayed_old_scope_page_cannot_restore_a_released_replica() {
 
 #[test]
 fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
-    let mut sim = seeded(9104, &["u"]);
+    let mut sim = seeded(9104, &["u", "v"]);
+    tags(&mut sim, vec![add("u", &["x"]), add("v", &["x"])]);
+    sim.settle();
     sim.apply(Action::Enqueue {
         client: 0,
         mutation: axton_sim::MutationSpec::Edit {
@@ -157,7 +186,29 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
         },
     })
     .unwrap();
-    tags(&mut sim, vec![add("u", &["x"]), remove_tag("u", "x")]);
+    tags(
+        &mut sim,
+        vec![
+            add("u", &["x"]),
+            select("u", serde_json::json!({"tags":{"only":["x"]}})),
+            detach("u", "x"),
+        ],
+    );
+    sim.apply(Action::Pull { client: 0 }).unwrap();
+    sim.apply(Action::Deliver).unwrap();
+    sim.apply(Action::Deliver).unwrap();
+    assert_eq!(
+        sim.read_text(0, &entry_key("a")).as_deref(),
+        Some("pending"),
+        "second hold preserves the optimistic edit"
+    );
+    tags(
+        &mut sim,
+        vec![
+            select("v", serde_json::json!({"tags":{"only":["x"]}})),
+            detach("v", "x"),
+        ],
+    );
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Deliver).unwrap();
     sim.apply(Action::Deliver).unwrap();
@@ -199,7 +250,9 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
         "receipt does not repopulate the released base"
     );
 
-    let mut local = seeded(9105, &["u"]);
+    let mut local = seeded(9105, &["u", "v"]);
+    tags(&mut local, vec![add("u", &["x"]), add("v", &["x"])]);
+    local.settle();
     local
         .apply(Action::Direct {
             client: 0,
@@ -207,7 +260,27 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
             text: "device".into(),
         })
         .unwrap();
-    tags(&mut local, vec![add("u", &["x"]), remove_tag("u", "x")]);
+    tags(
+        &mut local,
+        vec![
+            add("u", &["x"]),
+            select("u", serde_json::json!({"tags":{"only":["x"]}})),
+            detach("u", "x"),
+        ],
+    );
+    local.settle();
+    assert_eq!(
+        local.read_text(0, &entry_key("a")).as_deref(),
+        Some("device"),
+        "second hold preserves the direct patch"
+    );
+    tags(
+        &mut local,
+        vec![
+            select("v", serde_json::json!({"tags":{"only":["x"]}})),
+            detach("v", "x"),
+        ],
+    );
     local.settle();
     assert_eq!(
         local.read_text(0, &entry_key("a")),
@@ -335,7 +408,7 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
         })
         .unwrap();
     tags(&mut sim, vec![add("u", &["x"])]);
-    tags(&mut sim, vec![remove_tag("u", "x")]);
+    tags(&mut sim, vec![withdraw_matching("u", "x")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("local"));
     sim.apply(Action::Crash { client: 0 }).unwrap();
@@ -390,9 +463,17 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
             sim.settle();
             for step in 0..6 {
                 let scope = if rng.chance(1, 2) { "u" } else { "v" };
-                match rng.below(5) {
+                match rng.below(7) {
                     0 => tags(&mut sim, vec![add(scope, &["x", "y"])]),
-                    1 => tags(&mut sim, vec![remove_tag(scope, "x")]),
+                    1 => tags(&mut sim, vec![withdraw_matching(scope, "x")]),
+                    5 => tags(&mut sim, vec![detach(scope, "x")]),
+                    6 => tags(
+                        &mut sim,
+                        vec![select(
+                            scope,
+                            serde_json::json!({"tags":{"only":["x","y"]}}),
+                        )],
+                    ),
                     2 => tags(
                         &mut sim,
                         vec![ScopeIntent::Remove {
@@ -469,4 +550,67 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
                 .unwrap_or_else(|e| panic!("seed{seed} cycle{cycle}: {e}"));
         }
     }
+}
+
+#[test]
+fn exact_only_x_cleanup_preserves_a_c_through_duplicate_reordered_delivery_and_reopen() {
+    let mut sim = Sim::new(9400, 1);
+    sim.apply(Action::Subscribe {
+        client: 0,
+        scope: "u".into(),
+    })
+    .unwrap();
+    for id in ["A", "B", "C"] {
+        sim.apply(Action::Declare {
+            key: format!("Entry:{id}"),
+            touch: Some(Some(format!("{id} text"))),
+            memberships: vec![("u".into(), true)],
+        })
+        .unwrap();
+    }
+    sim.settle();
+    let added = |id: &str, labels: &[&str]| ScopeIntent::Add {
+        scope: "u".into(),
+        record: RecordRef {
+            model: "Entry".into(),
+            identity: serde_json::json!({"id":id}),
+        },
+        tags: labels.iter().map(|label| (*label).into()).collect(),
+    };
+    tags(
+        &mut sim,
+        vec![
+            added("A", &["X", "Y"]),
+            added("B", &["X"]),
+            added("C", &["Y"]),
+        ],
+    );
+    let head = sim.host.head("u");
+    tags(
+        &mut sim,
+        vec![
+            select("u", serde_json::json!({"tags":{"only":["X"]}})),
+            detach("u", "X"),
+        ],
+    );
+    assert_eq!(sim.host.head("u"), head + 1);
+    assert!(sim.host.stored_memberships(&entry_key("B")).is_empty());
+    for id in ["A", "C"] {
+        assert_eq!(
+            sim.host.stored_memberships(&entry_key(id)),
+            vec!["u".to_string()]
+        );
+    }
+    sim.apply(Action::Pull { client: 0 }).unwrap();
+    sim.apply(Action::Duplicate).unwrap();
+    sim.apply(Action::Hold).unwrap();
+    sim.settle();
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    sim.apply(Action::Restart { client: 0 }).unwrap();
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("B")), None);
+    for id in ["A", "C"] {
+        assert_eq!(sim.read_text(0, &entry_key(id)), Some(format!("{id} text")));
+    }
+    sim.check().unwrap();
 }

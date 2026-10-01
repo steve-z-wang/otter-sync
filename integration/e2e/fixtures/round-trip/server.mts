@@ -18,6 +18,7 @@ type Tx = Prisma.TransactionClient;
 export async function createExample() {
   const db = new PrismaClient();
   let calls = 0;
+  let loaderCalls = 0;
   const handlers: Handlers<Tx> = {
     async edit({ input, tx }) {
       calls++;
@@ -40,6 +41,7 @@ export async function createExample() {
   const refusing = new Set<string>();
   const loaders: Loaders<Tx> = {
     async entry({ ids, tx }) {
+      loaderCalls++;
       if (ids.some((identity) => refusing.has(identity.id)))
         throw new Error(`the Entry loader refuses ${ids.map((i) => i.id).join(", ")}`);
       return Promise.all(ids.map((identity) => tx.entry.findUnique({ where: identity })));
@@ -56,6 +58,13 @@ export async function createExample() {
     db,
     backend,
     schema,
+    get loaderCalls() { return loaderCalls; },
+    async members(scope: string) {
+      const rows = await db.$queryRawUnsafe<{ identity_key: string; tags: string[] }[]>(
+        "SELECT r.identity_key, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 AND r.model='Entry' GROUP BY r.identity_key ORDER BY r.identity_key", scope,
+      );
+      return rows.map(row => [JSON.parse(row.identity_key).id, row.tags]);
+    },
     get handlerCalls() {
       return calls;
     },

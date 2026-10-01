@@ -17,3 +17,5 @@ dart analyze integration/generated-api
 bash integration/generated-api/negative/check.sh
 cd integration/generated-api
 dart test generated_test.dart
+
+bash "$root/integration/persistence/client/run.sh"

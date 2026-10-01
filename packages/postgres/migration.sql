@@ -1,3 +1,11 @@
+DO $$
+BEGIN
+ IF EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_channel','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log','axton_membership','axton_invalidation']) AND relkind='r')
+ AND (to_regclass('axton_scope') IS NULL OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name LIKE 'axton_%' AND column_name='channel')) THEN
+  RAISE EXCEPTION 'installed legacy framework layout: apply forward migrations before migration.sql';
+ END IF;
+END
+$$;
 -- AXTON's framework tables for a new database. Apply the whole file at once
 -- (psql, or one simple-protocol query): the trigger functions are
 -- dollar-quoted. Re-applying it changes nothing. A database installed from

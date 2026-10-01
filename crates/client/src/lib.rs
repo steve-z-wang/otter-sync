@@ -424,11 +424,13 @@ impl PullLedger {
 }
 
 impl<S: ClientStore> Client<S> {
-    /// Open `store` for `schema`. An earlier framework layout is refused: file
+    /// Open `store` for `schema`. Supported ownership renames migrate first.
+    /// An incompatible earlier framework layout is refused: file
     /// selection and rebuilding belong to [`Client::open_at`]. The schema the
     /// store is built for is recorded (or replaced) once reconciliation succeeds.
     pub fn open(mut store: S, schema: Schema) -> Result<Self> {
         schema.validate()?;
+        ddl::migrate_scope_layout(&mut store)?;
         if let ddl::Layout::Legacy(what) = ddl::check_layout(&mut store)? {
             return Err(invalid(format!(
                 "this database was created by an earlier AXTON runtime ({what}); open it through a path so it can be rebuilt beside"
@@ -519,6 +521,7 @@ impl<S: ClientStore> Client<S> {
         let path = path.as_ref().to_path_buf();
         let file = schema_store::current_file(&path);
         let mut store = factory(&file)?;
+        ddl::migrate_scope_layout(&mut store)?;
         let mut client = match ddl::check_layout(&mut store)? {
             ddl::Layout::Fresh => Self::open(store, schema.clone())?,
             ddl::Layout::Legacy(what) => {

@@ -5,11 +5,18 @@
 // Every assertion reads the committed tables through a separate pool.
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {execFileSync} from 'node:child_process';
+import {Client as DeviceClient} from '../../../packages/client-js/index.mts';
 import {createRequire} from 'node:module';
 import {Pool,Client} from 'pg';
 import {createBackend} from '../../../packages/server/index.mts';
-import {pg,answer,persistence} from '../../../packages/postgres/index.mts';
+import {pg,prisma,answer,persistence} from '../../../packages/postgres/index.mts';
+import {drizzle} from '../../../packages/postgres/src/drizzle.mts';
+import {drizzle as drizzleOrm} from 'drizzle-orm/node-postgres';
 import * as SQL from '../../../packages/postgres/src/sql.mts';
 import {sqlStatements} from '../../../packages/postgres/src/statements.mts';
 const require=createRequire(import.meta.url);
@@ -194,7 +201,7 @@ test('the association trigger refuses a tag of another Scope on insert and updat
  const [{id:tagQ}]=await q("INSERT INTO axton_scope_tag(scope,name) VALUES('own-Q','X') RETURNING id::text");
  assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagQ]),'23514','a member cannot carry a tag of another Scope');
  assert.equal(await refused('INSERT INTO axton_scope_member_tag(member_id,tag_id) VALUES($1,$2)',[member,tagP]),'accepted');
- assert.equal(await refused('UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1',[member,tagQ]),'23514','nor be moved onto one');
+ assert.equal(await refused('UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1 AND tag_id=(SELECT min(tag_id) FROM axton_scope_member_tag WHERE member_id=$1)',[member,tagQ]),'23514','nor be moved onto one');
  assert.equal(await refused("UPDATE axton_scope_member SET scope='own-Q' WHERE id=$1",[member]),'23514','a member never changes Scope');
  assert.equal(await refused("UPDATE axton_scope_tag SET scope='own-Q', name='moved' WHERE id=$1",[tagP]),'23514','a tag never changes Scope');
  assert.equal(await refused("INSERT INTO axton_scope_member(scope,record_id) VALUES('own-P',$1)",[record]),'23505','one member per pair');
@@ -287,7 +294,7 @@ CREATE TABLE IF NOT EXISTS axton_membership (
 CREATE INDEX IF NOT EXISTS axton_membership_channel
  ON axton_membership(channel, model, identity_key);
 `;
-const EIGHT=['axton_client','axton_call','axton_channel','axton_record','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log'];
+const EIGHT=['axton_client','axton_call','axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log'];
 const databaseUrl=name=>{const u=new URL(url);u.pathname=`/${name}`;return u.toString();};
 /** A fresh database in the cluster and a client on it. */
 const scratch=async name=>{
@@ -296,13 +303,19 @@ const scratch=async name=>{
 };
 /** Apply the upgrade file as one simple-protocol call; a failure leaves the explicit transaction to roll back. */
 const upgrade=async client=>{
- try{await client.query(await source('migrations/2026-09-30-channel-members.sql'));}
+ try{
+  if((await client.query("SELECT to_regclass('axton_channel') AS old,to_regclass('axton_channel_member') AS member")).rows[0].old && !(await client.query("SELECT to_regclass('axton_channel_member') AS member")).rows[0].member)
+   await client.query(await source('migrations/2026-09-30-channel-members.sql'));
+  await client.query(await source('migrations/2026-09-30-scopes.sql'));
+ }
  catch(error){await client.query('ROLLBACK');throw error;}
 };
 /** Everything the eight tables are made of, independent of column order and sequence positions. */
 const catalog=async client=>{
  const rows=async sql=>(await client.query(sql,[EIGHT])).rows;
  return {
+  indexColumns:await rows(`SELECT c.relname,a.attnum,a.attname FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_class t ON t.oid=i.indrelid JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped WHERE t.relname=ANY($1) ORDER BY 1,2`),
+  sequences:await rows(`SELECT s.relname AS name,t.relname AS tbl,a.attname AS column,seq.seqstart::text,seq.seqincrement::text,seq.seqmin::text,seq.seqmax::text,seq.seqcache::text,seq.seqcycle FROM pg_class s JOIN pg_sequence seq ON seq.seqrelid=s.oid JOIN pg_depend d ON d.objid=s.oid AND d.deptype IN ('a','i') JOIN pg_class t ON t.oid=d.refobjid JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=d.refobjsubid WHERE t.relname=ANY($1) ORDER BY 1`),
   columns:await rows(`SELECT table_name,column_name,data_type,is_nullable,column_default,is_identity,identity_generation,is_generated,generation_expression FROM information_schema.columns WHERE table_schema='public' AND table_name=ANY($1) ORDER BY 1,2`),
   constraints:await rows(`SELECT conrelid::regclass::text AS tbl,conname,pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid::regclass::text=ANY($1) ORDER BY 1,2`),
   indexes:await rows(`SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename=ANY($1) ORDER BY 1,2`),
@@ -331,34 +344,34 @@ const seedPrevious=async client=>{
  await client.query(`INSERT INTO axton_invalidation(channel,model,identity_key,identity,cursor,stamp) VALUES
   ('m-A','Todo',$1,$1::text::jsonb,5,3),('m-A','Todo',$2,$2::text::jsonb,4,1),('m-A','Todo',$3,$3::text::jsonb,2,2),('m-B','Todo',$2,$2::text::jsonb,2,1)`,[k('a'),k('b'),k('c')]);
 };
-const logOf=async(client,channel)=>(await client.query('SELECT r.model,r.identity->>\'id\' AS id,l.cursor::int,l.kind FROM axton_channel_log l JOIN axton_record r ON r.id=l.record_id WHERE l.channel=$1 ORDER BY l.cursor',[channel])).rows.map(r=>[r.model,r.id,r.cursor,r.kind]);
-const headsOf=async client=>Object.fromEntries((await client.query('SELECT channel,head::int FROM axton_channel ORDER BY channel')).rows.map(r=>[r.channel,r.head]));
+const logOf=async(client,scope)=>(await client.query('SELECT r.model,r.identity->>\'id\' AS id,l.cursor::int,l.kind FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE l.scope=$1 ORDER BY l.cursor',[scope])).rows.map(r=>[r.model,r.id,r.cursor,r.kind]);
+const headsOf=async client=>Object.fromEntries((await client.query('SELECT scope,head::int FROM axton_scope ORDER BY scope')).rows.map(r=>[r.scope,r.head]));
 
 test('the forward upgrade copies memberships, maps invalidations to current presence, logs unlogged members above the head and converges with a fresh install',async()=>{
  const fresh=await scratch('axton_fresh'),old=await scratch('axton_upgraded');
  try{
   await fresh.query(await source('migration.sql'));
   await seedPrevious(old);
-  const legacy=async()=>({memberships:(await old.query('SELECT * FROM axton_membership ORDER BY channel,model,identity_key')).rows,invalidations:(await old.query('SELECT * FROM axton_invalidation ORDER BY channel,cursor')).rows});
+  const legacy=async(column='channel')=>({memberships:(await old.query(`SELECT * FROM axton_membership ORDER BY ${column},model,identity_key`)).rows,invalidations:(await old.query(`SELECT * FROM axton_invalidation ORDER BY ${column},cursor`)).rows});
   const kept=await legacy();
   await upgrade(old);
   assert.deepEqual(await catalog(old),await catalog(fresh),'fresh and upgraded schemas converge');
-  assert.deepEqual(await legacy(),kept,'the old tables are retained unchanged');
+  assert.deepEqual(await legacy('scope'),JSON.parse(JSON.stringify(kept).replaceAll('\"channel\":','\"scope\":')),'retained legacy rows survive under Scope ownership');
   assert.deepEqual((await old.query("SELECT identity FROM axton_record WHERE model='Todo' AND identity_key='{\"id\":\"aa\"}'")).rows,[{identity:{id:'aa'}}],'identity is the decoded key');
   assert.deepEqual(await logOf(old,'m-A'),[['Todo','c',2,'upsert'],['Todo','b',4,'remove'],['Todo','a',5,'upsert'],['Note','a',6,'upsert'],['Todo','aa',7,'upsert'],['Todo','d',8,'upsert']],
    'retained cursors are preserved; a non-member is a remove; unlogged members follow the old head in record-key order');
   assert.deepEqual(await logOf(old,'m-B'),[['Todo','b',2,'upsert']]);
   assert.deepEqual(await logOf(old,'m-E'),[['Todo','a',1,'upsert']]);
   assert.deepEqual(await headsOf(old),{'m-A':8,'m-B':2,'m-E':1});
-  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_channel_member')).rows,[{n:7}]);
-  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_channel_tag')).rows,[{n:0}],'tags start empty');
+  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_scope_member')).rows,[{n:7}]);
+  assert.deepEqual((await old.query('SELECT count(*)::int AS n FROM axton_scope_tag')).rows,[{n:0}],'tags start empty');
   // The upgraded database serves the runtime.
   const upgradedPool=new Pool({connectionString:databaseUrl('axton_upgraded')});
   try{
    const d=pg(upgradedPool).driver;
    const call=r=>d.transaction(tx=>answer(d,tx,r));
-   assert.deepEqual((await call({op:'scan',channel:'m-A',after:0,limit:50})).map(r=>[r.model,r.identity.id,r.cursor,r.kind,r.stamp??null]),[['Todo','c',2,'upsert',2],['Todo','b',4,'remove',null],['Todo','a',5,'upsert',3],['Note','a',6,'upsert',1],['Todo','aa',7,'upsert',1],['Todo','d',8,'upsert',1]]);
-   const removed=await call({op:'applyChannelMembers',deltas:[{channel:'m-A',model:'Todo',identity:{id:'c'},identityKey:JSON.stringify({id:'c'}),present:false,tags:[],publish:true}]});
+   assert.deepEqual((await call({op:'scan',scope:'m-A',after:0,limit:50})).map(r=>[r.model,r.identity.id,r.cursor,r.kind,r.stamp??null]),[['Todo','c',2,'upsert',2],['Todo','b',4,'remove',null],['Todo','a',5,'upsert',3],['Note','a',6,'upsert',1],['Todo','aa',7,'upsert',1],['Todo','d',8,'upsert',1]]);
+   const removed=await call({op:'applyScopeMembers',deltas:[{scope:'m-A',model:'Todo',identity:{id:'c'},identityKey:JSON.stringify({id:'c'}),present:false,tags:[],publish:true}]});
    assert.deepEqual(removed.map(p=>[p.cursor,p.kind]),[[9,'remove']]);
   }finally{await upgradedPool.end();}
   // A repeated upgrade verifies and changes nothing, even after runtime writes: the removal is not undone from the old tables.
@@ -367,7 +380,7 @@ test('the forward upgrade copies memberships, maps invalidations to current pres
   assert.deepEqual(await contents(old),before,'no row was written or rewritten');
   assert.deepEqual(await catalog(old),await catalog(fresh));
   await upgrade(fresh);
-  assert.deepEqual((await fresh.query('SELECT count(*)::int AS n FROM axton_channel_log')).rows,[{n:0}],'on a fresh install the upgrade is a verified no-op too');
+  assert.deepEqual((await fresh.query('SELECT count(*)::int AS n FROM axton_scope_log')).rows,[{n:0}],'on a fresh install the upgrade is a verified no-op too');
  }finally{await fresh.end();await old.end();}
 });
 
@@ -669,4 +682,194 @@ test('fresh Scope catalog contains exact framework objects and no retired owners
   indexes:await q("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY indexname"),
   functions:await q("SELECT proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY proname"),
  }),before,'repeat installation keeps the catalog');
+});
+
+// Genuine released v0.2 input: never derive it by renaming a fresh schema.
+const originalFixture=name=>readFile(new URL(`fixtures/${name}`,import.meta.url),'utf8');
+const scopeUpgrade=async c=>{try{await c.query(await source('migrations/2026-09-30-scopes.sql'));}catch(e){await c.query('ROLLBACK');throw e;}};
+test('original v0.2 Scope cutover preserves saved work, memberships and opaque application channel data',async()=>{
+ const c=await scratch('axton_scope_cutover');
+ try{
+  await c.query(await originalFixture('v02-framework.sql'));
+  await c.query(await originalFixture('postgres-state.sql'));
+  await c.query(await originalFixture('postgres-optional-retained-v01.sql'));
+  const composite={completion:{callId:'composite',outcome:{status:'succeeded',result:{channel:'opaque result',memberships:[{channel:'nested result'}]}}},records:[{model:'Composite',identity:{channel:'tenant',id:'x'},stamp:4,state:{channel:'opaque state',memberships:[{channel:'nested state'}]}}],memberships:[{channel:'Other',cursor:3,model:'Composite',identity:{channel:'tenant',id:'x'}}]};
+  await c.query('INSERT INTO axton_call(owner_id,call_id,request,response) VALUES($1,$2,$3,$4)',['alice','composite',' {"args":{"channel":"opaque request"}} ',JSON.stringify(composite)]);
+  const requests=(await c.query('SELECT call_id,request FROM axton_call ORDER BY call_id')).rows;
+  const before=await frameworkSnapshot(c);
+  const expectedRows=Object.fromEntries(Object.entries(before.rows).map(([table,rows])=>[table.replace(/^axton_channel/,'axton_scope'),rows.map(({xmin,row})=>({xmin,row:Object.fromEntries(Object.entries(row).map(([k,v])=>[k==='channel'?'scope':k,v]))}))]));
+  const owned=['axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log','axton_membership','axton_invalidation'];
+  const responses=(await c.query('SELECT call_id,response FROM axton_call ORDER BY call_id')).rows;
+  await scopeUpgrade(c);
+  assert.equal((await c.query("SELECT to_regclass('axton_channel_member') AS t")).rows[0].t,null);
+  const migrated=await frameworkSnapshot(c);for(const t of owned)assert.deepEqual(migrated.rows[t]?.sort((a,b)=>JSON.stringify(Object.entries(a.row).sort()).localeCompare(JSON.stringify(Object.entries(b.row).sort()))),expectedRows[t]?.sort((a,b)=>JSON.stringify(Object.entries(a.row).sort()).localeCompare(JSON.stringify(Object.entries(b.row).sort()))),`${t}: identities, associations and evidence preserved`);
+  assert.equal(migrated.catalog.filter(r=>r.relname.includes('channel')||r.attname==='channel').length,0);
+  assert.equal(migrated.functions.some(r=>r.proname.includes('channel')||r.prosrc.includes('axton_channel')||r.prosrc.includes('OLD.channel')),false);
+  const fresh=await scratch('axton_scope_catalog');try{await fresh.query(await source('migration.sql'));assert.deepEqual(await catalog(c),await catalog(fresh));}finally{await fresh.end();}
+  assert.deepEqual((await c.query('SELECT call_id,request FROM axton_call ORDER BY call_id')).rows,requests);
+  for(const saved of responses){
+   const expected=JSON.parse(saved.response);for(const m of expected.memberships??[]){m.scope=m.channel;delete m.channel;}
+   assert.deepEqual(JSON.parse((await c.query('SELECT response FROM axton_call WHERE call_id=$1',[saved.call_id])).rows[0].response),expected);
+  }
+  assert.deepEqual((await c.query('SELECT scope,head::int FROM axton_scope ORDER BY scope')).rows,[{scope:'Channel:business-scope',head:11},{scope:'Empty',head:0},{scope:'Other',head:3}]);
+  assert.equal((await c.query('SELECT count(*)::int AS n FROM axton_scope_member')).rows[0].n,2);
+  const versions=(await c.query('SELECT xmin::text,response FROM axton_call ORDER BY call_id')).rows;
+  const settled=await frameworkSnapshot(c);
+  await scopeUpgrade(c);
+  assert.deepEqual((await c.query('SELECT xmin::text,response FROM axton_call ORDER BY call_id')).rows,versions);
+  assert.deepEqual(await frameworkSnapshot(c),settled,'second cutover rewrites neither rows nor persistent catalog objects');
+  assert.equal((await c.query("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema='public' AND table_name LIKE 'axton_%' AND column_name='channel'")).rows[0].n,0);
+ }finally{await c.end();}
+});
+
+const frameworkSnapshot=async c=>{
+ const names=(await c.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'axton_%' ORDER BY tablename")).rows;
+ const rows={};for(const {tablename} of names)rows[tablename]=(await c.query(`SELECT xmin::text,to_jsonb(t) AS row FROM ${tablename} t ORDER BY to_jsonb(t)::text`)).rows;
+ return {rows,catalog:(await c.query("SELECT c.relname,c.relkind,a.attname,pg_get_expr(d.adbin,d.adrelid) AS default FROM pg_class c LEFT JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum WHERE c.relnamespace='public'::regnamespace AND c.relname LIKE 'axton_%' ORDER BY 1,2,3")).rows,
+ functions:(await c.query("SELECT xmin::text,proname,prosrc FROM pg_proc WHERE proname LIKE 'axton_%' ORDER BY 1")).rows,
+ triggers:(await c.query("SELECT tgname,pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE NOT tgisinternal ORDER BY 1")).rows};
+};
+const seedV02=async c=>{await c.query(await originalFixture('v02-framework.sql'));await c.query(await originalFixture('postgres-state.sql'));};
+test('Scope cutover conflicts and late malformed claims roll back schema and every earlier valid rewrite',async()=>{
+ for(const sql of ["CREATE TABLE axton_scope(scope text)","CREATE TABLE axton_scope_member(scope text)","ALTER TABLE axton_channel_member ADD COLUMN scope text","DROP TABLE axton_channel_log",
+  `UPDATE axton_call SET response='{"memberships":{}}' WHERE call_id LIKE '%003'`,
+  `UPDATE axton_call SET response='{"memberships":[{"channel":"x","scope":"x","model":"Todo","identity":{},"cursor":10}]}' WHERE call_id LIKE '%003'`,
+  `UPDATE axton_call SET response='{"memberships":[{"channel":"x","identity":{},"cursor":10}]}' WHERE call_id LIKE '%003'`]){
+  const c=await scratch('axton_scope_refused');try{
+   await seedV02(c);await c.query(sql);const before=await frameworkSnapshot(c);
+   await assert.rejects(()=>scopeUpgrade(c));assert.deepEqual(await frameworkSnapshot(c),before,sql);
+  }finally{await c.end();}
+ }
+ const c=await scratch('axton_scope_guard');try{
+  await seedV02(c);const before=await frameworkSnapshot(c);
+  const bootstrap=await source('migration.sql');await assert.rejects(()=>c.query(bootstrap),/legacy/);
+  assert.deepEqual(await frameworkSnapshot(c),before);
+ }finally{await c.end();}
+});
+
+test('migrated direct, alternate batch, exact receipt and Load replay bypass poisoned handlers and Loaders on every shim',async()=>{
+ const c=await scratch('axton_scope_replay');
+ const schema=JSON.parse(await originalFixture('schema.json'));
+ const input=JSON.parse(await originalFixture('envelopes.json'));
+ const pool=new Pool({connectionString:databaseUrl('axton_scope_replay')});
+ const {PrismaClient}=require('../../bindings/node/generated/client');
+ const pr=new PrismaClient({datasourceUrl:databaseUrl('axton_scope_replay')});
+ try{
+  await seedV02(c);
+  const noClaimRequest=JSON.stringify(input.loadRequest).replaceAll('000000000003','000000000005');
+  const noClaimResponse=JSON.stringify(input.noClaimLoadResponse).replaceAll('000000000003','000000000005');
+  await c.query('INSERT INTO axton_call(owner_id,call_id,request,response) VALUES($1,$2,$3,$4)',['alice','01890f47-1234-7123-8123-000000000005',noClaimRequest,noClaimResponse]);
+  await scopeUpgrade(c);
+  let invoked=0;
+  const poison=()=>{invoked++;throw new Error('poisoned fresh execution');};
+  const state=async()=>{const o={};for(const t of ['axton_scope','axton_record','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log'])o[t]=(await c.query(`SELECT xmin::text,to_jsonb(t) AS row FROM ${t} t ORDER BY to_jsonb(t)::text`)).rows;return o;};
+  const before=await state();
+  for(const [name,database] of [['pg',pg(pool)],['prisma',prisma(pr)],['drizzle',drizzle(drizzleOrm(pool))]]){
+   const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database,authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
+   const action=input.actionRequest;
+   const direct=JSON.parse(await app.action('alice',JSON.stringify({capabilities:['scope-membership-v1'],call:{callId:action.callId,name:action.name,version:action.version,args:action.args},models:action.models})));
+   assert.equal(direct.records[0].state.title,'saved snapshot',name);
+   assert.deepEqual(direct.memberships,[{scope:'Channel:business-scope',model:'Todo',identity:{id:'live'},cursor:10}]);
+   const body=clientId=>JSON.stringify({capabilities:['scope-membership-v1'],clientId,batchSequence:1,models:action.models,mutations:[{ordinal:1,callId:action.callId,name:action.name,version:1,args:action.args}]});
+   const alternate=JSON.parse(await app.push('alice',body(`alternate-${name}`)));
+   assert.deepEqual(alternate.records,direct.records);assert.deepEqual(alternate.memberships,direct.memberships);
+   const receipt=JSON.parse(await app.push('alice',body('fixture-client')));
+   assert.deepEqual(receipt.records,direct.records);assert.deepEqual(receipt.memberships,direct.memberships);
+   const load=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['scope-membership-v1'],loads:[input.loadIntent]}))).loads[0];
+   assert.equal(load.records[0].state.title,'saved snapshot');assert.deepEqual(load.outcome.next,input.loadResponse.outcome.next);assert.deepEqual(load.memberships,direct.memberships);
+   const noClaim=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['scope-membership-v1'],loads:[{...input.loadIntent,callId:'01890f47-1234-7123-8123-000000000005'}]}))).loads[0];
+   assert.equal(Object.hasOwn(noClaim,'memberships'),false,'saved no-claim response has no fabricated claims');
+   assert.deepEqual(noClaim.outcome.next,input.noClaimLoadResponse.outcome.next);
+   assert.equal(invoked,0,`${name}: saved state executes no handler/Loader`);
+   assert.deepEqual(await state(),before,`${name}: replay never reenrolls withdrawn pair or rewrites head/stamp/log/tag`);
+  }
+  const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database:pg(pool),authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
+  await app.action('alice',JSON.stringify({capabilities:['scope-membership-v1'],call:{callId:'01890f47-1234-7123-8123-000000000099',name:'Edit',version:1,args:input.actionRequest.args},models:{Todo:1}}));
+  assert.equal(invoked,1,'a fresh call really reaches the poisoned handler');
+ }finally{await pr.$disconnect();await pool.end();await c.end();}
+});
+
+test('migrated original catalog retains trigger, FK, uniqueness and sequence ownership behavior',async()=>{
+ const c=await scratch('axton_scope_constraints');try{
+  await seedV02(c);await scopeUpgrade(c);
+  const m=(await c.query("SELECT id FROM axton_scope_member WHERE scope='Other'")).rows[0].id;
+  const t=(await c.query("SELECT id FROM axton_scope_tag WHERE scope='Channel:business-scope'")).rows[0].id;
+  for(const [sql,params,code] of [
+   ['INSERT INTO axton_scope_member_tag VALUES($1,$2)',[m,t],'23514'],
+   ['UPDATE axton_scope_member_tag SET tag_id=$2 WHERE member_id=$1 AND tag_id=(SELECT min(tag_id) FROM axton_scope_member_tag WHERE member_id=$1)',[m,t],'23514'],
+   ["UPDATE axton_scope_member SET scope='Empty' WHERE id=$1",[m],'23514'],
+   ["UPDATE axton_scope_tag SET scope='Empty' WHERE id=$1",[t],'23514'],
+   ["INSERT INTO axton_scope_tag(scope,name) VALUES('Other','X')",[],'23505'],
+   ["UPDATE axton_scope_log SET cursor=0 WHERE scope='Other'",[],'23514'],
+   ["UPDATE axton_scope_log SET kind='bad' WHERE scope='Other'",[],'23514'],
+   ["UPDATE axton_scope_log SET record_id=999999 WHERE scope='Other'",[],'23503']
+  ])await assert.rejects(()=>c.query(sql,params),e=>e.code===code,sql);
+  const max=Number((await c.query('SELECT max(id) FROM axton_scope_tag')).rows[0].max);
+  const next=Number((await c.query("INSERT INTO axton_scope_tag(scope,name) VALUES('Empty','future') RETURNING id")).rows[0].id);assert.ok(next>max);
+  await c.query('DELETE FROM axton_scope_member WHERE id=$1',[m]);
+  assert.equal((await c.query('SELECT count(*)::int AS n FROM axton_scope_member_tag WHERE member_id=$1',[m])).rows[0].n,0);
+ }finally{await c.end();}
+});
+
+test('disconnect during actual cutover rolls back renames and earlier receipt rewrite, then retry succeeds',async()=>{
+ const c=await scratch('axton_scope_interrupted');c.on('error',()=>{});
+ let reopened;
+ try{
+  await seedV02(c);
+  await c.query(`CREATE FUNCTION fixture_delay_cutover() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$; CREATE TRIGGER fixture_delay BEFORE UPDATE ON axton_call FOR EACH ROW EXECUTE FUNCTION fixture_delay_cutover()`);
+  const before=await frameworkSnapshot(c);
+  const pid=(await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+  const sql=await source('migrations/2026-09-30-scopes.sql');
+  const running=c.query(sql).then(()=>null,error=>error);
+  let waiting=false;
+  for(let n=0;n<150;n++){
+   waiting=(await q("SELECT wait_event='PgSleep' AS sleeping FROM pg_stat_activity WHERE pid=$1",[pid]))[0]?.sleeping===true;
+   if(waiting)break;await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  assert.ok(waiting,'migration reached saved-call rewrite after catalog renames and receipt rewrite');
+  await q('SELECT pg_terminate_backend($1)',[pid]);assert.ok(await running);
+  reopened=new Client({connectionString:databaseUrl('axton_scope_interrupted')});await reopened.connect();
+  assert.deepEqual(await frameworkSnapshot(reopened),before,'connection loss rolls back the complete cutover');
+  await reopened.query('DROP TRIGGER fixture_delay ON axton_call; DROP FUNCTION fixture_delay_cutover()');
+  await scopeUpgrade(reopened);
+  assert.equal((await reopened.query("SELECT to_regclass('axton_scope_member') AS t")).rows[0].t,'axton_scope_member');
+ }finally{await reopened?.end();await c.end();}
+});
+
+test('original frozen device batch settles migrated saved receipt and younger work keeps its call ID and one accepted effect',async()=>{
+ const c=await scratch('axton_scope_queue');
+ const dir=await mkdtemp(join(tmpdir(),'axton-scope-queue-'));
+ const pool=new Pool({connectionString:databaseUrl('axton_scope_queue')});
+ let device;
+ try{
+  await seedV02(c);
+  // Acceptance variant corrects the prepared void-result fixture BEFORE
+  // migration. Production migration never repairs arbitrary result payloads.
+  await c.query(`UPDATE axton_client SET receipt=jsonb_set(receipt::jsonb,'{completions,0,outcome,result}','null')::text;
+   UPDATE axton_call SET response=jsonb_set(response::jsonb,'{completion,outcome,result}','null')::text WHERE call_id LIKE '%001'`);
+  await scopeUpgrade(c);
+  const schema=JSON.parse(await originalFixture('schema.json'));
+  const path=join(dir,'device.sqlite');
+  execFileSync('python3',[fileURLToPath(new URL('../client/seed.py',import.meta.url)),path]);
+  device=await DeviceClient.open({path,schema});
+  const frozen=await device.freeze();
+  const logical=JSON.parse(frozen);delete logical.capabilities;
+  assert.deepEqual(logical,JSON.parse(await readFile(new URL('../../../crates/sqlite/tests/fixtures/frozen-push-logical.json',import.meta.url),'utf8')));
+  await device.close();device=await DeviceClient.open({path,schema});assert.equal(await device.freeze(),frozen);
+  const database=pg(pool);let effects=0,reads=0;
+  const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database,authenticate:()=>'alice',onError:()=>{},mutations:{async edit({ctx,args}){effects++;await database.driver.query(ctx.tx,'UPDATE fixture_todo SET channel=$2 WHERE id=$1',[args.todo.id,args.todo.channel]);}},loads:{async scan(){throw Error('unexpected load');}},loaders:{async todo({tx,ids}){reads++;return Promise.all(ids.map(async({id})=>(await database.driver.query(tx,'SELECT id,title,channel FROM fixture_todo WHERE id=$1',[id]))[0]??null));}}});
+  const receipt=JSON.parse(await app.push('alice',frozen));
+  assert.equal(effects,0);assert.equal(reads,0);
+  assert.equal(receipt.completions[0].callId,logical.mutations[0].callId);
+  await device.acknowledge(1,receipt);
+  assert.equal((await device.syncState()).pending,1);
+  const next=await device.freeze();const nextBody=JSON.parse(next);
+  assert.equal(nextBody.batchSequence,2);assert.equal(nextBody.mutations.length,1);assert.equal(nextBody.mutations[0].ordinal,2);
+  assert.equal(nextBody.mutations[0].callId,'01890f47-1234-7123-8123-000000000004');
+  const accepted=JSON.parse(await app.push('alice',next));await device.acknowledge(2,accepted);
+  assert.equal(effects,1);assert.equal((await device.syncState()).pending,0);
+  assert.equal((await c.query("SELECT channel FROM fixture_todo WHERE id='live'")).rows[0].channel,'second queued Channel');
+  assert.deepEqual(JSON.parse(await app.push('alice',next)),accepted);assert.equal(effects,1,'retry never repeats accepted business effects');
+  assert.equal(await device.freeze(),null);
+ }finally{await device?.close();await pool.end();await c.end();await rm(dir,{recursive:true,force:true});}
 });

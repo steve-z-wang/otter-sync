@@ -139,6 +139,93 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
     }
 }
 
+/// Upgrade framework ownership names before fresh DDL or layout reconciliation.
+/// Durable business JSON and the membership reconciliation marker are untouched.
+pub fn migrate_scope_layout<S: ClientStore>(store: &mut S) -> Result<()> {
+    store.begin()?;
+    let result = (|| {
+        let rows = store.query("SELECT name FROM sqlite_master WHERE type='table'", &[])?;
+        let tables: Vec<&str> = rows.rows.iter().filter_map(|r| r[0].as_str()).collect();
+        let columns = |store: &mut S, table: &str| -> Result<Vec<String>> {
+            Ok(store
+                .query(&format!("PRAGMA table_info({table})"), &[])?
+                .rows
+                .iter()
+                .filter_map(|r| r[1].as_str().map(str::to_owned))
+                .collect())
+        };
+        let client = columns(store, "axton_client")?;
+        let subscription = columns(store, "axton_subscription")?;
+        let old_member = tables.contains(&"axton_channel_member");
+        let old = old_member
+            || subscription.iter().any(|c| c == "channel")
+            || client.iter().any(|c| c == "channel_membership_version");
+        if !old {
+            return Ok(());
+        }
+        if tables.contains(&"axton_scope_member")
+            || subscription.iter().any(|c| c == "scope")
+            || client.iter().any(|c| c == "scope_membership_version")
+        {
+            return Err(invalid("conflicting old and Scope framework layouts"));
+        }
+        if !tables.contains(&"axton_client")
+            || !tables.contains(&"axton_subscription")
+            || !subscription.iter().any(|c| c == "channel")
+        {
+            return Err(invalid("incomplete old framework layout"));
+        }
+        for table in FRAMEWORK_TABLES {
+            let original = if *table == "axton_scope_member" {
+                "axton_channel_member"
+            } else {
+                table
+            };
+            if original == "axton_channel_member"
+                && !client.iter().any(|c| c == "channel_membership_version")
+            {
+                continue;
+            }
+            if !tables.contains(&original) {
+                return Err(invalid(format!(
+                    "incomplete old framework layout: {original}"
+                )));
+            }
+        }
+        if client.iter().any(|c| c == "channel_membership_version") && !old_member {
+            return Err(invalid("old membership layout lacks axton_channel_member"));
+        }
+        if old_member {
+            let member = columns(store, "axton_channel_member")?;
+            if !member.iter().any(|c| c == "channel") || member.iter().any(|c| c == "scope") {
+                return Err(invalid("conflicting or incomplete old membership columns"));
+            }
+            store.execute_batch("ALTER TABLE axton_channel_member RENAME TO axton_scope_member;
+                ALTER TABLE axton_scope_member RENAME COLUMN channel TO scope;
+                DROP INDEX IF EXISTS axton_channel_member_record;
+                CREATE INDEX axton_scope_member_record ON axton_scope_member(model, identity, present);")?;
+        }
+        store.execute_batch("ALTER TABLE axton_subscription RENAME COLUMN channel TO scope")?;
+        if client.iter().any(|c| c == "channel_membership_version") {
+            store.execute_batch("ALTER TABLE axton_client RENAME COLUMN channel_membership_version TO scope_membership_version")?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => match store.commit() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = store.rollback();
+                Err(e)
+            }
+        },
+        Err(e) => {
+            store.rollback()?;
+            Err(e)
+        }
+    }
+}
+
 pub const FRAMEWORK_DDL: &str = "
 CREATE TABLE IF NOT EXISTS axton_schema (
   descriptor TEXT NOT NULL, created_at TEXT NOT NULL

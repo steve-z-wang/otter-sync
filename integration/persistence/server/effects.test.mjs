@@ -647,7 +647,6 @@ test('Load enrollment bytes count tags, including tags merged into a repeated pa
  assert.deepEqual(effects.memberships()[0],add(channels[0],'Todo',{id:'t1'}),'the crossing merge stored nothing');
 });
 
-
 test('a Load keeps valid 64+1 add boundaries rather than emitting an invalid 65-tag declaration',()=>{
  const effects=freshLoad();
  const tags=Array.from({length:65},(_,i)=>`t${i}`);
@@ -729,4 +728,57 @@ test('only argument-free tag remove detaches and Load label failures poison',()=
   const load=createLoadEffects(models);assert.throws(()=>call(load.scope('U')));assert.equal(load.failure().kind,'invalid');
  }
  const load=createLoadEffects(models);assert.throws(()=>load.scope('\ud800'));assert.equal(load.failure().kind,'invalid');
+});
+
+test('canonical typed sparse operands reject before any effect',()=>{
+ for(const [name,call] of [
+  ['add',(effects,scope,ids)=>scope.add.todo(ids)],
+  ['remove',(effects,scope,ids)=>scope.remove.todo(ids)],
+  ['tag add',(effects,scope,ids)=>scope.tag('X').add.todo(ids)],
+  ['tag remove',(effects,scope,ids)=>scope.tag('X').remove.todo(ids)],
+  ['touch',(effects,scope,ids)=>effects.touch.todo(ids)],
+ ]){
+  for(const ids of [['A',,'B'],[{id:'A'},,{id:'B'}]]){
+   const effects=fresh();
+   assert.throws(()=>call(effects,effects.scope('U'),ids),undefined,name);
+   assert.deepEqual(effects.settlement(),empty,name);
+  }
+ }
+});
+
+test('Load typed sparse operands poison before enrollment or label effects',()=>{
+ for(const call of [
+  (scope,ids)=>scope.add.todo(ids),
+  (scope,ids)=>scope.tag('X').add.todo(ids),
+ ]){
+  const effects=freshLoad(),scope=effects.scope('U');
+  let thrown;
+  try{call(scope,['A',,'B']);}catch(error){thrown=error;}
+  assert.ok(thrown);
+  assert.deepEqual(effects.failure(),{kind:'invalid',error:thrown});
+  assert.deepEqual(effects.memberships(),[]);
+ }
+});
+
+test('canonical sparse predicate groups reject before selection effects',()=>{
+ for(const group of ['and','or']){
+  for(const children of [Array(1),[{tags:{only:[]}},,{tags:{all:['X']}}]]){
+   for(const typed of [false,true]){
+    const effects=fresh(),scope=effects.scope('U');
+    const where=typed?scope.where.todo:scope.where;
+    assert.throws(()=>where({[group]:children}).remove());
+    assert.deepEqual(effects.settlement(),empty);
+   }
+  }
+ }
+});
+
+test('canonical empty operand arrays retain no-effect semantics',()=>{
+ const effects=fresh(),scope=effects.scope('U');
+ scope.add.todo([]).tag('X');scope.remove.todo([]);
+ scope.tag('X').add.todo([]);scope.tag('X').remove.todo([]);effects.touch.todo([]);
+ assert.deepEqual(effects.settlement(),empty);
+ const load=freshLoad();
+ load.scope('U').add.todo([]).tag('X');load.scope('U').tag('X').add.todo([]);
+ assert.deepEqual(load.memberships(),[]);assert.equal(load.failure(),undefined);
 });

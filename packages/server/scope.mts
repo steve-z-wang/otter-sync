@@ -113,7 +113,7 @@ export function scopePredicate(value: unknown): ScopePredicate {
         if (!Array.isArray(item) || item.length === 0)
           throw new Error("scope: invalid predicate group");
         result[key] = Object.freeze(
-          item.map((child) => visit(child, depth + 1)),
+          Array.from(item, (child) => visit(child, depth + 1)),
         );
       } else if (key === "not") result[key] = visit(item, depth + 1);
       else throw new Error("scope: unknown predicate key");
@@ -141,7 +141,8 @@ function operands(
       );
   c.publishable(entry.name, caller);
   const values = Array.isArray(value) ? value : [value];
-  return values.map(
+  return Array.from(
+    values,
     (v) =>
       Object.freeze({
         model: entry.name,

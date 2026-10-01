@@ -390,3 +390,8 @@ function invalidCanonicalScope(ctx: import('./backend.ts').MutationContext<objec
  // @ts-expect-error Query has no scope
  query.scope('U');
 }
+
+function invalidViewerLoaderScope(call: import('./backend.ts').LoaderCall<object, { id: string }>) {
+ // @ts-expect-error viewer Loader has no scope
+ call.scope('U');
+}

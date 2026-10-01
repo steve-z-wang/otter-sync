@@ -402,7 +402,7 @@ pub fn legacy_eviction(c: &mut Client<SqliteStore>, path: &std::path::Path, key:
             "DELETE FROM {} WHERE id=?",
             axton_client::ddl::quote(&key.model)
         ),
-        &[id.clone()],
+        std::slice::from_ref(&id),
     )
     .unwrap();
     raw.execute(

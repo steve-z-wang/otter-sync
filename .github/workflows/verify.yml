@@ -52,4 +52,4 @@ jobs:
         run: |
           cargo build --workspace --release --locked
           node bindings/node/build.mjs --release
-          node --test integration/bindings/client-js/*.test.mjs
+          node --test integration/bindings/client-js/*.test.mjs packages/client-js/*.test.mjs

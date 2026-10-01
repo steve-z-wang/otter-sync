@@ -5,20 +5,12 @@ pub struct TransportAction {
     pub kind: String,
     pub body: String,
 }
+#[derive(Default)]
 pub struct SyncCycle {
     push_only: bool,
     /// Every subscribed stream reached its head in this cycle.
     completed: bool,
     active: Option<TransportAction>,
-}
-impl Default for SyncCycle {
-    fn default() -> Self {
-        Self {
-            push_only: false,
-            completed: false,
-            active: None,
-        }
-    }
 }
 impl SyncCycle {
     /// Validate a received push receipt against the still-frozen action and

@@ -676,7 +676,7 @@ pub async fn process_push(
                 }
                 let stamps =
                     settlement::settle_changes(config, &changed, &declarations, host).await?;
-                let outcome = readback::read_back(
+                readback::read_back(
                     config,
                     &request.models,
                     owner,
@@ -684,8 +684,7 @@ pub async fn process_push(
                     &stamps,
                     host,
                 )
-                .await?;
-                outcome
+                .await?
             }
         };
         match outcome {

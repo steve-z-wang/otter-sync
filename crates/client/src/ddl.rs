@@ -104,20 +104,7 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 /// Add every framework column in [`ADDED_COLUMNS`] a table still lacks.
 pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
     store.begin()?;
-    let result = (|| {
-        for (table, column, definition) in ADDED_COLUMNS {
-            let columns = store.query_committed(&format!("PRAGMA table_info({table})"), &[])?;
-            if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
-                store.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-                ))?;
-            }
-        }
-        store.execute_batch(
-            "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
-        )?;
-        Ok(())
-    })();
+    let result = add_framework_columns_in_transaction(store);
     match result {
         Ok(()) => match store.commit() {
             Ok(()) => Ok(()),
@@ -131,6 +118,21 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
             Err(error)
         }
     }
+}
+
+fn add_framework_columns_in_transaction<S: ClientStore>(store: &mut S) -> Result<()> {
+    for (table, column, definition) in ADDED_COLUMNS {
+        let columns = store.query(&format!("PRAGMA table_info({table})"), &[])?;
+        if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
+            store.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
+    store.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
+    )?;
+    Ok(())
 }
 
 /// Upgrade framework ownership names before fresh DDL or layout reconciliation.
@@ -286,9 +288,10 @@ fn validate_authority_layout<S: ClientStore>(store: &mut S) -> Result<bool> {
     {
         return Err(invalid("incomplete subscription columns"));
     }
-    let modern = client.iter().any(|c| {
-        c == "local_authority_version" || c == &format!("{vocabulary}_membership_version")
-    });
+    let modern = has_table(&format!("axton_{vocabulary}_member"))
+        || client.iter().any(|c| {
+            c == "local_authority_version" || c == &format!("{vocabulary}_membership_version")
+        });
     for table in FRAMEWORK_TABLES {
         // These were additive framework tables before the membership era.
         let additive = [
@@ -306,8 +309,8 @@ fn validate_authority_layout<S: ClientStore>(store: &mut S) -> Result<bool> {
         }
     }
     // Names alone cannot prove a supported layout: validate durable work's
-    // original fields before dropping the old ledger. Additive fields are
-    // still supplied by add_framework_columns after this migration.
+    // original fields before dropping the old ledger. Only pre-membership
+    // layouts may receive additive defaults after this migration.
     for (table, required) in [
         ("axton_schema", &["descriptor", "created_at"][..]),
         (
@@ -425,6 +428,23 @@ fn validate_authority_layout<S: ClientStore>(store: &mut S) -> Result<bool> {
         false
     };
     let member_table = format!("axton_{vocabulary}_member");
+    if modern {
+        // Known membership-era and completed layouts already have these fields.
+        // Default repair would replace durable work or legacy eviction fences.
+        // Only genuinely pre-membership additive layouts may lack them.
+        for (table, field, _) in ADDED_COLUMNS {
+            let required = if *field == "stream_membership_version" {
+                format!("{vocabulary}_membership_version")
+            } else {
+                (*field).to_owned()
+            };
+            if !columns(store, table)?.iter().any(|c| c == &required) {
+                return Err(invalid(format!(
+                    "incomplete modern authority columns: {table}.{required}"
+                )));
+            }
+        }
+    }
     if marker {
         if vocabulary != "stream"
             || has_table(&member_table)
@@ -482,6 +502,10 @@ fn migrate_local_authority<S: ClientStore>(store: &mut S) -> Result<()> {
     } else {
         store.execute_batch("ALTER TABLE axton_client ADD COLUMN local_authority_version INTEGER NOT NULL DEFAULT 0")?;
     }
+    // Completion describes a complete layout, including genuinely older
+    // additive tables/fields. open_at may validate it again before Client::open.
+    store.execute_batch(FRAMEWORK_DDL)?;
+    add_framework_columns_in_transaction(store)?;
     store.execute_batch(
         "DROP INDEX IF EXISTS axton_stream_member_record;
         DROP TABLE IF EXISTS axton_stream_member;

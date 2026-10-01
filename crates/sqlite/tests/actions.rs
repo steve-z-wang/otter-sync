@@ -924,7 +924,7 @@ fn queued_action_without_a_store_column_keeps_default_policy() {
         .unwrap();
     SqliteStore::open(&path)
         .unwrap()
-        .execute_batch("ALTER TABLE axton_mutation DROP COLUMN store")
+        .execute_batch("ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version; ALTER TABLE axton_mutation DROP COLUMN store")
         .unwrap();
     let mut client = open(&path, store_schema());
     assert_eq!(client.pending_count().unwrap(), 1);

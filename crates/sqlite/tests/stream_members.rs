@@ -411,6 +411,9 @@ fn legacy_authoritative_absence_is_not_reclassified_as_eviction() {
     drop(c);
     {
         let db = rusqlite::Connection::open(dir.path().join("db")).unwrap();
+        // This simulates a genuine pre-membership additive layout, not a
+        // damaged file whose authority migration is already complete.
+        db.execute_batch("ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version").unwrap();
         db.execute("ALTER TABLE axton_record DROP COLUMN base_state", [])
             .unwrap();
         db.execute("ALTER TABLE axton_record DROP COLUMN evicted_at", [])

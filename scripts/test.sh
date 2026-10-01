@@ -25,7 +25,7 @@ bash integration/action-runtime-ts/verify.sh
 "$root/node_modules/.bin/prettier" --check packages/client-js/*.mts packages/server/*.mts packages/postgres/*.mts packages/postgres/src/*.mts packages/client-react-native/*.mts packages/client-react-native/index.ts
 "$root/node_modules/.bin/tsc" -p packages/client-react-native
 node --test packages/client-react-native/plugins/expo-path-spaces.test.cjs
-node --test integration/bindings/client-js/*.test.mjs
+node --test integration/bindings/client-js/*.test.mjs packages/client-js/*.test.mjs
 node --test integration/bindings/client-react-native/*.test.mjs
 bash integration/persistence/transaction-probe/run.sh
 bash integration/persistence/server/run.sh

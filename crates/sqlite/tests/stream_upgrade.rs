@@ -191,7 +191,7 @@ fn legacy_upgrade_preserves_queue_load_and_ordinary_cursor_without_fabricating_h
         ))
         .unwrap();
     }
-    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN stream_membership_version")
+    raw.execute_batch("ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version")
         .unwrap();
     drop(raw);
     let mut c = Client::open(
@@ -1060,6 +1060,117 @@ fn malformed_modern_stream_layout_is_refused_before_destructive_migration() {
                 states,
                 "{damage}"
             );
+        }
+    }
+}
+
+#[test]
+fn completed_layout_refuses_missing_durable_fields_without_replacing_fences_or_work() {
+    for vocabulary in ["channel", "scope", "stream", "completed"] {
+        for (table, field) in [
+            ("axton_record", "evicted_at"),
+            ("axton_record", "base_state"),
+            ("axton_client", "store_epoch"),
+            ("axton_client", "push_results"),
+            ("axton_client", "stream_membership_version"),
+            ("axton_mutation", "store_epoch"),
+            ("axton_mutation", "diverged"),
+            ("axton_mutation", "call_id"),
+            ("axton_mutation", "args"),
+            ("axton_mutation", "store"),
+            ("axton_load", "store_epoch"),
+            ("axton_load", "call_id"),
+            ("axton_load", "intent"),
+            ("axton_load", "continuation"),
+            ("axton_subscription", "bootstrap_state"),
+            ("axton_subscription", "bootstrap_run"),
+            ("axton_subscription", "bootstrap_cursor"),
+            ("axton_subscription", "bootstrap_barrier"),
+            ("axton_subscription", "bootstrap_error"),
+            ("axton_subscription", "reconcile_state"),
+            ("axton_subscription", "reconcile_run"),
+            ("axton_subscription", "reconcile_cursor"),
+            ("axton_subscription", "reconcile_bound"),
+            ("axton_subscription", "reconcile_barrier"),
+            ("axton_subscription", "reconcile_error"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("db");
+            let (mut raw, schema) = original_store(&path, 1);
+            raw.execute_batch("UPDATE axton_record SET base_state='evicted',evicted_at=5 WHERE identity='{\"id\":\"live\"}'; UPDATE axton_client SET store_epoch=5; UPDATE axton_mutation SET store_epoch=0; UPDATE axton_load SET store_epoch=0;").unwrap();
+            if vocabulary == "completed" {
+                drop(raw);
+                // Complete a real original-file migration before corrupting its layout.
+                drop(
+                    Client::open(
+                        axton_sqlite::SqliteStore::open(&path).unwrap(),
+                        schema.clone(),
+                    )
+                    .unwrap(),
+                );
+                raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+            } else if vocabulary != "channel" {
+                raw.execute_batch(&format!("ALTER TABLE axton_channel_member RENAME TO axton_{vocabulary}_member; ALTER TABLE axton_{vocabulary}_member RENAME COLUMN channel TO {vocabulary}; DROP INDEX axton_channel_member_record; CREATE INDEX axton_{vocabulary}_member_record ON axton_{vocabulary}_member(model,identity,present); ALTER TABLE axton_subscription RENAME COLUMN channel TO {vocabulary}; ALTER TABLE axton_client RENAME COLUMN channel_membership_version TO {vocabulary}_membership_version;")).unwrap();
+            }
+            let field = if field == "stream_membership_version" && vocabulary != "completed" {
+                format!("{vocabulary}_membership_version")
+            } else {
+                field.to_owned()
+            };
+            assert_eq!(raw.query("SELECT stamp,base_state,evicted_at FROM axton_record WHERE identity='{\"id\":\"live\"}'", &[]).unwrap().rows, vec![vec![json!(7),json!("evicted"),json!(5)]]);
+            assert!(
+                raw.query("SELECT store_epoch FROM axton_load", &[])
+                    .unwrap()
+                    .rows
+                    .iter()
+                    .all(|r| r[0] == 0)
+            );
+            raw.execute_batch(&format!(
+                "ALTER TABLE {table} RENAME COLUMN {field} TO retained_{field}"
+            ))
+            .unwrap();
+            let catalog_query = "SELECT type,name,sql FROM sqlite_master ORDER BY type,name";
+            let catalog = raw.query(catalog_query, &[]).unwrap().rows;
+            let tables: Vec<String> = raw
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+                    &[],
+                )
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|r| r[0].as_str().unwrap().to_owned())
+                .collect();
+            // Raw values include frozen JSON bytes, renamed fences, work layers,
+            // explicit bootstrap progress and both business/before-image rows.
+            let before: Vec<_> = tables
+                .iter()
+                .map(|t| {
+                    raw.query(&format!("SELECT * FROM {t} ORDER BY rowid"), &[])
+                        .unwrap()
+                        .rows
+                })
+                .collect();
+            drop(raw);
+            assert!(
+                Client::open(axton_sqlite::SqliteStore::open(&path).unwrap(), schema).is_err(),
+                "{vocabulary} layout accepted missing {table}.{field}"
+            );
+            let mut raw = axton_sqlite::SqliteStore::open(&path).unwrap();
+            assert_eq!(
+                raw.query(catalog_query, &[]).unwrap().rows,
+                catalog,
+                "{table}.{field}"
+            );
+            for (t, expected) in tables.iter().zip(before) {
+                assert_eq!(
+                    raw.query(&format!("SELECT * FROM {t} ORDER BY rowid"), &[])
+                        .unwrap()
+                        .rows,
+                    expected,
+                    "{table}.{field}: {t}"
+                );
+            }
         }
     }
 }

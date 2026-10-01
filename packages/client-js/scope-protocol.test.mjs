@@ -16,7 +16,7 @@ async function until(predicate) {
   }
 }
 
-test('runtime negotiates on live and pull; identity-only removal reaches the native store', async () => {
+test('runtime negotiates on live and pull; Remove retains authority until newer Loader null', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'axton-sdk-scope-'));
   const schema = JSON.parse(await readFile(new URL('../../fixtures/schemas/entry.json', import.meta.url), 'utf8'));
   let stored = 0;
@@ -51,12 +51,20 @@ test('runtime negotiates on live and pull; identity-only removal reaches the nat
     await connection.resume();
     const send = (from, change) => socket.send(JSON.stringify({ cursors: { scope: { from, to: from + 1, head: from + 1 } }, changes: [change] }));
     await until(async () => (await client.read('Entry', { id: 'e' }))?.text === 'held');
+    const row = await client.read('Entry', { id: 'e' });
+    const metadata = await client.readSql('SELECT * FROM axton_record');
     send(1, { kind: 'remove', stream: 'scope', cursor: 2, model: 'Entry', identity: { id: 'e' } });
     await until(async () => (await client.syncState()).cursors.scope === 2);
+    assert.deepEqual(await client.read('Entry', { id: 'e' }), row);
+    assert.deepEqual(await client.readSql('SELECT * FROM axton_record'), metadata);
+    assert.equal(stored, 1, 'Remove invokes no authority onStore hook');
+    assert.deepEqual(await client.readSql("SELECT name FROM sqlite_master WHERE name IN ('axton_stream_member','axton_stream_member_record')"), []);
+    send(2, { kind: 'upsert', stream: 'scope', cursor: 3, model: 'Entry', identity: { id: 'e' }, stamp: 2, state: null });
+    await until(async () => (await client.syncState()).cursors.scope === 3);
     assert.equal(await client.read('Entry', { id: 'e' }), null);
-    assert.equal(stored, 1, 'identity-only removal releases cache without an authority onStore hook');
+    assert.equal(stored, 2, 'newer Loader null applies canonical absence');
     assert.ok(envelopes.some(e => e.cursors?.scope === 0), 'runtime HTTP catch-up was observed');
-    for (const envelope of envelopes) assert.ok(envelope.capabilities.includes('stream-membership-v1'));
+    for (const envelope of envelopes) assert.ok(envelope.capabilities.includes('stream-authority-v1'));
     assert.deepEqual(errors, []);
     await connection.close();
   } finally {

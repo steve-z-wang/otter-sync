@@ -230,7 +230,7 @@ fn a_queue_without_the_divergence_column_gains_it_in_place() {
     }
     SqliteStore::open(&path)
         .unwrap()
-        .execute_batch("ALTER TABLE axton_mutation DROP COLUMN diverged")
+        .execute_batch("ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version; ALTER TABLE axton_mutation DROP COLUMN diverged")
         .unwrap();
     let mut c = axton_client::Client::open(SqliteStore::open(&path).unwrap(), entry).unwrap();
     assert_eq!(c.pending_count().unwrap(), 1, "the queued mutation is kept");
@@ -269,6 +269,7 @@ fn a_subscription_ledger_without_bootstrap_columns_gains_them_in_place() {
         (waiting.subscription_id, live.subscription_id)
     };
     let mut store = SqliteStore::open(&path).unwrap();
+    store.execute_batch("ALTER TABLE axton_client DROP COLUMN local_authority_version; ALTER TABLE axton_client DROP COLUMN stream_membership_version").unwrap();
     for column in [
         "bootstrap_state",
         "bootstrap_run",

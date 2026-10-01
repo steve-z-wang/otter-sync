@@ -38,7 +38,7 @@ The subscription ledger is one row per followed Scope ([#150](https://github.com
 
 ```sql
 CREATE TABLE axton_subscription (
-  scope           TEXT PRIMARY KEY,  -- the Scope name; renamed by #152
+  scope           TEXT PRIMARY KEY,  -- the Scope name
   subscription_id   INTEGER NOT NULL UNIQUE,
   starting_cursor   INTEGER,           -- the boundary the first initialization committed
   cursor            INTEGER,           -- how far delivery has committed

@@ -14,7 +14,7 @@ import { drizzle } from "@axtonjs/postgres/drizzle";      // drizzle-orm/node-po
 
 ## Schema
 
-`migration.sql` installs the eight framework tables in a new database: `axton_client`, `axton_call`, `axton_channel`, `axton_record` and the Channel tables `axton_channel_member`, `axton_channel_tag`, `axton_channel_member_tag` and `axton_channel_log`. Apply the whole file at once (for example `psql -v ON_ERROR_STOP=1 -f`); its trigger functions are dollar-quoted, so it cannot be split on semicolons. Re-applying it changes nothing.
+`migration.sql` installs the eight framework tables in a new database: `axton_client`, `axton_call`, `axton_scope`, `axton_record` and the Scope tables `axton_scope_member`, `axton_scope_tag`, `axton_scope_member_tag` and `axton_scope_log`. Apply the whole file at once (for example `psql -v ON_ERROR_STOP=1 -f`); its trigger functions are dollar-quoted, so it cannot be split on semicolons. Re-applying it changes nothing.
 
 An installed v0.2 database upgrades with `@axtonjs/postgres/migrations/2026-09-30-scopes.sql`. Stop all older backend writers and live connections, then apply the whole file once. It transactionally renames framework tables, ownership columns and catalog objects, replaces trigger bodies, and converts only top-level saved membership claims. Business JSON, request bytes, IDs, cursors, tags and removal evidence survive. Conflicting or incomplete layouts and malformed saved claims fail the whole transaction; after an error, issue `ROLLBACK` before retrying. Reapplying the file leaves saved rows unchanged.
 
@@ -22,4 +22,4 @@ A v0.1.x installation first applies the original `2026-09-30-channel-members.sql
 
 Clients reopen old SQLite files in place before reconciliation or network work. The upgrade preserves positive and negative membership evidence, subscriptions, request epochs and frozen queue/Load work. The membership marker retains its existing 0→1 reconciliation meaning. Updated peers require `scope-membership-v1`; old clients are rejected before handlers or progress effects.
 
-A repeated upgrade still takes an `ACCESS EXCLUSIVE` lock on `axton_record`. Retain the old tables and compacted removal log: this release provides no pruning floor or snapshot replacement. Upgrade the backend, adapter, generated tooling and client runtimes together; see [cutover](https://github.com/zanminwang/axton/blob/main/website/docs/backend/deployment.md#channel-membership-cutover).
+A repeated upgrade still takes an `ACCESS EXCLUSIVE` lock on `axton_record`. Retain the old tables and compacted removal log: this release provides no pruning floor or snapshot replacement. Upgrade the backend, adapter, generated tooling and client runtimes together; see [cutover](https://github.com/zanminwang/axton/blob/main/website/docs/backend/deployment.md#scope-membership-cutover).

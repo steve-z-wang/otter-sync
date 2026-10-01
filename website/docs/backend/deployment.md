@@ -53,7 +53,7 @@ Use your own token format and verify it in `authenticate`; `devAuth` trusts the 
 
 - **Everything reaching the listener is trusted to have come through your proxy.** The runtime does not authenticate the proxy and does not read forwarded-for headers, so bind to loopback (or a private interface) and let the proxy be the only route in.
 - **Identity comes from `authenticate` alone.** The user id it returns is the owner used for every host operation in that request. A client identity is bound to the first owner that pushed with it; a push from another user with the same client id answers `403 client.owner_mismatch` ([Errors](api.md#errors)). Give each signed-in user their own local client database ([Authentication and account changes](../frontend/sync.md#authentication-and-account-changes)).
-- **Authorization is application code.** Handlers decide what a user may write and loaders decide what a user may see, per channel; the runtime enforces no channel-level policy ([What your backend owns](api.md#what-your-backend-owns)).
+- **Authorization is application code.** Handlers decide what a user may write and loaders decide what a user may see, per scope; the runtime enforces no scope-level policy ([What your backend owns](api.md#what-your-backend-owns)).
 
 ## What has been validated
 
@@ -66,18 +66,25 @@ Not validated by the repository's tests, and therefore not claimed:
 - More than one backend process behind the proxy. Live wakeups are process-local, so a client connected to one process does not learn about commits made through another until it pulls.
 
 
-## Channel membership cutover
+## Scope membership cutover
 
-AXTON 0.2 coordinates the backend, PostgreSQL adapter, generated tooling, and JS/Dart runtimes. Tags stay on the server; clients receive per-record `upsert` or `remove` events and enrollment claims. `channel-membership-v1` is mandatory on every new request and live subscribe. A valid request without it receives `426 protocol.unsupported` before handler work or progress; malformed capabilities receive `400 request.invalid`. Live negotiation refuses unsupported subscriptions before acknowledgement. Application platform/build admission remains a separate gate.
+The Scope interfaces described on this site are an **unreleased breaking cutover**. Published 0.2 packages still use the earlier Channel contract. Adopt these interfaces only with the coordinated package/tooling release described below; deploying the documentation does not release packages.
 
-| Component | Compatibility requirement |
-| --- | --- |
-| Backend and PostgreSQL adapter | Eight-table schema and new Channel host operations; older writers stopped before migration |
-| Generated tooling | Tag options and selector overloads; regenerate contracts against the coordinated release |
-| JS and Dart runtimes | Capability advertisement, Channel holds, request epoch admission and additive local upgrade |
-| Custom persistence host | Ordered locking, final membership/tags, compacted log, same-Channel associations and checked cursor answers |
-| Legacy saved calls | Explicit compatibility decoding, frozen original claims when present, no invented enrollment, and stale-response admission |
+The Scope API and protocol require a coordinated breaking upgrade of the backend, PostgreSQL adapter, generated tooling and JS/Dart runtimes. `scope-membership-v1` is required for requests and live subscription negotiation. Unsupported clients receive `426 protocol.unsupported` before application handlers, receipts or cursors change. Malformed capability metadata receives `400 request.invalid`. Application platform/build admission is a separate gate.
 
-Prepare compatible application clients first. Stop old server writers, apply the whole forward migration, then start only the coordinated backend and enforce capability and application build gates before enabling synchronized removal. Reopening a client's existing database upgrades it additively: preserve pending work, client identity, subscription positions and local data. The runtime durably reconciles retained subscribed Channel history before ordinary delivery resumes, rather than wiping the database. Legacy untracked cache has no recoverable provenance; records absent from both retained members and logs cannot be inferred.
+There are no legacy Channel API aliases or acceptance of old runtime wire fields. Scope name values remain unchanged; this upgrade renames framework metadata, not application Models, fields, arguments or opaque values.
 
-Retain saved responses, old server tables, compacted removal logs and client absence evidence. This release has no TTL, pruning floor or snapshot replacement. Removing N members writes and delivers N identities in bounded batches; [local measurements](https://github.com/zanminwang/axton/blob/main/docs/engineering/channel-membership-release.md#costs-and-acceptance-evidence) describe one environment, without a universal latency guarantee. If several domains share one Channel, tags do not count access sources: the application decides surviving access before whole-member removal ([Channels](api.md#channels)). Automatic retention across distinct known Channel holds remains available.
+1. Prepare coordinated server, adapter, tooling and client builds. Regenerate application contracts against the new tooling.
+2. Stop old server writers. Apply the [Scope forward migration](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-09-30-scopes.sql) transactionally before applying the current PostgreSQL DDL.
+3. Start only the coordinated backend and enforce the Scope capability floor. Roll out the matching JS/Dart clients and any application build gate.
+4. Clients forward-migrate their existing SQLite framework state before scheduling network work.
+
+The PostgreSQL tables become `axton_scope`, `axton_scope_member`, `axton_scope_tag`, `axton_scope_member_tag` and `axton_scope_log`; ownership columns and associated framework schema objects use Scope vocabulary. SQLite renames its membership table to `axton_scope_member`, framework ownership columns to `scope`, and its layout marker to `scope_membership_version`.
+
+Migration preserves stored records, Scope values, identities, labels and associations, stamps, cursors, heads, subscriptions, holds, pending writes, frozen logical requests and saved outcomes. Saved receipts/results/pages rewrite only framework-owned membership claims. Application payloads and fields named `channel` remain application data. Transport capability metadata uses the new marker without changing the queued business command.
+
+A failed migration commits neither partial layout nor progress. Reapplying the migration or reopening an upgraded database is idempotent; old and new layouts cannot remain parallel sources of truth. Custom persistence hosts must implement the same ordered transaction, selection, label-editing and locking contract as the PostgreSQL host.
+
+The earlier v0.1-to-v0.2 membership upgrade is separate from this v0.2-to-Scope metadata/API cutover. Retain its explicit migration instructions where needed; do not present Scope changes as an invisible 0.2.0 patch. Package version selection and publication are separate release work.
+
+Labels still do not count access sources. Establish one consistent application enrollment/label policy, with backfill or explicit handling for existing untagged members, before replacing label-based cleanup policy. Last-hold withdrawal does not cover every unheld one-shot cache entry, and authoritative business-deletion hooks remain useful. Application adoption and removal of hooks require their own review.

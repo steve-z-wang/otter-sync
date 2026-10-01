@@ -42,20 +42,20 @@ export const loads: Loads<Tx> = {
 };
 ```
 
-Pass `loads` to `createBackend` beside `mutations`, `queries` and `loaders`; it is required when the schema declares a Load. Register a bare function for a Load that has only version 1, or `{ v1, v2 }` for retained versions. The handler receives `{ ctx, args, continuation }`: decoded arguments (a `DateTime` is a `Date`), and a `ctx` with `tx`, `userId`, the page's `callId`, the job's `loadId` and a `channel(name)` that only adds records the page returns to a Channel ([below](#add-loaded-records-to-a-channel)), and no `touch`. It returns `data`, one list of identities per declared output, and `next`. The generated `{Name}HandlerOutput` type (`ProjectTodosHandlerOutput`) names that return value.
+Pass `loads` to `createBackend` beside `mutations`, `queries` and `loaders`; it is required when the schema declares a Load. Register a bare function for a Load that has only version 1, or `{ v1, v2 }` for retained versions. The handler receives `{ ctx, args, continuation }`: decoded arguments (a `DateTime` is a `Date`), and a `ctx` with `tx`, `userId`, the page's `callId`, the job's `loadId` and a `scope(name)` that enrolls and attaches labels only for records the page returns to a Scope ([below](#add-loaded-records-to-a-scope)), and no `touch`. It returns `data`, one list of identities per declared output, and `next`. The generated `{Name}HandlerOutput` type (`ProjectTodosHandlerOutput`) names that return value.
 
 - **Continuation.** `continuation` is `null` for the first page and afterwards the previous page's `next`. Return `next: null` to finish, or `{ state }` to ask for another page; `{ state: null }` is a valid state, distinct from finishing. State is any portable JSON up to 64 KiB and 64 levels deep: no `undefined`, functions, `BigInt`, `NaN`, class instances or strings with a lone UTF-16 surrogate. Encode dates and integers beyond the JavaScript safe range as strings. Invalid state fails the page with `load.invalid_continuation`.
 - **Termination is yours.** AXTON never compares states and never ends a Load because a page was empty or repeated a state. A handler that always returns a `next` never finishes. A final empty page is fine.
 - **Consistency is yours.** Each page runs in its own database transaction; nothing holds a snapshot across pages. Choose a stable order (a keyset, as above), and decide how rows that change, move or are deleted between pages are treated, for example with a cutoff stored in the state.
-- **No business writes.** A Load must not change business data. AXTON cannot inspect your SQL, so this is your responsibility, as for Queries. Adding records to a Channel is framework metadata, not a business write.
+- **No business writes.** A Load must not change business data. AXTON cannot inspect your SQL, so this is your responsibility, as for Queries. Adding records to a Scope is framework metadata, not a business write.
 - **Authorization.** Enumerate only identities the user may read. Each identity is resolved through that Model's [Loader](../backend/api.md#loaders); a Loader that returns `null`, refuses or throws fails the whole page (`load.record_unavailable`, the rejection code, or `loader.failed`), and so does a handler that throws (`handler.failed`) or throws `CallRejected` (its code). A failed page is saved: retrying it re-reads from the last stored page under a new request. The continuation comes back from the client, so never trust it for authorization.
 - **Size.** A page may return at most 1,000 identities across its lists, duplicates included, and 1 MiB of encoded records. A larger page fails with `load.page_too_large`, and retrying reads the same continuation again, so it fails again: reduce your page size in the handler, then retry.
 - **Return identities, not records.** TypeScript does not check extra properties on an object returned from an unannotated handler, so returning full `Todo` records compiles; AXTON then fails the page with `handler.invalid`. Map rows to `{ id }` as above, or annotate the return type as `Promise<ProjectTodosHandlerOutput>` to catch it at compile time.
 - **Versions.** Keep a handler for every retained version. If you change what your state means in an incompatible way, add `@version(n + 1)`; the compiler cannot detect such a change.
 
-### Add loaded records to a Channel
+### Add loaded records to a Scope
 
-A handler can add records it loads to a [Channel](../backend/api.md#channels), so that later changes to them reach that Channel's subscribers with no second add: the Mutation that changes a record, or a `touch`, is enough. This lets you enroll existing data progressively, as it is loaded, instead of backfilling every membership first.
+A Load can explicitly enroll returned identities so future changes reach the Scope's subscribers. Returning an identity alone does not enroll it.
 
 ```ts
 export const loads: Loads<Tx> = {
@@ -63,9 +63,10 @@ export const loads: Loads<Tx> = {
     const after = continuation === null
       ? null
       : (continuation.state as { after: string }).after;
+    // Application-provided keyset query; enumerate identities this user may read.
     const ids = await readTodoIds(ctx.tx, ctx.userId, args.projectId, after, 200);
-    const channel = ctx.channel(`project:${args.projectId}`);
-    for (const id of ids) channel.todo.add({ id });
+    const s = ctx.scope(`project:${args.projectId}`);
+    s.add.todo(ids).tag('loaded');
     return {
       data: { todos: ids.map(id => ({ id })) },
       next: ids.length < 200 ? null : { state: { after: ids[ids.length - 1]! } },
@@ -74,15 +75,18 @@ export const loads: Loads<Tx> = {
 };
 ```
 
-`ctx.channel(name)` returns a `LoadChannel`: `channel.todo.add(identity, { tags: ["X"] })` per Model, or `channel.add([Todo({ id }), Project({ id })], { tags: ["X"] })` for several Models with the generated reference functions. It has no `remove`, and the context has no `touch`. Each call is synchronous, returns nothing and copies the identity at the call; the handle refuses every call once the handler returns or throws. The handler still returns only `{ data, next }`.
+`ctx.scope(name)` returns a `LoadScope`. Its `add` methods accept typed single/list identities or mixed generated references and return an `AddDeclaration` whose `.tag(...)` attaches labels. It also supports explicit label add, such as `s.tag('loaded').add.todo(ids)`, for currently enrolled identities. Standalone label add does not enroll missing members: a missing membership fails and rolls back the page. All membership and label targets must occur in this page's returned identity lists, including targets already enrolled by an earlier page.
 
-- **Only records this page returns.** Each added record must be in one of the page's returned identity lists; returning a record does not add it, so add only the ones you want. Adding a record the page does not return fails the page with `handler.invalid`, and an empty page cannot add anything. A call with an invalid identity, a blank Channel name or a Model without a Loader throws at once and fails the page with `handler.failed`, even if your handler catches the error, so a page never adds part of what it declared.
-- **Bounded.** One page may add at most 1,000 distinct Channel/record pairs and 1 MiB of encoded additions; repeating a pair counts once. More fails the page with `load.page_too_large`: add fewer records or Channels per page.
-- **Atomic.** The additions commit with the page in its transaction. A page that fails for any reason, a Loader refusal or an oversized page included, adds nothing, and subscribers are woken only after the commit.
-- **Shared membership.** Membership belongs to the Channel and the record, not to this Load or this user. Every subscriber of the Channel receives the record's later changes, and each subscriber's Loader still decides what that user may see; which Channel names a user may load into is your application's authorization decision. A record that was not yet a member is delivered to the Channel once at its current stamp; adding a member does nothing, and adding a record to one Channel does not redeliver it to the others it belongs to.
-- **It stays.** Completing, cancelling or forgetting the Load removes nothing; only an explicit `remove` - from a Mutation or legacy slot handler, [`backend.transaction`](../backend/api.md#background-writes) or [`backend.publish`](../backend/api.md#in-a-transaction-you-own) - ends a membership. Records created later join no Channel until the handler that creates them adds them, or another Load returns and adds them.
-- **Replay and once.** A repeated page request returns the saved page and adds nothing again, and a completed `once` hit sends no request, so it adds nothing either. After you add enrollment to a handler, run jobs that already completed again with `refresh: true` or [`invalidate`](#refresh-and-invalidate); a new page adds existing members again harmlessly.
-- **Cost.** A page without additions reads its stamps and records in a fixed number of batched calls. Additions cost extra database work for each record added and each new Channel/record pair, so do not expect the cost of a pure read.
+Declarations are synchronous, copy their operands and settle in invocation order. Ignoring the add handle still declares enrollment. All handles expire with the callback. A Load has no `remove`, `where`, label removal, whole-Scope detachment or `touch`.
+
+Enrollment and label changes commit atomically with the page. Validation, a missing membership, Loader refusal, oversized output, save or commit failure leaves no partial enrollment or label edits. Each returned identity still resolves through its viewer Loader. A Scope or label grants no permission; the application authorizes which Scope names a handler may target.
+
+Preserve the existing page limits: at most 1,000 returned identities, duplicates included, and 1 MiB of encoded records; enrollment at most 1,000 distinct Scope/record pairs and 1 MiB of encoded additions. Repeated pairs count once. Label names and operations obey the [Scope limits](../backend/api.md#add-declarations-and-label-editors).
+
+A new member is delivered to that Scope at its current stamp. Re-adding a member is idempotent; editing its labels alone emits no delivery. Membership is shared by the Scope, independent of the Load or its caller. Completing, cancelling or forgetting a Load removes no membership. A Mutation or host operation must explicitly withdraw it.
+
+A saved page replay performs no new enrollment or label editing and cannot reverse a later withdrawal. A completed `once` hit also makes no new declarations. A fresh traversal may enroll again; use `refresh: true` or [invalidate](#refresh-and-invalidate) when already completed jobs must run the changed enrollment policy.
+
 
 ## Start a Load and wait
 
@@ -110,16 +114,16 @@ export const loads: Loads<Tx> = {
 
 Awaiting the start means the job is stored locally; it works offline and promises no data yet. A Load without inputs still takes `{}` in TypeScript (`client.loads.recentTodos({})`) and no argument in Dart. `wait()` resolves once the final page is stored and throws a `LoadError` (TypeScript) or `LoadException` (Dart) with `code` and `message` if the Load fails or is cancelled. Each page commits on its own, so `watch` on your Models shows records as pages arrive. A Load has no result object: read the Models.
 
-## Continuation versus Channel cursor
+## Continuation versus Scope cursor
 
-| | Load continuation | Channel cursor |
+| | Load continuation | Scope cursor |
 | --- | --- | --- |
 | Owned by | Your Load handler | AXTON |
 | Contains | Any portable JSON you choose | A publication position |
-| Meaning | Where your enumeration continues | Which Channel changes a subscription has received |
+| Meaning | Where your enumeration continues | Which Scope changes a subscription has received |
 | Ends | When your handler returns `next: null` | Never; delivery continues |
 
-A Load creates no subscription or delivery cursor, and the records it returns join no Channel unless the handler [adds them](#add-loaded-records-to-a-channel). Completing it is not a snapshot: it means your handler finished its traversal and every page was stored. Records missing from a page are never deleted locally.
+A Load creates no subscription or delivery cursor, and the records it returns join no Scope unless the handler [adds them](#add-loaded-records-to-a-scope). Completing it is not a snapshot: it means your handler finished its traversal and every page was stored. Records missing from a page are never deleted locally.
 
 ## Fresh start, once and reattach
 
@@ -155,7 +159,7 @@ A Load creates no subscription or delivery cursor, and the records it returns jo
 
 `once` is keyed by the Load's name and version, its normalized arguments (key order, UUID case and date offsets do not matter; list order and explicit `null` do) and the Model versions it stores. It belongs to the local database file, not to the signed-in user: use a separate database per account, backend or tenant. In Dart the options are `once` and `refresh`, or `callOnce` and `callRefresh` when your Load has inputs with those names.
 
-`once` says an earlier load can be reused; it does not promise the records are still complete or fresh. Deleting local records, Channel changes and elapsed time do not undo it.
+`once` says an earlier load can be reused; it does not promise the records are still complete or fresh. Deleting local records, Scope changes and elapsed time do not undo it.
 
 ## Refresh and invalidate
 
@@ -198,7 +202,7 @@ Closing the client rejects pending `wait()` calls with `client_closed` and keeps
 
 ## Keep loaded records current
 
-A Load reads records once. To keep them current, subscribe to a Channel the records belong to, or that the handler [adds them to](#add-loaded-records-to-a-channel), wait until the subscription's `initialization` is `ready`, then start the Load:
+A Load reads records once. To keep them current, subscribe to a Scope the records belong to, or that the handler [adds them to](#add-loaded-records-to-a-scope), wait until the subscription's `initialization` is `ready`, then start the Load:
 
 === "TypeScript"
 
@@ -223,7 +227,7 @@ A Load reads records once. To keep them current, subscribe to a Channel the reco
     final load = await client.loads.projectTodos(projectId: 'p1');
     ```
 
-Awaiting `subscribe` only stores your intent locally; `ready` means the first handshake with the backend is committed, and changes published from then on reach this client. `watch` reports the current status first, so the wait ends at once when the subscription is already ready. Changes after that point arrive through the subscription, the same record may arrive through both the page and the Channel harmlessly, and record stamps make sure an older page never overwrites a newer change, whichever arrives first; a pending local edit still shows over both. A Load started before the subscription is ready is allowed, but a change between the page's read and the subscription's first handshake can be missed. Adding records to a Channel on the backend never subscribes the client. This works only if your backend publishes every relevant change and your enumeration is stable.
+Awaiting `subscribe` only stores your intent locally; `ready` means the first handshake with the backend is committed, and changes published from then on reach this client. `watch` reports the current status first, so the wait ends at once when the subscription is already ready. Changes after that point arrive through the subscription, the same record may arrive through both the page and the Scope harmlessly, and record stamps make sure an older page never overwrites a newer change, whichever arrives first; a pending local edit still shows over both. A Load started before the subscription is ready is allowed, but a change between the page's read and the subscription's first handshake can be missed. Adding records to a Scope on the backend never subscribes the client. This works only if your backend publishes every relevant change and your enumeration is stable.
 
 ## Batching and latency
 
@@ -254,11 +258,11 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 | `load.unknown` | No Load of that name and version in this client's schema |
 | `load.invalid_args` | The start or invalidation arguments do not match the Load's inputs; nothing was written |
 | `load_version_unsupported`, `load.invalid`, `model_version_unsupported` | The backend does not retain this Load version, refused its arguments, or does not retain a Model version the client stores |
-| `handler.failed`, `loader.failed`, a `CallRejected` code | The handler or a Loader threw or rejected, or a Channel addition was refused at the call |
-| `handler.invalid`, `loader.invalid`, `loader.unregistered` | The handler returned something other than identity lists (a full record, for example) or added a record to a Channel that the page does not return, a Loader returned malformed rows, or no Loader is registered |
+| `handler.failed`, `loader.failed`, a `CallRejected` code | The handler or a Loader threw or rejected, or a Scope addition was refused at the call |
+| `handler.invalid`, `loader.invalid`, `loader.unregistered` | The handler returned something other than identity lists (a full record, for example) or added a record to a Scope that the page does not return, a Loader returned malformed rows, or no Loader is registered |
 | `load.invalid_continuation` | The handler returned a `next` that is missing, malformed, not portable JSON or over its limits |
 | `load.record_unavailable` | A Loader returned `null` for an identity the page listed |
-| `load.page_too_large` | The page exceeded 1,000 identities or 1 MiB, or added more than 1,000 Channel/record pairs or 1 MiB of them; change the handler's page size |
+| `load.page_too_large` | The page exceeded 1,000 identities or 1 MiB, or added more than 1,000 Scope/record pairs or 1 MiB of them; change the handler's page size |
 | `load.store_failed` | A record could not be stored locally; the page was not stored, and your `onError` receives an `AxtonReport` naming each refused record's Model and identity |
 | `load.hook_failed` | An `onStore` callback threw; the page and the callback's writes were rolled back |
 | `load.protocol_invalid` | The response for this page was malformed, or the backend refused the page's request on its own with a 4xx status |
@@ -273,6 +277,6 @@ These codes appear as `status.error.code` and on the error `wait()` or a managem
 
 `server.unavailable` and `transaction.conflict` are backend faults the client retries on its own; they never fail a Load.
 
-An enrolling page saves membership claims with its immutable response. Replaying that page neither enrolls again nor refreshes the claim cursor, so a later Channel removal wins over an old saved claim. A page without enrollment is untracked cache, with no automatic cleanup guarantee. Delayed positive bodies are subject to request epoch admission, including legacy saved pages without claims; continuation and call settlement still complete.
+An enrolling page saves membership claims with its immutable response. Replaying that page neither enrolls again nor refreshes the claim cursor, so a later Scope removal wins over an old saved claim. A page without enrollment is untracked cache, with no automatic cleanup guarantee. Delayed positive bodies are subject to request epoch admission, including legacy saved pages without claims; continuation and call settlement still complete.
 
 A retained single-page request at the original 1 MiB logical limit remains sendable after negotiation is added: only the fixed 41-byte capability metadata allowance applies. Multi-page batches stay within 1 MiB including negotiation. Reopening preserves the saved page and call identity.

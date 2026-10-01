@@ -14,7 +14,7 @@ Regenerate application bindings, rebuild native artifacts, update imports and en
 
 ## Persistent state
 
-Internal SQLite and PostgreSQL tables now use the `axton_` prefix, including client identity, queued work, receipts, record stamps and channel positions. The reserved model prefix changes with these tables. The PostgreSQL setup SQL creates the new tables; it does not migrate old metadata.
+Internal SQLite and PostgreSQL tables now use the `axton_` prefix, including client identity, queued work, receipts, record stamps and scope positions. The reserved model prefix changes with these tables. The PostgreSQL setup SQL creates the new tables; it does not migrate old metadata.
 
 For disposable development environments, use fresh client database paths and a fresh backend database. Preserve any business data you need separately. Do not point the renamed runtime at existing pre-rename databases: old metadata and pending local work will not be adopted automatically.
 

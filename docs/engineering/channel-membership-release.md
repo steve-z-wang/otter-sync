@@ -1,6 +1,8 @@
 # Channel membership: 0.2 release boundary
 
-Prepared release notes; coordinated release acceptance and publication are pending. [Deployment cutover](../../website/docs/backend/deployment.md#channel-membership-cutover) owns the compatibility matrix and operator sequence. The [design](../superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
+Historical pre-Scope release observations, retained as evidence of the earlier implementation. These API names and measured costs do not describe the unreleased Scope cutover; [current deployment guidance](../../website/docs/backend/deployment.md#scope-membership-cutover) owns that boundary.
+
+Prepared release notes; coordinated release acceptance and publication are pending. [Deployment cutover](../../website/docs/backend/deployment.md#scope-membership-cutover) owns the compatibility matrix and operator sequence. The [design](../superpowers/specs/2026-09-30-channel-tags-removal-design.md) records the binding decisions.
 
 ## Release notes
 
@@ -25,7 +27,7 @@ Oasis's inspected pin is `0.1.1`. Adoption is separate work, targeting exactly `
 3. Coordinate stopped older writers, server migration and backend cutover with per-platform minimum-build floors and the capability gate.
 4. Enable synchronized removal only after that boundary is enforced.
 
-When several Journal domains share one User Channel, tags do not reference-count their access: removing X also removes an X/Y membership. Oasis must decide surviving domain access before declaring removal; automatic cross-Channel holds apply only to separate known Channels. See [Channel selection semantics](../../website/docs/backend/api.md#channels).
+When several Journal domains share one User Channel, tags do not reference-count their access: removing X also removes an X/Y membership. Oasis must decide surviving domain access before declaring removal; automatic cross-Channel holds apply only to separate known Channels. See [Channel selection semantics](../../website/docs/backend/api.md#scopes).
 
 The adoption task chooses actual build floors and runs Oasis's pin/contract checks. No pin, lock, build number or Oasis code is changed here. A package bump alone does not protect old clients.
 

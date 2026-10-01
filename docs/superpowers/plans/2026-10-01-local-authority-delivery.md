@@ -100,7 +100,7 @@ Use the same literal format as the current `HEADROOM` source (raw JSON without e
 
 **Files:**
 - Modify all client authority/local-work and opening/scheduling files in the source map; retain `authority.rs` pending replay and the direct/companion local journal.
-- Test: `crates/sqlite/tests/stream_upgrade.rs`, `subscriptions.rs`, `store_hooks.rs`, `direct_writes.rs`, `settlement.rs`, `loads.rs`, `actions.rs`, `bootstrap.rs`, `bootstrap_worker.rs`, `ddl.rs`.
+- Test: `crates/sqlite/tests/stream_upgrade.rs`, `stream_members.rs`, `subscriptions.rs`, `store_hooks.rs`, `direct_writes.rs`, `settlement.rs`, `loads.rs`, `actions.rs`, `bootstrap.rs`, `bootstrap_worker.rs`, `ddl.rs`, `downlink.rs`, `downlink_worker.rs`, `runtime_lanes.rs`, `load_worker.rs`, `query_cache.rs`, `transaction_mutation_crash.rs`, `unsent.rs`, and `common/mod.rs` where they assert removed ownership or reconstruction behavior.
 - Fixtures: keep `crates/sqlite/tests/fixtures/v02-framework.sql`, `sqlite-state.sql`, `frozen-push-logical.json` as original pre-upgrade inputs. Add authority-era expectations in the tests, not by modernizing old fixtures.
 
 **Interfaces:**
@@ -176,6 +176,7 @@ Review the migration ordering and fresh layout separately from the authority loo
 **Files:**
 - Create: `packages/postgres/migrations/2026-10-01-local-authority.sql`.
 - Test: `integration/persistence/server/stream-tracking.test.mjs` (existing runner already executes it).
+- Runner prerequisites: adapt active capability literals and fresh-claim assertions in `integration/persistence/server/protocol-admission.test.mjs`, `actions.test.mjs`, `membership.test.mjs`, `loads.test.mjs`, `fetch.test.mjs`, `runtime.test.mjs`, and `driver-conformance.test.mjs` so the full existing PostgreSQL runner tests the authority-capable source from Tasks 1–2. Preserve explicit history/rejection inputs. Task 4 owns the additional cross-runtime scenarios and remaining fixture boundaries.
 - Modify commentary only where needed: `packages/postgres/migration.sql`, `packages/postgres/src/sql.mts`; preserve server `axton_stream_member` and host interface.
 
 **Interfaces:**

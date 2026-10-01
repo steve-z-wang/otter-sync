@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - The governing spec is `docs/superpowers/specs/2026-09-30-scope-membership-api-design.md`.
-- Rename APIs, generated types, implementation concepts, protocol fields, database tables/columns and living documentation to Scope. No Channel public aliases or old wire-field acceptance; old names occur only in explicit legacy migration inputs and dated history. Never rename application-owned Model names/fields/arguments.
+- Rename APIs, generated types, implementation concepts, protocol fields, database tables/columns and living documentation to Scope. No Channel public aliases or old wire-field acceptance; old names occur only in explicit legacy migration inputs and dated history. Never rename application-owned Model names/fields/arguments or external standard/dependency APIs such as `std::sync::mpsc::channel`; those transport mechanisms are not the framework Scope abstraction.
 - Preserve v0.2.0 removal delivery, enrollment claims, local hold accounting and request fences. No tags, predicates or SQL travel to clients.
 - Tags are labels, not grants or retention sources. Removing the last tag leaves membership present.
 - Standalone label add requires current membership; missing membership fails and rolls back its enclosing operation. Chained add/tag first ensures membership.
@@ -176,7 +176,7 @@ late final scopes = TransactionScopes._(this);
 // No transaction.channels facade remains.
 ```
 
-- [ ] **Step 4: Audit residual terminology.** Run `rg -n 'Channel|channel' crates packages bindings examples website/docs docs/engineering`. Each surviving occurrence must be explicit legacy migration input, an intentional application-owned schema field/name used by a migration regression, or dated history. No public aliases, old protocol-field parsing, old capability identifiers in live code, or canonical channel tables remain. Living-guide cleanup finishes in Task 6.
+- [ ] **Step 4: Audit residual terminology.** Run `rg -n 'Channel|channel' crates packages bindings examples website/docs docs/engineering`. Each surviving occurrence must be explicit legacy migration input, an intentional application-owned schema field/name used by a migration regression, an external standard/dependency API, or dated history. No public aliases, old protocol-field parsing, old capability identifiers in live code, or canonical channel tables remain. Living-guide cleanup finishes in Task 6.
 - [ ] **Step 5: Verify GREEN for fresh-layout behavior.** Run focused Rust protocol/server/client tests, JS and React Native subscription tests, Dart analyze/test, generated positive/negative contracts and real-PG new-database scenarios. Existing-layout upgrades are Task 4 acceptance; record that boundary instead of claiming complete migration evidence here.
 - [ ] **Step 6: Self-review, commit and report.** Report canonical names, new admission floor and exact fresh-layout assertions; identify old-layout migration fixtures for Task 4. This is a breaking coordinated change, never a patch silently compatible with 0.2.
 
@@ -194,7 +194,7 @@ late final scopes = TransactionScopes._(this);
 - Convert framework-owned membership claim keys in PostgreSQL receipt/call responses. SQLite queue/Load state has no persisted framework claim envelope to rewrite; preserve its stored values unchanged unless a source-proven additional claim location is found. Do not recursively rename arbitrary JSON keys: Model data, identities, args, continuation and opaque values may legitimately contain `channel`.
 - Preserve frozen logical request bytes and IDs. Capability advertisement is transport metadata, stripped from durable logical request identity by the existing core protocol functions; change advertisement to the Scope marker without rewriting business requests.
 
-- [ ] **Step 1: Write failing migration scenarios from original layout fixtures.** Create v0.2.0 data with live/absent holds, tag associations and tombstones, current subscriptions, a pending mutation with frozen request, stored page/result claims, and a business Model field/argument named `channel`. Snapshot unaffected bytes/IDs/cursors before upgrade. Run the new runtime/migration and independently query resulting Scope tables and saved outcomes.
+- [ ] **Step 1: Write failing migration scenarios from original layout fixtures.** Create v0.2.0 data with live/absent holds, tag associations and tombstones, current subscriptions, a pending mutation with frozen request, server-saved page/result claims, and a business Model field/argument named `channel`. Snapshot unaffected bytes/IDs/cursors before upgrade. Run the new runtime/migration and independently query resulting Scope tables and saved outcomes.
 
 ```js
 assert.equal(await exists('axton_scope_member'), true);
@@ -260,7 +260,7 @@ s.tag('journal:1').remove();
 ```
 
 TypeScript/Dart client examples must agree. Describe bootstrap, permission checks, authoritative deletion versus replica release and untracked one-shot cache honestly; do not claim hooks can all be removed.
-- [ ] **Step 2: Verify docs and Scope-only surfaces.** Run `python3 website/scripts/check_examples.py`, the repository's strict website build command from `website/README.md`, local links/anchors and terminology residual checks. Update the interface index and writing convention term list to Scope. Verify surviving Channel strings are only legacy migration inputs, dated history or intentional application-field regression data.
+- [ ] **Step 2: Verify docs and Scope-only surfaces.** Run `python3 website/scripts/check_examples.py`, the repository's strict website build command from `website/README.md`, local links/anchors and terminology residual checks. Update the interface index and writing convention term list to Scope. Verify surviving Channel strings are only legacy migration inputs, dated history, external standard/dependency APIs or intentional application-field regression data.
 - [ ] **Step 3: Run the complete host gate once.** Run `bash scripts/test.sh` on the final branch, saving the log and exact commit. It includes release checks, Rust fmt/clippy/tests, SDK bindings, persistence, generated APIs, Action/Load/e2e, snippets and installed-package tests. Also run the relevant React Native subscription mock suite and `node scripts/release/version.mjs check` if the host script does not include them. Do not publish packages to test them.
 - [ ] **Step 4: Resolve failures and review the branch.** Diagnose each failure, add a targeted regression for production defects, rerun affected checks, and re-run the full gate only after meaningful fixes. Dispatch a whole-branch reviewer against v0.2.0 with the spec, final task reports, migration-boundary inventory and exact validation evidence. Fix Critical/Important findings and re-review.
 - [ ] **Step 5: Commit documentation/evidence and report.** Confirm clean worktree, completed task ledger, latest tested SHA and no version/publish/merge changes. Provide the user the implementation result, remaining material limitations and reviewable branch/PR artifact if requested or created under the authorized workflow.

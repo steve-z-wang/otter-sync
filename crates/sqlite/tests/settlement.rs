@@ -1361,7 +1361,7 @@ fn a_wire_cascade_keeps_its_place_before_later_operations_of_the_same_call() {
 fn a_pending_wire_delete_still_hides_a_delivered_child_of_a_parent_recreated_by_a_later_call() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = family_start(&dir.path().join("db"));
-    c.transaction(|tx| tx.set_scope("a".into(), true)).unwrap();
+    c.transaction(|tx| tx.set_stream("a".into(), true)).unwrap();
     acknowledge(&mut c, &[("a", 0)]);
     let mut delete = Mutation::new("Delete", vec![book_delete("b")]);
     delete.prerequisites.push("hold".into());

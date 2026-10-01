@@ -56,7 +56,7 @@ export type ClientSyncState = {
   pending: number;
   beforeImages: number;
   cursors: Record<string, number>;
-  scopes: string[];
+  streams: string[];
   rejections: Rejection[];
   schema: SchemaState;
 };
@@ -804,23 +804,23 @@ export function createClient<
       }
     }
     /**
-     * Register durable intent to follow `scope` and answer with its handle. It
+     * Register durable intent to follow `stream` and answer with its handle. It
      * resolves when the local transaction commits: it awaits no
-     * authentication, connection or acknowledgement, and the same Scope answers
+     * authentication, connection or acknowledgement, and the same Stream answers
      * with the same handle while its registration lives. The socket is never
      * cancelled here; the Downlink worker sees the committed change and
      * reconciles its own session.
      */
-    async subscribeScope(scope: string): Promise<Subscription> {
+    async subscribeStream(stream: string): Promise<Subscription> {
       this.#guard();
-      return this.#subscriptions.subscribe(scope);
+      return this.#subscriptions.subscribe(stream);
     }
-    /** The Scope surface the generated `scopes` facade delegates to, with no logic of its own. */
-    get scopes(): { subscribe(scope: string): Promise<Subscription> } {
-      return { subscribe: (scope) => this.subscribeScope(scope) };
+    /** The Stream surface the generated `streams` facade delegates to, with no logic of its own. */
+    get streams(): { subscribe(stream: string): Promise<Subscription> } {
+      return { subscribe: (stream) => this.subscribeStream(stream) };
     }
-    subscribe(scope: string): Promise<Subscription> {
-      return this.subscribeScope(scope);
+    subscribe(stream: string): Promise<Subscription> {
+      return this.subscribeStream(stream);
     }
     /**
      * Accept a native Load durably ([#173](https://github.com/zanminwang/axton/issues/173))
@@ -848,10 +848,10 @@ export function createClient<
     invalidateLoad(name: string, args: object): Promise<void> {
       return this.#loads.invalidate(name, args);
     }
-    /** Remove whatever registration this Scope name has; its handle stops. */
-    async unsubscribe(scope: string): Promise<void> {
+    /** Remove whatever registration this Stream name has; its handle stops. */
+    async unsubscribe(stream: string): Promise<void> {
       this.#guard();
-      return this.#subscriptions.unsubscribeScope(scope);
+      return this.#subscriptions.unsubscribeStream(stream);
     }
     /**
      * Connect to `server`: install the effects the runtime will ask for, then

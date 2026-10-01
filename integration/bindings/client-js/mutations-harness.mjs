@@ -331,7 +331,7 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
               captured = local;
               for (const member of [
                 "submitMutation",
-                "scopes",
+                "streams",
                 "savepoint",
                 "watch",
                 "mutate",
@@ -382,7 +382,7 @@ export function mutationTests(test, Transaction, { savepoints, exactGuard }) {
                 tx.submitMutation("Ping", 1, {}, decode),
                 CAPABILITY,
               );
-              await assert.rejects(tx.scopes.subscribe("book"), CAPABILITY);
+              await assert.rejects(tx.streams.subscribe("book"), CAPABILITY);
               if (savepoints)
                 await assert.rejects(
                   tx.savepoint(async () => {}),

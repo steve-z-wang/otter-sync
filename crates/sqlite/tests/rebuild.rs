@@ -141,7 +141,7 @@ fn an_earlier_framework_layout_is_rebuilt_beside_not_refused() {
     let path = dir.path().join("db");
     let mut s = SqliteStore::open(&path).unwrap();
     s.execute_batch(ddl::FRAMEWORK_DDL).unwrap();
-    s.execute_batch("CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, scope TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, scope)); INSERT INTO axton_push_checkpoint VALUES (1,'a',1); INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES ('old',1,1,1,8); INSERT INTO axton_subscription (scope, subscription_id, starting_cursor, cursor) VALUES ('a', 7, 9, 9)").unwrap();
+    s.execute_batch("CREATE TABLE axton_push_checkpoint (push INTEGER NOT NULL, scope TEXT NOT NULL, cursor INTEGER NOT NULL, PRIMARY KEY (push, scope)); INSERT INTO axton_push_checkpoint VALUES (1,'a',1); INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES ('old',1,1,1,8); INSERT INTO axton_subscription (stream, subscription_id, starting_cursor, cursor) VALUES ('a', 7, 9, 9)").unwrap();
     drop(s);
     assert!(
         Client::open(SqliteStore::open(&path).unwrap(), schema()).is_err(),
@@ -476,7 +476,7 @@ fn a_rebuild_resets_the_bootstrap_state_with_the_fresh_identity() {
             .subscription_id;
         c.request_bootstrap("book", id).unwrap();
         let page = BootstrapPage {
-            scope: "book".into(),
+            stream: "book".into(),
             from: 0,
             to: 0,
             until: 0,

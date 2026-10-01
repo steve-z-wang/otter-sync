@@ -13,6 +13,7 @@ import {createBackend} from '../../../packages/server/index.mts';
 import {pg,prisma,answer,pgDriver,withRetries,retryDelay,RETRY_BACKOFF_BASE_MS,RETRY_BACKOFF_CAP_MS} from '../../../packages/postgres/index.mts';
 import {drizzle} from '../../../packages/postgres/src/drizzle.mts';
 const require=createRequire(import.meta.url);
+const native=require('../../../bindings/node/axton-node.node');
 const {PrismaClient}=require('../../bindings/node/generated/client');
 const url=process.env.DATABASE_URL;
 const check=new Pool({connectionString:url});
@@ -113,8 +114,8 @@ for(const shim of shims){
  const {database}=shim;const {driver}=database;
  const inTx=body=>driver.transaction(tx=>body(tx,(sql,params=[])=>driver.query(tx,sql,params),r=>answer(driver,tx,r)));
  const p=name=>`${shim.name}-${name}`;
- /** One final member state, as settlement hands it to applyScopeMembers. */
- const member=(scope,id,{present=true,tags=[],publish=true}={})=>({scope,model:'Task',identity:{id},identityKey:key(id),present,tags,publish});
+ /** One final member state, as settlement hands it to applyStreamMembers. */
+ const member=(stream,id,{publish=true}={})=>({stream,model:'Task',identity:{id},identityKey:key(id),publish});
  test(`[${shim.name}] call claims commit with business writes and replay without overwriting the original`,async()=>{
   const id=p('call-commit'), row=p('call-row');
   const claim={op:'claimCall',owner:'alice',callId:id,request:'{"name":"first"}'};
@@ -190,29 +191,29 @@ for(const shim of shims){
   assert.deepEqual(await q('SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2',['alice',id]),[{response:'{"ok":true}'}]);
  });
  test(`[${shim.name}] a push writes business rows and AXTON metadata in one transaction and a pull reads them back`,async()=>{
-  const backend=createBackend({config,database,authenticate,handlers:{async edit({input,tx,scope: scope}){await driver.query(tx,'INSERT INTO conformance_task(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[input.task.identity.id,input.task.patch.title]);scope(p('shared')).add.task(input.task.identity);}},loaders:{async task({ids,tx}){const rows=await driver.query(tx,'SELECT id,title FROM conformance_task WHERE id = ANY($1)',[ids.map(i=>i.id)]);return ids.map(i=>{const r=rows.find(r=>r.id===i.id);return r?{title:r.title}:null;});}}});
-  const receipt=JSON.parse(await backend.push('alice',JSON.stringify({capabilities:['scope-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id:p('t')},values:{title:'typed'}}]}]})));
+  const backend=createBackend({config,native,database,authenticate,handlers:{async edit({input,tx,stream: stream}){await driver.query(tx,'INSERT INTO conformance_task(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[input.task.identity.id,input.task.patch.title]);stream(p('shared')).track.task(input.task.identity);}},loaders:{async task({ids,tx}){const rows=await driver.query(tx,'SELECT id,title FROM conformance_task WHERE id = ANY($1)',[ids.map(i=>i.id)]);return ids.map(i=>{const r=rows.find(r=>r.id===i.id);return r?{title:r.title}:null;});}}});
+  const receipt=JSON.parse(await backend.push('alice',JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id:p('t')},values:{title:'typed'}}]}]})));
   assert.deepEqual(receipt.records,[{identity:{id:p('t')},model:'Task',stamp:1,state:{title:'typed'}}]);
   assert.deepEqual(await q('SELECT title FROM conformance_task WHERE id=$1',[p('t')]),[{title:'typed'}]);
   assert.equal(Number((await q('SELECT sequence FROM axton_client WHERE client_id=$1',[p('c')]))[0].sequence),1);
-  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['scope-membership-v1'],cursors:{[p('shared')]:0},models:{Task:1}})));
+  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{[p('shared')]:0},models:{Task:1}})));
   assert.equal(page.changes.length,1);assert.deepEqual(page.changes[0].state,{title:'typed'});assert.equal(page.changes[0].stamp,1);
-  assert.equal(await backend.push('alice',JSON.stringify({capabilities:['scope-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[]}]})),JSON.stringify(receipt),'a retry answers from the stored receipt');
+  assert.equal(await backend.push('alice',JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[]}]})),JSON.stringify(receipt),'a retry answers from the stored receipt');
  });
- test(`[${shim.name}] claim creates and locks the client row; saveReceipt refuses another owner; head of an unknown scope is 0`,async()=>{
+ test(`[${shim.name}] claim creates and locks the client row; saveReceipt refuses another owner; head of an unknown stream is 0`,async()=>{
   const claimed=await inTx((tx,_,a)=>a({op:'claim',owner:'alice',clientId:p('claim')}));
   assert.deepEqual(claimed,{clientId:p('claim'),owner:'alice',sequence:0,receipt:null});
   await assert.rejects(()=>inTx((tx,_,a)=>a({op:'saveReceipt',owner:'bob',clientId:p('claim'),sequence:1,receipt:'{}'})),/Receipt owner mismatch/);
   await inTx((tx,_,a)=>a({op:'saveReceipt',owner:'alice',clientId:p('claim'),sequence:2**40,receipt:'{"big":true}'}));
   const again=await inTx((tx,_,a)=>a({op:'claim',owner:'alice',clientId:p('claim')}));
   assert.deepEqual(again,{clientId:p('claim'),owner:'alice',sequence:2**40,receipt:'{"big":true}'},'bigint counters round-trip beyond 32 bits');
-  assert.equal(await inTx((tx,_,a)=>a({op:'head',scope:p('nowhere')})),0);
+  assert.equal(await inTx((tx,_,a)=>a({op:'head',stream:p('nowhere')})),0);
  });
- test(`[${shim.name}] advanceStamp increments without a scope; ensureStamp initialises once and keeps an advanced stamp`,async()=>{
+ test(`[${shim.name}] advanceStamp increments without a stream; ensureStamp initialises once and keeps an advanced stamp`,async()=>{
   const ref={model:'Task',identityKey:key(p('stamp'))};
   assert.deepEqual(await inTx(async(tx,_,a)=>[await a({op:'advanceStamp',...ref}),await a({op:'advanceStamp',...ref})]),[1,2]);
   assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[ref.identityKey]),[{stamp:2}]);
-  assert.deepEqual(await q('SELECT l.* FROM axton_scope_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1',[ref.identityKey]),[]);
+  assert.deepEqual(await q('SELECT l.* FROM axton_stream_log l JOIN axton_record r ON r.id=l.record_id WHERE r.identity_key=$1',[ref.identityKey]),[]);
   const race={model:'Task',identityKey:key(p('race'))};
   const ensure=()=>inTx((tx,_,a)=>a({op:'ensureStamp',...race}));
   assert.deepEqual(await Promise.all([ensure(),ensure(),ensure()]),[1,1,1],'concurrent first publications agree on 1 (serialization retries)');
@@ -220,39 +221,27 @@ for(const shim of shims){
   await inTx((tx,_,a)=>a({op:'advanceStamp',...race}));
   assert.equal(await ensure(),2);
  });
- test(`[${shim.name}] applyScopeMembers reserves one consecutive range per Scope in delta order, answers a kept member's position and refuses a record without metadata`,async()=>{
-  const [a,b]=[p('range-a'),p('range-b')];const [x,y,z]=[p('rx'),p('ry'),p('rz')];
-  const apply=deltas=>inTx((tx,_,f)=>f({op:'applyScopeMembers',deltas}));
-  const at=positions=>positions.map(r=>[r.scope,JSON.parse(r.identityKey).id,r.cursor,r.kind]);
-  await assert.rejects(()=>apply([member(a,x)]),/Record metadata missing/);
-  assert.deepEqual(await q('SELECT * FROM axton_scope WHERE scope=$1',[a]),[],'the refused call created no Scope');
-  await inTx(async(tx,_,f)=>{for(const id of [x,y,z])await f({op:'ensureStamp',model:'Task',identityKey:key(id)});});
-  assert.deepEqual(at(await apply([member(a,x,{tags:['t1']}),member(a,y),member(b,z,{tags:['t1','t2']})])),[[a,x,1,'upsert'],[a,y,2,'upsert'],[b,z,1,'upsert']]);
-  assert.deepEqual(at(await apply([member(a,x,{tags:['t2'],publish:false}),member(a,y,{present:false}),member(a,z),member(b,z,{tags:['t1','t2'],publish:false})])),
-   [[a,x,1,'upsert'],[a,y,3,'remove'],[a,z,4,'upsert'],[b,z,1,'upsert']],'kept deltas answer their positions; published ones continue each range');
-  assert.deepEqual(await q('SELECT scope,head::int AS head FROM axton_scope WHERE scope = ANY($1) ORDER BY scope',[[a,b]]),[{scope:a,head:4},{scope:b,head:1}]);
-  const read=await inTx((tx,_,f)=>f({op:'readScopeMembers',scope:a,explicitKeys:[x,y,z].map(id=>({model:'Task',identityKey:key(id)})),tags:[]}));
-  assert.deepEqual(read.map(r=>[JSON.parse(r.identityKey).id,r.tags]).sort(),[[x,['t2']],[z,[]]],'exactly the delta tags; the removed member is gone');
-  assert.deepEqual(await q('SELECT cursor::int,kind FROM axton_scope_log WHERE scope=$1 ORDER BY cursor',[a]),[{cursor:1,kind:'upsert'},{cursor:3,kind:'remove'},{cursor:4,kind:'upsert'}]);
-  assert.deepEqual(await q('SELECT name FROM axton_scope_tag WHERE scope=$1 ORDER BY name',[a]),[{name:'t2'}],'t1 lost its last member and was collected');
- });
+
  test(`[${shim.name}] a thrown body rolls back a first initialisation together with its publication`,async()=>{
   const id=p('undone');
-  await assert.rejects(()=>inTx(async(tx,_,f)=>{await f({op:'ensureStamp',model:'Task',identityKey:key(id)});await f({op:'applyScopeMembers',deltas:[member(p('undone'),id,{tags:['t']})]});throw new Error('cancel');}),/cancel/);
+  await assert.rejects(()=>inTx(async(tx,_,f)=>{await f({op:'ensureStamp',model:'Task',identityKey:key(id)});await f({op:'applyStreamMembers',deltas:[member(p('undone'),id)]});throw new Error('cancel');}),/cancel/);
   assert.deepEqual(await q('SELECT * FROM axton_record WHERE identity_key=$1',[key(id)]),[]);
-  assert.deepEqual(await q('SELECT * FROM axton_scope_log WHERE scope=$1',[p('undone')]),[]);
-  assert.deepEqual(await q('SELECT * FROM axton_scope_tag WHERE scope=$1',[p('undone')]),[]);
-  assert.deepEqual(await q('SELECT * FROM axton_scope WHERE scope=$1',[p('undone')]),[]);
+  assert.deepEqual(await q('SELECT * FROM axton_stream_log WHERE stream=$1',[p('undone')]),[]);
+  assert.deepEqual(await q('SELECT * FROM axton_stream WHERE stream=$1',[p('undone')]),[]);
  });
  test(`[${shim.name}] scan retains removals before its limit and reads current stamps only for upserts`,async()=>{
-  const scope=p('scan');const [id,gone,other]=[p('scan'),p('scan-gone'),p('scan-other')];
-  await inTx(async(tx,_,f)=>{for(const m of [gone,other,id])await f({op:'ensureStamp',model:'Task',identityKey:key(m)});await f({op:'applyScopeMembers',deltas:[gone,other,id].map(m=>member(scope,m))});await f({op:'advanceStamp',model:'Task',identityKey:key(id)});});
-  const scan=(after=0,limit=50)=>inTx((tx,_,f)=>f({op:'scan',scope,after,limit}));
+  const stream=p('scan');const [id,gone,other]=[p('scan'),p('scan-gone'),p('scan-other')];
+  await inTx(async(tx,_,f)=>{for(const m of [gone,other,id])await f({op:'ensureStamp',model:'Task',identityKey:key(m)});await f({op:'applyStreamMembers',deltas:[gone,other,id].map(m=>member(stream,m))});await f({op:'advanceStamp',model:'Task',identityKey:key(id)});});
+  const scan=(after=0,limit=50)=>inTx((tx,_,f)=>f({op:'scan',stream,after,limit}));
   assert.deepEqual((await scan()).map(r=>r.identity.id),[gone,other,id]);
-  await inTx((tx,_,f)=>f({op:'applyScopeMembers',deltas:[member(scope,gone,{present:false}),member(scope,other,{present:false})]}));
-  assert.deepEqual(await scan(0,1),[{scope,kind:'upsert',cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'the first retained position fills the limit');
-  assert.deepEqual(await scan(3,1),[{scope,kind:'remove',cursor:4,model:'Task',identityKey:key(gone),identity:{id:gone}}],'a removal fills a page without authority fields');
-  assert.deepEqual((await q('SELECT cursor::int,kind FROM axton_scope_log WHERE scope=$1 ORDER BY cursor',[scope])).map(r=>[r.cursor,r.kind]),[[3,'upsert'],[4,'remove'],[5,'remove']],'one compacted row per pair');
+  await inTx(async(tx,query)=>{
+   await query("UPDATE axton_stream SET head=5 WHERE stream=$1",[stream]);
+   await query("UPDATE axton_stream_log l SET kind='remove',cursor=CASE WHEN r.identity_key=$2 THEN 4 ELSE 5 END FROM axton_record r WHERE l.record_id=r.id AND l.stream=$1 AND r.identity_key=ANY($3)",[stream,key(gone),[key(gone),key(other)]]);
+   await query("DELETE FROM axton_stream_member WHERE stream=$1 AND record_id IN(SELECT id FROM axton_record WHERE identity_key=ANY($2))",[stream,[key(gone),key(other)]]);
+  });
+  assert.deepEqual(await scan(0,1),[{stream,kind:'upsert',cursor:3,model:'Task',identityKey:key(id),identity:{id},stamp:2}],'the first retained position fills the limit');
+  assert.deepEqual(await scan(3,1),[{stream,kind:'remove',cursor:4,model:'Task',identityKey:key(gone),identity:{id:gone}}],'a removal fills a page without authority fields');
+  assert.deepEqual((await q('SELECT cursor::int,kind FROM axton_stream_log WHERE stream=$1 ORDER BY cursor',[stream])).map(r=>[r.cursor,r.kind]),[[3,'upsert'],[4,'remove'],[5,'remove']],'one compacted row per pair');
   // The log's foreign key forbids dropping a record row; forge the defect with triggers off.
   await inTx(async(tx,query)=>{await query('SET LOCAL session_replication_role = replica');await query('DELETE FROM axton_record WHERE identity_key=$1',[key(id)]);});
   await assert.rejects(()=>scan(),/Record metadata missing/);
@@ -272,145 +261,17 @@ for(const shim of shims){
   await assert.rejects(()=>inTx((tx,_,a)=>a({op:'savepoint',ordinal:0})),/Invalid savepoint ordinal/);
  });
  test(`[${shim.name}] a serialization conflict retries the whole body and commits once; with no retries it is reported`,async()=>{
-  const scope=p('serial');
-  await q("INSERT INTO axton_scope(scope,head) VALUES($1,0) ON CONFLICT(scope) DO UPDATE SET head=0",[scope]);
+  const stream=p('serial');
+  await q("INSERT INTO axton_stream(stream,head) VALUES($1,0) ON CONFLICT(stream) DO UPDATE SET head=0",[stream]);
   let bodies=0;let entered,release;const inside=new Promise(r=>{entered=r;});const gate=new Promise(r=>{release=r;});
-  const first=driver.transaction(async tx=>{bodies++;const [{head}]=await driver.query(tx,'SELECT head FROM axton_scope WHERE scope=$1',[scope]);if(bodies===1){entered();await gate;}await driver.query(tx,'UPDATE axton_scope SET head=head+1 WHERE scope=$1',[scope]);return Number(head);});
-  await inside;await q('UPDATE axton_scope SET head=head+10 WHERE scope=$1',[scope]);release();
+  const first=driver.transaction(async tx=>{bodies++;const [{head}]=await driver.query(tx,'SELECT head FROM axton_stream WHERE stream=$1',[stream]);if(bodies===1){entered();await gate;}await driver.query(tx,'UPDATE axton_stream SET head=head+1 WHERE stream=$1',[stream]);return Number(head);});
+  await inside;await q('UPDATE axton_stream SET head=head+10 WHERE stream=$1',[stream]);release();
   assert.equal(await first,10);assert.equal(bodies,2);
-  assert.equal(Number((await q('SELECT head FROM axton_scope WHERE scope=$1',[scope]))[0].head),11);
+  assert.equal(Number((await q('SELECT head FROM axton_stream WHERE stream=$1',[stream]))[0].head),11);
  });
- test(`[${shim.name}] Scope operations add, read and remove members idempotently, need record metadata and create no Scope before a position`,async()=>{
-  const id=p('member');const rec={model:'Task',identityKey:key(id)};const tagged=p('member-tagged');
-  const [a,b,c]=[p('member-a'),p('member-b'),p('member-c')];
-  const apply=(...deltas)=>inTx((tx,_,x)=>x({op:'applyScopeMembers',deltas}));
-  const read=(scope,ids,tags=[])=>inTx((tx,_,x)=>x({op:'readScopeMembers',scope,explicitKeys:ids.map(i=>({model:'Task',identityKey:key(i)})),tags})).then(rows=>rows.map(r=>[JSON.parse(r.identityKey).id,[...r.tags].sort()]).sort());
-  const heads=async()=>Object.fromEntries((await q('SELECT scope,head::int AS head FROM axton_scope WHERE scope = ANY($1)',[[a,b,c]])).map(r=>[r.scope,r.head]));
-  assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),null,'an absent record locks nothing');
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[]);
-  assert.equal(await inTx((tx,_,x)=>x({op:'lockScopes',scopes:[a,b]})),null,'locking absent Scopes is a no-op');
-  assert.deepEqual(await heads(),{},'and creates none');
-  assert.deepEqual(await read(a,[id],['t']),[]);
-  await assert.rejects(()=>apply(member(a,id)),/Record metadata missing/,'a member needs its record row');
-  assert.deepEqual(await q('SELECT * FROM axton_record WHERE identity_key=$1',[rec.identityKey]),[],'neither lock nor membership creates the record row');
-  assert.deepEqual(await heads(),{},'the refused enrolment rolled its scope row back');
-  assert.equal(await inTx((tx,_,x)=>x({op:'ensureStamp',...rec})),1);
-  assert.equal(await inTx((tx,_,x)=>x({op:'ensureStamp',model:'Task',identityKey:key(tagged)})),1);
-  await apply(member(a,id),member(a,tagged,{tags:['t','u']}),member(b,id));
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a,b],'the answer is sorted and unique');
-  assert.deepEqual(await heads(),{[a]:2,[b]:1},'a first member takes the first position of a new Scope');
-  assert.equal(await inTx((tx,_,x)=>x({op:'lockScopes',scopes:[a,b]})),null);
-  assert.deepEqual(await read(a,[id,id,tagged],['t']),[[id,[]],[tagged,['t','u']]],'named and tagged, each once with its complete tags');
-  assert.deepEqual(await read(a,[],['u']),[[tagged,['t','u']]]);
-  assert.deepEqual(await apply(member(a,id,{publish:false})).then(r=>r.map(x=>x.cursor)),[1],'an unchanged member keeps its position');
-  assert.deepEqual(await heads(),{[a]:2,[b]:1});
-  await apply(member(b,id,{present:false}));
-  assert.deepEqual(await inTx((tx,_,x)=>x({op:'memberships',...rec})),[a]);
-  assert.deepEqual(await heads(),{[a]:2,[b]:2},'a removal takes a position; it never rewinds or deletes a head');
-  assert.deepEqual(await read(b,[id]),[],'and removing it again finds nothing to remove');
-  assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),1,'the lock answers the current stamp');
-  assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[rec.identityKey]),[{stamp:1}],'and preserves it');
-  assert.equal(await inTx((tx,_,x)=>x({op:'advanceStamp',...rec})),2);
-  assert.equal(await inTx((tx,_,x)=>x({op:'lockRecord',...rec})),2);
- });
- test(`[${shim.name}] savepoint and transaction rollback restore members, tags, positions and heads`,async()=>{
-  const id=p('member-undo');const rec={model:'Task',identityKey:key(id)};
-  const [a,b,c]=[p('undo-a'),p('undo-b'),p('undo-c')];
-  const apply=(x,...deltas)=>x({op:'applyScopeMembers',deltas});
-  const members=x=>x({op:'memberships',...rec});
-  const tables=async()=>({log:await q('SELECT scope,cursor::int,kind FROM axton_scope_log WHERE scope = ANY($1) ORDER BY scope',[[a,b,c]]),tags:await q('SELECT scope,name FROM axton_scope_tag WHERE scope = ANY($1) ORDER BY scope,name',[[a,b,c]]),heads:await q('SELECT scope,head::int FROM axton_scope WHERE scope = ANY($1) ORDER BY scope',[[a,b,c]])});
-  await inTx(async(tx,_,x)=>{await x({op:'ensureStamp',...rec});await apply(x,member(a,id,{tags:['keep']}));});
-  const before=await tables();
-  await inTx(async(tx,_,x)=>{
-   await x({op:'savepoint',ordinal:1});
-   await apply(x,member(a,id,{present:false}),member(b,id,{tags:['new']}));
-   assert.deepEqual(await members(x),[b]);
-   await x({op:'rollback',ordinal:1});await x({op:'release',ordinal:1});
-   assert.deepEqual(await members(x),[a],'the savepoint restored both edits');
-  });
-  await assert.rejects(()=>inTx(async(tx,_,x)=>{await apply(x,member(a,id,{present:false}),member(c,id));assert.deepEqual(await members(x),[c]);throw new Error('cancel');}),/cancel/);
-  assert.deepEqual(await q('SELECT m.scope FROM axton_scope_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key=$1',[rec.identityKey]),[{scope:a}],'a rolled-back transaction restores the relationship it removed and drops the one it added');
-  assert.deepEqual(await tables(),before,'tags, positions and heads as before; scopes created only by rolled-back enrolments are gone');
-  assert.deepEqual(await inTx((tx,_,x)=>members(x)),[a]);
- });
- test(`[${shim.name}] a membership-only writer's no-op record UPDATE makes a stale-snapshot writer of the same record retry`,async()=>{
-  // B fixes its snapshot by reading the record's memberships, then waits. A
-  // enrolls the record in a Scope and commits. B then writes the record row.
-  // With A's lockRecord guard the write conflicts and the runner restarts B,
-  // whose second attempt sees A's membership. Without the guard, Repeatable
-  // Read let B commit on its stale view (the foreign key's KEY SHARE lock
-  // only); at Serializable, the level every shim runs since #202, B's stale
-  // membership read and A's key check of the row B writes form a cycle, so B
-  // restarts either way. The guard is what still makes B restart when A is a
-  // transaction AXTON does not open: a caller-owned transaction around
-  // backend.publish at Repeatable Read, which takes no predicate locks. The
-  // mixed-level trials below pin that; a guard weakened to SELECT … FOR UPDATE
-  // or removed lets B commit on its stale view there.
-  const trial=async(name,guard,writerA=inTx)=>{
-   const rec={model:'Task',identityKey:key(p(name))};const scope=p(`${name}-ch`);
-   await inTx((tx,_,x)=>x({op:'ensureStamp',...rec}));
-   const seen=[];let entered,release;const inside=new Promise(r=>{entered=r;});const gate=new Promise(r=>{release=r;});
-   const writerB=inTx(async(tx,_,x)=>{
-    seen.push(await x({op:'memberships',...rec}));
-    if(seen.length===1){entered();await gate;}
-    return x({op:'advanceStamp',...rec});
-   });
-   await Promise.race([inside,writerB.then(()=>{throw new Error('B finished before its snapshot was held');})]);
-   await writerA(async(tx,_,x)=>{if(guard)assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'applyScopeMembers',deltas:[{scope,...rec,identity:JSON.parse(rec.identityKey),present:true,tags:[],publish:true}]});});
-   release();
-   const stamp=await writerB;
-   return {seen,stamp,scope,rec};
-  };
-  const guarded=await trial('rr-guarded',true);
-  assert.deepEqual(guarded.seen,[[],[guarded.scope]],'B ran twice: its stale first attempt failed serialization, its retry read the new membership');
-  assert.equal(guarded.stamp,2,'only the retried attempt advanced the stamp');
-  assert.deepEqual(await q('SELECT stamp::int AS stamp FROM axton_record WHERE identity_key=$1',[guarded.rec.identityKey]),[{stamp:2}]);
-  const unguarded=await trial('rr-unguarded',false);
-  assert.deepEqual(unguarded.seen,[[],[unguarded.scope]],'at Serializable the stale writer restarts even without the no-op UPDATE');
-  assert.equal(unguarded.stamp,2);
-  // Mixed levels: A at Repeatable Read on a raw pg client (a caller-owned
-  // transaction), B the shim's Serializable writer.
-  const pool=new Pool({connectionString:url});const persistence=pgDriver(pool);
-  const repeatableRead=async body=>{
-   const client=await pool.connect();
-   try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ');const result=await body(client,(sql,params=[])=>persistence.query(client,sql,params),r=>answer(persistence,client,r));await client.query('COMMIT');return result;}
-   catch(error){await client.query('ROLLBACK');throw error;}
-   finally{client.release();}
-  };
-  try{
-   const mixedGuarded=await trial('rr-mixed-guarded',true,repeatableRead);
-   assert.deepEqual(mixedGuarded.seen,[[],[mixedGuarded.scope]],'the guard\'s row write makes the Serializable writer fail serialization and retry');
-   assert.equal(mixedGuarded.stamp,2);
-   const mixedUnguarded=await trial('rr-mixed-unguarded',false,repeatableRead);
-   assert.deepEqual(mixedUnguarded.seen,[[]],'control: without the guard a Repeatable Read enrolment leaves the Serializable writer committing on its stale view');
-   assert.equal(mixedUnguarded.stamp,2);
-  }finally{await pool.end();}
-  // The same conflict when B's write reaches the row while A still holds it:
-  // B waits on A's row lock, and A's commit makes B restart rather than proceed.
-  const rec={model:'Task',identityKey:key(p('rr-blocked'))};const scope=p('rr-blocked-ch');
-  await inTx((tx,_,x)=>x({op:'ensureStamp',...rec}));
-  const seen=[];let pid,snapshot,locked,commitA;
-  const bSnapshot=new Promise(r=>{snapshot=r;});const aLocked=new Promise(r=>{locked=r;});const aGate=new Promise(r=>{commitA=r;});
-  const writerB=inTx(async(tx,query,x)=>{
-   pid??=Number((await query('SELECT pg_backend_pid() AS pid'))[0].pid);
-   seen.push(await x({op:'memberships',...rec}));
-   if(seen.length===1){snapshot();await aLocked;}
-   return x({op:'advanceStamp',...rec});
-  });
-  await bSnapshot;
-  const writerA=inTx(async(tx,_,x)=>{assert.equal(await x({op:'lockRecord',...rec}),1);await x({op:'applyScopeMembers',deltas:[{scope,...rec,identity:JSON.parse(rec.identityKey),present:true,tags:[],publish:true}]});locked();await aGate;});
-  let blocked=false;
-  for(let attempt=0;attempt<200&&!blocked;attempt++){
-   const rows=await q('SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1',[pid]);
-   blocked=rows[0]?.wait_event_type==='Lock';
-   if(!blocked)await new Promise(resolve=>setTimeout(resolve,10));
-  }
-  commitA();
-  await writerA;
-  assert.equal(await writerB,2);
-  assert.equal(blocked,true,'B reached PostgreSQL and waited on the row A locked');
-  assert.deepEqual(seen,[[],[scope]],'A\'s commit made B restart; the retry read the new membership');
- });
+
+
+
  test(`[${shim.name}] lock-then-recheck, delete case: an Archive for an Author who already left never commits; exactly one transaction retries`,async()=>{
   const {runs,authors,archives}=await archiveRace(driver.transaction,driver.query,p('leave'));
   assert.deepEqual(runs,{first:1,second:2},'the re-check that read the departed Author failed serialization and ran again');
@@ -422,6 +283,33 @@ for(const shim of shims){
   assert.deepEqual(runs,{first:1,second:2},'the cleanup that missed the phantom Star failed serialization and ran again');
   assert.deepEqual(posts,[],'the Post is deleted');
   assert.deepEqual(stars,[],'the serial outcome: the retry saw the Star and deleted it with its Post');
+ });
+ test(`[${shim.name}] targeted row to null retains tracking, advances global stamp once and wakes only after commit; replay stays exact`,async()=>{
+  const id=p('targeted'),a=p('target-a'),b=p('target-b'),missing=p('target-missing');
+  const app=createBackend({config,native,database,authenticate,handlers:{async edit({input,tx,stream}){
+   await driver.query(tx,'DELETE FROM conformance_task WHERE id=$1',[input.task.identity.id]);
+   stream(a).invalidate.task(input.task.identity);
+  }},loaders:{async task({ids,tx}){const rows=await driver.query(tx,'SELECT id,title FROM conformance_task WHERE id=ANY($1)',[ids.map(i=>i.id)]);return ids.map(({id})=>rows.find(r=>r.id===id)??null);}}});
+  await q('INSERT INTO conformance_task VALUES($1,$2)',[id,'before']);
+  await app.transaction(({stream})=>stream([a,b]).track.task({id}));
+  const wakes=[];const stopA=app.onCommitted(a,()=>wakes.push(a)),stopB=app.onCommitted(b,()=>wakes.push(b));
+  let wake;
+  await driver.transaction(async tx=>{
+   await driver.query(tx,'DELETE FROM conformance_task WHERE id=$1',[id]);
+   wake=await app.publish(tx,({stream})=>stream([a,missing]).invalidate.task({id}));
+   assert.deepEqual(wakes,[],'caller-owned publish returns before commit and does not wake');
+   assert.equal(Number((await q('SELECT stamp FROM axton_record WHERE model=$1 AND identity_key=$2',['Task',key(id)]))[0].stamp),1,'new authority remains uncommitted');
+  });
+  wake();await new Promise(r=>setImmediate(r));assert.deepEqual(wakes,[a]);
+  const heads=(await q('SELECT stream,head::int FROM axton_stream WHERE stream=ANY($1) ORDER BY stream',[[a,b,missing]])).map(r=>[r.stream,r.head]);
+  assert.deepEqual(heads,[[a,2],[b,1]]);
+  const page=JSON.parse(await app.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{[a]:1},models:{Task:1}})));
+  assert.deepEqual(page.changes.map(r=>[r.state,r.stamp]),[[null,2]]);
+  assert.equal((await q('SELECT count(*)::int n FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key=$1',[key(id)]))[0].n,2,'null never withdraws tracking');
+  const request=JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('target-call'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id},values:{title:'deleted'}}]}]});
+  const saved=await app.push('alice',request);await new Promise(r=>setImmediate(r));const count=wakes.length;
+  assert.equal(await app.push('alice',request),saved);await new Promise(r=>setImmediate(r));assert.equal(wakes.length,count,'exact saved replay publishes nothing');
+  stopA();stopB();
  });
  test(`[${shim.name}] close`,async()=>{await shim.close();});
 }

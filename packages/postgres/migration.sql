@@ -1,7 +1,6 @@
 DO $$
 BEGIN
- IF EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_channel','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log','axton_membership','axton_invalidation']) AND relkind='r')
- AND (to_regclass('axton_scope') IS NULL OR EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name LIKE 'axton_%' AND column_name='channel')) THEN
+ IF EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_channel','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log','axton_scope','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log']) AND relkind='r') THEN
   RAISE EXCEPTION 'installed legacy framework layout: apply forward migrations before migration.sql';
  END IF;
 END
@@ -24,11 +23,11 @@ CREATE TABLE IF NOT EXISTS axton_call (
  claim_tx xid8 NOT NULL DEFAULT pg_current_xact_id(),
  PRIMARY KEY(owner_id,call_id)
 );
-CREATE TABLE IF NOT EXISTS axton_scope (
- scope text PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS axton_stream (
+ stream text PRIMARY KEY,
  head bigint NOT NULL CHECK(head >= 0 AND head <= 9007199254740991)
 );
--- One row per record ever stamped or represented in a Scope. `identity` is
+-- One row per record ever stamped or represented in a Stream. `identity` is
 -- the decoded canonical `identity_key`, so a removal needs no domain row.
 CREATE TABLE IF NOT EXISTS axton_record (
  model text NOT NULL,
@@ -41,77 +40,35 @@ CREATE TABLE IF NOT EXISTS axton_record (
  CONSTRAINT axton_record_identity_object CHECK(jsonb_typeof(identity) = 'object')
 );
 -- Live membership only: an absent pair has no row here and a `remove` log row.
-CREATE TABLE IF NOT EXISTS axton_scope_member (
+CREATE TABLE IF NOT EXISTS axton_stream_member (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
- scope text NOT NULL REFERENCES axton_scope(scope),
+ stream text NOT NULL REFERENCES axton_stream(stream),
  record_id bigint NOT NULL REFERENCES axton_record(id),
- CONSTRAINT axton_scope_member_scope_record_id_key UNIQUE(scope,record_id)
+ CONSTRAINT axton_stream_member_stream_record_id_key UNIQUE(stream,record_id)
 );
-CREATE INDEX IF NOT EXISTS axton_scope_member_record
- ON axton_scope_member(record_id, scope);
-CREATE TABLE IF NOT EXISTS axton_scope_tag (
- id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
- scope text NOT NULL REFERENCES axton_scope(scope),
- name text NOT NULL CHECK(octet_length(name) BETWEEN 1 AND 256),
- CONSTRAINT axton_scope_tag_scope_name_key UNIQUE(scope,name)
-);
-CREATE TABLE IF NOT EXISTS axton_scope_member_tag (
- member_id bigint NOT NULL REFERENCES axton_scope_member(id) ON DELETE CASCADE,
- tag_id bigint NOT NULL REFERENCES axton_scope_tag(id) ON DELETE CASCADE,
- PRIMARY KEY(member_id,tag_id)
-);
-CREATE INDEX IF NOT EXISTS axton_scope_member_tag_tag
- ON axton_scope_member_tag(tag_id, member_id);
--- The latest deliverable state of each pair, whose `(scope, cursor)` orders scans.
-CREATE TABLE IF NOT EXISTS axton_scope_log (
- scope text NOT NULL REFERENCES axton_scope(scope),
+CREATE INDEX IF NOT EXISTS axton_stream_member_record
+ ON axton_stream_member(record_id, stream);
+-- The latest deliverable state of each pair, whose `(stream, cursor)` orders scans.
+CREATE TABLE IF NOT EXISTS axton_stream_log (
+ stream text NOT NULL REFERENCES axton_stream(stream),
  record_id bigint NOT NULL REFERENCES axton_record(id),
  cursor bigint NOT NULL CHECK(cursor > 0 AND cursor <= 9007199254740991),
  kind text NOT NULL CHECK(kind IN ('upsert','remove')),
- PRIMARY KEY(scope,record_id),
- CONSTRAINT axton_scope_log_scope_cursor_key UNIQUE(scope,cursor)
+ PRIMARY KEY(stream,record_id),
+ CONSTRAINT axton_stream_log_stream_cursor_key UNIQUE(stream,cursor)
 );
--- Both sides of an association belong to one Scope.
-CREATE OR REPLACE FUNCTION axton_scope_member_tag_same_scope() RETURNS trigger
-LANGUAGE plpgsql AS $$
-DECLARE
- member_scope text;
- tag_scope text;
-BEGIN
- SELECT scope INTO member_scope FROM axton_scope_member WHERE id = NEW.member_id;
- SELECT scope INTO tag_scope FROM axton_scope_tag WHERE id = NEW.tag_id;
- IF member_scope IS DISTINCT FROM tag_scope THEN
-  RAISE EXCEPTION 'member % of Scope % cannot carry tag % of Scope %',
-   NEW.member_id, member_scope, NEW.tag_id, tag_scope USING ERRCODE = 'check_violation';
- END IF;
- RETURN NULL;
-END
-$$;
--- A member or tag never changes the Scope (or ID) it belongs to.
-CREATE OR REPLACE FUNCTION axton_scope_owner_fixed() RETURNS trigger
+-- A tracking row never moves between Streams or changes identity.
+CREATE OR REPLACE FUNCTION axton_stream_owner_fixed() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
- IF NEW.id IS DISTINCT FROM OLD.id OR NEW.scope IS DISTINCT FROM OLD.scope THEN
-  RAISE EXCEPTION '% row % belongs to Scope % and cannot move',
-   TG_TABLE_NAME, OLD.id, OLD.scope USING ERRCODE = 'check_violation';
+ IF NEW.id IS DISTINCT FROM OLD.id OR NEW.stream IS DISTINCT FROM OLD.stream OR NEW.record_id IS DISTINCT FROM OLD.record_id THEN
+  RAISE EXCEPTION 'tracking row cannot move' USING ERRCODE = 'check_violation';
  END IF;
  RETURN NEW;
 END
 $$;
-DO $$
-BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'axton_scope_member_tag'::regclass AND tgname = 'axton_scope_member_tag_same_scope') THEN
-  CREATE CONSTRAINT TRIGGER axton_scope_member_tag_same_scope
-   AFTER INSERT OR UPDATE ON axton_scope_member_tag
-   FOR EACH ROW EXECUTE FUNCTION axton_scope_member_tag_same_scope();
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='axton_stream_member'::regclass AND tgname='axton_stream_member_fixed') THEN
+ CREATE TRIGGER axton_stream_member_fixed BEFORE UPDATE ON axton_stream_member FOR EACH ROW EXECUTE FUNCTION axton_stream_owner_fixed();
  END IF;
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'axton_scope_member'::regclass AND tgname = 'axton_scope_member_fixed') THEN
-  CREATE TRIGGER axton_scope_member_fixed BEFORE UPDATE ON axton_scope_member
-   FOR EACH ROW EXECUTE FUNCTION axton_scope_owner_fixed();
- END IF;
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'axton_scope_tag'::regclass AND tgname = 'axton_scope_tag_fixed') THEN
-  CREATE TRIGGER axton_scope_tag_fixed BEFORE UPDATE ON axton_scope_tag
-   FOR EACH ROW EXECUTE FUNCTION axton_scope_owner_fixed();
- END IF;
-END
-$$;
+END $$;

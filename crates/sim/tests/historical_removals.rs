@@ -1,168 +1,85 @@
-//! Scope labels remain server-only; the production Pull path delivers identity releases.
-use axton_server::host::{RecordRef, ScopeIntent};
+//! Compatibility fixtures preserve previously saved removal evidence.
+//! These events are restored directly; fresh Stream settlement never withdraws.
+use axton_server::host::{RecordRef, StreamIntent};
 use axton_sim::{Action, Sim, schema::entry_key};
-
-fn add(scope: &str, tags: &[&str]) -> ScopeIntent {
-    ScopeIntent::Add {
-        scope: scope.into(),
-        record: RecordRef {
-            model: "Entry".into(),
-            identity: serde_json::json!({"id":"a"}),
-        },
-        tags: tags.iter().map(|v| v.to_string()).collect(),
+use serde_json::json;
+enum Fixture {
+    Track(String),
+    SavedRemoval(String),
+}
+fn track(stream: &str) -> Fixture {
+    Fixture::Track(stream.into())
+}
+fn release(stream: &str) -> Fixture {
+    Fixture::SavedRemoval(stream.into())
+}
+fn effects(sim: &mut Sim, effects: Vec<Fixture>) {
+    for effect in effects {
+        match effect {
+            Fixture::Track(stream) => sim
+                .apply(Action::StreamDeclarations {
+                    intents: vec![StreamIntent::Track {
+                        stream,
+                        record: RecordRef {
+                            model: "Entry".into(),
+                            identity: json!({"id":"a"}),
+                        },
+                    }],
+                })
+                .unwrap(),
+            Fixture::SavedRemoval(stream) => sim
+                .apply(Action::RestoreHistoricalRemoval {
+                    key: "Entry:a".into(),
+                    stream,
+                })
+                .unwrap(),
+        }
     }
 }
-fn withdraw_matching(scope: &str, tag: &str) -> ScopeIntent {
-    ScopeIntent::Select {
-        scope: scope.into(),
-        model: None,
-        predicate: serde_json::from_value(serde_json::json!({"tags":{"any":[tag]}})).unwrap(),
-        action: axton_server::scope_members::SelectionAction::Remove,
-    }
-}
-fn select(scope: &str, predicate: serde_json::Value) -> ScopeIntent {
-    ScopeIntent::Select {
-        scope: scope.into(),
-        model: None,
-        predicate: serde_json::from_value(predicate).unwrap(),
-        action: axton_server::scope_members::SelectionAction::Remove,
-    }
-}
-fn detach(scope: &str, tag: &str) -> ScopeIntent {
-    ScopeIntent::DetachTags {
-        scope: scope.into(),
-        tags: vec![tag.into()],
-    }
-}
-fn tags(sim: &mut Sim, intents: Vec<ScopeIntent>) {
-    sim.apply(Action::ScopeTags { intents }).unwrap();
-}
-fn seeded(seed: u64, scopes: &[&str]) -> Sim {
+fn seeded(seed: u64, streams: &[&str]) -> Sim {
     let mut sim = Sim::new(seed, 1);
-    for c in scopes {
+    for stream in streams {
         sim.apply(Action::Subscribe {
             client: 0,
-            scope: c.to_string(),
+            stream: stream.to_string(),
         })
         .unwrap();
     }
     sim.apply(Action::Declare {
         key: "Entry:a".into(),
         touch: Some(Some("stored".into())),
-        memberships: vec![(scopes[0].into(), true)],
+        memberships: vec![(streams[0].into(), true)],
     })
     .unwrap();
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
     sim
 }
-
 #[test]
-fn removing_x_releases_the_whole_member_including_y_and_survives_offline_reopen() {
-    let mut sim = seeded(9100, &["u"]);
-    tags(&mut sim, vec![add("u", &["x", "y"])]);
-    tags(&mut sim, vec![withdraw_matching("u", "x")]);
-    assert!(sim.host.stored_memberships(&entry_key("a")).is_empty());
-    sim.settle();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
-    sim.apply(Action::Crash { client: 0 }).unwrap();
-    sim.apply(Action::Restart { client: 0 }).unwrap();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
-}
-
-#[test]
-fn second_scope_hold_preserves_content_until_its_own_release() {
+fn second_stream_hold_preserves_content_until_its_own_release() {
     let mut sim = seeded(9101, &["u", "v"]);
-    tags(&mut sim, vec![add("u", &["x"]), add("v", &["y"])]);
+    effects(&mut sim, vec![track("u"), track("v")]);
     sim.settle();
-    tags(&mut sim, vec![withdraw_matching("u", "x")]);
+    effects(&mut sim, vec![release("u")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
-    tags(&mut sim, vec![withdraw_matching("v", "y")]);
+    effects(&mut sim, vec![release("v")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
 }
 
 #[test]
-fn compacted_final_upsert_replaces_hidden_tag_history_then_final_remove_evicts() {
-    let mut sim = seeded(9102, &["u"]);
-    // The host keeps one final position per identity, exactly like production compaction.
-    sim.apply(Action::Crash { client: 0 }).unwrap();
-    tags(&mut sim, vec![add("u", &["x"])]);
-    tags(&mut sim, vec![withdraw_matching("u", "x")]);
-    tags(&mut sim, vec![add("u", &["y"])]);
-    sim.apply(Action::Restart { client: 0 }).unwrap();
-    sim.settle();
-    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
-    tags(&mut sim, vec![withdraw_matching("u", "y")]);
-    sim.settle();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
-}
-
-#[test]
-fn reproducible_tag_histories_converge_after_reordered_delivery_and_restart() {
-    for seed in 9200..9224 {
-        let mut sim = seeded(seed, &["u", "v"]);
-        let mut rng = axton_sim::Rng::new(seed);
-        for step in 0..80 {
-            let scope = if rng.chance(1, 2) { "u" } else { "v" };
-            let tag = if rng.chance(1, 2) { "x" } else { "y" };
-            let action = match rng.below(10) {
-                0..=2 => Action::ScopeTags {
-                    intents: vec![add(scope, &[tag])],
-                },
-                3 => Action::ScopeTags {
-                    intents: vec![withdraw_matching(scope, tag)],
-                },
-                8 => Action::ScopeTags {
-                    intents: vec![detach(scope, tag)],
-                },
-                9 => Action::ScopeTags {
-                    intents: vec![select(scope, serde_json::json!({"tags":{"only":[]}}))],
-                },
-                4 => Action::Pull { client: 0 },
-                5 => Action::Deliver,
-                6 => Action::Duplicate,
-                _ => Action::Hold,
-            };
-            sim.apply(action.clone())
-                .unwrap_or_else(|e| panic!("seed {seed} step {step} {action:?}: {e}"));
-            sim.check()
-                .unwrap_or_else(|e| panic!("seed {seed} step {step}: {e}"));
-            if step % 20 == 19 {
-                sim.apply(Action::Crash { client: 0 }).unwrap();
-                sim.apply(Action::Restart { client: 0 }).unwrap();
-                sim.settle();
-                let expected = !sim.host.stored_memberships(&entry_key("a")).is_empty();
-                assert_eq!(
-                    sim.read_text(0, &entry_key("a")).is_some(),
-                    expected,
-                    "seed {seed} step {step}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn delayed_old_scope_page_cannot_restore_a_released_replica() {
+fn delayed_old_stream_page_cannot_restore_a_released_replica() {
     let mut sim = seeded(9103, &["u"]);
     sim.apply(Action::ServerChange {
         key: "Entry:a".into(),
         text: Some("old page".into()),
-        scopes: vec!["u".into()],
+        streams: vec!["u".into()],
     })
     .unwrap();
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Deliver).unwrap(); // Snapshot the upsert, leave its response queued.
-    tags(
-        &mut sim,
-        vec![
-            add("u", &["x"]),
-            select("u", serde_json::json!({"tags":{"only":["x"]}})),
-            detach("u", "x"),
-        ],
-    );
+    effects(&mut sim, vec![release("u")]);
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Swap { i: 0, j: 1 }).unwrap();
     sim.apply(Action::Deliver).unwrap();
@@ -176,7 +93,7 @@ fn delayed_old_scope_page_cannot_restore_a_released_replica() {
 #[test]
 fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     let mut sim = seeded(9104, &["u", "v"]);
-    tags(&mut sim, vec![add("u", &["x"]), add("v", &["x"])]);
+    effects(&mut sim, vec![track("u"), track("v")]);
     sim.settle();
     sim.apply(Action::Enqueue {
         client: 0,
@@ -186,14 +103,7 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
         },
     })
     .unwrap();
-    tags(
-        &mut sim,
-        vec![
-            add("u", &["x"]),
-            select("u", serde_json::json!({"tags":{"only":["x"]}})),
-            detach("u", "x"),
-        ],
-    );
+    effects(&mut sim, vec![release("u")]);
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Deliver).unwrap();
     sim.apply(Action::Deliver).unwrap();
@@ -202,13 +112,7 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
         Some("pending"),
         "second hold preserves the optimistic edit"
     );
-    tags(
-        &mut sim,
-        vec![
-            select("v", serde_json::json!({"tags":{"only":["x"]}})),
-            detach("v", "x"),
-        ],
-    );
+    effects(&mut sim, vec![release("v")]);
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Deliver).unwrap();
     sim.apply(Action::Deliver).unwrap();
@@ -251,7 +155,7 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     );
 
     let mut local = seeded(9105, &["u", "v"]);
-    tags(&mut local, vec![add("u", &["x"]), add("v", &["x"])]);
+    effects(&mut local, vec![track("u"), track("v")]);
     local.settle();
     local
         .apply(Action::Direct {
@@ -260,27 +164,14 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
             text: "device".into(),
         })
         .unwrap();
-    tags(
-        &mut local,
-        vec![
-            add("u", &["x"]),
-            select("u", serde_json::json!({"tags":{"only":["x"]}})),
-            detach("u", "x"),
-        ],
-    );
+    effects(&mut local, vec![release("u")]);
     local.settle();
     assert_eq!(
         local.read_text(0, &entry_key("a")).as_deref(),
         Some("device"),
         "second hold preserves the direct patch"
     );
-    tags(
-        &mut local,
-        vec![
-            select("v", serde_json::json!({"tags":{"only":["x"]}})),
-            detach("v", "x"),
-        ],
-    );
+    effects(&mut local, vec![release("v")]);
     local.settle();
     assert_eq!(
         local.read_text(0, &entry_key("a")),
@@ -312,7 +203,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     let mut sim = Sim::new_with_schema(9106, 1, schema);
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "u".into(),
+        stream: "u".into(),
     })
     .unwrap();
     sim.apply(Action::Declare {
@@ -340,7 +231,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     let wire: serde_json::Value = serde_json::from_str(&dispatch.body).unwrap();
     assert_eq!(
         wire["capabilities"],
-        serde_json::json!(["scope-membership-v1"])
+        serde_json::json!(["stream-membership-v1"])
     );
     assert_eq!(wire["loads"][0]["args"], serde_json::json!({"channel":"u"}));
     let request = LoadBatchRequest::decode_envelope(dispatch.body.as_bytes()).unwrap();
@@ -354,7 +245,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         answer["loads"][0]["outcome"]["status"], "succeeded",
         "{answer}"
     );
-    sim.settle(); // The enrolled Scope delivers first.
+    sim.settle(); // The enrolled Stream delivers first.
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
     sim.apply(Action::Declare {
         key: "Entry:a".into(),
@@ -394,7 +285,7 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
     let mut sim = Sim::new(9107, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "u".into(),
+        stream: "u".into(),
     })
     .unwrap();
     sim.client(0)
@@ -407,8 +298,8 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
             })
         })
         .unwrap();
-    tags(&mut sim, vec![add("u", &["x"])]);
-    tags(&mut sim, vec![withdraw_matching("u", "x")]);
+    effects(&mut sim, vec![track("u")]);
+    effects(&mut sim, vec![release("u")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("local"));
     sim.apply(Action::Crash { client: 0 }).unwrap();
@@ -417,7 +308,22 @@ fn device_local_create_is_not_deleted_by_matching_replica_release() {
 }
 
 #[test]
-fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_replay() {
+fn compacted_saved_removal_then_fresh_tracking_survives_offline_reopen() {
+    let mut sim = seeded(9108, &["u"]);
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    effects(&mut sim, vec![release("u"), track("u")]);
+    sim.apply(Action::Restart { client: 0 }).unwrap();
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
+    effects(&mut sim, vec![release("u")]);
+    sim.settle();
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    sim.apply(Action::Restart { client: 0 }).unwrap();
+    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+}
+
+#[test]
+fn generated_saved_removals_and_tracking_preserve_enrolled_load_replay_through_restart() {
     use axton_client::{LoadOptions, LoadWorker};
     use axton_core::{LoadBatchRequest, LoadBatchResponse};
     for seed in 9300..9312 {
@@ -425,10 +331,10 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
         let mut config = axton_sim::schema::config();
         config.schema = schema.clone();
         let mut sim = Sim::new_with_schema(seed, 1, schema);
-        for scope in ["u", "v"] {
+        for stream in ["u", "v"] {
             sim.apply(Action::Subscribe {
                 client: 0,
-                scope: scope.into(),
+                stream: stream.into(),
             })
             .unwrap();
         }
@@ -462,28 +368,10 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
             let handlers = sim.host.native_load_calls();
             sim.settle();
             for step in 0..6 {
-                let scope = if rng.chance(1, 2) { "u" } else { "v" };
+                let stream = if rng.chance(1, 2) { "u" } else { "v" };
                 match rng.below(7) {
-                    0 => tags(&mut sim, vec![add(scope, &["x", "y"])]),
-                    1 => tags(&mut sim, vec![withdraw_matching(scope, "x")]),
-                    5 => tags(&mut sim, vec![detach(scope, "x")]),
-                    6 => tags(
-                        &mut sim,
-                        vec![select(
-                            scope,
-                            serde_json::json!({"tags":{"only":["x","y"]}}),
-                        )],
-                    ),
-                    2 => tags(
-                        &mut sim,
-                        vec![ScopeIntent::Remove {
-                            scope: scope.into(),
-                            record: RecordRef {
-                                model: "Entry".into(),
-                                identity: serde_json::json!({"id":"a"}),
-                            },
-                        }],
-                    ),
+                    0 | 5 => effects(&mut sim, vec![track(stream)]),
+                    1 | 2 | 6 => effects(&mut sim, vec![release(stream)]),
                     _ => sim
                         .apply(Action::Declare {
                             key: "Entry:a".into(),
@@ -553,11 +441,11 @@ fn reproducible_enrolled_load_histories_mix_tags_touches_delays_and_offline_repl
 }
 
 #[test]
-fn exact_only_x_cleanup_preserves_a_c_through_duplicate_reordered_delivery_and_reopen() {
+fn one_saved_removal_preserves_other_rows_through_duplicate_reordered_delivery_and_reopen() {
     let mut sim = Sim::new(9400, 1);
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "u".into(),
+        stream: "u".into(),
     })
     .unwrap();
     for id in ["A", "B", "C"] {
@@ -569,37 +457,16 @@ fn exact_only_x_cleanup_preserves_a_c_through_duplicate_reordered_delivery_and_r
         .unwrap();
     }
     sim.settle();
-    let added = |id: &str, labels: &[&str]| ScopeIntent::Add {
-        scope: "u".into(),
-        record: RecordRef {
-            model: "Entry".into(),
-            identity: serde_json::json!({"id":id}),
-        },
-        tags: labels.iter().map(|label| (*label).into()).collect(),
-    };
-    tags(
-        &mut sim,
-        vec![
-            added("A", &["X", "Y"]),
-            added("B", &["X"]),
-            added("C", &["Y"]),
-        ],
-    );
     let head = sim.host.head("u");
-    tags(
-        &mut sim,
-        vec![
-            select("u", serde_json::json!({"tags":{"only":["X"]}})),
-            detach("u", "X"),
-        ],
-    );
+    sim.apply(Action::RestoreHistoricalRemoval {
+        key: "Entry:B".into(),
+        stream: "u".into(),
+    })
+    .unwrap();
     assert_eq!(sim.host.head("u"), head + 1);
     assert!(sim.host.stored_memberships(&entry_key("B")).is_empty());
     for id in ["A", "C"] {
-        assert_eq!(
-            sim.host.stored_memberships(&entry_key(id)),
-            vec!["u".to_string()]
-        );
+        assert_eq!(sim.host.stored_memberships(&entry_key(id)), ["u"]);
     }
     sim.apply(Action::Pull { client: 0 }).unwrap();
     sim.apply(Action::Duplicate).unwrap();

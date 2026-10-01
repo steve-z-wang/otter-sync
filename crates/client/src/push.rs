@@ -134,7 +134,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 candidate.push(q.clone());
                 if axton_core::with_capabilities(
                     canonical_json(&self.request_json(next_push, &models, &candidate)?)?.as_bytes(),
-                    &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY],
+                    &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
                 )?
                 .len()
                     > max_bytes

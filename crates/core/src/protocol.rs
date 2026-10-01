@@ -17,7 +17,7 @@ pub mod limits {
     /// The client freezes a batch only while its canonical bytes stay under this.
     pub const PUSH_BYTES: usize = 256 * 1024;
     /// A pull page carries at most this many changes. A page holding exactly
-    /// this many continues: the scope may hold more beyond `to`.
+    /// this many continues: the stream may hold more beyond `to`.
     pub const PULL_CHANGES: usize = 50;
     /// A Load batch carries between one and this many page requests.
     pub const LOAD_BATCH_ITEMS: usize = 8;
@@ -37,12 +37,12 @@ pub mod limits {
     pub const LOAD_STATE_DEPTH: usize = 64;
     /// UTF-8 bytes of one Load item error message.
     pub const LOAD_ERROR_MESSAGE_BYTES: usize = 1024;
-    /// Distinct Scope/record pairs one Load page may enroll. Repeated
+    /// Distinct Stream/record pairs one Load page may enroll. Repeated
     /// declarations of a pair count once, like the page's identities.
     pub const LOAD_ENROLLMENT_PAIRS: usize = 1000;
     /// The encoded bytes of one Load page's distinct enrollment: the sum of
     /// the UTF-8 lengths of each pair's canonical JSON intent
-    /// `{scope, identity, model, present}` at its canonical identity.
+    /// `{kind: "track", stream, record: {model, identity}}` at its canonical identity.
     pub const LOAD_ENROLLMENT_BYTES: usize = 1024 * 1024;
 }
 
@@ -187,7 +187,7 @@ pub struct Rejection {
 /// carries it. Identity is canonical; `state` is a normalized record state or
 /// `null` for a deletion. A record the server could not read carries `error`
 /// (a code) instead of a state: the client keeps what it has and reports it.
-/// It names no scope and no cursor: authority is ordered by stamp alone
+/// It names no stream and no cursor: authority is ordered by stamp alone
 /// ([Protocol / Push](../../../docs/engineering/architecture/protocol/push.md)).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AuthorityRecord {
@@ -235,9 +235,9 @@ impl AuthorityRecord {
         self.error.is_some()
     }
 }
-/// The members only a [`ScopeChange`] carries. A record names no scope, so
-/// a scope page can never pass as record-only authority.
-const SCOPE_MEMBERS: [&str; 3] = ["scope", "cursor", "kind"];
+/// The members only a [`StreamChange`] carries. A record names no stream, so
+/// a stream page can never pass as record-only authority.
+const STREAM_MEMBERS: [&str; 3] = ["stream", "cursor", "kind"];
 /// The model and identity rule every record, removal and claim shares.
 fn check_key(model: &str, identity: &Value) -> Result<()> {
     if model.is_empty() {
@@ -251,7 +251,7 @@ fn check_key(model: &str, identity: &Value) -> Result<()> {
 /// Refuse retired framework ownership only at the immediate envelope level.
 /// Application state, arguments and identities are opaque to this check.
 fn reject_legacy_ownership(value: &Value) -> Result<()> {
-    if let Some(member) = ["channel", "channels"]
+    if let Some(member) = ["scope", "scopes", "channel", "channels"]
         .iter()
         .find(|member| value.get(**member).is_some())
     {
@@ -264,7 +264,7 @@ pub(crate) fn decode_record(value: &Value) -> Result<AuthorityRecord> {
     if !value.is_object() {
         return Err(invalid("record must be an object"));
     }
-    if let Some(member) = SCOPE_MEMBERS.iter().find(|m| value.get(**m).is_some()) {
+    if let Some(member) = STREAM_MEMBERS.iter().find(|m| value.get(**m).is_some()) {
         return Err(invalid(format!("a record names no {member}")));
     }
     if value.get("error").is_none() && value.get("state").is_none() {
@@ -501,23 +501,23 @@ fn read_models_inner(value: &Value, allow_empty: bool) -> Result<BTreeMap<String
         })
         .collect()
 }
-/// `{"book:demo":42,"inbox:alice":7}`: one cursor per scope, at least one scope.
+/// `{"book:demo":42,"inbox:alice":7}`: one cursor per stream, at least one stream.
 pub fn read_cursors(value: &Value) -> Result<BTreeMap<String, u64>> {
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("cursors must map scopes to cursors"))?;
+        .ok_or_else(|| invalid("cursors must map streams to cursors"))?;
     if object.is_empty() {
-        return Err(invalid("cursors must name at least one scope"));
+        return Err(invalid("cursors must name at least one stream"));
     }
     object
         .iter()
-        .map(|(scope, cursor)| {
-            check_scope(scope)?;
-            Ok((scope.clone(), read_counter(cursor, false)?))
+        .map(|(stream, cursor)| {
+            check_stream(stream)?;
+            Ok((stream.clone(), read_counter(cursor, false)?))
         })
         .collect()
 }
-/// One pull for every subscribed scope: where the client is in each, and
+/// One pull for every subscribed stream: where the client is in each, and
 /// the read contracts it expects ([`read_models`]). The owner comes from
 /// authentication; no client id travels.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -541,9 +541,9 @@ impl PullRequest {
         Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
     }
 }
-/// A scope's progress in one page: the cursor the page starts after, the
-/// cursor it reaches, and the scope's head when the page was built. Equal
-/// `from` and `to` means nothing changed; `to` below `head` means the scope
+/// A stream's progress in one page: the cursor the page starts after, the
+/// cursor it reaches, and the stream's head when the page was built. Equal
+/// `from` and `to` means nothing changed; `to` below `head` means the stream
 /// has more and the client pulls again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorRange {
@@ -552,7 +552,7 @@ pub struct CursorRange {
     pub head: u64,
 }
 impl CursorRange {
-    /// Whether the scope holds changes beyond `to`.
+    /// Whether the stream holds changes beyond `to`.
     pub fn continues(&self) -> bool {
         self.to < self.head
     }
@@ -560,23 +560,23 @@ impl CursorRange {
 fn read_ranges(value: &Value) -> Result<BTreeMap<String, CursorRange>> {
     let ranges = value
         .as_object()
-        .ok_or_else(|| invalid("page cursors must map scopes to ranges"))?;
+        .ok_or_else(|| invalid("page cursors must map streams to ranges"))?;
     let mut cursors = BTreeMap::new();
-    for (scope, range) in ranges {
-        check_scope(scope)?;
+    for (stream, range) in ranges {
+        check_stream(stream)?;
         let from = read_counter(&range["from"], false)?;
         let to = read_counter(&range["to"], false)?;
         let head = read_counter(&range["head"], false)?;
-        cursors.insert(scope.clone(), CursorRange { from, to, head });
+        cursors.insert(stream.clone(), CursorRange { from, to, head });
     }
     Ok(cursors)
 }
 fn check_ranges(cursors: &BTreeMap<String, CursorRange>) -> Result<()> {
     if cursors.is_empty() {
-        return Err(invalid("page must name at least one scope"));
+        return Err(invalid("page must name at least one stream"));
     }
-    for (scope, range) in cursors {
-        check_scope(scope)?;
+    for (stream, range) in cursors {
+        check_stream(stream)?;
         counter(range.from)?;
         counter(range.to)?;
         counter(range.head)?;
@@ -584,17 +584,17 @@ fn check_ranges(cursors: &BTreeMap<String, CursorRange>) -> Result<()> {
             return Err(invalid("page moves backwards"));
         }
         if range.head < range.to {
-            return Err(invalid("page reaches past the scope head"));
+            return Err(invalid("page reaches past the stream head"));
         }
     }
     Ok(())
 }
-/// One record-only page for every scope it names: each scope's progress,
+/// One record-only page for every stream it names: each stream's progress,
 /// and the records changed in any of them, once each at its current stamp. A
-/// change is the same [`AuthorityRecord`] a receipt carries; a scope never
+/// change is the same [`AuthorityRecord`] a receipt carries; a stream never
 /// appears on a record. The server scans at most [`limits::PULL_CHANGES`]
-/// invalidations per scope; a scope whose `to` is below its head
-/// continues. [`ScopePullPage`] is the same envelope with scope changes.
+/// invalidations per stream; a stream whose `to` is below its head
+/// continues. [`StreamPullPage`] is the same envelope with stream changes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PullPage {
     pub cursors: BTreeMap<String, CursorRange>,
@@ -627,7 +627,7 @@ impl PullPage {
         check_ranges(&self.cursors)?;
         if self.changes.len() > limits::PULL_CHANGES * self.cursors.len() {
             return Err(invalid(format!(
-                "page exceeds {} changes per scope",
+                "page exceeds {} changes per stream",
                 limits::PULL_CHANGES
             )));
         }
@@ -637,8 +637,8 @@ impl PullPage {
         self.validate()?;
         Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
     }
-    /// The scopes the page names, in canonical order.
-    pub fn scopes(&self) -> impl Iterator<Item = &str> {
+    /// The streams the page names, in canonical order.
+    pub fn streams(&self) -> impl Iterator<Item = &str> {
         self.cursors.keys().map(String::as_str)
     }
 }
@@ -660,13 +660,13 @@ pub fn pull_mode(bytes: &[u8]) -> Option<String> {
             other => other.to_string(),
         })
 }
-/// Read the one scope name of a bounded pull envelope.
-fn read_scope(value: &Value) -> Result<String> {
-    let scope = value
+/// Read the one stream name of a bounded pull envelope.
+fn read_stream(value: &Value) -> Result<String> {
+    let stream = value
         .as_str()
-        .ok_or_else(|| invalid("scope must be a string"))?;
-    check_scope(scope)?;
-    Ok(scope.to_string())
+        .ok_or_else(|| invalid("stream must be a string"))?;
+    check_stream(stream)?;
+    Ok(stream.to_string())
 }
 /// Require the bounded-pull mode: the envelope is not a bootstrap one without it.
 fn read_bootstrap_mode(value: &Value) -> Result<()> {
@@ -676,7 +676,7 @@ fn read_bootstrap_mode(value: &Value) -> Result<()> {
         Err(invalid("mode must be \"bootstrap\""))
     }
 }
-/// One bounded page request of a Scope's historical interval: the scope it
+/// One bounded page request of a Stream's historical interval: the stream it
 /// loads, the read contracts it expects (as in [`PullRequest::models`]), the
 /// committed progress `after` (B) and the subscription origin `until` (S).
 /// The server walks `(after, until]` and never chases a moving head; the owner
@@ -684,7 +684,7 @@ fn read_bootstrap_mode(value: &Value) -> Result<()> {
 /// ([#151](https://github.com/zanminwang/axton/issues/151)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapRequest {
-    pub scope: String,
+    pub stream: String,
     pub models: BTreeMap<String, u64>,
     pub after: u64,
     pub until: u64,
@@ -699,7 +699,7 @@ impl BootstrapRequest {
         read_capabilities(&value)?;
         read_bootstrap_mode(&value["mode"])?;
         let request = Self {
-            scope: read_scope(&value["scope"])?,
+            stream: read_stream(&value["stream"])?,
             models: read_models(&value["models"])?,
             after: read_counter(&value["after"], false)?,
             until: read_counter(&value["until"], false)?,
@@ -708,7 +708,7 @@ impl BootstrapRequest {
         Ok(request)
     }
     pub fn validate(&self) -> Result<()> {
-        check_scope(&self.scope)?;
+        check_stream(&self.stream)?;
         read_models(&serde_json::to_value(&self.models)?)?;
         counter(self.after)?;
         counter(self.until)?;
@@ -721,7 +721,7 @@ impl BootstrapRequest {
         self.validate()?;
         Ok(canonical_json(&serde_json::json!({
             "mode": BOOTSTRAP_MODE,
-            "scope": self.scope,
+            "stream": self.stream,
             "models": self.models,
             "after": self.after,
             "until": self.until,
@@ -733,9 +733,9 @@ impl BootstrapRequest {
         self.after == self.until
     }
 }
-/// One record-only bounded page of a Scope's historical interval
-/// ([`ScopeBootstrapPage`] carries scope changes): the echoed scope and
-/// origin, the interval `(from, to]` the page covers, the scope head its
+/// One record-only bounded page of a Stream's historical interval
+/// ([`StreamBootstrapPage`] carries stream changes): the echoed stream and
+/// origin, the interval `(from, to]` the page covers, the stream head its
 /// transaction observed, and the records published at or below `until` in that
 /// interval, at most [`limits::PULL_CHANGES`] of them, once each at their
 /// current stamp. `to == until` completes the interval, so no done flag
@@ -743,7 +743,7 @@ impl BootstrapRequest {
 /// page ([Protocol / Pull](../../../docs/engineering/architecture/protocol/pull.md)).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BootstrapPage {
-    pub scope: String,
+    pub stream: String,
     pub from: u64,
     pub to: u64,
     pub until: u64,
@@ -758,13 +758,13 @@ impl BootstrapPage {
             return Err(invalid("bootstrap page must be an object"));
         }
         read_bootstrap_mode(&value["mode"])?;
-        for field in ["scope", "from", "to", "until", "head", "records"] {
+        for field in ["stream", "from", "to", "until", "head", "records"] {
             if value.get(field).is_none() {
                 return Err(invalid(format!("bootstrap page {field} missing")));
             }
         }
         let page = Self {
-            scope: read_scope(&value["scope"])?,
+            stream: read_stream(&value["stream"])?,
             from: read_counter(&value["from"], false)?,
             to: read_counter(&value["to"], false)?,
             until: read_counter(&value["until"], false)?,
@@ -780,7 +780,7 @@ impl BootstrapPage {
         Ok(page)
     }
     pub fn validate(&self) -> Result<()> {
-        check_interval(&self.scope, self.from, self.to, self.until, self.head)?;
+        check_interval(&self.stream, self.from, self.to, self.until, self.head)?;
         if self.records.len() > limits::PULL_CHANGES {
             return Err(invalid(format!(
                 "bootstrap page exceeds {} records",
@@ -793,7 +793,7 @@ impl BootstrapPage {
         self.validate()?;
         Ok(canonical_json(&serde_json::json!({
             "mode": BOOTSTRAP_MODE,
-            "scope": self.scope,
+            "stream": self.stream,
             "from": self.from,
             "to": self.to,
             "until": self.until,
@@ -807,16 +807,16 @@ impl BootstrapPage {
     pub fn terminal(&self) -> bool {
         self.to == self.until
     }
-    /// Whether the page answers this request: the echoed scope and origin,
+    /// Whether the page answers this request: the echoed stream and origin,
     /// the requested `from`, and progress that never moves backwards. A
     /// nonterminal page must advance, so a repeated `from` is refused.
     pub fn answers(&self, request: &BootstrapRequest) -> bool {
-        answers_interval(&self.scope, self.from, self.to, self.until, request)
+        answers_interval(&self.stream, self.from, self.to, self.until, request)
     }
 }
 /// The bounds every bounded page keeps: `from <= to <= until <= head`.
-fn check_interval(scope: &str, from: u64, to: u64, until: u64, head: u64) -> Result<()> {
-    check_scope(scope)?;
+fn check_interval(stream: &str, from: u64, to: u64, until: u64, head: u64) -> Result<()> {
+    check_stream(stream)?;
     for cursor in [from, to, until, head] {
         counter(cursor)?;
     }
@@ -827,18 +827,18 @@ fn check_interval(scope: &str, from: u64, to: u64, until: u64, head: u64) -> Res
         return Err(invalid("bootstrap page reaches past its origin"));
     }
     if head < until {
-        return Err(invalid("bootstrap origin is past the scope head"));
+        return Err(invalid("bootstrap origin is past the stream head"));
     }
     Ok(())
 }
 fn answers_interval(
-    scope: &str,
+    stream: &str,
     from: u64,
     to: u64,
     until: u64,
     request: &BootstrapRequest,
 ) -> bool {
-    scope == request.scope
+    stream == request.stream
         && from == request.after
         && until == request.until
         && to >= from
@@ -846,13 +846,13 @@ fn answers_interval(
 }
 
 /// The one client frame of a live session:
-/// `{"type":"subscribe","scopes":[…],"models":{…}}`. Scopes are normalized
+/// `{"type":"subscribe","streams":[…],"models":{…}}`. Streams are normalized
 /// on decode and on construction: deduplicated and sorted by UTF-16 code
 /// units, the order the acknowledgement uses. `models` declares the read
 /// contracts every frame of the session is served at, as in [`PullRequest`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubscribeRequest {
-    pub scopes: Vec<String>,
+    pub streams: Vec<String>,
     pub models: BTreeMap<String, u64>,
 }
 #[derive(Deserialize)]
@@ -860,39 +860,39 @@ pub struct SubscribeRequest {
 struct SubscribeWire {
     #[serde(rename = "type")]
     kind: String,
-    scopes: Vec<String>,
+    streams: Vec<String>,
     #[serde(default)]
     models: Value,
 }
-/// The one scope-name rule: a name that is empty, or nothing but whitespace,
-/// names no scope. Every frame that carries scope names is refused for it,
-/// and so is a durable client registration, so a Scope no socket could ever
+/// The one stream-name rule: a name that is empty, or nothing but whitespace,
+/// names no stream. Every frame that carries stream names is refused for it,
+/// and so is a durable client registration, so a Stream no socket could ever
 /// subscribe cannot be stored either.
-pub fn check_scope(scope: &str) -> Result<()> {
-    if scope.trim().is_empty() {
-        return Err(invalid("scope must not be empty"));
+pub fn check_stream(stream: &str) -> Result<()> {
+    if stream.trim().is_empty() {
+        return Err(invalid("stream must not be empty"));
     }
     Ok(())
 }
-fn normalize_scopes(scopes: Vec<String>) -> Result<Vec<String>> {
-    if scopes.is_empty() {
-        return Err(invalid("subscribe requires at least one scope"));
+fn normalize_streams(streams: Vec<String>) -> Result<Vec<String>> {
+    if streams.is_empty() {
+        return Err(invalid("subscribe requires at least one stream"));
     }
-    for scope in &scopes {
-        check_scope(scope)?;
+    for stream in &streams {
+        check_stream(stream)?;
     }
-    let mut scopes: Vec<_> = scopes
+    let mut streams: Vec<_> = streams
         .into_iter()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    scopes.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
-    Ok(scopes)
+    streams.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+    Ok(streams)
 }
 impl SubscribeRequest {
-    pub fn new(scopes: Vec<String>, models: BTreeMap<String, u64>) -> Result<Self> {
+    pub fn new(streams: Vec<String>, models: BTreeMap<String, u64>) -> Result<Self> {
         Ok(Self {
-            scopes: normalize_scopes(scopes)?,
+            streams: normalize_streams(streams)?,
             models: read_models(&serde_json::to_value(&models)?)?,
         })
     }
@@ -903,19 +903,19 @@ impl SubscribeRequest {
         strip_capabilities(&mut raw)?;
         let wire: SubscribeWire = serde_json::from_value(raw)?;
         if wire.kind != "subscribe" {
-            return Err(invalid("expected one subscribe frame with scopes"));
+            return Err(invalid("expected one subscribe frame with streams"));
         }
-        Self::new(wire.scopes, read_models(&wire.models)?)
+        Self::new(wire.streams, read_models(&wire.models)?)
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         Ok(canonical_json(
-            &serde_json::json!({"type":"subscribe","scopes":self.scopes,"models":self.models}),
+            &serde_json::json!({"type":"subscribe","streams":self.streams,"models":self.models}),
         )?
         .into_bytes())
     }
 }
 
-/// The server's answer to a subscribe frame: every scope's current head.
+/// The server's answer to a subscribe frame: every stream's current head.
 /// The client compares them with its cursors and catches up over HTTP only
 /// where it is behind. Unknown fields are ignored so a newer server can
 /// extend the frame.
@@ -946,9 +946,9 @@ impl SubscriptionAck {
                 .map_err(|_| invalid("invalid live subscription acknowledgement"))?,
         )
     }
-    /// Whether the server acknowledged exactly the requested scope set.
+    /// Whether the server acknowledged exactly the requested stream set.
     pub fn confirms(&self, request: &SubscribeRequest) -> bool {
-        self.cursors.keys().eq(request.scopes.iter())
+        self.cursors.keys().eq(request.streams.iter())
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         Ok(
@@ -959,7 +959,7 @@ impl SubscriptionAck {
 }
 
 /// A record-only frame the server sends on a live socket
-/// ([`ScopeLiveMessage`] carries scope pages): the acknowledgement carries a
+/// ([`StreamLiveMessage`] carries stream pages): the acknowledgement carries a
 /// `type`, a page never does ([Protocol / Subscriptions](../../../docs/engineering/architecture/protocol/subscriptions.md)).
 #[derive(Clone, Debug, PartialEq)]
 pub enum LiveMessage {
@@ -982,11 +982,11 @@ impl LiveMessage {
     }
 }
 
-/// The capability a request advertises when its client applies scope
-/// membership changes: [`ScopeChange`] pages, removals and enrollment
+/// The capability a request advertises when its client applies stream
+/// membership changes: [`StreamChange`] pages, removals and enrollment
 /// [`MembershipClaim`]s. A package version never implies it; only the
 /// request's `capabilities` member does.
-pub const SCOPE_MEMBERSHIP_CAPABILITY: &str = "scope-membership-v1";
+pub const STREAM_MEMBERSHIP_CAPABILITY: &str = "stream-membership-v1";
 /// The stable refusal code of a request that does not advertise a capability
 /// the server requires. It is refused before any handler runs or cursor
 /// moves: HTTP 426, and a live subscribe before its acknowledgement.
@@ -1034,7 +1034,7 @@ pub fn logical_request(envelope: &Value) -> Result<Value> {
     Ok(logical)
 }
 /// Check a request's existing payload bound, allowing only the fixed wire
-/// overhead of advertising scope membership on an already frozen request.
+/// overhead of advertising stream membership on an already frozen request.
 /// Requests within the original raw bound retain their legacy size behavior.
 /// Above it, both the raw wire and canonical logical payload are bounded;
 /// arbitrary capability names never increase the allowance.
@@ -1042,12 +1042,12 @@ pub fn check_request_size(bytes: &[u8], limit: usize) -> Result<()> {
     if bytes.len() <= limit {
         return Ok(());
     }
-    const HEADROOM: usize = br#","capabilities":["scope-membership-v1"]"#.len();
+    const HEADROOM: usize = br#","capabilities":["stream-membership-v1"]"#.len();
     if bytes.len().saturating_sub(limit) > HEADROOM {
         return Err(invalid("request exceeds byte limit"));
     }
     let envelope: Value = serde_json::from_slice(bytes)?;
-    if !read_capabilities(&envelope)?.contains(SCOPE_MEMBERSHIP_CAPABILITY)
+    if !read_capabilities(&envelope)?.contains(STREAM_MEMBERSHIP_CAPABILITY)
         || canonical_json(&logical_request(&envelope)?)?.len() > limit
     {
         return Err(invalid("request exceeds byte limit"));
@@ -1108,33 +1108,33 @@ pub fn require_capability(
     }
 }
 
-/// One membership event of a scope page: the scope it belongs to, its log
+/// One membership event of a stream page: the stream it belongs to, its log
 /// cursor there, and whether the record is a member. An upsert carries the
 /// record's current [`AuthorityRecord`] beside those members; a Loader `null`
 /// is stamped absence and a Loader failure an `error`, never a removal. A
 /// removal carries only the record's identity: no stamp, state, error or
 /// tags. The wire is tagged by `kind` (`upsert` or `remove`); serde decoding
-/// validates like [`ScopeChange::decode`].
+/// validates like [`StreamChange::decode`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ScopeChange {
+pub enum StreamChange {
     Upsert {
-        scope: String,
+        stream: String,
         cursor: u64,
         #[serde(flatten)]
         record: AuthorityRecord,
     },
     Remove {
-        scope: String,
+        stream: String,
         cursor: u64,
         #[serde(flatten)]
         key: RecordKey,
     },
 }
 /// Everything a removal may carry.
-const REMOVAL_MEMBERS: [&str; 5] = ["scope", "cursor", "kind", "model", "identity"];
-impl ScopeChange {
-    /// Decode one change: a known `kind`, a named scope, a positive safe
+const REMOVAL_MEMBERS: [&str; 5] = ["stream", "cursor", "kind", "model", "identity"];
+impl StreamChange {
+    /// Decode one change: a known `kind`, a named stream, a positive safe
     /// cursor, then an upsert's authority record or a removal's identity and
     /// nothing else.
     pub fn decode(value: &Value) -> Result<Self> {
@@ -1145,10 +1145,10 @@ impl ScopeChange {
         let kind = object
             .get("kind")
             .ok_or_else(|| invalid("change kind missing"))?;
-        let scope = read_scope(
+        let stream = read_stream(
             object
-                .get("scope")
-                .ok_or_else(|| invalid("change scope missing"))?,
+                .get("stream")
+                .ok_or_else(|| invalid("change stream missing"))?,
         )?;
         let cursor = read_counter(
             object
@@ -1159,11 +1159,11 @@ impl ScopeChange {
         let change = match kind.as_str() {
             Some("upsert") => {
                 let mut record = object.clone();
-                for member in SCOPE_MEMBERS {
+                for member in STREAM_MEMBERS {
                     record.remove(member);
                 }
                 Self::Upsert {
-                    scope,
+                    stream,
                     cursor,
                     record: decode_record(&Value::Object(record))?,
                 }
@@ -1180,7 +1180,7 @@ impl ScopeChange {
                     .and_then(Value::as_str)
                     .ok_or_else(|| invalid("removal model missing"))?;
                 Self::Remove {
-                    scope,
+                    stream,
                     cursor,
                     key: RecordKey {
                         model: model.to_string(),
@@ -1194,7 +1194,7 @@ impl ScopeChange {
         Ok(change)
     }
     pub fn validate(&self) -> Result<()> {
-        check_scope(self.scope())?;
+        check_stream(self.stream())?;
         if self.cursor() == 0 || counter(self.cursor()).is_err() {
             return Err(invalid("change cursor must be a positive counter"));
         }
@@ -1203,9 +1203,9 @@ impl ScopeChange {
             Self::Remove { key, .. } => check_key(&key.model, &key.identity),
         }
     }
-    pub fn scope(&self) -> &str {
+    pub fn stream(&self) -> &str {
         match self {
-            Self::Upsert { scope, .. } | Self::Remove { scope, .. } => scope,
+            Self::Upsert { stream, .. } | Self::Remove { stream, .. } => stream,
         }
     }
     pub fn cursor(&self) -> u64 {
@@ -1238,75 +1238,75 @@ impl ScopeChange {
         }
     }
 }
-impl<'de> Deserialize<'de> for ScopeChange {
+impl<'de> Deserialize<'de> for StreamChange {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Self, D::Error> {
         Self::decode(&Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
-/// Membership evidence is unique per scope/record pair and per scope
-/// position: the scope log holds one row for each.
+/// Membership evidence is unique per stream/record pair and per stream
+/// position: the stream log holds one row for each.
 fn unique_positions<'a>(
     evidence: impl IntoIterator<Item = (&'a str, u64, RecordKey)>,
 ) -> Result<()> {
     let (mut pairs, mut positions) = (BTreeSet::new(), BTreeSet::new());
-    for (scope, cursor, key) in evidence {
-        if !pairs.insert((scope, key.encoded()?)) {
-            return Err(invalid("duplicate scope/record pair"));
+    for (stream, cursor, key) in evidence {
+        if !pairs.insert((stream, key.encoded()?)) {
+            return Err(invalid("duplicate stream/record pair"));
         }
-        if !positions.insert((scope, cursor)) {
-            return Err(invalid("two records at one scope position"));
+        if !positions.insert((stream, cursor)) {
+            return Err(invalid("two records at one stream position"));
         }
     }
     Ok(())
 }
-/// The event rules of a scope page: each change belongs to a scope the
-/// page covers with `from < cursor <= to` in its range, a scope carries at
+/// The event rules of a stream page: each change belongs to a stream the
+/// page covers with `from < cursor <= to` in its range, a stream carries at
 /// most [`limits::PULL_CHANGES`] changes, and a pair or position appears once.
 fn check_changes(
-    changes: &[ScopeChange],
+    changes: &[StreamChange],
     range: impl Fn(&str) -> Option<(u64, u64)>,
 ) -> Result<()> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for change in changes {
         change.validate()?;
-        let (from, to) = range(change.scope())
-            .ok_or_else(|| invalid("change names a scope the page does not cover"))?;
+        let (from, to) = range(change.stream())
+            .ok_or_else(|| invalid("change names a stream the page does not cover"))?;
         if change.cursor() <= from || change.cursor() > to {
-            return Err(invalid("change cursor outside its scope's page range"));
+            return Err(invalid("change cursor outside its stream's page range"));
         }
-        let count = counts.entry(change.scope()).or_default();
+        let count = counts.entry(change.stream()).or_default();
         *count += 1;
         if *count > limits::PULL_CHANGES {
             return Err(invalid(format!(
-                "page exceeds {} changes per scope",
+                "page exceeds {} changes per stream",
                 limits::PULL_CHANGES
             )));
         }
     }
-    unique_positions(changes.iter().map(|c| (c.scope(), c.cursor(), c.key())))
+    unique_positions(changes.iter().map(|c| (c.stream(), c.cursor(), c.key())))
 }
-fn read_changes(value: &Value, label: &str) -> Result<Vec<ScopeChange>> {
+fn read_changes(value: &Value, label: &str) -> Result<Vec<StreamChange>> {
     value
         .as_array()
         .ok_or_else(|| invalid(format!("{label} changes must be an array")))?
         .iter()
-        .map(ScopeChange::decode)
+        .map(StreamChange::decode)
         .collect()
 }
 
-/// The [`PullPage`] envelope with scope changes: each scope's progress
+/// The [`PullPage`] envelope with stream changes: each stream's progress
 /// and the membership events in each, at most [`limits::PULL_CHANGES`] per
-/// scope. A record in two scopes appears once per scope, since each is
+/// stream. A record in two streams appears once per stream, since each is
 /// separate membership evidence. A page with any change never decodes as a
-/// record-only page, nor a record-only change as a scope change.
+/// record-only page, nor a record-only change as a stream change.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ScopePullPage {
+pub struct StreamPullPage {
     pub cursors: BTreeMap<String, CursorRange>,
-    pub changes: Vec<ScopeChange>,
+    pub changes: Vec<StreamChange>,
 }
-impl ScopePullPage {
+impl StreamPullPage {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let value: Value = serde_json::from_slice(bytes)?;
         reject_legacy_ownership(&value)?;
@@ -1327,34 +1327,34 @@ impl ScopePullPage {
     }
     pub fn validate(&self) -> Result<()> {
         check_ranges(&self.cursors)?;
-        check_changes(&self.changes, |scope| {
-            self.cursors.get(scope).map(|range| (range.from, range.to))
+        check_changes(&self.changes, |stream| {
+            self.cursors.get(stream).map(|range| (range.from, range.to))
         })
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
     }
-    /// The scopes the page names, in canonical order.
-    pub fn scopes(&self) -> impl Iterator<Item = &str> {
+    /// The streams the page names, in canonical order.
+    pub fn streams(&self) -> impl Iterator<Item = &str> {
         self.cursors.keys().map(String::as_str)
     }
 }
 
-/// The [`BootstrapPage`] envelope with scope changes in place of records:
+/// The [`BootstrapPage`] envelope with stream changes in place of records:
 /// the same interval, origin and completion rules, and at most
-/// [`limits::PULL_CHANGES`] changes, each in the page's scope with
+/// [`limits::PULL_CHANGES`] changes, each in the page's stream with
 /// `from < cursor <= to`. A change beyond `until` belongs to the delta lane.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ScopeBootstrapPage {
-    pub scope: String,
+pub struct StreamBootstrapPage {
+    pub stream: String,
     pub from: u64,
     pub to: u64,
     pub until: u64,
     pub head: u64,
-    pub changes: Vec<ScopeChange>,
+    pub changes: Vec<StreamChange>,
 }
-impl ScopeBootstrapPage {
+impl StreamBootstrapPage {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let value: Value = serde_json::from_slice(bytes)?;
         reject_legacy_ownership(&value)?;
@@ -1362,13 +1362,13 @@ impl ScopeBootstrapPage {
             return Err(invalid("bootstrap page must be an object"));
         }
         read_bootstrap_mode(&value["mode"])?;
-        for field in ["scope", "from", "to", "until", "head", "changes"] {
+        for field in ["stream", "from", "to", "until", "head", "changes"] {
             if value.get(field).is_none() {
                 return Err(invalid(format!("bootstrap page {field} missing")));
             }
         }
         let page = Self {
-            scope: read_scope(&value["scope"])?,
+            stream: read_stream(&value["stream"])?,
             from: read_counter(&value["from"], false)?,
             to: read_counter(&value["to"], false)?,
             until: read_counter(&value["until"], false)?,
@@ -1379,16 +1379,16 @@ impl ScopeBootstrapPage {
         Ok(page)
     }
     pub fn validate(&self) -> Result<()> {
-        check_interval(&self.scope, self.from, self.to, self.until, self.head)?;
-        check_changes(&self.changes, |scope| {
-            (scope == self.scope).then_some((self.from, self.to))
+        check_interval(&self.stream, self.from, self.to, self.until, self.head)?;
+        check_changes(&self.changes, |stream| {
+            (stream == self.stream).then_some((self.from, self.to))
         })
     }
     pub fn encode(&self) -> Result<Vec<u8>> {
         self.validate()?;
         Ok(canonical_json(&serde_json::json!({
             "mode": BOOTSTRAP_MODE,
-            "scope": self.scope,
+            "stream": self.stream,
             "from": self.from,
             "to": self.to,
             "until": self.until,
@@ -1404,18 +1404,18 @@ impl ScopeBootstrapPage {
     }
     /// Whether the page answers this request, as [`BootstrapPage::answers`].
     pub fn answers(&self, request: &BootstrapRequest) -> bool {
-        answers_interval(&self.scope, self.from, self.to, self.until, request)
+        answers_interval(&self.stream, self.from, self.to, self.until, request)
     }
 }
 
-/// A live frame when the session applies scope changes: the same
-/// acknowledgement, or a [`ScopePullPage`].
+/// A live frame when the session applies stream changes: the same
+/// acknowledgement, or a [`StreamPullPage`].
 #[derive(Clone, Debug, PartialEq)]
-pub enum ScopeLiveMessage {
+pub enum StreamLiveMessage {
     Acknowledged(SubscriptionAck),
-    Page(ScopePullPage),
+    Page(StreamPullPage),
 }
-impl ScopeLiveMessage {
+impl StreamLiveMessage {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let value: Value = serde_json::from_slice(bytes)?;
         reject_legacy_ownership(&value)?;
@@ -1425,27 +1425,27 @@ impl ScopeLiveMessage {
         if value.get("type").is_some() {
             return Ok(Self::Acknowledged(SubscriptionAck::decode(bytes)?));
         }
-        ScopePullPage::decode(bytes)
+        StreamPullPage::decode(bytes)
             .map(Self::Page)
             .map_err(|e| invalid(format!("invalid live page: {e}")))
     }
 }
 
 /// One enrollment claim a response carries beside the authority records it
-/// returns: a scope the call enrolled a returned record in, and the pair's
+/// returns: a stream the call enrolled a returned record in, and the pair's
 /// current upsert cursor from the same transaction. It is membership evidence
-/// in that scope's cursor order, not another cursor namespace and never a
+/// in that stream's cursor order, not another cursor namespace and never a
 /// Model field. Serde decoding validates like [`MembershipClaim::decode`].
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MembershipClaim {
-    pub scope: String,
+    pub stream: String,
     pub cursor: u64,
     pub model: String,
     pub identity: Value,
 }
 impl MembershipClaim {
-    const MEMBERS: [&str; 4] = ["scope", "cursor", "model", "identity"];
-    /// Decode exactly `{scope, cursor, model, identity}`.
+    const MEMBERS: [&str; 4] = ["stream", "cursor", "model", "identity"];
+    /// Decode exactly `{stream, cursor, model, identity}`.
     pub fn decode(value: &Value) -> Result<Self> {
         reject_legacy_ownership(value)?;
         let object = value
@@ -1458,7 +1458,7 @@ impl MembershipClaim {
             return Err(invalid(format!("a membership claim carries no {member}")));
         }
         let claim = Self {
-            scope: read_scope(&value["scope"])?,
+            stream: read_stream(&value["stream"])?,
             cursor: read_counter(&value["cursor"], true)?,
             model: value["model"]
                 .as_str()
@@ -1470,7 +1470,7 @@ impl MembershipClaim {
         Ok(claim)
     }
     pub fn validate(&self) -> Result<()> {
-        check_scope(&self.scope)?;
+        check_stream(&self.stream)?;
         if self.cursor == 0 || counter(self.cursor).is_err() {
             return Err(invalid(
                 "membership claim cursor must be a positive counter",
@@ -1515,7 +1515,7 @@ pub fn read_memberships(
     Ok(claims)
 }
 /// Every claim is valid, names a record the response returns, and is unique
-/// per scope/record pair and per scope position.
+/// per stream/record pair and per stream position.
 pub fn validate_memberships(claims: &[MembershipClaim], records: &[AuthorityRecord]) -> Result<()> {
     let returned = records
         .iter()
@@ -1535,5 +1535,9 @@ pub fn validate_memberships(claims: &[MembershipClaim], records: &[AuthorityReco
             ));
         }
     }
-    unique_positions(claims.iter().map(|c| (c.scope.as_str(), c.cursor, c.key())))
+    unique_positions(
+        claims
+            .iter()
+            .map(|c| (c.stream.as_str(), c.cursor, c.key())),
+    )
 }

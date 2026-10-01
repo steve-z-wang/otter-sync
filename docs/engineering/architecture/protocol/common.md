@@ -6,7 +6,7 @@ Three runtimes exchange the same messages: Rust, TypeScript and Dart. The protoc
 
 ## 2. Architecture Constraints
 
-Wire names are short and stable: `scopes` and `cursors` name scopes and their positions, `stamp` is a record's version. Every counter (cursor, stamp, batch sequence, ordinal, version) is an integer in `0..=2^53−1` so JavaScript reads it exactly.
+Wire names are short and stable: `streams` and `cursors` name streams and their positions, `stamp` is a record's version. Every counter (cursor, stamp, batch sequence, ordinal, version) is an integer in `0..=2^53−1` so JavaScript reads it exactly.
 
 ## 5. Building Block View
 
@@ -28,7 +28,7 @@ Code: [core/lib.rs](../../../../crates/core/src/lib.rs) (`canonical_json`), [cor
 
 ## 8. Crosscutting Concepts
 
-Three limits are shared by both sides but not negotiated on the wire: 20 mutations and 256 KiB per push, 50 changes per scope in a pull page. They are defined once, in `limits` of [core/protocol.rs](../../../../crates/core/src/protocol.rs), and every consumer reads them from there: the push request decoder and the client's [batching](../client/engine/push/batching.md), the per-scope continuation rule (`CursorRange::continues`) and the [server pull](../server/engine/pull.md) scan. A page with more than 50 changes per named scope is refused by `PullPage::validate`. Making the limits configurable is [#11](https://github.com/zanminwang/axton/issues/11).
+Three limits are shared by both sides but not negotiated on the wire: 20 mutations and 256 KiB per push, 50 changes per stream in a pull page. They are defined once, in `limits` of [core/protocol.rs](../../../../crates/core/src/protocol.rs), and every consumer reads them from there: the push request decoder and the client's [batching](../client/engine/push/batching.md), the per-stream continuation rule (`CursorRange::continues`) and the [server pull](../server/engine/pull.md) scan. A page with more than 50 changes per named stream is refused by `PullPage::validate`. Making the limits configurable is [#11](https://github.com/zanminwang/axton/issues/11).
 
 Native Load pages have their own item, identity, state and byte bounds, owned by [Protocol / Loads](loads.md#6-runtime-view).
 
@@ -47,11 +47,11 @@ Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests a
 
 **Accepted limitation.** Client-direction errors cross the bindings as message text, with a machine-readable `details.code` only where the client runtime provides one; nothing branches on the wording. Owned by [SDKs / Bindings](../sdks/bindings.md).
 
-## Scope membership capability and claims
+## Stream membership capability and claims
 
-New requests advertise `capabilities: ["scope-membership-v1"]`. This envelope metadata is excluded from saved-call logical equality, so adding capability does not change a frozen call's identity. Valid unsupported requests are refused before handler execution or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md#scope-membership-cutover) upgrades all runtimes together.
+New requests advertise `capabilities: ["stream-membership-v1"]`. This envelope metadata is excluded from saved-call logical equality, so adding capability does not change a frozen call's identity. Valid unsupported requests are refused before handler execution or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md#stream-membership-cutover) upgrades all runtimes together.
 
-Load pages, accepted receipts and direct Mutation responses may carry `memberships: [{scope, cursor, model, identity}]` for explicit Add pairs whose normalized identity the response returns. Claims preserve the original saved cursor on replay and never re-enroll. Failed items, ordinary Fetches, Queries and extra outputs fabricate no claims. A claim updates the same local holding ledger as a Scope upsert; it never advances delivery progress. Tags are server-only.
+Load pages, accepted receipts and direct Mutation responses may carry `memberships: [{stream, cursor, model, identity}]` for explicit tracking pairs whose normalized identity the response returns. Claims preserve the original saved cursor on replay and never re-enroll. Failed items, ordinary Fetches, Queries and extra outputs fabricate no claims. A claim updates the same local holding ledger as a Stream upsert; it never advances delivery progress. Fresh tracking has no tags or selectors; retained removal positions carry identity only, without a Loader read.
 
 Positive content is admitted before stamp comparison only when currently held or when its logical request's frozen store epoch is at least the record's eviction epoch. Retries and restarts preserve the original token. This prevents delayed saved Load, Fetch, Query or receipt bodies from restoring released replication while preserving result/continuation and queue settlement. Fresh authorized reads may cache again; authoritative null and Loader diagnostics retain their own meanings.
 

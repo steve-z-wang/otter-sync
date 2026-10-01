@@ -45,7 +45,7 @@ Returns `Promise<GeneratedClient>` / `Future<GeneratedClient>`. Opening can fail
 
 ## React to incoming records
 
-Register an `onStore` callback when opening the generated client. This example changes local Scope intent for each incoming Entry; use Scope names your backend actually publishes to.
+Register an `onStore` callback when opening the generated client. This example changes local Stream intent for each incoming Entry; use Stream names your backend actually publishes to.
 
 === "TypeScript"
 
@@ -55,11 +55,11 @@ Register an `onStore` callback when opening the generated client. This example c
       onStore: {
         async entry(tx, changes) {
           for (const change of changes) {
-            const scope = `entry:${change.identity.id}`;
+            const stream = `entry:${change.identity.id}`;
             if (change.kind === 'upsert') {
-              await tx.scopes.subscribe(scope);
+              await tx.streams.subscribe(stream);
             } else {
-              await tx.scopes.unsubscribe(scope);
+              await tx.streams.unsubscribe(stream);
             }
           }
         },
@@ -76,11 +76,11 @@ Register an `onStore` callback when opening the generated client. This example c
       onStore: StoreHooks(
         entry: (tx, changes) async {
           for (final change in changes) {
-            final scope = 'entry:${change.identity.id}';
+            final stream = 'entry:${change.identity.id}';
             if (change is StoreUpsert<EntryIdentity, Entry>) {
-              await tx.scopes.subscribe(scope);
+              await tx.streams.subscribe(stream);
             } else {
-              await tx.scopes.unsubscribe(scope);
+              await tx.streams.unsubscribe(stream);
             }
           }
         },
@@ -88,7 +88,9 @@ Register an `onStore` callback when opening the generated client. This example c
     );
     ```
 
-The callback receives typed incoming upserts (identity and full row) and deletes (identity only). It can read the pre-store local view and write local Models through `tx.models`; `tx.scopes` changes only local subscription intent and returns no handle. These writes, incoming authority and delivery progress commit together. A failed callback rolls them back and reports `store_hook_failed`; delivery may invoke it again, and a permanently failing callback can block that Scope or the current push batch. A stored [Fetch](#fetch-a-record-from-the-backend) invokes it for the fetched record before the Fetch resolves. Local CRUD, optimistic replay, and authority excluded from local storage by the call's `store` option do not invoke it. `store: false` still stores mandatory Mutation input authority, which may invoke its hook. See [sync and recovery](sync.md#recover-from-connection-failures) for connection diagnostics.
+The callback receives typed incoming upserts (identity and full row) and deletes (identity only). It can read the pre-store local view and write local Models through `tx.models`; `tx.streams` changes only local subscription intent and returns no handle. These writes, incoming authority and delivery progress commit together. A failed callback rolls them back and reports `store_hook_failed`; delivery may invoke it again, and a permanently failing callback can block that Stream or the current push batch. A stored [Fetch](#fetch-a-record-from-the-backend) invokes it for the fetched record before the Fetch resolves. Local CRUD, optimistic replay, and authority excluded from local storage by the call's `store` option do not invoke it. `store: false` still stores mandatory Mutation input authority, which may invoke its hook. See [sync and recovery](sync.md#recover-from-connection-failures) for connection diagnostics.
+
+For standing/access deletion, use the [cache-reclamation pattern](sync.md#authentication-and-account-changes): consume explicit incoming absence in this transaction, preserve independent paths and pending/device-only work, and gate presentation in Queries. Hooks see pre-store rows, and direct child deletion creates no request-epoch fence.
 
 ## Model APIs
 
@@ -110,7 +112,7 @@ The callback receives typed incoming upserts (identity and full row) and deletes
     print(entry?.text);
     ```
 
-`get(identity)` returns the complete typed record or `null` when it is absent from local storage. It does not call the backend loader. A newly opened cache can return `null` until scope synchronization supplies the record. To read the record from the backend instead, use [`client.fetch`](#fetch-a-record-from-the-backend).
+`get(identity)` returns the complete typed record or `null` when it is absent from local storage. It does not call the backend loader. A newly opened cache can return `null` until stream synchronization supplies the record. To read the record from the backend instead, use [`client.fetch`](#fetch-a-record-from-the-backend).
 
 ### Query records
 
@@ -204,7 +206,7 @@ The call returns `Promise<Entry | null>` / `Future<Entry?>`: the complete record
 - **Storage.** By default (`store: true`) the call resolves only after the record is stored locally and any `onStore` callback for that Model has committed with it. A `null` result deletes the local row. A newer local copy is kept, and the call still returns its own snapshot. With `store: false` the record is returned without changing local data or running `onStore`. `store` is the only option and must be a boolean.
 - **Every call reads the backend.** No result is cached on the client. The backend records each call's response, a `store: false` preview included, so a retry of the same call ID replays it, as for a direct Query; those records are not pruned automatically ([Database](../backend/database.md#what-the-persistence-does)). A call for the same identity with the same `store` choice as a call still in flight shares that call: one request, one Loader call and one local store, and each caller receives its own object. A later call makes a new request.
 - **No offline fallback.** A local row does not satisfy the call. Without a connection it rejects with `fetch.unavailable`; it is never queued. It uses the connection's direct timeout and credential refresh ([Server connection](runtime.md#server-connection)).
-- **No subscription.** A Fetch joins no Scope and changes no subscription, cursor or `bootstrap()` progress.
+- **No subscription.** A Fetch joins no Stream and changes no subscription, cursor or `bootstrap()` progress.
 - **Permissions stay in the Loader.** Return `null` for a record this user may not see if the app should treat it as absent, which deletes a stored copy; throw `CallRejected` if it should be an error, which deletes nothing.
 - **Not inside transactions.** `tx` has no `fetch`. Calling `client.fetch` inside a `client.transaction` or `onStore` callback fails with `transaction_active`.
 
@@ -218,7 +220,7 @@ Failures reject with `CallError`:
 | `fetch.timeout` | The direct timeout passed |
 | `fetch.transport_failed` | The request or credential refresh failed; `cause` carries the message and the HTTP status, if any |
 | `fetch.invalid_response` | The response did not answer this request |
-| `fetch.store_failed` | The record could not be stored: an `onStore` callback threw (it is the `cause`, and the callback's writes are rolled back), the local commit failed, or local content has the same stamp as different backend content. The last case happens when a business write skipped `touch`, so the record did not get a new stamp, or when a [local write](#local-writes-to-synced-models) changed a record the client already held at that stamp |
+| `fetch.store_failed` | The record could not be stored: an `onStore` callback threw (it is the `cause`, and the callback's writes are rolled back), the local commit failed, or local content has the same stamp as different backend content. The last case happens when a business write skipped `invalidate`, so the record did not get a new stamp, or when a [local write](#local-writes-to-synced-models) changed a record the client already held at that stamp |
 | `fetch.schema_pending` | The local database is waiting to be rebuilt for an incompatible schema change |
 | `fetch.schema_changed` | The local database was rebuilt while the call waited |
 
@@ -249,7 +251,7 @@ A failure never deletes the local row. `execution` is `rejected` for the backend
 
 `transaction<T>(callback)` returns the callback's result after local commit. Throwing or a failed operation rolls it back. Await each operation, including nested callbacks; unfinished work is rejected. Inside the callback, use `tx.models` for reads that must see earlier writes in the same transaction. Calling the outer `client` from inside its own transaction callback - a read, a Mutation, a Query or a Fetch - fails with `transaction_active` on Node and Dart (React Native rejects Mutations, Queries and Fetches and lets other outer calls wait behind the transaction) instead of waiting on itself. To send backend work with the transaction, queue it through `tx.mutations` ([queue Mutations in a transaction](#queue-mutations-in-a-transaction)).
 
-The callback receives a generated transaction with `models`, `scopes` and the underlying `transaction`; when the schema declares Mutations it is an `ApplicationTransaction`, which adds `mutations` for queued Mutations. It has no `mutations.call`, `queries`, `fetch`, `loads` or watch method. `onStore` callbacks receive a `GeneratedTransaction`, which has no `mutations`. For nested savepoints, see [transactions and savepoints](runtime.md#transactions-and-savepoints).
+The callback receives a generated transaction with `models`, `streams` and the underlying `transaction`; when the schema declares Mutations it is an `ApplicationTransaction`, which adds `mutations` for queued Mutations. It has no `mutations.call`, `queries`, `fetch`, `loads` or watch method. `onStore` callbacks receive a `GeneratedTransaction`, which has no `mutations`. For nested savepoints, see [transactions and savepoints](runtime.md#transactions-and-savepoints).
 
 ## Mutations and Queries
 
@@ -341,7 +343,7 @@ A direct call does not enter the durable queue and infers no local optimism. It 
 
 TypeScript sets `connection.directTimeoutMs` in milliseconds (an integer from 1 to 2,147,483,647); Dart sets `directTimeout` on `open` or `connect` to a positive `Duration`. Both default to 30 seconds. See [server connection](runtime.md#server-connection) for option placement. Queued calls use background retry instead of this direct timeout.
 
-A result holds only the outputs the operation declares. A Model input is not a result: once a call completes, the backend's authority for each Model it created, updated or deleted is already applied locally, whatever the outputs or `store` say, so read it from `client.models`. An output may share an input's name and still name a different record; the fixture's `EditAndRead(todo Todo.update) { todo Todo }` can edit one Todo and return another. A handler selects an explicit Model output by returning an identity object with every `@@id` field. A Model output is the Loader snapshot for that invocation: a later call in the same batch can change the batch-final authority, and a pending local edit can change what `client.models.todo.get(...)` shows, while the result retains its own snapshot. Records the backend handler changed beyond the Model inputs are not returned to the caller; they arrive through the Scopes they belong to. Optional outputs can be null, lists preserve order and duplicates, and no outputs means void. Results held by live calls are kept in client memory; reopening preserves pending work and completion state, but does not restore a past business result to a new handle. The backend retains committed outcomes of both kinds for replay without a TTL or automatic pruning.
+A result holds only the outputs the operation declares. A Model input is not a result: once a call completes, the backend's authority for each Model it created, updated or deleted is already applied locally, whatever the outputs or `store` say, so read it from `client.models`. An output may share an input's name and still name a different record; the fixture's `EditAndRead(todo Todo.update) { todo Todo }` can edit one Todo and return another. A handler selects an explicit Model output by returning an identity object with every `@@id` field. A Model output is the Loader snapshot for that invocation: a later call in the same batch can change the batch-final authority, and a pending local edit can change what `client.models.todo.get(...)` shows, while the result retains its own snapshot. Records the backend handler changed beyond the Model inputs are not returned to the caller; they arrive through the Streams they belong to. Optional outputs can be null, lists preserve order and duplicates, and no outputs means void. Results held by live calls are kept in client memory; reopening preserves pending work and completion state, but does not restore a past business result to a new handle. The backend retains committed outcomes of both kinds for replay without a TTL or automatic pruning.
 
 ### Storing Model results
 
@@ -419,7 +421,7 @@ A direct Query can opt in, at the call site, to reusing the complete result of a
 
 The saved value is the complete typed result: scalars, Model results, list order and membership, and pagination values such as `nextCursor`. A successful empty result is saved too. Each call decodes a new result object, so changing a returned list, `Date` or object affects neither the saved result nor another caller. A saved paginated result is only the page that was requested.
 
-A saved result is the answer of an earlier request, not the current local view. Scope deliveries and local writes change Models, never saved results, and a hit never reapplies an old Model result. Read `client.models` for current local data, and use `refresh` or `invalidate` when your application decides a saved result is outdated. Saved results never expire on their own: no time limit or automatic freshness applies. They stay until invalidated, replaced by a successful refresh, or discarded by a schema change or local database rebuild.
+A saved result is the answer of an earlier request, not the current local view. Stream deliveries and local writes change Models, never saved results, and a hit never reapplies an old Model result. Read `client.models` for current local data, and use `refresh` or `invalidate` when your application decides a saved result is outdated. Saved results never expire on their own: no time limit or automatic freshness applies. They stay until invalidated, replaced by a successful refresh, or discarded by a schema change or local database rebuild.
 
 The saved result belongs to the Query name and version, the normalized arguments (key order, UUID case and date offsets do not matter; list order and explicit `null` do) and the `store` policy. `store` still controls only which Model results update local Models, so `once` with `store: false` returns a saved result that did not store Models, and a later call that asks for Models (the default) does not reuse it. `store: false` does not make the call ephemeral: its result is still saved in the local database. `invalidate` takes only the Query's business arguments, needs no connection, resolves after its local commit and discards the saved results for every `store` policy. A request that was already in flight still resolves its callers, but cannot save its result after an invalidation.
 
@@ -481,7 +483,7 @@ A transaction can queue several Mutations, each with its own `local` callback an
 
 **The Call.** `tx.mutations.<name>` resolves after the Mutation's local changes and its `local` callback ran, before the transaction commits. Until the commit its Call is provisional: `status` is `pending`, yet nothing is saved or sent. `wait()` before the commit rejects at once with a `CallError` whose `code` is `transaction_uncommitted`; the Mutation is not cancelled, and the same Call can be awaited after `client.transaction` resolves. If the transaction, or the [savepoint](runtime.md#transactions-and-savepoints) the call was made in, rolls back, the Mutation is discarded: a Call kept from it has status `failed` and its `wait()` rejects with `transaction_rolled_back`. These codes describe the local transaction; the backend's answer still arrives as the `wait()` outcome. After the commit the Call behaves like one from `client.mutations.<name>`, and ignoring it cancels nothing: the Mutation is sent and settled, `local` changes included, even across a restart. A headless Dart program that awaits it must keep its isolate alive until `wait()` resolves ([#177](https://github.com/zanminwang/axton/issues/177), see [Mutations and Queries](#mutations-and-queries)).
 
-**The `local` callback** receives `local.models`, with the same reads and `create`, `update` and `delete` as `tx.models`. Reads see the transaction's earlier writes and this Mutation's own local changes; writes apply at once and are never sent. It has no `mutations`, Scopes, savepoints or watch, and using the outer `tx` or `client` inside it fails. Await every operation; a throw fails the transaction. Do not keep `local` after the callback returns: using it later fails with `invalid transaction capability` and fails the transaction while it is still open, or with `transaction_closed` after it ended. A submission that fails rejects with the runtime's error or the value your callback threw, not a `CallError`; only invalid options are `CallError` `action.invalid_options`. AXTON stores the callback's changes, not the function, so it never runs again on retry or restart. Only `tx.mutations` methods take `local`; in TypeScript the runtime also refuses it from untyped callers of `client.mutations.<name>` and the other routes with `CallError` code `action.invalid_options`, before any work. In Dart the parameter is `local`, or `callLocal` when the Mutation has a business input named `local`.
+**The `local` callback** receives `local.models`, with the same reads and `create`, `update` and `delete` as `tx.models`. Reads see the transaction's earlier writes and this Mutation's own local changes; writes apply at once and are never sent. It has no `mutations`, Streams, savepoints or watch, and using the outer `tx` or `client` inside it fails. Await every operation; a throw fails the transaction. Do not keep `local` after the callback returns: using it later fails with `invalid transaction capability` and fails the transaction while it is still open, or with `transaction_closed` after it ended. A submission that fails rejects with the runtime's error or the value your callback threw, not a `CallError`; only invalid options are `CallError` `action.invalid_options`. AXTON stores the callback's changes, not the function, so it never runs again on retry or restart. Only `tx.mutations` methods take `local`; in TypeScript the runtime also refuses it from untyped callers of `client.mutations.<name>` and the other routes with `CallError` code `action.invalid_options`, before any work. In Dart the parameter is `local`, or `callLocal` when the Mutation has a business input named `local`.
 
 **Settlement and later edits.** Local writes made later, such as recreating the deleted draft, a standalone edit or another Mutation's `local` change, keep their place whichever outcome arrives and in whatever order; only an edit of a record whose sole creation was rejected goes with it. A network retry undoes nothing. `local` changes do not override the backend: newer server data for the same record replaces them as it replaces any local write, so use them for local-only data.
 
@@ -541,20 +543,20 @@ Fields with a [creation default](../schema/reference.md#creation-defaults) may b
 
 ### Local writes to synced Models
 
-A local write may target a Model that Scopes also deliver. For example, an application can store a profile it looked up over REST before any Scope has delivered that person. The write is never sent, and newer server data for that identity replaces it:
+A local write may target a Model that Streams also deliver. For example, an application can store a profile it looked up over REST before any Stream has delivered that person. The write is never sent, and newer server data for that identity replaces it:
 
 - **It is never sent.** A `tx.models` or `client.models` write never becomes a queued call or a backend request, whatever Model it targets.
-- **Newer server data replaces it.** A Scope update, a [Load](loads.md) page, a [Fetch](#fetch-a-record-from-the-backend) or a Mutation's receipt that carries a newer version of the same identity replaces the local write. Nothing restores the local write afterwards, not a later rejection and not a restart. A record that exists only because of a local write has no server version yet, so the first server data for it replaces it.
+- **Newer server data replaces it.** A Stream update, a [Load](loads.md) page, a [Fetch](#fetch-a-record-from-the-backend) or a Mutation's receipt that carries a newer version of the same identity replaces the local write. Nothing restores the local write afterwards, not a later rejection and not a restart. A record that exists only because of a local write has no server version yet, so the first server data for it replaces it.
 - **A rejection does not undo it.** A local write can land on a record that a pending Mutation also changes. If the backend rejects that Mutation, AXTON removes only that Mutation's changes, including its `local` changes, and the local write stays until newer server data replaces it. The exception is a record whose only creation is a pending Mutation: if that create is rejected, the record goes, local writes included.
 
-Avoid overwriting a record the client already holds from the server unless newer server data will follow. If the same version arrives again after the local write, AXTON reports it as a conflict instead of replacing the write. A Scope update keeps the local write and reports the conflict through `onError`. A Load page that carries the same version fails its Load with `load.store_failed`, and a Fetch rejects with `fetch.store_failed`; the local write stays in both cases ([#196](https://github.com/zanminwang/axton/issues/196)).
+Avoid overwriting a record the client already holds from the server unless newer server data will follow. If the same version arrives again after the local write, AXTON reports it as a conflict instead of replacing the write. A Stream update keeps the local write and reports the conflict through `onError`. A Load page that carries the same version fails its Load with `load.store_failed`, and a Fetch rejects with `fetch.store_failed`; the local write stays in both cases ([#196](https://github.com/zanminwang/axton/issues/196)).
 
-## Scopes
+## Streams
 
 === "TypeScript"
 
     ```ts
-    const followed = await client.scopes.subscribe('book:demo');
+    const followed = await client.streams.subscribe('book:demo');
     console.log(followed.status.initialization, followed.status.connection);
     await followed.unsubscribe();
     ```
@@ -562,18 +564,18 @@ Avoid overwriting a record the client already holds from the server unless newer
 === "Flutter"
 
     ```dart
-    final followed = await client.scopes.subscribe('book:demo');
+    final followed = await client.streams.subscribe('book:demo');
     print('${followed.status.initialization} ${followed.status.connection}');
     await followed.unsubscribe();
     ```
 
 
-**Subscribing delivers later changes, not the scope's existing records.** The position the server acknowledges the first time a session is negotiated becomes that subscription's starting point; nothing published earlier is downloaded, and reconnecting keeps that starting point rather than jumping ahead. Use `watch` to observe what arrives. To load what the scope already held, call `bootstrap()` on the handle:
+**Subscribing delivers later changes, not the stream's existing records.** The position the server acknowledges the first time a session is negotiated becomes that subscription's starting point; nothing published earlier is downloaded, and reconnecting keeps that starting point rather than jumping ahead. Use `watch` to observe what arrives. To load what the stream already held, call `bootstrap()` on the handle:
 
 === "TypeScript"
 
     ```ts
-    const followed = await client.scopes.subscribe('book:demo');
+    const followed = await client.streams.subscribe('book:demo');
     followed.bootstrap().catch(console.error);
     console.log(followed.status.bootstrap.phase);
     ```
@@ -581,25 +583,25 @@ Avoid overwriting a record the client already holds from the server unless newer
 === "Flutter"
 
     ```dart
-    final followed = await client.scopes.subscribe('book:demo');
+    final followed = await client.streams.subscribe('book:demo');
     followed.bootstrap().catchError((Object error) => print(error));
     print(followed.status.bootstrap.phase);
     ```
 
-`bootstrap()` asks for everything published to the scope before this subscription's starting point. It registers that work when you call it, whether or not you await the returned `Promise`/`Future`, so it runs in the background while your screen shows what is already local. It resolves once that work is committed; calls made while it is running share one task, a call after it has completed resolves from local state even offline, and a call after a failure retries from the progress that was committed. Handle the rejection - a background call that nobody awaits is still a rejected `Promise`/`Future`.
+`bootstrap()` asks for everything published to the stream before this subscription's starting point. It registers that work when you call it, whether or not you await the returned `Promise`/`Future`, so it runs in the background while your screen shows what is already local. It resolves once that work is committed; calls made while it is running share one task, a call after it has completed resolves from local state even offline, and a call after a failure retries from the progress that was committed. Handle the rejection - a background call that nobody awaits is still a rejected `Promise`/`Future`.
 
-Completing it does **not** mean you have a point-in-time snapshot of the scope, that the data is currently fresh, or that every record loaded successfully: a record whose loader failed is reported through the connection's error callback and is corrected the next time it is delivered. What it does mean is that the records published before your starting point, and the changes up to the position the load finished at, have been processed. Later changes keep arriving the ordinary way.
+Completing it does **not** mean you have a point-in-time snapshot of the stream, that the data is currently fresh, or that every record loaded successfully: a record whose loader failed is reported through the connection's error callback and is corrected the next time it is delivered. What it does mean is that the records published before your starting point, and the changes up to the position the load finished at, have been processed. Later changes keep arriving the ordinary way.
 
 `status` is a snapshot with `active`, `initialization` (`pending` until the starting point is committed, then `ready`), `connection` (`offline`, `connecting`, `catching-up`, `live`, `stopped`) and `bootstrap`; `live` means the stream is healthy, not that all records have arrived. `bootstrap` is `{phase, error}`, where `phase` is `not-requested`, `waiting-for-initialization` (asked for, but the starting point it is bounded by is not committed yet), `loading`, `catching-up` (the history is loaded and the load is waiting for ordinary delivery to reach the position it finished at), `complete` or `failed` with the `{code, message}` that failed it. Waiting for connectivity is not a failure and has no timeout. `watch(listener)` delivers the current snapshot and every change, and returns a function that stops observing (Dart returns a `Stream`). `unsubscribe()` removes this registration; work through a handle that was unsubscribed, or whose client was closed, fails with `subscription.closed`. Closing the client stops the handles and removes no subscription. Unsubscribing also removes that registration's load: waiters get `subscription.closed`, a call that raced the removal is rejected with `subscription.closed` too, and subscribing again starts the history over. An explicit retry starts a new run, so a call still waiting on the run it replaced is rejected with `bootstrap.superseded` rather than resolved by it. Closing the client keeps the load: this process's waiters are rejected with `client_closed`, and the next client resumes it without another `bootstrap()` call.
 
-A scope name must match what your backend publishes to. A subscription is a request for data; loaders must still enforce read permissions. Unsubscribing stops that scope's synchronization and removes nothing: records, their stamps and pending edits stay. See [sync and recovery](sync.md) for cache and account-change behavior.
+A stream name must match what your backend publishes to. A subscription is a request for data; loaders must still enforce read permissions. Unsubscribing stops delivery and removes its registration/progress; cached records, stamps, recorded holdings, pending edits and server tracking remain. See [sync and recovery](sync.md) for cache and account-change behavior.
 
 === "TypeScript"
 
     ```ts
     await client.transaction(async tx => {
-      await tx.scopes.subscribe('book:demo');
-      await tx.scopes.unsubscribe('book:old');
+      await tx.streams.subscribe('book:demo');
+      await tx.streams.unsubscribe('book:old');
     });
     ```
 
@@ -607,22 +609,22 @@ A scope name must match what your backend publishes to. A subscription is a requ
 
     ```dart
     await client.transaction((tx) async {
-      await tx.scopes.subscribe('book:demo');
-      await tx.scopes.unsubscribe('book:old');
+      await tx.streams.subscribe('book:demo');
+      await tx.streams.unsubscribe('book:old');
     });
     ```
 
-Transaction subscription methods store local intent atomically with other local writes and return no Subscription handle. Neither surface edits server membership or labels. Labels and selectors are backend-only.
+Transaction subscription methods store local intent atomically with other local writes and return no Subscription handle. Neither surface edits server tracking.
 
 
 ## Status and lifecycle
 
-- `client.syncState()` returns the client's pending count, cursors, scopes and rejections; `client.models.<name>.syncState(identity)` returns one record's pending calls and rejections, typed by the Model. Neither sends network requests. See [pending work and recovery](runtime.md#pending-work-and-recovery).
+- `client.syncState()` returns the client's pending count, cursors, streams and rejections; `client.models.<name>.syncState(identity)` returns one record's pending calls and rejections, typed by the Model. Neither sends network requests. See [pending work and recovery](runtime.md#pending-work-and-recovery).
 - `client.clientId` is this database's durable client identity.
 - `client.connection` is the connection created by `open` or `client.connect`. It is `undefined` / `null` when there is none. See [connection controls](runtime.md#connection-controls).
 - Recovery, prerequisite and escape-hatch members (`dismissRejection`, `drop`, `pendingTasks`, `setReadiness`, `querySpec`, `readSql`, `watchSql`) are on the same object; see the [client runtime reference](runtime.md).
 - `client.rejections`, `client.failures` and `client.outbound` watch the refused calls, the calls stuck on a failed prerequisite and the pending count account-wide, and resolve them; `rejections` and `failures` are also on the transaction of a schema with Mutations. See [unsent work](runtime.md#unsent-work).
-- `await client.close()` stops the connection and releases the local database handle. Close the client when its owning application scope ends; cancel individual watchers when their views end. Calls after close fail.
+- `await client.close()` stops the connection and releases the local database handle. Close the client when its owning application stream ends; cancel individual watchers when their views end. Calls after close fail.
 
 ## Generated data types
 

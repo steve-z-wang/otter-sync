@@ -37,15 +37,15 @@ export type SaveCallRequest = {
   callId: string;
   response: string;
 };
-/** The scope's current head cursor. */
-export type HeadRequest = { op: "head"; scope: string };
+/** The stream's current head cursor. */
+export type HeadRequest = { op: "head"; stream: string };
 /**
  * Retained log rows after `after`, including removals, at most `limit`
  * in cursor order. Legacy projection happens only in the engine.
  */
 export type ScanRequest = {
   op: "scan";
-  scope: string;
+  stream: string;
   after: number;
   limit: number;
 };
@@ -80,8 +80,8 @@ export type JsonValue =
 export type LoadNext = null | { state: JsonValue };
 /**
  * Run one Load handler for one page. Its context declares no changes: the
- * answer names identities, the next continuation and the Scope additions
- * its add-only handles declared.
+ * answer names identities, the next continuation and the tracking
+ * its handler declared.
  */
 export type HandleLoadRequest = {
   op: "handleLoad";
@@ -95,7 +95,7 @@ export type HandleLoadRequest = {
 };
 /**
  * Load the current state of these identities as records of one retained model
- * read contract, for this caller. Loads name no scope: the same identity,
+ * read contract, for this caller. Loads name no stream: the same identity,
  * version and stamp describe the same content on every delivery path.
  */
 export type LoadRequest = {
@@ -139,59 +139,28 @@ export type LockRecordRequest = {
   model: string;
   identityKey: string;
 };
-/** The Scopes this record is a persistent member of: a touch's recipients. */
-export type MembershipsRequest = {
-  op: "memberships";
-  model: string;
-  identityKey: string;
-};
-/**
- * Serialize membership changes on these Scopes: lock each existing Scope
- * row, in exactly this order (distinct, canonical byte order), until the
- * transaction ends. Creates no Scope. Every settlement takes its Scopes
- * this way before any record guard.
- */
-export type LockScopesRequest = { op: "lockScopes"; scopes: string[] };
-/** A record as the Scope operations name it: its Model and canonical identity key. */
 export type MemberKey = { model: string; identityKey: string };
-/**
- * The live members of the locked `scope` that `explicitKeys` names or that
- * carry one of `tags` (distinct, canonical byte order), each once, with its
- * complete current tags. `all: true` additionally selects every present
- * member; absent `all` defaults to false. Reads only.
- */
-export type ReadScopeMembersRequest = {
-  op: "readScopeMembers";
-  scope: string;
-  explicitKeys: MemberKey[];
-  tags: string[];
-  all?: boolean;
+export type TrackingPair = MemberKey & { stream: string };
+export type ReadTrackingRequest = {
+  op: "readTracking";
+  records: MemberKey[];
+  pairs: TrackingPair[];
 };
-/**
- * One pair's final state. Present with exactly `tags`, or absent with none.
- * `publish` takes the Scope's next position (`upsert` when present,
- * `remove` when not; a removal always publishes); without it the member keeps
- * its existing position and only its tags may change.
- */
-export type MemberDelta = {
-  scope: string;
-  model: string;
+export type ReadTrackingResponse = TrackingPair[];
+export type GuardRecordsRequest = {
+  op: "guardRecords";
+  records: (MemberKey & { mode: "advance" | "ensure" | "lock" })[];
+};
+export type GuardRecordsResponse = (number | null)[];
+/** Distinct, strictly ordered UTF-8 names; lock before canonical record guards. */
+export type LockStreamsRequest = { op: "lockStreams"; streams: string[] };
+export type TrackingDelta = TrackingPair & {
   identity: Record<string, unknown>;
-  identityKey: string;
-  present: boolean;
-  tags: string[];
   publish: boolean;
 };
-/**
- * Persist final member states in the caller's transaction, without
- * re-evaluating any selector or opening a transaction. A present delta needs
- * the record's metadata row; a missing Scope starts at head zero. Published
- * deltas take consecutive positions per Scope in delta order. Answers one
- * position per delta, in delta order.
- */
-export type ApplyScopeMembersRequest = {
-  op: "applyScopeMembers";
-  deltas: MemberDelta[];
+export type ApplyStreamMembersRequest = {
+  op: "applyStreamMembers";
+  deltas: TrackingDelta[];
 };
 
 export type HostRequest =
@@ -212,10 +181,10 @@ export type HostRequest =
   | EnsureStampRequest
   | ReadStampsRequest
   | LockRecordRequest
-  | MembershipsRequest
-  | LockScopesRequest
-  | ReadScopeMembersRequest
-  | ApplyScopeMembersRequest;
+  | ReadTrackingRequest
+  | GuardRecordsRequest
+  | LockStreamsRequest
+  | ApplyStreamMembersRequest;
 
 export type HostOperation = HostRequest["op"];
 
@@ -243,13 +212,13 @@ export type ClaimedCall = {
 /** The answer to `head`: a bare counter. */
 export type Head = number;
 /**
- * One retained scope position and centralized identity. Only an upsert
+ * One retained stream position and centralized identity. Only an upsert
  * carries the current content stamp from the same snapshot as its Loader.
  */
 export type Invalidation = {
   /** Omitted only by legacy hosts; new scans include retained removals. */
   kind?: "upsert" | "remove";
-  scope: string;
+  stream: string;
   cursor: number;
   model: string;
   identity: Record<string, unknown>;
@@ -263,13 +232,7 @@ export type Stamped = number;
 export type Stamps = number[];
 /** The answer to `lockRecord`: the locked record's unchanged stamp, or `null` when it has no row. */
 export type Locked = number | null;
-/** The answer to `memberships`: unique Scope names, sorted by the database. */
-export type Memberships = string[];
-/** One member `readScopeMembers` answers: its complete current tags, each once, in any order. */
-export type MemberState = MemberKey & { tags: string[] };
-/** The latest position of one pair: new for a published delta, the existing one otherwise. */
-export type MemberPosition = MemberKey & {
-  scope: string;
+export type MemberPosition = TrackingPair & {
   cursor: number;
   kind: "upsert" | "remove";
 };
@@ -278,57 +241,22 @@ export type HostRecordRef = {
   model: string;
   identity: Record<string, unknown>;
 };
-/**
- * One persistent Scope membership declaration, in declaration order: `add`
- * makes the record a member of `scope` and unions `tags` (distinct, as
- * spelled; `[]` adds none) with its labels; `remove` releases the record's
- * whole membership; predicate selections operate on the preceding declarations. The engine reduces the list
- * in order to its final state.
- */
-export type ScopeIntent =
-  | {
-      kind: "add";
-      scope: string;
-      record: HostRecordRef;
-      tags: readonly string[];
-    }
-  | { kind: "remove"; scope: string; record: HostRecordRef }
-  | {
-      kind: "tagAdd" | "tagRemove";
-      scope: string;
-      record: HostRecordRef;
-      tags: readonly string[];
-    }
-  | { kind: "detachTags"; scope: string; tags: readonly string[] }
-  | {
-      kind: "select";
-      scope: string;
-      model?: string;
-      predicate: ScopePredicate;
-      action: SelectionAction;
-    };
-export type ScopePredicate = {
-  tags?: {
-    all?: readonly string[];
-    any?: readonly string[];
-    none?: readonly string[];
-    only?: readonly string[];
-  };
-  and?: readonly ScopePredicate[];
-  or?: readonly ScopePredicate[];
-  not?: ScopePredicate;
+export type TrackIntent = {
+  kind: "track";
+  stream: string;
+  record: HostRecordRef;
 };
-export type SelectionAction =
-  | { kind: "remove" }
-  | { kind: "tagAdd" | "tagRemove"; tags: readonly string[] };
+export type StreamIntent =
+  | TrackIntent
+  | { kind: "invalidate"; streams: string[] | null; record: HostRecordRef };
 /**
  * The effects one settlement carries, shared by Mutation handlers, legacy
  * handlers and `backend.transaction`: changed records beyond any input
- * targets and ordered Scope intents. There is no implicit publication.
+ * targets and combined Stream declarations. There is no implicit publication.
  */
 export type SettlementEffects = {
   changes: HostRecordRef[];
-  memberships: ScopeIntent[];
+  declarations: StreamIntent[];
 };
 /**
  * The answer to `handle`: the records the handler changed beyond the uploaded
@@ -348,20 +276,12 @@ export type HandledAction =
   | ({ outputs: Record<string, unknown> } & SettlementEffects)
   | { rejection: string }
   | { error: string };
-/**
- * The answer to `handleLoad`: the page's identity lists, next continuation
- * and the membership additions the handler declared through its add-only
- * Scope handles, a rejection code, or a failure carrying a thrown handler
- * error. `memberships` is omitted when there are none (an older host never
- * sends it); `null`, `changes`, or memberships beside a rejection or failure
- * are refused. The engine, not this type, refuses a removal, a tag selector
- * or a record the page did not return.
- */
+/** Native Loads declare only tracking of records their successful page returns. */
 export type HandledLoad =
   | {
       data: Record<string, unknown>;
       next: LoadNext;
-      memberships?: ScopeIntent[];
+      tracking?: TrackIntent[];
     }
   | { rejection: string }
   | { error: string };
@@ -395,10 +315,10 @@ export type HostResponse = {
   ensureStamp: Stamped;
   readStamps: Stamps;
   lockRecord: Locked;
-  memberships: Memberships;
-  lockScopes: Acknowledged;
-  readScopeMembers: MemberState[];
-  applyScopeMembers: MemberPosition[];
+  readTracking: ReadTrackingResponse;
+  guardRecords: GuardRecordsResponse;
+  lockStreams: Acknowledged;
+  applyStreamMembers: MemberPosition[];
 };
 
 /**
@@ -423,10 +343,10 @@ const OPERATIONS: Record<HostOperation, true> = {
   ensureStamp: true,
   readStamps: true,
   lockRecord: true,
-  memberships: true,
-  lockScopes: true,
-  readScopeMembers: true,
-  applyScopeMembers: true,
+  readTracking: true,
+  guardRecords: true,
+  lockStreams: true,
+  applyStreamMembers: true,
 };
 
 export const HOST_OPERATIONS: readonly HostOperation[] = Object.keys(

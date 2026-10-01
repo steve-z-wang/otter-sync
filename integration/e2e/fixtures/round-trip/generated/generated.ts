@@ -103,4 +103,4 @@ export type StoreHandler<Identity, Model> = (tx:GeneratedTransaction, changes:Re
 export interface StoreHooks {
  readonly entry?: StoreHandler<EntryIdentity, Entry>;
 }
-export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly scopes:{subscribe(scope:string):Promise<void>;unsubscribe(scope:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.scopes=(transaction as WritePort & {scopes:GeneratedTransaction['scopes']}).scopes; } }
+export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; readonly streams:{subscribe(stream:string):Promise<void>;unsubscribe(stream:string):Promise<void>}; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); this.streams=(transaction as WritePort & {streams:GeneratedTransaction['streams']}).streams; } }

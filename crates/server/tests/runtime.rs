@@ -48,37 +48,37 @@ fn historical_known_field_outside_capability_is_refused() {
 }
 
 #[test]
-fn live_subscribe_requires_one_subscribe_frame_and_normalizes_scopes() {
+fn live_subscribe_requires_one_subscribe_frame_and_normalizes_streams() {
     let decoded = axton_server::live::decode_subscribe(
-        br#"{"type":"subscribe","scopes":["shared","alice","shared"],"models":{"Task":1}}"#,
+        br#"{"type":"subscribe","streams":["shared","alice","shared"],"models":{"Task":1}}"#,
     )
     .unwrap();
-    assert_eq!(decoded.scopes, vec!["alice", "shared"]);
+    assert_eq!(decoded.streams, vec!["alice", "shared"]);
     assert_eq!(decoded.models.get("Task"), Some(&1));
     assert!(
         axton_server::live::decode_subscribe(
-            br#"{"type":"other","scopes":["a"],"models":{"Task":1}}"#
+            br#"{"type":"other","streams":["a"],"models":{"Task":1}}"#
         )
         .is_err()
     );
     assert!(
         axton_server::live::decode_subscribe(
-            br#"{"type":"subscribe","scopes":[],"models":{"Task":1}}"#
+            br#"{"type":"subscribe","streams":[],"models":{"Task":1}}"#
         )
         .is_err()
     );
     assert!(
-        axton_server::live::decode_subscribe(br#"{"type":"subscribe","scopes":["a"]}"#).is_err(),
+        axton_server::live::decode_subscribe(br#"{"type":"subscribe","streams":["a"]}"#).is_err(),
         "models are required"
     );
 }
 
 #[test]
-fn live_page_progression_checks_every_scope_it_asked_for() {
+fn live_page_progression_checks_every_stream_it_asked_for() {
     let full = json!({
         "cursors": {"shared": {"from":7, "to":57, "head":90}},
         "changes": (8..=57).map(|i| json!({
-            "scope":"shared","cursor":i,"kind":"upsert","model":"Task","identity":{"id":i},"stamp":i,"state":null
+            "stream":"shared","cursor":i,"kind":"upsert","model":"Task","identity":{"id":i},"stamp":i,"state":null
         })).collect::<Vec<_>>()
     });
     let asked = std::collections::BTreeMap::from([("shared".to_string(), 7)]);
@@ -254,7 +254,7 @@ fn startup_refuses_a_descriptor_naming_a_model_without_a_loader() {
 mod refusals {
     use axton_server::{
         Host, HostResult, code,
-        host::{self, Acknowledged, Handled, Head, HostRequest, Loaded, Memberships, Stamped},
+        host::{self, Acknowledged, Handled, Head, HostRequest, Loaded, Stamped},
     };
     use serde_json::{Value, json};
     use std::{
@@ -295,13 +295,16 @@ mod refusals {
                         self.handled.lock().unwrap().push(request.clone());
                         serde_json::to_value(Handled::Settled {
                             changes: vec![],
-                            memberships: vec![],
+                            declarations: vec![],
                         })
                         .unwrap()
                     }
                     HostRequest::AdvanceStamp { .. } => serde_json::to_value(Stamped(1)).unwrap(),
-                    HostRequest::Memberships { .. } => {
-                        serde_json::to_value(Memberships::default()).unwrap()
+                    // This refusal host has no tracked records. Bulk guards still
+                    // return one aligned positive stamp for every uploaded target.
+                    HostRequest::ReadTracking { .. } => json!([]),
+                    HostRequest::GuardRecords { records } => {
+                        json!(records.iter().map(|_| 1).collect::<Vec<_>>())
                     }
                     HostRequest::Load { identities, .. } => serde_json::to_value(Loaded::Rows(
                         identities
@@ -311,7 +314,8 @@ mod refusals {
                     ))
                     .unwrap(),
                     HostRequest::Head { .. } => serde_json::to_value(Head(0)).unwrap(),
-                    HostRequest::Savepoint { .. }
+                    HostRequest::LockStreams { .. }
+                    | HostRequest::Savepoint { .. }
                     | HostRequest::Rollback { .. }
                     | HostRequest::Release { .. }
                     | HostRequest::SaveReceipt { .. } => {
@@ -438,7 +442,7 @@ mod refusals {
         ))
         .unwrap_err();
         assert_eq!(err.code, code::PRINCIPAL_INVALID);
-        let err = axton_server::live::decode_subscribe(br#"{"type":"other","scopes":["a"]}"#)
+        let err = axton_server::live::decode_subscribe(br#"{"type":"other","streams":["a"]}"#)
             .unwrap_err();
         assert_eq!(err.code, code::REQUEST_INVALID);
     }

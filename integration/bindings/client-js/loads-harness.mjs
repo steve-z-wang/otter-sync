@@ -123,3 +123,23 @@ export function backend() {
   });
   return { server, connection };
 }
+
+// Application-owned standing fixture: the Query decides eligibility and the
+// hook reclaims only the subset that has no independent path.
+export const standingSchema = {
+  ...schema,
+  models: [...schema.models, { name: 'Standing', version: 1, identity: ['id'], fields: [fields[0]] },
+    { name: 'Composition', identity: ['id'], fields }],
+  resultModels: [...schema.resultModels, { name: 'Standing', version: 1, identity: ['id'], fields: [fields[0]], enums: [] }],
+  actions: [{ name: 'Edit', version: 1, inputs: [{ kind: 'model', name: 'entry', model: 'Entry', operation: 'update', cardinality: 'single', allowedPatchFields: ['text'] }], outputs: [] }],
+};
+export const eligibleEntries = `SELECT id FROM Entry WHERE id IN ('own','pending') OR note IS NULL
+  OR EXISTS (SELECT 1 FROM Standing WHERE id=Entry.note)
+  OR (id='independent' AND EXISTS (SELECT 1 FROM Standing WHERE id='other')) ORDER BY id`;
+export async function reclaimStanding(tx, changes) {
+  for (const change of changes) if (change.kind === 'delete') {
+    const rows = await tx.readSql(`SELECT id FROM Entry WHERE note=? AND id NOT IN ('own','pending')
+      AND NOT (id='independent' AND EXISTS (SELECT 1 FROM Standing WHERE id='other'))`, [change.identity.id]);
+    for (const row of rows) await tx.models.Entry.delete({ id: row.id });
+  }
+}

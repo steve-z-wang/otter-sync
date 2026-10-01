@@ -16,7 +16,7 @@ const badHooks:StoreHooks={
   // @ts-expect-error Fetch is unavailable within the onStore transaction
   void tx.fetch;
   // @ts-expect-error onStore subscribes locally; it has no server Channel enrollment
-  tx.scope('c').add.entry({id:'e'});
+  tx.stream('c').track.entry({id:'e'});
  },
  // @ts-expect-error unknown Models cannot register hooks
  unknown:async()=>{},
@@ -27,9 +27,9 @@ export function scopeMisuse(client:GeneratedClient,subscription:Subscription){
  // @ts-expect-error a status snapshot is immutable
  subscription.status.active=false;
  // @ts-expect-error the Scope a handle names is fixed for its lifetime
- subscription.scope='other';
+ subscription.stream='other';
  // @ts-expect-error the first Scope API deliberately omits a get-only accessor
- void client.scopes.get('project:123');
+ void client.streams.get('project:123');
  // The load status is part of that immutable snapshot, and this milestone
  // introduces no task-cancel or forced-refresh API
  // ([#151](https://github.com/zanminwang/axton/issues/151)).
@@ -116,7 +116,7 @@ export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTra
  // @ts-expect-error the callback modifies no Channel
  void local.channels;
  // @ts-expect-error companions have no local Scope registration
- void local.scopes;
+ void local.streams;
  // @ts-expect-error the callback opens no savepoint and exposes no raw port
  void local.transaction.savepoint;
  // @ts-expect-error the callback cannot watch
@@ -136,7 +136,7 @@ async function retiredScopeAliases(client:GeneratedClient,tx:GeneratedTransactio
  void client.channels;
  // @ts-expect-error the generated transaction exposes scopes only
  void tx.channels;
- await tx.scopes.subscribe('U');
- await tx.scopes.unsubscribe('U');
+ await tx.streams.subscribe('U');
+ await tx.streams.unsubscribe('U');
 }
 void retiredScopeAliases;

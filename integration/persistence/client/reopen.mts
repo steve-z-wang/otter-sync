@@ -9,9 +9,9 @@ for(let run=0;run<2;run++){
  try{
   assert.equal(c.client.clientId,'fixture-client');
   assert.equal((await c.models.todo.get({id:'live'})).channel,'second queued Channel');
-  assert.equal((await c.client.readSql('SELECT count(*) AS n FROM axton_scope_member',[]))[0].n,4);
+  assert.equal((await c.client.readSql('SELECT count(*) AS n FROM axton_stream_member',[]))[0].n,4);
   assert.equal((await c.client.readSql("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'axton_channel%'",[]))[0].n,0);
-  assert.equal((await c.client.readSql("SELECT cursor,reconcile_run FROM axton_subscription WHERE scope='Channel:business-scope'",[]))[0].cursor,11);
+  assert.equal((await c.client.readSql("SELECT cursor,reconcile_run FROM axton_subscription WHERE stream='Channel:business-scope'",[]))[0].cursor,11);
   const bytes=await c.client.freeze();
   const logical=JSON.parse(bytes);delete logical.capabilities;
   const expected=JSON.parse(await readFile(new URL('../../../crates/sqlite/tests/fixtures/frozen-push-logical.json',import.meta.url),'utf8'));

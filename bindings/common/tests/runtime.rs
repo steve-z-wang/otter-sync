@@ -512,7 +512,10 @@ fn observer_snapshots_arrive_after_the_commit_they_describe() {
         json!([{"id":"e","text":"hi","note":null}])
     );
 
-    carrier.task("subscribe", json!({"kind":"scopeSubscribe","scope":"book"}));
+    carrier.task(
+        "subscribe",
+        json!({"kind":"streamSubscribe","stream":"book"}),
+    );
     let events = carrier.through(|e| e["type"] == "observerChanged");
     let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
     assert_eq!(

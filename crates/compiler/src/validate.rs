@@ -833,7 +833,7 @@ const GENERATED_NAMES: &[&str] = &[
     "CallStatus",
     "CallStore",
     "CallSuccess",
-    "Scopes",
+    "Streams",
     "Client",
     "ClientClosedException",
     "ClientSyncState",
@@ -865,7 +865,7 @@ const GENERATED_NAMES: &[&str] = &[
     "RefusedAct",
     "Rejection",
     "RuntimeConnection",
-    "Scopes",
+    "Streams",
     "Subscription",
     "SubscriptionClosedException",
     "SubscriptionConnection",
@@ -886,23 +886,16 @@ const GENERATED_NAMES: &[&str] = &[
 ];
 
 /// Top-level type names the generated TypeScript backend declares for handler
-/// calls, Scope membership and touch. A model or enum with one of these names
+/// calls, Stream tracking and invalidation. A model or enum with one of these names
 /// would collide with them in the generated backend file.
 const GENERATED_BACKEND_NAMES: &[&str] = &[
-    "Scope",
-    "LoadScope",
-    "ScopeAdd",
-    "ScopeRecords",
-    "ScopeWhere",
-    "ScopeSelection",
-    "ScopeTagRemoval",
-    "ScopePredicate",
-    "AddDeclaration",
+    "Stream",
+    "LoadStream",
+    "RecordDeclaration",
     "HandlerCall",
     "MutationContext",
     "QueryContext",
     "RecordRef",
-    "Touch",
     "TransactionCall",
 ];
 
@@ -1001,7 +994,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
     }
     // The generated backend addresses a Model by its lower-first accessor in
-    // `touch` and each Scope operation namespace.
+    // `invalidate` and each Stream declaration namespace.
     let mut accessors: BTreeMap<String, &str> = BTreeMap::new();
     for m in &d.models {
         let accessor = format!("{}{}", m.name[..1].to_ascii_lowercase(), &m.name[1..]);

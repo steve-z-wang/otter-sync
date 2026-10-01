@@ -61,9 +61,9 @@ void scopeMisuse(GeneratedClient client, Subscription subscription) {
   // a status snapshot is immutable
   subscription.status.active = false;
   // the Scope a handle names is fixed for its lifetime
-  subscription.scope = 'other';
+  subscription.stream = 'other';
   // the first Scope API deliberately omits a get-only accessor
-  client.scopes.get('project:123');
+  client.streams.get('project:123');
   // The load status is part of that immutable snapshot, and this milestone
   // introduces no task-cancel or forced-refresh API
   // ([#151](https://github.com/zanminwang/axton/issues/151)).
@@ -116,7 +116,7 @@ Future<void> transactionMisuse(GeneratedClient client, ApplicationTransaction tx
   // the callback queues no Mutation, modifies no Channel and exposes no raw port
   local.mutations;
   local.channels;
-  local.scopes;
+  local.streams;
   local.transaction;
   // the callback cannot watch
   local.models.composition.watch();
@@ -125,6 +125,6 @@ Future<void> transactionMisuse(GeneratedClient client, ApplicationTransaction tx
 Future<void> retiredScopeAliases(GeneratedClient client, GeneratedTransaction tx) async {
   client.channels;
   tx.channels;
-  await tx.scopes.subscribe('U');
-  await tx.scopes.unsubscribe('U');
+  await tx.streams.subscribe('U');
+  await tx.streams.unsubscribe('U');
 }

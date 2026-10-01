@@ -52,7 +52,10 @@ export async function createFixture() {
   const pings: string[] = [];
   const failing = new Set<string>();
   const enrolling = new Set<string>();
-  const enrollmentTags = new Map<string, string[][]>();
+  const trackingStreams = new Map<string, string[]>();
+  const absent = new Set<string>();
+  const loaderErrors = new Set<string>();
+  let loaderCalls = 0;
   const handlerHolds = new Holds<Handled>();
   const loaderHolds = new Holds<string[]>();
   const xact = async (tx: PgClient) => String((await tx.query("SELECT pg_current_xact_id()::text AS xact")).rows[0].xact);
@@ -62,7 +65,7 @@ export async function createFixture() {
   const mutations: Mutations<PgClient> = {
     async addItem({ ctx, args }) {
       await ctx.tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [args.item.id, args.item.project, args.item.title]);
-      ctx.scope(`items:${args.item.project}`).add.item(args.item);
+      ctx.stream(`items:${args.item.project}`).track.item(args.item);
     },
     async renameItem({ ctx, args }) {
       const changed = await ctx.tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1 RETURNING id", [args.item.id, args.item.title]);
@@ -92,15 +95,12 @@ export async function createFixture() {
       const pageTags = pageNumber === 1 ? tags : [];
       if (enrolling.has(args.project)) {
         // Only what this page returns, in both forms; an Item declared twice is one addition.
-        const scope = ctx.scope(`items:${args.project}`);
-        for (const item of items) scope.add.item(item);
-        scope.add([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
+        const scope = ctx.stream(`items:${args.project}`);
+        for (const item of items) scope.track.item(item);
+        scope.track([...items.map((item) => Item(item)), ...pageTags.map((tag) => Tag(tag))]);
       }
-      const labelGroups = enrollmentTags.get(args.project);
-      if (labelGroups) for (const item of items) {
-        const added = ctx.scope(`items:${args.project}`).add.item(item);
-        for (const labels of labelGroups) if (labels.length) added.tag(labels);
-      }
+      const names = trackingStreams.get(args.project);
+      if (names) ctx.stream(names).track([...items.map(Item), ...pageTags.map(Tag)]);
       return {
         data: { items, tags: pageTags },
         next: { state: { after: items.at(-1)!.id, page: pageNumber, trail: [...(state?.trail ?? []), ...items.map((item) => item.id)], meta: { size: PAGE, nested: { flags: [true, false, null], label: `p${pageNumber}` } } } },
@@ -125,11 +125,13 @@ export async function createFixture() {
   };
   const loaders: Loaders<PgClient> = {
     async item({ ids, tx }) {
+      loaderCalls++;
+      if (ids.some(({ id }) => loaderErrors.has(id))) throw new Error("fixture Loader error");
       const rows = (await tx.query("SELECT id,project,title FROM load_e2e_item WHERE id = ANY($1::text[])", [ids.map(({ id }) => id)])).rows;
       const byId = new Map(rows.map((row) => [String(row.id), { id: String(row.id), project: String(row.project), title: String(row.title) }]));
       // Read first, then pause: a held page carries the rows as they were.
       await loaderHolds.pass(ids.map(({ id }) => id));
-      return ids.map(({ id }) => byId.get(id) ?? null);
+      return ids.map(({ id }) => absent.has(id) ? null : byId.get(id) ?? null);
     },
     async tag({ ids, tx }) {
       const rows = (await tx.query("SELECT id,label FROM load_e2e_tag WHERE id = ANY($1::text[])", [ids.map(({ id }) => id)])).rows;
@@ -152,9 +154,16 @@ export async function createFixture() {
     failing,
     /** Projects whose ProjectItems pages add what they return to Scope `items:${project}`. */
     enrolling,
-    enrollmentTags,
-    async taggedMembers(scope: string) {
-      return (await pool.query("SELECT m.id::text, COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), ARRAY[]::text[]) AS tags FROM axton_scope_member m LEFT JOIN axton_scope_member_tag mt ON mt.member_id=m.id LEFT JOIN axton_scope_tag t ON t.id=mt.tag_id WHERE m.scope=$1 GROUP BY m.id", [scope])).rows;
+    trackingStreams, absent, loaderErrors,
+    get loaderCalls() { return loaderCalls; },
+    async tracked(stream: string) {
+      return (await pool.query("SELECT r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 ORDER BY r.model,r.identity_key", [stream])).rows;
+    },
+    async invalidate(ids: string[], streams?: string[]) {
+      await backend.transaction(async (ctx) => {
+        const records = ids.map((id) => Item({ id }));
+        if (streams === undefined) ctx.invalidate(records); else ctx.stream(streams).invalidate(records);
+      });
     },
     /** Pause a handler at its first matching page, before it reads. */
     holdHandler: (match: (page: Handled) => boolean) => handlerHolds.arm(match),
@@ -180,37 +189,31 @@ export async function createFixture() {
       for (const [n, id] of ids.entries()) await pool.query("INSERT INTO load_e2e_tag(id,project,label) VALUES($1,$2,$3)", [id, project, labels[n]]);
       return ids;
     },
-    /** Retitle an Item in a backend transaction that `touch`es it: no Mutation and no Scope declaration. */
+    /** Retitle an Item in a backend transaction that invalidates it globally: no Mutation or tracking declaration. */
     async retitle(id: string, title: string) {
-      await backend.transaction(async ({ tx, touch }) => {
+      await backend.transaction(async ({ tx, invalidate: touch }) => {
         await tx.query("UPDATE load_e2e_item SET title=$2 WHERE id=$1", [id, title]);
         touch.item({ id });
       });
     },
     /** Relabel a Tag the same way. */
     async relabel(id: string, label: string) {
-      await backend.transaction(async ({ tx, touch }) => {
+      await backend.transaction(async ({ tx, invalidate: touch }) => {
         await tx.query("UPDATE load_e2e_tag SET label=$2 WHERE id=$1", [id, label]);
         touch.tag({ id });
       });
     },
     /** Create an Item in a backend transaction, adding it to `scope` only when one is named. */
     async create(id: string, project: string, scope?: string) {
-      await backend.transaction(async ({ tx, touch, scope: join }) => {
+      await backend.transaction(async ({ tx, invalidate: touch, stream: join }) => {
         await tx.query("INSERT INTO load_e2e_item(id,project,title) VALUES($1,$2,$3)", [id, project, `${id} title`]);
         touch.item({ id });
-        if (scope !== undefined) join(scope).add.item({ id });
+        if (scope !== undefined) join(scope).track.item({ id });
       });
     },
-    async membership(id: string, scopeName: string, present: boolean) {
-      await backend.transaction(async ({ scope: scope }) => {
-        const membership = scope(scopeName);
-        if (present) membership.add.item({ id }); else membership.remove.item({ id });
-      });
-    },
-    /** A Scope's head: it moves only when something is published to it. */
+    /** A Stream's head: it moves only when something is published to it. */
     async head(scope: string) {
-      return Number((await pool.query("SELECT head FROM axton_scope WHERE scope=$1", [scope])).rows[0]?.head ?? 0);
+      return Number((await pool.query("SELECT head FROM axton_stream WHERE stream=$1", [scope])).rows[0]?.head ?? 0);
     },
     async listen() {
       listener = await backend.listen({ port: 0 });

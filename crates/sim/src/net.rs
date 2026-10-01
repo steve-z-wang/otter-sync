@@ -13,7 +13,7 @@ pub enum Message {
         sequence: u64,
         bytes: Vec<u8>,
     },
-    /// One pull for every scope the client subscribes to.
+    /// One pull for every stream the client subscribes to.
     Pull {
         client: usize,
         bytes: Vec<u8>,
@@ -22,7 +22,7 @@ pub enum Message {
         client: usize,
         bytes: Vec<u8>,
     },
-    /// One bounded historical page request of a Scope's interval, carrying the
+    /// One bounded historical page request of a Stream's interval, carrying the
     /// run it belongs to so a late answer can be fenced against the ledger
     /// ([#151](https://github.com/zanminwang/axton/issues/151)).
     Load {

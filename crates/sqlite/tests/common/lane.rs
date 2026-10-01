@@ -17,8 +17,8 @@ pub fn text(page: &PullPage) -> String {
             page.changes
                 .iter()
                 .enumerate()
-                .map(move |(i, record)| ScopeChange::Upsert {
-                    scope: scope.clone(),
+                .map(move |(i, record)| StreamChange::Upsert {
+                    stream: scope.clone(),
                     cursor: range
                         .to
                         .saturating_sub(page.changes.len().saturating_sub(i + 1) as u64),
@@ -27,7 +27,7 @@ pub fn text(page: &PullPage) -> String {
         })
         .collect();
     String::from_utf8(
-        ScopePullPage {
+        StreamPullPage {
             cursors: page.cursors.clone(),
             changes,
         }
@@ -48,7 +48,7 @@ pub fn applied(scopes: &[&str]) -> Vec<DownlinkAction> {
     vec![
         DownlinkAction::Wake { lane: "push" },
         DownlinkAction::Changed {
-            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            streams: scopes.iter().map(|s| s.to_string()).collect(),
         },
     ]
 }
@@ -56,7 +56,7 @@ pub fn applied(scopes: &[&str]) -> Vec<DownlinkAction> {
 /// whether or not the acknowledgement committed a boundary for any of them.
 pub fn established(scopes: &[&str]) -> DownlinkAction {
     DownlinkAction::Acknowledged {
-        scopes: scopes.iter().map(|s| s.to_string()).collect(),
+        streams: scopes.iter().map(|s| s.to_string()).collect(),
     }
 }
 pub fn request(action: &DownlinkAction) -> (u64, PullRequest) {
@@ -250,7 +250,7 @@ impl Lane {
     }
     pub fn set(&mut self, scope: &str, subscribed: bool) {
         self.client
-            .transaction(|tx| tx.set_scope(scope.into(), subscribed))
+            .transaction(|tx| tx.set_stream(scope.into(), subscribed))
             .unwrap();
     }
     /// A subscription an earlier session left at `cursor`: registered, and its
@@ -273,7 +273,7 @@ impl Lane {
         self.set(scope, true);
         let actions = self.send(DownlinkEvent::Start);
         let (epoch, subscribe) = opened(&actions[0]);
-        assert_eq!(subscribe.scopes, [scope]);
+        assert_eq!(subscribe.streams, [scope]);
         let acknowledged = self.message(epoch, ack(&[(scope, head)]));
         (epoch, acknowledged)
     }

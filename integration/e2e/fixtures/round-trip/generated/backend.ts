@@ -6,33 +6,18 @@ export type Entry = EntryRecord;
 export type { EntryIdentity, EntryPatch };
 export function Entry(identity: EntryIdentity): Extract<RecordRef, { model: "Entry" }> { return { model: "Entry", identity }; }
 export type RecordRef = { readonly model: "Entry"; readonly identity: EntryIdentity };
-export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
-export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
-export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
-export interface ScopeAdd {
- (records: RecordRef | readonly RecordRef[]): AddDeclaration;
- entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): AddDeclaration;
-}
-export interface ScopeRecords {
+export interface RecordDeclaration {
  (records: RecordRef | readonly RecordRef[]): void;
  entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
 }
-export interface Touch {
- (records: RecordRef | readonly RecordRef[]): void;
- entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
-}
-export interface ScopeTagRemoval extends ScopeRecords { (): void }
-export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
- entry(predicate: ScopePredicate): ScopeSelection;
-}
-export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
-export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
+export interface Stream { readonly track: RecordDeclaration; readonly invalidate: RecordDeclaration }
+export interface LoadStream { readonly track: RecordDeclaration }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface QueryContext<Tx> {
  tx: Tx;
@@ -43,13 +28,13 @@ export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
- scope(name: string): Scope;
- touch: Touch;
+ stream(names: string | readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 const schema = {"actions":[],"deprecations":[],"inverses":[],"loaders":["Entry"],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}],"mutations":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"prerequisites":[],"requirements":[],"schema":{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]},"uniqueConstraints":[]} as const;
 export interface EditInput {

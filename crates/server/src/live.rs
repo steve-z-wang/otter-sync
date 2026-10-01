@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Serialize)]
 pub struct Negotiation {
-    /// The acknowledgement frame: every scope's head.
+    /// The acknowledgement frame: every stream's head.
     pub response: String,
-    /// The accepted scopes with their heads at negotiation.
+    /// The accepted streams with their heads at negotiation.
     pub heads: BTreeMap<String, u64>,
     /// The read contracts the client declared; every page of the session is
     /// pulled at these versions.
@@ -24,7 +24,7 @@ pub struct PageProgress {
     pub cursors: BTreeMap<String, CursorRange>,
 }
 
-/// The subscribe frame's shape and scope normalization are protocol rules
+/// The subscribe frame's shape and stream normalization are protocol rules
 /// ([`SubscribeRequest`]); this maps their refusal to the request code.
 pub fn decode_subscribe(bytes: &[u8]) -> Result<SubscribeRequest> {
     SubscribeRequest::decode(bytes).map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))
@@ -41,8 +41,8 @@ pub async fn negotiate(
     let request = decode_subscribe(bytes)?;
     config.check_declared(&request.models)?;
     let mut heads = BTreeMap::new();
-    for scope in &request.scopes {
-        heads.insert(scope.clone(), head(host, scope).await?);
+    for stream in &request.streams {
+        heads.insert(stream.clone(), head(host, stream).await?);
     }
     let ack = SubscriptionAck::new(heads.clone())
         .and_then(|ack| ack.encode())
@@ -57,9 +57,9 @@ pub async fn negotiate(
 }
 
 /// A page the host pulled must answer exactly the cursors that were asked:
-/// the same scopes, each starting at its requested cursor.
+/// the same streams, each starting at its requested cursor.
 pub fn page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
-    scope_page_progress(page, expected)
+    stream_page_progress(page, expected)
 }
 
 pub async fn pull(
@@ -69,15 +69,15 @@ pub async fn pull(
     models: &BTreeMap<String, u64>,
     host: &impl Host,
 ) -> Result<PageProgress> {
-    scope_pull(config, owner, cursors, models, host).await
+    stream_pull(config, owner, cursors, models, host).await
 }
 
 /// What the host reports to a socket's [`Subscriptions`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum LiveEvent {
-    /// A transaction that touched `scope` committed (from the host's commit hub).
-    Committed { scope: String },
+    /// A transaction that touched `stream` committed (from the host's commit hub).
+    Committed { stream: String },
     /// The host finished the pull a [`LiveAction::Pull`] asked for; `page` is
     /// the page text `pull` returned.
     Pulled { page: String },
@@ -93,9 +93,9 @@ pub enum LiveEvent {
     rename_all_fields = "camelCase"
 )]
 pub enum LiveAction {
-    /// Register a commit listener for `scope`; the host reports each commit as
+    /// Register a commit listener for `stream`; the host reports each commit as
     /// [`LiveEvent::Committed`]. Issued before anything is sent.
-    Listen { scope: String },
+    Listen { stream: String },
     /// Send this frame on the socket (the acknowledgement or a page).
     Send { frame: String },
     /// Run `pull(owner, cursors, models)` in a transaction and report the page
@@ -107,25 +107,25 @@ pub enum LiveAction {
     },
 }
 
-/// One accepted scope: the cursor streamed so far and whether a commit
+/// One accepted stream: the cursor streamed so far and whether a commit
 /// arrived that has not been pulled yet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScopeState {
-    pub scope: String,
+pub struct StreamState {
+    pub stream: String,
     pub cursor: u64,
     pub pending: bool,
 }
 
 /// The per-socket state machine. Registration precedes the acknowledgement,
-/// and every scope is drained once from its negotiated head, so a commit
+/// and every stream is drained once from its negotiated head, so a commit
 /// landing between negotiation and registration is caught by that first
-/// drain. One pull is outstanding at a time and covers every scope with a
-/// pending commit; a page that leaves a scope below its head, or a commit
+/// drain. One pull is outstanding at a time and covers every stream with a
+/// pending commit; a page that leaves a stream below its head, or a commit
 /// observed during the pull, queues the next pull.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscriptions {
-    scopes: Vec<ScopeState>,
+    streams: Vec<StreamState>,
     /// The cursors the outstanding pull was asked for, if one is outstanding.
     running: Option<BTreeMap<String, u64>>,
     closed: bool,
@@ -135,27 +135,27 @@ pub struct Subscriptions {
 impl Subscriptions {
     /// Starts the session for a negotiation: `[Listen …, Send ack, Pull all]`.
     pub fn open(negotiation: Negotiation) -> (Self, Vec<LiveAction>) {
-        let scopes: Vec<ScopeState> = negotiation
+        let streams: Vec<StreamState> = negotiation
             .heads
             .iter()
-            .map(|(scope, head)| ScopeState {
-                scope: scope.clone(),
+            .map(|(stream, head)| StreamState {
+                stream: stream.clone(),
                 cursor: *head,
                 pending: false,
             })
             .collect();
-        let mut actions: Vec<LiveAction> = scopes
+        let mut actions: Vec<LiveAction> = streams
             .iter()
             .map(|state| LiveAction::Listen {
-                scope: state.scope.clone(),
+                stream: state.stream.clone(),
             })
             .collect();
         actions.push(LiveAction::Send {
             frame: negotiation.response,
         });
-        let cursors: BTreeMap<String, u64> = scopes
+        let cursors: BTreeMap<String, u64> = streams
             .iter()
-            .map(|state| (state.scope.clone(), state.cursor))
+            .map(|state| (state.stream.clone(), state.cursor))
             .collect();
         actions.push(LiveAction::Pull {
             cursors: cursors.clone(),
@@ -163,7 +163,7 @@ impl Subscriptions {
         });
         (
             Self {
-                scopes,
+                streams,
                 running: Some(cursors),
                 closed: false,
                 models: negotiation.models,
@@ -173,7 +173,7 @@ impl Subscriptions {
     }
 
     /// Applies one event and answers the actions it calls for. An event the
-    /// session cannot accept (an unknown scope, or a `Pulled` no pull is
+    /// session cannot accept (an unknown stream, or a `Pulled` no pull is
     /// outstanding for) is a host defect reported as `live.invalid_event`; an
     /// invalid page progression is `live.invalid_page`. The host reports either
     /// and closes the socket.
@@ -181,15 +181,15 @@ impl Subscriptions {
         self.handle_page(event)
     }
 
-    /// Apply a scope-aware live page without projecting away removals.
-    pub fn handle_scope(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
+    /// Apply a stream-aware live page without projecting away removals.
+    pub fn handle_stream(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
         self.handle_page(event)
     }
 
     fn handle_page(&mut self, event: LiveEvent) -> Result<Vec<LiveAction>> {
         match event {
-            LiveEvent::Committed { scope } => {
-                self.scope_mut(&scope)?.pending = true;
+            LiveEvent::Committed { stream } => {
+                self.stream_mut(&stream)?.pending = true;
                 if self.closed || self.running.is_some() {
                     return Ok(vec![]);
                 }
@@ -205,7 +205,7 @@ impl Subscriptions {
                 if self.closed {
                     return Ok(vec![]);
                 }
-                let progress = scope_page_progress(&page, &asked)?;
+                let progress = stream_page_progress(&page, &asked)?;
                 let mut actions = vec![];
                 let advanced = progress.cursors.values().any(|range| range.to > range.from);
                 if advanced {
@@ -213,8 +213,8 @@ impl Subscriptions {
                         frame: progress.page,
                     });
                 }
-                for (scope, range) in &progress.cursors {
-                    let state = self.scope_mut(scope)?;
+                for (stream, range) in &progress.cursors {
+                    let state = self.stream_mut(stream)?;
                     state.cursor = range.to;
                     if range.continues() {
                         state.pending = true;
@@ -225,7 +225,7 @@ impl Subscriptions {
             }
             LiveEvent::Closed => {
                 self.closed = true;
-                for state in &mut self.scopes {
+                for state in &mut self.streams {
                     state.pending = false;
                 }
                 Ok(vec![])
@@ -233,23 +233,23 @@ impl Subscriptions {
         }
     }
 
-    /// The pull for every pending scope, clearing their flags; none when
+    /// The pull for every pending stream, clearing their flags; none when
     /// nothing is pending.
     fn next_pull(&mut self) -> Option<LiveAction> {
         let pending: BTreeSet<String> = self
-            .scopes
+            .streams
             .iter()
             .filter(|state| state.pending)
-            .map(|state| state.scope.clone())
+            .map(|state| state.stream.clone())
             .collect();
         if pending.is_empty() {
             return None;
         }
         let mut cursors = BTreeMap::new();
-        for state in &mut self.scopes {
-            if pending.contains(&state.scope) {
+        for state in &mut self.streams {
+            if pending.contains(&state.stream) {
                 state.pending = false;
-                cursors.insert(state.scope.clone(), state.cursor);
+                cursors.insert(state.stream.clone(), state.cursor);
             }
         }
         self.running = Some(cursors.clone());
@@ -259,9 +259,9 @@ impl Subscriptions {
         })
     }
 
-    /// The accepted scopes in acknowledgement order, with their drain state.
-    pub fn scopes(&self) -> &[ScopeState] {
-        &self.scopes
+    /// The accepted streams in acknowledgement order, with their drain state.
+    pub fn streams(&self) -> &[StreamState] {
+        &self.streams
     }
 
     /// Whether a pull is outstanding.
@@ -274,29 +274,29 @@ impl Subscriptions {
         self.closed
     }
 
-    fn scope_mut(&mut self, scope: &str) -> Result<&mut ScopeState> {
-        self.scopes
+    fn stream_mut(&mut self, stream: &str) -> Result<&mut StreamState> {
+        self.streams
             .iter_mut()
-            .find(|state| state.scope == scope)
+            .find(|state| state.stream == stream)
             .ok_or_else(|| {
                 Error::new(
                     code::LIVE_INVALID_EVENT,
-                    format!("scope {scope} is not subscribed"),
+                    format!("stream {stream} is not subscribed"),
                 )
             })
     }
 }
 
-/// Validate scope-aware live progress, preserving the complete frame.
-pub fn scope_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
+/// Validate stream-aware live progress, preserving the complete frame.
+pub fn stream_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Result<PageProgress> {
     let invalid = |m| Error::new(code::LIVE_INVALID_PAGE, m);
     let decoded =
-        axton_core::ScopePullPage::decode(page.as_bytes()).map_err(|e| invalid(e.to_string()))?;
+        axton_core::StreamPullPage::decode(page.as_bytes()).map_err(|e| invalid(e.to_string()))?;
     if !decoded.cursors.keys().eq(expected.keys())
         || decoded
             .cursors
             .iter()
-            .any(|(scope, range)| range.from != expected[scope])
+            .any(|(stream, range)| range.from != expected[stream])
     {
         return Err(invalid("invalid live page progression".into()));
     }
@@ -306,8 +306,8 @@ pub fn scope_page_progress(page: &str, expected: &BTreeMap<String, u64>) -> Resu
     })
 }
 
-/// Pull scope membership events for a live session in the host transaction.
-pub async fn scope_pull(
+/// Pull stream membership events for a live session in the host transaction.
+pub async fn stream_pull(
     config: &crate::Config,
     owner: &str,
     cursors: &BTreeMap<String, u64>,
@@ -321,8 +321,8 @@ pub async fn scope_pull(
     .encode()
     .map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))?;
     let request =
-        axton_core::with_capabilities(&request, &[axton_core::SCOPE_MEMBERSHIP_CAPABILITY])
+        axton_core::with_capabilities(&request, &[axton_core::STREAM_MEMBERSHIP_CAPABILITY])
             .map_err(crate::internal)?;
-    let page = crate::process_scope_pull(config, owner, &request, host).await?;
-    scope_page_progress(&page, cursors)
+    let page = crate::process_stream_pull(config, owner, &request, host).await?;
+    stream_page_progress(&page, cursors)
 }

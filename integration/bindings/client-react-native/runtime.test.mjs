@@ -85,11 +85,11 @@ test('mobile store callback runs without a public task and uses transaction scop
       held=tx; entered(); await gate; return;
     }
     if(changes[0]?.identity?.id==='unawaited') {
-      void tx.scopes.subscribe('x'); return;
+      void tx.streams.subscribe('x'); return;
     }
     assert.deepEqual(changes,[{kind:'delete',identity:{id:'e'}}]);
     assert.equal(await within(client.mutate({name:'M',operations:[]}).then(()=>'',e=>e.message)),'transaction_active');
-    assert.equal(await tx.scopes.subscribe('project:p1'),undefined);
+    assert.equal(await tx.streams.subscribe('project:p1'),undefined);
     callback=tx;
   }};
   const client=await Client.open({path:'unused',schema:{},onStore});
@@ -100,7 +100,7 @@ test('mobile store callback runs without a public task and uses transaction scop
   wake('1');
   await new Promise(resolve=>setImmediate(resolve));
   await new Promise(resolve=>setImmediate(resolve));
-  assert.deepEqual(admitted.find(x=>x.type==='transactionCommand').command,{kind:'scope',scope:'project:p1',subscribed:true});
+  assert.deepEqual(admitted.find(x=>x.type==='transactionCommand').command,{kind:'stream',stream:'project:p1',subscribed:true});
   assert.deepEqual(admitted.find(x=>x.type==='callbackResult'),{type:'callbackResult',effectId:'store',transactionId:'tx',ok:true});
   await assert.rejects(callback.read('Entry',{id:'e'}),/closed/);
   outbox.push({type:'effect',effectId:'held',operation:{kind:'storeCallback',transactionId:'tx2',model:'Entry',changes:[{kind:'delete',identity:{id:'hold'}}]}});

@@ -121,7 +121,8 @@ fn reopen_preserves_stamps_and_tombstones() {
     c.apply_page(stamped("a", 0, 1, 1, Some("A"))).unwrap();
     c.apply_page(stamped("b", 0, 1, 2, Some("B"))).unwrap();
     c.apply_page(stamped("b", 1, 2, 4, None)).unwrap();
-    c.transaction(|tx| tx.set_scope("b".into(), false)).unwrap();
+    c.transaction(|tx| tx.set_stream("b".into(), false))
+        .unwrap();
     drop(c);
     let mut c = open(&path);
     assert!(c.read(&key()).unwrap().is_none());

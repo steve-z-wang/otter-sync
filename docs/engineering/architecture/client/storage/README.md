@@ -13,3 +13,7 @@ The layout of the Model tables is a public, stable contract: a Model's table is 
 |---|---|
 | Store | [client/store.rs](../../../../../crates/client/src/store.rs), [sqlite/lib.rs](../../../../../crates/sqlite/src/lib.rs) |
 | Reconciliation | [client/ddl.rs](../../../../../crates/client/src/ddl.rs), [client/schema_store.rs](../../../../../crates/client/src/schema_store.rs), `open_at` and `rebuild` in [client/lib.rs](../../../../../crates/client/src/lib.rs), `Schema::compatibility` in [core/schema.rs](../../../../../crates/core/src/schema.rs) |
+
+## Stream vocabulary upgrade
+
+Existing SQLite files migrate framework delivery tables/columns and the layout marker in place before network scheduling. The database path, subscriptions/cursors, normalized holdings, frozen Load requests/continuations, queued/pending/rejected work, companions and device-only Models are preserved. No application query-cache JSON is rewritten. Retained removal decoding and source holdings remain distinct from Loader authority absence; unsubscribe retains content and server tracking. See [reconciliation](reconciliation.md#stream-membership-upgrade) and [coordinated cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover).

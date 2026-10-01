@@ -42,7 +42,7 @@ fn setup() -> Sim {
     for client in 0..2 {
         sim.apply(Action::Subscribe {
             client,
-            scope: "a".into(),
+            stream: "a".into(),
         })
         .unwrap();
     }
@@ -94,7 +94,7 @@ fn an_incompatible_schema_sends_unsent_work_from_the_old_file_then_rebuilds_and_
         .client(0)
         .subscription_state("a")
         .unwrap()
-        .expect("the Scope is carried over");
+        .expect("the Stream is carried over");
     assert_eq!(
         (carried.starting_cursor, carried.cursor),
         (None, None),
@@ -102,11 +102,11 @@ fn an_incompatible_schema_sends_unsent_work_from_the_old_file_then_rebuilds_and_
     );
     assert!(sim.client(0).subscriptions().unwrap().is_empty());
     sim.check().unwrap();
-    // Registering the Scope again commits a boundary for the new identity, and
+    // Registering the Stream again commits a boundary for the new identity, and
     // the rebuilt file converges from it like a new client.
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "a".into(),
+        stream: "a".into(),
     })
     .unwrap();
     assert_eq!(
@@ -148,7 +148,7 @@ fn discarding_unsent_work_rebuilds_at_once_and_reports_what_the_old_file_keeps()
     assert_eq!(sim.read_text(0, &entry_key("e2")), None);
     sim.apply(Action::Subscribe {
         client: 0,
-        scope: "a".into(),
+        stream: "a".into(),
     })
     .unwrap();
     sim.settle();

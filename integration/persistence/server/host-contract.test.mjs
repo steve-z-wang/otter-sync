@@ -45,10 +45,10 @@ const fakePersistence=seen=>({
    case 'ensureStamp':return response('ensureStamp','stamped');
    case 'readStamps':return response('readStamps','stamped');
    case 'lockRecord':return response('lockRecord','locked');
-   case 'memberships':return response('memberships','members');
-   case 'lockScopes':return null;
-   case 'readScopeMembers':return response('readScopeMembers','members');
-   case 'applyScopeMembers':return response('applyScopeMembers','positions');
+   case 'readTracking':return response('readTracking','holders');
+   case 'guardRecords':return response('guardRecords','stamps');
+   case 'lockStreams':return null;
+   case 'applyStreamMembers':return response('applyStreamMembers','positions');
    default:throw new Error(`fake persistence reached ${request.op}`);
   }
  },
@@ -76,8 +76,8 @@ async function replay(requests,{reject=false,fail=false,onError,page,options={},
   database:{transaction:body=>body({}),persistence:()=>fakePersistence(seen)},
   authenticate:()=>'alice',
   onError,
-  // Two touches (the update slot's t-1, which the engine also targets on its
-  // own, and t-2), both added to one Scope and the target to another: the
+  // Two invalidations (the update slot's t-1, which the engine also targets on its
+  // own, and t-2), both added to one Stream and the target to another: the
   // fixture's settlement.
   mutations:{async send({ctx}){sent.push(ctx);return {message:'sent'};}},
   loads:{async tasks(call){
@@ -86,12 +86,12 @@ async function replay(requests,{reject=false,fail=false,onError,page,options={},
    if(fail)throw new Error('boom');
    return page?page(call):response('handleLoad','settled');
   }},
-  handlers:{async edit({input,scope: scope,touch}){
+  handlers:{async edit({input,stream,invalidate}){
    handled.push(input);
-   touch.task(input.task.identity);
-   touch.task({id:'t-2'});
-   scope('shared').add([{model:'Task',identity:input.task.identity},{model:'Task',identity:{id:'t-2'}}]);
-   scope('other').add.task(input.task.identity);
+   invalidate.task(input.task.identity);
+   invalidate.task({id:'t-2'});
+   stream('shared').track([{model:'Task',identity:input.task.identity},{model:'Task',identity:{id:'t-2'}}]);
+   stream('other').track.task(input.task.identity);
    if(reject)throw new MutationRejected('task.refused');
    if(fail)throw new Error('boom');
   }},
@@ -117,8 +117,8 @@ test('every fixture request replays through the TypeScript host to the fixture a
   scan:response('scan','rows'),savepoint:null,rollback:null,release:null,
   handle:response('handle','settled'),handleAction:response('handleAction','settled'),handleLoad:response('handleLoad','settled'),load:response('load','rows'),
   advanceStamp:response('advanceStamp','stamped'),ensureStamp:response('ensureStamp','stamped'),readStamps:response('readStamps','stamped'),
-  lockRecord:response('lockRecord','locked'),memberships:response('memberships','members'),lockScopes:null,
-  readScopeMembers:response('readScopeMembers','members'),applyScopeMembers:response('applyScopeMembers','positions'),
+  lockRecord:response('lockRecord','locked'),readTracking:response('readTracking','holders'),guardRecords:response('guardRecords','stamps'),lockStreams:null,
+  applyStreamMembers:response('applyStreamMembers','positions'),
  };
  assert.equal(Object.keys(expected).length,HOST_OPERATIONS.length,'every operation has an expected answer');
  for(const [op,answer] of answers)assert.deepEqual(answer,expected[op],`${op} answer`);
@@ -128,18 +128,18 @@ test('every fixture request replays through the TypeScript host to the fixture a
  assert.equal(handled.length,1);
  assert.deepEqual(handled[0].task.patch,entry('handle').request.arguments.task.patch);
  assert.equal(loaded.length,1);assert.deepEqual(loaded[0].ids,entry('load').request.identities);assert.equal(loaded[0].userId,entry('load').request.owner);
- assert.equal('scope' in loaded[0],false,'loads name no scope');
- assert.equal('touch' in loaded[0],false,'a Loader declares no change');
+ assert.equal('stream' in loaded[0],false,'a Loader has no stream context');
+ assert.equal('invalidate' in loaded[0],false,'a Loader declares no change');
  const loadRequest=entry('handleLoad').request;
  assert.equal(paged.length,1);
  assert.deepEqual(paged[0].continuation,loadRequest.continuation);
  assert.deepEqual(paged[0].args,loadRequest.arguments);
- assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','loadId','scope','tx','userId'],'a Load context adds to Scopes and declares no change: no touch');
- assert.equal(typeof paged[0].ctx.scope,'function');
+ assert.deepEqual(Object.keys(paged[0].ctx).sort(),['callId','loadId','stream','tx','userId'],'a Load context adds to Scopes and declares no change: no touch');
+ assert.equal(typeof paged[0].ctx.stream,'function');
  // A Mutation keeps its full declaration handles.
  assert.equal(sent.length,1);
- assert.deepEqual(Object.keys(sent[0]).sort(),['callId','scope','touch','tx','userId']);
- assert.equal(typeof sent[0].touch.task,'function');
+ assert.deepEqual(Object.keys(sent[0]).sort(),['callId','invalidate','stream','tx','userId']);
+ assert.equal(typeof sent[0].invalidate.task,'function');
  assert.deepEqual([paged[0].ctx.userId,paged[0].ctx.callId,paged[0].ctx.loadId],[loadRequest.owner,loadRequest.callId,loadRequest.loadId]);
 });
 
@@ -244,26 +244,28 @@ test('the PostgreSQL persistence answers the persistence half through a two-meth
  for(const op of ['handle','handleAction','handleLoad','load'])
   await assert.rejects(()=>bound.call(entry(op).request),/Unsupported persistence operation/);
  await assert.rejects(()=>bound.call({op:'vacuum'}),/Unsupported persistence operation vacuum/);
- // The Scope operations answer through the same two methods.
- assert.equal(await bound.call(entry('lockScopes').request),null);
- assert.deepEqual(await bound.call(entry('readScopeMembers').request),[],'no rows, no members');
+ // The Stream operations answer through the same two methods.
+ assert.equal(await bound.call(entry('lockStreams').request),null);
+ assert.deepEqual(await bound.call(entry('readTracking').request),[],'no rows, no members');
 });
 
-test('the PostgreSQL persistence refuses a malformed Scope request before any statement runs',async()=>{
- const seen=[];const driver={transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push(sql);return [];}};
- const read=entry('readScopeMembers').request,apply=entry('applyScopeMembers').request;
- const [kept,removed]=apply.deltas;
+test('the PostgreSQL persistence refuses malformed bulk requests before any statement runs',async()=>{
+ const seen=[];const driver={transaction:body=>body('tx'),query:async(tx,sql)=>{seen.push(sql);return [];}};
+ const read=entry('readTracking').request,apply=entry('applyStreamMembers').request;
+ const delta=apply.deltas[0],guard=entry('guardRecords').request;
  for(const [request,pattern] of [
-  [{op:'lockScopes',scopes:[]},/at least one Scope/],
-  [{op:'lockScopes',scopes:['a','a']},/repeats/],
-  [{op:'lockScopes',scopes:[' ']},/Invalid membership scope/],
-  [{...read,extra:1},/Unknown readScopeMembers field extra/],
-  [{...read,explicitKeys:[{model:'Task'}]},/identityKey must be a non-empty string/],
-  [{...read,tags:[1]},/tags must be an array of strings/],
-  [{...apply,deltas:[{...kept,stamp:1}]},/Unknown member delta field stamp/],
-  [{...apply,deltas:[{...removed,publish:false}]},/absent member delta/],
-  [{...apply,deltas:[{...removed,tags:['x']}]},/absent member delta/],
-  [{...apply,deltas:[kept,kept]},/names a pair twice/],
+  [{op:'lockStreams',streams:[]},/at least one/],
+  [{op:'lockStreams',streams:['a','a']},/repeats/],
+  [{op:'lockStreams',streams:[' ']},/Invalid tracking stream/],
+  [{...read,extra:1},/Unknown readTracking field extra/],
+  [{...read,records:[{model:'Task'}]},/identityKey must be a non-empty string/],
+  [{...read,records:[read.records[0],read.records[0]]},/repeats/],
+  [{...guard,records:[{...guard.records[0],mode:['advance']}]},/guard mode/],
+  [{...guard,records:[guard.records[1],guard.records[0]]},/canonical order/],
+  [{...apply,deltas:[{...delta,stamp:1}]},/Unknown record key field stamp/],
+  [{...apply,deltas:[{...delta,publish:1}]},/publish must be boolean/],
+  [{...apply,deltas:[{...delta,tags:['x']}]},/Unknown record key field tags/],
+  [{...apply,deltas:[delta,delta]},/repeats/],
  ]){
   seen.length=0;
   await assert.rejects(()=>answer(driver,'tx',request),pattern);
@@ -271,15 +273,15 @@ test('the PostgreSQL persistence refuses a malformed Scope request before any st
  }
 });
 
-test('a published position wakes its Scope after commit, a kept one does not, and a settlement conflict retries the whole transaction',async()=>{
- const [kept,removed]=entry('applyScopeMembers').request.deltas;
- const request={op:'applyScopeMembers',deltas:[{...kept,scope:'kept'},removed]};
+test('a published position wakes its Stream after commit, a kept one does not, and a settlement conflict retries the whole transaction',async()=>{
+ const deltas=entry('applyStreamMembers').request.deltas;
+ const request={op:'applyStreamMembers',deltas:[{...deltas[0],stream:'kept'},...deltas.slice(1)]};
  let attempts=0;
  const seen=[];
  const backend=createBackend({config,
   native:{validateConfig:c=>native.validateConfig(c),
    settleExternal:async(_config,_settlement,callback)=>{
-    if(++attempts===1)throw new Error(JSON.stringify({code:'transaction.conflict',message:'Task {"id":"t-1"} joined Scope b after settlement locked its Scopes; the transaction must retry'}));
+    if(++attempts===1)throw new Error(JSON.stringify({code:'transaction.conflict',message:'Task {"id":"t-1"} joined Stream b after settlement locked its Streams; the transaction must retry'}));
     await callback(JSON.stringify(request));
     return '[]';
    }},
@@ -291,136 +293,135 @@ test('a published position wakes its Scope after commit, a kept one does not, an
  await backend.transaction(async()=>{});
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(attempts,2,'the conflict reached the driver retry loop once');
- assert.deepEqual(seen.map(r=>r.op),['applyScopeMembers']);
+ assert.deepEqual(seen.map(r=>r.op),['applyStreamMembers']);
  assert.deepEqual(woken,['shared'],'only a published position wakes');
  assert.equal(isRetryableTransactionError({code:'transaction.conflict'}),true);
  assert.equal(isRetryableTransactionError({code:'handler.invalid'}),false);
 });
 
-test('the PostgreSQL persistence validates record requests and the rows it answers from',async()=>{
+test('the PostgreSQL persistence validates aligned guards and tracking rows',async()=>{
  const driverAnswering=rows=>{const seen=[];return {seen,driver:{transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push([sql,params]);return rows(sql);}}};};
- const lock=entry('lockRecord').request,members=entry('memberships').request;
+ const lock=entry('lockRecord').request,read=entry('readTracking').request;
+ const guard=entry('guardRecords').request;
  {
-  const {driver,seen}=driverAnswering(()=>[]);
+  const {driver}=driverAnswering(()=>[]);
   assert.equal(await answer(driver,'tx',lock),null,'no row: nothing locked, nothing created');
-  assert.deepEqual(await answer(driver,'tx',members),[]);
-  assert.deepEqual(seen.map(([sql,params])=>[sql.split(/\s+/).slice(0,3).join(' '),params]),[
-   ['UPDATE axton_record SET',['Task',lock.identityKey]],
-   ['SELECT m.scope FROM',['Task',members.identityKey]],
-  ]);
+  assert.deepEqual(await answer(driver,'tx',read),[]);
  }
  {
-  const {driver}=driverAnswering(sql=>sql.startsWith('UPDATE')?[{stamp:4n}]:[{scope:'shared'},{scope:'other'}]);
-  assert.equal(await answer(driver,'tx',lock),response('lockRecord','locked'));
-  assert.deepEqual(await answer(driver,'tx',members),['shared','other'],'rows keep the database order');
+  const {driver}=driverAnswering(()=>[{stream:'shared',model:'Task',identity_key:'{"id":"t-1"}'}]);
+  assert.deepEqual(await answer(driver,'tx',read),response('readTracking','holders'));
  }
- for(const [rows,pattern] of [[[{stamp:0}],/Stored stamp/],[[{stamp:2**53}],/Stored stamp/],[[{stamp:1},{stamp:1}],/more than one/]]){
+ for(const rows of [[{stamp:0}],[{stamp:2**53}],[{stamp:1},{stamp:1}]]){
   const {driver}=driverAnswering(()=>rows);
-  await assert.rejects(()=>answer(driver,'tx',lock),pattern);
+  await assert.rejects(()=>answer(driver,'tx',lock),/Stored stamp|more than one/);
  }
- for(const [rows,pattern] of [[[{scope:'a'},{scope:'a'}],/Duplicate membership/],[[{scope:' '}],/Invalid membership scope/],[[{scope:null}],/Invalid membership scope/]]){
+ for(const stream of [' ',null]){
+  const {driver}=driverAnswering(()=>[{stream,model:'Task',identity_key:'{"id":"t-1"}'}]);
+  await assert.rejects(()=>answer(driver,'tx',read),/Invalid tracking stream/);
+ }
+ {
+  const {driver}=driverAnswering(()=>[{ord:1,stamp:8},{ord:2,stamp:null}]);
+  assert.deepEqual(await answer(driver,'tx',guard),response('guardRecords','stamps'));
+ }
+ for(const mode of ['advance','ensure']){
+  const {driver}=driverAnswering(()=>[{ord:1,stamp:null}]);
+  await assert.rejects(()=>answer(driver,'tx',{op:'guardRecords',records:[{...guard.records[0],mode}]}),/null|stamp/);
+ }
+ for(const rows of [[],[{ord:2,stamp:1},{ord:1,stamp:1}],[{ord:1,stamp:0},{ord:2,stamp:null}]]){
   const {driver}=driverAnswering(()=>rows);
-  await assert.rejects(()=>answer(driver,'tx',members),pattern);
- }
- for(const [request,pattern] of [
-  [{...lock,scope:'shared'},/Unknown lockRecord field scope/],
-  [{...members,present:true},/Unknown memberships field present/],
- ]){
-  const {driver,seen}=driverAnswering(()=>[]);
-  await assert.rejects(()=>answer(driver,'tx',request),pattern);
-  assert.deepEqual(seen,[],'a malformed request runs no statement');
+  await assert.rejects(()=>answer(driver,'tx',guard),/number of stamps|order|Stored stamp/);
  }
 });
 
-/** The page the `enrolled` fixture answer carries, without its framework metadata. */
-const enrolledPage=()=>{const {memberships,...page}=response('handleLoad','enrolled');return page;};
+const enrolledPage=()=>{const {tracking,...page}=response('handleLoad','enrolled');return page;};
 
-test('a Load declares its enrollment through ctx.scope and the host attaches it to the fixture answer',async()=>{
+test('a Load declares its enrollment through ctx.stream and the host attaches it to the fixture answer',async()=>{
  const request=entry('handleLoad').request;
  const {answers}=await replay([request],{page:({ctx})=>{
-  const shared=ctx.scope('shared');
-  shared.add.task({id:'t-1'});
-  ctx.scope('other').add([{model:'Task',identity:{id:'t-1'}}]);
+  const shared=ctx.stream('shared');
+  shared.track.task({id:'t-1'});
+  ctx.stream('other').track([{model:'Task',identity:{id:'t-1'}}]);
   // Repeats are one pair: the answer lists each pair once, in first-declaration order.
-  shared.add.task({id:'t-1',title:'not identity'});
-  shared.add([{model:'Task',identity:{id:'t-1'}}]);
+  shared.track.task({id:'t-1',title:'not identity'});
+  shared.track([{model:'Task',identity:{id:'t-1'}}]);
   return enrolledPage();
  }});
  assert.equal(answers.length,1);
  assert.equal(JSON.stringify(answers[0][1]),JSON.stringify(response('handleLoad','enrolled')),'exactly the fixture answer, member order included');
 });
 
-test('the Load Scope handle adds only and closes when the handler settles',async()=>{
+test('the Load Stream handle tracks only and closes when the handler settles',async()=>{
  const request=entry('handleLoad').request;
  let escaped,handle;
  const {answers}=await replay([request],{page:({ctx})=>{
-  handle=ctx.scope('shared');
-  escaped=handle.add.task;
+  handle=ctx.stream('shared');
+  escaped=handle.track.task;
   escaped({id:'t-1'});
   return enrolledPage();
  }});
- assert.deepEqual(answers[0][1].memberships,[{kind:'add',scope:'shared',record:{model:'Task',identity:{id:'t-1'}},tags:[]}]);
- assert.deepEqual(Object.keys(handle),['add','tag']);
- assert.deepEqual(Object.keys(handle.add),['task']);
+ assert.deepEqual(answers[0][1].tracking,[{kind:'track',stream:'shared',record:{model:'Task',identity:{id:'t-1'}}}]);
+ assert.deepEqual(Object.keys(handle),['track']);
+ assert.deepEqual(Object.keys(handle.track),['task']);
  assert.deepEqual(Object.keys(escaped),[]);
- for(const absent of ['remove','touch'])assert.equal(absent in handle,false,absent);
+ for(const absent of ['remove','invalidate','tag'])assert.equal(absent in handle,false,absent);
  assert.equal('remove' in escaped,false);
- assert.ok(Object.isFrozen(handle)&&Object.isFrozen(handle.add));
+ assert.ok(Object.isFrozen(handle)&&Object.isFrozen(handle.track));
  assert.throws(()=>escaped({id:'t-2'}),/closed/);
- assert.throws(()=>handle.add([{model:'Task',identity:{id:'t-2'}}]),/closed/);
+ assert.throws(()=>handle.track([{model:'Task',identity:{id:'t-2'}}]),/closed/);
  // Reading the answer happens after the handles closed: a getter cannot declare.
  const errors=[];
  const getter=await replay([request],{onError:e=>errors.push(e),page:({ctx})=>{
-  const late=ctx.scope('late');
-  return {get data(){late.add.task({id:'t-1'});return {tasks:[{id:'t-1'}]};},next:null};
+  const late=ctx.stream('late');
+  return {get data(){late.track.task({id:'t-1'});return {tasks:[{id:'t-1'}]};},next:null};
  }});
- assert.equal(getter.answers[0][1].memberships,undefined);
+ assert.equal(getter.answers[0][1].tracking,undefined);
  assert.match(getter.answers[0][1].error,/closed/);
 });
 
-test('only declarations feed the enrollment: a returned memberships property is ignored and none is sent when empty',async()=>{
+test('only declarations feed the enrollment: a returned tracking property is ignored and none is sent when empty',async()=>{
  const request=entry('handleLoad').request;
- const forged=[{kind:'add',scope:'forged',record:{model:'Task',identity:{id:'t-1'}},tags:[]}];
- const {answers}=await replay([request],{page:()=>({...response('handleLoad','settled'),memberships:forged})});
+ const forged=[{kind:'track',stream:'forged',record:{model:'Task',identity:{id:'t-1'}}}];
+ const {answers}=await replay([request],{page:()=>({...response('handleLoad','settled'),tracking:forged})});
  assert.deepEqual(answers[0][1],response('handleLoad','settled'));
- assert.equal('memberships' in answers[0][1],false);
- const selected=await replay([request],{page:({ctx})=>{ctx.scope('selected');return response('handleLoad','settled');}});
- assert.equal('memberships' in selected.answers[0][1],false,'selecting a Scope enrolls nothing');
+ assert.equal('tracking' in answers[0][1],false);
+ const selected=await replay([request],{page:({ctx})=>{ctx.stream('selected');return response('handleLoad','settled');}});
+ assert.equal('tracking' in selected.answers[0][1],false,'selecting a Stream enrolls nothing');
 });
 
 test('an enrollment past its bound fails the page as load.page_too_large, even when the handler caught it',async()=>{
  const request=entry('handleLoad').request;
- const overflow=ctx=>{for(let n=0;n<=1000;n++)ctx.scope(`c${n}`).add.task({id:'t-1'});};
+ const overflow=ctx=>{for(let n=0;n<=1000;n++)ctx.stream(`c${n}`).track.task({id:'t-1'});};
  const outcomes=[
   ['caught, then a normal answer',({ctx})=>{try{overflow(ctx);}catch{}return enrolledPage();}],
   ['thrown out of the handler',({ctx})=>{overflow(ctx);return enrolledPage();}],
   ['caught, then a rejection',({ctx})=>{try{overflow(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
   ['caught, then an invalid continuation',({ctx})=>{try{overflow(ctx);}catch{}return {data:{tasks:[]},next:{state:NaN}};}],
-  ['after a caught invalid declaration',({ctx})=>{try{ctx.scope('c').add.task({});}catch{}try{overflow(ctx);}catch{}return enrolledPage();}],
+  ['after a caught invalid declaration',({ctx})=>{try{ctx.stream('c').track.task({});}catch{}try{overflow(ctx);}catch{}return enrolledPage();}],
  ];
  for(const [label,page] of outcomes){
   const errors=[];
   const {answers}=await replay([request],{onError:e=>errors.push(e),page});
   assert.deepEqual(answers,[['handleLoad',{rejection:'load.page_too_large'}]],label);
   assert.equal(errors.length,1,`${label}: reported once`);
-  assert.match(errors[0].message,/more than 1000 Scope\/record pairs/,label);
+  assert.match(errors[0].message,/more than 1000 Stream\/record pairs/,label);
  }
 });
 
 test('a refused declaration fails the page with its message, even when the handler caught it',async()=>{
  const request=entry('handleLoad').request;
  const invalid=[
-  ['blank Scope',ctx=>ctx.scope(' '),/Scope name/],
-  ['missing identity',ctx=>ctx.scope('c').add.task({}),/Task identity field id is missing/],
+  ['blank Stream',ctx=>ctx.stream(' '),/Stream name/],
+  ['missing identity',ctx=>ctx.stream('c').track.task({}),/Task identity field id is missing/],
   // Not a host fault: an identity the bridge could not send fails the page as the handler's.
-  ['lone surrogate identity',ctx=>ctx.scope('c').add.task({id:'t-\ud800'}),/Task identity field id must be Unicode text/],
-  ['lone surrogate identity in a list',ctx=>ctx.scope('c').add([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/Task identity field id must be Unicode text/],
-  ['raw identity in a list',ctx=>ctx.scope('c').add([{id:'t-1'}]),/record reference/],
-  ['unknown Model',ctx=>ctx.scope('c').add([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
+  ['lone surrogate identity',ctx=>ctx.stream('c').track.task({id:'t-\ud800'}),/identity must be Unicode text, without a lone surrogate/],
+  ['lone surrogate identity in a list',ctx=>ctx.stream('c').track([{model:'Task',identity:{id:'t-1'}},{model:'Task',identity:{id:'\udc00'}}]),/identity must be Unicode text, without a lone surrogate/],
+  ['raw identity in a list',ctx=>ctx.stream('c').track([{id:'t-1'}]),/record reference/],
+  ['unknown Model',ctx=>ctx.stream('c').track([{model:'Nope',identity:{id:'t-1'}}]),/unknown Model Nope/],
  ];
  for(const [label,declare,pattern] of invalid)
   for(const [how,page] of [
-   ['caught, then a normal answer',({ctx})=>{ctx.scope('shared').add.task({id:'t-1'});try{declare(ctx);}catch{}return enrolledPage();}],
+   ['caught, then a normal answer',({ctx})=>{ctx.stream('shared').track.task({id:'t-1'});try{declare(ctx);}catch{}return enrolledPage();}],
    ['caught, then a rejection',({ctx})=>{try{declare(ctx);}catch{}throw new MutationRejected('tasks.refused');}],
    ['thrown out of the handler',({ctx})=>{declare(ctx);return enrolledPage();}],
   ]){
@@ -435,12 +436,12 @@ test('a refused declaration fails the page with its message, even when the handl
   }
 });
 
-test('a Query context and a Loader call carry no scope or touch; an external transaction keeps both',async()=>{
+test('a Query and Loader carry no declarations; an external transaction has track and invalidate',async()=>{
  const queryConfig=structuredClone(config);
  queryConfig.schema.actions.push({name:'Ask',version:1,kind:'query',inputs:[],outputs:[{name:'message',kind:'value',type:{kind:'scalar',name:'string'},cardinality:'single',source:'handlerValue'}]});
  const asked=[];
  const {answers,loaded}=await replay([{...entry('handleAction').request,name:'Ask'},entry('load').request],{options:{config:queryConfig,queries:{async ask({ctx}){asked.push(ctx);return {message:'asked'};}}}});
- assert.deepEqual(answers[0],['handleAction',{outputs:{message:'asked'},changes:[],memberships:[]}]);
+ assert.deepEqual(answers[0],['handleAction',{outputs:{message:'asked'},changes:[],declarations:[]}]);
  assert.deepEqual(Object.keys(asked[0]).sort(),['callId','tx','userId']);
  assert.deepEqual(Object.keys(loaded[0]).sort(),['ids','tx','userId']);
  const backend=createBackend({config,native:{validateConfig:c=>native.validateConfig(c),settleExternal:async()=>'[]'},
@@ -448,28 +449,25 @@ test('a Query context and a Loader call carry no scope or touch; an external tra
   handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
   loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
  await backend.transaction(async call=>{
-  assert.deepEqual(Object.keys(call).sort(),['scope','touch','tx']);
-  assert.equal(typeof call.scope('c').remove,'function');
-  assert.equal(typeof call.scope('c').remove.task,'function');
-  assert.equal(typeof call.touch.task,'function');
+  assert.deepEqual(Object.keys(call).sort(),['invalidate','stream','tx']);
+  assert.equal(typeof call.stream('c').track.task,'function');
+  assert.equal(typeof call.stream(['c','d']).invalidate.task,'function');
+  assert.equal(typeof call.invalidate.task,'function');
  });
 });
 
-test('candidate all flag defaults false, enables an empty-key read, and validates before SQL',async()=>{
- const driverAnswering=rows=>{const seen=[];return {seen,driver:{transaction:body=>body('tx'),query:async(tx,sql,params)=>{seen.push([sql,params]);return rows(sql);}}};};
- const request={op:'readScopeMembers',scope:'shared',explicitKeys:[{model:'Task',identityKey:'{"id":"t-1"}'}],tags:[]};
- for(const flag of [undefined,false,true]){
-  const {driver,seen}=driverAnswering(()=>[]);
-  await answer(driver,'tx',{...request,...(flag===undefined?{}:{all:flag})});
-  assert.equal(seen.length,1);
-  assert.equal(seen[0][1][3],flag??false);
- }
- const {driver,seen}=driverAnswering(()=>[]);
- await answer(driver,'tx',{...request,explicitKeys:[],all:true});
- assert.equal(seen.length,1);
- for(const all of [null,'true',1]){
-  const {driver,seen}=driverAnswering(()=>[]);
-  await assert.rejects(()=>answer(driver,'tx',{...request,all}),/all must be a boolean/);
-  assert.deepEqual(seen,[]);
- }
+test('tracking combines all-holder and explicit-pair candidates, deduplicating chunk overlap',async()=>{
+ const key={model:'Task',identityKey:'{"id":"t-1"}'};
+ const pairs=[{...key,stream:'shared'}];
+ const seen=[];
+ const driver={transaction:body=>body('tx'),query:async(tx,sql,params)=>{
+  seen.push(params);
+  return [{model:'Task',identity_key:key.identityKey,stream:'shared'}];
+ }};
+ assert.deepEqual(await answer(driver,'tx',{op:'readTracking',records:[key],pairs}),pairs);
+ assert.deepEqual(JSON.parse(seen[0][0]),[key]);
+ assert.deepEqual(JSON.parse(seen[0][1]),pairs);
+ const count=seen.length;
+ assert.deepEqual(await answer(driver,'tx',{op:'readTracking',records:[],pairs:[]}),[]);
+ assert.equal(seen.length,count,'an empty read performs no SQL');
 });

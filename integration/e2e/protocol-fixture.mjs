@@ -13,12 +13,12 @@ export async function syncProtocol(client, transport, models) {
   if(caughtUp)return;
   const status=await client.syncState();
   // Only an initialized subscription has a delivery position to pull from: a
-  // registration still waiting for its first acknowledged head is in `scopes`
+  // registration still waiting for its first acknowledged head is in `streams`
   // and not in `cursors`, and a null boundary is never read as zero (#150).
   const cursors={...status.cursors};
   if(Object.keys(cursors).length===0)return;
   // One pull covers every initialized scope; it repeats while any scope continues.
-  const page=JSON.parse(await transport('pull',JSON.stringify({capabilities:["scope-membership-v1"],cursors,models})));await client.applyPull(page);
+  const page=JSON.parse(await transport('pull',JSON.stringify({capabilities:["stream-membership-v1"],cursors,models})));await client.applyPull(page);
   caughtUp=Object.values(page.cursors).every(range=>range.to>=range.head);
  }
 }

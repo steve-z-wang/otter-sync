@@ -31,13 +31,13 @@ Local-first apps read and write data on the device, so everyday interactions don
 
 ## How it works
 
-The Scope API below is an [unreleased coordinated breaking cutover](website/docs/backend/deployment.md#scope-membership-cutover); published 0.2 packages retain the earlier contract.
+The Stream API below is an [unreleased coordinated breaking cutover](website/docs/backend/deployment.md#stream-membership-cutover); published 0.2 packages retain the earlier contract.
 
 ![AXTON architecture: local state and background sync](website/docs/assets/architecture.svg)
 
 Clients push mutations over HTTP. On connection, they catch up from saved progress over HTTP, then receive ongoing record updates over WebSocket. AXTON manages this as one connection.
 
-On your server, **handlers** process writes and **loaders** read records to send to clients. After a handler runs, AXTON reads the records the mutation targeted back through your loaders and returns them to the client in the receipt. A **scope** is a set of records other clients subscribe to: add a record to it once, and every later change to that record reaches its subscribers.
+On your server, **handlers** process writes and **loaders** read records to send to clients. After a handler runs, AXTON reads the records the mutation targeted back through your loaders and returns them to the client in the receipt. A **Stream** is a resumable delivery sequence clients subscribe to. Track a record once; global invalidation of its authority reaches every tracking Stream, through the viewer's Loader.
 
 Writes update local SQLite immediately, so reads see changes before sync completes. Changes to local data update query subscriptions (`watch`). If the backend rejects a mutation, its local changes roll back.
 
@@ -111,11 +111,11 @@ const { error } = await call.wait();
 // Run a Query. It asks the backend directly and returns its result.
 const { todos } = await client.queries.searchTodos({ text: "milk" });
 
-// Receive record changes published to the "todos" scope.
-await client.scopes.subscribe("todos");
+// Receive record changes published to the "todos" stream.
+await client.streams.subscribe("todos");
 ```
 
-AXTON sends queued Mutations when the network allows, retries failed sync requests, and fetches changed records from your subscribed scopes. `client.mutations.call` waits for the backend instead, and `client.queries.enqueue` queues a Query.
+AXTON sends queued Mutations when the network allows, retries failed sync requests, and fetches changed records from your subscribed streams. `client.mutations.call` waits for the backend instead, and `client.queries.enqueue` queues a Query.
 
 ### 3. Implement handlers and loaders for your backend
 
@@ -128,12 +128,12 @@ const mutations: Mutations<Tx> = {
     await ctx.tx.todo.create({ data: args.todo });
 
     // The new todo is read back for the caller regardless. Adding it to the
-    // "todos" scope once sends it, and every later change, to subscribers.
-    ctx.scope("todos").add.todo(args.todo);
+    // "todos" stream once sends it, and every later change, to subscribers.
+    ctx.stream("todos").track.todo(args.todo);
   },
 };
 
-// Answer a read. A Query's context has no touch or scope.
+// Answer a read. A Query's context has no invalidate or stream.
 const queries: Queries<Tx> = {
   async searchTodos({ ctx, args }) {
     const rows = await ctx.tx.todo.findMany({

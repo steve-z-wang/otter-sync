@@ -24,8 +24,8 @@ async function until(predicate,what='condition') {
  while(Date.now()<deadline) { if(await predicate()) return; await new Promise(r=>setTimeout(r,5)); }
  throw Error(`${what} timed out`);
 }
-const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.scopes.map(c=>[c,heads[c]??0]))});
-const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{scope:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
+const ack = (sub, heads={}) => JSON.stringify({type:'subscribed',cursors:Object.fromEntries(sub.streams.map(c=>[c,heads[c]??0]))});
+const page = (text, cursor=0, stamp=cursor+1) => ({cursors:{scope:{from:cursor,to:cursor+1,head:cursor+1}},changes:[{stream:'scope',cursor:cursor+1,kind:'upsert',model:'Entry',identity:{id:'live'},stamp,state:{text,note:null}}]});
 /** The `bootstrap` part of a status snapshot before anything asked for a load. */
 const notRequested={phase:'not-requested',error:null};
 /**
@@ -33,7 +33,7 @@ const notRequested={phase:'not-requested',error:null};
  * scope head it observed - the barrier completion then waits for
  * ([#151](https://github.com/zanminwang/axton/issues/151)).
  */
-const loaded=(body,head=body.until)=>({mode:'bootstrap',scope:body.scope,from:body.after,to:body.until,until:body.until,head,changes:[]});
+const loaded=(body,head=body.until)=>({mode:'bootstrap',stream:body.stream,from:body.after,to:body.until,until:body.until,head,changes:[]});
 /**
  * A fake server whose handshake acknowledges `heads` and whose pull answers when
  * `hold` resolves. A bootstrap request is answered by `load` behind its own
@@ -68,20 +68,20 @@ test('one handle per subscription identity: concurrent and repeated calls coales
  try {
   const [first,second]=await Promise.all([client.subscribe('scope'),client.subscribe('scope')]);
   assert.equal(first,second,'concurrent calls obtain one cached handle');
-  assert.equal(await client.scopes.subscribe('scope'),first,'the scopes facade shares the cache');
-  assert.equal(first.scope,'scope');
+  assert.equal(await client.streams.subscribe('scope'),first,'the streams facade shares the cache');
+  assert.equal(first.stream,'scope');
   assert.deepEqual({...first.status},{active:true,initialization:'pending',connection:'offline',bootstrap:notRequested},
    'registered offline: durable intent with no boundary and no transport');
-  assert.deepEqual((await client.syncState()).scopes,['scope']);
+  assert.deepEqual((await client.syncState()).streams,['scope']);
   assert.deepEqual((await client.syncState()).cursors,{},'an uninitialized subscription has no cursor at all');
   const other=await client.subscribe('other');
-  assert.notEqual(other,first,'another Scope is another subscription');
+  assert.notEqual(other,first,'another Stream is another subscription');
   // A name no socket could subscribe is refused before a row exists, so no
-  // handle is handed out and no lane is left with a Scope it cannot ask for.
+  // handle is handed out and no lane is left with a Stream it cannot ask for.
   for (const blank of ['','  ','\t\n'])
-   await assert.rejects(()=>client.scopes.subscribe(blank),/scope must not be empty/,
-    `a blank Scope name is refused: ${JSON.stringify(blank)}`);
-  assert.deepEqual((await client.syncState()).scopes,['other','scope'],
+   await assert.rejects(()=>client.streams.subscribe(blank),/stream must not be empty/,
+    `a blank Stream name is refused: ${JSON.stringify(blank)}`);
+  assert.deepEqual((await client.syncState()).streams,['other','scope'],
    'nothing of a refused registration was written');
  } finally { await fixture.close(); }
 });
@@ -123,7 +123,7 @@ test('an observer exception is reported after the commit and changes nothing', a
   await until(async()=>(await client.syncState()).cursors.scope===0,'the committed boundary');
   assert.ok(reported.length>=2,`the observer failed again after the commit: ${reported.length}`);
   assert.ok(reported.every(e=>e.message==='observer failed'));
-  assert.equal((await client.syncState()).scopes.length,1,'nothing was rolled back');
+  assert.equal((await client.syncState()).streams.length,1,'nothing was rolled back');
   // A failing observer is not a transport failure: the session it fired in is
   // still the one streaming.
   network.sockets[0].send(JSON.stringify(page('streamed')));
@@ -193,10 +193,10 @@ test('a recreated subscription is connecting until its own handshake acknowledge
  } finally { await fixture.close();await network.close(); }
 });
 
-// A replica rebuild carries the Scope names over with fresh identities, so a
+// A replica rebuild carries the Stream names over with fresh identities, so a
 // handle from before it names a registration that no longer exists: the one
 // public path where an identity-fenced removal answers "nothing went" while the
-// Scope has a live registration ([#150](https://github.com/zanminwang/axton/issues/150)).
+// Stream has a live registration ([#150](https://github.com/zanminwang/axton/issues/150)).
 test('a stale handle from before a rebuild cannot disturb the subscription that replaced it', async()=>{
  const dir=await mkdtemp(join(tmpdir(),'axton-subscriptions-rebuild-'));
  const path=join(dir,'client.sqlite');
@@ -222,16 +222,16 @@ test('a stale handle from before a rebuild cannot disturb the subscription that 
    'the observer was told, and the handle has no changes left');
   stop();
   const current=await client.subscribe('scope');
-  assert.notEqual(current,stale,'the carried Scope is a new registration, never the same handle');
+  assert.notEqual(current,stale,'the carried Stream is a new registration, never the same handle');
   const connection=await client.connect(network.config);
   await until(()=>current.status.connection==='live'&&current.status.initialization==='ready',
    'the carried subscription goes live');
   assert.deepEqual({...stale.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested},
-   'the new session acknowledges the Scope name, not the stale handle');
-  // The old handle removes nothing: the Scope's current registration is another
+   'the new session acknowledges the Stream name, not the stale handle');
+  // The old handle removes nothing: the Stream's current registration is another
   // identity, whose acknowledgement is not this handle's to forget.
   await stale.unsubscribe();
-  assert.deepEqual((await client.syncState()).scopes,['scope'],'the current registration stands');
+  assert.deepEqual((await client.syncState()).streams,['scope'],'the current registration stands');
   assert.deepEqual({...current.status},{active:true,initialization:'ready',connection:'live',bootstrap:notRequested},
    'a removal that removed nothing changes no status');
   assert.deepEqual({...stale.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
@@ -245,18 +245,18 @@ test('unsubscribe removes one registration; an old handle cannot remove its repl
   const first=await client.subscribe('scope');
   await first.unsubscribe();
   assert.deepEqual({...first.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
-  assert.deepEqual((await client.syncState()).scopes,[],'the registration is gone');
+  assert.deepEqual((await client.syncState()).streams,[],'the registration is gone');
   await first.unsubscribe();
-  assert.deepEqual((await client.syncState()).scopes,[],'repeating it on a closed handle is a no-op');
+  assert.deepEqual((await client.syncState()).streams,[],'repeating it on a closed handle is a no-op');
   const second=await client.subscribe('scope');
   assert.notEqual(second,first);
   await first.unsubscribe();
-  assert.deepEqual((await client.syncState()).scopes,['scope'],
+  assert.deepEqual((await client.syncState()).streams,['scope'],
    'an old handle must not delete the subscription that replaced it');
   assert.equal(second.status.active,true);
-  // The Scope-named form removes whatever is registered and closes its handle.
+  // The Stream-named form removes whatever is registered and closes its handle.
   await client.unsubscribe('scope');
-  assert.deepEqual((await client.syncState()).scopes,[]);
+  assert.deepEqual((await client.syncState()).streams,[]);
   assert.deepEqual({...second.status},{active:false,initialization:'pending',connection:'stopped',bootstrap:notRequested});
  } finally { await fixture.close(); }
 });
@@ -276,14 +276,14 @@ test('closing the client stops handles and deletes nothing; work through them fa
   assert.equal(failed?.code,'subscription.closed','a stopped handle cannot commit work');
   const reopened=await runtime.Client.open({path,schema});
   try {
-   assert.deepEqual((await reopened.syncState()).scopes,['scope'],'closing the client deleted nothing');
+   assert.deepEqual((await reopened.syncState()).streams,['scope'],'closing the client deleted nothing');
    const restored=await reopened.subscribe('scope');
    assert.equal(restored.status.active,true);
   } finally { await reopened.close(); }
  } finally { await rm(dir,{recursive:true,force:true}); }
 });
 
-// Whole-Scope bootstrap through the handle
+// Whole-Stream bootstrap through the handle
 // ([#151](https://github.com/zanminwang/axton/issues/151)): registration is
 // eager and local, completion is a committed transition, and the status says
 // which of the two the run is waiting for.
@@ -313,7 +313,7 @@ test('bootstrap is submitted eagerly, concurrent calls share one run, and the ba
   assert.equal(settled,false,'a barrier delivery has not reached does not complete the run');
   assert.equal(network.loads.length,1,'two concurrent calls registered one task');
   assert.deepEqual(network.loads[0].after,0,'the page asked for the interval from committed progress');
-  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{scope:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
+  network.sockets[0].send(JSON.stringify({cursors:{scope:{from:0,to:3,head:3}},changes:[{stream:'scope',cursor:3,kind:'upsert',model:'Entry',identity:{id:'live'},stamp:3,state:{text:'delivered',note:null}}]}));
   await both;
   assert.deepEqual({...subscription.status.bootstrap},{phase:'complete',error:null});
   assert.ok(Object.isFrozen(subscription.status.bootstrap),'the load status is immutable too');
@@ -471,11 +471,11 @@ test('an observer that throws on a load transition is reported and changes nothi
  * The handles driven through a Bridge over a scripted runtime, so what the
  * runtime publishes is exact: the snapshot queued behind the task that names
  * its observer, a terminal snapshot, and every failure code a parked
- * `scopeBootstrap` can end with ([#134](https://github.com/zanminwang/axton/issues/134)).
+ * `streamBootstrap` can end with ([#134](https://github.com/zanminwang/axton/issues/134)).
  * The runtime decides all of it; these tests pin what the handle makes of it.
  */
 const statusOf=(over={})=>({active:true,initialization:'ready',connection:'live',bootstrap:notRequested,...over});
-const snapshot=(status,closed)=>({kind:'subscription',scope:'scope',subscriptionId:1,status,...(closed?{closed:true}:{})});
+const snapshot=(status,closed)=>({kind:'subscription',stream:'scope',subscriptionId:1,status,...(closed?{closed:true}:{})});
 const changed=(status,closed)=>({type:'observerChanged',observerId:'7',snapshot:snapshot(status,closed)});
 const done=(requestId,value=null)=>({type:'taskCompleted',requestId,ok:true,value});
 const failed=(requestId,error,details)=>({type:'taskCompleted',requestId,ok:false,value:null,error,...(details?{details}:{})});
@@ -492,9 +492,9 @@ async function scriptedRuntime() {
    switch(input.command.kind){
     // The observer's first snapshot rides in the same batch, after the task.
     // A repeated call for a known identity publishes nothing: the status is unchanged.
-    case 'scopeSubscribe':outbox.push(done(input.requestId,{state:{scope:'scope',subscriptionId:1,startingCursor:0,cursor:0},observerId:'7'}));
+    case 'streamSubscribe':outbox.push(done(input.requestId,{state:{stream:'scope',subscriptionId:1,startingCursor:0,cursor:0},observerId:'7'}));
      if(!observed){observed=true;outbox.push(changed(statusOf()));}break;
-    case 'scopeUnsubscribe':observed=false;outbox.push(changed(statusOf({active:false,connection:'stopped'}),true),done(input.requestId,{removed:true}));break;
+    case 'streamUnsubscribe':observed=false;outbox.push(changed(statusOf({active:false,connection:'stopped'}),true),done(input.requestId,{removed:true}));break;
     // A bootstrap parks until the test publishes its outcome.
    }
    later();
@@ -506,7 +506,7 @@ async function scriptedRuntime() {
  const subscriptions=new Subscriptions(bridge,error=>reported.push(error));
  return {bridge,subscriptions,tasks,reported,
   publish(...events){if(events.some(e=>e.snapshot?.closed))observed=false;outbox.push(...events);wake('1');},
-  bootstraps:()=>tasks.filter(t=>t.kind==='scopeBootstrap')};
+  bootstraps:()=>tasks.filter(t=>t.kind==='streamBootstrap')};
 }
 
 test('a status observer attached right after subscribe resolves sees the current snapshot once', async()=>{
@@ -529,7 +529,7 @@ test('a terminal snapshot ends the handle: observers hear it once, then nothing,
  const {subscriptions,publish,tasks}=await scriptedRuntime();
  const subscription=await subscriptions.subscribe('scope');
  const seen=[];subscription.watch(status=>seen.push(status));
- // A removal the runtime committed elsewhere: the Scope-named form, or a rebuild.
+ // A removal the runtime committed elsewhere: the Stream-named form, or a rebuild.
  publish(changed(statusOf({active:false,connection:'stopped'}),true));
  assert.deepEqual(seen.map(s=>[s.active,s.connection]),[[true,'live'],[false,'stopped']]);
  publish(changed(statusOf()));
@@ -549,7 +549,7 @@ test('unsubscribe resolves after the terminal snapshot closed the handle', async
  const {subscriptions,tasks}=await scriptedRuntime();
  const subscription=await subscriptions.subscribe('scope');
  await subscription.unsubscribe();
- assert.deepEqual(tasks.at(-1),{kind:'scopeUnsubscribe',scope:'scope',subscriptionId:1,requestId:tasks.at(-1).requestId});
+ assert.deepEqual(tasks.at(-1),{kind:'streamUnsubscribe',stream:'scope',subscriptionId:1,requestId:tasks.at(-1).requestId});
  assert.deepEqual({...subscription.status},statusOf({active:false,connection:'stopped'}));
  const before=tasks.length;
  await subscription.unsubscribe();
@@ -564,7 +564,7 @@ test('a registration the engine refuses as closed rejects with subscription.clos
  const refused=subscription.bootstrap().then(()=>null,error=>error);
  const other=subscription.bootstrap().then(()=>null,error=>error);
  assert.equal(bootstraps().length,2,'eager: submitted when called');
- assert.deepEqual(bootstraps()[0],{kind:'scopeBootstrap',scope:'scope',subscriptionId:1,requestId:bootstraps()[0].requestId});
+ assert.deepEqual(bootstraps()[0],{kind:'streamBootstrap',stream:'scope',subscriptionId:1,requestId:bootstraps()[0].requestId});
  const text='subscription.closed: subscription 1 for scope is closed; it has no bootstrap state';
  publish(failed(bootstraps()[0].requestId,text,{code:'subscription.closed'}),
   failed(bootstraps()[1].requestId,'the database is locked'));
@@ -650,7 +650,7 @@ test('an observer that throws is reported and hears every later snapshot', async
  assert.equal(subscription.status.connection,'connecting','the exception changed nothing');
 });
 
-test('unsubscribing a Scope while a bootstrap is submitted rejects it as closed', async()=>{
+test('unsubscribing a Stream while a bootstrap is submitted rejects it as closed', async()=>{
  const fixture=await openClient();const {client}=fixture;
  try {
   const subscription=await client.subscribe('scope');
@@ -665,30 +665,36 @@ test('unsubscribing a Scope while a bootstrap is submitted rejects it as closed'
  } finally { await fixture.close(); }
 });
 
-test('transaction scopes commit, rollback and reopen local intent without a channels facade', async()=>{
+test('transaction streams commit, rollback and reopen local intent without a channels facade', async()=>{
  const fixture=await openClient();const {client}=fixture;
  try {
   await client.transaction(async tx=>{
    assert.equal('channels' in tx,false);
-   await tx.scopes.subscribe('U');
-   await tx.scopes.subscribe('discard');
+   await tx.streams.subscribe('U');
+   await tx.savepoint(async()=>{
+    await tx.streams.subscribe('discard');
+    await assert.rejects(tx.savepoint(async()=>{
+     await tx.streams.subscribe('nested-rollback');
+     throw Error('nested rollback');
+    }), /nested rollback/);
+   });
   });
-  assert.deepEqual((await client.syncState()).scopes,['U','discard']);
+  assert.deepEqual((await client.syncState()).streams,['U','discard']);
   await client.transaction(async tx=>{
-   await tx.scopes.unsubscribe('discard');
+   await tx.streams.unsubscribe('discard');
   });
-  assert.deepEqual((await client.syncState()).scopes,['U']);
+  assert.deepEqual((await client.syncState()).streams,['U']);
   await assert.rejects(client.transaction(async tx=>{
-   await tx.scopes.unsubscribe('U');
-   await tx.scopes.subscribe('discard');
-   await tx.scopes.subscribe('rolled-back');
-   throw Error('rollback scopes');
-  }),/rollback scopes/);
-  assert.deepEqual((await client.syncState()).scopes,['U']);
+   await tx.streams.unsubscribe('U');
+   await tx.streams.subscribe('discard');
+   await tx.streams.subscribe('rolled-back');
+   throw Error('rollback streams');
+  }),/rollback streams/);
+  assert.deepEqual((await client.syncState()).streams,['U']);
   const reopened=await fixture.reopen();
-  assert.deepEqual((await reopened.syncState()).scopes,['U'],'reopen preserves only committed registrations before any subscribe call');
-  const followed=await reopened.scopes.subscribe('U');
-  assert.equal(followed,await reopened.scopes.subscribe('U'));
+  assert.deepEqual((await reopened.syncState()).streams,['U'],'reopen preserves only committed registrations before any subscribe call');
+  const followed=await reopened.streams.subscribe('U');
+  assert.equal(followed,await reopened.streams.subscribe('U'));
   await followed.unsubscribe();
   assert.equal(followed.status.active,false);
  } finally { await fixture.close(); }

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/zanminwang/axton/compare/v0.2.0...v0.3.0) (2026-10-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* deliver model authority without local stream ownership ([#228](https://github.com/zanminwang/axton/issues/228))
+* replace Channel with Scope membership APIs ([#225](https://github.com/zanminwang/axton/issues/225))
+
+### Features
+
+* deliver model authority without local stream ownership ([#228](https://github.com/zanminwang/axton/issues/228)) ([e0ff93e](https://github.com/zanminwang/axton/commit/e0ff93ed9a9ffa3b6f06fd2064541f2e687c4e6c))
+* replace Channel with Scope membership APIs ([#225](https://github.com/zanminwang/axton/issues/225)) ([66232e5](https://github.com/zanminwang/axton/commit/66232e525648188e8a8986870ea7a272741029a9))
+* replace delivery scopes and tags with Stream tracking ([#227](https://github.com/zanminwang/axton/issues/227)) ([134294d](https://github.com/zanminwang/axton/commit/134294d0e7b0d6161e9c9a8dfed85eee02ca1d1b))
+
 ## [0.2.0](https://github.com/zanminwang/axton/compare/v0.1.2...v0.2.0) (2026-09-30)
 
 

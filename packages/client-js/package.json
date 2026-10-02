@@ -1,6 +1,6 @@
 {
   "name": "@axtonjs/client",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AXTON's local-first client for Node.js.",
   "license": "MIT",
   "author": "Zanmin Wang (https://zanminwang.com)",
@@ -25,7 +25,7 @@
     "node": ">=22.18.0"
   },
   "dependencies": {
-    "@axtonjs/native": "0.2.0",
+    "@axtonjs/native": "0.3.0",
     "ws": "^8.21.3"
   },
   "publishConfig": {

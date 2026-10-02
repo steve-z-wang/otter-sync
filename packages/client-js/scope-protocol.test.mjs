@@ -47,6 +47,7 @@ test('runtime negotiates on live and pull; Remove retains authority until newer 
     await client.subscribe('scope');
     const connection = await client.connect({ url: `http://127.0.0.1:${server.address().port}`, token: 'secret' }, { onError: error => errors.push(error) });
     await until(() => envelopes.some(e => e.type === 'subscribe'));
+    await until(async () => (await client.syncState()).cursors.scope === 0);
     await connection.pause();
     await connection.resume();
     const send = (from, change) => socket.send(JSON.stringify({ cursors: { scope: { from, to: from + 1, head: from + 1 } }, changes: [change] }));

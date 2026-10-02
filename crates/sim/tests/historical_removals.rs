@@ -56,16 +56,35 @@ fn seeded(seed: u64, streams: &[&str]) -> Sim {
     sim
 }
 #[test]
-fn second_stream_hold_preserves_content_until_its_own_release() {
+fn saved_removals_preserve_content_and_stamp_until_newer_loader_absence() {
     let mut sim = seeded(9101, &["u", "v"]);
     effects(&mut sim, vec![track("u"), track("v")]);
     sim.settle();
     effects(&mut sim, vec![release("u")]);
     sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
+    let stamp = sim.client(0).record_stamp(&entry_key("a")).unwrap();
     effects(&mut sim, vec![release("v")]);
     sim.settle();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+    assert_eq!(
+        sim.read_text(0, &entry_key("a")).as_deref(),
+        Some("stored"),
+        "Remove supplies no Model authority"
+    );
+    assert_eq!(sim.client(0).record_stamp(&entry_key("a")).unwrap(), stamp);
+    sim.apply(Action::Declare {
+        key: "Entry:a".into(),
+        touch: Some(None),
+        memberships: vec![("u".into(), true)],
+    })
+    .unwrap();
+    sim.settle();
+    assert_eq!(
+        sim.read_text(0, &entry_key("a")),
+        None,
+        "current Loader null supplies absence"
+    );
+    assert!(sim.client(0).record_stamp(&entry_key("a")).unwrap() > stamp);
 }
 
 #[test]
@@ -85,8 +104,17 @@ fn delayed_old_stream_page_cannot_restore_a_released_replica() {
     sim.apply(Action::Deliver).unwrap();
     sim.apply(Action::Swap { i: 0, j: 1 }).unwrap();
     sim.apply(Action::Deliver).unwrap(); // New removal first.
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
-    sim.apply(Action::Deliver).unwrap(); // Older page cannot resurrect.
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
+    assert_eq!(sim.client(0).record_stamp(&entry_key("a")).unwrap(), 1);
+    sim.apply(Action::Deliver).unwrap(); // Older covered page cannot move authority.
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
+    sim.apply(Action::Declare {
+        key: "Entry:a".into(),
+        touch: Some(None),
+        memberships: vec![("u".into(), true)],
+    })
+    .unwrap();
+    sim.settle();
     assert_eq!(sim.read_text(0, &entry_key("a")), None);
 }
 
@@ -110,7 +138,7 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     assert_eq!(
         sim.read_text(0, &entry_key("a")).as_deref(),
         Some("pending"),
-        "second hold preserves the optimistic edit"
+        "Remove preserves the optimistic edit"
     );
     effects(&mut sim, vec![release("v")]);
     sim.apply(Action::Pull { client: 0 }).unwrap();
@@ -118,15 +146,15 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     sim.apply(Action::Deliver).unwrap();
     assert_eq!(
         sim.read_text(0, &entry_key("a")),
-        None,
-        "pending update cannot render against an absent base"
+        Some("pending".into()),
+        "Remove preserves the base and pending words"
     );
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
     assert_eq!(
         sim.read_text(0, &entry_key("a")),
-        None,
-        "pending update cannot render against an absent base"
+        Some("pending".into()),
+        "Remove preserves the base and pending words"
     );
     assert_eq!(sim.client(0).pending_count().unwrap(), 1);
     let submitted = sim
@@ -150,8 +178,8 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     );
     assert_eq!(
         sim.read_text(0, &entry_key("a")),
-        None,
-        "receipt does not repopulate the released base"
+        Some("pending".into()),
+        "receipt remains canonical authority without tracking"
     );
 
     let mut local = seeded(9105, &["u", "v"]);
@@ -169,14 +197,14 @@ fn pending_edit_and_device_local_patch_survive_release_and_offline_reopen() {
     assert_eq!(
         local.read_text(0, &entry_key("a")).as_deref(),
         Some("device"),
-        "second hold preserves the direct patch"
+        "Remove preserves the direct patch"
     );
     effects(&mut local, vec![release("v")]);
     local.settle();
     assert_eq!(
         local.read_text(0, &entry_key("a")),
-        None,
-        "direct patch does not retain unrelated replica fields"
+        Some("device".into()),
+        "Remove does not change the direct patch or base"
     );
     let layers = local
         .client(0)
@@ -231,7 +259,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     let wire: serde_json::Value = serde_json::from_str(&dispatch.body).unwrap();
     assert_eq!(
         wire["capabilities"],
-        serde_json::json!(["stream-membership-v1"])
+        serde_json::json!(["stream-authority-v1"])
     );
     assert_eq!(wire["loads"][0]["args"], serde_json::json!({"channel":"u"}));
     let request = LoadBatchRequest::decode_envelope(dispatch.body.as_bytes()).unwrap();
@@ -254,7 +282,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     })
     .unwrap();
     sim.settle();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
     let reply = LoadBatchResponse::decode(held.as_bytes(), &request)
         .unwrap()
         .remove(0);
@@ -263,8 +291,8 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
         .unwrap();
     assert_eq!(
         sim.read_text(0, &entry_key("a")),
-        None,
-        "old enrolled claim cannot revive released content"
+        Some("loaded".into()),
+        "saved Load authority is independent of server tracking"
     );
     // Durable server call replay returns the original claim, without executing add again.
     let replay = sim
@@ -276,7 +304,7 @@ fn delayed_enrolled_native_load_claim_and_replay_cannot_reenroll_after_removal()
     assert!(sim.host.stored_memberships(&entry_key("a")).is_empty());
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("loaded"));
 }
 
 #[test]
@@ -319,7 +347,7 @@ fn compacted_saved_removal_then_fresh_tracking_survives_offline_reopen() {
     sim.settle();
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
-    assert_eq!(sim.read_text(0, &entry_key("a")), None);
+    assert_eq!(sim.read_text(0, &entry_key("a")).as_deref(), Some("stored"));
 }
 
 #[test]
@@ -415,6 +443,8 @@ fn generated_saved_removals_and_tracking_preserve_enrolled_load_replay_through_r
                 handlers,
                 "seed{seed} cycle{cycle}: replay does not re-enroll"
             );
+            let retained = sim.read_text(0, &entry_key("a"));
+            let retained_stamp = sim.client(0).record_stamp(&entry_key("a")).unwrap();
             let request = LoadBatchRequest::decode_envelope(dispatched.body.as_bytes()).unwrap();
             let reply = LoadBatchResponse::decode(replay.as_bytes(), &request)
                 .unwrap()
@@ -422,17 +452,17 @@ fn generated_saved_removals_and_tracking_preserve_enrolled_load_replay_through_r
             sim.client(0)
                 .store_load_page(&dispatched.pages[0].fence, reply)
                 .unwrap();
-            let expected = if sim.host.stored_memberships(&entry_key("a")).is_empty() {
-                None
+            let original: serde_json::Value = serde_json::from_str(&held).unwrap();
+            let record = &original["loads"][0]["records"][0];
+            let expected = if retained_stamp >= record["stamp"].as_u64().unwrap() {
+                retained
             } else {
-                sim.host
-                    .state(&entry_key("a"))
-                    .map(|s| s["text"].as_str().unwrap().to_string())
+                record["state"]["text"].as_str().map(str::to_owned)
             };
             assert_eq!(
                 sim.read_text(0, &entry_key("a")),
                 expected,
-                "seed{seed} cycle{cycle}: older enrolled authority follows final memberships/current content"
+                "seed{seed} cycle{cycle}: older Load authority cannot replace a newer delivered stamp; tracking is routing"
             );
             sim.check()
                 .unwrap_or_else(|e| panic!("seed{seed} cycle{cycle}: {e}"));
@@ -475,6 +505,18 @@ fn one_saved_removal_preserves_other_rows_through_duplicate_reordered_delivery_a
     sim.apply(Action::Crash { client: 0 }).unwrap();
     sim.apply(Action::Restart { client: 0 }).unwrap();
     sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("B")).as_deref(), Some("B text"));
+    assert_eq!(sim.client(0).record_stamp(&entry_key("B")).unwrap(), 1);
+    sim.apply(Action::Declare {
+        key: "Entry:B".into(),
+        touch: Some(None),
+        memberships: vec![("u".into(), true)],
+    })
+    .unwrap();
+    sim.settle();
+    assert_eq!(sim.read_text(0, &entry_key("B")), None);
+    sim.apply(Action::Crash { client: 0 }).unwrap();
+    sim.apply(Action::Restart { client: 0 }).unwrap();
     assert_eq!(sim.read_text(0, &entry_key("B")), None);
     for id in ["A", "C"] {
         assert_eq!(sim.read_text(0, &entry_key(id)), Some(format!("{id} text")));

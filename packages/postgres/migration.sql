@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS axton_record (
  CONSTRAINT axton_record_model_identity_key_key UNIQUE(model,identity_key),
  CONSTRAINT axton_record_identity_object CHECK(jsonb_typeof(identity) = 'object')
 );
--- Live membership only: an absent pair has no row here and a `remove` log row.
+-- Durable tracking, including when a viewer Loader currently answers null.
+-- Historical withdrawals are repaired by 2026-10-01-local-authority.sql.
 CREATE TABLE IF NOT EXISTS axton_stream_member (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  stream text NOT NULL REFERENCES axton_stream(stream),

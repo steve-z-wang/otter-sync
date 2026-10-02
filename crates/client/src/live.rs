@@ -45,7 +45,7 @@ impl LiveSession {
         let subscribe = SubscribeRequest::new(streams, models)?;
         let frame = String::from_utf8(with_capabilities(
             &subscribe.encode()?,
-            &[STREAM_MEMBERSHIP_CAPABILITY],
+            &[STREAM_AUTHORITY_CAPABILITY],
         )?)
         .map_err(|_| invalid("utf8"))?;
         self.epoch = allocate(self.epoch, "socket epoch")?;

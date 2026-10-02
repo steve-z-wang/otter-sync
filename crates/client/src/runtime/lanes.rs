@@ -746,21 +746,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 }
             }
             DownlinkAction::Bootstrap(state) => self.observe_run(state),
-            DownlinkAction::Reconciliation(state) => {
-                if state.state == crate::BootstrapPhase::Complete
-                    && self.lanes.downlink.stream_acknowledged()
-                    && self
-                        .client
-                        .subscription_state(&state.stream)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|subscription| {
-                            subscription.subscription_id == state.subscription_id
-                        })
-                {
-                    self.acknowledged(vec![state.stream]);
-                }
-            }
             // The replica was rebuilt: the runtime already cancelled the old
             // replica's lane effects when it reset the worker; whatever is
             // still held for it goes now, before the worker opens or requests

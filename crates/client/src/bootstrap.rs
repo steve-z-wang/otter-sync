@@ -19,8 +19,6 @@ use axton_core::{BootstrapPage, BootstrapRequest, Result, invalid};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-type HistoryBarrierScan = (Vec<(BootstrapState, bool)>, Vec<LedgerIssue>);
-
 /// The stable code a page whose records could not all be applied fails with.
 pub const RECORDS_FAILED: &str = "bootstrap.records_failed";
 /// The stable code a response that is not a page of the requested interval
@@ -258,7 +256,6 @@ impl BootstrapApply {
 /// the row, so both halves are read in the one transaction that picked the task.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BootstrapTask {
-    pub(crate) reconciliation: bool,
     pub state: BootstrapState,
     /// S, the subscription origin every page of this run is bounded by.
     pub origin: u64,
@@ -271,7 +268,7 @@ impl BootstrapTask {
     ) -> Result<Vec<u8>> {
         axton_core::with_capabilities(
             &self.request(models).encode()?,
-            &[axton_core::STREAM_MEMBERSHIP_CAPABILITY],
+            &[axton_core::STREAM_AUTHORITY_CAPABILITY],
         )
     }
     /// The page this run asks for next: `(B, S]` with the client's declared
@@ -300,116 +297,6 @@ impl<S: ClientStore> Client<S> {
     pub fn bootstrap_schedule(&mut self, rotation: Option<&str>) -> Result<Option<BootstrapTask>> {
         Ok(self.bootstrap_schedule_scan(rotation)?.0)
     }
-    pub(crate) fn retry_reconciliation_failures(&mut self) -> Result<()> {
-        let streams=self.view(|e| Ok(e.rows("SELECT stream FROM axton_subscription WHERE reconcile_state='failed' AND reconcile_run<?", &[serde_json::json!(axton_core::MAX_SAFE_INTEGER)])?.rows.into_iter().filter_map(|row| row[0].as_str().map(str::to_string)).collect::<Vec<_>>()))?;
-        if streams.is_empty() {
-            return Ok(());
-        }
-        self.write(|e| {
-            e.reconciled(|e| {
-                for stream in streams {
-                    let Some(row) = e.bootstrap_row(&stream)? else {
-                        continue;
-                    };
-                    if row.state.state != BootstrapPhase::Failed {
-                        continue;
-                    }
-                    let mut state = row.state;
-                    let old_run = state.run;
-                    state.run = old_run
-                        .checked_add(1)
-                        .filter(|r| *r <= axton_core::MAX_SAFE_INTEGER)
-                        .ok_or_else(|| invalid("reconciliation run exhausted"))?;
-                    state.state = if state.barrier.is_some() {
-                        BootstrapPhase::CatchingUp
-                    } else {
-                        BootstrapPhase::Requested
-                    };
-                    state.error = None;
-                    written(e.set_bootstrap(&state, old_run)?)?;
-                    e.mark_bootstrap(&stream);
-                }
-                Ok(())
-            })
-        })
-    }
-    pub(crate) fn reconciliation_failed(&mut self) -> Result<bool> {
-        self.view(|e| {
-            Ok(e.scalar(
-                "SELECT 1 FROM axton_subscription WHERE reconcile_state='failed' LIMIT 1",
-                &[],
-            )?
-            .is_some())
-        })
-    }
-    pub(crate) fn reconciliation_schedule(&mut self) -> Result<Option<BootstrapTask>> {
-        self.view(|e| {
-            e.reconciled(|e| {
-                Ok(e.bootstrap_task_rows()?
-                    .into_iter()
-                    .find(|row| row.state.state.schedulable())
-                    .and_then(|row| {
-                        Some(BootstrapTask {
-                            reconciliation: true,
-                            origin: row.subscription.starting_cursor?,
-                            state: row.state,
-                        })
-                    }))
-            })
-        })
-    }
-    pub(crate) fn any_reconciliation_pending(&mut self) -> Result<bool> {
-        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE reconcile_state NOT IN ('not_requested','complete') LIMIT 1", &[])?.is_some()))
-    }
-    pub(crate) fn reconciliation_pending(&mut self, stream: &str) -> Result<bool> {
-        self.view(|e| Ok(e.scalar("SELECT 1 FROM axton_subscription WHERE stream=? AND reconcile_state NOT IN ('not_requested','complete')", &[serde_json::json!(stream)])?.is_some()))
-    }
-    pub(crate) fn apply_stream_history_page(
-        &mut self,
-        reconciliation: bool,
-        stream: &str,
-        subscription_id: u64,
-        run: u64,
-        expected_after: u64,
-        page: &axton_core::StreamBootstrapPage,
-    ) -> Result<BootstrapApply> {
-        self.write(|e| {
-            e.reconciliation = reconciliation;
-            e.apply_stream_bootstrap_body(stream, subscription_id, run, expected_after, page)
-        })
-    }
-    pub(crate) fn fail_history_state(
-        &mut self,
-        reconciliation: bool,
-        stream: &str,
-        subscription_id: u64,
-        run: u64,
-        error: BootstrapError,
-    ) -> Result<Option<BootstrapState>> {
-        if !reconciliation {
-            return self.fail_bootstrap_state(stream, subscription_id, run, error);
-        }
-        self.write(|e| {
-            e.reconciled(|e| {
-                let Some(row) = e
-                    .bootstrap_row(stream)?
-                    .filter(|r| r.subscription.subscription_id == subscription_id)
-                else {
-                    return Ok(None);
-                };
-                let mut state = row.state;
-                if state.run != run || !state.state.active() {
-                    return Ok(None);
-                }
-                state.state = BootstrapPhase::Failed;
-                state.error = Some(error);
-                written(e.set_bootstrap(&state, run)?)?;
-                e.mark_bootstrap(stream);
-                Ok(Some(state))
-            })
-        })
-    }
-
     /// [`Client::bootstrap_schedule`] with an issue for every active row the
     /// read skipped because it cannot be decoded.
     pub(crate) fn bootstrap_schedule_scan(
@@ -424,34 +311,13 @@ impl<S: ClientStore> Client<S> {
                 .filter(|row| row.state.state.schedulable())
                 .filter_map(|row| {
                     Some(BootstrapTask {
-                        reconciliation: false,
                         origin: row.subscription.starting_cursor?,
                         state: row.state,
                     })
                 })
                 .collect();
-            let reconciliation = e.reconciled(|e| e.bootstrap_task_scan())?;
-            tasks.extend(
-                reconciliation
-                    .rows
-                    .into_iter()
-                    .filter(|row| row.state.state.schedulable())
-                    .filter_map(|row| {
-                        Some(BootstrapTask {
-                            reconciliation: true,
-                            origin: row.subscription.starting_cursor?,
-                            state: row.state,
-                        })
-                    }),
-            );
-            tasks.sort_by(|a, b| {
-                a.state
-                    .stream
-                    .cmp(&b.state.stream)
-                    .then(b.reconciliation.cmp(&a.reconciliation))
-            });
-            let mut issues = scan.issues;
-            issues.extend(reconciliation.issues);
+            tasks.sort_by(|a, b| a.state.stream.cmp(&b.state.stream));
+            let issues = scan.issues;
             let after = rotation
                 .and_then(|last| tasks.iter().find(|t| t.state.stream.as_str() > last))
                 .or_else(|| tasks.first());
@@ -470,10 +336,7 @@ impl<S: ClientStore> Client<S> {
     /// read skipped because it cannot be decoded.
     pub(crate) fn bootstrap_barriers_scan(&mut self) -> Result<(Vec<String>, Vec<LedgerIssue>)> {
         self.view(|e| {
-            let mut scan = e.bootstrap_task_scan()?;
-            let reconcile = e.reconciled(|e| e.bootstrap_task_scan())?;
-            scan.rows.extend(reconcile.rows);
-            scan.issues.extend(reconcile.issues);
+            let scan = e.bootstrap_task_scan()?;
             let waiting = scan
                 .rows
                 .into_iter()
@@ -639,37 +502,16 @@ impl<S: ClientStore> Client<S> {
         &mut self,
         streams: &[String],
     ) -> Result<(Vec<BootstrapState>, Vec<LedgerIssue>)> {
-        let (states, issues) = self.settle_history_barriers_scan(streams)?;
-        Ok((
-            states
-                .into_iter()
-                .filter_map(|(state, reconciliation)| (!reconciliation).then_some(state))
-                .collect(),
-            issues,
-        ))
-    }
-    pub(crate) fn settle_history_barriers_scan(
-        &mut self,
-        streams: &[String],
-    ) -> Result<HistoryBarrierScan> {
         let scan = self.view(|e| e.settleable_scan(streams))?;
-        let reconciliation = self.view(|e| e.reconciled(|e| e.settleable_scan(streams)))?;
-        let mut issues = scan.issues;
-        issues.extend(reconciliation.issues);
-        if scan.rows.is_empty() && reconciliation.rows.is_empty() {
+        let issues = scan.issues;
+        if scan.rows.is_empty() {
             return Ok((vec![], issues));
         }
         let settled = self.write(|e| {
             let mut settled = vec![];
             for stream in &scan.rows {
-                settled.extend(e.settle_barrier(stream)?.map(|state| (state, false)));
+                settled.extend(e.settle_barrier(stream)?);
             }
-            e.reconciled(|e| {
-                for stream in &reconciliation.rows {
-                    settled.extend(e.settle_barrier(stream)?.map(|state| (state, true)));
-                }
-                Ok(())
-            })?;
             Ok(settled)
         })?;
         Ok((settled, issues))
@@ -818,8 +660,7 @@ impl<S: ClientStore> Client<S> {
         page: &axton_core::StreamBootstrapPage,
     ) -> Result<BootstrapApply> {
         page.validate()?;
-        self.apply_stream_history_page(
-            task.reconciliation,
+        self.apply_stream_bootstrap_page(
             &task.state.stream,
             task.state.subscription_id,
             task.state.run,

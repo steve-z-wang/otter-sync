@@ -18,7 +18,7 @@ export async function syncProtocol(client, transport, models) {
   const cursors={...status.cursors};
   if(Object.keys(cursors).length===0)return;
   // One pull covers every initialized scope; it repeats while any scope continues.
-  const page=JSON.parse(await transport('pull',JSON.stringify({capabilities:["stream-membership-v1"],cursors,models})));await client.applyPull(page);
+  const page=JSON.parse(await transport('pull',JSON.stringify({capabilities:["stream-authority-v1"],cursors,models})));await client.applyPull(page);
   caughtUp=Object.values(page.cursors).every(range=>range.to>=range.head);
  }
 }

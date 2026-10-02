@@ -75,7 +75,7 @@ const itemIds = (answer: LoadResponseItem | undefined) =>
   answer?.outcome.status === "succeeded" ? answer.outcome.data.items!.map((item) => item.id) : undefined;
 const rejectsWith = (code: string) => (error: { code?: string }) => { assert.equal(error.code, code); return true; };
 const post = async (body: unknown) => {
-  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["stream-membership-v1"] }) });
+  const response = await fetch(`${proxy.url}/sync/loads`, { method: "POST", headers: { authorization: "Bearer alice", "content-type": "application/json" }, body: JSON.stringify({ ...(body as object), capabilities: ["stream-authority-v1"] }) });
   assert.equal(response.status, 200);
   return (await response.json()) as { loads: LoadResponseItem[] };
 };

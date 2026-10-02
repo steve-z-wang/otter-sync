@@ -65,16 +65,10 @@ pub enum DownlinkEvent {
 pub enum DownlinkAction {
     /// Open the socket and send `subscribe` once it is open. Frames it delivers
     /// are `message` events of this epoch; its end is `closed`.
-    Open {
-        epoch: u64,
-        subscribe: String,
-    },
+    Open { epoch: u64, subscribe: String },
     /// Close the socket of this epoch and abandon its request, if any. A
     /// `reason` is a protocol violation the host reports as an error.
-    Close {
-        epoch: u64,
-        reason: Option<String>,
-    },
+    Close { epoch: u64, reason: Option<String> },
     /// `POST /sync/pull` with `body`; its answer is a `response` event of this
     /// id, a failure is `failed`. An ordinary catch-up carries every subscribed
     /// stream and belongs to the open session, so the session's cancellation
@@ -93,26 +87,17 @@ pub enum DownlinkAction {
     /// delivery decision depends on it
     /// ([#151](https://github.com/zanminwang/axton/issues/151)).
     Bootstrap(BootstrapState),
-    Reconciliation(BootstrapState),
     /// A page applied and may have settled a batch: wake the push lane.
-    Wake {
-        lane: &'static str,
-    },
+    Wake { lane: &'static str },
     /// What the last page could not apply; the host hands it to the application.
-    Report {
-        reports: Vec<Report>,
-    },
+    Report { reports: Vec<Report> },
     /// A commit landed for these Streams: their cursors moved.
-    Changed {
-        streams: Vec<String>,
-    },
+    Changed { streams: Vec<String> },
     /// The handshake of the open session covered these Streams: delivery for
     /// them is established, whether or not anything was committed for them.
     /// The SDKs turn it into the `live` connection status; no sync decision
     /// depends on it.
-    Acknowledged {
-        streams: Vec<String>,
-    },
+    Acknowledged { streams: Vec<String> },
     /// A stored Bootstrap row of `stream` cannot be decoded, so the schedule
     /// and the barrier settlement skip it: the host hands `message`, a bounded
     /// reason, to the application's error handler. The row is kept as stored
@@ -121,14 +106,9 @@ pub enum DownlinkAction {
     /// repair or a removal, is announced again - and it is neither a committed
     /// `bootstrap` transition nor a record `report`
     /// ([#163](https://github.com/zanminwang/axton/issues/163)).
-    LedgerIssue {
-        stream: String,
-        message: String,
-    },
+    LedgerIssue { stream: String, message: String },
     /// Nothing to do for `millis`; then pump again.
-    Wait {
-        millis: u64,
-    },
+    Wait { millis: u64 },
     /// The replica under the lane was rebuilt: abandon the socket and every
     /// request - ordinary or historical - the host still holds for it, and
     /// forget their state, without reporting anything. Always first in the
@@ -169,7 +149,6 @@ struct Pending {
 /// committed when it arrives.
 #[derive(Clone)]
 struct PendingBootstrap {
-    reconciliation: bool,
     id: u64,
     subscription_id: u64,
     run: u64,
@@ -340,7 +319,6 @@ pub struct DownlinkWorker {
     pending_store: Option<PendingStore>,
     yielded_store: Option<(StoreToken, StoreDelivery)>,
     bootstrap_failure: Option<PendingBootstrapFailure>,
-    reconciliation_failed: bool,
 }
 
 /// Whether an HTTP status is a refusal the server decided, which no retry can
@@ -429,13 +407,7 @@ impl DownlinkWorker {
                     });
                 }
                 if let Some(state) = applied.state() {
-                    self.reconciliation_failed |=
-                        pending.reconciliation && state.state == BootstrapPhase::Failed;
-                    self.pending.push(if pending.reconciliation {
-                        DownlinkAction::Reconciliation(state.clone())
-                    } else {
-                        DownlinkAction::Bootstrap(state.clone())
-                    });
+                    self.pending.push(DownlinkAction::Bootstrap(state.clone()));
                 }
             }
             _ => unreachable!("downlink store owner/result mismatch"),
@@ -466,9 +438,7 @@ impl DownlinkWorker {
             }
             StoreSource::Bootstrap(pending) => {
                 if !hook_failed {
-                    let (StoreDelivery::StreamBootstrap { page, .. }
-                    | StoreDelivery::StreamReconciliation { page, .. }) = pending_store_delivery
-                    else {
+                    let StoreDelivery::StreamBootstrap { page, .. } = pending_store_delivery else {
                         unreachable!()
                     };
                     let body = String::from_utf8(page.encode()?)
@@ -492,22 +462,15 @@ impl DownlinkWorker {
             return Ok(());
         };
         let stream = &failure.pending.request.stream;
-        let state = client.fail_history_state(
-            failure.pending.reconciliation,
+        let state = client.fail_bootstrap_state(
             stream,
             failure.pending.subscription_id,
             failure.pending.run,
             failure.error.clone(),
         )?;
-        let reconciliation = failure.pending.reconciliation;
         self.bootstrap_failure = None;
         if let Some(state) = state {
-            self.reconciliation_failed |= reconciliation;
-            self.pending.push(if reconciliation {
-                DownlinkAction::Reconciliation(state)
-            } else {
-                DownlinkAction::Bootstrap(state)
-            });
+            self.pending.push(DownlinkAction::Bootstrap(state));
         }
         Ok(())
     }
@@ -688,10 +651,6 @@ impl DownlinkWorker {
 
     /// The streamed page frames held for the pump, never more than
     /// [`QUEUED_FRAMES`].
-    pub(crate) fn stream_acknowledged(&self) -> bool {
-        self.session.acknowledged()
-    }
-
     pub fn queued_frames(&self) -> usize {
         self.pages.len()
     }
@@ -921,7 +880,6 @@ impl DownlinkWorker {
         }
         self.pending.retain(|action| match action {
             DownlinkAction::Bootstrap(_)
-            | DownlinkAction::Reconciliation(_)
             | DownlinkAction::Wake { .. }
             | DownlinkAction::Report { .. }
             | DownlinkAction::Changed { .. }
@@ -943,9 +901,6 @@ impl DownlinkWorker {
         hooks: Option<&BTreeSet<String>>,
     ) -> Result<Vec<DownlinkAction>> {
         self.persist_bootstrap_failure(client)?;
-        if std::mem::take(&mut self.reconciliation_failed) {
-            self.loading.defer(now, entropy);
-        }
         if self.pending_store.is_some() {
             return Ok(vec![]);
         }
@@ -1176,15 +1131,11 @@ impl DownlinkWorker {
     ) -> Result<bool> {
         let (waiting, issues) = client.bootstrap_barriers_scan()?;
         self.ledger(issues, Scan::Complete, actions);
-        let (settled, issues) = client.settle_history_barriers_scan(&waiting)?;
+        let (settled, issues) = client.settle_bootstrap_barriers_scan(&waiting)?;
         self.ledger(issues, Scan::Candidates, actions);
         let committed = !settled.is_empty();
-        for (state, reconciliation) in settled {
-            actions.push(if reconciliation {
-                DownlinkAction::Reconciliation(state)
-            } else {
-                DownlinkAction::Bootstrap(state)
-            });
+        for state in settled {
+            actions.push(DownlinkAction::Bootstrap(state));
         }
         Ok(committed)
     }
@@ -1212,7 +1163,7 @@ impl DownlinkWorker {
             return Ok(());
         }
         let moved: Vec<String> = moved.into_iter().collect();
-        let (settled, issues) = match client.settle_history_barriers_scan(&moved) {
+        let (settled, issues) = match client.settle_bootstrap_barriers_scan(&moved) {
             Ok(result) => result,
             Err(error) => {
                 self.barrier_retry.extend(moved);
@@ -1221,12 +1172,8 @@ impl DownlinkWorker {
         };
         self.barrier_retry.clear();
         self.ledger(issues, Scan::Candidates, actions);
-        for (state, reconciliation) in settled {
-            actions.push(if reconciliation {
-                DownlinkAction::Reconciliation(state)
-            } else {
-                DownlinkAction::Bootstrap(state)
-            });
+        for state in settled {
+            actions.push(DownlinkAction::Bootstrap(state));
         }
         Ok(())
     }
@@ -1383,29 +1330,18 @@ impl DownlinkWorker {
         if Self::wants_stream_hook(&page.changes, hooks) {
             self.yield_store(
                 client,
-                if pending.reconciliation {
-                    StoreDelivery::StreamReconciliation {
-                        stream: stream.clone(),
-                        subscription_id: pending.subscription_id,
-                        run: pending.run,
-                        expected_after: pending.request.after,
-                        page,
-                    }
-                } else {
-                    StoreDelivery::StreamBootstrap {
-                        stream: stream.clone(),
-                        subscription_id: pending.subscription_id,
-                        run: pending.run,
-                        expected_after: pending.request.after,
-                        page,
-                    }
+                StoreDelivery::StreamBootstrap {
+                    stream: stream.clone(),
+                    subscription_id: pending.subscription_id,
+                    run: pending.run,
+                    expected_after: pending.request.after,
+                    page,
                 },
                 StoreSource::Bootstrap(pending),
             )?;
             return Ok(true);
         }
-        let applied = client.apply_stream_history_page(
-            pending.reconciliation,
+        let applied = client.apply_stream_bootstrap_page(
             &stream,
             pending.subscription_id,
             pending.run,
@@ -1422,13 +1358,7 @@ impl DownlinkWorker {
         let Some(state) = applied.state() else {
             return Ok(false);
         };
-        self.reconciliation_failed |=
-            pending.reconciliation && state.state == BootstrapPhase::Failed;
-        actions.push(if pending.reconciliation {
-            DownlinkAction::Reconciliation(state.clone())
-        } else {
-            DownlinkAction::Bootstrap(state.clone())
-        });
+        actions.push(DownlinkAction::Bootstrap(state.clone()));
         Ok(true)
     }
 
@@ -1456,22 +1386,12 @@ impl DownlinkWorker {
         if !held {
             return Ok(false);
         }
-        let Some(state) = client.fail_history_state(
-            pending.reconciliation,
-            stream,
-            pending.subscription_id,
-            pending.run,
-            error,
-        )?
+        let Some(state) =
+            client.fail_bootstrap_state(stream, pending.subscription_id, pending.run, error)?
         else {
             return Ok(false);
         };
-        self.reconciliation_failed |= pending.reconciliation;
-        actions.push(if pending.reconciliation {
-            DownlinkAction::Reconciliation(state)
-        } else {
-            DownlinkAction::Bootstrap(state)
-        });
+        actions.push(DownlinkAction::Bootstrap(state));
         Ok(true)
     }
 
@@ -1494,7 +1414,6 @@ impl DownlinkWorker {
         if self.loading.due > now {
             return Ok(());
         }
-        client.retry_reconciliation_failures()?;
         let (task, issues) = client.bootstrap_schedule_scan(self.loading.rotation.as_deref())?;
         self.ledger(issues, Scan::Complete, actions);
         let Some(task) = task else {
@@ -1508,7 +1427,6 @@ impl DownlinkWorker {
         let id = self.next_request()?;
         self.loading.rotation = Some(task.state.stream.clone());
         self.bootstrap = Some(PendingBootstrap {
-            reconciliation: task.reconciliation,
             id,
             subscription_id: task.state.subscription_id,
             run: task.state.run,
@@ -1589,12 +1507,7 @@ impl DownlinkWorker {
         }
         // Delivery is established for the acknowledged set, whether or not a
         // boundary was committed for any of it: the SDKs read it as `live`.
-        let mut streams = vec![];
-        for stream in ack.cursors.keys() {
-            if !client.reconciliation_pending(stream)? {
-                streams.push(stream.clone());
-            }
-        }
+        let streams = ack.cursors.keys().cloned().collect::<Vec<_>>();
         if !streams.is_empty() {
             actions.push(DownlinkAction::Acknowledged { streams });
         }

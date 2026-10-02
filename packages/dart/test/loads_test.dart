@@ -186,7 +186,7 @@ void main() {
       final body =
           jsonDecode(await utf8.decoder.bind(request).join())
               as Map<String, dynamic>;
-      expect(body['capabilities'], contains('stream-membership-v1'));
+      expect(body['capabilities'], contains('stream-authority-v1'));
       batches.add(body);
       await gate?.future;
       if (status != null) {
@@ -211,6 +211,90 @@ void main() {
     await server.close(force: true);
     await directory.delete(recursive: true);
   });
+
+  test(
+    'authority and application cleanup roll back together without client holds',
+    () async {
+      var refuse = true;
+      var hooks = 0;
+      final fixtureSchema = {
+        ..._schema,
+        'models': [
+          ..._schema['models'] as List,
+          {
+            'name': 'Composition',
+            'identity': ['id'],
+            'fields': _fields,
+          },
+        ],
+      };
+      final client = await Client.open(
+        path: '${directory.path}/db',
+        schema: fixtureSchema,
+        libraryPath: Platform.environment['AXTON_LIBRARY']!,
+        onStore: {
+          'Entry': (tx, changes) async {
+            hooks++;
+            await tx.direct({
+              'model': 'Entry',
+              'op': 'delete',
+              'identity': {'id': 'child'},
+            });
+            if (refuse) throw StateError('cleanup refused');
+          },
+        },
+      );
+      clients.add(client);
+      await client.transaction((tx) async {
+        await tx.direct({
+          'model': 'Entry',
+          'op': 'create',
+          'identity': {'id': 'child'},
+          'values': {'text': 'cached', 'note': null},
+        });
+        await tx.direct({
+          'model': 'Composition',
+          'op': 'create',
+          'identity': {'id': 'draft'},
+          'values': {'text': 'device words', 'note': null},
+        });
+      });
+      expect(
+        await client.readSql(
+          "SELECT name FROM sqlite_master WHERE name='axton_stream_member'",
+        ),
+        isEmpty,
+      );
+      answer = (intent) => _page(intent, [('access', 'current authority')]);
+      final job = await client.startLoad('Entries', 1, _args);
+      await connect(client);
+      await expectLater(job.wait(), _code('load.hook_failed'));
+      expect(await client.read('Entry', {'id': 'access'}), isNull);
+      expect((await client.read('Entry', {'id': 'child'}))!['text'], 'cached');
+      expect(job.status.pages, 0);
+      refuse = false;
+      await job.retry();
+      await job.wait();
+      expect(
+        (await client.read('Entry', {'id': 'access'}))!['text'],
+        'current authority',
+      );
+      expect(await client.read('Entry', {'id': 'child'}), isNull);
+      expect(
+        (await client.read('Composition', {'id': 'draft'}))!['text'],
+        'device words',
+      );
+      expect(job.status.pages, 1);
+      expect(hooks, 2);
+      await client.subscribe('delivery');
+      await client.unsubscribe('delivery');
+      expect(
+        (await client.read('Entry', {'id': 'access'}))!['text'],
+        'current authority',
+      );
+      expect(hooks, 2, reason: 'registration changes run no Model hook');
+    },
+  );
 
   test('a start is accepted offline and wait completes after the final '
       'page committed', () async {

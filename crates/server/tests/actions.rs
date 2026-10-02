@@ -1010,7 +1010,7 @@ fn a_duplicate_or_inferred_touch_allocates_one_stamp() {
 }
 
 #[test]
-fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_positions() {
+fn fresh_push_omits_claims_even_when_replaying_a_saved_action() {
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
     backend.seed("Todo", "extra", todo("extra", "hidden"), Some(1));
@@ -1021,24 +1021,34 @@ fn mutation_readback_claims_only_returned_enrolled_identities_and_replays_saved_
         json!({"Todo":1}),
         vec![edit(1, 80, "EditAndRead", "a", "new")],
     );
-    assert_eq!(
-        first["memberships"],
-        json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
-    );
+    assert!(first.get("memberships").is_none());
+    assert_eq!(backend.members("Todo", "a"), ["c"]);
+    assert_eq!(backend.members("Todo", "extra"), ["c"]);
+    backend.with(|state| {
+        let saved = state.tables.calls.get_mut(&support::call_id(80)).unwrap();
+        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
+        response["memberships"] =
+            json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }]);
+        saved.1 = Some(response.to_string());
+    });
     backend.saved_removal("c", "Todo", "a");
     let state = backend.tables();
+    backend.clear_log();
     let replay = support::push(
         &backend,
         2,
         json!({"Todo":1}),
         vec![edit(1, 80, "EditAndRead", "a", "new")],
     );
-    assert_eq!(replay["memberships"], first["memberships"]);
+    assert!(replay.get("memberships").is_none());
+    assert_eq!(backend.count("handle"), 0);
+    assert_eq!(backend.count("load"), 0);
+    assert_eq!(backend.count("guardRecords"), 0);
     assert_eq!(backend.tables(), state);
 }
 
 #[test]
-fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_replay() {
+fn direct_action_tracks_without_claims_and_replays_its_saved_response() {
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
     backend.script("EditAndRead",json!({"outputs":{"todo":{"id":"a"}},"changes":[],"declarations":[support::add("c","Todo","a")]}));
@@ -1053,10 +1063,8 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        first["memberships"],
-        json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }])
-    );
+    assert!(first.get("memberships").is_none());
+    assert_eq!(backend.members("Todo", "a"), ["c"]);
     backend.saved_removal("c", "Todo", "a");
     let state = backend.tables();
     let replay: Value = serde_json::from_str(
@@ -1074,12 +1082,12 @@ fn direct_action_readback_claims_the_enrolled_returned_record_and_saves_it_for_r
 }
 
 #[test]
-fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claims() {
+fn saved_action_replays_historical_claims_and_nested_business_result() {
     let backend = Backend::new();
     backend.seed("Todo", "a", todo("a", "old"), Some(1));
     backend.script("EditAndRead", json!({"outputs":{"todo":{"id":"a"}},"changes":[],"declarations":[support::add("c","Todo","a")]}));
     let request = crate::capability::request(json!({"call":{"callId":support::call_id(91),"name":"EditAndRead","version":1,"args":{"todo":{"id":"a","title":"new"}}},"models":{"Todo":1}}).to_string().as_bytes());
-    let first: Value = serde_json::from_str(
+    let mut first: Value = serde_json::from_str(
         &support::run(axton_server::process_action(
             &support::config(),
             "alice",
@@ -1089,15 +1097,17 @@ fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claim
         .unwrap(),
     )
     .unwrap();
+    first["memberships"] =
+        json!([{ "stream":"c","cursor":1,"model":"Todo","identity":{"id":"a"} }]);
+    first["completion"]["outcome"]["result"] =
+        json!({"memberships":[{"scope":"business"}],"stream":"business"});
     backend.saved_removal("c", "Todo", "a");
     backend.with(|state| {
         let saved = state.tables.calls.get_mut(&support::call_id(91)).unwrap();
         let mut logical: Value = serde_json::from_str(&saved.0).unwrap();
         logical["capabilities"] = json!(["scope-membership-v1"]);
         saved.0 = logical.to_string();
-        let mut response: Value = serde_json::from_str(saved.1.as_ref().unwrap()).unwrap();
-        response.as_object_mut().unwrap().remove("memberships");
-        saved.1 = Some(response.to_string());
+        saved.1 = Some(first.to_string());
     });
     let before = backend.tables();
     backend.clear_log();
@@ -1112,7 +1122,7 @@ fn saved_action_negotiation_is_not_call_identity_and_legacy_replay_adds_no_claim
     )
     .unwrap();
     assert_eq!(replay["completion"], first["completion"]);
-    assert!(replay.get("memberships").is_none());
+    assert_eq!(replay, first);
     assert_eq!(backend.ops(), ["claimCall"]);
     assert_eq!(backend.tables(), before);
 }

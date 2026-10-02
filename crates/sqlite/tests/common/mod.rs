@@ -388,3 +388,31 @@ pub fn scope_fixture(mut value: Value) -> Value {
     }
     value
 }
+
+/// Arrange a surviving pre-cutover eviction epoch, independently of Stream delivery.
+/// New authority-only clients cannot produce this state, but frozen old work must honor it.
+pub fn legacy_eviction(c: &mut Client<SqliteStore>, path: &std::path::Path, key: &RecordKey) {
+    let mut raw = SqliteStore::open(path).unwrap();
+    raw.execute_batch("UPDATE axton_client SET store_epoch=store_epoch+1")
+        .unwrap();
+    raw.execute("UPDATE axton_record SET base_state='evicted',evicted_at=(SELECT store_epoch FROM axton_client) WHERE model=? AND identity=?", &[json!(key.model),json!(key.encoded_identity().unwrap())]).unwrap();
+    let id = key.identity["id"].clone();
+    raw.execute(
+        &format!(
+            "DELETE FROM {} WHERE id=?",
+            axton_client::ddl::quote(&key.model)
+        ),
+        std::slice::from_ref(&id),
+    )
+    .unwrap();
+    raw.execute(
+        &format!(
+            "DELETE FROM {} WHERE id=?",
+            axton_client::ddl::quote(&format!("axton_before_{}", key.model))
+        ),
+        &[id],
+    )
+    .unwrap();
+    drop(raw);
+    c.transaction(|_| Ok(())).unwrap();
+}

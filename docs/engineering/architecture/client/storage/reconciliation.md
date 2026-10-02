@@ -133,46 +133,29 @@ Executed 2026-09-16: `cargo test -p axton-core -p axton-client -p axton-sqlite -
 
 ## Stream membership upgrade
 
-The 0.2 framework upgrade is additive and separate from incompatible application-schema rebuilding. It retains client identity, pending operations, subscriptions/cursors and existing data. The holding ledger records current presence and latest membership cursor per Stream/record; record metadata distinguishes materialized, authoritative absent, legacy and evicted bases. Retained stamp and eviction evidence prevent stale restoration. No client tag table is introduced.
+The authority framework upgrade is an in-place opening transaction, separate from incompatible application-schema rebuilding. Supported original Channel, Scope and Stream layouts are validated before editing. The transaction commits `axton_client.local_authority_version=1`, removes obsolete client `axton_stream_member` and its index, and preserves Model rows/stamps, identity, subscriptions/cursors, explicit bootstrap state, queued/pending/rejected work, frozen Push and Load requests, continuations, companions and device-only Models. Original historical fixture files remain migration inputs. Malformed modern layouts are refused atomically, leaving the file untouched; unsupported older checkpoint layouts retain the existing nondestructive rebuild-beside policy and preserve the original file. Successful reopen is idempotent.
 
-Clean device-local operations are retained in a bounded internal layer, separate from replication. Release replays pending and local operations over an absent base without sending a write. Legacy stamped cache cannot be promoted to local authorship; old unstamped local creates can survive conservatively. Lost direct-write provenance is not reconstructed.
+Existing `reconcile_*` columns and their saved values remain inert for compatibility. They schedule no network requests, choose no bounds and advance no progress. Opening or resubscribing does not reconstruct historical Stream ownership. A fresh registration initializes at its acknowledged head; an explicit `bootstrap()` retains its ordinary registration/run fences, cancellation and fixed completion barrier.
 
-The opening transaction adds `axton_client.stream_membership_version` and the subscription columns below. An old file receives marker zero, schedules each retained registration once, then commits marker one with the upgrade. A fresh file starts at marker one and keeps ordinary first-subscription semantics. Resubscribing a Stream with retained membership evidence also schedules reconciliation; the upgrade fabricates no holds.
-
-| Subscription column | Meaning |
-| --- | --- |
-| `reconcile_state` | `not_requested`, `requested`, `loading`, `catching_up`, `complete` or `failed` |
-| `reconcile_run` | Own run identity, fencing retries and stale responses |
-| `reconcile_cursor` | Committed historical progress, initially zero |
-| `reconcile_bound` | Own fixed history bound, initially null |
-| `reconcile_barrier` | Fixed terminal-page head that ordinary delta delivery must reach |
-| `reconcile_error` | Bounded saved failure for a failed run |
-
-A valid acknowledgement, or the first valid current HTTP delta head when no acknowledgement exists, fixes `reconcile_bound` once. The separate walk processes retained history through that bound, including removals below already saved delivery progress. Its terminal page fixes the delta barrier; completion waits for ordinary delivery to reach it. Reopen retains bound, run, progress and barrier. Stale responses and replaced registrations cannot choose or advance a replacement's bound. Prepared pages keep their admitted authority and holds after callback subscription edits, but cannot update replacement progress.
-
-This lane never rewinds `cursor`, changes `starting_cursor`, or completes the user's separate `bootstrap_*` task or waiters. Hidden failed reconciliation uses the worker's bounded historical retry timer: a new own run clears the failure while keeping bound, progress and barrier. HTTP-only `SyncCycle` cannot report completion with reconciliation pending; a failed cycle requires explicit restart, which reactivates failed work.
-
-New logical requests freeze store epochs; retry/restart and saved legacy responses keep their original token. Migration cannot infer holdings for records absent from both retained membership and log, so unrelated one-shot cache is not wiped. Claims are never fabricated for legacy responses. [Cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover) owns deployment sequencing. Source: [framework upgrade](../../../../../crates/client/src/ddl.rs), [reconciliation scheduling](../../../../../crates/client/src/bootstrap.rs) and [ledger](../../../../../crates/client/src/bootstrap_ledger.rs).
-
-Low-level hosts keep the opaque `BootstrapTask` returned by `bootstrap_schedule` and send its `encode_request(models)` bytes. Apply the response through `Client::apply_stream_bootstrap_task(task, &page) -> Result<BootstrapApply>` so the task routes its own ordinary or reconciliation lane and fences registration, run and progress. `apply_stream_bootstrap_page` remains explicitly ordinary bootstrap only; it is not a replacement for task-aware application.
+Pending Held state, `axton_local_replica_layer` history and legacy record classifications remain. Stamped cache is not promoted to local authorship; lost direct-write provenance is not reconstructed. Historical saved claims do not create a client holding table. Application query-cache JSON and opaque names are not rewritten.
 
 ### Frozen request ownership
 
-`StoreToken { epoch }` is client-local and never encoded into requests or Models. The shared predicate is `held || request_epoch >= evicted_at`, before stamp staging; null authority is not suppressed. Each newly accepted final unheld identity advances the durable epoch, including already absent/untracked cache. Duplicate/stale evidence or another current hold does not. Prepared preflight rolls metadata back, and committed replay advances it once.
+The retained legacy global recovery mechanism uses client-local `StoreToken { epoch }` and old `evicted_at` evidence. It may refuse stale positive restoration to an already evicted base; null authority remains canonical. This exception preserves old recovery history and frozen tokens, rather than introducing Stream ownership. Historical Remove, unsubscribe and application cache deletion never advance this epoch.
 
 | Work | Token owner |
 | --- | --- |
-| Direct Query/Mutation | New prepared call ID; retry keeps it, completion/failure/cancellation retires it |
-| Query once | Miss/refresh owns a flight; joins use its token, cache hits apply no authority |
-| Stored Model Fetch | Owning prepared call; coalesced callers join it, unused candidate tokens retire |
-| Prepared store | Copies the transient token so later owner retirement cannot refresh it |
+| Direct Query/Mutation | Prepared call ID; retry keeps it and completion/failure/cancellation retires it |
+| Query once | Miss/refresh flight; joins share its token and cache hits apply no authority |
+| Stored Model Fetch | Prepared call; coalesced callers join it |
+| Prepared store | Copies the transient token for its admitted delivery |
 | Native Load | Durable logical page; continuation or explicit retry captures anew, automatic retry/reopen keeps it |
-| Queued Mutation/Query | Durable enqueue row, before push freezing or network; receipt uses that original token |
+| Queued Mutation/Query | Durable enqueue row; receipt uses that original token |
 
-A receipt contains batch authority without per-call record provenance. Push selection therefore groups only calls with the same epoch (as well as the existing shape grouping), so unrelated old work cannot suppress fresh authority. Mixed-epoch receipts are refused rather than guessed. Legacy durable rows and unknown historical transient IDs use epoch zero. Additive columns on client, queue and Load rows preserve saved IDs, intent and frozen push bytes. Transient tokens are bounded by outstanding owners; manually abandoning a low-level request requires `Client::retire_request(call_id)`, while runtime lifecycle retires them automatically. The unrelated downlink delivery-ownership token is not repurposed.
+Pending/frozen work preserves call IDs, sequence, original logical bytes and tokens across supported migration and reopen. Negotiation decorates outgoing copies with `stream-authority-v1`, outside saved logical equality. Request lifecycle retires transient tokens; low-level hosts abandoning a request call `Client::retire_request(call_id)`.
 
 ### Stream metadata rename
 
-Opening an installed Channel or Scope SQLite layout performs the supported forward framework delivery rename to Stream metadata and `stream_membership_version` before network scheduling. Database paths, IDs, subscriptions/cursors, holdings, frozen Loads/continuations, queued/pending/rejected work, local companions and device-only Models remain intact. SQLite stores no full wire membership-claim envelopes and rewrites no application query-cache JSON. Reopen is idempotent and inconsistent layouts roll back wholly, without parallel sources of truth. This rename is separate from historical membership reconciliation and application-schema rebuilds. [Cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover) owns coordinated negotiation and server migration.
+Prior Channel/Scope naming upgrades run before authority migration inside the same validated opening transaction. Paths, IDs, business fields, saved result/continuation JSON and opaque Stream names retain their meaning. No hidden history walk follows this rename. [Cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover) owns coordinated server repair and negotiation; [ddl.rs](../../../../../crates/client/src/ddl.rs) owns local migration.
 
-Direct application child deletion through `tx.models` creates no historical-removal request-epoch fence. Delayed newer-stamp authority may materialize cache again; current standing and independent reachability must gate application Queries. See [standing cleanup](../../../../../website/docs/frontend/sync.md#authentication-and-account-changes).
+Direct application child deletion through `tx.models` creates no request-epoch fence. A later newer canonical upsert may materialize cache again; current standing and independent reachability must gate Queries. See [standing cleanup](../../../../../website/docs/frontend/sync.md#authentication-and-account-changes).

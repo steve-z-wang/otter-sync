@@ -447,7 +447,7 @@ test('a socket the server closes is reconnected after the backoff, resubscribed,
   assert.ok(waited>=180,`the reconnect waited ${waited} ms; the first retry is due 250 ms later, minus 20% jitter`);
   assert.ok(errors.some(e=>/live disconnected: 1001/.test(String(e.message))),`the close reaches onError: ${errors.map(e=>e.message)}`);
   await until(()=>subscribes.length===2);
-  assert.deepEqual(subscribes[1],{type:'subscribe',streams:['scope'],models:{Entry:1},capabilities:['stream-membership-v1']},'the new socket subscribes again without an application event, declaring its read contracts');
+  assert.deepEqual(subscribes[1],{type:'subscribe',streams:['scope'],models:{Entry:1},capabilities:['stream-authority-v1']},'the new socket subscribes again without an application event, declaring its read contracts');
   sockets[1].send(JSON.stringify(page('after reconnect',0)));
   await until(async()=>(await client.read('Entry',{id:'live'}))?.text==='after reconnect');
   assert.equal(upgrades.length,2,'one reconnect; no busy loop');

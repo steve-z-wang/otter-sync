@@ -2119,7 +2119,7 @@ fn stream_fixture() -> Value {
 #[test]
 fn stream_membership_pages_decode_as_declared_and_never_as_record_only_pages() {
     let fixture = stream_fixture();
-    assert_eq!(fixture["capability"], STREAM_MEMBERSHIP_CAPABILITY);
+    assert_eq!(fixture["capability"], STREAM_AUTHORITY_CAPABILITY);
     let canonical = &fixture["canonical"];
     let page = StreamPullPage::decode(canonical["wire"].as_str().unwrap().as_bytes()).unwrap();
     assert_eq!(
@@ -2420,12 +2420,12 @@ fn membership_claims_are_unique_pairs_tied_to_returned_records() {
 
 #[test]
 fn capability_negotiation_refuses_with_stable_codes() {
-    assert_eq!(STREAM_MEMBERSHIP_CAPABILITY, "stream-membership-v1");
+    assert_eq!(STREAM_AUTHORITY_CAPABILITY, "stream-authority-v1");
     assert_eq!(PROTOCOL_UNSUPPORTED, "protocol.unsupported");
     let fixture = stream_fixture();
     for case in fixture["negotiation"].as_array().unwrap() {
         let wire = case["wire"].as_str().unwrap().as_bytes();
-        let outcome = match require_capability(wire, STREAM_MEMBERSHIP_CAPABILITY) {
+        let outcome = match require_capability(wire, STREAM_AUTHORITY_CAPABILITY) {
             Ok(()) => "supported",
             Err(refusal) => refusal.code(),
         };
@@ -2460,10 +2460,10 @@ fn capability_negotiation_refuses_with_stable_codes() {
 
 #[test]
 fn negotiation_metadata_is_not_part_of_the_logical_request() {
-    let caps = [STREAM_MEMBERSHIP_CAPABILITY];
+    let caps = [STREAM_AUTHORITY_CAPABILITY];
     let upgrade = |plain: &[u8]| {
         let upgraded = with_capabilities(plain, &caps).unwrap();
-        assert!(require_capability(&upgraded, STREAM_MEMBERSHIP_CAPABILITY).is_ok());
+        assert!(require_capability(&upgraded, STREAM_AUTHORITY_CAPABILITY).is_ok());
         let (plain_value, upgraded_value): (Value, Value) = (
             serde_json::from_slice(plain).unwrap(),
             serde_json::from_slice(&upgraded).unwrap(),
@@ -2479,7 +2479,7 @@ fn negotiation_metadata_is_not_part_of_the_logical_request() {
     let pull = br#"{"models":{"Entry":1},"cursors":{"a":0}}"#;
     assert_eq!(
         String::from_utf8(with_capabilities(pull, &caps).unwrap()).unwrap(),
-        r#"{"capabilities":["stream-membership-v1"],"cursors":{"a":0},"models":{"Entry":1}}"#
+        r#"{"capabilities":["stream-authority-v1"],"cursors":{"a":0},"models":{"Entry":1}}"#
     );
     assert_eq!(
         PullRequest::decode(&upgrade(pull)).unwrap(),
@@ -2544,7 +2544,7 @@ fn negotiation_metadata_is_not_part_of_the_logical_request() {
     // Every request decoder refuses a malformed capabilities member.
     let malformed = |wire: &str| {
         let mut value: Value = serde_json::from_str(wire).unwrap();
-        value["capabilities"] = json!("stream-membership-v1");
+        value["capabilities"] = json!("stream-authority-v1");
         value.to_string().into_bytes()
     };
     assert!(PullRequest::decode(&malformed(std::str::from_utf8(pull).unwrap())).is_err());
@@ -2666,7 +2666,7 @@ fn frozen_requests_at_payload_limit_accept_required_negotiation() {
             decode(&frozen),
             "legacy request decodes at its original limit"
         );
-        let upgraded = with_capabilities(&frozen, &[STREAM_MEMBERSHIP_CAPABILITY]).unwrap();
+        let upgraded = with_capabilities(&frozen, &[STREAM_AUTHORITY_CAPABILITY]).unwrap();
         assert!(
             decode(&upgraded),
             "required negotiation must not strand a frozen request"
@@ -2680,8 +2680,8 @@ fn negotiation_headroom_does_not_expand_logical_payload_or_accept_unbounded_meta
         .unwrap()
         .into_bytes();
     let limit = original.len();
-    let upgraded = with_capabilities(&original, &[STREAM_MEMBERSHIP_CAPABILITY]).unwrap();
-    assert_eq!(upgraded.len() - limit, 40);
+    let upgraded = with_capabilities(&original, &[STREAM_AUTHORITY_CAPABILITY]).unwrap();
+    assert_eq!(upgraded.len() - limit, 39);
     assert!(check_request_size(&upgraded, limit).is_ok());
     // Even one extra semantic byte cannot borrow the metadata allowance.
     let mut oversized: Value = serde_json::from_slice(&upgraded).unwrap();
@@ -2689,16 +2689,13 @@ fn negotiation_headroom_does_not_expand_logical_payload_or_accept_unbounded_meta
     assert!(check_request_size(canonical_json(&oversized).unwrap().as_bytes(), limit).is_err());
     assert!(check_request_size(&original, limit - 1).is_err());
     // A shorter logical payload cannot grant arbitrary negotiation headroom.
-    let excessive = with_capabilities(
-        &original,
-        &[STREAM_MEMBERSHIP_CAPABILITY, &"z".repeat(1000)],
-    )
-    .unwrap();
+    let excessive =
+        with_capabilities(&original, &[STREAM_AUTHORITY_CAPABILITY, &"z".repeat(1000)]).unwrap();
     assert!(check_request_size(&excessive, limit).is_err());
     for capabilities in [
         json!(null),
-        json!(STREAM_MEMBERSHIP_CAPABILITY),
-        json!([STREAM_MEMBERSHIP_CAPABILITY, STREAM_MEMBERSHIP_CAPABILITY]),
+        json!(STREAM_AUTHORITY_CAPABILITY),
+        json!([STREAM_AUTHORITY_CAPABILITY, STREAM_AUTHORITY_CAPABILITY]),
         json!(["unrecognized"]),
     ] {
         let malformed = json!({"body":"x".repeat(100),"capabilities":capabilities});
@@ -2706,7 +2703,7 @@ fn negotiation_headroom_does_not_expand_logical_payload_or_accept_unbounded_meta
     }
     // Every semantic extension remains part of the logical body.
     let extension =
-        json!({"body":"x".repeat(100),"extra":true,"capabilities":[STREAM_MEMBERSHIP_CAPABILITY]});
+        json!({"body":"x".repeat(100),"extra":true,"capabilities":[STREAM_AUTHORITY_CAPABILITY]});
     assert!(check_request_size(canonical_json(&extension).unwrap().as_bytes(), limit).is_err());
     let mut whitespace = upgraded;
     whitespace.push(b' ');
@@ -2732,12 +2729,12 @@ fn stream_wire_is_required_and_legacy_ownership_is_refused() {
         SubscribeRequest::decode(br#"{"type":"subscribe","channels":["U"],"models":{"Entry":1}}"#)
             .is_err()
     );
-    assert_eq!(STREAM_MEMBERSHIP_CAPABILITY, "stream-membership-v1");
+    assert_eq!(STREAM_AUTHORITY_CAPABILITY, "stream-authority-v1");
 }
 
 #[test]
 fn old_framework_ownership_is_refused_even_beside_stream_and_new_capability() {
-    let capability = json!([STREAM_MEMBERSHIP_CAPABILITY]);
+    let capability = json!([STREAM_AUTHORITY_CAPABILITY]);
     for old in ["scope", "scopes", "channel", "channels"] {
         let mut bootstrap = json!({"mode":"bootstrap","stream":"U","after":0,"until":1,"models":{"Entry":1},"capabilities":capability});
         bootstrap[old] = json!("U");
@@ -2774,7 +2771,7 @@ fn old_framework_ownership_is_refused_even_beside_stream_and_new_capability() {
 
 #[test]
 fn new_capability_admission_refuses_old_wire_before_effects() {
-    let marker = STREAM_MEMBERSHIP_CAPABILITY;
+    let marker = STREAM_AUTHORITY_CAPABILITY;
     assert!(require_capability(br#"{"capabilities":["channel-membership-v1"]}"#, marker).is_err());
     for old in ["scope", "scopes", "channel", "channels"] {
         let mut envelope = json!({"capabilities":[marker,"future-extension"],"args":{"channel":"business","channels":["value"]}});
@@ -2797,17 +2794,18 @@ fn fresh_stream_removal_keeps_saved_identity_only_evidence() {
 
 #[test]
 fn fresh_stream_capability_refuses_old_negotiation() {
-    assert_eq!(STREAM_MEMBERSHIP_CAPABILITY, "stream-membership-v1");
+    assert_eq!(STREAM_AUTHORITY_CAPABILITY, "stream-authority-v1");
     for wire in [
         br#"{}"#.as_slice(),
         br#"{"capabilities":["scope-membership-v1"]}"#,
+        br#"{"capabilities":["stream-membership-v1"]}"#,
     ] {
-        assert!(require_capability(wire, STREAM_MEMBERSHIP_CAPABILITY).is_err());
+        assert!(require_capability(wire, STREAM_AUTHORITY_CAPABILITY).is_err());
     }
     assert!(
         require_capability(
-            br#"{"capabilities":["stream-membership-v1"]}"#,
-            STREAM_MEMBERSHIP_CAPABILITY
+            br#"{"capabilities":["stream-authority-v1"]}"#,
+            STREAM_AUTHORITY_CAPABILITY
         )
         .is_ok()
     );
@@ -2850,7 +2848,7 @@ fn adapt_stream_fixture(raw: &str) -> Value {
             }
             Value::String(text) => {
                 if text == "scope-membership-v1" {
-                    *text = "stream-membership-v1".into();
+                    *text = "stream-authority-v1".into();
                 } else if let Ok(mut wire) = serde_json::from_str::<Value>(text) {
                     migrate(&mut wire);
                     *text = wire.to_string();
@@ -2862,4 +2860,21 @@ fn adapt_stream_fixture(raw: &str) -> Value {
     let mut value = serde_json::from_str(raw).unwrap();
     migrate(&mut value);
     value
+}
+
+#[test]
+fn authority_capability_is_transport_decoration_for_a_frozen_call() {
+    let frozen = br#" {"call":{"callId":"01890f47-1234-7123-8123-000000000001","name":"Find","version":1,"args":{"memberships":["business"]}},"models":{}} "#;
+    let decorated = axton_core::with_capabilities(frozen, &["stream-authority-v1"]).unwrap();
+    axton_core::require_capability(&decorated, "stream-authority-v1").unwrap();
+    let logical =
+        axton_core::logical_request(&serde_json::from_slice(&decorated).unwrap()).unwrap();
+    assert_eq!(
+        logical,
+        serde_json::from_slice::<serde_json::Value>(frozen).unwrap()
+    );
+    assert_eq!(
+        axton_core::STREAM_AUTHORITY_CAPABILITY,
+        "stream-authority-v1"
+    );
 }

@@ -79,7 +79,7 @@ fn p2_contiguous_sequence_and_server_refuses_gap_and_overlap() {
     // Hand-built gap and overlap against the host directly.
     let id = sim.client(0).client_id().to_string();
     let batch = |seq: u64| {
-        let body = serde_json::json!({"capabilities":["stream-membership-v1"],"clientId":id,"batchSequence":seq,"models":axton_sim::schema::declared_models(),"mutations":[{"ordinal":99,"name":"Edit","version":1,"operations":[{"model":"Entry","op":"update","identity":{"id":"e1"},"values":{"text":"z"}}]}]});
+        let body = serde_json::json!({"capabilities":["stream-authority-v1"],"clientId":id,"batchSequence":seq,"models":axton_sim::schema::declared_models(),"mutations":[{"ordinal":99,"name":"Edit","version":1,"operations":[{"model":"Entry","op":"update","identity":{"id":"e1"},"values":{"text":"z"}}]}]});
         let bytes = axton_core::canonical_json(&body).unwrap().into_bytes();
         axton_core::PushRequest::decode(&bytes).unwrap();
         bytes

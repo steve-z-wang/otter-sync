@@ -156,8 +156,8 @@ fn no_pending_means_converged(sim: &mut Sim) -> Result<(), String> {
                 }
                 // A record's invalidation row on this stream outlives its
                 // membership. A release establishes no content authority: a
-                // second hold, local work, or a fresh unheld read may retain
-                // content. Presence after release is checked in historical_removals
+                // retained authority and application-owned local work may retain
+                // content. Presence after Remove is checked in historical_removals
                 // traces, separately from current-member content convergence.
                 if !sim
                     .host

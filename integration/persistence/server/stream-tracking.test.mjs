@@ -343,24 +343,24 @@ test('migrated direct, alternate batch, exact receipt and Load replay bypass poi
   for(const [name,database] of [['pg',pg(pool)],['prisma',prisma(pr)],['drizzle',drizzle(drizzleOrm(pool))]]){
    const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database,authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
    const action=input.actionRequest;
-   const direct=JSON.parse(await app.action('alice',JSON.stringify({capabilities:['stream-membership-v1'],call:{callId:action.callId,name:action.name,version:action.version,args:action.args},models:action.models})));
+   const direct=JSON.parse(await app.action('alice',JSON.stringify({capabilities:['stream-authority-v1'],call:{callId:action.callId,name:action.name,version:action.version,args:action.args},models:action.models})));
    assert.equal(direct.records[0].state.title,'saved snapshot',name);
    assert.deepEqual(direct.memberships,[{stream:'Channel:business-scope',model:'Todo',identity:{id:'live'},cursor:10}]);
-   const body=clientId=>JSON.stringify({capabilities:['stream-membership-v1'],clientId,batchSequence:1,models:action.models,mutations:[{ordinal:1,callId:action.callId,name:action.name,version:1,args:action.args}]});
+   const body=clientId=>JSON.stringify({capabilities:['stream-authority-v1'],clientId,batchSequence:1,models:action.models,mutations:[{ordinal:1,callId:action.callId,name:action.name,version:1,args:action.args}]});
    const alternate=JSON.parse(await app.push('alice',body(`alternate-${name}`)));
-   assert.deepEqual(alternate.records,direct.records);assert.deepEqual(alternate.memberships,direct.memberships);
+   assert.deepEqual(alternate.records,direct.records);assert.equal(Object.hasOwn(alternate,'memberships'),false,'fresh alternate Push omits saved Action claims');
    const receipt=JSON.parse(await app.push('alice',body('fixture-client')));
    assert.deepEqual(receipt.records,direct.records);assert.deepEqual(receipt.memberships,direct.memberships);
-   const load=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['stream-membership-v1'],loads:[input.loadIntent]}))).loads[0];
+   const load=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['stream-authority-v1'],loads:[input.loadIntent]}))).loads[0];
    assert.equal(load.records[0].state.title,'saved snapshot');assert.deepEqual(load.outcome.next,input.loadResponse.outcome.next);assert.deepEqual(load.memberships,direct.memberships);
-   const noClaim=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['stream-membership-v1'],loads:[{...input.loadIntent,callId:'01890f47-1234-7123-8123-000000000005'}]}))).loads[0];
+   const noClaim=JSON.parse(await app.loads('alice',JSON.stringify({capabilities:['stream-authority-v1'],loads:[{...input.loadIntent,callId:'01890f47-1234-7123-8123-000000000005'}]}))).loads[0];
    assert.equal(Object.hasOwn(noClaim,'memberships'),false,'saved no-claim response has no fabricated claims');
    assert.deepEqual(noClaim.outcome.next,input.noClaimLoadResponse.outcome.next);
    assert.equal(invoked,0,`${name}: saved state executes no handler/Loader`);
    assert.deepEqual(await state(),before,`${name}: replay never reenrolls withdrawn pair or rewrites head/stamp/log/tag`);
   }
   const app=createBackend({config:{schema,mutations:[],loaders:['Todo']},native,database:pg(pool),authenticate:()=>'alice',mutations:{edit:poison},loads:{scan:poison},loaders:{todo:poison},onError:()=>{}});
-  await app.action('alice',JSON.stringify({capabilities:['stream-membership-v1'],call:{callId:'01890f47-1234-7123-8123-000000000099',name:'Edit',version:1,args:input.actionRequest.args},models:{Todo:1}}));
+  await app.action('alice',JSON.stringify({capabilities:['stream-authority-v1'],call:{callId:'01890f47-1234-7123-8123-000000000099',name:'Edit',version:1,args:input.actionRequest.args},models:{Todo:1}}));
   assert.equal(invoked,1,'a fresh call really reaches the poisoned handler');
  }finally{await pr.$disconnect();await pool.end();await c.end();}
 });
@@ -395,4 +395,104 @@ test('fresh Stream DDL installs identically through whole-file pg and split prep
    triggers:(await c.query("SELECT tgname,pg_get_triggerdef(oid) body FROM pg_trigger WHERE NOT tgisinternal ORDER BY 1")).rows});
   assert.deepEqual(await catalog(split),await catalog(whole));
  }finally{await pr.$disconnect();await whole.end();await split.end();}
+});
+
+// The repair changes framework authority only. Raw text snapshots deliberately
+// include historical top-level claims and opaque nested business memberships.
+const repair=async c=>{try{await c.query(await source('migrations/2026-10-01-local-authority.sql'));}catch(e){await c.query('ROLLBACK');throw e;}};
+const authoritySnapshot=async c=>{
+ const out={};for(const table of ['axton_record','axton_stream','axton_stream_member','axton_stream_log','axton_client','axton_call','authority_business'])out[table]=(await c.query(`SELECT to_jsonb(t) row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows;
+ return out;
+};
+const authorityFixture=async c=>{
+ await c.query(await source('migration.sql'));
+ await c.query('CREATE TABLE authority_business(id text PRIMARY KEY, payload text NOT NULL)');
+ const business=' {"memberships": [ {"stream":"business", "value":1} ]} ';
+ const response=' {"memberships":[{"stream":"A","model":"Entry","identity":{"id":"e"},"cursor":11}],"result":{"memberships":["opaque"]}} ';
+ await c.query('INSERT INTO authority_business VALUES($1,$2)',['e',business]);
+ await c.query('INSERT INTO axton_call(owner_id,call_id,request,response) VALUES($1,$2,$3,$4)',['alice','saved',' {"args":{"memberships":["business"]}} ',response]);
+ await c.query('INSERT INTO axton_client(client_id,owner_id,sequence,receipt) VALUES($1,$2,3,$3)',['saved-client','alice',response]);
+ await c.query("INSERT INTO axton_stream(stream,head) VALUES('A',11),('B',4),('U',20)");
+ const id=(await c.query("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Entry',$1,7) RETURNING id",[key('e')])).rows[0].id;
+ const unrelated=(await c.query("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Entry',$1,9) RETURNING id",[key('u')])).rows[0].id;
+ await c.query("INSERT INTO axton_stream_member(stream,record_id) VALUES('B',$1),('U',$2)",[id,unrelated]);
+ await c.query("INSERT INTO axton_stream_log(stream,record_id,cursor,kind) VALUES('A',$1,11,'remove'),('B',$1,4,'upsert'),('U',$2,20,'upsert')",[id,unrelated]);
+ return {id,unrelated};
+};
+test('local authority repair restamps withdrawals once, preserves saved bytes and current viewer authority',async()=>{
+ const name='axton_authority_repair',c=await scratch(name),p=new Pool({connectionString:databaseUrl(name)});
+ try{
+  const {id,unrelated}=await authorityFixture(c),before=await authoritySnapshot(c);
+  let calls=0;
+  const model={name:'Entry',version:1,identity:['id'],fields:[{name:'id',nullable:false,type:{kind:'scalar',name:'string'}},{name:'payload',nullable:false,type:{kind:'scalar',name:'string'}}]};
+  const app=createBackend({config:{schema:{enums:[],models:[model]},mutations:[],loaders:['Entry']},native,database:pg(p),authenticate:()=> 'alice',loaders:{entry:async({ids,userId,tx})=>{calls++;const rows=await tx.query('SELECT * FROM authority_business WHERE id=ANY($1)',[ids.map(x=>x.id)]);return ids.map(({id})=>userId==='removed'?null:rows.rows.find(r=>r.id===id)?{payload:rows.rows.find(r=>r.id===id).payload}:null);}}});
+  const pull=(owner,cursors)=>app.pull(owner,JSON.stringify({capabilities:['stream-authority-v1'],cursors,models:{Entry:1}})).then(JSON.parse);
+  const historical=await pull('removed',{A:10});
+  assert.equal(historical.changes[0].kind,'remove');assert.equal(Object.hasOwn(historical.changes[0],'state'),false);assert.equal(calls,0,'Remove evidence invokes no Loader');
+  await repair(c);
+  assert.equal((await c.query("SELECT stamp FROM axton_record WHERE model='Entry' AND identity_key=$1",[key('e')])).rows[0].stamp,'8');
+  assert.deepEqual((await c.query('SELECT stream,kind,cursor::text cursor FROM axton_stream_log WHERE record_id=$1 ORDER BY stream',[id])).rows.map(r=>[r.stream,r.kind,r.cursor]),[['A','upsert','12'],['B','upsert','5']]);
+  assert.equal((await c.query('SELECT count(*)::int n FROM axton_stream_member WHERE record_id=$1',[id])).rows[0].n,2);
+  const after=await authoritySnapshot(c);
+  for(const table of ['axton_call','axton_client','authority_business'])assert.deepEqual(after[table],before[table],table+' exact bytes');
+  for(const table of ['axton_record','axton_stream_member','axton_stream_log'])assert.deepEqual(after[table].filter(({row})=>row.id===Number(unrelated)||row.record_id===Number(unrelated)),before[table].filter(({row})=>row.id===Number(unrelated)||row.record_id===Number(unrelated)));
+  assert.deepEqual(after.axton_stream.filter(({row})=>row.stream==='U'),before.axton_stream.filter(({row})=>row.stream==='U'));
+  const seq=async()=>(await c.query('SELECT last_value,is_called FROM axton_stream_member_id_seq')).rows;
+  const sequence=await seq();await repair(c);assert.deepEqual(await authoritySnapshot(c),after);assert.deepEqual(await seq(),sequence,'replay allocates no tracking IDs');
+  const removed=await pull('removed',{A:11}),surviving=await pull('surviving',{B:4});
+  assert.equal(removed.changes[0].stamp,8);assert.equal(removed.changes[0].state,null,'current Loader decides absence');
+  assert.equal(surviving.changes[0].stamp,8);assert.equal(surviving.changes[0].state.payload,before.authority_business[0].row.payload,'another viewer retains valid content');
+  assert.equal((await c.query('SELECT count(*)::int n FROM axton_stream_member WHERE record_id=$1',[id])).rows[0].n,2,'null does not erase tracking');
+ }finally{await p.end();await c.end();}
+});
+test('local authority repair handles more than 1000 pairs and globally unions several withdrawals per identity',async()=>{
+ const c=await scratch('axton_authority_bulk');try{
+  await authorityFixture(c);
+  await c.query("INSERT INTO axton_stream(stream,head) VALUES('bulk',1001),('other',1001),('survivor',1001)");
+  await c.query(`INSERT INTO axton_record(model,identity_key,stamp) SELECT 'BulkRepair',format('{"id":"%s"}',lpad(n::text,5,'0')),7 FROM generate_series(1,1001) n`);
+  await c.query("INSERT INTO axton_stream_member(stream,record_id) SELECT 'survivor',id FROM axton_record WHERE model='BulkRepair'");
+  await c.query(`INSERT INTO axton_stream_log(stream,record_id,cursor,kind) SELECT s.stream,r.id,row_number() OVER(PARTITION BY s.stream ORDER BY r.identity_key),CASE WHEN s.stream='survivor' THEN 'upsert' ELSE 'remove' END FROM axton_record r CROSS JOIN (VALUES('bulk'),('other'),('survivor')) s(stream) WHERE r.model='BulkRepair'`);
+  await repair(c);
+  assert.deepEqual((await c.query("SELECT DISTINCT stamp FROM axton_record WHERE model='BulkRepair'")).rows,[{stamp:'8'}]);
+  assert.equal((await c.query("SELECT count(*)::int n FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE r.model='BulkRepair'")).rows[0].n,3003);
+  assert.deepEqual((await c.query("SELECT stream,head FROM axton_stream WHERE stream IN ('bulk','other','survivor') ORDER BY stream")).rows,[{stream:'bulk',head:'2002'},{stream:'other',head:'2002'},{stream:'survivor',head:'2002'}]);
+  assert.equal((await c.query("SELECT count(*)::int n FROM axton_stream_log WHERE stream='bulk' AND cursor>1001 AND kind='upsert'")).rows[0].n,1001,'all repaired positions follow the old cursor');
+  const before=await authoritySnapshot(c);await repair(c);assert.deepEqual(await authoritySnapshot(c),before);
+ }finally{await c.end();}
+});
+test('local authority repair refuses counter overflow and late SQL failure atomically, preserving saved bytes',async()=>{
+ for(const fault of ['stamp','head','late']){
+  const c=await scratch('axton_authority_failure');try{
+   await authorityFixture(c);
+   if(fault==='stamp')await c.query("UPDATE axton_record SET stamp=9007199254740991 WHERE identity_key=$1",[key('e')]);
+   if(fault==='head')await c.query("UPDATE axton_stream SET head=9007199254740991 WHERE stream='A'");
+   if(fault==='late')await c.query(`CREATE FUNCTION authority_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.stream='B' THEN RAISE EXCEPTION 'injected late repair failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER authority_fail BEFORE UPDATE ON axton_stream_log FOR EACH ROW EXECUTE FUNCTION authority_fail()`);
+   const before=await authoritySnapshot(c);
+   await assert.rejects(()=>repair(c),fault==='late'?/injected late repair failure/:/check constraint/);
+   assert.deepEqual(await authoritySnapshot(c),before,fault+' rolls back rows and preserves exact saved text');
+   assert.equal((await c.query("SELECT count(*)::int n FROM pg_class WHERE relnamespace=pg_my_temp_schema() AND relname LIKE 'axton_authority_%'")).rows[0].n,0,'temporary repair state rolls back');
+  }finally{await c.end();}
+ }
+});
+test('local authority repair refuses unsupported shapes before modifying data',async()=>{
+ for(const mutation of ["ALTER TABLE axton_call RENAME COLUMN request TO missing_request","ALTER TABLE axton_stream_log RENAME COLUMN cursor TO missing_cursor","ALTER TABLE axton_record ALTER COLUMN stamp TYPE numeric", "ALTER TABLE axton_record DROP CONSTRAINT axton_record_stamp_check, ADD CHECK(stamp>0 OR stamp<=9007199254740991)", "CREATE TABLE axton_scope_member(scope text)"]){
+  const c=await scratch('axton_authority_invalid');try{
+   await authorityFixture(c);await c.query(mutation);const before=await authoritySnapshot(c);
+   await assert.rejects(()=>repair(c),/incomplete|unsupported/);assert.deepEqual(await authoritySnapshot(c),before);
+  }finally{await c.end();}
+ }
+});
+test('local authority repair accepts the historical Channel-to-Scope-to-Stream layout and preserves upgraded saved text',async()=>{
+ const c=await scratch('axton_authority_upgraded');try{
+  await c.query(await fixture('v02-framework.sql'));await c.query(await fixture('postgres-state.sql'));
+  await c.query(await source('migrations/2026-09-30-scopes.sql'));await upgrade(c);
+  const saved=async()=>(await c.query('SELECT request,response FROM axton_call ORDER BY call_id')).rows;
+  const receipts=(await c.query('SELECT receipt FROM axton_client ORDER BY client_id')).rows;
+  const before=await saved();
+  const removed=(await c.query("SELECT DISTINCT r.id,r.stamp FROM axton_record r JOIN axton_stream_log l ON l.record_id=r.id WHERE l.kind='remove'")).rows;
+  assert.ok(removed.length>0,'original fixture contains withdrawals');await repair(c);
+  assert.equal((await c.query("SELECT count(*)::int n FROM axton_stream_log WHERE kind='remove'")).rows[0].n,0);
+  for(const r of removed)assert.equal((await c.query('SELECT stamp FROM axton_record WHERE id=$1',[r.id])).rows[0].stamp,String(BigInt(r.stamp)+1n));
+  assert.deepEqual(await saved(),before);assert.deepEqual((await c.query('SELECT receipt FROM axton_client ORDER BY client_id')).rows,receipts);
+ }finally{await c.end();}
 });

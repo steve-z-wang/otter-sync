@@ -540,7 +540,7 @@ fn malformed_tracking_or_positions_abort_and_savepoint_rejection_rolls_back() {
     assert_eq!(backend.count("rollback"), 1);
 }
 #[test]
-fn claims_only_name_declared_tracking_and_saved_call_replays_exactly() {
+fn fresh_receipt_omits_claims_preserves_tracking_and_replays_exactly() {
     let backend = Backend::new();
     backend.seed("Todo", "t", todo_row("t", "old"), Some(7));
     backend.enroll("A", "Todo", "t", 0);
@@ -554,10 +554,8 @@ fn claims_only_name_declared_tracking_and_saved_call_replays_exactly() {
     let args = vec![edit(1, 1, "Edit", "t", "changed")];
     let first = push(&backend, 1, json!({"Todo":1}), args.clone());
     succeeded(&first);
-    assert_eq!(
-        first["memberships"],
-        json!([{"stream":"B","cursor":1,"model":"Todo","identity":{"id":"t"}}])
-    );
+    assert!(first.get("memberships").is_none());
+    assert_eq!(backend.members("Todo", "t"), ["A", "B"]);
     let before = backend.tables();
     backend.clear_log();
     let replay = push(&backend, 1, json!({"Todo":1}), args);

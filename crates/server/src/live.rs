@@ -321,7 +321,7 @@ pub async fn stream_pull(
     .encode()
     .map_err(|e| Error::new(code::REQUEST_INVALID, e.to_string()))?;
     let request =
-        axton_core::with_capabilities(&request, &[axton_core::STREAM_MEMBERSHIP_CAPABILITY])
+        axton_core::with_capabilities(&request, &[axton_core::STREAM_AUTHORITY_CAPABILITY])
             .map_err(crate::internal)?;
     let page = crate::process_stream_pull(config, owner, &request, host).await?;
     stream_page_progress(&page, cursors)

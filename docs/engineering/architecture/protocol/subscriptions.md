@@ -5,13 +5,13 @@ Engine behavior: [Client / Connection / Controller](../client/connection/control
 ## 3. Context and Scope
 
 - Endpoint: WebSocket upgrade on `/sync/live` with `Authorization: Bearer <token>`; refused with a raw `401`, `500` or `503` before the upgrade.
-- Client frame, exactly one: `{"type":"subscribe","streams":[…],"models":{…},"capabilities":["stream-membership-v1"]}`. `models` is the same read-contract declaration as on a [pull](pull.md) and required. It carries no cursors and no client id; unsupported capability is refused before acknowledgement; malformed metadata is a protocol error.
+- Client frame, exactly one: `{"type":"subscribe","streams":[…],"models":{…},"capabilities":["stream-authority-v1"]}`. `models` is the same read-contract declaration as on a [pull](pull.md) and required. It carries no cursors and no client id; unsupported capability is refused before acknowledgement; malformed metadata is a protocol error.
 - Server acknowledgement: `{"type":"subscribed","cursors":{stream: head}}`: every requested stream with its current head. For a stream the client has not initialized yet, that head is the subscription's origin ([#150](https://github.com/zanminwang/axton/issues/150)).
 - Server frames: [Pull](pull.md) pages without a `type` key, naming only the streams that moved; each stream's `from` is where the previous frame (or the acknowledgement's head) left it.
 - Close codes: `1002` protocol violation (a second client frame, a malformed subscribe, or a declaration the server refuses, with reason `model_version_unsupported`), `1011` server failure, `1001` server shutting down.
 
 ```json
-{"type":"subscribe","capabilities":["stream-membership-v1"],"models":{"Entry":2,"Comment":1},"streams":["book:demo","inbox:alice"]}
+{"type":"subscribe","capabilities":["stream-authority-v1"],"models":{"Entry":2,"Comment":1},"streams":["book:demo","inbox:alice"]}
 {"type":"subscribed","cursors":{"book:demo":47,"inbox:alice":9}}
 {"cursors":{"book:demo":{"from":47,"to":48,"head":48}},
  "changes":[{"stream":"book:demo","cursor":48,"kind":"upsert","model":"Entry","identity":{"id":"e"},"stamp":13,"state":{"text":"Hello!","note":null}}]}
@@ -49,3 +49,5 @@ Executed 2026-09-16 (2026-09-25 for the initialization bullet): `cargo test -p a
 ## 11. Risks and Technical Debt
 
 - **Resolved ([#63](https://github.com/zanminwang/axton/issues/63)).** The acknowledgement's vestigial `rejections` array is gone with the new frame.
+
+Unsubscribe removes the registration and its explicit bootstrap task, retaining Models and stamps. Resubscribe initializes a new ordinary origin; it starts no hidden reconciliation or historical walk. Only an explicit `bootstrap()` requests history.

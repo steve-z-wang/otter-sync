@@ -37,13 +37,6 @@ pub enum StoreDelivery {
         expected_after: u64,
         page: axton_core::StreamBootstrapPage,
     },
-    StreamReconciliation {
-        stream: String,
-        subscription_id: u64,
-        run: u64,
-        expected_after: u64,
-        page: axton_core::StreamBootstrapPage,
-    },
     Bootstrap {
         stream: String,
         subscription_id: u64,
@@ -187,15 +180,7 @@ impl<S: ClientStore> Client<S> {
                 run,
                 expected_after,
                 page,
-            }
-            | StoreDelivery::StreamReconciliation {
-                stream,
-                subscription_id,
-                run,
-                expected_after,
-                page,
             } => self.staged(mode, |e| {
-                e.reconciliation = matches!(delivery, StoreDelivery::StreamReconciliation { .. });
                 let outcome = if let Some(prepared) = prepared {
                     e.apply_stream_bootstrap_prepared_body(
                         stream,

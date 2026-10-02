@@ -10,7 +10,6 @@ pub const FRAMEWORK_TABLES: &[&str] = &[
     "axton_schema",
     "axton_client",
     "axton_record",
-    "axton_stream_member",
     "axton_local_replica_layer",
     "axton_subscription",
     "axton_mutation",
@@ -105,25 +104,7 @@ const ADDED_COLUMNS: &[(&str, &str, &str)] = &[
 /// Add every framework column in [`ADDED_COLUMNS`] a table still lacks.
 pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
     store.begin()?;
-    let result = (|| {
-        for (table, column, definition) in ADDED_COLUMNS {
-            let columns = store.query_committed(&format!("PRAGMA table_info({table})"), &[])?;
-            if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
-                store.execute_batch(&format!(
-                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-                ))?;
-            }
-        }
-        store.execute_batch(
-            "UPDATE axton_subscription SET reconcile_state='requested', reconcile_run=reconcile_run+1
-             WHERE EXISTS (SELECT 1 FROM axton_client WHERE stream_membership_version=0);
-             UPDATE axton_client SET stream_membership_version=1;"
-        )?;
-        store.execute_batch(
-            "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
-        )?;
-        Ok(())
-    })();
+    let result = add_framework_columns_in_transaction(store);
     match result {
         Ok(()) => match store.commit() {
             Ok(()) => Ok(()),
@@ -139,11 +120,29 @@ pub fn add_framework_columns<S: ClientStore>(store: &mut S) -> Result<()> {
     }
 }
 
+fn add_framework_columns_in_transaction<S: ClientStore>(store: &mut S) -> Result<()> {
+    for (table, column, definition) in ADDED_COLUMNS {
+        let columns = store.query(&format!("PRAGMA table_info({table})"), &[])?;
+        if !columns.rows.iter().any(|r| r[1].as_str() == Some(column)) {
+            store.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))?;
+        }
+    }
+    store.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS axton_mutation_call_id ON axton_mutation(call_id)",
+    )?;
+    Ok(())
+}
+
 /// Upgrade framework ownership names before fresh DDL or layout reconciliation.
 /// Durable business JSON and the membership reconciliation marker are untouched.
 pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
     store.begin()?;
     let result = (|| {
+        if !validate_authority_layout(store)? {
+            return Ok(());
+        }
         migrate_channel_layout(store)?;
         let rows = store.query("SELECT name FROM sqlite_master WHERE type='table'", &[])?;
         let tables: Vec<&str> = rows.rows.iter().filter_map(|r| r[0].as_str()).collect();
@@ -161,7 +160,7 @@ pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
             || subscription.iter().any(|c| c == "scope")
             || client.iter().any(|c| c == "scope_membership_version");
         if !old {
-            return Ok(());
+            return migrate_local_authority(store);
         }
         // Older incompatible replicas are still rebuilt beside by opening;
         // do not turn their pre-membership Scope vocabulary into a refusal.
@@ -184,24 +183,6 @@ pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
             || !subscription.iter().any(|c| c == "scope")
         {
             return Err(invalid("incomplete Scope framework layout"));
-        }
-        for table in FRAMEWORK_TABLES {
-            let original = if *table == "axton_stream_member" {
-                "axton_scope_member"
-            } else {
-                table
-            };
-            // Pre-membership Channel layouts still acquire their first marker and table below.
-            if original == "axton_scope_member"
-                && !client.iter().any(|c| c == "scope_membership_version")
-            {
-                continue;
-            }
-            if !tables.contains(&original) {
-                return Err(invalid(format!(
-                    "incomplete Scope framework layout: {original}"
-                )));
-            }
         }
         if client.iter().any(|c| c == "scope_membership_version")
             && !tables.contains(&"axton_scope_member")
@@ -228,7 +209,7 @@ pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
         if client.iter().any(|c| c == "scope_membership_version") {
             store.execute_batch("ALTER TABLE axton_client RENAME COLUMN scope_membership_version TO stream_membership_version")?;
         }
-        Ok(())
+        migrate_local_authority(store)
     })();
     match result {
         Ok(()) => match store.commit() {
@@ -243,6 +224,294 @@ pub fn migrate_stream_layout<S: ClientStore>(store: &mut S) -> Result<()> {
             Err(e)
         }
     }
+}
+
+/// Validate the original vocabulary before any rename or destructive migration.
+/// Unsupported checkpoint layouts retain the existing rebuild-beside policy.
+fn validate_authority_layout<S: ClientStore>(store: &mut S) -> Result<bool> {
+    let catalog = store.query("SELECT type,name,tbl_name FROM sqlite_master", &[])?;
+    let has_table = |name: &str| catalog.rows.iter().any(|r| r[0] == "table" && r[1] == name);
+    let columns = |store: &mut S, name: &str| -> Result<Vec<String>> {
+        Ok(store
+            .query(&format!("PRAGMA table_info({name})"), &[])?
+            .rows
+            .iter()
+            .filter_map(|r| r[1].as_str().map(str::to_owned))
+            .collect())
+    };
+    let client = columns(store, "axton_client")?;
+    if LEGACY_TABLES.iter().any(|t| has_table(t)) {
+        return Ok(false);
+    }
+    if has_table("axton_client")
+        && CLIENT_COLUMNS
+            .iter()
+            .any(|c| !client.iter().any(|v| v == c))
+    {
+        if client.iter().any(|c| {
+            [
+                "local_authority_version",
+                "channel_membership_version",
+                "scope_membership_version",
+                "stream_membership_version",
+            ]
+            .contains(&c.as_str())
+        }) {
+            return Err(invalid("incomplete modern client columns"));
+        }
+        return Ok(false);
+    }
+    let subscription = columns(store, "axton_subscription")?;
+    let vocabularies: Vec<_> = ["channel", "scope", "stream"]
+        .into_iter()
+        .filter(|v| {
+            has_table(&format!("axton_{v}_member"))
+                || subscription.iter().any(|c| c == v)
+                || client
+                    .iter()
+                    .any(|c| c == &format!("{v}_membership_version"))
+        })
+        .collect();
+    if !has_table("axton_client") {
+        if !vocabularies.is_empty() {
+            return Err(invalid("incomplete authority framework layout"));
+        }
+        return Ok(false);
+    }
+    if vocabularies.len() != 1 {
+        return Err(invalid("conflicting framework vocabularies"));
+    }
+    let vocabulary = vocabularies[0];
+    if [vocabulary, "subscription_id", "starting_cursor", "cursor"]
+        .iter()
+        .any(|required| !subscription.iter().any(|c| c == required))
+    {
+        return Err(invalid("incomplete subscription columns"));
+    }
+    let modern = has_table(&format!("axton_{vocabulary}_member"))
+        || client.iter().any(|c| {
+            c == "local_authority_version" || c == &format!("{vocabulary}_membership_version")
+        });
+    for table in FRAMEWORK_TABLES {
+        // These were additive framework tables before the membership era.
+        let additive = [
+            "axton_local_replica_layer",
+            "axton_local_write",
+            "axton_query_cache",
+            "axton_load",
+            "axton_load_once",
+        ]
+        .contains(table);
+        if !has_table(table) && (modern || !additive) {
+            return Err(invalid(format!(
+                "incomplete authority framework layout: {table}"
+            )));
+        }
+    }
+    // Names alone cannot prove a supported layout: validate durable work's
+    // original fields before dropping the old ledger. Only pre-membership
+    // layouts may receive additive defaults after this migration.
+    for (table, required) in [
+        ("axton_schema", &["descriptor", "created_at"][..]),
+        (
+            "axton_client",
+            &[
+                "client_id",
+                "next_ordinal",
+                "next_push",
+                "generation",
+                "last_completed_push",
+                "push_models",
+                "next_subscription",
+            ][..],
+        ),
+        ("axton_record", &["model", "identity", "stamp"][..]),
+        (
+            "axton_local_replica_layer",
+            &["model", "identity", "operations"][..],
+        ),
+        (
+            "axton_mutation",
+            &["ordinal", "name", "version", "push"][..],
+        ),
+        (
+            "axton_mutation_operation",
+            &[
+                "ordinal", "position", "kind", "model", "identity", "op", "values",
+            ][..],
+        ),
+        (
+            "axton_mutation_dependency",
+            &["ordinal", "depends_on", "kind"][..],
+        ),
+        (
+            "axton_mutation_prerequisite",
+            &["ordinal", "key", "error"][..],
+        ),
+        (
+            "axton_local_write",
+            &[
+                "sequence",
+                "ordinal",
+                "position",
+                "disposition",
+                "model",
+                "identity",
+                "op",
+                "values",
+            ][..],
+        ),
+        (
+            "axton_rejection",
+            &["ordinal", "name", "code", "detail"][..],
+        ),
+        (
+            "axton_query_cache",
+            &[
+                "key",
+                "contract",
+                "name",
+                "version",
+                "args",
+                "store",
+                "generation",
+                "result",
+            ][..],
+        ),
+        (
+            "axton_load",
+            &[
+                "load_id",
+                "seq",
+                "ready",
+                "name",
+                "version",
+                "args",
+                "models",
+                "continuation",
+                "run",
+                "phase",
+                "pages",
+                "call_id",
+                "intent",
+                "retry",
+                "attempts",
+                "error",
+            ][..],
+        ),
+        (
+            "axton_load_once",
+            &["key", "name", "version", "args", "models", "load_id"][..],
+        ),
+    ] {
+        if !has_table(table) {
+            continue;
+        }
+        let existing = columns(store, table)?;
+        if required
+            .iter()
+            .any(|required| !existing.iter().any(|c| c == required))
+        {
+            return Err(invalid(format!("incomplete framework columns: {table}")));
+        }
+    }
+    let marker = if client.iter().any(|c| c == "local_authority_version") {
+        let values = store.query("SELECT local_authority_version FROM axton_client", &[])?;
+        if values.rows.iter().any(|r| r[0] != 0 && r[0] != 1) {
+            return Err(invalid("invalid local authority marker"));
+        }
+        if values.rows.iter().any(|r| r[0] == 0) && values.rows.iter().any(|r| r[0] == 1) {
+            return Err(invalid("conflicting local authority markers"));
+        }
+        values.rows.first().map(|r| r[0] == 1).unwrap_or(true)
+    } else {
+        false
+    };
+    let member_table = format!("axton_{vocabulary}_member");
+    if modern {
+        // Known membership-era and completed layouts already have these fields.
+        // Default repair would replace durable work or legacy eviction fences.
+        // Only genuinely pre-membership additive layouts may lack them.
+        for (table, field, _) in ADDED_COLUMNS {
+            let required = if *field == "stream_membership_version" {
+                format!("{vocabulary}_membership_version")
+            } else {
+                (*field).to_owned()
+            };
+            if !columns(store, table)?.iter().any(|c| c == &required) {
+                return Err(invalid(format!(
+                    "incomplete modern authority columns: {table}.{required}"
+                )));
+            }
+        }
+    }
+    if marker {
+        if vocabulary != "stream"
+            || has_table(&member_table)
+            || catalog.rows.iter().any(|r| {
+                [
+                    "axton_channel_member_record",
+                    "axton_scope_member_record",
+                    "axton_stream_member_record",
+                ]
+                .iter()
+                .any(|name| r[1] == *name)
+            })
+        {
+            return Err(invalid(
+                "completed authority layout still contains holdings",
+            ));
+        }
+        return Ok(true);
+    }
+    let membership_marker = format!("{vocabulary}_membership_version");
+    if client.iter().any(|c| c == &membership_marker) && !has_table(&member_table) {
+        return Err(invalid("membership layout lacks holding table"));
+    }
+    if has_table(&member_table) {
+        let member = columns(store, &member_table)?;
+        if [vocabulary, "model", "identity", "cursor", "present"]
+            .iter()
+            .any(|required| !member.iter().any(|c| c == required))
+        {
+            return Err(invalid("incomplete membership columns"));
+        }
+    }
+    for vocabulary in ["channel", "scope", "stream"] {
+        let index = format!("axton_{vocabulary}_member_record");
+        if catalog.rows.iter().any(|r| {
+            r[1] == index && (r[0] != "index" || r[2] != format!("axton_{vocabulary}_member"))
+        }) {
+            return Err(invalid("holding index has wrong owner"));
+        }
+    }
+    Ok(true)
+}
+
+fn migrate_local_authority<S: ClientStore>(store: &mut S) -> Result<()> {
+    let client = store.query("PRAGMA table_info(axton_client)", &[])?;
+    if client
+        .rows
+        .iter()
+        .any(|r| r[1] == "local_authority_version")
+    {
+        let marker = store.query("SELECT local_authority_version FROM axton_client", &[])?;
+        if marker.rows.iter().all(|r| r[0] == 1) {
+            return Ok(());
+        }
+    } else {
+        store.execute_batch("ALTER TABLE axton_client ADD COLUMN local_authority_version INTEGER NOT NULL DEFAULT 0")?;
+    }
+    // Completion describes a complete layout, including genuinely older
+    // additive tables/fields. open_at may validate it again before Client::open.
+    store.execute_batch(FRAMEWORK_DDL)?;
+    add_framework_columns_in_transaction(store)?;
+    store.execute_batch(
+        "DROP INDEX IF EXISTS axton_stream_member_record;
+        DROP TABLE IF EXISTS axton_stream_member;
+        UPDATE axton_client SET local_authority_version=1;",
+    )?;
+    Ok(())
 }
 
 fn migrate_channel_layout<S: ClientStore>(store: &mut S) -> Result<()> {
@@ -277,23 +546,6 @@ fn migrate_channel_layout<S: ClientStore>(store: &mut S) -> Result<()> {
     {
         return Err(invalid("incomplete old framework layout"));
     }
-    for table in FRAMEWORK_TABLES {
-        let original = if *table == "axton_stream_member" {
-            "axton_channel_member"
-        } else {
-            table
-        };
-        if original == "axton_channel_member"
-            && !client.iter().any(|c| c == "channel_membership_version")
-        {
-            continue;
-        }
-        if !tables.contains(&original) {
-            return Err(invalid(format!(
-                "incomplete old framework layout: {original}"
-            )));
-        }
-    }
     if client.iter().any(|c| c == "channel_membership_version") && !old_member {
         return Err(invalid("old membership layout lacks axton_channel_member"));
     }
@@ -327,6 +579,7 @@ CREATE TABLE IF NOT EXISTS axton_client (
   push_models  TEXT,
   push_results TEXT,
   stream_membership_version INTEGER NOT NULL DEFAULT 1,
+  local_authority_version INTEGER NOT NULL DEFAULT 1,
   store_epoch INTEGER NOT NULL DEFAULT 0,
   next_subscription INTEGER NOT NULL DEFAULT 1
 );
@@ -336,12 +589,6 @@ CREATE TABLE IF NOT EXISTS axton_record (
   evicted_at INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (model, identity)
 );
-CREATE TABLE IF NOT EXISTS axton_stream_member (
-  stream TEXT NOT NULL, model TEXT NOT NULL, identity TEXT NOT NULL,
-  cursor INTEGER NOT NULL CHECK(cursor > 0), present INTEGER NOT NULL CHECK(present IN (0,1)),
-  PRIMARY KEY(stream, model, identity)
-);
-CREATE INDEX IF NOT EXISTS axton_stream_member_record ON axton_stream_member(model, identity, present);
 CREATE TABLE IF NOT EXISTS axton_local_replica_layer (
   model TEXT NOT NULL, identity TEXT NOT NULL, operations TEXT NOT NULL,
   PRIMARY KEY(model, identity)

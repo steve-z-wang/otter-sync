@@ -619,7 +619,7 @@ test('standing absence reclaims its cache; a late newer child remains gated by t
   }
   const directory = await mkdtemp(join(tmpdir(), 'axton-standing-'));
   const childGate = deferred(), pushGate = deferred();
-  let childRequested = false, standingHooks = 0, childHooks = 0;
+  let childRequested = false, standingHooks = 0, childHooks = 0, refuseCleanup = true;
   const Client = createClient(native, FixtureTransaction, () => ({
     open() {},
     push: async (kind, text) => {
@@ -639,7 +639,7 @@ test('standing absence reclaims its cache; a late newer child remains gated by t
     },
   }));
   const client = await Client.open({ path: join(directory,'db'), schema: standingSchema, onStore: {
-    Standing: async (tx, changes) => { standingHooks++; await reclaimStanding(tx,changes); },
+    Standing: async (tx, changes) => { standingHooks++; await reclaimStanding(tx,changes); if(refuseCleanup) throw new Error("cleanup refused"); },
     Entry: () => { childHooks++; },
   }});
   const create = (model,id,values) => ({model,op:'create',identity:{id},values});
@@ -658,8 +658,13 @@ test('standing absence reclaims its cache; a late newer child remains gated by t
     await client.unsubscribe('lost');
     assert.equal(standingHooks,0,'unsubscribe and incomplete Load do not signal standing absence');
     assert.notEqual(await client.read('Standing',{id:'lost'}),null);
+    assert.deepEqual(await client.readSql("SELECT name FROM sqlite_master WHERE name='axton_stream_member'"),[],'fresh authority has no client holding table');
+    await assert.rejects(()=>client.fetchModel('Standing',1,{id:'lost'},x=>x),error=>error.code==='fetch.store_failed' && error.cause?.message==='cleanup refused');
+    assert.notEqual(await client.read('Standing',{id:'lost'}),null,'incoming absence rolls back with failed cleanup');
+    assert.equal((await client.read('Entry',{id:'child'})).text,'child','hook child deletion rolls back with authority');
+    refuseCleanup=false;
     await client.fetchModel('Standing',1,{id:'lost'},x=>x);
-    assert.equal(standingHooks,1);
+    assert.equal(standingHooks,2);
     assert.equal(await client.read('Entry',{id:'child'}),null,'direct hook deletion reclaims the cache');
     assert.equal((await client.read('Entry',{id:'pending'})).text,'pending words');
     assert.equal((await client.read('Entry',{id:'companion'})).text,'companion words');

@@ -192,13 +192,13 @@ for(const shim of shims){
  });
  test(`[${shim.name}] a push writes business rows and AXTON metadata in one transaction and a pull reads them back`,async()=>{
   const backend=createBackend({config,native,database,authenticate,handlers:{async edit({input,tx,stream: stream}){await driver.query(tx,'INSERT INTO conformance_task(id,title) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET title=$2',[input.task.identity.id,input.task.patch.title]);stream(p('shared')).track.task(input.task.identity);}},loaders:{async task({ids,tx}){const rows=await driver.query(tx,'SELECT id,title FROM conformance_task WHERE id = ANY($1)',[ids.map(i=>i.id)]);return ids.map(i=>{const r=rows.find(r=>r.id===i.id);return r?{title:r.title}:null;});}}});
-  const receipt=JSON.parse(await backend.push('alice',JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id:p('t')},values:{title:'typed'}}]}]})));
+  const receipt=JSON.parse(await backend.push('alice',JSON.stringify({capabilities:['stream-authority-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id:p('t')},values:{title:'typed'}}]}]})));
   assert.deepEqual(receipt.records,[{identity:{id:p('t')},model:'Task',stamp:1,state:{title:'typed'}}]);
   assert.deepEqual(await q('SELECT title FROM conformance_task WHERE id=$1',[p('t')]),[{title:'typed'}]);
   assert.equal(Number((await q('SELECT sequence FROM axton_client WHERE client_id=$1',[p('c')]))[0].sequence),1);
-  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{[p('shared')]:0},models:{Task:1}})));
+  const page=JSON.parse(await backend.pull('alice',JSON.stringify({capabilities:['stream-authority-v1'],cursors:{[p('shared')]:0},models:{Task:1}})));
   assert.equal(page.changes.length,1);assert.deepEqual(page.changes[0].state,{title:'typed'});assert.equal(page.changes[0].stamp,1);
-  assert.equal(await backend.push('alice',JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[]}]})),JSON.stringify(receipt),'a retry answers from the stored receipt');
+  assert.equal(await backend.push('alice',JSON.stringify({capabilities:['stream-authority-v1'],clientId:p('c'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[]}]})),JSON.stringify(receipt),'a retry answers from the stored receipt');
  });
  test(`[${shim.name}] claim creates and locks the client row; saveReceipt refuses another owner; head of an unknown stream is 0`,async()=>{
   const claimed=await inTx((tx,_,a)=>a({op:'claim',owner:'alice',clientId:p('claim')}));
@@ -303,10 +303,10 @@ for(const shim of shims){
   wake();await new Promise(r=>setImmediate(r));assert.deepEqual(wakes,[a]);
   const heads=(await q('SELECT stream,head::int FROM axton_stream WHERE stream=ANY($1) ORDER BY stream',[[a,b,missing]])).map(r=>[r.stream,r.head]);
   assert.deepEqual(heads,[[a,2],[b,1]]);
-  const page=JSON.parse(await app.pull('alice',JSON.stringify({capabilities:['stream-membership-v1'],cursors:{[a]:1},models:{Task:1}})));
+  const page=JSON.parse(await app.pull('alice',JSON.stringify({capabilities:['stream-authority-v1'],cursors:{[a]:1},models:{Task:1}})));
   assert.deepEqual(page.changes.map(r=>[r.state,r.stamp]),[[null,2]]);
   assert.equal((await q('SELECT count(*)::int n FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE r.identity_key=$1',[key(id)]))[0].n,2,'null never withdraws tracking');
-  const request=JSON.stringify({capabilities:['stream-membership-v1'],clientId:p('target-call'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id},values:{title:'deleted'}}]}]});
+  const request=JSON.stringify({capabilities:['stream-authority-v1'],clientId:p('target-call'),batchSequence:1,models:{Task:1},mutations:[{ordinal:1,name:'edit',operations:[{model:'Task',op:'update',identity:{id},values:{title:'deleted'}}]}]});
   const saved=await app.push('alice',request);await new Promise(r=>setImmediate(r));const count=wakes.length;
   assert.equal(await app.push('alice',request),saved);await new Promise(r=>setImmediate(r));assert.equal(wakes.length,count,'exact saved replay publishes nothing');
   stopA();stopB();

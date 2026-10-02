@@ -44,15 +44,27 @@ test('new capability with retired immediate wire fields is refused before host e
  const {backend,effects}=app();const listening=await backend.listen({port:0});
  try{
   for(const old of ['channel','channels','scope','scopes']){
-   const request={mode:'bootstrap',stream:'room',after:0,until:1,models:{Entry:1},capabilities:['stream-membership-v1'],[old]:'room'};
+   const request={mode:'bootstrap',stream:'room',after:0,until:1,models:{Entry:1},capabilities:['stream-authority-v1'],[old]:'room'};
    const response=await fetch(listening.url+'/sync/pull',{method:'POST',body:JSON.stringify(request)});
    assert.equal(response.status,400);assert.deepEqual(await response.json(),{code:'request.invalid'});
-   await assert.rejects(()=>native.negotiateLive(JSON.stringify(config),'alice',JSON.stringify({type:'subscribe',streams:['room'],models:{Entry:1},capabilities:['stream-membership-v1'],[old]:['room']}),async()=>{effects.push('host');}),error=>JSON.parse(error.message).code==='request.invalid');
+   await assert.rejects(()=>native.negotiateLive(JSON.stringify(config),'alice',JSON.stringify({type:'subscribe',streams:['room'],models:{Entry:1},capabilities:['stream-authority-v1'],[old]:['room']}),async()=>{effects.push('host');}),error=>JSON.parse(error.message).code==='request.invalid');
   }
-  for(const route of routes)for(const old of ['channel-membership-v1','scope-membership-v1']){
+  for(const route of routes)for(const old of ['channel-membership-v1','scope-membership-v1','stream-membership-v1']){
    const response=await fetch(listening.url+route,{method:'POST',body:JSON.stringify({capabilities:[old]})});
    assert.equal(response.status,426);
   }
   assert.deepEqual(effects,[]);
  }finally{await listening.close();}
+});
+
+// Explicit bootstrap ingress must negotiate before range scans, Loaders or progress.
+test('bootstrap with old capability has no host effects on native and HTTP boundaries', async () => {
+ const {backend,effects}=app(); const listening=await backend.listen({port:0});
+ const request={mode:'bootstrap',stream:'room',after:0,until:10,models:{Entry:1},capabilities:['stream-membership-v1']};
+ try {
+  await assert.rejects(()=>native.processPull(JSON.stringify(config),'alice',JSON.stringify(request),async()=>{effects.push('host');throw new Error('host must not run');}),error=>JSON.parse(error.message).code==='protocol.unsupported');
+  const response=await fetch(listening.url+'/sync/pull',{method:'POST',body:JSON.stringify(request)});
+  assert.equal(response.status,426);assert.deepEqual(await response.json(),{code:'protocol.unsupported'});
+  assert.deepEqual(effects,[]);
+ } finally { await listening.close(); }
 });

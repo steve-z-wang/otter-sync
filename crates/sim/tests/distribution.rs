@@ -386,10 +386,10 @@ fn d4_parent_and_child_move_streams_together_without_deletes() {
     sim.check().unwrap();
 }
 
-/// Removal takes one identity-only position and releases the last hold.
-/// Later content reaches neither the old holder nor a late subscriber.
+/// Historical Remove takes one identity-only position and retains cached authority.
+/// Later content is not routed through the removed pair.
 #[test]
-fn removal_evicts_client_rows_and_hides_later_content_from_the_old_stream() {
+fn removal_retains_client_rows_and_routes_no_later_content_from_the_old_stream() {
     let mut sim = Sim::new(61, 2);
     let e1 = entry_key("e1");
     subscribe(&mut sim, 0, &["a"]);
@@ -410,8 +410,8 @@ fn removal_evicts_client_rows_and_hides_later_content_from_the_old_stream() {
     sim.settle();
     assert_eq!(
         sim.read_text(0, &e1).as_deref(),
-        None,
-        "the final stream release evicts the row"
+        Some("before"),
+        "identity-only Remove retains the last delivered authority"
     );
     assert_eq!(sim.client(0).record_stamp(&e1).unwrap(), 1);
     assert_eq!(sim.client(0).cursor("a").unwrap(), Some(head));
@@ -439,7 +439,7 @@ fn re_adding_publishes_current_state_and_later_touches_follow() {
     declare(&mut sim, "Entry:e1", None, &[("a", false)]);
     declare(&mut sim, "Entry:e1", Some(Some("v2")), &[]);
     sim.settle();
-    assert_eq!(sim.read_text(0, &e1), None);
+    assert_eq!(sim.read_text(0, &e1).as_deref(), Some("v1"));
     let head = sim.host.head("a");
     declare(&mut sim, "Entry:e1", None, &[("a", true)]);
     assert_eq!(sim.host.head("a"), head + 1, "a fresh position");
@@ -490,19 +490,18 @@ fn a_deleted_record_stays_enrolled_and_its_recreation_is_delivered_again() {
     sim.settle();
     assert_eq!(
         sim.read_text(0, &e1).as_deref(),
-        None,
-        "the stream release removes its last hold"
+        Some("again"),
+        "a historical Remove supplies no canonical deletion"
     );
     sim.check().unwrap();
 }
 
 /// Generated add/remove/touch sequences, with client edits, dropped and
 /// duplicated messages and client crashes and restarts in between. Every step
-/// keeps the invariants; a row disappears only with authoritative absence
-/// or persisted stream-release evidence. After settling, every client at a
-/// Stream's head holds the
-/// server's state of that Stream's members, and a client that subscribes to
-/// every Stream from zero only then holds exactly the current members.
+/// keeps the invariants; a row disappears only with authoritative absence.
+/// Historical Remove supplies no deletion authority. Settled clients agree
+/// with current authority that their Streams actually delivered; a late
+/// subscriber sees the currently tracked records.
 #[test]
 fn generated_membership_sequences_converge_through_restarts_and_duplicates() {
     let mut comparisons = 0;
@@ -546,9 +545,8 @@ fn generated_membership_sequences_converge_through_restarts_and_duplicates() {
                 if sim.is_up(client) && sim.read_text(client, &key).is_none() {
                     let stamp = sim.client(client).record_stamp(&key).unwrap();
                     assert!(
-                        deletions.contains(&(key.encoded().unwrap(), stamp))
-                            || !sim.client(client).read_sql("SELECT 1 AS released FROM axton_stream_member WHERE model=? AND identity=? AND present=0 AND NOT EXISTS (SELECT 1 FROM axton_stream_member AS held WHERE held.model=axton_stream_member.model AND held.identity=axton_stream_member.identity AND held.present=1)", &[serde_json::json!(key.model), serde_json::json!(key.encoded_identity().unwrap())]).unwrap().is_empty(),
-                        "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without a deletion or stream release"
+                        deletions.contains(&(key.encoded().unwrap(), stamp)),
+                        "seed {seed} step {step}: client {client} lost {key:?} at stamp {stamp} without delivered deletion authority"
                     );
                 }
             }

@@ -453,7 +453,7 @@ impl<S: ClientStore> Client<S> {
                 ),
                 None => {
                     let id = uuid::Uuid::new_v4().to_string();
-                    store.execute("INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription) VALUES (?,1,1,1,1)", &[Value::from(id.clone())])?;
+                    store.execute("INSERT INTO axton_client (client_id, next_ordinal, next_push, generation, next_subscription, local_authority_version) VALUES (?,1,1,1,1,1)", &[Value::from(id.clone())])?;
                     (id, 1)
                 }
             };
@@ -1142,7 +1142,7 @@ impl<S: ClientStore> Client<S> {
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         self.write(|e| e.freeze(max_bytes))?
-            .map(|bytes| with_capabilities(&bytes, &[STREAM_MEMBERSHIP_CAPABILITY]))
+            .map(|bytes| with_capabilities(&bytes, &[STREAM_AUTHORITY_CAPABILITY]))
             .transpose()
     }
     /// Complete the push in flight from its receipt: the returned authority

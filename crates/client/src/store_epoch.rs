@@ -45,9 +45,6 @@ impl<S: ClientStore> Engine<'_, S> {
         key: &RecordKey,
         token: StoreToken,
     ) -> Result<bool> {
-        if self.held(key)? {
-            return Ok(true);
-        }
         let evicted = self
             .scalar(
                 "SELECT evicted_at FROM axton_record WHERE model=? AND identity=?",
@@ -55,20 +52,5 @@ impl<S: ClientStore> Engine<'_, S> {
             )?
             .unwrap_or(json!(0));
         Ok(token.epoch >= as_u64(&evicted)?)
-    }
-    pub(crate) fn evict_at_next_epoch(&mut self, key: &RecordKey) -> Result<()> {
-        // bump returns the old value; store_epoch starts at zero.
-        let epoch = self.bump("store_epoch")? + 1;
-        self.release_replica(key)?;
-        self.exec(
-            "axton_record",
-            "UPDATE axton_record SET evicted_at=? WHERE model=? AND identity=?",
-            &[
-                json!(epoch),
-                json!(key.model),
-                json!(key.encoded_identity()?),
-            ],
-        )?;
-        Ok(())
     }
 }

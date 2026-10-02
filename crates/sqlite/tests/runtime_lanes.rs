@@ -1412,7 +1412,7 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
         serde_json::from_str(h.open[&socket]["subscribe"].as_str().unwrap()).unwrap();
     assert_eq!(
         subscribe,
-        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"type":"subscribe","streams":["book"],"models":{"Entry":1}})
+        json!({"capabilities":[STREAM_AUTHORITY_CAPABILITY],"type":"subscribe","streams":["book"],"models":{"Entry":1}})
     );
     assert_eq!(sockets(&events).len(), 1);
     assert!(
@@ -1450,7 +1450,7 @@ fn connect_starts_both_lanes_and_the_worker_streams_catches_up_and_applies() {
     let (pull, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
+        json!({"capabilities":[STREAM_AUTHORITY_CAPABILITY],"cursors":{"book":1},"models":{"Entry":1}})
     );
     assert_eq!(connections(&events), ["catching-up"]);
     h.frame(&socket, &page(1, 2, "e", "queued"));
@@ -1659,7 +1659,7 @@ fn receipts_direct_applies_and_pages_each_commit_in_their_own_step_beside_a_boot
     let (load, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[STREAM_AUTHORITY_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Live traffic flows beside the outstanding historical page.
     h.frame(&socket, &page(7, 8, "live", "streamed"));
@@ -2817,20 +2817,9 @@ fn subscription_status_follows_the_lanes_and_a_removal_closes_it_once() {
     let events = h.run();
     assert_eq!(
         snapshots(&events, &renewed).last().unwrap()["status"],
-        status("ready", "connecting", "not-requested")
-    );
-    let (history, body) = h.http("pull");
-    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["until"], 6);
-    h.ok(
-        &history,
-        &json!({"mode":"bootstrap","stream":"book","from":0,"to":6,"until":6,"head":6,"changes":[]})
-            .to_string(),
-    );
-    let events = h.run();
-    assert_eq!(
-        snapshots(&events, &renewed).last().unwrap()["status"],
         status("ready", "live", "not-requested")
     );
+    assert!(h.client().bootstrap_schedule(None).unwrap().is_none());
     // Stopping the connection takes every live handle offline.
     h.task("stop", json!({"kind":"connection","event":"stop"}));
     assert_eq!(connections(&h.run()), ["offline"]);
@@ -3577,7 +3566,7 @@ fn bootstrap_commands_register_read_and_schedule_one_page() {
     let (page, body) = h.http("pull");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({"capabilities":[STREAM_MEMBERSHIP_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
+        json!({"capabilities":[STREAM_AUTHORITY_CAPABILITY],"mode":"bootstrap","stream":"book","models":{"Entry":1},"after":0,"until":7})
     );
     // Nothing asks twice: a wake finds the request in flight.
     h.call("wake", json!({"kind":"connection","event":"wake"}));
@@ -5519,7 +5508,7 @@ fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registe
 }
 
 #[test]
-fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks() {
+fn legacy_frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks() {
     for hooked in [false, true] {
         let mut h = if hooked { hooked_host() } else { host() };
         h.connect(false);
@@ -5563,6 +5552,8 @@ fn frozen_runtime_fetch_owner_and_joiner_suppress_delayed_positive_without_hooks
                 }],
             })
             .unwrap();
+        let path = h._dir.as_ref().unwrap().path().join("db");
+        common::legacy_eviction(h.client(), &path, &common::key());
         // A caller joining after release still joins the older logical request.
         h.task("joined", fetch("e"));
         h.run();
@@ -5607,7 +5598,7 @@ fn runtime_direct_effect_advertises_membership_without_changing_call_identity() 
     assert!(
         read_capabilities(&request)
             .unwrap()
-            .contains(STREAM_MEMBERSHIP_CAPABILITY)
+            .contains(STREAM_AUTHORITY_CAPABILITY)
     );
 }
 

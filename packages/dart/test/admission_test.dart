@@ -293,7 +293,7 @@ void main() {
       await until(() => server.acknowledged == 2, 'the later socket');
       expect(server.envelopes, isNotEmpty);
       for (final envelope in server.envelopes) {
-        expect(envelope['capabilities'], contains('stream-membership-v1'));
+        expect(envelope['capabilities'], contains('stream-authority-v1'));
       }
       expect(errors, hasLength(1));
       expect(

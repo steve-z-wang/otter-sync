@@ -2,7 +2,7 @@
 pub fn request(bytes: &[u8]) -> Vec<u8> {
     match serde_json::from_slice::<serde_json::Value>(bytes) {
         Ok(value) if value.is_object() => {
-            axton_core::with_capabilities(bytes, &[axton_core::STREAM_MEMBERSHIP_CAPABILITY])
+            axton_core::with_capabilities(bytes, &[axton_core::STREAM_AUTHORITY_CAPABILITY])
                 .unwrap()
         }
         _ => bytes.to_vec(),

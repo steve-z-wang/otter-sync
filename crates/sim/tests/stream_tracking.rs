@@ -145,7 +145,7 @@ fn targeted_permission_loss_delivers_newer_absence_without_notifying_other_viewe
     let key = entry_key("a");
     sim.host.hide_for_viewer("alice", &key);
     declare(&mut sim, vec![invalidate(Some(&["A"]))]);
-    let request = json!({"capabilities":["stream-membership-v1"],"models":axton_sim::schema::declared_models(),"cursors":{"A":1}});
+    let request = json!({"capabilities":["stream-authority-v1"],"models":axton_sim::schema::declared_models(),"cursors":{"A":1}});
     let page = StreamPullPage::decode(
         sim.host
             .pull("alice", &serde_json::to_vec(&request).unwrap())

@@ -799,7 +799,7 @@ fn a_store_session_submits_no_mutation_and_records_no_companion() {
 }
 
 #[test]
-fn scope_release_notifies_local_observers_only_after_commit() {
+fn stream_removal_advances_cursor_without_notifying_model_observers() {
     use std::collections::{BTreeMap, BTreeSet};
     let dir = tempfile::tempdir().unwrap();
     let mut client = open(&dir.path().join("db"));
@@ -847,8 +847,9 @@ fn scope_release_notifies_local_observers_only_after_commit() {
     assert!(observer.try_recv().is_err());
     assert!(client.read(&key()).unwrap().is_some());
     client.commit_session().unwrap();
-    assert!(observer.try_recv().is_ok());
-    assert!(client.read(&key()).unwrap().is_none());
+    assert!(observer.try_recv().is_err());
+    assert!(client.read(&key()).unwrap().is_some());
+    assert_eq!(client.cursor("a").unwrap(), Some(2));
 }
 
 #[test]
@@ -919,21 +920,21 @@ fn prepared_scope_bootstrap_detaches_after_hook_replaces_registration() {
         assert_eq!(state.barrier, None);
         assert_eq!(state.state, BootstrapPhase::NotRequested);
         assert!(c.bootstrap_state("a", old).is_err());
-        let member = c
-            .read_sql(
-                "SELECT cursor,present FROM axton_stream_member WHERE stream='a'",
-                &[],
+        assert_eq!(
+            c.read_sql(
+                "SELECT count(*) AS n FROM sqlite_master WHERE name='axton_stream_member'",
+                &[]
             )
-            .unwrap();
-        assert_eq!(member[0]["cursor"], 1);
-        assert_eq!(member[0]["present"], u8::from(!removal_only));
+            .unwrap()[0]["n"],
+            0
+        );
         assert!(
             c.read(&schema().record_key("Entry", &json!({"id":"hook"})).unwrap())
                 .unwrap()
                 .is_some()
         );
         if removal_only {
-            assert!(c.read(&key()).unwrap().is_none());
+            assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "cached");
         } else {
             assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "admitted");
         }
@@ -975,12 +976,12 @@ fn prepared_scope_page_keeps_admitted_authority_after_hook_replaces_registration
     let new = c.subscription_state("a").unwrap().unwrap();
     assert_ne!(new.subscription_id, old);
     assert_eq!(new.cursor, None);
-    let member = c
-        .read_sql(
-            "SELECT cursor,present FROM axton_stream_member WHERE stream='a'",
-            &[],
+    assert_eq!(
+        c.read_sql(
+            "SELECT count(*) AS n FROM sqlite_master WHERE name='axton_stream_member'",
+            &[]
         )
-        .unwrap();
-    assert_eq!(member[0]["cursor"], 1);
-    assert_eq!(member[0]["present"], 1);
+        .unwrap()[0]["n"],
+        0
+    );
 }

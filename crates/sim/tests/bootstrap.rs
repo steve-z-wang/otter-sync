@@ -249,7 +249,7 @@ fn a_record_republished_above_the_origin_leaves_the_historical_interval() {
 /// duplicated page request and page change nothing. A record removed and
 /// re-added before its page runs moves above the origin and arrives through
 /// ordinary delivery; retained identity-only removals count toward bounded
-/// pages and release both existing and historical holds.
+/// pages without changing Model authority.
 #[test]
 fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicates() {
     let mut sim = Sim::new(9, 2);
@@ -320,8 +320,8 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
         );
         assert_eq!(
             sim.read_text(0, &key),
-            expected,
-            "e{i:03} on the existing client after stream releases"
+            Some(format!("text {i}")),
+            "e{i:03} on the existing client after identity-only removals"
         );
     }
     sim.check().unwrap();
@@ -330,7 +330,7 @@ fn bootstrap_delivers_removed_members_across_pages_through_restart_and_duplicate
 }
 
 #[test]
-fn resumed_stream_reconciles_removed_history_through_the_public_scheduler() {
+fn resumed_stream_retains_history_and_bootstraps_only_on_explicit_request() {
     let mut sim = Sim::new(91, 1);
     sim.apply(Action::Subscribe {
         client: 0,
@@ -353,8 +353,17 @@ fn resumed_stream_reconciles_removed_history_through_the_public_scheduler() {
     .unwrap();
     let origin = sim.client(0).cursor("a").unwrap();
     load(&mut sim, 0);
-    assert_eq!(sim.read_text(0, &entry_key("e")), None);
+    assert_eq!(sim.read_text(0, &entry_key("e")), Some("held".into()));
+    assert_eq!(sim.client(0).record_stamp(&entry_key("e")).unwrap(), 1);
     assert_eq!(sim.client(0).cursor("a").unwrap(), origin);
     assert_eq!(sim.bootstrap_phase(0, "a"), BootstrapPhase::NotRequested);
     assert!(sim.client(0).bootstrap_schedule(None).unwrap().is_none());
+    sim.apply(Action::Bootstrap {
+        client: 0,
+        stream: "a".into(),
+    })
+    .unwrap();
+    load(&mut sim, 0);
+    assert_eq!(sim.bootstrap_phase(0, "a"), BootstrapPhase::Complete);
+    assert_eq!(sim.read_text(0, &entry_key("e")), Some("held".into()));
 }

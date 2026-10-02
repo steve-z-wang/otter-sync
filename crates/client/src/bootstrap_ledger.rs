@@ -151,21 +151,6 @@ fn closed(stream: &str, subscription_id: u64) -> axton_core::Error {
 }
 
 impl<S: ClientStore> Engine<'_, S> {
-    fn ledger_columns(&self) -> &'static str {
-        if self.reconciliation {
-            "stream, subscription_id, reconcile_bound, cursor, reconcile_state, reconcile_run, reconcile_cursor, reconcile_barrier, reconcile_error"
-        } else {
-            COLUMNS
-        }
-    }
-    fn ledger_sql(&self, sql: &str) -> String {
-        if self.reconciliation {
-            sql.replace("starting_cursor", "reconcile_bound")
-                .replace("bootstrap_", "reconcile_")
-        } else {
-            sql.to_string()
-        }
-    }
     /// Record that this transaction changed `stream`'s load. The mark is
     /// stripped before the changed set reaches watchers and hosts, and it
     /// bumps no subscription generation: a load changes no membership, so it
@@ -177,10 +162,7 @@ impl<S: ClientStore> Engine<'_, S> {
     /// The whole row for `stream`, or `None` when it is not subscribed.
     pub(crate) fn bootstrap_row(&mut self, stream: &str) -> Result<Option<Loaded>> {
         let rows = self.rows(
-            &format!(
-                "SELECT {} FROM axton_subscription WHERE stream=?",
-                self.ledger_columns()
-            ),
+            &format!("SELECT {} FROM axton_subscription WHERE stream=?", COLUMNS),
             &[json!(stream)],
         )?;
         rows.rows.first().map(|r| decode(r)).transpose()
@@ -212,9 +194,9 @@ impl<S: ClientStore> Engine<'_, S> {
         };
         let affected = self.exec(
             "axton_subscription",
-            &self.ledger_sql("UPDATE axton_subscription SET bootstrap_state=?, bootstrap_run=?, bootstrap_cursor=?, \
+            "UPDATE axton_subscription SET bootstrap_state=?, bootstrap_run=?, bootstrap_cursor=?, \
              bootstrap_barrier=?, bootstrap_error=? \
-             WHERE stream=? AND subscription_id=? AND bootstrap_run=?"),
+             WHERE stream=? AND subscription_id=? AND bootstrap_run=?",
             &[
                 json!(state.state.as_str()),
                 json!(state.run),
@@ -266,11 +248,11 @@ impl<S: ClientStore> Engine<'_, S> {
     /// stored.
     fn active_rows(&mut self) -> Result<SqlRows> {
         self.rows(
-            &self.ledger_sql(&format!(
+            &format!(
                 "SELECT {} FROM axton_subscription \
                  WHERE starting_cursor IS NOT NULL AND bootstrap_state IN ('requested','loading','catching_up') \
-                 ORDER BY stream", self.ledger_columns()
-            )),
+                 ORDER BY stream", COLUMNS
+            ),
             &[],
         )
     }
@@ -300,14 +282,14 @@ impl<S: ClientStore> Engine<'_, S> {
         for chunk in unique.chunks(SETTLE_CHUNK) {
             let named = vec!["?"; chunk.len()].join(",");
             let rows = self.rows(
-                &self.ledger_sql(&format!(
+                &format!(
                     "SELECT {} FROM axton_subscription \
                      WHERE starting_cursor IS NOT NULL \
                        AND bootstrap_state='catching_up' AND bootstrap_barrier IS NOT NULL \
                        AND cursor IS NOT NULL AND cursor >= bootstrap_barrier \
                        AND stream IN ({named}) ORDER BY stream",
-                    self.ledger_columns()
-                )),
+                    COLUMNS
+                ),
                 &chunk.iter().map(|stream| json!(stream)).collect::<Vec<_>>(),
             )?;
             for row in &rows.rows {

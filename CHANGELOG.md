@@ -8,6 +8,12 @@
 * deliver model authority without local stream ownership ([#228](https://github.com/zanminwang/axton/issues/228))
 * replace Channel with Scope membership APIs ([#225](https://github.com/zanminwang/axton/issues/225))
 
+### Upgrade notes
+
+Upgrade the server, PostgreSQL adapter, generated tooling and JS/Dart runtimes together: requests and live negotiation require `stream-authority-v1`. Devices keep one Model/identity/stamp across Streams without a local holding ledger. Unsubscribe and historical Remove retain Models; newer stamped viewer Loader null supplies canonical absence. Applications own business cache reclamation through existing `onStore` hooks and transactions.
+
+Stop old writers and live sessions, apply the appropriate prior layout upgrades and current DDL, run `packages/postgres/migrations/2026-10-01-local-authority.sql`, deploy coordinated authority-capable admission/runtimes, then resume traffic. Never reset cursors or reinterpret Remove as null. See the [deployment cutover](https://github.com/zanminwang/axton/blob/v0.3.0/website/docs/backend/deployment.md#stream-membership-cutover).
+
 ### Features
 
 * deliver model authority without local stream ownership ([#228](https://github.com/zanminwang/axton/issues/228)) ([e0ff93e](https://github.com/zanminwang/axton/commit/e0ff93ed9a9ffa3b6f06fd2064541f2e687c4e6c))

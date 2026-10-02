@@ -31,7 +31,7 @@ Local-first apps read and write data on the device, so everyday interactions don
 
 ## How it works
 
-The Stream API below is an [unreleased coordinated breaking cutover](website/docs/backend/deployment.md#stream-membership-cutover); published 0.2 packages retain the earlier contract.
+The Stream API below requires the [coordinated AXTON 0.3 upgrade](website/docs/backend/deployment.md#stream-membership-cutover); 0.2 packages retain the earlier contract.
 
 ![AXTON architecture: local state and background sync](website/docs/assets/architecture.svg)
 
@@ -205,6 +205,6 @@ Instant Cloud is closed to new signups and will shut down on August 31, 2027. Yo
 
 ## Project status
 
-AXTON is an early alpha. Packages have not been published, and a license has not yet been added. Existing integrations must follow the [AXTON rename notes](docs/engineering/brand-rename.md) before upgrading from a pre-rename build.
+AXTON is an early alpha: its API is unstable and it is not ready for production use. Existing integrations must follow the [AXTON rename notes](docs/engineering/brand-rename.md) before upgrading from a pre-rename build.
 
 [Schema guide](website/docs/schema/reference.md) · [Client guide](website/docs/frontend/setup.md) · [Backend guide](website/docs/backend/setup.md)

@@ -13,7 +13,7 @@ Use macOS with:
 - PostgreSQL tools `initdb` and `pg_ctl` on `PATH`.
 - Internet access for the first dependency/build setup.
 
-Run all commands below from the repository root. Packages have not been published; these instructions use the checked-in source and generated APIs. Linux hosts can run the backend and the host tests but not the simulators.
+Run all commands below from the repository root; these instructions use the checked-in source and generated APIs. Linux hosts can run the backend and the host tests but not the simulators.
 
 ## 1. Read the schema
 

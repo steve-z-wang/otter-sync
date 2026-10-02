@@ -68,7 +68,7 @@ Not validated by the repository's tests, and therefore not claimed:
 
 ## Stream membership cutover
 
-The Stream API described here is an unreleased coordinated breaking cutover. Source manifests remain `0.2.0`; they do not choose or overwrite a registry release. Package version selection, publication and application rollout are separate work.
+AXTON 0.3 introduces a coordinated breaking cutover to Stream delivery and application-owned cache reclamation. Package publication and application rollout are separate steps.
 
 Upgrade the backend, PostgreSQL adapter, generated tooling and JS/Dart runtimes together. Requests and live negotiation require `stream-authority-v1`; old runtime shapes receive `426 protocol.unsupported` before handlers, receipts or progress change. Malformed capability metadata receives `400 request.invalid`. Application build admission is a separate gate.
 

@@ -24,3 +24,10 @@ test=(node --test --test-timeout=300000 --test-force-exit)
 "${test[@]}" "$root/integration/persistence/server/loads.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/fetch.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/stream-tracking.test.mjs"
+# Protocol 4 starts from an empty publication history. Legacy tests above may
+# leave compacted positions without protocol-4 group evidence, so use a fresh
+# database in the same disposable cluster for its vertical and adapter gates.
+createdb -h 127.0.0.1 -p "$port" axton_protocol4
+protocol4_database_url="${DATABASE_URL%/postgres}/axton_protocol4"
+DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04.test.mjs"
+DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04-drivers.test.mjs"

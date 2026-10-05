@@ -251,6 +251,19 @@ impl Scripted {
         let mut s = self.state.lock().unwrap();
         s.log.push(request.clone());
         Ok(match request {
+            HostRequest::ReadCall { .. } => Value::Null,
+            HostRequest::HandleBootstrap { .. } => json!({"declarations":[]}),
+            HostRequest::CreateManifest { .. } | HostRequest::ReadManifest { .. } => {
+                json!({"start":0,"total":0,"models":{},"from":0,"to":0,"keys":[]})
+            }
+            HostRequest::CaptureTail { head, .. } => json!(head),
+            HostRequest::AdmitContext { .. } => json!(true),
+            HostRequest::PublicationFence {} | HostRequest::SavePublicationGroups { .. } => {
+                Value::Null
+            }
+            HostRequest::ReadPublicationGroups { .. } | HostRequest::ReadPositions { .. } => {
+                json!([])
+            }
             HostRequest::Claim { owner, client_id } => {
                 let (sequence, receipt) = s.clients.get(&client_id).cloned().unwrap_or((0, None));
                 json!({"clientId":client_id,"owner":owner,"sequence":sequence,"receipt":receipt})
@@ -549,6 +562,7 @@ fn success_reads_back_each_changed_record_once_at_its_stamp() {
         version,
         identities,
         owner,
+        ..
     } = &host.log()[6]
     else {
         panic!("not a load");

@@ -14,6 +14,7 @@ fn models() -> BTreeMap<String, u64> {
 fn negotiation(heads: &[(&str, u64)]) -> Negotiation {
     Negotiation {
         models: models(),
+        context: None,
         response: r#"{"cursors":{},"type":"subscribed"}"#.into(),
         heads: heads.iter().map(|(s, h)| ((*s).to_string(), *h)).collect(),
     }

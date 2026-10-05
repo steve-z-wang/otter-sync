@@ -229,6 +229,23 @@ pub(crate) async fn settle_locked(
         let request = HostRequest::ApplyStreamMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
         check_positions(&request, &positions)?;
+        if config.protocol4.is_some() {
+            let HostRequest::ApplyStreamMembers { deltas } = &request else {
+                unreachable!()
+            };
+            let published = positions
+                .into_iter()
+                .zip(deltas)
+                .filter_map(|(position, delta)| delta.publish.then_some(position))
+                .collect::<Vec<_>>();
+            if !published.is_empty() {
+                let _: Acknowledged = host
+                    .call_typed(HostRequest::SavePublicationGroups {
+                        positions: published,
+                    })
+                    .await?;
+            }
+        }
     }
     Ok(Settlement { stamps })
 }

@@ -147,6 +147,15 @@ pub async fn process_action(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    if crate::protocol_v04::is_request(bytes) {
+        if serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .is_some_and(|v| v.get("models").is_some())
+        {
+            return crate::protocol_v04::mutation(config, owner, bytes, host).await;
+        }
+        return crate::protocol_v04::query(config, owner, bytes, host).await;
+    }
     crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = DirectActionRequest::decode_envelope(bytes).map_err(request_invalid)?;
@@ -212,6 +221,7 @@ async fn execute_fresh(
             owner: owner.into(),
             call_id: call.call_id.clone(),
             ordinal,
+            context: None,
         })
         .await?;
     let (outputs, extra, declarations) = match settled {

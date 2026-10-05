@@ -1,3 +1,4 @@
+use axton_core::v04;
 use axton_core::v04::*;
 use serde_json::json;
 
@@ -321,6 +322,7 @@ fn exact_manifest_page_covers_keys_even_after_remove_and_survives_restart() {
         total: 1,
         from: 0,
         to: 1,
+        companions: vec![],
         items: vec![ManifestItem {
             ordinal: 0,
             change: StreamChange::Remove {
@@ -805,4 +807,102 @@ fn strict_v04_deserialization_keeps_application_values_opaque_and_legacy_codecs_
     assert!(decode::<MutationReceipt>(value.to_string().as_bytes()).is_ok());
     let record = json!({"model":"Entry","identity":{"id":"x","stamp":1},"cursor":null,"state":{"cursor":2,"stamp":3,"scope":"application"}});
     assert!(decode::<ReadRecord>(record.to_string().as_bytes()).is_ok());
+}
+
+#[test]
+fn carrier_requests_bind_one_stream_context_and_bounded_resume() {
+    let context = serde_json::from_value::<v04::RequestContext>(json!({"protocol":4,"binding":{"backend":"api","viewer":"alice","stream":"User:alice","contract":"app"},"materialization":"m1","incarnation":"store1"})).unwrap();
+    let ack = v04::SubscribeAcknowledged {
+        context: context.clone(),
+        cursor: 0,
+        head: 7,
+    };
+    assert!(v04::encode(&ack).is_ok());
+    let delta = v04::DeltaIntent {
+        context: context.clone(),
+        call_id: "01890f47-1234-7123-8123-123456789ab1".into(),
+        after: 0,
+        models: std::collections::BTreeMap::from([("Todo".into(), 1)]),
+        limit: 100,
+    };
+    assert_eq!(
+        v04::decode::<v04::DeltaIntent>(&v04::encode(&delta).unwrap()).unwrap(),
+        delta
+    );
+    let start = v04::BootstrapIntent::Start {
+        context,
+        call_id: delta.call_id.clone(),
+        models: delta.models.clone(),
+        budget: 1000,
+        held_keys: vec![],
+    };
+    assert!(v04::encode(&start).is_ok());
+    let mut bad = serde_json::to_value(&delta).unwrap();
+    bad["limit"] = json!(0);
+    assert!(v04::decode::<v04::DeltaIntent>(&serde_json::to_vec(&bad).unwrap()).is_err());
+    bad = serde_json::to_value(&delta).unwrap();
+    bad["streams"] = json!(["Other"]);
+    assert!(v04::decode::<v04::DeltaIntent>(&serde_json::to_vec(&bad).unwrap()).is_err());
+}
+
+#[test]
+fn shared_materialization_id_ignores_carrier_metadata_and_binds_read_shape_and_projection() {
+    let base = json!({"enums":[],"models":[{"name":"Todo","identity":["id"],"fields":[{"name":"id","type":{"kind":"scalar","name":"string"},"nullable":false},{"name":"text","type":{"kind":"scalar","name":"string"},"nullable":true}]}]});
+    let schema: axton_core::Schema = serde_json::from_value(base.clone()).unwrap();
+    let hash = v04::materialization_id(&schema, "1").unwrap();
+    let mut decorated = base.clone();
+    decorated["models"][0]["fields"][1]["createDefault"] = json!({"kind":"literal","value":"x"});
+    decorated["requirements"] =
+        json!([{ "model":"Todo","field":"text","name":"prepare","arguments":{} }]);
+    assert_eq!(
+        hash,
+        v04::materialization_id(&serde_json::from_value(decorated).unwrap(), "1").unwrap()
+    );
+    assert_ne!(hash, v04::materialization_id(&schema, "2").unwrap());
+    let mut marked = base;
+    marked["models"][0]["bootstrap"] = json!(true);
+    assert_ne!(
+        hash,
+        v04::materialization_id(&serde_json::from_value(marked).unwrap(), "1").unwrap()
+    );
+}
+
+#[test]
+fn bootstrap_manifest_binds_held_evidence_and_owned_receipt_targets() {
+    let start = json!({"kind":"start","context":context(),"callId":"01890f47-1234-7123-8123-123456789ab1","models":{"Entry":1},"budget":10,"heldKeys":[key()],"receiptTargets":{"callId":"01890f47-1234-7123-8123-123456789ab2","keys":[{"model":"Entry","identity":{"id":"y"}}]}});
+    let mut start = start;
+    let targets = start
+        .as_object_mut()
+        .unwrap()
+        .remove("receiptTargets")
+        .unwrap();
+    let materialize = json!({"kind":"materialize","context":context(),"callId":"01890f47-1234-7123-8123-123456789ab3","receiptTargets":targets,"budget":10});
+    assert!(decode::<BootstrapIntent>(&serde_json::to_vec(&materialize).unwrap()).is_ok());
+    let decoded = decode::<BootstrapIntent>(&serde_json::to_vec(&start).unwrap()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), start);
+    let mut malformed = start.clone();
+    malformed["heldKeys"][0]["stamp"] = json!(9);
+    assert!(decode::<BootstrapIntent>(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    malformed = materialize.clone();
+    malformed["receiptTargets"]["keys"][0]["stamp"] = json!(9);
+    assert!(decode::<BootstrapIntent>(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    malformed = start.clone();
+    malformed["heldKeys"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value(key()).unwrap());
+    assert!(decode::<BootstrapIntent>(&serde_json::to_vec(&malformed).unwrap()).is_err());
+}
+
+#[test]
+fn manifest_constraint_companions_add_authority_without_ordinal_coverage() {
+    let page = json!({"context":context(),"manifestId":"m","total":2,"from":0,"to":1,"items":[{"ordinal":0,"change":{"kind":"remove","key":{"model":"Entry","identity":{"id":"x"}},"cursor":57}}],"companions":[{"kind":"remove","key":{"model":"Entry","identity":{"id":"y"}},"cursor":58}]});
+    let decoded = decode::<ManifestPage>(&serde_json::to_vec(&page).unwrap()).unwrap();
+    let mut coverage = BootstrapCoverage::new("m".into(), "schema-one".into(), 50, 2).unwrap();
+    coverage.commit_page(&decoded, &context()).unwrap();
+    assert_eq!(coverage.covered, 1);
+    assert_eq!(coverage.tail, None);
+    let mut duplicate = page.clone();
+    duplicate["companions"][0]["key"]["identity"] = json!({"id":"x"});
+    assert!(decode::<ManifestPage>(&serde_json::to_vec(&duplicate).unwrap()).is_err());
 }

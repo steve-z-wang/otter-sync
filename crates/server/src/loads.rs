@@ -417,6 +417,7 @@ async fn resolve(
     }
     let loaded: Loaded = host
         .call_typed(HostRequest::Load {
+            mode: None,
             model: model.into(),
             version,
             identities: keys.values().map(|key| key.identity.clone()).collect(),

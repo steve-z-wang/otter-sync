@@ -36,6 +36,11 @@ const fakePersistence=seen=>({
  async call(request){
   seen.push(request);
   switch(request.op){
+   case 'publicationFence':case 'savePublicationGroups':return null;
+   case 'readPublicationGroups':return response('readPublicationGroups');
+   case 'readCall':return null;
+   case 'createManifest':case 'readManifest':case 'captureTail':return response(request.op);
+   case 'readPositions':return response('readPositions');
    case 'claim':return response('claim','claimed');
    case 'claimCall':return response('claimCall','fresh');
    case 'saveReceipt':case 'saveCall':case 'savepoint':case 'rollback':case 'release':return null;
@@ -62,8 +67,10 @@ async function replay(requests,{reject=false,fail=false,onError,page,options={},
  const seen=[],answers=[],handled=[],loaded=[],paged=[];
  const backend=createBackend({
   config,
+  protocol4:{backendId:"api",contractId:"app",projectionGeneration:"1",authorizeStream:()=>true},
   native:{
    validateConfig:c=>native.validateConfig(c),
+   serverMaterializationId:(c,g)=>native.serverMaterializationId(c,g),
    processPush:async(_config,_owner,_request,callback)=>{
     for(const request of requests)answers.push([request.op,JSON.parse(await callback(JSON.stringify(request)))]);
     return '{"batchSequence":1,"clientId":"alice","records":[],"rejections":[]}';
@@ -113,6 +120,8 @@ test('every fixture request replays through the TypeScript host to the fixture a
  const {answers,seen,handled,loaded,paged}=await replay(requests,{sent});
  assert.deepEqual(answers.map(([op])=>op),HOST_OPERATIONS);
  const expected={
+  handleBootstrap:{declarations:[]},readCall:null,createManifest:response('createManifest'),readManifest:response('readManifest'),captureTail:response('captureTail'),
+  admitContext:true,publicationFence:null,savePublicationGroups:null,readPublicationGroups:response('readPublicationGroups'),readPositions:response('readPositions'),
   claim:response('claim','claimed'),saveReceipt:null,claimCall:response('claimCall','fresh'),saveCall:null,head:response('head','cursor'),
   scan:response('scan','rows'),savepoint:null,rollback:null,release:null,
   handle:response('handle','settled'),handleAction:response('handleAction','settled'),handleLoad:response('handleLoad','settled'),load:response('load','rows'),
@@ -124,7 +133,7 @@ test('every fixture request replays through the TypeScript host to the fixture a
  for(const [op,answer] of answers)assert.deepEqual(answer,expected[op],`${op} answer`);
  // handle and load reach application code; everything else reaches persistence,
  // savepoint/rollback/release included - they are bookkept *and* forwarded.
- assert.deepEqual(seen.map(r=>r.op),HOST_OPERATIONS.filter(op=>op!=='handle'&&op!=='handleAction'&&op!=='handleLoad'&&op!=='load'));
+ assert.deepEqual(seen.map(r=>r.op),HOST_OPERATIONS.filter(op=>op!=='handleBootstrap'&&op!=='admitContext'&&op!=='handle'&&op!=='handleAction'&&op!=='handleLoad'&&op!=='load'));
  assert.equal(handled.length,1);
  assert.deepEqual(handled[0].task.patch,entry('handle').request.arguments.task.patch);
  assert.equal(loaded.length,1);assert.deepEqual(loaded[0].ids,entry('load').request.identities);assert.equal(loaded[0].userId,entry('load').request.owner);
@@ -449,7 +458,8 @@ test('a Query and Loader carry no declarations; an external transaction has trac
   handlers:{async edit(){}},mutations:{async send(){return {message:'sent'};}},
   loads:{async tasks(){return response('handleLoad','settled');}},loaders:{async task(){return [];}}});
  await backend.transaction(async call=>{
-  assert.deepEqual(Object.keys(call).sort(),['invalidate','stream','tx']);
+  assert.deepEqual(Object.keys(call).sort(),['invalidate','stream','streams','tx']);
+  assert.equal(typeof call.streams(['c']).track.task,'function');
   assert.equal(typeof call.stream('c').track.task,'function');
   assert.equal(typeof call.stream(['c','d']).invalidate.task,'function');
   assert.equal(typeof call.invalidate.task,'function');

@@ -1,5 +1,18 @@
 # Backend interfaces
 
+## Protocol 4 configuration
+
+Set `protocol4` on the runtime backend options with stable `backendId`, `contractId`, and `authorizeStream(viewer, stream)`. Authorization runs again for saved response replay. `projectionGeneration` defaults to `"1"`; configure the same stable generation on the client, independently of credentials. The backend exposes its derived `materializationId`. Normal reopen retains the Store context and incarnation without a network handshake; changing projection generation requires rematerialization.
+
+`materializations` maps supported prior materialization IDs to `{schema, projectionGeneration}` using the complete original descriptor, including its original Model set and Bootstrap selection. Keep it while serving frozen queued Mutation retries. `maxUnitBytes` bounds one authoritative commit unit and defaults to 1 MiB; an oversized dependency group fails explicitly.
+
+A protocol 4 Query and the optional `bootstrap({ctx})` callback can track with `ctx.stream.track.todo(ids)` for the initiating Stream or `ctx.streams([name, ...]).track.todo(ids)` for explicitly selected Streams. Mutation contexts additionally provide `ctx.stream.invalidate.todo(ids)` and global `ctx.invalidate.todo(ids)`. Tracking is idempotent; invalidation does not enroll. Fetch snapshots are ordinary null-cursor reads and do not track.
+
+Framework-owned `transaction(callback)` acquires the publication fence before the callback. In a caller-owned transaction, await `acquirePublicationFence(tx)` before relevant business work, or do that work within `publish(tx, callback)`. Calling publish after earlier unfenced writes cannot make their snapshot safe. Every change to a Loader's viewer projection must publish all affected identities in the same transaction.
+
+Bootstrap includes only marked historical Model types and explicitly held authority needed for rematerialization. Its manifest pages can contain constraint companions at real Stream positions; these share an atomic local unit and cover no additional manifest ordinal. Receipt-target materialization recovers accepted no-op targets older than the device's delivery boundary without running the Bootstrap callback, tracking again, or inventing a cursor. The native client owns this bounded recovery mechanism.
+
+
 Your backend implements Mutations and Queries through handlers and the read/sync path through loaders. The compiler generates their TypeScript interfaces from your schema. AXTON supplies protocol processing; your application supplies business logic, authorization and a database transaction.
 
 Handler signatures below follow the [generated operation fixture](https://github.com/zanminwang/axton/blob/main/integration/action-contract/schema.model). The background-write example uses an independent `Entry` Model fixture. The working To-do backend is [examples/todo/server.mts](https://github.com/zanminwang/axton/blob/main/examples/todo/server.mts).

@@ -354,6 +354,19 @@ impl Backend {
         s.log.push(request.clone());
         let action = matches!(request, HostRequest::HandleAction { .. });
         Ok(match request {
+            HostRequest::ReadCall { .. } => Value::Null,
+            HostRequest::HandleBootstrap { .. } => json!({"declarations":[]}),
+            HostRequest::CreateManifest { .. } | HostRequest::ReadManifest { .. } => {
+                json!({"start":0,"total":0,"models":{},"from":0,"to":0,"keys":[]})
+            }
+            HostRequest::CaptureTail { head, .. } => json!(head),
+            HostRequest::AdmitContext { .. } => json!(true),
+            HostRequest::PublicationFence {} | HostRequest::SavePublicationGroups { .. } => {
+                Value::Null
+            }
+            HostRequest::ReadPublicationGroups { .. } | HostRequest::ReadPositions { .. } => {
+                json!([])
+            }
             HostRequest::Claim { owner, client_id } => {
                 let (sequence, receipt) = s.clients.get(&client_id).cloned().unwrap_or((0, None));
                 json!({"clientId":client_id,"owner":owner,"sequence":sequence,"receipt":receipt})
@@ -477,6 +490,10 @@ impl Backend {
                     .cloned()
                     .unwrap_or_else(|| json!({"data":{},"next":null}))
             }
+            HostRequest::Load {
+                mode: Some(axton_server::host::LoaderMode::Prepare),
+                ..
+            } => json!([]),
             HostRequest::Load {
                 model, identities, ..
             } => {

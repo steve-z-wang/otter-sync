@@ -8,6 +8,7 @@ pub mod host;
 pub mod live;
 mod loading;
 mod loads;
+mod protocol_v04;
 mod readback;
 mod settlement;
 pub mod stream_members;
@@ -38,6 +39,8 @@ pub trait Host: Send + Sync {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     pub schema: Schema,
+    #[serde(default)]
+    pub protocol4: Option<protocol_v04::ProtocolConfig>,
     pub mutations: Vec<Mutation>,
     pub loaders: Vec<String>,
     /// Every retained model read contract, one per `(name, version)`. Absent
@@ -241,6 +244,24 @@ impl Config {
                     ),
                 ));
             }
+        }
+        if let Some(protocol) = &mut c.protocol4 {
+            let derived =
+                axton_core::v04::materialization_id(&c.schema, &protocol.projection_generation)
+                    .map_err(config_invalid)?;
+            if !protocol.materialization_id.is_empty() && protocol.materialization_id != derived {
+                return Err(Error::new(
+                    code::CONFIG_INVALID,
+                    "materializationId must match shared Model contracts/projection generation",
+                ));
+            }
+            if protocol.backend_id.trim().is_empty() || protocol.contract_id.trim().is_empty() {
+                return Err(Error::new(
+                    code::CONFIG_INVALID,
+                    "protocol4 stable identity is blank",
+                ));
+            }
+            protocol.materialization_id = derived;
         }
         Ok(c)
     }
@@ -792,6 +813,15 @@ pub async fn process_stream_pull(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    if protocol_v04::is_request(bytes) {
+        if serde_json::from_slice::<Value>(bytes)
+            .ok()
+            .is_some_and(|v| v.get("kind").is_some())
+        {
+            return protocol_v04::bootstrap(config, owner, bytes, host).await;
+        }
+        return protocol_v04::delta(config, owner, bytes, host).await;
+    }
     admit_protocol(bytes)?;
     principal(owner)?;
     match axton_core::pull_mode(bytes).as_deref() {
@@ -801,4 +831,9 @@ pub async fn process_stream_pull(
         }
         Some(_) => Err(request_invalid("pull mode must be absent or bootstrap")),
     }
+}
+
+pub fn materialization_id(config: &Config, projection_generation: &str) -> Result<String> {
+    axton_core::v04::materialization_id(&config.schema, projection_generation)
+        .map_err(config_invalid)
 }

@@ -206,7 +206,7 @@ test('unified connection acknowledges listeners then catches up through HTTP bef
   heads.scope=1;
   await connection.resume();
   await until(()=>events.filter(e=>e==='ack').length===2);
-  await new Promise(r=>setTimeout(r,100));
+  await until(()=>pulls===1);
   assert.equal(pulls,1,'a head beyond the cursor in the acknowledgement starts one HTTP catch-up');
   await until(async()=>(await fixture.client.read('Entry',{id:'live'}))?.text==='caught up');
   socket.send(JSON.stringify(page('continuous',1)));

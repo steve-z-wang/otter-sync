@@ -128,3 +128,9 @@ Future<void> retiredScopeAliases(GeneratedClient client, GeneratedTransaction tx
   await tx.streams.subscribe('U');
   await tx.streams.unsubscribe('U');
 }
+
+void inheritanceMisuse(GeneratedClient client) {
+  final DraftFields fields=DraftCreate(memo:null);
+  fields.identity;
+  client.models.draftFields;
+}

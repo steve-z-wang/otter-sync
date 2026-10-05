@@ -1,13 +1,16 @@
 enum Status { active archived @deprecated(reason: "archive with RemoveEntries instead") }
-model Entry {
- id UUID
+abstract model IdentifiedFields { id UUID }
+abstract model EntryFields extends IdentifiedFields {
  title String
  note String?
  at DateTime
  tags String[]
  status Status
+}
+model Entry extends EntryFields {
  @@id(id)
  @@version(2)
+ @@bootstrap
 }
 mutation CreateEntry { entry Entry.create }
 mutation EditEntry { entry Entry.update<title,note,at> @@version(2) }

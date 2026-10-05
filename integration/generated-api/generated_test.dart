@@ -6,6 +6,14 @@ import 'generated.dart';
 import '../action-contract/generated.dart' as composite;
 import 'package:axton/axton.dart' show WritePort, SubmitMutationPort;
 void main(){
+ test('concrete records implement inherited fields without inheriting input or identity types',(){
+  final EntryFields fields=Entry(id:'123e4567-e89b-42d3-a456-426614174001',title:'hello',note:null,at:DateTime.utc(2026),tags:const ['x'],status:Status.active);
+  final IdentifiedFields identified=fields;
+  expect(identified.id,fields.id);
+  expect(fields.at,DateTime.utc(2026));
+  final DraftFields draft=Draft(id:'123e4567-e89b-42d3-a456-426614174002',body:'draft',mood:Mood.busy,created:DateTime.utc(2026),note:null,memo:null);
+  expect(draft.body,'draft');
+ });
  test('transaction Mutations queue typed args and run local through the companion port',()async{
   final port=_ScriptedTransaction();
   final mutations=TransactionMutations(port);

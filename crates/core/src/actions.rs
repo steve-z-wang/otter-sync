@@ -1183,6 +1183,7 @@ pub(crate) fn read_field_fallback(field: &FieldDescriptor) -> Option<Value> {
 pub(crate) fn read_schema(schema: &Schema, descriptor: &ModelReadDescriptor) -> Schema {
     let mut local = schema.clone();
     local.models = vec![ModelDescriptor {
+        bootstrap: false,
         name: descriptor.name.clone(),
         version: descriptor.version,
         identity: descriptor.identity.clone(),

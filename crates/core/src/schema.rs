@@ -48,6 +48,9 @@ pub struct EnumDescriptor {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelDescriptor {
     pub name: String,
+    /// Included in initial Bootstrap history; does not restrict later Stream delivery.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bootstrap: bool,
     /// The read-contract version of the records this descriptor describes
     /// (`@@version(n)`, 1 when omitted). Independent of mutation versions and
     /// of record stamps; a loader is selected by model name and this version.

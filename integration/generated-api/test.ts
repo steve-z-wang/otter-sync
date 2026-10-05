@@ -12,6 +12,9 @@ import type {Transaction as RawTransaction} from '../../packages/client-js/index
 import {Client as RawClient} from '../../packages/client-js/index.mts';
 import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,Mutate,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
 const row:Entry={id:'123e4567-e89b-42d3-a456-426614174000',title:'hello',note:null,at:new Date('2026-01-01T00:00:00Z'),tags:['x'],status:'active'};
+const shared: import('./generated.ts').EntryFields = row;
+const identified: import('./generated.ts').IdentifiedFields = shared;
+void identified;
 const externalHooks: StoreHooks = {
  async entry(tx, changes) {
   for (const change of changes) {

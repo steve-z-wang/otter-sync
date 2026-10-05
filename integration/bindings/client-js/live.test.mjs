@@ -113,8 +113,9 @@ test('client replaces subscriptions from saved cursors and guards queued obsolet
   assert.equal(pulls.length,0,'at the head: the acknowledgement starts no catch-up');
   const gate=Promise.withResolvers(),entered=Promise.withResolvers();
   const tx=client.transaction(async()=>{entered.resolve();await gate.promise;});await entered.promise;
-  sockets[0].send(JSON.stringify(page('stale',1)));
+  // Obsolescence follows admission order: queue replacement before the frame.
   const removed=client.unsubscribe('scope');const restored=client.subscribe('scope');
+  sockets[0].send(JSON.stringify(page('stale',1)));
   gate.resolve();await tx;await removed;await restored;
   await until(()=>handshakes.length>=2);
   assert.equal((await client.read('Entry',{id:'live'})).text,'first','unsubscribing retains the downloaded record; the queued obsolete page is dropped, not applied');

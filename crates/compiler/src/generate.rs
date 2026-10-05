@@ -31,6 +31,21 @@ pub fn descriptors(v: &Validated) -> Value {
             Deprecation::Slot { mutation, slot, reason } => json!({"kind":"slot","mutation":mutation,"slot":slot,"reason":reason}),
         }).collect::<Vec<_>>(),
     });
+    if !v.abstract_models.is_empty() {
+        descriptors["abstractModels"] = json!(v.abstract_models.iter().map(|m| json!({
+            "name":m.name, "parent":m.parent,
+            "fields":m.fields.iter().map(|f| json!({"name":f.name,"nullable":f.nullable,"type":field_type(&f.ty)})).collect::<Vec<_>>()
+        })).collect::<Vec<_>>());
+        descriptors["inheritance"] = json!(
+            v.models
+                .iter()
+                .filter_map(|m| m
+                    .parent
+                    .as_ref()
+                    .map(|parent| json!({"model":m.name,"parent":parent})))
+                .collect::<Vec<_>>()
+        );
+    }
     // Present only beside a declared Load, so other schemas keep their bytes.
     if !v.loads.is_empty() {
         descriptors["loads"] = loads(v);
@@ -45,7 +60,7 @@ pub fn schema(v: &Validated) -> Value {
         .models
         .iter()
         .map(|m| {
-            json!({
+            let mut model = json!({
                 "name": m.name,
                 "version": m.version,
                 "identity": m.identity,
@@ -61,7 +76,9 @@ pub fn schema(v: &Validated) -> Value {
                     "onDelete":r.on_delete.descriptor_name(),
                 })).collect::<Vec<_>>(),
                 "unique": m.unique,
-            })
+            });
+            if m.bootstrap { model["bootstrap"] = json!(true); }
+            model
         })
         .collect();
     let enums: Vec<Value> = v

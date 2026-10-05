@@ -155,4 +155,5 @@ export const savepointName = (ordinal: number): string =>
   `axton_mutation_${ordinal}`;
 
 /** UPDATE creates the Serializable snapshot conflict fence; advisory locks do not. */
-export const PUBLICATION_FENCE = "UPDATE axton_publication_fence SET held=held WHERE id=1 RETURNING id";
+export const PUBLICATION_FENCE =
+  "UPDATE axton_publication_fence SET held=held WHERE id=1 RETURNING id";

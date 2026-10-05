@@ -47,7 +47,10 @@ export type LoadFault =
 export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
   validateConfig(config: string): void;
-  serverMaterializationId?(config:string, projectionGeneration:string):string;
+  serverMaterializationId?(
+    config: string,
+    projectionGeneration: string,
+  ): string;
   processPush(
     config: string,
     owner: string,
@@ -122,7 +125,7 @@ export type LiveEvent =
   | { type: "closed" };
 /** What the controller asks the executor to do, in order. */
 export type LiveAction =
-  | {type:"pullV04";request:string}
+  | { type: "pullV04"; request: string }
   | { type: "listen"; stream: string }
   | { type: "send"; frame: string }
   | {
@@ -264,7 +267,9 @@ function typedNative(native: Native): Native {
       }
     };
   return {
-    ...(native.serverMaterializationId ? {serverMaterializationId:native.serverMaterializationId.bind(native)} : {}),
+    ...(native.serverMaterializationId
+      ? { serverMaterializationId: native.serverMaterializationId.bind(native) }
+      : {}),
     validateConfig: wrapSync("validateConfig"),
     processPush: wrap("processPush"),
     processAction: wrap("processAction"),
@@ -286,18 +291,18 @@ function typedNative(native: Native): Native {
  */
 const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
   "request.invalid": 400,
-  context_mismatch:409,
-  "stream.forbidden":403,
-  "manifest.capacity":413,
-  "page.capacity":413,
-  constraint_group_capacity:413,
-  "manifest.identity_untracked":400,
-  "manifest.identity_invalid":400,
-  "receipt.invalid":400,
-  "manifest.invalid":404,
-  "manifest.ordinal_invalid":400,
-  "manifest.coverage_missing":409,
-  "bootstrap.coverage_incomplete":409,
+  context_mismatch: 409,
+  "stream.forbidden": 403,
+  "manifest.capacity": 413,
+  "page.capacity": 413,
+  constraint_group_capacity: 413,
+  "manifest.identity_untracked": 400,
+  "manifest.identity_invalid": 400,
+  "receipt.invalid": 400,
+  "manifest.invalid": 404,
+  "manifest.ordinal_invalid": 400,
+  "manifest.coverage_missing": 409,
+  "bootstrap.coverage_incomplete": 409,
   "protocol.unsupported": 426,
   "client.owner_mismatch": 403,
   gap: 409,
@@ -325,7 +330,7 @@ export { MutationRejected as CallRejected };
  */
 export interface TransactionCall<Tx> {
   tx: Tx;
-  streams(names:readonly string[]):RuntimeStream;
+  streams(names: readonly string[]): RuntimeStream;
   stream(names: string | readonly string[]): RuntimeStream;
   invalidate: RuntimeInvalidate;
 }
@@ -362,8 +367,9 @@ export interface MutationContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
-  readonly stream: RuntimeStream & ((names:string | readonly string[])=>RuntimeStream);
-  streams(names:readonly string[]):RuntimeStream;
+  readonly stream: RuntimeStream &
+    ((names: string | readonly string[]) => RuntimeStream);
+  streams(names: readonly string[]): RuntimeStream;
   invalidate: RuntimeInvalidate;
 }
 /**
@@ -376,8 +382,9 @@ export interface QueryContext<Tx> {
   tx: Tx;
   userId: string;
   callId: string;
-  readonly stream:RuntimeLoadStream & ((names:string | readonly string[])=>RuntimeLoadStream);
-  streams(names:readonly string[]):RuntimeLoadStream;
+  readonly stream: RuntimeLoadStream &
+    ((names: string | readonly string[]) => RuntimeLoadStream);
+  streams(names: readonly string[]): RuntimeLoadStream;
 }
 /**
  * Trusted framework context of one Load page. A Load reads without business
@@ -490,21 +497,38 @@ function decodeActionRecord(
   return record;
 }
 /** Current binding is trusted by the engine; selectors remain explicit. */
-function scopedStreams<S extends RuntimeLoadStream>(effects:{stream:(names:string | readonly string[])=>S},context:{binding:{stream:string}}):{stream:S & ((names:string | readonly string[])=>S);streams:(names:readonly string[])=>S} {
-  const current=effects.stream(context.binding.stream);
-  const stream=Object.assign((names:string | readonly string[])=>effects.stream(names),current);
-  return {stream,streams:(names:readonly string[])=>effects.stream(names)};
+function scopedStreams<S extends RuntimeLoadStream>(
+  effects: { stream: (names: string | readonly string[]) => S },
+  context: { binding: { stream: string } },
+): {
+  stream: S & ((names: string | readonly string[]) => S);
+  streams: (names: readonly string[]) => S;
+} {
+  const current = effects.stream(context.binding.stream);
+  const stream = Object.assign(
+    (names: string | readonly string[]) => effects.stream(names),
+    current,
+  );
+  return {
+    stream,
+    streams: (names: readonly string[]) => effects.stream(names),
+  };
 }
 export interface BackendOptions<T> {
   protocol4?: {
-    backendId: string; contractId: string; materializationId?: string;
+    backendId: string;
+    contractId: string;
+    materializationId?: string;
     projectionGeneration?: string;
-    maxUnitBytes?:number;
-    materializations?: Record<string,{schema:object;projectionGeneration?:string}>;
+    maxUnitBytes?: number;
+    materializations?: Record<
+      string,
+      { schema: object; projectionGeneration?: string }
+    >;
     /** Evaluated now, including saved response replay; no default Stream grant. */
     authorizeStream(viewer: string, stream: string): boolean | Promise<boolean>;
   };
-  bootstrap?: (call:{ctx:QueryContext<T>})=>void | Promise<void>;
+  bootstrap?: (call: { ctx: QueryContext<T> }) => void | Promise<void>;
   config: object;
   database: Database<T>;
   authenticate: Authenticate;
@@ -531,7 +555,12 @@ export interface BackendOptions<T> {
   loaders: Record<string, LoaderRegistration<T> | undefined>;
   loaderHooks?: Record<
     string,
-    { prepareForViewer(call: LoaderCall<T, any> & Pick<TransactionCall<T>, "streams" | "invalidate">): Promise<void> }
+    {
+      prepareForViewer(
+        call: LoaderCall<T, any> &
+          Pick<TransactionCall<T>, "streams" | "invalidate">,
+      ): Promise<void>;
+    }
   >;
   translateRejection?: (error: unknown) => string | null | undefined;
   native?: Native;
@@ -817,11 +846,30 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   const config = JSON.stringify({
     ...options.config,
     loaders: loadedModels,
-    ...(options.protocol4 ? {protocol4: {backendId: options.protocol4.backendId, contractId: options.protocol4.contractId, projectionGeneration: options.protocol4.projectionGeneration ?? "1",maxUnitBytes:options.protocol4.maxUnitBytes ?? 1024*1024, ...(options.protocol4.materializationId ? {materializationId: options.protocol4.materializationId} : {}), materializations:options.protocol4.materializations ?? {}}} : {}),
+    ...(options.protocol4
+      ? {
+          protocol4: {
+            backendId: options.protocol4.backendId,
+            contractId: options.protocol4.contractId,
+            projectionGeneration: options.protocol4.projectionGeneration ?? "1",
+            maxUnitBytes: options.protocol4.maxUnitBytes ?? 1024 * 1024,
+            ...(options.protocol4.materializationId
+              ? { materializationId: options.protocol4.materializationId }
+              : {}),
+            materializations: options.protocol4.materializations ?? {},
+          },
+        }
+      : {}),
   });
   native.validateConfig(config);
-  const materializationId=options.protocol4 ? native.serverMaterializationId?.(config,options.protocol4.projectionGeneration ?? "1") : undefined;
-  if(options.protocol4 && !materializationId) throw new Error("protocol4 native materialization derivation unavailable");
+  const materializationId = options.protocol4
+    ? native.serverMaterializationId?.(
+        config,
+        options.protocol4.projectionGeneration ?? "1",
+      )
+    : undefined;
+  if (options.protocol4 && !materializationId)
+    throw new Error("protocol4 native materialization derivation unavailable");
   // Refuses Models whose generated accessors collide,
   // and declarations naming a device-only Model.
   const createEffects = effectsFor(
@@ -1048,11 +1096,28 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         if (req.op === "rollback") session.rollback(req.ordinal);
         if (req.op === "release") session.release(req.ordinal);
         if (req.op === "admitContext") {
-          result = !!options.protocol4 && await options.protocol4.authorizeStream(req.owner, req.context.binding.stream);
+          result =
+            !!options.protocol4 &&
+            (await options.protocol4.authorizeStream(
+              req.owner,
+              req.context.binding.stream,
+            ));
         } else if (req.op === "handleBootstrap") {
-          const effects=createLoadEffects();
-          try {await options.bootstrap?.({ctx:{tx,userId:req.owner,callId:req.callId,...scopedStreams(effects,req.context)}});if(effects.failure()) throw effects.failure()!.error;result={declarations:effects.tracking()};}
-          finally {effects.close();}
+          const effects = createLoadEffects();
+          try {
+            await options.bootstrap?.({
+              ctx: {
+                tx,
+                userId: req.owner,
+                callId: req.callId,
+                ...scopedStreams(effects, req.context),
+              },
+            });
+            if (effects.failure()) throw effects.failure()!.error;
+            result = { declarations: effects.tracking() };
+          } finally {
+            effects.close();
+          }
         } else if (req.op === "handle") {
           const entry = handlerTable.get(`${req.name}:${req.version}`);
           if (!entry)
@@ -1128,7 +1193,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           // A Query context has no declaration handles at runtime either:
           // its settlement never carries changes or memberships.
           const query = (action.kind ?? "mutation") === "query";
-          const effects = query ? (req.context ? createLoadEffects() : undefined) : createEffects();
+          const effects = query
+            ? req.context
+              ? createLoadEffects()
+              : undefined
+            : createEffects();
           try {
             const outputs = await handler({
               ctx: effects
@@ -1136,8 +1205,16 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                     tx,
                     userId: req.owner,
                     callId: req.callId,
-                    ...(req.context ? scopedStreams(effects,req.context) : {stream:effects.stream}),
-                    ...(!query ? {invalidate: (effects as ReturnType<typeof createEffects>).invalidate} : {}),
+                    ...(req.context
+                      ? scopedStreams(effects, req.context)
+                      : { stream: effects.stream }),
+                    ...(!query
+                      ? {
+                          invalidate: (
+                            effects as ReturnType<typeof createEffects>
+                          ).invalidate,
+                        }
+                      : {}),
                   }
                 : { tx, userId: req.owner, callId: req.callId },
               args,
@@ -1145,7 +1222,14 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             result = {
               outputs: outputs === undefined ? {} : outputs,
               ...(effects
-                ? (query ? {changes: [], declarations: (effects as ReturnType<typeof createLoadEffects>).tracking()} : (effects as ReturnType<typeof createEffects>).settlement())
+                ? query
+                  ? {
+                      changes: [],
+                      declarations: (
+                        effects as ReturnType<typeof createLoadEffects>
+                      ).tracking(),
+                    }
+                  : (effects as ReturnType<typeof createEffects>).settlement()
                 : { changes: [], declarations: [] }),
             };
           } catch (error) {
@@ -1288,11 +1372,24 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           try {
             const hook = options.loaderHooks?.[lowerFirst(req.model)];
             if (req.mode !== "canonical" && hook) {
-              if (options.protocol4) await storage.call({op:"publicationFence"});
+              if (options.protocol4)
+                await storage.call({ op: "publicationFence" });
               const effects = createEffects();
-              try { await hook.prepareForViewer({...call, streams:effects.stream, invalidate:effects.invalidate}); }
-              finally { effects.close(); }
-              if (options.protocol4) await native.settleExternal(config, JSON.stringify(effects.settlement()), host(tx, session));
+              try {
+                await hook.prepareForViewer({
+                  ...call,
+                  streams: effects.stream,
+                  invalidate: effects.invalidate,
+                });
+              } finally {
+                effects.close();
+              }
+              if (options.protocol4)
+                await native.settleExternal(
+                  config,
+                  JSON.stringify(effects.settlement()),
+                  host(tx, session),
+                );
             }
             rows = req.mode === "prepare" ? [] : await loader(call);
           } catch (error) {
@@ -1422,14 +1519,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     session: Session,
     body: (call: External) => R | Promise<R>,
   ): Promise<R> => {
-    if (options.protocol4) await session.track(() => options.database.persistence(tx).call({op:"publicationFence"}));
+    if (options.protocol4)
+      await session.track(() =>
+        options.database.persistence(tx).call({ op: "publicationFence" }),
+      );
     const effects = createEffects();
     let result: R;
     try {
       const call: TransactionCall<T> = {
         tx,
         stream: effects.stream,
-        streams:effects.stream,
+        streams: effects.stream,
         invalidate: effects.invalidate,
       };
       result = await body(call as unknown as External);
@@ -1627,7 +1727,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     transaction,
     publish,
     /** Must be awaited BEFORE relevant business writes in a caller-owned tx. */
-    acquirePublicationFence: (tx: T): Promise<void> => options.database.persistence(tx).call({op:"publicationFence"}).then(() => {}),
+    acquirePublicationFence: (tx: T): Promise<void> =>
+      options.database
+        .persistence(tx)
+        .call({ op: "publicationFence" })
+        .then(() => {}),
   };
   const authenticate = async (request: IncomingMessage) => {
     const id = await options.authenticate(request);
@@ -1833,7 +1937,7 @@ function createHttpHandler(options: {
  * commit hub it asks the executor to use.
  */
 interface LiveBackend {
-  pull?(owner:string,request:string):Promise<string>;
+  pull?(owner: string, request: string): Promise<string>;
   negotiateLive(
     owner: string,
     request: Uint8Array | string,
@@ -1970,9 +2074,14 @@ async function serveLive(
         );
       } else if (action.type === "send") {
         if (open()) connection.send(action.frame);
-      } else if(action.type==="pullV04") {
-        if(!backend.pull){fail(new Error("v04 pull carrier unavailable"));return;}
-        backend.pull(owner,action.request).then(page=>dispatch({type:"pulled",page}),fail);
+      } else if (action.type === "pullV04") {
+        if (!backend.pull) {
+          fail(new Error("v04 pull carrier unavailable"));
+          return;
+        }
+        backend
+          .pull(owner, action.request)
+          .then((page) => dispatch({ type: "pulled", page }), fail);
       } else {
         backend
           .pullLive(owner, action.cursors, action.models)

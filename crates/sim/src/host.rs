@@ -717,6 +717,20 @@ impl Host for MemHost {
                 .map_err(|error| format!("unsupported host request: {error}"))?;
             let mut s = self.0.lock().unwrap();
             Ok(match request {
+                HostRequest::AdmitContext { .. }
+                | HostRequest::PublicationFence {}
+                | HostRequest::HandleBootstrap { .. }
+                | HostRequest::CreateManifest { .. }
+                | HostRequest::ReadCall { .. }
+                | HostRequest::ReadManifest { .. }
+                | HostRequest::CaptureTail { .. }
+                | HostRequest::SavePublicationGroups { .. }
+                | HostRequest::ReadPublicationGroups { .. }
+                | HostRequest::ReadPositions { .. } => {
+                    return Err(
+                        "legacy MemHost does not implement protocol 4; use actual adapters".into(),
+                    );
+                }
                 HostRequest::Claim { owner, client_id } => {
                     let claimed = s
                         .clients

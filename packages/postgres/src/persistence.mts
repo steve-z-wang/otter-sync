@@ -1,4 +1,4 @@
-import {EngineError} from "@axtonjs/server";
+import { EngineError } from "@axtonjs/server";
 import type {
   Acknowledged,
   Claimed,
@@ -437,113 +437,382 @@ export async function answer<Tx>(
     case "guardRecords":
       return guardRecords(q, r);
     case "readCall": {
-      fieldsOf(r,["op","owner","callId"],"readCall");
-      const row=(await q("SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2",r.owner,r.callId))[0];
+      fieldsOf(r, ["op", "owner", "callId"], "readCall");
+      const row = (
+        await q(
+          "SELECT response FROM axton_call WHERE owner_id=$1 AND call_id=$2",
+          r.owner,
+          r.callId,
+        )
+      )[0];
       return row?.response ?? null;
     }
     case "createManifest": {
-      fieldsOf(r,["op","owner","manifestId","context","start","models","selected","held","budget"],"createManifest");
-      const selected=strings(r.selected,"manifest Model selection");
-      const held=arrayOf(r.held,"held manifest keys").map(v=>keyOf(v));unique(held,"held manifest keys");
-      if(held.length>Math.min(storedStamp(r.budget),100000)) throw new EngineError("manifest.capacity","manifest.capacity");
-      for(const group of batches(held)) {
-        const known=await q("SELECT r.model,r.identity_key FROM axton_record r JOIN axton_stream_log l ON l.record_id=r.id AND l.stream=$1 JOIN jsonb_array_elements($2::jsonb) v ON r.model=v->>'model' AND r.identity_key=v->>'identityKey'",r.context.binding.stream,JSON.stringify(group));
-        if(known.length!==group.length) throw new EngineError("manifest.identity_untracked","manifest.identity_untracked");
+      fieldsOf(
+        r,
+        [
+          "op",
+          "owner",
+          "manifestId",
+          "context",
+          "start",
+          "models",
+          "selected",
+          "held",
+          "budget",
+        ],
+        "createManifest",
+      );
+      const selected = strings(r.selected, "manifest Model selection");
+      const held = arrayOf(r.held, "held manifest keys").map((v) => keyOf(v));
+      unique(held, "held manifest keys");
+      if (held.length > Math.min(storedStamp(r.budget), 100000))
+        throw new EngineError("manifest.capacity", "manifest.capacity");
+      for (const group of batches(held)) {
+        const known = await q(
+          "SELECT r.model,r.identity_key FROM axton_record r JOIN axton_stream_log l ON l.record_id=r.id AND l.stream=$1 JOIN jsonb_array_elements($2::jsonb) v ON r.model=v->>'model' AND r.identity_key=v->>'identityKey'",
+          r.context.binding.stream,
+          JSON.stringify(group),
+        );
+        if (known.length !== group.length)
+          throw new EngineError(
+            "manifest.identity_untracked",
+            "manifest.identity_untracked",
+          );
       }
-      const rows=await q("SELECT model,identity_key FROM (SELECT r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model=ANY($2::text[]) UNION SELECT v->>'model',v->>'identityKey' FROM jsonb_array_elements($3::jsonb) v) wanted ORDER BY model COLLATE \"C\",identity_key COLLATE \"C\" LIMIT $4",r.context.binding.stream,selected,JSON.stringify(held),Math.min(storedStamp(r.budget),100000)+1);
-      if(rows.length>Math.min(r.budget,100000)) throw new EngineError("manifest.capacity","manifest.capacity");
-      await q("INSERT INTO axton_bootstrap_manifest(owner_id,manifest_id,context,start_cursor,total,models) VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb)",r.owner,r.manifestId,JSON.stringify(r.context),safe(r.start),rows.length,JSON.stringify(r.models));
-      for(const group of batches(rows.map((row,index)=>({ordinal:index,model:row.model,identityKey:row.identity_key})))) await q("INSERT INTO axton_bootstrap_identity(owner_id,manifest_id,ordinal,model,identity_key) SELECT $1,$2,(v->>'ordinal')::bigint,v->>'model',v->>'identityKey' FROM jsonb_array_elements($3::jsonb) v",r.owner,r.manifestId,JSON.stringify(group));
-      return {start:r.start,total:rows.length,models:r.models,from:0,to:0,keys:[]};
+      const rows = await q(
+        "SELECT model,identity_key FROM (SELECT r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model=ANY($2::text[]) UNION SELECT v->>'model',v->>'identityKey' FROM jsonb_array_elements($3::jsonb) v) wanted ORDER BY model COLLATE \"C\",identity_key COLLATE \"C\" LIMIT $4",
+        r.context.binding.stream,
+        selected,
+        JSON.stringify(held),
+        Math.min(storedStamp(r.budget), 100000) + 1,
+      );
+      if (rows.length > Math.min(r.budget, 100000))
+        throw new EngineError("manifest.capacity", "manifest.capacity");
+      await q(
+        "INSERT INTO axton_bootstrap_manifest(owner_id,manifest_id,context,start_cursor,total,models) VALUES($1,$2,$3::jsonb,$4,$5,$6::jsonb)",
+        r.owner,
+        r.manifestId,
+        JSON.stringify(r.context),
+        safe(r.start),
+        rows.length,
+        JSON.stringify(r.models),
+      );
+      for (const group of batches(
+        rows.map((row, index) => ({
+          ordinal: index,
+          model: row.model,
+          identityKey: row.identity_key,
+        })),
+      ))
+        await q(
+          "INSERT INTO axton_bootstrap_identity(owner_id,manifest_id,ordinal,model,identity_key) SELECT $1,$2,(v->>'ordinal')::bigint,v->>'model',v->>'identityKey' FROM jsonb_array_elements($3::jsonb) v",
+          r.owner,
+          r.manifestId,
+          JSON.stringify(group),
+        );
+      return {
+        start: r.start,
+        total: rows.length,
+        models: r.models,
+        from: 0,
+        to: 0,
+        keys: [],
+      };
     }
     case "readManifest": {
-      fieldsOf(r,["op","owner","manifestId","context","from","limit","uniqueModels"],"readManifest");
-      const manifest=(await q("SELECT start_cursor,total,models FROM axton_bootstrap_manifest WHERE owner_id=$1 AND manifest_id=$2 AND context=$3::jsonb",r.owner,r.manifestId,JSON.stringify(r.context)))[0];
-      if(!manifest) throw new EngineError("manifest.invalid","manifest.invalid");
-      const from=safe(r.from),total=safe(manifest.total);if(from>total) throw new EngineError("manifest.ordinal_invalid","manifest.ordinal_invalid");
-      const to=Math.min(total,from+storedStamp(r.limit));
-      const rows=await q("SELECT ordinal,model,identity_key FROM axton_bootstrap_identity WHERE owner_id=$1 AND manifest_id=$2 AND ordinal>=$3 AND ordinal<$4 ORDER BY ordinal",r.owner,r.manifestId,from,to);
-      if(rows.length!==to-from) throw new EngineError("manifest.coverage_missing","manifest.coverage_missing");
-      await q("INSERT INTO axton_bootstrap_range(owner_id,manifest_id,from_ordinal,to_ordinal) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",r.owner,r.manifestId,from,to);
-      const roots=rows.map(row=>({model:String(row.model),identityKey:String(row.identity_key)}));
-      const keys=new Map(roots.map(key=>[pairId(key),key]));
-      const uniqueModels=strings(r.uniqueModels,"unique Model constraints").filter(model=>roots.some(key=>key.model===model));
+      fieldsOf(
+        r,
+        [
+          "op",
+          "owner",
+          "manifestId",
+          "context",
+          "from",
+          "limit",
+          "uniqueModels",
+        ],
+        "readManifest",
+      );
+      const manifest = (
+        await q(
+          "SELECT start_cursor,total,models FROM axton_bootstrap_manifest WHERE owner_id=$1 AND manifest_id=$2 AND context=$3::jsonb",
+          r.owner,
+          r.manifestId,
+          JSON.stringify(r.context),
+        )
+      )[0];
+      if (!manifest)
+        throw new EngineError("manifest.invalid", "manifest.invalid");
+      const from = safe(r.from),
+        total = safe(manifest.total);
+      if (from > total)
+        throw new EngineError(
+          "manifest.ordinal_invalid",
+          "manifest.ordinal_invalid",
+        );
+      const to = Math.min(total, from + storedStamp(r.limit));
+      const rows = await q(
+        "SELECT ordinal,model,identity_key FROM axton_bootstrap_identity WHERE owner_id=$1 AND manifest_id=$2 AND ordinal>=$3 AND ordinal<$4 ORDER BY ordinal",
+        r.owner,
+        r.manifestId,
+        from,
+        to,
+      );
+      if (rows.length !== to - from)
+        throw new EngineError(
+          "manifest.coverage_missing",
+          "manifest.coverage_missing",
+        );
+      await q(
+        "INSERT INTO axton_bootstrap_range(owner_id,manifest_id,from_ordinal,to_ordinal) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        r.owner,
+        r.manifestId,
+        from,
+        to,
+      );
+      const roots = rows.map((row) => ({
+        model: String(row.model),
+        identityKey: String(row.identity_key),
+      }));
+      const keys = new Map(roots.map((key) => [pairId(key), key]));
+      const uniqueModels = strings(
+        r.uniqueModels,
+        "unique Model constraints",
+      ).filter((model) => roots.some((key) => key.model === model));
       // A release and a later acquisition may have no transaction identity
       // overlap. Cached prior unique values therefore require bounded current
       // authority for this same Model, independently of manifest ordinal order.
-      if(uniqueModels.length) {
-        const current=await q("SELECT r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model=ANY($2::text[]) UNION SELECT model,identity_key FROM axton_bootstrap_identity WHERE owner_id=$3 AND manifest_id=$4 AND model=ANY($2::text[]) LIMIT 10001",r.context.binding.stream,uniqueModels,r.owner,r.manifestId);
-        for(const row of current){const key={model:String(row.model),identityKey:String(row.identity_key)};keys.set(pairId(key),key);}
-        if(keys.size>10000 || Buffer.byteLength(JSON.stringify([...keys.values()]))>1024*1024) throw new EngineError("constraint_group_capacity","constraint_group_capacity");
+      if (uniqueModels.length) {
+        const current = await q(
+          "SELECT r.model,r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model=ANY($2::text[]) UNION SELECT model,identity_key FROM axton_bootstrap_identity WHERE owner_id=$3 AND manifest_id=$4 AND model=ANY($2::text[]) LIMIT 10001",
+          r.context.binding.stream,
+          uniqueModels,
+          r.owner,
+          r.manifestId,
+        );
+        for (const row of current) {
+          const key = {
+            model: String(row.model),
+            identityKey: String(row.identity_key),
+          };
+          keys.set(pairId(key), key);
+        }
+        if (
+          keys.size > 10000 ||
+          Buffer.byteLength(JSON.stringify([...keys.values()])) > 1024 * 1024
+        )
+          throw new EngineError(
+            "constraint_group_capacity",
+            "constraint_group_capacity",
+          );
       }
-      while(true) {
+      while (true) {
         // Historical unrelated types do not become Bootstrap-selected merely
         // through coarse transaction grouping. Same-Model unique ownership
         // transfers and post-N normal Stream publications require companions.
-        const related=await q("SELECT DISTINCT k->>'model' model,k->>'identityKey' identity_key FROM axton_publication_group g CROSS JOIN LATERAL jsonb_array_elements(g.keys) k JOIN axton_record rec ON rec.model=k->>'model' AND rec.identity_key=k->>'identityKey' JOIN axton_stream_log l ON l.record_id=rec.id AND l.stream=g.stream WHERE g.stream=$1 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) member JOIN jsonb_array_elements($2::jsonb) wanted ON member=wanted) AND ((k->>'model')=ANY($3::text[]) OR l.cursor>$4)",r.context.binding.stream,JSON.stringify([...keys.values()]),uniqueModels,safe(manifest.start_cursor));
-        const before=keys.size;
-        for(const row of related){const key={model:String(row.model),identityKey:String(row.identity_key)};keys.set(pairId(key),key);}
-        if(keys.size>10000 || Buffer.byteLength(JSON.stringify([...keys.values()]))>1024*1024) throw new EngineError("constraint_group_capacity","constraint_group_capacity");
-        if(keys.size===before) break;
+        const related = await q(
+          "SELECT DISTINCT k->>'model' model,k->>'identityKey' identity_key FROM axton_publication_group g CROSS JOIN LATERAL jsonb_array_elements(g.keys) k JOIN axton_record rec ON rec.model=k->>'model' AND rec.identity_key=k->>'identityKey' JOIN axton_stream_log l ON l.record_id=rec.id AND l.stream=g.stream WHERE g.stream=$1 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) member JOIN jsonb_array_elements($2::jsonb) wanted ON member=wanted) AND ((k->>'model')=ANY($3::text[]) OR l.cursor>$4)",
+          r.context.binding.stream,
+          JSON.stringify([...keys.values()]),
+          uniqueModels,
+          safe(manifest.start_cursor),
+        );
+        const before = keys.size;
+        for (const row of related) {
+          const key = {
+            model: String(row.model),
+            identityKey: String(row.identity_key),
+          };
+          keys.set(pairId(key), key);
+        }
+        if (
+          keys.size > 10000 ||
+          Buffer.byteLength(JSON.stringify([...keys.values()])) > 1024 * 1024
+        )
+          throw new EngineError(
+            "constraint_group_capacity",
+            "constraint_group_capacity",
+          );
+        if (keys.size === before) break;
       }
-      const rootIds=new Set(roots.map(pairId));
-      return {start:safe(manifest.start_cursor),total,models:manifest.models,from,to,keys:roots,companions:[...keys.values()].filter(key=>!rootIds.has(pairId(key)))};
+      const rootIds = new Set(roots.map(pairId));
+      return {
+        start: safe(manifest.start_cursor),
+        total,
+        models: manifest.models,
+        from,
+        to,
+        keys: roots,
+        companions: [...keys.values()].filter(
+          (key) => !rootIds.has(pairId(key)),
+        ),
+      };
     }
     case "captureTail": {
-      fieldsOf(r,["op","owner","manifestId","context","head"],"captureTail");
-      const manifest=(await q("SELECT total,tail FROM axton_bootstrap_manifest WHERE owner_id=$1 AND manifest_id=$2 AND context=$3::jsonb FOR UPDATE",r.owner,r.manifestId,JSON.stringify(r.context)))[0];
-      if(!manifest) throw new EngineError("manifest.invalid","manifest.invalid");
-      if(manifest.tail!=null) return safe(manifest.tail);
-      const ranges=await q("SELECT from_ordinal,to_ordinal FROM axton_bootstrap_range WHERE owner_id=$1 AND manifest_id=$2 ORDER BY from_ordinal,to_ordinal",r.owner,r.manifestId);
-      let through=0;for(const range of ranges){if(safe(range.from_ordinal)>through) break;through=Math.max(through,safe(range.to_ordinal));}
-      if(through!==safe(manifest.total)) throw new EngineError("bootstrap.coverage_incomplete","bootstrap.coverage_incomplete");
-      await q("UPDATE axton_bootstrap_manifest SET tail=$3 WHERE owner_id=$1 AND manifest_id=$2",r.owner,r.manifestId,safe(r.head));return r.head;
+      fieldsOf(
+        r,
+        ["op", "owner", "manifestId", "context", "head"],
+        "captureTail",
+      );
+      const manifest = (
+        await q(
+          "SELECT total,tail FROM axton_bootstrap_manifest WHERE owner_id=$1 AND manifest_id=$2 AND context=$3::jsonb FOR UPDATE",
+          r.owner,
+          r.manifestId,
+          JSON.stringify(r.context),
+        )
+      )[0];
+      if (!manifest)
+        throw new EngineError("manifest.invalid", "manifest.invalid");
+      if (manifest.tail != null) return safe(manifest.tail);
+      const ranges = await q(
+        "SELECT from_ordinal,to_ordinal FROM axton_bootstrap_range WHERE owner_id=$1 AND manifest_id=$2 ORDER BY from_ordinal,to_ordinal",
+        r.owner,
+        r.manifestId,
+      );
+      let through = 0;
+      for (const range of ranges) {
+        if (safe(range.from_ordinal) > through) break;
+        through = Math.max(through, safe(range.to_ordinal));
+      }
+      if (through !== safe(manifest.total))
+        throw new EngineError(
+          "bootstrap.coverage_incomplete",
+          "bootstrap.coverage_incomplete",
+        );
+      await q(
+        "UPDATE axton_bootstrap_manifest SET tail=$3 WHERE owner_id=$1 AND manifest_id=$2",
+        r.owner,
+        r.manifestId,
+        safe(r.head),
+      );
+      return r.head;
     }
     case "savePublicationGroups": {
-      fieldsOf(r,["op","positions"],"savePublicationGroups");
-      const positions=arrayOf(r.positions,"positions").map(v=>{
-        const p=keyOf(v,["stream","cursor","kind"]);
-        return {...p,stream:streamName(p.stream),cursor:storedStamp(p.cursor)};
+      fieldsOf(r, ["op", "positions"], "savePublicationGroups");
+      const positions = arrayOf(r.positions, "positions").map((v) => {
+        const p = keyOf(v, ["stream", "cursor", "kind"]);
+        return {
+          ...p,
+          stream: streamName(p.stream),
+          cursor: storedStamp(p.cursor),
+        };
       });
-      for(const stream of [...new Set(positions.map(p=>p.stream))].sort(byteOrder)) {
-        const selected=positions.filter(p=>p.stream===stream);
-        const old=await q("SELECT from_cursor,through_cursor,keys FROM axton_publication_group WHERE stream=$1 AND transaction_id=pg_current_xact_id()",stream);
-        const keys=new Map<string,{model:string;identityKey:string}>();
-        for(const k of (old[0]?.keys ?? []) as {model:string;identityKey:string}[]) keys.set(pairId(k),k);
-        for(const p of selected) keys.set(pairId({model:p.model,identityKey:p.identityKey}),{model:p.model,identityKey:p.identityKey});
-        if(keys.size>10000 || Buffer.byteLength(JSON.stringify([...keys.values()]))>1024*1024) throw new EngineError("constraint_group_capacity","constraint_group_capacity");
-        const from=Math.min(...selected.map(p=>p.cursor-1),old[0]?safe(old[0].from_cursor):Number.MAX_SAFE_INTEGER);
-        const through=Math.max(...selected.map(p=>p.cursor),old[0]?safe(old[0].through_cursor):0);
-        await q("INSERT INTO axton_publication_group(stream,from_cursor,through_cursor,keys) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(stream,transaction_id) DO UPDATE SET from_cursor=EXCLUDED.from_cursor,through_cursor=EXCLUDED.through_cursor,keys=EXCLUDED.keys",stream,from,through,JSON.stringify([...keys.values()]));
+      for (const stream of [...new Set(positions.map((p) => p.stream))].sort(
+        byteOrder,
+      )) {
+        const selected = positions.filter((p) => p.stream === stream);
+        const old = await q(
+          "SELECT from_cursor,through_cursor,keys FROM axton_publication_group WHERE stream=$1 AND transaction_id=pg_current_xact_id()",
+          stream,
+        );
+        const keys = new Map<string, { model: string; identityKey: string }>();
+        for (const k of (old[0]?.keys ?? []) as {
+          model: string;
+          identityKey: string;
+        }[])
+          keys.set(pairId(k), k);
+        for (const p of selected)
+          keys.set(pairId({ model: p.model, identityKey: p.identityKey }), {
+            model: p.model,
+            identityKey: p.identityKey,
+          });
+        if (
+          keys.size > 10000 ||
+          Buffer.byteLength(JSON.stringify([...keys.values()])) > 1024 * 1024
+        )
+          throw new EngineError(
+            "constraint_group_capacity",
+            "constraint_group_capacity",
+          );
+        const from = Math.min(
+          ...selected.map((p) => p.cursor - 1),
+          old[0] ? safe(old[0].from_cursor) : Number.MAX_SAFE_INTEGER,
+        );
+        const through = Math.max(
+          ...selected.map((p) => p.cursor),
+          old[0] ? safe(old[0].through_cursor) : 0,
+        );
+        await q(
+          "INSERT INTO axton_publication_group(stream,from_cursor,through_cursor,keys) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT(stream,transaction_id) DO UPDATE SET from_cursor=EXCLUDED.from_cursor,through_cursor=EXCLUDED.through_cursor,keys=EXCLUDED.keys",
+          stream,
+          from,
+          through,
+          JSON.stringify([...keys.values()]),
+        );
       }
       return null;
     }
     case "readPublicationGroups": {
-      fieldsOf(r,["op","stream","after","limit"],"readPublicationGroups");
-      const rows=await q("SELECT from_cursor,through_cursor,keys FROM axton_publication_group WHERE stream=$1 AND through_cursor>$2 ORDER BY through_cursor LIMIT $3",streamName(r.stream),safe(r.after),storedStamp(r.limit));
-      const result=[];
-      for(const row of rows) {
-        const keys=new Map<string,{model:string;identityKey:string}>();
-        for(const key of row.keys as {model:string;identityKey:string}[]) keys.set(pairId(key),key);
-        while(true) {
-          const related=await q("SELECT g.keys FROM axton_publication_group g WHERE g.stream=$1 AND g.through_cursor>$2 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) k JOIN jsonb_array_elements($3::jsonb) w ON k=w)",r.stream,safe(row.from_cursor),JSON.stringify([...keys.values()]));
-          const before=keys.size;
-          for(const group of related) for(const key of group.keys as {model:string;identityKey:string}[]) keys.set(pairId(key),key);
-          if(keys.size>10000 || Buffer.byteLength(JSON.stringify([...keys.values()]))>1024*1024) throw new EngineError("constraint_group_capacity","constraint_group_capacity");
-          if(keys.size===before) break;
+      fieldsOf(r, ["op", "stream", "after", "limit"], "readPublicationGroups");
+      const rows = await q(
+        "SELECT from_cursor,through_cursor,keys FROM axton_publication_group WHERE stream=$1 AND through_cursor>$2 ORDER BY through_cursor LIMIT $3",
+        streamName(r.stream),
+        safe(r.after),
+        storedStamp(r.limit),
+      );
+      const result = [];
+      for (const row of rows) {
+        const keys = new Map<string, { model: string; identityKey: string }>();
+        for (const key of row.keys as { model: string; identityKey: string }[])
+          keys.set(pairId(key), key);
+        while (true) {
+          const related = await q(
+            "SELECT g.keys FROM axton_publication_group g WHERE g.stream=$1 AND g.through_cursor>$2 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) k JOIN jsonb_array_elements($3::jsonb) w ON k=w)",
+            r.stream,
+            safe(row.from_cursor),
+            JSON.stringify([...keys.values()]),
+          );
+          const before = keys.size;
+          for (const group of related)
+            for (const key of group.keys as {
+              model: string;
+              identityKey: string;
+            }[])
+              keys.set(pairId(key), key);
+          if (
+            keys.size > 10000 ||
+            Buffer.byteLength(JSON.stringify([...keys.values()])) > 1024 * 1024
+          )
+            throw new EngineError(
+              "constraint_group_capacity",
+              "constraint_group_capacity",
+            );
+          if (keys.size === before) break;
         }
-        result.push({from:safe(row.from_cursor),through:safe(row.through_cursor),keys:[...keys.values()]});
+        result.push({
+          from: safe(row.from_cursor),
+          through: safe(row.through_cursor),
+          keys: [...keys.values()],
+        });
       }
       return result;
     }
     case "readPositions": {
-      fieldsOf(r,["op","stream","records"],"readPositions");
-      const records=arrayOf(r.records,"records").map(v=>keyOf(v));unique(records,"records");
-      const result=[];
-      for(const group of batches(records)) {
-        const rows=await q("WITH wanted AS (SELECT v->>'model' model,v->>'identityKey' identity_key,ord FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY x(v,ord)) SELECT w.ord,w.model,w.identity_key,l.cursor,l.kind FROM wanted w LEFT JOIN axton_record r USING(model,identity_key) LEFT JOIN axton_stream_log l ON l.record_id=r.id AND l.stream=$1 ORDER BY w.ord",streamName(r.stream),JSON.stringify(group));
-        if(rows.length!==group.length || rows.some(row=>row.cursor==null)) throw new Error("missing publication group position");
-        for(const row of rows) result.push({stream:r.stream,model:row.model,identityKey:row.identity_key,cursor:storedStamp(row.cursor),kind:row.kind});
+      fieldsOf(r, ["op", "stream", "records"], "readPositions");
+      const records = arrayOf(r.records, "records").map((v) => keyOf(v));
+      unique(records, "records");
+      const result = [];
+      for (const group of batches(records)) {
+        const rows = await q(
+          "WITH wanted AS (SELECT v->>'model' model,v->>'identityKey' identity_key,ord FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY x(v,ord)) SELECT w.ord,w.model,w.identity_key,l.cursor,l.kind FROM wanted w LEFT JOIN axton_record r USING(model,identity_key) LEFT JOIN axton_stream_log l ON l.record_id=r.id AND l.stream=$1 ORDER BY w.ord",
+          streamName(r.stream),
+          JSON.stringify(group),
+        );
+        if (
+          rows.length !== group.length ||
+          rows.some((row) => row.cursor == null)
+        )
+          throw new Error("missing publication group position");
+        for (const row of rows)
+          result.push({
+            stream: r.stream,
+            model: row.model,
+            identityKey: row.identity_key,
+            cursor: storedStamp(row.cursor),
+            kind: row.kind,
+          });
       }
       return result;
     }

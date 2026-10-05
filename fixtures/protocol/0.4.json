@@ -1,0 +1,254 @@
+{
+  "context": {
+    "protocol": 4,
+    "binding": {
+      "backend": "backend",
+      "viewer": "alice",
+      "stream": "User:alice",
+      "contract": "app"
+    },
+    "materialization": "schema-one",
+    "incarnation": "open-one"
+  },
+  "readRecord": {
+    "model": "Entry",
+    "identity": {
+      "id": "x"
+    },
+    "cursor": null,
+    "state": {
+      "text": "B"
+    }
+  },
+  "fetchIntent": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "callId": "00000000-0000-4000-8000-000000000001",
+    "model": "Entry",
+    "version": 1,
+    "identity": {
+      "id": "x"
+    }
+  },
+  "readResponse": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "completion": {
+      "callId": "00000000-0000-4000-8000-000000000001",
+      "outcome": {
+        "status": "succeeded",
+        "result": {
+          "id": "x",
+          "text": "B"
+        }
+      }
+    },
+    "records": [
+      {
+        "model": "Entry",
+        "identity": {
+          "id": "x"
+        },
+        "cursor": null,
+        "state": {
+          "text": "B"
+        }
+      }
+    ]
+  },
+  "mutationIntent": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "callId": "00000000-0000-4000-8000-000000000001",
+    "name": "Edit",
+    "version": 1,
+    "args": {
+      "entry": {
+        "id": "x",
+        "text": "B"
+      }
+    },
+    "models": {
+      "Entry": 1
+    }
+  },
+  "mutationReceipt": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "intentDigest": "10e015bf2e7177c22ceb256595b1887fecdf37c9f17cf925b6e76344e9464089",
+    "completion": {
+      "callId": "00000000-0000-4000-8000-000000000001",
+      "outcome": {
+        "status": "succeeded",
+        "result": {}
+      }
+    },
+    "targets": [
+      {
+        "kind": "private",
+        "record": {
+          "model": "Entry",
+          "identity": {
+            "id": "x"
+          },
+          "cursor": null,
+          "state": {
+            "text": "B"
+          }
+        }
+      }
+    ]
+  },
+  "manifestPage": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "manifestId": "manifest",
+    "total": 1,
+    "from": 0,
+    "to": 1,
+    "items": [
+      {
+        "ordinal": 0,
+        "change": {
+          "kind": "remove",
+          "key": {
+            "model": "Entry",
+            "identity": {
+              "id": "x"
+            }
+          },
+          "cursor": 150
+        }
+      }
+    ]
+  },
+  "deltaPage": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "pageId": "page",
+    "from": 10,
+    "to": 20,
+    "head": 25,
+    "units": [
+      {
+        "through": 15,
+        "changes": [
+          {
+            "kind": "upsert",
+            "record": {
+              "model": "Entry",
+              "identity": {
+                "id": "x"
+              },
+              "cursor": 25,
+              "state": {
+                "text": "B"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "through": 20,
+        "changes": []
+      }
+    ]
+  },
+  "trackedMutationReceipt": {
+    "context": {
+      "protocol": 4,
+      "binding": {
+        "backend": "backend",
+        "viewer": "alice",
+        "stream": "User:alice",
+        "contract": "app"
+      },
+      "materialization": "schema-one",
+      "incarnation": "open-one"
+    },
+    "intentDigest": "10e015bf2e7177c22ceb256595b1887fecdf37c9f17cf925b6e76344e9464089",
+    "completion": {
+      "callId": "00000000-0000-4000-8000-000000000001",
+      "outcome": {
+        "status": "succeeded",
+        "result": {}
+      }
+    },
+    "targets": [
+      {
+        "kind": "stream",
+        "key": {
+          "model": "Entry",
+          "identity": {
+            "id": "x"
+          }
+        },
+        "cursor": 59,
+        "fallback": {
+          "model": "Entry",
+          "identity": {
+            "id": "x"
+          },
+          "cursor": null,
+          "state": {
+            "text": "SERVER-B"
+          }
+        }
+      }
+    ]
+  }
+}

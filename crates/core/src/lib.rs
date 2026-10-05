@@ -4,6 +4,8 @@ mod fetch;
 mod loads;
 mod protocol;
 mod schema;
+#[path = "protocol_v04.rs"]
+pub mod v04;
 pub use actions::*;
 pub use fetch::*;
 pub use loads::*;

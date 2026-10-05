@@ -153,6 +153,20 @@ impl Delivery04 {
         now: u64,
         entropy: u64,
     ) -> Result<Vec<DownlinkAction>> {
+        let mut actions = self.turn(c, now, entropy)?;
+        // One turn consumes one event. A Stop/Pause may produce no transport
+        // work while a newer Start/Resume is still queued; keep that turn ready.
+        if actions.is_empty() && !self.events.is_empty() {
+            actions.push(DownlinkAction::Wait { millis: 0 });
+        }
+        Ok(actions)
+    }
+    fn turn<S: ClientStore>(
+        &mut self,
+        c: &mut Client<S>,
+        now: u64,
+        entropy: u64,
+    ) -> Result<Vec<DownlinkAction>> {
         let active = c.request_context()?.clone();
         if self.context.as_ref() != Some(&active) {
             let prior = self.context.replace(active.clone());

@@ -72,6 +72,7 @@ export type HandleActionRequest = {
   owner: string;
   callId: string;
   ordinal: number;
+  context?:RequestContext;
 };
 /** Portable JSON: what a Load continuation state may hold. */
 export type JsonValue =
@@ -100,6 +101,8 @@ export type HandleLoadRequest = {
  */
 export type LoadRequest = {
   op: "load";
+  /** Prepare only (empty success rows), or read after completed preparation. */
+  mode?: "prepare" | "canonical";
   model: string;
   version: number;
   identities: Record<string, unknown>[];
@@ -164,6 +167,16 @@ export type ApplyStreamMembersRequest = {
 };
 
 export type HostRequest =
+  | AdmitContextRequest
+  | PublicationFenceRequest
+  | SavePublicationGroupsRequest
+  | ReadPublicationGroupsRequest
+  | ReadPositionsRequest
+  | HandleBootstrapRequest
+  | ReadCallRequest
+  | CreateManifestRequest
+  | ReadManifestRequest
+  | CaptureTailRequest
   | ClaimRequest
   | SaveReceiptRequest
   | ClaimCallRequest
@@ -191,7 +204,7 @@ export type HostOperation = HostRequest["op"];
 /** The subset a [Persistence] answers: everything that is not application code. */
 export type PersistenceRequest = Exclude<
   HostRequest,
-  HandleRequest | HandleActionRequest | HandleLoadRequest | LoadRequest
+  HandleRequest | HandleActionRequest | HandleLoadRequest | LoadRequest | AdmitContextRequest | HandleBootstrapRequest
 >;
 
 /** The answer to an operation whose only answer is "done". */
@@ -298,6 +311,16 @@ export type Loaded =
 
 /** The answer each operation owes, keyed by `op`. */
 export type HostResponse = {
+  admitContext: boolean;
+  publicationFence: Acknowledged;
+  savePublicationGroups: Acknowledged;
+  readPublicationGroups: PublicationGroup[];
+  readPositions: MemberPosition[];
+  handleBootstrap:{declarations:TrackIntent[]};
+  readCall:string|null;
+  createManifest:ManifestSlice;
+  readManifest:ManifestSlice;
+  captureTail:number;
   claim: Claimed;
   saveReceipt: Acknowledged;
   claimCall: ClaimedCall;
@@ -326,29 +349,56 @@ export type HostResponse = {
  * and an extra one are both compile errors here.
  */
 const OPERATIONS: Record<HostOperation, true> = {
-  claim: true,
-  saveReceipt: true,
-  claimCall: true,
-  saveCall: true,
-  head: true,
-  scan: true,
-  savepoint: true,
-  rollback: true,
-  release: true,
-  handle: true,
-  handleAction: true,
-  handleLoad: true,
-  load: true,
-  advanceStamp: true,
-  ensureStamp: true,
-  readStamps: true,
-  lockRecord: true,
-  readTracking: true,
-  guardRecords: true,
-  lockStreams: true,
-  applyStreamMembers: true,
+  admitContext:true,
+  publicationFence:true,
+  handleBootstrap:true,
+  createManifest:true,
+  readCall:true,
+  readManifest:true,
+  captureTail:true,
+  savePublicationGroups:true,
+  readPublicationGroups:true,
+  readPositions:true,
+  claim:true,
+  saveReceipt:true,
+  claimCall:true,
+  saveCall:true,
+  head:true,
+  scan:true,
+  savepoint:true,
+  rollback:true,
+  release:true,
+  handle:true,
+  handleAction:true,
+  handleLoad:true,
+  load:true,
+  advanceStamp:true,
+  ensureStamp:true,
+  readStamps:true,
+  lockRecord:true,
+  readTracking:true,
+  guardRecords:true,
+  lockStreams:true,
+  applyStreamMembers:true,
 };
 
 export const HOST_OPERATIONS: readonly HostOperation[] = Object.keys(
   OPERATIONS,
 ) as HostOperation[];
+
+export type RequestContext = {protocol:4;binding:{backend:string;viewer:string;stream:string;contract:string};materialization:string;incarnation:string};
+export type AdmitContextRequest = {op:"admitContext";owner:string;context:RequestContext;durable:boolean};
+export type PublicationFenceRequest = {op:"publicationFence"};
+
+export type PublicationGroup={from:number;through:number;keys:MemberKey[]};
+export type SavePublicationGroupsRequest={op:"savePublicationGroups";positions:MemberPosition[]};
+export type ReadPublicationGroupsRequest={op:"readPublicationGroups";stream:string;after:number;limit:number};
+export type ReadPositionsRequest={op:"readPositions";stream:string;records:MemberKey[]};
+
+export type HandleBootstrapRequest={op:"handleBootstrap";owner:string;callId:string;context:RequestContext};
+export type CreateManifestRequest={op:"createManifest";owner:string;manifestId:string;context:RequestContext;start:number;models:Record<string,number>;selected:string[];held:MemberKey[];budget:number};
+export type ReadManifestRequest={op:"readManifest";owner:string;manifestId:string;context:RequestContext;from:number;limit:number;uniqueModels:string[]};
+export type CaptureTailRequest={op:"captureTail";owner:string;manifestId:string;context:RequestContext;head:number};
+export type ManifestSlice={start:number;total:number;models:Record<string,number>;from:number;to:number;keys:MemberKey[];companions?:MemberKey[]};
+
+export type ReadCallRequest={op:"readCall";owner:string;callId:string};

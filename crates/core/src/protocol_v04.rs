@@ -87,6 +87,26 @@ fn strict_key<'de, D: serde::Deserializer<'de>>(
         identity: value.identity,
     })
 }
+fn strict_keys<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<RecordKey>, D::Error> {
+    #[derive(Deserialize)]
+    struct Strict(#[serde(deserialize_with = "strict_key")] RecordKey);
+    Ok(Vec::<Strict>::deserialize(deserializer)?
+        .into_iter()
+        .map(|v| v.0)
+        .collect())
+}
+fn distinct_keys(values: &[RecordKey]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        key(value)?;
+        if !seen.insert(value.encoded()?) {
+            return Err(invalid("duplicate manifest key"));
+        }
+    }
+    Ok(())
+}
 fn strict_completion<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<crate::CallCompletion, D::Error> {
@@ -817,6 +837,9 @@ pub struct ManifestPage {
     pub from: u64,
     pub to: u64,
     pub items: Vec<ManifestItem>,
+    /// Constraint companions share this atomic commit; they own no ordinal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<StreamChange>,
 }
 impl Validate for ManifestPage {
     fn validate(&self) -> Result<()> {
@@ -839,6 +862,12 @@ impl Validate for ManifestPage {
                 || !keys.insert(item.change.key().encoded()?)
             {
                 return Err(invalid("manifest item mismatch or duplicate key"));
+            }
+        }
+        for change in &self.companions {
+            change.validate()?;
+            if !keys.insert(change.key().encoded()?) {
+                return Err(invalid("duplicate manifest companion key"));
             }
         }
         Ok(())
@@ -1087,4 +1116,295 @@ impl SettlementTarget {
             }
         })
     }
+}
+
+fn call_id(value: &str) -> Result<()> {
+    if normalize_call_id(value)? != value {
+        return Err(invalid("noncanonical callId"));
+    }
+    Ok(())
+}
+fn declared_models(models: &BTreeMap<String, u64>) -> Result<()> {
+    for (model, version) in models {
+        nonblank(model)?;
+        position(*version)?;
+    }
+    Ok(())
+}
+/// One immutable single-Stream delta request. The call ID owns its saved plan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeltaIntent {
+    pub context: RequestContext,
+    pub call_id: String,
+    pub after: u64,
+    pub models: BTreeMap<String, u64>,
+    pub limit: u64,
+}
+impl Validate for DeltaIntent {
+    fn validate(&self) -> Result<()> {
+        self.context.validate()?;
+        call_id(&self.call_id)?;
+        counter(self.after)?;
+        declared_models(&self.models)?;
+        position(self.limit)
+    }
+}
+/// Existing accepted receipt ownership authorizes bounded materialization of
+/// missing Stream targets, including positions older than the delivery cursor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BootstrapReceiptTargets {
+    pub call_id: String,
+    #[serde(deserialize_with = "strict_keys")]
+    pub keys: Vec<RecordKey>,
+}
+impl Validate for BootstrapReceiptTargets {
+    fn validate(&self) -> Result<()> {
+        call_id(&self.call_id)?;
+        if self.keys.is_empty() {
+            return Err(invalid("empty receipt target request"));
+        }
+        distinct_keys(&self.keys)
+    }
+}
+/// Bootstrap resumes by saved identity ordinal, never by a moving log position.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BootstrapIntent {
+    Start {
+        context: RequestContext,
+        call_id: String,
+        models: BTreeMap<String, u64>,
+        budget: u64,
+        /// Previously held Stream authority; ordinary null-cache rows do not qualify.
+        #[serde(
+            default,
+            deserialize_with = "strict_keys",
+            skip_serializing_if = "Vec::is_empty"
+        )]
+        held_keys: Vec<RecordKey>,
+    },
+    /// Internal Call recovery: no application Bootstrap or general range scan.
+    Materialize {
+        context: RequestContext,
+        call_id: String,
+        receipt_targets: BootstrapReceiptTargets,
+        budget: u64,
+    },
+    Page {
+        context: RequestContext,
+        call_id: String,
+        manifest_id: String,
+        from: u64,
+        limit: u64,
+    },
+    Tail {
+        context: RequestContext,
+        call_id: String,
+        manifest_id: String,
+    },
+}
+impl BootstrapIntent {
+    pub fn context(&self) -> &RequestContext {
+        match self {
+            Self::Start { context, .. }
+            | Self::Materialize { context, .. }
+            | Self::Page { context, .. }
+            | Self::Tail { context, .. } => context,
+        }
+    }
+    pub fn call_id(&self) -> &str {
+        match self {
+            Self::Start { call_id, .. }
+            | Self::Materialize { call_id, .. }
+            | Self::Page { call_id, .. }
+            | Self::Tail { call_id, .. } => call_id,
+        }
+    }
+}
+impl Validate for BootstrapIntent {
+    fn validate(&self) -> Result<()> {
+        self.context().validate()?;
+        call_id(self.call_id())?;
+        match self {
+            Self::Start {
+                models,
+                budget,
+                held_keys,
+                ..
+            } => {
+                declared_models(models)?;
+                distinct_keys(held_keys)?;
+                position(*budget)
+            }
+            Self::Materialize {
+                receipt_targets,
+                budget,
+                ..
+            } => {
+                receipt_targets.validate()?;
+                position(*budget)
+            }
+            Self::Page {
+                manifest_id,
+                from,
+                limit,
+                ..
+            } => {
+                nonblank(manifest_id)?;
+                counter(*from)?;
+                position(*limit)
+            }
+            Self::Tail { manifest_id, .. } => nonblank(manifest_id),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BootstrapStarted {
+    pub context: RequestContext,
+    pub manifest_id: String,
+    pub start: u64,
+    pub total: u64,
+}
+impl Validate for BootstrapStarted {
+    fn validate(&self) -> Result<()> {
+        self.context.validate()?;
+        nonblank(&self.manifest_id)?;
+        counter(self.start)?;
+        counter(self.total).map(|_| ())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BootstrapTail {
+    pub context: RequestContext,
+    pub manifest_id: String,
+    pub head: u64,
+}
+impl Validate for BootstrapTail {
+    fn validate(&self) -> Result<()> {
+        self.context.validate()?;
+        nonblank(&self.manifest_id)?;
+        counter(self.head).map(|_| ())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubscribeIntent {
+    pub context: RequestContext,
+    pub models: BTreeMap<String, u64>,
+    pub cursor: u64,
+}
+impl Validate for SubscribeIntent {
+    fn validate(&self) -> Result<()> {
+        self.context.validate()?;
+        declared_models(&self.models)?;
+        counter(self.cursor).map(|_| ())
+    }
+}
+
+/// Subscription admission is transport progress, never a Bootstrap completion.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscribeAcknowledged {
+    pub context: RequestContext,
+    pub cursor: u64,
+    pub head: u64,
+}
+impl Validate for SubscribeAcknowledged {
+    fn validate(&self) -> Result<()> {
+        self.context.validate()?;
+        counter(self.cursor)?;
+        counter(self.head)?;
+        if self.cursor > self.head {
+            return Err(invalid("subscription cursor ahead of head"));
+        }
+        Ok(())
+    }
+}
+
+/// Shared offline identity of current Model materialization. Server-only
+/// operations and creation metadata cannot partition client/server authority.
+pub fn materialization_id(schema: &crate::Schema, projection_generation: &str) -> Result<String> {
+    materialization_id_for(
+        schema,
+        &schema
+            .models
+            .iter()
+            .map(|m| (m.name.clone(), m.version))
+            .collect(),
+        projection_generation,
+    )
+}
+/// Retained versions use their exact read descriptor and reachable enum values.
+/// The caller supplies retained descriptors in Schema.result_models.
+pub fn materialization_id_for(
+    schema: &crate::Schema,
+    models: &BTreeMap<String, u64>,
+    projection_generation: &str,
+) -> Result<String> {
+    nonblank(projection_generation)?;
+    if models.len() != schema.models.len() {
+        return Err(invalid("materialization needs every Model"));
+    }
+    fn enums(ty: &crate::ValueType, names: &mut BTreeSet<String>) {
+        match ty {
+            crate::ValueType::Enum { name } => {
+                names.insert(name.clone());
+            }
+            crate::ValueType::List { element } => enums(element, names),
+            _ => {}
+        }
+    }
+    let mut contracts = Vec::new();
+    for (name, version) in models {
+        position(*version)?;
+        let current = schema.model(name)?;
+        let (fields, identity, available) = if current.version == *version {
+            (&current.fields, &current.identity, &schema.enums)
+        } else {
+            let old = schema
+                .result_models
+                .iter()
+                .find(|m| m.name == *name && m.version == *version)
+                .ok_or_else(|| invalid("retained materialization contract missing"))?;
+            (&old.fields, &old.identity, &old.enums)
+        };
+        let mut reachable = BTreeSet::new();
+        let mut normalized = BTreeMap::new();
+        for field in fields {
+            enums(&field.value_type, &mut reachable);
+            if normalized.insert(field.name.clone(),serde_json::json!({"name":field.name,"type":field.value_type,"nullable":field.nullable})).is_some(){return Err(invalid("duplicate materialization field"));}
+        }
+        let mut enum_contracts = BTreeMap::new();
+        for name in reachable {
+            let descriptor = available
+                .iter()
+                .find(|e| e.name == name)
+                .ok_or_else(|| invalid("materialization enum missing"))?;
+            let mut values = descriptor.values.clone();
+            values.sort();
+            enum_contracts.insert(
+                name.clone(),
+                serde_json::json!({"name":name,"values":values}),
+            );
+        }
+        let mut identity = identity.clone();
+        identity.sort();
+        contracts.push(serde_json::json!({"name":name,"version":version,"bootstrap":current.bootstrap,"identity":identity,"fields":normalized.into_values().collect::<Vec<_>>(),"enums":enum_contracts.into_values().collect::<Vec<_>>()}));
+    }
+    let bytes = crate::canonical_json(
+        &serde_json::json!({"projectionGeneration":projection_generation,"models":contracts}),
+    )?;
+    let mut digest = Sha256::new();
+    digest.update(b"axton:protocol4:sha256:materialization\0");
+    digest.update(bytes.as_bytes());
+    Ok(format!("{:x}", digest.finalize()))
 }

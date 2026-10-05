@@ -25,6 +25,14 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
         };
     }
     match op {
+        "handleBootstrap" => round!(axton_server::host::BootstrapEffects),
+        "createManifest" | "readManifest" => round!(axton_server::host::ManifestSlice),
+        "readCall" => round!(Option<String>),
+        "captureTail" => round!(u64),
+        "admitContext" => round!(bool),
+        "publicationFence" | "savePublicationGroups" => round!(Acknowledged),
+        "readPublicationGroups" => round!(Vec<axton_server::host::PublicationGroup>),
+        "readPositions" => round!(Positions),
         "claim" => round!(Claimed),
         "claimCall" => round!(ClaimedCall),
         "saveReceipt" | "saveCall" | "savepoint" | "rollback" | "release" | "lockStreams" => {
@@ -134,11 +142,11 @@ fn a_request_missing_a_field_or_carrying_an_unknown_one_is_refused() {
             );
             // `arguments`, `identity` and `identities` carry schema-shaped
             // payloads verbatim; the contract constrains every other field.
-            if ["arguments", "identity", "identities"].contains(&field.as_str()) {
+            if ["arguments", "identity", "identities", "positions"].contains(&field.as_str()) {
                 continue;
             }
             // `present` is the one boolean field; every other field is not.
-            let wrong_value = if field == "present" {
+            let wrong_value = if ["present", "durable"].contains(&field.as_str()) {
                 json!("true")
             } else {
                 json!(true)
@@ -374,4 +382,20 @@ fn loads_refuse_invalidation_and_global_selection_requires_explicit_null() {
             .is_err()
     );
     assert!(serde_json::from_value::<HandledLoad>(json!({"data":{},"next":null,"tracking":[{"kind":"invalidate","streams":null,"record":record}]})).is_err());
+}
+
+#[test]
+fn loader_phases_are_strict_and_ordinary_wire_is_unchanged() {
+    let ordinary = serde_json::json!({"op":"load","model":"Task","version":1,"identities":[{"id":"a"}],"owner":"alice"});
+    let decoded: HostRequest = serde_json::from_value(ordinary.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), ordinary);
+    for mode in ["prepare", "canonical"] {
+        let mut request = ordinary.clone();
+        request["mode"] = serde_json::json!(mode);
+        let decoded: HostRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), request);
+    }
+    let mut invalid = ordinary;
+    invalid["mode"] = serde_json::json!("unfenced");
+    assert!(serde_json::from_value::<HostRequest>(invalid).is_err());
 }

@@ -304,3 +304,12 @@ pub async fn pull_live(
     .map_err(reason)?;
     serde_json::to_string(&result).map_err(internal)
 }
+
+/// Same Model-only context derivation used by the offline client runtime.
+#[napi]
+pub fn server_materialization_id(config_json:String,projection_generation:String)->Result<String>{
+    axton_core_materialization(&config(&config_json)?,&projection_generation)
+}
+fn axton_core_materialization(config:&axton_server::Config,generation:&str)->Result<String>{
+    axton_server::materialization_id(config,generation).map_err(reason)
+}

@@ -28,7 +28,7 @@ pub(crate) struct ResultReadback<'a> {
 
 /// Loader reads of this invocation, deduplicated by record and read version.
 #[derive(Default)]
-struct Reads(BTreeMap<(String, u64), Value>);
+struct Reads(BTreeMap<(String, u64), Value>, bool);
 impl Reads {
     /// A read that may reuse an earlier read of the same record and version.
     async fn cached(
@@ -54,7 +54,7 @@ impl Reads {
         version: u64,
         host: &impl Host,
     ) -> Result<Value> {
-        let state = load_one_state(config, owner, key, version, host).await?;
+        let state = load_state(config, owner, key, version, self.1, host).await?;
         self.0
             .insert((key.encoded().map_err(internal)?, version), state.clone());
         Ok(state)
@@ -84,8 +84,20 @@ pub(crate) async fn load_one_state(
     version: u64,
     host: &impl Host,
 ) -> Result<Value> {
+    load_state(config, owner, key, version, false, host).await
+}
+
+pub(crate) async fn load_state(
+    config: &Config,
+    owner: &str,
+    key: &RecordKey,
+    version: u64,
+    canonical: bool,
+    host: &impl Host,
+) -> Result<Value> {
     let loaded: Loaded = host
         .call_typed(HostRequest::Load {
+            mode: canonical.then_some(crate::host::LoaderMode::Canonical),
             model: key.model.clone(),
             version,
             identities: vec![key.identity.clone()],
@@ -306,4 +318,178 @@ pub(crate) async fn assemble_result(
         }
     }
     Ok((Value::Object(result), additional.into_values().collect()))
+}
+
+/// v04 result snapshots never allocate/read authority stamps, in either mode.
+fn snapshot_selection(
+    config: &Config,
+    action: &ActionDescriptor,
+    args: &Value,
+    explicit: &Map<String, Value>,
+    output: &axton_core::ActionOutputDescriptor,
+) -> Result<Value> {
+    let selected = match &output.source {
+        ActionOutputSource::Named(_) => explicit
+            .get(&output.name)
+            .ok_or_else(|| Error::code(code::HANDLER_INVALID))?
+            .clone(),
+        ActionOutputSource::InputIdentity { input_identity } => {
+            let input = action
+                .inputs
+                .iter()
+                .find(|i| i.name() == input_identity)
+                .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+            let model = output
+                .model
+                .as_deref()
+                .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+            let ids = input_identities(&config.schema, model, &args[input_identity], input)?;
+            match output.cardinality.as_str() {
+                "list" => Value::Array(ids),
+                "optional" if ids.is_empty() => Value::Null,
+                _ if ids.len() == 1 => ids[0].clone(),
+                _ => return Err(Error::code(code::HANDLER_INVALID)),
+            }
+        }
+    };
+    Ok(selected)
+}
+pub(crate) struct SnapshotPolicy<'a> {
+    pub models: &'a BTreeMap<String, u64>,
+    pub canonical: bool,
+}
+
+pub(crate) async fn assemble_snapshots(
+    config: &Config,
+    owner: &str,
+    action: &ActionDescriptor,
+    args: &Value,
+    outputs: &Value,
+    policy: SnapshotPolicy<'_>,
+    host: &impl Host,
+) -> Result<(Value, Vec<axton_core::v04::ReadRecord>)> {
+    use axton_core::v04::{NullCursor, ReadRecord};
+    let explicit = outputs
+        .as_object()
+        .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+    if explicit.keys().any(|name| {
+        !action
+            .outputs
+            .iter()
+            .any(|o| o.name == *name && matches!(o.source, ActionOutputSource::Named(_)))
+    }) {
+        return Err(Error::code(code::HANDLER_INVALID));
+    }
+    if action.outputs.is_empty() {
+        return Ok((Value::Null, vec![]));
+    }
+    let mut result = Map::new();
+    let mut snapshots = BTreeMap::new();
+    let mut reads = Reads(BTreeMap::new(), policy.canonical);
+    for output in &action.outputs {
+        let selected = snapshot_selection(config, action, args, explicit, output)?;
+        if output.kind != "model" {
+            result.insert(output.name.clone(), selected);
+            continue;
+        }
+        let model = output
+            .model
+            .as_deref()
+            .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+        let version = output
+            .model_read_version
+            .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+        let identities: Vec<Value> = match output.cardinality.as_str() {
+            "list" => selected
+                .as_array()
+                .ok_or_else(|| Error::code(code::HANDLER_INVALID))?
+                .clone(),
+            "optional" if selected.is_null() => vec![],
+            _ => vec![selected],
+        };
+        let mut values = vec![];
+        for identity in identities {
+            let key = config
+                .contract(model, version)
+                .ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?
+                .record_key(model, &identity)
+                .map_err(|_| Error::code(code::HANDLER_INVALID))?;
+            let state = reads.cached(config, owner, &key, version, host).await?;
+            let cache_version = *policy
+                .models
+                .get(model)
+                .ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?;
+            let cache_state = reads
+                .cached(config, owner, &key, cache_version, host)
+                .await?;
+            snapshots.insert(
+                key.encoded().map_err(internal)?,
+                ReadRecord {
+                    key: key.clone(),
+                    cursor: NullCursor,
+                    state: cache_state,
+                },
+            );
+            if state.is_null() {
+                if output.cardinality != "optional" {
+                    return Err(Error::code(code::LOADER_INVALID));
+                }
+                values.push(Value::Null);
+            } else {
+                values.push(
+                    materialize_action_model(&config.schema, model, version, &key.identity, &state)
+                        .map_err(|_| Error::code(code::LOADER_INVALID))?,
+                );
+            }
+        }
+        result.insert(
+            output.name.clone(),
+            if output.cardinality == "list" {
+                Value::Array(values)
+            } else {
+                values.into_iter().next().unwrap_or(Value::Null)
+            },
+        );
+    }
+    Ok((Value::Object(result), snapshots.into_values().collect()))
+}
+
+pub(crate) fn snapshot_keys(
+    config: &Config,
+    action: &ActionDescriptor,
+    args: &Value,
+    outputs: &Value,
+) -> Result<Vec<RecordKey>> {
+    let explicit = outputs
+        .as_object()
+        .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+    let mut keys = Vec::new();
+    for output in action.outputs.iter().filter(|o| o.kind == "model") {
+        let selected = snapshot_selection(config, action, args, explicit, output)?;
+        let model = output
+            .model
+            .as_deref()
+            .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+        let version = output
+            .model_read_version
+            .ok_or_else(|| Error::code(code::HANDLER_INVALID))?;
+        let identities = match output.cardinality.as_str() {
+            "list" => selected
+                .as_array()
+                .ok_or_else(|| Error::code(code::HANDLER_INVALID))?
+                .clone(),
+            "optional" if selected.is_null() => vec![],
+            _ => vec![selected],
+        };
+        for identity in identities {
+            keys.push(
+                config
+                    .contract(model, version)
+                    .ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?
+                    .record_key(model, &identity)
+                    .map_err(|_| Error::code(code::HANDLER_INVALID))?,
+            );
+        }
+    }
+    Ok(keys)
 }

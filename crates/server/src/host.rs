@@ -256,6 +256,37 @@ fn guard_order<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<Guard
     }
     Ok(records)
 }
+/// Full original transaction group keys survive later log compaction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationGroup {
+    #[serde(with = "counter")]
+    pub from: u64,
+    #[serde(with = "cursor")]
+    pub through: u64,
+    pub keys: Vec<MemberKey>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestSlice {
+    #[serde(with = "counter")]
+    pub start: u64,
+    #[serde(with = "counter")]
+    pub total: u64,
+    pub models: std::collections::BTreeMap<String, u64>,
+    #[serde(with = "counter")]
+    pub from: u64,
+    #[serde(with = "counter")]
+    pub to: u64,
+    pub keys: Vec<MemberKey>,
+    #[serde(default)]
+    pub companions: Vec<MemberKey>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapEffects {
+    pub declarations: Vec<TrackIntent>,
+}
 pub type Tracking = Vec<TrackingPair>;
 pub type Guards = Vec<Option<Stamped>>;
 /// [`MemberPosition`] on the wire: `{stream, model, identityKey, cursor, kind}`.
@@ -309,7 +340,24 @@ fn nullable_string<'de, D: Deserializer<'de>>(
 /// Every operation, in the order [`HostRequest`] declares them. The fixture
 /// and `packages/server/host-contract.mts` carry the same list; the contract
 /// test checks this one against the enum itself.
-pub const OPERATIONS: [&str; 21] = [
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LoaderMode {
+    Prepare,
+    Canonical,
+}
+
+pub const OPERATIONS: [&str; 31] = [
+    "admitContext",
+    "publicationFence",
+    "handleBootstrap",
+    "createManifest",
+    "readCall",
+    "readManifest",
+    "captureTail",
+    "savePublicationGroups",
+    "readPublicationGroups",
+    "readPositions",
     "claim",
     "saveReceipt",
     "claimCall",
@@ -342,6 +390,66 @@ pub const OPERATIONS: [&str; 21] = [
     deny_unknown_fields
 )]
 pub enum HostRequest {
+    /// Current authorization, including saved response replay.
+    AdmitContext {
+        owner: String,
+        context: axton_core::v04::RequestContext,
+        durable: bool,
+    },
+    /// Persisted namespace-wide write fence; acquire before relevant work.
+    PublicationFence {},
+    HandleBootstrap {
+        owner: String,
+        call_id: String,
+        context: axton_core::v04::RequestContext,
+    },
+    CreateManifest {
+        owner: String,
+        manifest_id: String,
+        context: axton_core::v04::RequestContext,
+        #[serde(with = "counter")]
+        start: u64,
+        models: std::collections::BTreeMap<String, u64>,
+        selected: Vec<String>,
+        held: Vec<MemberKey>,
+        #[serde(with = "cursor")]
+        budget: u64,
+    },
+    ReadCall {
+        owner: String,
+        call_id: String,
+    },
+    ReadManifest {
+        owner: String,
+        manifest_id: String,
+        context: axton_core::v04::RequestContext,
+        #[serde(with = "counter")]
+        from: u64,
+        #[serde(with = "cursor")]
+        limit: u64,
+        unique_models: Vec<String>,
+    },
+    CaptureTail {
+        owner: String,
+        manifest_id: String,
+        context: axton_core::v04::RequestContext,
+        #[serde(with = "counter")]
+        head: u64,
+    },
+    SavePublicationGroups {
+        positions: Vec<MemberPosition>,
+    },
+    ReadPublicationGroups {
+        stream: String,
+        #[serde(with = "counter")]
+        after: u64,
+        #[serde(with = "cursor")]
+        limit: u64,
+    },
+    ReadPositions {
+        stream: String,
+        records: Vec<MemberKey>,
+    },
     /// Lock this client's row and report its last accepted batch.
     Claim {
         owner: String,
@@ -406,6 +514,8 @@ pub enum HostRequest {
         owner: String,
         call_id: String,
         ordinal: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<axton_core::v04::RequestContext>,
     },
     /// Execute one generated Load handler for one page: the normalized flat
     /// arguments and the page's continuation (`null` on the first page). Its
@@ -426,6 +536,10 @@ pub enum HostRequest {
     /// no stream: the same identity, version and stamp describe the same
     /// content on every delivery path.
     Load {
+        /// Omitted preserves the ordinary read. Preparation returns an empty row list;
+        /// canonical reads must follow completed preparation in the same fenced transaction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<LoaderMode>,
         model: String,
         version: u64,
         identities: Vec<Value>,
@@ -518,6 +632,16 @@ impl HostRequest {
     /// The operation, and the ordinal when the operation carries one.
     pub fn label(&self) -> String {
         match self {
+            Self::HandleBootstrap { .. } => "handleBootstrap".into(),
+            Self::CreateManifest { .. } => "createManifest".into(),
+            Self::ReadCall { .. } => "readCall".into(),
+            Self::ReadManifest { .. } => "readManifest".into(),
+            Self::CaptureTail { .. } => "captureTail".into(),
+            Self::AdmitContext { .. } => "admitContext".into(),
+            Self::PublicationFence {} => "publicationFence".into(),
+            Self::SavePublicationGroups { .. } => "savePublicationGroups".into(),
+            Self::ReadPublicationGroups { .. } => "readPublicationGroups".into(),
+            Self::ReadPositions { .. } => "readPositions".into(),
             Self::Claim { .. } => "claim".into(),
             Self::SaveReceipt { .. } => "saveReceipt".into(),
             Self::ClaimCall { .. } => "claimCall".into(),
@@ -549,11 +673,21 @@ impl HostRequest {
             | Self::ClaimCall { .. }
             | Self::SaveCall { .. }
             | Self::Scan { .. } => code::STORAGE_INVALID,
-            Self::Handle { .. } | Self::HandleAction { .. } | Self::HandleLoad { .. } => {
-                code::HANDLER_INVALID
-            }
+            Self::Handle { .. }
+            | Self::HandleAction { .. }
+            | Self::HandleLoad { .. }
+            | Self::HandleBootstrap { .. } => code::HANDLER_INVALID,
             Self::Load { .. } => code::LOADER_INVALID,
-            Self::Head { .. }
+            Self::AdmitContext { .. }
+            | Self::CreateManifest { .. }
+            | Self::ReadCall { .. }
+            | Self::ReadManifest { .. }
+            | Self::CaptureTail { .. }
+            | Self::PublicationFence {}
+            | Self::SavePublicationGroups { .. }
+            | Self::ReadPublicationGroups { .. }
+            | Self::ReadPositions { .. }
+            | Self::Head { .. }
             | Self::Savepoint { .. }
             | Self::Rollback { .. }
             | Self::Release { .. }

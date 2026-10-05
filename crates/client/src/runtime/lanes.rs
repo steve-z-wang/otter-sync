@@ -420,6 +420,20 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.ready.push_back(effects::Ready::PushReceipt { body });
             return;
         }
+        if self.client.request_context().is_ok() {
+            let generation = self.client.generation();
+            match self.client.settle_receipts04() {
+                Ok(report) => {
+                    self.committed_since(generation);
+                    self.settled(&report);
+                }
+                Err(error) => {
+                    self.error(error.to_string());
+                    self.push_failed(now, entropy);
+                    return;
+                }
+            }
+        }
         let generation = self.client.generation();
         let next = self.lanes.cycle.next(&mut self.client);
         self.committed_since(generation);
@@ -428,7 +442,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 let effect = self.issue_effect(
                     EffectKind::Push,
                     Operation::Http {
-                        route: HttpRoute::Push,
+                        route: if action.kind == "mutation04" {
+                            HttpRoute::Action
+                        } else {
+                            HttpRoute::Push
+                        },
                         body: action.body,
                     },
                 );
@@ -482,16 +500,17 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Settle a receipt in one transaction: completions after the commit,
     /// then the cycle goes on with the next batch.
     pub(super) fn push_receipt(&mut self, body: String, now: u64, entropy: u64) {
-        let candidate = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|raw| raw["records"].as_array().cloned())
-            .is_some_and(|records| {
-                self.has_store_hook_candidate(
-                    records
-                        .into_iter()
-                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
-                )
-            });
+        let candidate = self.client.request_context().is_err()
+            && serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|raw| raw["records"].as_array().cloned())
+                .is_some_and(|records| {
+                    self.has_store_hook_candidate(
+                        records
+                            .into_iter()
+                            .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                    )
+                });
         if candidate {
             match self
                 .lanes

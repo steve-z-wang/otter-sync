@@ -265,6 +265,7 @@ pub const QUEUED_FRAMES: usize = 64;
 /// The Downlink worker: one lane, one socket session at a time.
 #[derive(Default)]
 pub struct DownlinkWorker {
+    protocol04: crate::downlink04::Delivery04,
     /// The lane's schedule: when to open a session, when to retry, pause, stop.
     driver: ConnectionDriver,
     /// The socket session it directs; it owns no queue and no client.
@@ -483,6 +484,12 @@ impl DownlinkWorker {
         hooks: &BTreeSet<String>,
         hooks_active: bool,
     ) -> Result<RuntimeDownlinkPump> {
+        if client.request_context().is_ok() {
+            return Ok(RuntimeDownlinkPump {
+                actions: self.protocol04.next(client, now, entropy)?,
+                store: None,
+            });
+        }
         let actions = self.pump_with_hooks(client, now, entropy, hooks_active.then_some(hooks))?;
         Ok(RuntimeDownlinkPump {
             actions,
@@ -537,6 +544,15 @@ impl DownlinkWorker {
         now: u64,
         entropy: u64,
     ) -> Result<Vec<DownlinkAction>> {
+        if client.request_context().is_ok() {
+            return match event {
+                DownlinkEvent::Next => self.protocol04.next(client, now, entropy),
+                other => {
+                    self.protocol04.enqueue(other);
+                    Ok(vec![])
+                }
+            };
+        }
         match event {
             DownlinkEvent::Next => self.pump_with_hooks(client, now, entropy, None),
             other => {
@@ -652,7 +668,7 @@ impl DownlinkWorker {
     /// The streamed page frames held for the pump, never more than
     /// [`QUEUED_FRAMES`].
     pub fn queued_frames(&self) -> usize {
-        self.pages.len()
+        self.pages.len() + self.protocol04.queued_frames()
     }
 
     /// The replica under the lane was rebuilt in place

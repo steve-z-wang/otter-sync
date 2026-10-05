@@ -109,7 +109,12 @@ impl<S: ClientStore> Engine<'_, S> {
     /// New authority replaces the base, and with it the settled local writes
     /// retained on that base: later server authority may replace a direct
     /// write or an accepted companion (L4). Pending operations replay on it.
-    fn stage_one(&mut self, key: &RecordKey, value: Option<&Value>, held: &mut Held) -> Result<()> {
+    pub(crate) fn stage_one(
+        &mut self,
+        key: &RecordKey,
+        value: Option<&Value>,
+        held: &mut Held,
+    ) -> Result<()> {
         self.clear_local_layer(key)?;
         if value.is_none() {
             self.set_base_state(key, "absent")?;

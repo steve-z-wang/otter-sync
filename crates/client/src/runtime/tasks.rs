@@ -82,12 +82,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 companion_id,
                 ok,
                 error,
+                input,
             } => self.callback_result(
                 &effect_id,
                 &transaction_id,
                 companion_id.as_deref(),
                 ok,
                 error,
+                input,
             ),
             Input::EffectResult { effect_id, outcome } => {
                 self.effect_result(effect_id, outcome, now, entropy);
@@ -334,6 +336,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Some(outcome)
             }
             Command::UnsentWatch { view } => Some(self.unsent_watch(*view)),
+            Command::ResetStore { discard_pending } => {
+                Some(self.reset_store(discard_pending.unwrap_or(false), now, entropy))
+            }
             Command::Rebuild { discard_pending } => {
                 Some(self.rebuild(discard_pending.unwrap_or(false), now, entropy))
             }
@@ -354,7 +359,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             | Command::LoadRetry { .. }
             | Command::LoadForget { .. }
             | Command::LoadInvalidate { .. }
-            | Command::LoadDispose { .. } => self.load_task(&request_id, &command),
+            | Command::LoadDispose { .. } => {
+                if self.client.request_context().is_ok() {
+                    Some(Err("Load is retired in protocol 4".into()))
+                } else {
+                    self.load_task(&request_id, &command)
+                }
+            }
             _ => Some(commands::execute(&mut self.client, &command).map_err(|e| e.to_string())),
         };
         self.committed_since(generation);
@@ -386,6 +397,29 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// `fetch.schema_changed`, their flights fenced), the prerequisite handler
     /// in flight is cancelled and the new replica scanned, every observer of the old replica ends and every abandoned
     /// durable call is completed. A refused rebuild changes nothing.
+    fn reset_store(
+        &mut self,
+        discard_pending: bool,
+        now: u64,
+        entropy: u64,
+    ) -> std::result::Result<Value, String> {
+        let report = self
+            .client
+            .reset_store04(discard_pending)
+            .map_err(|error| error.to_string())?;
+        self.lanes.cycle = crate::SyncCycle::default();
+        self.lanes.downlink.reset_for_rebuild();
+        self.fence_directs();
+        self.rebuilt_prerequisites();
+        self.rebuilt_loads(&[]);
+        self.rebuilt_lanes(now, entropy);
+        self.observers.stale = true;
+        self.rebuilt_observers();
+        for abandoned in &report.abandoned_calls {
+            self.events.push(Event::CallCompleted { call_id:abandoned.call_id.clone(), outcome:json!({"status":"failed","code":"abandoned","execution":if abandoned.frozen {"unknown"}else{"rejected"}}) });
+        }
+        serde_json::to_value(report).map_err(|error| error.to_string())
+    }
     fn rebuild(
         &mut self,
         discard_pending: bool,

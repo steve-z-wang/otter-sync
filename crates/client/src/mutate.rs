@@ -261,6 +261,13 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     /// Every record reachable from `parent` through declared cascading deletes.
     pub fn descendants(&mut self, parent: &RecordKey) -> Result<Vec<RecordKey>> {
+        self.descendants_where(parent, |_, _| Ok(true))
+    }
+    pub(crate) fn descendants_where(
+        &mut self,
+        parent: &RecordKey,
+        mut admit: impl FnMut(&mut Self, &RecordKey) -> Result<bool>,
+    ) -> Result<Vec<RecordKey>> {
         let schema = self.schema;
         let mut seen = BTreeSet::from([parent.encoded()?]);
         let mut todo = vec![parent.clone()];
@@ -285,7 +292,7 @@ impl<S: ClientStore> Engine<'_, S> {
                     )?);
                     for identity in identities {
                         let child = schema.record_key(&model.name, &identity)?;
-                        if seen.insert(child.encoded()?) {
+                        if seen.insert(child.encoded()?) && admit(self, &child)? {
                             todo.push(child.clone());
                             result.push(child);
                         }
@@ -373,7 +380,13 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(())
     }
-    pub fn enqueue(&mut self, mut mutation: Mutation) -> Result<u64> {
+    pub fn enqueue(&mut self, mutation: Mutation) -> Result<u64> {
+        self.enqueue_ordered(mutation, false)
+    }
+    pub(crate) fn enqueue_companions_first(&mut self, mutation: Mutation) -> Result<u64> {
+        self.enqueue_ordered(mutation, true)
+    }
+    fn enqueue_ordered(&mut self, mut mutation: Mutation, companions_first: bool) -> Result<u64> {
         if mutation.name.trim().is_empty()
             || mutation.version == 0
             || (mutation.operations.is_empty() && mutation.call_id.is_none())
@@ -403,7 +416,7 @@ impl<S: ClientStore> Engine<'_, S> {
             if intent.call_id != *call_id
                 || intent.args != *args
                 || serde_json::to_value(expected)? != serde_json::to_value(&mutation.operations)?
-                || !mutation.companion.is_empty()
+                || (!companions_first && !mutation.companion.is_empty())
                 || !mutation.effects.is_empty()
                 || !mutation.prerequisites.is_empty()
                 || !mutation.lifecycle_dependencies.is_empty()
@@ -442,16 +455,30 @@ impl<S: ClientStore> Engine<'_, S> {
         // on the wire.
         let mut ordered: Vec<(OpKind, Operation)> = vec![];
         let wire = mutation.operations.len();
-        let mut all: Vec<Operation> = mutation
-            .operations
-            .drain(..)
-            .chain(mutation.companion.drain(..))
-            .collect();
+        let companions = mutation.companion.len();
+        let mut all: Vec<Operation> = if companions_first {
+            mutation
+                .companion
+                .drain(..)
+                .chain(mutation.operations.drain(..))
+                .collect()
+        } else {
+            mutation
+                .operations
+                .drain(..)
+                .chain(mutation.companion.drain(..))
+                .collect()
+        };
         // Each hold_truth runs before its operation reaches the queue, so `dirty`
         // still reflects only earlier mutations.
         for (index, op) in all.iter_mut().enumerate() {
             normalize(self.schema, op)?;
-            let (own, cascade) = if index < wire {
+            let is_wire = if companions_first {
+                index >= companions
+            } else {
+                index < wire
+            };
+            let (own, cascade) = if is_wire {
                 (OpKind::Wire, OpKind::Effect)
             } else {
                 (OpKind::Companion, OpKind::Companion)
@@ -542,6 +569,34 @@ impl<S: ClientStore> Engine<'_, S> {
         self.apply_main(op)?;
         record(self, own, op.clone())
     }
+    /// Temporary callback visibility. The enclosing savepoint owns these rows;
+    /// concrete operations are recorded once and replayed as owned companions.
+    pub(crate) fn preview_callback04(
+        &mut self,
+        mut operation: Operation,
+    ) -> Result<Vec<Operation>> {
+        crate::defaults::fill_operation(self.schema, &mut operation);
+        normalize(self.schema, &mut operation)?;
+        let key = self
+            .schema
+            .record_key(&operation.model, &operation.identity)?;
+        let mut operations = vec![];
+        if operation.op == OperationKind::Delete {
+            for child in self.descendants(&key)? {
+                operations.push(Operation {
+                    model: child.model,
+                    identity: child.identity,
+                    op: OperationKind::Delete,
+                    values: None,
+                });
+            }
+        }
+        operations.push(operation);
+        for op in &operations {
+            self.apply_main(op)?;
+        }
+        Ok(operations)
+    }
     /// A local write that is never sent: it moves the truth along with the row.
     pub fn direct(&mut self, mut operation: Operation) -> Result<()> {
         crate::defaults::fill_operation(self.schema, &mut operation);
@@ -570,6 +625,7 @@ impl<S: ClientStore> Engine<'_, S> {
             .record_key(&operation.model, &operation.identity)?;
         let is_dirty = self.dirty(&key)?;
         self.apply_main(&operation)?;
+        self.direct_evidence04(&key)?;
         if is_dirty {
             let after = self.last_ordinal()?;
             self.insert_local_write(after, None, LocalWriteKind::Independent, &operation)?;

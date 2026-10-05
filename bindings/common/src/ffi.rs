@@ -29,6 +29,33 @@ impl Context {
     }
 }
 
+/// Fix the host's durable application-data directory once, before opening
+/// Stores. Mobile adapters resolve their application container, not a client option.
+/// Returns 0, or 1 with `*error_out` set.
+///
+/// # Safety
+/// `path` must be null or a valid NUL-terminated UTF-8 string for this call;
+/// `error_out` must be null or valid for one write.
+pub unsafe fn configure_application_data(path: *const c_char, error_out: *mut *mut c_char) -> i32 {
+    let configured = catch_unwind(AssertUnwindSafe(|| {
+        if path.is_null() {
+            return Err("null application data directory".to_string());
+        }
+        let path = unsafe { CStr::from_ptr(path) }
+            .to_str()
+            .map_err(|error| error.to_string())?;
+        axton_sqlite::SqliteStore::set_application_data_directory(path)
+            .map_err(|error| error.to_string())
+    }));
+    match configured.unwrap_or_else(|_| Err("runtime panic".into())) {
+        Ok(()) => 0,
+        Err(error) => {
+            unsafe { write_error(error_out, &error) };
+            1
+        }
+    }
+}
+
 /// Open a runtime; answer its id, or 0 with `*error_out` set. The open's
 /// outcome arrives as the `taskCompleted` of the request's `requestId`.
 ///

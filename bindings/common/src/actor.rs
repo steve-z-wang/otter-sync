@@ -198,7 +198,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Open a runtime for `{"type":"open","requestId","path","schema","discardPending"?}`
+/// Open a runtime for `{"type":"open","requestId","path","schema","binding","projectionGeneration"?}`
 /// and answer its id (never 0, never reused). The open itself runs on the new
 /// thread and completes `requestId` through the outbox; a failed open
 /// completes it with the error and closes the runtime. Only a request that
@@ -340,24 +340,28 @@ fn open_runtime(request: &Value) -> axton_client::Result<ClientRuntime<SqliteSto
     let path = request["path"]
         .as_str()
         .ok_or_else(|| axton_client::invalid("path must be string"))?;
-    let discard = match request.get("discardPending") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(discard)) => *discard,
-        Some(_) => return Err(axton_client::invalid("discardPending must be bool")),
+    let binding: axton_client::v04::StoreBinding =
+        serde_json::from_value(request["binding"].clone())
+            .map_err(|_| axton_client::invalid("binding is required"))?;
+    axton_client::v04::Validate::validate(&binding)?;
+    let generation = match request.get("projectionGeneration") {
+        None => "1",
+        Some(Value::String(value)) => value.as_str(),
+        _ => return Err(axton_client::invalid("projectionGeneration must be string")),
     };
-    let hooks = names(request, "storeHooks", "Model names")?;
-    let prerequisites = names(request, "prerequisiteHandlers", "prerequisite names")?;
-    let mut runtime = ClientRuntime::open_at(
-        path,
-        Schema::from_value(request["schema"].clone())?,
-        Box::new(|file| SqliteStore::open(file)),
-        discard,
-    )?;
-    // Registrations are validated against the requested schema before the
-    // actor can admit work and survive rebuild on this runtime object.
-    if !hooks.is_empty() {
-        runtime = runtime.register_store_hooks(hooks)?;
+    if request.get("storeHooks").is_some() {
+        return Err(axton_client::invalid(
+            "storeHooks are not supported in protocol4",
+        ));
     }
+    let prerequisites = names(request, "prerequisiteHandlers", "prerequisite names")?;
+    let client = axton_client::Client::open_bound_with_projection(
+        SqliteStore::open_exclusive(path)?,
+        Schema::from_value(request["schema"].clone())?,
+        binding,
+        generation,
+    )?;
+    let mut runtime = ClientRuntime::new(client);
     if !prerequisites.is_empty() {
         runtime = runtime.register_prerequisite_handlers(prerequisites)?;
     }

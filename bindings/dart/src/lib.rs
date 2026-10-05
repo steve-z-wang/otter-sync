@@ -2,6 +2,19 @@
 //! ([#134](https://github.com/zanminwang/axton/issues/134)).
 use axton_binding::ffi;
 use std::ffi::{c_char, c_void};
+/// Initialize the application's durable container directory before any Store open.
+/// Returns 0, or 1 with `*error_out` set.
+///
+/// # Safety
+/// See `axton_binding::ffi::configure_application_data`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn axton_runtime_configure_application_data(
+    path: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    unsafe { ffi::configure_application_data(path, error_out) }
+}
+
 /// Open a Rust-owned client runtime
 /// ([#134](https://github.com/zanminwang/axton/issues/134)). Answers the
 /// runtime id, or 0 with `*error_out` set (freed with [`axton_free`]). `wake`

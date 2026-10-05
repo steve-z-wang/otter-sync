@@ -4,6 +4,19 @@
 use axton_binding::ffi;
 use std::ffi::{c_char, c_void};
 
+/// Initialize the application's durable container directory before any Store open.
+/// Returns 0, or 1 with `*error_out` set.
+///
+/// # Safety
+/// See `axton_binding::ffi::configure_application_data`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn axton_mobile_runtime_configure_application_data(
+    path: *const c_char,
+    error_out: *mut *mut c_char,
+) -> i32 {
+    unsafe { ffi::configure_application_data(path, error_out) }
+}
+
 /// Opens a Rust-owned client runtime
 /// ([#134](https://github.com/zanminwang/axton/issues/134)). Answers the
 /// runtime id, or 0 with `*error_out` set (freed with [`axton_mobile_free`]).
@@ -87,7 +100,7 @@ mod tests {
         let (sender, wakes) = std::sync::mpsc::channel::<u64>();
         let context = Box::into_raw(Box::new(std::sync::Mutex::new(sender)));
         let request = CString::new(
-            serde_json::json!({"type":"open","requestId":"1","path":dir.path().join("db"),"schema":schema})
+            serde_json::json!({"type":"open","requestId":"1","path":dir.path().join("db"),"schema":schema,"binding":{"backend":"mobile-tests","viewer":"a","stream":"User:a","contract":"app"}})
                 .to_string(),
         )
         .unwrap();
@@ -212,7 +225,7 @@ mod tests {
         let context = Box::into_raw(Box::new(std::sync::Mutex::new(sender)));
         let missing = dir.path().join("missing").join("sub").join("mobile.db");
         let request = CString::new(
-            serde_json::json!({"type":"open","requestId":"1","path":missing,"schema":schema})
+            serde_json::json!({"type":"open","requestId":"1","path":missing,"schema":schema,"binding":{"backend":"mobile-tests","viewer":"a","stream":"User:a","contract":"app"}})
                 .to_string(),
         )
         .unwrap();

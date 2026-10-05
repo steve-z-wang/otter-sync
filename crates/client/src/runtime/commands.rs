@@ -18,6 +18,14 @@ pub(super) fn execute<S: ClientStore + 'static>(
     client: &mut Client<S>,
     command: &Command,
 ) -> Result<Value> {
+    if client.request_context().is_ok()
+        && matches!(
+            command,
+            Command::Freeze | Command::Ack { .. } | Command::Pull { .. } | Command::Enqueue { .. }
+        )
+    {
+        return Err(invalid("legacy protocol seam is retired in protocol 4"));
+    }
     Ok(match command {
         Command::Read { key } => client.read(key)?.unwrap_or(Value::Null),
         Command::Query { model, filter } => {
@@ -55,6 +63,9 @@ pub(super) fn execute<S: ClientStore + 'static>(
             args,
             store,
         } => {
+            if client.request_context().is_ok() && store.is_some() {
+                return Err(invalid("Mutation does not accept store"));
+            }
             let submitted =
                 client.submit_action_with_options(name, *version, args.clone(), options(store)?)?;
             json!({"callId":submitted.call_id,"ordinal":submitted.ordinal})
@@ -121,6 +132,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         }
         Command::Discard { ordinal } => json!({"completions":client.discard(*ordinal)?}),
         Command::RecordStatus { key } => client.record_status(key)?,
+        Command::CallCompletion { call_id } => json!(client.call_completion04(call_id)?),
         Command::Tasks => json!(client.pending_tasks()?),
         Command::Status => {
             json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"streams":client.desired_streams()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
@@ -131,6 +143,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         | Command::Connection { .. }
         | Command::Invoke { .. }
         | Command::Fetch { .. }
+        | Command::ResetStore { .. }
         | Command::Rebuild { .. }
         | Command::StreamSubscribe { .. }
         | Command::Watch { .. }
@@ -159,6 +172,9 @@ pub(super) fn execute_in_session<S: ClientStore>(
     client: &mut Client<S>,
     command: &TransactionCommand,
 ) -> Result<Value> {
+    if client.request_context().is_ok() && matches!(command, TransactionCommand::Enqueue { .. }) {
+        return Err(invalid("legacy protocol seam is retired in protocol 4"));
+    }
     Ok(match command {
         TransactionCommand::Read { key } => {
             client.session(|tx| tx.read(key))?.unwrap_or(Value::Null)

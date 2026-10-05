@@ -70,6 +70,7 @@ impl ModelContract {
             result_models: vec![],
             models: vec![axton_core::ModelDescriptor {
                 name: self.name.clone(),
+                bootstrap: false,
                 version: self.version,
                 identity: self.identity.clone(),
                 fields: self.fields.clone(),

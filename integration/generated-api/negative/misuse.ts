@@ -140,3 +140,18 @@ async function retiredScopeAliases(client:GeneratedClient,tx:GeneratedTransactio
  await tx.streams.unsubscribe('U');
 }
 void retiredScopeAliases;
+
+// Field inheritance keeps complete records separate from defaultable inputs.
+import type {DraftFields, DraftIdentity} from '../generated.ts';
+const defaultableDraft = {memo:null} as DraftCreate;
+// @ts-expect-error a create input may omit shared fields with defaults
+const fieldsFromCreate:DraftFields = defaultableDraft;
+// @ts-expect-error abstract field types have no concrete identity helper
+const identityFromFields:DraftIdentity = fieldsFromCreate.identity;
+void identityFromFields;
+
+function abstractModelCrudMisuse(client:GeneratedClient) {
+ // @ts-expect-error abstract fields have no local Model/table accessor
+ client.models.draftFields;
+}
+void abstractModelCrudMisuse;

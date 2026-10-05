@@ -139,6 +139,9 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
     for en in values(schema, "enums") {
         add(name(en).into(), format!("enum {}", name(en)))?;
     }
+    for model in values(config, "abstractModels") {
+        add(name(model).into(), format!("model {}", name(model)))?;
+    }
     for model in values(schema, "models") {
         let n = name(model);
         let owner = format!("model {n}");
@@ -206,6 +209,39 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             )?;
         }
     }
+    let mutations = if config["backendMutations"].is_array() {
+        values(config, "backendMutations")
+    } else {
+        values(config, "mutations")
+    };
+    let mut mutation_latest = BTreeMap::<&str, u64>::new();
+    for mutation in mutations {
+        let n = name(mutation);
+        let version = mutation["version"].as_u64().unwrap();
+        mutation_latest
+            .entry(n)
+            .and_modify(|v| *v = (*v).max(version))
+            .or_insert(version);
+    }
+    for mutation in mutations {
+        let n = name(mutation);
+        let version = mutation["version"].as_u64().unwrap();
+        let prefix = if version == mutation_latest[n] {
+            n.to_owned()
+        } else {
+            format!("{n}V{version}")
+        };
+        add(format!("{prefix}Input"), format!("mutation {n} v{version}"))?;
+    }
+    for mutation in values(config, "mutations") {
+        let n = name(mutation);
+        let owner = format!("mutation {n} v{}", mutation["version"]);
+        add(format!("{n}Args"), owner.clone())?;
+        // Dart's encoder is a top-level function in the same library as
+        // generated field classes. Its actual lower-first name must not
+        // shadow a type or another Mutation's encoder.
+        add(crate::emit::lower(n), owner)?;
+    }
     // Model-only schemas still emit every per-model type (such as
     // `{Model}Create`); the remaining names exist only beside operations.
     if actions.is_empty() {
@@ -236,30 +272,6 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         "QueuedQueries",
     ] {
         add(helper.into(), "operation helper".into())?;
-    }
-    let mutations = if config["backendMutations"].is_array() {
-        values(config, "backendMutations")
-    } else {
-        values(config, "mutations")
-    };
-    let mut mutation_latest = BTreeMap::<&str, u64>::new();
-    for mutation in mutations {
-        let n = name(mutation);
-        let version = mutation["version"].as_u64().unwrap();
-        mutation_latest
-            .entry(n)
-            .and_modify(|v| *v = (*v).max(version))
-            .or_insert(version);
-    }
-    for mutation in mutations {
-        let n = name(mutation);
-        let version = mutation["version"].as_u64().unwrap();
-        let prefix = if version == mutation_latest[n] {
-            n.to_owned()
-        } else {
-            format!("{n}V{version}")
-        };
-        add(format!("{prefix}Input"), format!("mutation {n} v{version}"))?;
     }
     let mut latest = BTreeMap::<&str, u64>::new();
     for action in actions {

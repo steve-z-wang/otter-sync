@@ -209,12 +209,41 @@ pub fn typescript(v: &Value) -> String {
         )
         .unwrap();
     }
+    if let Some(models) = v["abstractModels"].as_array() {
+        for m in models {
+            let n = s(m, "name");
+            let parent = m["parent"]
+                .as_str()
+                .map(|p| format!(" extends {p}"))
+                .unwrap_or_default();
+            writeln!(o, "export interface {n}{parent} {{").unwrap();
+            for f in arr(m, "fields") {
+                o.push_str(&ts_deprecated(deprecation(
+                    v,
+                    "field",
+                    &[("model", n), ("field", s(f, "name"))],
+                )));
+                writeln!(o, " {}: {};", s(f, "name"), ft(f, false)).unwrap();
+            }
+            o.push_str("}\n");
+        }
+    }
     for m in arr(&v["schema"], "models") {
         let n = s(m, "name");
         for (suffix, filter, partial) in
             [("", 0, false), ("Identity", 1, false), ("Patch", 2, true)]
         {
-            writeln!(o, "export interface {n}{suffix} {{").unwrap();
+            let parent = if suffix.is_empty() {
+                v["inheritance"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|i| i["model"] == n))
+                    .and_then(|i| i["parent"].as_str())
+                    .map(|p| format!(" extends {p}"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            writeln!(o, "export interface {n}{suffix}{parent} {{").unwrap();
             for f in arr(m, "fields") {
                 let id = arr(m, "identity").contains(&f["name"]);
                 if (filter == 1 && !id) || (filter == 2 && id) {
@@ -2153,6 +2182,24 @@ pub fn dart(v: &Value) -> String {
         )
         .unwrap();
     }
+    if let Some(models) = v["abstractModels"].as_array() {
+        for m in models {
+            let n = s(m, "name");
+            let parent = m["parent"]
+                .as_str()
+                .map(|p| format!(" implements {p}"))
+                .unwrap_or_default();
+            writeln!(o, "abstract interface class {n}{parent} {{").unwrap();
+            for f in arr(m, "fields") {
+                o.push_str(&dart_deprecated(
+                    deprecation(v, "field", &[("model", n), ("field", s(f, "name"))]),
+                    "\n",
+                ));
+                writeln!(o, " {} get {};", ft(f, true), s(f, "name")).unwrap();
+            }
+            o.push_str("}\n");
+        }
+    }
     for m in arr(&v["schema"], "models") {
         let n = s(m, "name");
         for suffix in ["", "Identity", "Patch"] {
@@ -2166,7 +2213,13 @@ pub fn dart(v: &Value) -> String {
             let patch = suffix == "Patch";
             if suffix.is_empty() {
                 writeln!(o, "/// What a fresh create of {n} accepts: a complete [{n}], or a [{n}Create] that may omit fields with creation defaults.\nabstract interface class {n}CreateInput {{ Map<String,dynamic> toCreateRecord(); }}").unwrap();
-                writeln!(o, "class {n} implements {n}CreateInput {{").unwrap();
+                let parent = v["inheritance"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|i| i["model"] == n))
+                    .and_then(|i| i["parent"].as_str())
+                    .map(|p| format!(", {p}"))
+                    .unwrap_or_default();
+                writeln!(o, "class {n} implements {n}CreateInput{parent} {{").unwrap();
             } else {
                 writeln!(o, "class {n}{suffix} {{").unwrap();
             }

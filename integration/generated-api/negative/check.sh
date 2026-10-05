@@ -11,6 +11,9 @@ if [[ $status -eq 0 ]]; then
   exit 1
 fi
 expected=(
+  "A value of type 'DraftCreate' can't be assigned to a variable of type 'DraftFields'"
+  "The getter 'identity' isn't defined for the type 'DraftFields'"
+  "The getter 'draftFields' isn't defined for the type 'LiveModels'"
   "The getter 'channels' isn't defined for the type 'GeneratedClient'"
   "The getter 'channels' isn't defined for the type 'GeneratedTransaction'"
   "The named parameter 'tags' isn't defined"          # list as a query predicate, and in a mutation patch

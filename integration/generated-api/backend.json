@@ -1,4 +1,131 @@
 {
+  "abstractModels": [
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "uuid"
+          }
+        },
+        {
+          "name": "body",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "mood",
+          "nullable": false,
+          "type": {
+            "kind": "enum",
+            "name": "Mood"
+          }
+        },
+        {
+          "name": "created",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        },
+        {
+          "name": "note",
+          "nullable": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "memo",
+          "nullable": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "name": "DraftFields",
+      "parent": null
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "uuid"
+          }
+        }
+      ],
+      "name": "IdentifiedFields",
+      "parent": null
+    },
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "uuid"
+          }
+        },
+        {
+          "name": "title",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "note",
+          "nullable": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "at",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        },
+        {
+          "name": "tags",
+          "nullable": false,
+          "type": {
+            "element": {
+              "kind": "scalar",
+              "name": "string"
+            },
+            "kind": "list"
+          }
+        },
+        {
+          "name": "status",
+          "nullable": false,
+          "type": {
+            "kind": "enum",
+            "name": "Status"
+          }
+        }
+      ],
+      "name": "EntryFields",
+      "parent": "IdentifiedFields"
+    }
+  ],
   "actions": [
     {
       "input": {
@@ -184,6 +311,16 @@
       "mutation": "RemoveEntries",
       "reason": "use entries",
       "slot": "maybe"
+    }
+  ],
+  "inheritance": [
+    {
+      "model": "Draft",
+      "parent": "DraftFields"
+    },
+    {
+      "model": "Entry",
+      "parent": "EntryFields"
     }
   ],
   "inverses": [
@@ -1922,6 +2059,7 @@
         "version": 1
       },
       {
+        "bootstrap": true,
         "fields": [
           {
             "name": "id",

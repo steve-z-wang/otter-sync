@@ -1,4 +1,5 @@
 import type { QuerySpec, RecordValue } from "./values.mts";
+import { CommandAccounting } from "./command-accounting.mts";
 import { CallError, type Call } from "./actions.mts";
 
 /** Callback input is produced inside the Mutation's owned local scope. */
@@ -171,9 +172,7 @@ export class LocalTransaction {
   #expired: () => Error;
   #admit: (() => Error | undefined) | undefined;
   #open = true;
-  #tail: Promise<unknown> = Promise.resolve();
-  #pending = 0;
-  #failure: unknown;
+  #commands = new CommandAccounting();
   private constructor(
     send: (command: RecordValue) => Promise<any>,
     expired: () => Error,
@@ -191,31 +190,14 @@ export class LocalTransaction {
     if (!this.#open) return Promise.reject(this.#expired());
     const refused = this.#admit?.();
     if (refused) return Promise.reject(refused);
-    this.#pending++;
-    let work: Promise<any>;
-    try {
-      work = this.#send(command);
-    } catch (error) {
-      work = Promise.reject(error);
-    }
-    const settled = work.then(
-      () => {
-        this.#pending--;
-      },
-      (error) => {
-        this.#pending--;
-        this.#failure ??= error;
-      },
-    );
-    this.#tail = Promise.all([this.#tail, settled]);
-    return work;
+    return this.#commands.track(() => this.#send(command));
   }
   async #finish(): Promise<void> {
-    const outstanding = this.#pending > 0;
+    const outstanding = this.#commands.outstanding;
     this.#open = false;
-    await this.#tail;
+    await this.#commands.drain();
     if (outstanding) throw Error("unawaited transaction operation");
-    if (this.#failure) throw this.#failure;
+    if (this.#commands.failure) throw this.#commands.failure;
   }
   read(model: string, identity: object): Promise<RecordValue | null> {
     return this.#call({ kind: "read", key: { model, identity } });

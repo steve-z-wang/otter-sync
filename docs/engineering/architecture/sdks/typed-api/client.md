@@ -30,6 +30,8 @@ Public anonymous mutations, direct Mutation `call`, queued Query `enqueue`, Load
 
 [Compiler emission](../../../../../crates/compiler/src/emit.rs) and [transaction emission](../../../../../crates/compiler/src/emit_transactions.rs) generate typed facades/codecs. [Node runtime](../../../../../packages/client-js/runtime.mts), [Dart client](../../../../../packages/dart/lib/src/client.dart) and the [RN adapter](../../../../../packages/client-react-native/transaction.mts) submit through native Bridges. [Bindings](../bindings.md) own platform loading and per-client actors. [Client protocol 4](../../client/protocol4.md) owns persisted semantics.
 
+[Command accounting](../../../../../packages/client-js/command-accounting.mts) owns pending work, draining and first command failure for Node, RN and local companion scopes. Each adapter retains its own admission and lifetime guards; Node savepoint rollback restores the enclosing scope's recorded failure.
+
 ## 6. Runtime View
 
 A Mutation invocation resolves after local commit; a Call obtained inside an outer transaction remains provisional until that commit. `wait()` before commit refuses promptly with `transaction_uncommitted`; rollback ends the handle with `transaction_rolled_back`. Backend acceptance followed by local apply failure remains accepted-awaiting-settlement. Callback code runs once: retry/reopen replay retained operations, not application code.

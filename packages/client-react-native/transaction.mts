@@ -1,4 +1,5 @@
 import type { RecordValue, QuerySpec } from "../client-js/values.mts";
+import { CommandAccounting } from "../client-js/command-accounting.mts";
 import type { Call } from "../client-js/actions.mts";
 import {
   unsentTransaction,
@@ -34,10 +35,7 @@ export class Transaction {
   #locals = 0;
   /** An outer command refused while a `local` callback ran. */
   #structural: unknown;
-  /** Settles once every command submitted so far has settled. */
-  #tail: Promise<unknown> = Promise.resolve();
-  #pending = 0;
-  #failure: unknown;
+  #commands = new CommandAccounting();
   /**
    * Without AsyncLocalStorage the callback guard is coarse: while a callback
    * runs, every public call counts as inside it (see the README).
@@ -50,7 +48,7 @@ export class Transaction {
     this.#send = send;
     this.#host = {
       admit: () => this.#admit(),
-      track: (submit) => this.#track(() => submit(undefined)),
+      track: (submit) => this.#commands.track(() => submit(undefined)),
       running: (delta) => void (this.#locals += delta),
       expired: () => expiredRefusal(this.#open, this.#poison),
       mutations,
@@ -89,27 +87,7 @@ export class Transaction {
     return this.#activeCallback;
   }
   #queue(command: RecordValue): Promise<any> {
-    return this.#track(() => this.#send(command));
-  }
-  #track(submit: () => Promise<any>): Promise<any> {
-    this.#pending++;
-    let work: Promise<any>;
-    try {
-      work = submit();
-    } catch (error) {
-      work = Promise.reject(error);
-    }
-    const settled = work.then(
-      () => {
-        this.#pending--;
-      },
-      (error) => {
-        this.#pending--;
-        this.#failure ??= error;
-      },
-    );
-    this.#tail = Promise.all([this.#tail, settled]);
-    return work;
+    return this.#commands.track(() => this.#send(command));
   }
   #call(command: RecordValue): Promise<any> {
     return this.#admit() ?? this.#queue(command);
@@ -140,12 +118,12 @@ export class Transaction {
    * the Node transaction.
    */
   async finish(): Promise<void> {
-    const outstanding = this.#pending > 0;
+    const outstanding = this.#commands.outstanding;
     this.#open = false;
-    await this.#tail;
+    await this.#commands.drain();
     if (this.#structural) throw this.#structural;
     if (outstanding) throw Error("unawaited transaction operation");
-    if (this.#failure) throw this.#failure;
+    if (this.#commands.failure) throw this.#commands.failure;
   }
   read(model: string, identity: object): Promise<RecordValue | null> {
     return this.#call({ kind: "read", key: { model, identity } });

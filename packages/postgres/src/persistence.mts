@@ -755,22 +755,25 @@ export async function answer<Tx>(
       const result = [];
       for (const row of rows) {
         const keys = new Map<string, { model: string; identityKey: string }>();
-        for (const key of row.keys as { model: string; identityKey: string }[])
+        for (const value of arrayOf(json(row.keys), "publication group keys")) {
+          const key = keyOf(value);
           keys.set(pairId(key), key);
+        }
         while (true) {
           const related = await q(
-            "SELECT g.keys FROM axton_publication_group g WHERE g.stream=$1 AND g.through_cursor>$2 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) k JOIN jsonb_array_elements($3::jsonb) w ON k=w)",
+            "SELECT DISTINCT member AS key FROM axton_publication_group g CROSS JOIN LATERAL jsonb_array_elements(g.keys) member WHERE g.stream=$1 AND g.through_cursor>$2 AND EXISTS (SELECT 1 FROM jsonb_array_elements(g.keys) k JOIN jsonb_array_elements($3::jsonb) w ON k=w) LIMIT 10001",
             r.stream,
             safe(row.from_cursor),
             JSON.stringify([...keys.values()]),
           );
           const before = keys.size;
-          for (const group of related)
-            for (const key of group.keys as {
-              model: string;
-              identityKey: string;
-            }[])
-              keys.set(pairId(key), key);
+          // Keep full keys for validation; projecting only their fields would
+          // silently normalize malformed history. One extra distinct key makes
+          // truncation a capacity failure, never an incomplete successful closure.
+          for (const member of related) {
+            const key = keyOf(json(member.key));
+            keys.set(pairId(key), key);
+          }
           if (
             keys.size > 10000 ||
             Buffer.byteLength(JSON.stringify([...keys.values()])) > 1024 * 1024

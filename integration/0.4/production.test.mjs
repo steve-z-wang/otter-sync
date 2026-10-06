@@ -816,7 +816,18 @@ test("actual Query modes/once and stale Fetch distinguish invocation snapshots f
     ]);
     const host = await f.client(app, "modes");
     host.frameHold = (body) => Array.isArray(body.units);
+    const heldPulls = [];
+    host.hold = async (data) => {
+      if (data.route !== "pull") return false;
+      heldPulls.push(data);
+      return true;
+    };
     await host.task({ kind: "connect" });
+    await host.until(
+      "SELECT cursor FROM axton_v04_store",
+      () => heldPulls.length > 0,
+    );
+    assert.equal(heldPulls[0].response.start, 0);
     const snapshot = await host.task({
       kind: "invoke",
       name: "Find",
@@ -877,7 +888,13 @@ test("actual Query modes/once and stale Fetch distinguish invocation snapshots f
       ).history,
       {},
     );
+    host.hold = null;
     host.frameHold = null;
+    for (const pull of heldPulls)
+      host.reply(pull.effect, {
+        status: 200,
+        body: JSON.stringify(pull.response),
+      });
     for (const frame of host.heldFrames.splice(0))
       host.reply(frame.effect, frame.value);
     await host.until(

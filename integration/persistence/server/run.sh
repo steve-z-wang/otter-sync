@@ -31,3 +31,4 @@ createdb -h 127.0.0.1 -p "$port" axton_protocol4
 protocol4_database_url="${DATABASE_URL%/postgres}/axton_protocol4"
 DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04.test.mjs"
 DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04-drivers.test.mjs"
+DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/publication-closure.test.mjs"

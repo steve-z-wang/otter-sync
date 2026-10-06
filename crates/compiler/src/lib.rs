@@ -3,6 +3,7 @@
 //! [`generate`] renders the runtime descriptors and the generated code.
 use serde_json::Value;
 mod action_names;
+mod current_operations;
 mod emit;
 mod emit_stream;
 mod emit_transactions;

@@ -283,3 +283,22 @@ test('caught Query tracking refusal rolls back all enrollment and saves stable f
   assert.equal((await q('SELECT response FROM axton_call WHERE call_id=$1',[request.callId]))[0].response,wire);
  }
 });
+
+test('Delta and Manifest project identical final keys, and Remove bypasses preparation and Loader',async()=>{
+ let preparations=0,canonical=0;
+ const app=createBackend({config,native,database,protocol4,authenticate:()=> 'alice',queries:{find:async()=>({todo:{id:'parity-live'}})},loaderHooks:{todo:{prepareForViewer:async({ids})=>{preparations++;assert.ok(ids.every(({id})=>id!=='parity-remove'));}}},loaders:{todo:async(call)=>{canonical++;assert.ok(call.ids.every(({id})=>id!=='parity-remove'));return loader(call);}}});
+ await q("INSERT INTO v04_todo VALUES('parity-live','Parity live'),('parity-remove','Parity remove')");
+ const before=Number((await q("SELECT head FROM axton_stream WHERE stream='User:alice'"))[0]?.head??0);
+ await app.transaction(async({stream})=>stream('User:alice').track.todo([{id:'parity-live'},{id:'parity-remove'}]));
+ await app.transaction(async({tx,invalidate})=>{await tx.query("UPDATE v04_todo SET title='Parity current' WHERE id='parity-live'");invalidate.todo({id:'parity-live'});});
+ await database.transaction(async tx=>{await app.acquirePublicationFence(tx);const record=(await tx.query("SELECT id FROM axton_record WHERE model='Todo' AND identity_key=$1",['{"id":"parity-remove"}'])).rows[0].id;const head=(await tx.query("UPDATE axton_stream SET head=head+1 WHERE stream='User:alice' RETURNING head")).rows[0].head;await tx.query("DELETE FROM axton_stream_member WHERE stream='User:alice' AND record_id=$1",[record]);await tx.query("UPDATE axton_stream_log SET kind='remove',cursor=$2 WHERE stream='User:alice' AND record_id=$1",[record,head]);await database.persistence(tx).call({op:'savePublicationGroups',positions:[{stream:'User:alice',model:'Todo',identityKey:'{"id":"parity-remove"}',cursor:Number(head),kind:'remove'}]});});
+ const delta=JSON.parse(await app.pull('alice',JSON.stringify({context,callId:id(),after:before,models:{Todo:1},limit:1})));
+ const heldKeys=['parity-live','parity-remove'].map(id=>({model:'Todo',identity:{id}}));
+ const start=JSON.parse(await app.pull('alice',JSON.stringify({kind:'start',context,callId:id(),models:{Todo:1},budget:10,heldKeys})));
+ const manifest=JSON.parse(await app.pull('alice',JSON.stringify({kind:'page',context,callId:id(),manifestId:start.manifestId,from:0,limit:10})));
+ const sorted=changes=>changes.toSorted((a,b)=>(a.record??a.key).identity.id.localeCompare((b.record??b.key).identity.id));
+ assert.deepEqual(sorted(delta.units[0].changes),sorted(manifest.items.map(item=>item.change)));
+ assert.equal(delta.units[0].changes.find(c=>c.kind==='upsert').record.state.title,'Parity current');
+ assert.equal(delta.units[0].changes.find(c=>c.kind==='remove').key.identity.id,'parity-remove');
+ assert.ok(preparations>0&&canonical>0);
+});

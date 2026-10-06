@@ -1987,6 +1987,7 @@ function attachLive(
   });
   let closing = false;
   const sessions = new Set<Promise<void>>();
+  const upgrades = new Set<Promise<void>>();
   const refuse = (socket: Duplex, status: number) => {
     socket.end(
       `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : "Error"}\r\nConnection: close\r\n\r\n`,
@@ -2002,7 +2003,7 @@ function attachLive(
     );
   };
   const upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    void (async () => {
+    const pending = (async () => {
       if (request.url?.split("?")[0] !== "/sync/live") return;
       if (closing) {
         refuse(socket, 503);
@@ -2043,6 +2044,11 @@ function attachLive(
         );
       });
     })();
+    upgrades.add(pending);
+    void pending.then(
+      () => upgrades.delete(pending),
+      () => upgrades.delete(pending),
+    );
   };
   server.on("upgrade", upgrade);
   return {
@@ -2052,6 +2058,7 @@ function attachLive(
       server.off("upgrade", upgrade);
       for (const socket of sockets.clients) socket.close(1001, "closing");
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await Promise.all(upgrades);
       await Promise.all(sessions);
     },
   };

@@ -216,3 +216,247 @@ for (const carrier of ["protocol4", "legacy"]) {
     }
   });
 }
+
+test("listener close drains a held real upgrade admission before database release", async () => {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const entered = gate(),
+    release = gate(),
+    finished = gate(),
+    peerGone = gate();
+  const diagnostics = [];
+  let queryResult,
+    admissionSocket,
+    closed = false,
+    closing;
+  const app = createBackend({
+    config,
+    native,
+    database: pg(pool),
+    authenticate: () => "admission",
+    admit: async (request) => {
+      request.socket.once("close", () => peerGone.resolve());
+      admissionSocket = request.socket;
+      const tx = await pool.connect();
+      try {
+        entered.resolve();
+        await release.promise;
+        queryResult = (await tx.query("SELECT 1 AS admitted")).rows;
+        return null;
+      } finally {
+        tx.release();
+        finished.resolve();
+      }
+    },
+    onError: (error) => diagnostics.push(error),
+    loaders: { space: async ({ ids }) => ids.map(() => null) },
+  });
+  const listener = await app.listen({ port: 0 });
+  const socket = new WebSocket(
+    listener.url.replace("http:", "ws:") + "/sync/live",
+  );
+  const refused = new Promise((resolve) => socket.once("error", resolve));
+  try {
+    await entered.promise;
+    const disconnected = new Promise((resolve) =>
+      socket.once("close", resolve),
+    );
+    socket.terminate();
+    admissionSocket.destroy();
+    await disconnected;
+    await peerGone.promise;
+    closing = listener.close().then(() => {
+      closed = true;
+    });
+    await turn();
+    await turn();
+    assert.equal(
+      closed,
+      false,
+      "listener close resolved while its upgrade admission still owned database work",
+    );
+    release.resolve();
+    await finished.promise;
+    await closing;
+    assert.deepEqual(queryResult, [{ admitted: 1 }]);
+    assert.match(
+      (await refused).message,
+      /closed before the connection was established/,
+    );
+    assert.deepEqual(diagnostics, []);
+  } finally {
+    release.resolve();
+    await finished.promise;
+    await (closing ?? listener.close());
+    socket.close();
+    await pool.end();
+  }
+});
+
+for (const scenario of ["negotiation", "multiple pulls", "rejected pull"]) {
+  test(`listener close drains ${scenario} with real native sessions`, async () => {
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const database = pg(pool),
+      diagnostics = [],
+      expected = new Error("held pull rejected");
+    const rejectedTransactions = new Set(),
+      initialTransactions = new Map();
+    const count = scenario === "multiple pulls" ? 2 : 1;
+    const held = Array.from({ length: count }, () => ({
+      entered: gate(),
+      release: gate(),
+      finished: gate(),
+    }));
+    const initial = held.map(() => gate());
+    const viewers = held.map((_, i) => `shutdown-${scenario}-${i}`);
+    let armed = false,
+      negotiationHeld = false,
+      pendingIndex = 0;
+    const hold = async (tx, index) => {
+      const item = held[index];
+      item.entered.resolve();
+      await item.release.promise;
+      assert.deepEqual((await tx.query("SELECT 1 AS live")).rows, [
+        { live: 1 },
+      ]);
+    };
+    const app = createBackend({
+      config,
+      native,
+      database: {
+        ...database,
+        transaction: async (body) => {
+          const pending =
+            armed && scenario === "multiple pulls" ? pendingIndex++ : undefined;
+          if (pending !== undefined) {
+            held[pending].entered.resolve();
+            await held[pending].release.promise;
+          }
+          let transaction;
+          const result = await database.transaction(async (tx) => {
+            transaction = tx;
+            if (pending !== undefined)
+              assert.deepEqual((await tx.query("SELECT 1 AS live")).rows, [
+                { live: 1 },
+              ]);
+            const blocked =
+              armed && scenario === "negotiation" && !negotiationHeld;
+            if (blocked) {
+              negotiationHeld = true;
+              await hold(tx, 0);
+            }
+            try {
+              const result = await body(tx);
+              if (rejectedTransactions.delete(tx)) throw expected;
+              return result;
+            } finally {
+              if (blocked) held[0].finished.resolve();
+            }
+          });
+          if (pending !== undefined) held[pending].finished.resolve();
+          const index = initialTransactions.get(transaction);
+          if (index !== undefined) initial[index].resolve();
+          return result;
+        },
+      },
+      authenticate: (request) => request.headers["x-viewer"],
+      protocol4: {
+        backendId: "shutdown",
+        contractId: "app",
+        projectionGeneration: "1",
+        authorizeStream: (owner, name) => name === `User:${owner}`,
+      },
+      onError: (error) => diagnostics.push(error),
+      loaders: {
+        space: async ({ tx, ids, userId }) => {
+          const index = viewers.indexOf(userId);
+
+          if (!armed) initialTransactions.set(tx, index);
+          if (armed && scenario === "rejected pull") {
+            try {
+              await hold(tx, index);
+              if (scenario === "rejected pull") rejectedTransactions.add(tx);
+            } finally {
+              held[index].finished.resolve();
+            }
+          }
+          return ids.map(({ id }) => ({ id, name: "Journal" }));
+        },
+      },
+    });
+    for (const viewer of viewers)
+      await app.transaction(({ streams }) =>
+        streams(`User:${viewer}`).track.space({ id: viewer }),
+      );
+    armed = scenario === "negotiation";
+    const listener = await app.listen({ port: 0 }),
+      sockets = [];
+    let closing,
+      closed = false;
+    try {
+      for (const viewer of viewers) {
+        const socket = new WebSocket(
+          listener.url.replace("http:", "ws:") + "/sync/live",
+          { headers: { "x-viewer": viewer } },
+        );
+        sockets.push(socket);
+        await once(socket, "open");
+        socket.send(
+          JSON.stringify({
+            context: {
+              protocol: 4,
+              binding: {
+                backend: "shutdown",
+                viewer,
+                stream: `User:${viewer}`,
+                contract: "app",
+              },
+              materialization: app.materializationId,
+              incarnation: randomUUID(),
+            },
+            models: { Space: 1 },
+            cursor: 0,
+          }),
+        );
+      }
+      if (scenario !== "negotiation") {
+        await Promise.all(initial.map((item) => item.promise));
+        await app.transaction(({ invalidate }) => {
+          for (const id of viewers) invalidate.space({ id });
+          armed = true;
+        });
+      }
+      await Promise.all(held.map((item) => item.entered.promise));
+      const stopped = sockets.map((socket) => once(socket, "close"));
+      closing = listener.close().then(() => {
+        closed = true;
+      });
+      await Promise.all(stopped);
+      await turn();
+      assert.equal(closed, false);
+      held[0].release.resolve();
+      await held[0].finished.promise;
+      if (count === 2) {
+        await turn();
+        assert.equal(
+          closed,
+          false,
+          "first drained session must not release the second transaction",
+        );
+        held[1].release.resolve();
+        await held[1].finished.promise;
+      }
+      await closing;
+      if (scenario === "rejected pull")
+        assert.ok(
+          diagnostics.some((error) => error === expected),
+          "Reporter must retain the pull failure",
+        );
+      else assert.deepEqual(diagnostics, []);
+    } finally {
+      held.forEach((item) => item.release.resolve());
+      sockets.forEach((socket) => socket.close());
+      await (closing ?? listener.close());
+      await pool.end();
+    }
+  });
+}

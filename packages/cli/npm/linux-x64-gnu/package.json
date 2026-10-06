@@ -1,6 +1,6 @@
 {
   "name": "@axtonjs/cli-linux-x64-gnu",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "The axton compiler for Linux x64 (glibc).",
   "license": "MIT",
   "author": "Zanmin Wang (https://zanminwang.com)",

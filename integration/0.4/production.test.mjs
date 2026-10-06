@@ -1155,12 +1155,19 @@ test("actual SQLite deferred commit refusal preserves accepted-awaiting through 
     await app.transaction(async ({ stream }) =>
       stream("User:alice").track.task({ id: X }),
     );
-    const host = await f.client(app, "commit-fault", cfg.schema);
-    await cache(host);
+    let host = await f.client(app, "commit-fault", cfg.schema);
+    // Install the fault only after the native owner has released SQLite.
+    await host.close();
     const db = new DatabaseSync(join(f.directory, "commit-fault.sqlite"));
-    db.exec(
-      "CREATE TABLE fault_parent(id INTEGER PRIMARY KEY);CREATE TABLE fault_marker(parent INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER fail_settlement_commit BEFORE DELETE ON axton_mutation BEGIN INSERT INTO fault_marker VALUES(99);END",
-    );
+    try {
+      db.exec(
+        "CREATE TABLE fault_parent(id INTEGER PRIMARY KEY);CREATE TABLE fault_marker(parent INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER fail_settlement_commit BEFORE DELETE ON axton_mutation BEGIN INSERT INTO fault_marker VALUES(99);END",
+      );
+    } finally {
+      db.close();
+    }
+    host = await f.client(app, "commit-fault", cfg.schema);
+    await cache(host);
     const reply = held(
       ({ route, body }) => route === "action" && body.models,
       host,
@@ -1218,8 +1225,12 @@ test("actual SQLite deferred commit refusal preserves accepted-awaiting through 
       "later-direct",
     );
     await host.kill();
-    db.exec("DROP TRIGGER fail_settlement_commit");
-    db.close();
+    const repair = new DatabaseSync(join(f.directory, "commit-fault.sqlite"));
+    try {
+      repair.exec("DROP TRIGGER fail_settlement_commit");
+    } finally {
+      repair.close();
+    }
     const reopened = await f.client(app, "commit-fault", cfg.schema);
     await reopened.task({ kind: "connect" });
     const completion = await reopened.wait(

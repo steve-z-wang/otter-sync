@@ -12,7 +12,7 @@
 
 ### Guarantees
 
-[Guarantees](guarantees.md) describe promises about the Rust sync core as a whole, such as committed offline writes surviving restart and subscribed clients eventually converging. Tests check whether these promises hold under their stated conditions.
+[Guarantees](guarantees.md) describe the bound Store contract, including offline durability and convergence after delivery resumes. Tests check these requirements under their stated conditions. [Protocol-4 acceptance](testing/0.4.md) separates independent symbolic expectations, actual native/SQLite traces, production PostgreSQL process tests and language/package evidence. Historical compatibility tests are not substitutes for those paths.
 
 ### Component contracts
 

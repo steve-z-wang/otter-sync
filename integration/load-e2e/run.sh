@@ -5,6 +5,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$root/scripts/env.sh"
+case "$(uname -s)" in
+ Darwin) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.dylib";;
+ Linux) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.so";;
+ *) echo 'Unsupported native test host' >&2; exit 1;;
+esac
+export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 cd "$root"
 cargo run -p axton-compiler --locked -- compile integration/load-e2e integration/load-e2e \
   --backend-runtime ../../packages/server/index.mts \

@@ -25,8 +25,8 @@ export const SEED_TODOS = [
  * each a new stamp and position, and enrolling an existing member does nothing.
  */
 export async function seed(backend: Backend): Promise<void> {
-  await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
-    const demo = scope(SCOPE);
+  await backend.transaction(async ({ tx, streams: scope, invalidate: touch }) => {
+    const demo = scope([SCOPE]);
     for (const user of SEED_USERS) {
       await tx.user.upsert({
         where: { id: user.id },

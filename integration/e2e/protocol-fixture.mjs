@@ -1,24 +1,20 @@
-// Internal wire fixture for ACK-loss/transaction tests. Applications use Client.connect(server).
-/** The read contracts a client of `schema` declares: every model at its version. */
-export const declaredModels=schema=>Object.fromEntries(schema.models.map(model=>[model.name,model.version??1]));
-export async function syncProtocol(client, transport, models) {
- let caughtUp=false;
- for (;;) {
-  const frozen=await client.freeze();
-  if(frozen!==null) {
-   await client.acknowledge(JSON.parse(frozen).batchSequence,JSON.parse(await transport('push',frozen)));
-   caughtUp=false;
-   continue;
+// Transport-only harness: every state change enters the public native actor.
+import { setImmediate } from "node:timers/promises";
+import { createProxy } from "../load-e2e/server.mts";
+export { createProxy };
+export async function wait(predicate, label, timeout = 20000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await setImmediate();
   }
-  if(caughtUp)return;
-  const status=await client.syncState();
-  // Only an initialized subscription has a delivery position to pull from: a
-  // registration still waiting for its first acknowledged head is in `streams`
-  // and not in `cursors`, and a null boundary is never read as zero (#150).
-  const cursors={...status.cursors};
-  if(Object.keys(cursors).length===0)return;
-  // One pull covers every initialized scope; it repeats while any scope continues.
-  const page=JSON.parse(await transport('pull',JSON.stringify({capabilities:["stream-authority-v1"],cursors,models})));await client.applyPull(page);
-  caughtUp=Object.values(page.cursors).every(range=>range.to>=range.head);
- }
+  throw Error(`Timed out waiting for ${label}`);
 }
+export const connection = (url, viewer = "demo-user") => ({
+  url,
+  token: viewer,
+  identity: { backend: "round-trip", viewer, contract: "round-trip-v04" },
+});
+export const intent = (exchange) => JSON.parse(exchange.body);
+export const mutation = (exchange) =>
+  exchange.path === "/sync/actions" && intent(exchange).name === "EditEntry";

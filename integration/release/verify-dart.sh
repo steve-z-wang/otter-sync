@@ -29,6 +29,16 @@ else
   printf 'dependencies:\n  axton:\n    path: %s\nhooks:\n  user_defines:\n    axton:\n      local_artifacts: %s\n' \
     "$work/axton" "$release" >>"$project/pubspec.yaml"
 fi
+# The installed npm host passes its real backend and Dart emitted by its
+# installed CLI. The scratch Dart application still imports only installed axton.
+if [[ -n "${2:-}" && "${1:-}" != --registry ]]; then
+  [[ -n "${3:-}" && -f "$3" ]] || fail "network verification needs CLI-generated Dart"
+  cp "$3" "$project/bin/generated.dart"
+fi
 cd "$project"
 dart pub get
 dart run bin/check.dart
+if [[ -n "${2:-}" && "${1:-}" != --registry ]]; then
+  dart analyze bin/generated.dart bin/network.dart
+  dart run bin/network.dart "$2"
+fi

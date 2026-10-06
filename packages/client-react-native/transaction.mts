@@ -9,15 +9,16 @@ import {
   callbackRefusal,
   expiredRefusal,
   submitMutation,
-  type MutationOptions,
+  type MutationInput,
   type MutationPort,
   type SubmissionHost,
 } from "../client-js/local.mts";
 export {
   LocalTransaction,
   type LocalCallback,
-  type MutationOptions,
+  type MutationInput,
 } from "../client-js/local.mts";
+const scopedCallbacks = new Set<object>();
 /**
  * The commands of one application transaction callback. The runtime runs
  * them in submission order inside the transaction it owns, and refuses them
@@ -62,20 +63,6 @@ export class Transaction {
   cancel(): void {
     this.#open = false;
   }
-  /** Local Stream intent inside this transaction; no Subscription handle. */
-  get streams(): {
-    subscribe(stream: string): Promise<void>;
-    unsubscribe(stream: string): Promise<void>;
-  } {
-    return {
-      subscribe: (stream) =>
-        this.#call({ kind: "stream", stream, subscribed: true }).then(() => {}),
-      unsubscribe: (stream) =>
-        this.#call({ kind: "stream", stream, subscribed: false }).then(
-          () => {},
-        ),
-    };
-  }
   /** Dismiss a refusal as part of this transaction. */
   get rejections(): TransactionRejections {
     return unsentTransaction((command) => this.#call(command)).rejections;
@@ -85,11 +72,17 @@ export class Transaction {
     return unsentTransaction((command) => this.#call(command)).failures;
   }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
+    if (scopedCallbacks.size)
+      throw Error(
+        "overlapping transaction callbacks require async context support",
+      );
+    scopedCallbacks.add(this);
     this.#activeCallback = true;
     try {
       return await body();
     } finally {
       this.#activeCallback = false;
+      scopedCallbacks.delete(this);
     }
   }
   inCallback(): boolean {
@@ -136,11 +129,10 @@ export class Transaction {
   submitMutation<T>(
     name: string,
     version: number,
-    args: object,
+    input: MutationInput,
     decode: (value: unknown) => T,
-    options?: MutationOptions,
   ): Promise<Call<T>> {
-    return submitMutation(this.#host, name, version, args, decode, options);
+    return submitMutation(this.#host, name, version, input, decode);
   }
   /**
    * The callback returned. Promise lifetime decides "unawaited", and a

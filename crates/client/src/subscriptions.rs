@@ -272,6 +272,11 @@ impl<S: ClientStore> Client<S> {
     /// ([`check_stream`]) is refused here too: a row no session could ever
     /// subscribe for would fail every handshake and stop every other Stream.
     pub fn ensure_subscription(&mut self, stream: &str) -> Result<SubscriptionState> {
+        if let Some(context) = &self.context04
+            && context.binding.stream != stream
+        {
+            return Err(invalid("binding_mismatch"));
+        }
         check_stream(stream)?;
         // A registration that already exists is answered from the committed
         // reader: repeating it writes nothing, so it neither bumps the client
@@ -306,12 +311,19 @@ impl<S: ClientStore> Client<S> {
         expected: &BTreeMap<String, u64>,
         heads: &BTreeMap<String, u64>,
     ) -> Result<Initialization> {
+        if self.context04.is_some() {
+            return Err(invalid("protocol-4 ACK cannot initialize delivery cursor"));
+        }
+
         self.write(|e| e.initialize_subscriptions(expected, heads))
     }
     /// Unsubscribe the registration `subscription_id` names, and whether a row
     /// went. A Stream whose current subscription is another one is left alone:
     /// an old handle cannot remove the subscription that replaced it.
     pub fn remove_subscription(&mut self, stream: &str, subscription_id: u64) -> Result<bool> {
+        if self.context04.is_some() {
+            return Err(invalid("bound Stream cannot be removed"));
+        }
         self.write(|e| {
             let removed = e.remove_subscription(stream, Some(subscription_id))?;
             if removed {

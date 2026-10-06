@@ -1,57 +1,43 @@
-import { createInterface } from "node:readline/promises";
+import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { stdin, stdout } from "node:process";
 import { GeneratedClient } from "./generated/client.ts";
-
-// Open the local database and start syncing with the backend.
 const client = await GeneratedClient.open({
   path: resolve(process.env.AXTON_DATABASE ?? "example-client.sqlite"),
-  server: {
+  stream: "User:demo-user",
+  connection: {
     url: process.env.AXTON_URL ?? "http://127.0.0.1:4242",
     token: "demo-user",
+    identity: {
+      backend: "round-trip",
+      viewer: "demo-user",
+      contract: "round-trip-v04",
+    },
   },
-  connection: { onError: (error) => console.error(`sync: ${String(error)}`) },
 });
-// A subscription is durable and starts at the first head the server
-// acknowledges: it delivers what is published from then on, not the records the
-// scope already held (#150; the explicit whole-Scope load is #151's
-// `bootstrap()`). The status line shows when this client is live.
-const subscription = await client.streams.subscribe("book:demo");
-subscription.watch((status) =>
-  console.log(`book:demo ${status.initialization}/${status.connection}`),
+await client.bootstrap();
+const stop = client.models.entry.watch({}, (rows) =>
+  console.log(rows.find((row) => row.id === "entry-1") ?? null),
 );
-
-// Print the entry whenever it changes: first the local edit, then the server's version.
-client.models.entry.watch({}, (rows) => console.log(rows[0] ?? null));
-
-const terminal = createInterface({ input: stdin, output: stdout });
-console.log(
-  "Commands: edit TEXT | offline | online | status | quit. Edits apply locally at once and sync in the background.",
-);
+const terminal = createInterface({ input: process.stdin });
+console.log("Commands: edit TEXT | offline | online | status | quit");
 try {
-  for (;;) {
-    const line = await terminal.question("> ");
-    try {
-      if (line === "quit") break;
-      if (line.startsWith("edit ")) {
-        await client.mutate.edit({
-          entry: {
-            identity: { id: "entry-1" },
-            values: { text: line.slice(5) },
-          },
-        });
-      } else if (line === "offline") {
-        await client.connection!.pause();
-        console.log("Sync paused. Local reads and writes remain available.");
-      } else if (line === "online") {
-        await client.connection!.resume();
-        console.log("Sync resumed.");
-      } else if (line === "status") console.log(await client.syncState());
-    } catch (error) {
-      console.error(String(error));
-    }
+  for await (const line of terminal) {
+    if (line === "quit") break;
+    if (line.startsWith("edit "))
+      await client.mutations.editEntry({
+        entry: { id: "entry-1", text: line.slice(5) },
+      });
+    else if (line === "offline") {
+      await client.connection!.pause();
+      console.log("Sync paused.");
+    } else if (line === "online") {
+      await client.connection!.resume();
+      console.log("Sync resumed.");
+    } else if (line === "status")
+      console.log(JSON.stringify(await client.syncState()));
   }
 } finally {
+  stop();
   terminal.close();
   await client.close();
 }

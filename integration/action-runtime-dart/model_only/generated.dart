@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, StoreIdentity, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1}]}') as Map<String,dynamic>;
 /// What a fresh create of Item accepts: a complete [Item], or a [ItemCreate] that may omit fields with creation defaults.
@@ -81,41 +81,19 @@ class LiveModels { final Client port; LiveModels(this.port);
 class TxModels { final WritePort port; TxModels(this.port);
  late final ItemTxModel item = ItemTxModel(port);
 }
-/// The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration.
-class Streams { final Client client; Streams(this.client);
- Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);
-}
-/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local cache writes.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Item?> item(ItemIdentity identity, {bool store = true}) => _client.fetchModel('Item', 1, identity.toRecord(), Item.fromRecord, store: store);
 }
-sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
-final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
-final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
-typedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);
-class StoreHooks {
- final StoreHandler<ItemIdentity,Item>? item;
- const StoreHooks({this.item});
-}
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final streams = transaction.streams; GeneratedTransaction(this.transaction); }
+class GeneratedTransaction { final Transaction transaction; late final TxModels models=TxModels(transaction); GeneratedTransaction(this.transaction); }
 class GeneratedClient {
- /// The runtime handle (internal); application code uses the members below.
- final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
- late final Streams streams = Streams(client);
- /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
- late final FetchModels fetch = FetchModels(client);
- GeneratedClient._(this.client, this.connection);
- /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
- static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, Map<String, PrerequisiteHandler>? prerequisites, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
-  final rawHooks = <String, StoreHook>{};
-  final itemHook = onStore?.item;
-  if (itemHook != null) rawHooks['Item'] = (tx, changes) => itemHook(GeneratedTransaction(tx), changes.map<StoreChange<ItemIdentity,Item>>((change) { final identity=ItemIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<ItemIdentity,Item>(identity,Item.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<ItemIdentity,Item>(identity); }).toList());
-  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks, prerequisites:prerequisites);
-  try {
-  final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
-  return GeneratedClient._(client, connection);
-  } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
- }
+ final Client client; RuntimeConnection? get connection => client.connection; late final LiveModels models=LiveModels(client);
+ late final FetchModels fetch=FetchModels(client);
+ GeneratedClient._(this.client);
+ static Future<GeneratedClient> open({required String path, required String stream, required StoreConnection connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
+ Future<void> bootstrap() => client.bootstrap();
+ Future<RuntimeConnection> connect(SyncServer server,{void Function(Object)? onError,Future<void> Function()? refreshAuth,Duration directTimeout=const Duration(seconds:30)}) => client.connect(server,onError:onError,refreshAuth:refreshAuth,directTimeout:directTimeout);
+ Future<void> resetStore({bool discardPending=false}) => client.resetStore(discardPending:discardPending);
  Future<T> transaction<T>(Future<T> Function(GeneratedTransaction tx) body) => client.transaction((tx) => body(GeneratedTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
@@ -136,8 +114,6 @@ class GeneratedClient {
  late final failures = client.failures;
  /// The queue of unsettled acts: `watchPending`.
  late final outbound = client.outbound;
- /// Start the background connection when `open` was called without a server.
- Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.
  Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);
  /// Escape hatch: read-only SQL over the local database.

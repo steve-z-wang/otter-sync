@@ -393,7 +393,33 @@ impl<S: ClientStore> Client<S> {
         stream: &str,
         subscription_id: u64,
     ) -> Result<BootstrapState> {
-        self.view(|e| Ok(e.bootstrap_of(stream, subscription_id)?.state))
+        self.view(|e| {
+            let mut state = e.bootstrap_of(stream, subscription_id)?.state;
+            if let Some(context) = e.context04()? {
+                if stream != context.binding.stream {
+                    return Err(invalid("binding_mismatch"));
+                }
+                state.state = BootstrapPhase::Requested;
+                state.cursor = 0;
+                state.barrier = None;
+                state.error = None;
+                if let Some(coverage) = e
+                    .coverage04(None)?
+                    .filter(|coverage| coverage.materialization == context.materialization)
+                {
+                    state.cursor = coverage.covered;
+                    state.barrier = coverage.tail;
+                    state.state = if coverage.complete(e.cursor04()?)? {
+                        BootstrapPhase::Complete
+                    } else if coverage.tail.is_some() {
+                        BootstrapPhase::CatchingUp
+                    } else {
+                        BootstrapPhase::Loading
+                    };
+                }
+            }
+            Ok(state)
+        })
     }
     /// The initialized runs with work left, in Stream order: what the scheduler
     /// rotates through, one page at a time.

@@ -92,6 +92,7 @@ dependencies = [
 name = "axton-sim"
 version = "0.3.0"
 dependencies = [
+ "axton-binding",
  "axton-client",
  "axton-core",
  "axton-server",

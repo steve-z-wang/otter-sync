@@ -56,6 +56,20 @@ let savepoints = 0;
 export async function createExample() {
   const db = new PrismaClient();
   let calls = 0;
+  const database = prisma(db);
+  const pendingTransactions = new Set<Promise<unknown>>();
+  const observedDatabase = {
+    ...database,
+    transaction<R>(body: (tx: Tx) => Promise<R>): Promise<R> {
+      const result = database.transaction(body);
+      pendingTransactions.add(result);
+      void result.then(
+        () => pendingTransactions.delete(result),
+        () => pendingTransactions.delete(result),
+      );
+      return result;
+    },
+  };
   const mutations: Mutations<Tx> = {
     async addTodo({ args, ctx }) {
       const { tx, userId } = ctx;
@@ -73,21 +87,19 @@ export async function createExample() {
         throw new CallRejected("todo.id_conflict");
       }
       await tx.$executeRawUnsafe(`RELEASE SAVEPOINT ${savepoint}`);
-      // The created input is already a change the caller receives authority for.
-      // Joining the demo Scope once is what distributes it, and every later
-      // change to it, to the other subscribers.
-      ctx.stream(SCOPE).track.todo({ id: todo.id });
+      // Enroll the new identity, then publish its canonical content to every holder.
+      ctx.streams([SCOPE]).track.todo({ id: todo.id });
+      ctx.invalidate.todo({ id: todo.id });
     },
     async setTodoDone({ args, ctx }) {
       const { tx } = ctx;
       calls++;
       const { id, done } = args.todo;
-      // An empty patch is a no-op (#49): the record is still read back and
-      // distributed at a new stamp, but nothing is written. The Todo is already
-      // a member of the demo Scope, so no enrollment is needed here.
+      // An empty patch is a no-op: its result is read back without restamping.
       if (typeof done === "boolean") {
         try {
           await tx.todo.update({ where: { id }, data: { done } });
+          ctx.invalidate.todo({ id });
         } catch (error) {
           if (prismaCode(error) !== "P2025") throw error;
           throw new CallRejected("todo.missing");
@@ -111,8 +123,9 @@ export async function createExample() {
     },
   };
   const backend = createBackend<Tx>({
-    database: prisma(db),
+    database: observedDatabase,
     authenticate: demoAuth,
+    protocol4: { backendId: "todo-demo", contractId: "todo-v04", authorizeStream: (viewer, stream) => DEMO_USERS.has(viewer) && stream === SCOPE },
     mutations,
     loaders,
   });
@@ -142,7 +155,7 @@ export async function createExample() {
     /**
      * Touch the seed users and tasks again, creating nothing new: what a
      * backend job does when it wants existing rows redistributed. An app meets
-     * them instead through `subscription.bootstrap()`
+     * them instead through `client.bootstrap()`
      * ([#151](https://github.com/zanminwang/axton/issues/151)), which is what
      * `mobile/src/todo.ts` calls; this stays for the tests that are about
      * republication itself.
@@ -158,6 +171,9 @@ export async function createExample() {
     },
     async close() {
       await server?.close();
+      // Listener close ends sockets; already admitted database work still owns
+      // its transaction until it settles. Dispose Prisma only after that work.
+      while (pendingTransactions.size) await Promise.allSettled([...pendingTransactions]);
       await db.$disconnect();
     },
   };

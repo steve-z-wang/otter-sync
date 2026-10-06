@@ -460,6 +460,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         let ordinals: Vec<u64> = rejected.keys().copied().collect();
         self.delete_mutations(&ordinals)?;
+        self.complete_calls04(&completions)?;
         Ok((affected, completions))
     }
 }

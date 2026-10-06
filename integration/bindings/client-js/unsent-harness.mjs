@@ -1,3 +1,4 @@
+import {openStore} from './store-fixture.mjs';
 // Unsent work (#186, #205, #204): refused and failed acts as change streams,
 // their resolutions on the client and inside a transaction, over the native
 // runtime and SQLite. Shared by the Node and React Native suites: each passes
@@ -126,7 +127,7 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
   const Client = createClient(native, Transaction, createServerConnection);
   async function harness(body, prerequisites = {}) {
     const directory = await mkdtemp(join(tmpdir(), "axton-unsent-"));
-    const client = await Client.open({
+    const client = await openStore(Client,{
       path: join(directory, "db"),
       schema,
       prerequisites,
@@ -144,94 +145,10 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
       await rm(directory, { recursive: true, force: true });
     }
   }
-  /**
-   * Freeze the queue and answer it: `refuse` maps an ordinal to its code,
-   * and `records` is the authority of the accepted ones.
-   */
-  async function settle(client, sequence, refuse = {}, records = []) {
-    const request = JSON.parse(await client.freeze());
-    const rejections = [];
-    const completions = [];
-    for (const call of request.mutations) {
-      const code = refuse[call.ordinal];
-      if (code) {
-        rejections.push({ ordinal: call.ordinal, code });
-        completions.push({
-          callId: call.callId,
-          outcome: { status: "failed", code, execution: "rejected" },
-        });
-      } else {
-        completions.push({
-          callId: call.callId,
-          outcome: { status: "succeeded", result: null },
-        });
-      }
-    }
-    await client.acknowledge(sequence, {
-      clientId: client.clientId,
-      batchSequence: sequence,
-      rejections,
-      completions,
-      records,
-    });
-  }
   const text = async (client) => (await client.read("Note", { id: "n" })).text;
 
-  test("a refusal keeps the act as submitted until it is dismissed", () =>
-    harness(async (client) => {
-      const refused = recorder();
-      const pending = recorder();
-      const stopRefused = client.rejections.watch((items) =>
-        refused.push(items),
-      );
-      const stopPending = client.outbound.watchPending((count) =>
-        pending.push(count),
-      );
-      await refused.next((items) => items.length === 0);
-      await pending.next((count) => count === 0);
-      const call = await client.invokeAction(
-        "Write",
-        1,
-        write("the author's words"),
-        identity,
-      );
-      await pending.next((count) => count === 1);
-      await settle(client, 1, { 1: "note.denied" });
-      const [item] = await refused.next((items) => items.length === 1);
-      assert.deepEqual(item, {
-        id: 1,
-        name: "Write",
-        version: 1,
-        code: "note.denied",
-        act: {
-          args: write("the author's words"),
-          operations: [
-            {
-              model: "Note",
-              op: "update",
-              identity: { id: "n" },
-              values: { text: "the author's words", blob: null },
-            },
-          ],
-        },
-      });
-      // The author's words come back from the retained act.
-      assert.equal(item.act.args.note.text, "the author's words");
-      assert.equal(await text(client), "base");
-      assert.equal((await call.wait()).error.code, "note.denied");
-      assert.deepEqual(await client.rejections.get(1), item);
-      assert.equal(await client.rejections.get(2), null);
-      await pending.next((count) => count === 0);
-      assert.deepEqual(pending.values, [0, 1, 0], "distinct values only");
-      await client.rejections.dismiss(1);
-      await refused.next(
-        (items) => items.length === 0 && refused.values.length > 2,
-      );
-      assert.equal(await client.rejections.get(1), null);
-      stopRefused();
-      stopPending();
-    }));
-
+  // Business refusal and companion rollback run through the real backend in
+  // integration/v04-sdk. These fixtures inspect native unsent dependency fates.
   test("a terminal handler failure lists the act; a retry runs the handler again", () => {
     let calls = 0;
     return harness(
@@ -239,7 +156,7 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
         const failures = recorder();
         const stop = client.failures.watch((items) => failures.push(items));
         await failures.next((items) => items.length === 0);
-        await client.submitAction("Write", 1, write("photo", "X"));
+        await client.submitMutation("Write", 1, write("photo", "X"));
         const [act] = await failures.next((items) => items.length === 1);
         assert.deepEqual(act, {
           ordinal: 1,
@@ -288,9 +205,9 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
       async (client) => {
         const failures = recorder();
         const stop = client.failures.watch((items) => failures.push(items));
-        await client.submitAction("Write", 1, write("one", "X"));
+        await client.submitMutation("Write", 1, write("one", "X"));
         await failures.next((items) => items.length === 1);
-        await client.submitAction("Write", 1, write("two", "X"));
+        await client.submitMutation("Write", 1, write("two", "X"));
         const both = await failures.next((items) => items.length === 2);
         assert.deepEqual(
           both.map((act) => [act.ordinal, act.tasks[0].error]),
@@ -303,11 +220,8 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
         await client.failures.retry([blob("X")]);
         await until(async () => (await client.pendingTasks()).length === 0);
         assert.equal(calls, 2, "one handler run covers both acts");
-        const request = JSON.parse(await client.freeze());
-        assert.deepEqual(
-          request.mutations.map((call) => call.ordinal),
-          [1, 2],
-        );
+        assert.equal((await client.syncState()).pending,2);
+        assert.deepEqual((await client.pendingTasks()),[]);
         stop();
       },
       {
@@ -320,13 +234,13 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
 
   test("drop removes the act without a refusal and refuses a dependent", () =>
     harness(async (client) => {
-      const created = await client.invokeAction(
+      const created = await client.submitMutation(
         "Create",
         1,
         { note: { id: "m", text: "new", blob: null } },
         identity,
       );
-      const edited = await client.invokeAction(
+      const edited = await client.submitMutation(
         "Write",
         1,
         { note: { id: "m", text: "edited", blob: null } },
@@ -339,11 +253,15 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
       const refused = recorder();
       const stop = client.rejections.watch((items) => refused.push(items));
       const [item] = await refused.next((items) => items.length === 1);
-      assert.deepEqual([item.id, item.code], [2, "dependency.rejected"]);
+      assert.deepEqual([item.id,item.code],[2,'dependency.rejected']);
+      assert.equal(item.act.args.note.text,'edited');
+      assert.deepEqual(await client.rejections.get(2),item);
+      await client.rejections.dismiss(2);
+      assert.equal(await client.rejections.get(2),null);
       // The existing drop still records its refusal.
-      await client.submitAction("Write", 1, write("kept"));
+      await client.submitMutation("Write", 1, write("kept"));
       await client.drop(3);
-      await refused.next((items) => items.length === 2);
+      await refused.next((items) => items.length === 1 && items[0].id===3);
       stop();
     }));
 
@@ -351,7 +269,7 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
     let calls = 0;
     return harness(
       async (client) => {
-        const original = await client.invokeAction(
+        const original = await client.submitMutation(
           "Write",
           1,
           write("draft", "X"),
@@ -383,16 +301,8 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
           [{ n: 0 }],
           "not sequenced after the original",
         );
-        await settle(client, 1, {}, [
-          {
-            model: "Note",
-            identity: { id: "n" },
-            stamp: 1,
-            state: { text: "fixed", blob: null },
-          },
-        ]);
-        assert.equal((await replacement.wait()).error, null, "accepted");
-        assert.equal((await client.syncState()).pending, 0);
+        assert.equal(replacement.status,'pending');
+        assert.equal((await client.syncState()).pending,1);
         assert.equal(calls, 1);
       },
       {
@@ -407,7 +317,7 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
   test("a throw after the drop rolls both back and the original is intact (#205)", () =>
     harness(
       async (client) => {
-        await client.submitAction("Write", 1, write("draft", "X"));
+        await client.submitMutation("Write", 1, write("draft", "X"));
         await until(async () =>
           (await client.pendingTasks()).some((t) => t.state === "failed"),
         );
@@ -452,10 +362,10 @@ export function unsentSuite(test, { Transaction, createServerConnection }) {
         identity: { id: "n" },
         values: { text: "local" },
       });
-      await client.submitAction("Write", 1, write("one"));
+      await client.submitMutation("Write", 1, write("one"));
       await until(() => counts.length === 2);
       stop();
-      await client.submitAction("Write", 1, write("two"));
+      await client.submitMutation("Write", 1, write("two"));
       assert.deepEqual(counts, [0, 1], "no value after stop");
       // A listener's exception reaches onError; the stream stays.
       const errors = [];

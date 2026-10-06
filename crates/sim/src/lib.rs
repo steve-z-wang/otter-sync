@@ -3,6 +3,7 @@
 pub mod host;
 pub mod invariants;
 pub mod net;
+pub mod oracle04;
 pub mod rng;
 pub mod schema;
 pub mod shrink;

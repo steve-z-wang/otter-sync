@@ -70,6 +70,17 @@ impl SyncCycle {
         if let Some(action) = &self.active {
             return Ok(Some(action.clone()));
         }
+        if client.request_context().is_ok() {
+            let Some(bytes) = client.freeze_mutation_wire04()? else {
+                return Ok(None);
+            };
+            let action = TransportAction {
+                kind: "mutation04".into(),
+                body: String::from_utf8(bytes).map_err(|_| invalid("utf8"))?,
+            };
+            self.active = Some(action.clone());
+            return Ok(Some(action));
+        }
         if let Some(bytes) = client.freeze()? {
             let action = TransportAction {
                 kind: "push".into(),
@@ -109,6 +120,19 @@ impl SyncCycle {
             .active
             .clone()
             .ok_or_else(|| invalid("no transport action"))?;
+        if action.kind == "mutation04" {
+            let frozen: axton_core::v04::MutationIntent =
+                axton_core::v04::decode(action.body.as_bytes())?;
+            let receipt: axton_core::v04::MutationReceipt = axton_core::v04::decode(bytes)?;
+            if receipt.completion.call_id != frozen.call_id {
+                return Err(invalid("receipt correlation mismatch"));
+            }
+            client.save_receipt04(&receipt)?;
+            // Remote acceptance is durable before local validation/settlement.
+            self.active = None;
+            self.completed = false;
+            return client.settle_receipts04();
+        }
         let report = if action.kind == "push" {
             let (sequence, receipt) = self.decode_push_receipt(bytes)?;
             let report = client.acknowledge(sequence, receipt)?;

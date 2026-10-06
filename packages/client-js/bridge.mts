@@ -215,6 +215,13 @@ export class Bridge {
     request: {
       path: string;
       schema: object;
+      binding: {
+        backend: string;
+        viewer: string;
+        stream: string;
+        contract: string;
+      };
+      projectionGeneration?: string;
       discardPending?: boolean;
       migration?: unknown;
       onStore?: Record<string, RawStoreHandler>;
@@ -233,7 +240,6 @@ export class Bridge {
       bridge.#runtimeId = native.runtimeOpen(
         strictJson({
           ...wire,
-          storeHooks: [...bridge.#storeHandlers.keys()],
           type: "open",
           requestId,
         }),
@@ -334,7 +340,7 @@ export class Bridge {
     scope: string | undefined,
     command: RecordValue,
     local:
-      | ((send: (command: RecordValue) => Promise<any>) => Promise<void>)
+      | ((send: (command: RecordValue) => Promise<any>) => Promise<object>)
       | undefined,
     hooks: TaskHooks = {},
   ): Promise<any> {
@@ -374,8 +380,8 @@ export class Bridge {
         }));
       let result: RecordValue;
       try {
-        await local(send);
-        result = { ok: true };
+        const input = await local(send);
+        result = { ok: true, input };
       } catch (error) {
         route.thrown = { value: error };
         result = { ok: false, error: describe(error) };

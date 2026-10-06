@@ -8,6 +8,12 @@ import {
   type PrerequisiteHandler,
 } from "./connection.mts";
 export type { Connection, ConnectionOptions } from "./connection.mts";
+/** Offline-readable Store identity is independent of credentials and transport URLs. */
+export type StoreConnection = ServerOptions & {
+  identity: { backend: string; viewer: string; contract: string };
+  projectionGeneration?: string;
+  options?: ConnectionOptions;
+};
 /** A rejection retained in the local inbox until dismissed. */
 export type Rejection = {
   ordinal: number;
@@ -131,19 +137,6 @@ export type {
   TransactionFailures,
   TransactionRejections,
 } from "./unsent.mts";
-import {
-  Loads,
-  type Load,
-  type LoadOptions,
-  type LoadStatus,
-} from "./loads.mts";
-export {
-  LoadError,
-  type Load,
-  type LoadOptions,
-  type LoadPhase,
-  type LoadStatus,
-} from "./loads.mts";
 
 /**
  * The native command field for an Action's store option, beside its args.
@@ -288,6 +281,16 @@ export function createClient<
     runCallback<T>(body: () => Promise<T>): Promise<T>;
     inCallback(): boolean;
     direct(operation: object): Promise<void>;
+    submitMutation<T>(
+      name: string,
+      version: number,
+      input:
+        | object
+        | ((
+            port: import("./local.mts").LocalTransaction,
+          ) => object | Promise<object>),
+      decode: (value: unknown) => T,
+    ): Promise<Call<T>>;
   },
 >(
   native: NativeCarrier,
@@ -309,7 +312,11 @@ export function createClient<
     /** Public transactions submitted and not yet settled. */
     #transactions = 0;
     #completionListeners = new Set<(completion: any) => void>();
-    #actions = new ActionRegistry();
+    #actions = new ActionRegistry(
+      undefined,
+      (callId) => this.#bridge.task({ kind: "callCompletion", callId }),
+      () => this.#guard(true),
+    );
     /** Once callers still waiting: closing the client settles them at once. */
     #waitingOnce = new Set<(error: CallError) => void>();
     #connecting = false;
@@ -321,8 +328,6 @@ export function createClient<
     #activePublicTx: Tx | undefined;
     /** Subscription handles by persistent identity; the runtime publishes their status. */
     readonly #subscriptions: Subscriptions;
-    /** Load handles; the runtime owns every job and publishes its status. */
-    readonly #loads: Loads;
     readonly clientId: string;
     /** The refusals retained until dismissed, each with the act as submitted. */
     readonly rejections: ClientRejections;
@@ -343,22 +348,6 @@ export function createClient<
       this.rejections = unsent.rejections;
       this.failures = unsent.failures;
       this.outbound = unsent.outbound;
-      this.#loads = new Loads(
-        {
-          task: (command, hooks, writes) => {
-            try {
-              this.#guard(writes);
-            } catch (error) {
-              return Promise.reject(error);
-            }
-            return bridge.task(command, hooks);
-          },
-          release: (command) => bridge.task(command),
-          observe: (observerId, listener) =>
-            bridge.observe(observerId, listener),
-        },
-        reportCallbackError,
-      );
       // Every call outcome the runtime committed - receipts, discards, direct
       // calls, once flights and rebuild abandonments - after the commit that
       // decided it. This is the only path completions take.
@@ -409,54 +398,55 @@ export function createClient<
     static async open(options: {
       path: string;
       schema: object;
-      migration?: { defaults?: RecordValue; replayPull?: boolean };
-      /** Rebuild at once when the schema is incompatible, leaving unsent work in the old file. */
-      discardPending?: boolean;
-      onStore?: Record<string, StoreHook<Tx>>;
-      /**
-       * Prerequisite handlers by the schema's prerequisite name, fixed for
-       * the client's lifetime. The runtime runs one whenever a task of that
-       * name becomes pending - after a commit, at open, after a reset - and
-       * retries a {@link PrerequisiteRetry} with backoff.
-       */
+      stream: string;
+      connection: StoreConnection;
       prerequisites?: Record<string, PrerequisiteHandler>;
     }) {
-      const { onStore, prerequisites: prerequisiteHandlers, ...wire } = options;
-      const required = { ...prerequisiteHandlers };
-      let client!: Client;
-      const handlers = Object.fromEntries(
-        Object.entries(onStore ?? {}).map(([model, hook]) => [
-          model,
-          (
-            transactionId: string,
-            changes: readonly RawStoreChange[],
-            cancellation: AbortSignal,
-          ) =>
-            client.#runStoreTransaction(
-              transactionId,
-              hook,
-              changes,
-              cancellation,
-            ),
-        ]),
-      );
+      if (!options.connection?.identity)
+        throw Error("connection identity is required");
+      const { backend, viewer, contract } = options.connection.identity;
+      const required = { ...options.prerequisites };
       let effects!: Effects;
       const { bridge, opened } = await Bridge.open(
         native,
         {
-          ...wire,
-          onStore: handlers,
+          path: options.path,
+          schema: options.schema,
+          binding: { backend, viewer, contract, stream: options.stream },
+          projectionGeneration: options.connection.projectionGeneration ?? "1",
           prerequisiteHandlers: Object.keys(required),
         },
         (bridge) => {
-          // Timers and prerequisite handlers are asked for from the first
-          // step, with or without a connection.
           effects = new Effects(bridge);
           prerequisites(effects, required);
         },
       );
-      client = new Client(bridge, opened.clientId, effects);
+      const client = new Client(bridge, opened.clientId, effects);
+      client.#stream = options.stream;
+      try {
+        await client.connect(
+          options.connection,
+          options.connection.options ?? {},
+        );
+      } catch (error) {
+        await client.close().catch(() => {});
+        throw error;
+      }
       return client;
+    }
+    #stream!: string;
+    get connection(): Connection | undefined {
+      return this.#connection?.handle;
+    }
+    /** Wait for the native manifest coverage and ordinary delta handoff. */
+    async bootstrap(): Promise<void> {
+      this.#guard(true);
+      return (await this.#subscriptions.subscribe(this.#stream)).bootstrap();
+    }
+    async resetStore(
+      options: { discardPending?: boolean } = {},
+    ): Promise<void> {
+      await this.#task({ kind: "resetStore", ...options });
     }
     /**
      * Run `body` as the callback of a local transaction the runtime owns. The
@@ -571,14 +561,6 @@ export function createClient<
         relation,
       });
     }
-    mutate(mutation: object): Promise<number> {
-      try {
-        this.#guard(true);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      return this.#bridge.task({ kind: "enqueue", mutation });
-    }
     /** One standalone Model write in its own local transaction. */
     direct(operation: object): Promise<void> {
       try {
@@ -591,32 +573,20 @@ export function createClient<
       });
     }
     /** Submit durable work and register its observer as soon as it committed. */
-    async invokeAction<T>(
+    /** Submit one named Mutation through the existing local transaction. */
+    async submitMutation<T>(
       name: string,
       version: number,
-      args: object,
+      input: import("./local.mts").MutationInput,
       decode: (value: unknown) => T,
-      options?: CallOptions,
     ): Promise<Call<T>> {
-      this.#actions.assertSupported();
-      let call: Call<T> | undefined;
-      try {
-        await this.submitAction(
-          name,
-          version,
-          args,
-          (callId) => {
-            call = this.#actions.register(callId, decode);
-          },
-          options,
-        );
-      } catch (error) {
-        throw actionError(error);
-      }
-      return call!;
+      this.#guard(true);
+      return this.transaction((tx) =>
+        tx.submitMutation(name, version, input, decode),
+      );
     }
     /** Execute a direct Action and decode its committed result. */
-    async invokeDirectAction<T>(
+    async #invokeQueryAttempt<T>(
       name: string,
       version: number,
       args: object,
@@ -625,7 +595,7 @@ export function createClient<
     ): Promise<T> {
       let outcome: DirectOutcome | undefined;
       try {
-        ({ outcome } = await this.callAction(name, version, args, options));
+        ({ outcome } = await this.#callAction(name, version, args, options));
       } catch (error) {
         throw actionError(error);
       }
@@ -633,7 +603,7 @@ export function createClient<
     }
     /**
      * Execute a direct Query. Without `once` it is exactly
-     * [`invokeDirectAction`]: a fresh request that reads and writes no
+     * [`invokeQueryAttempt`]: a fresh request that reads and writes no
      * snapshot. With `once`, Rust decides: a saved result is decoded without
      * any request or Model write, an active request is joined, or a new one
      * is executed and its successful result saved with its authority. Every
@@ -650,7 +620,7 @@ export function createClient<
       const call: CallOptions =
         options?.store === undefined ? {} : { store: options.store };
       if (!once)
-        return this.invokeDirectAction(name, version, args, decode, call);
+        return this.#invokeQueryAttempt(name, version, args, decode, call);
       let outcome: DirectOutcome | undefined;
       try {
         this.#guard(true);
@@ -736,33 +706,6 @@ export function createClient<
           .finally(() => this.#waitingOnce.delete(reject));
       });
     }
-    /**
-     * Internal Action seam. `onCommitted` runs while the submission's
-     * completion is dispatched - after the local commit, before any later
-     * event - so the call's `callCompleted` can never outrun it.
-     */
-    submitAction(
-      name: string,
-      version: number,
-      args: object,
-      onCommitted?: (callId: string, ordinal: number) => void,
-      options?: CallOptions,
-    ): Promise<{ callId: string; ordinal: number }> {
-      let store: { store?: unknown };
-      try {
-        this.#guard(true);
-        store = storeOption(options);
-      } catch (error) {
-        return Promise.reject(error);
-      }
-      return this.#bridge.task(
-        { kind: "submitAction", name, version, args, ...store },
-        {
-          settled: ({ callId, ordinal }: { callId: string; ordinal: number }) =>
-            onCommitted?.(callId, ordinal),
-        },
-      );
-    }
     onActionCompletion(listener: (completion: any) => void): () => void {
       this.#completionListeners.add(listener);
       return () => this.#completionListeners.delete(listener);
@@ -783,7 +726,7 @@ export function createClient<
      * bounds it, refreshes credentials once on 401 and applies the response
      * in one local transaction; the value is `{outcome}` after that commit.
      */
-    async callAction(
+    async #callAction(
       name: string,
       version: number,
       args: object,
@@ -811,48 +754,6 @@ export function createClient<
      * cancelled here; the Downlink worker sees the committed change and
      * reconciles its own session.
      */
-    async subscribeStream(stream: string): Promise<Subscription> {
-      this.#guard();
-      return this.#subscriptions.subscribe(stream);
-    }
-    /** The Stream surface the generated `streams` facade delegates to, with no logic of its own. */
-    get streams(): { subscribe(stream: string): Promise<Subscription> } {
-      return { subscribe: (stream) => this.subscribeStream(stream) };
-    }
-    subscribe(stream: string): Promise<Subscription> {
-      return this.subscribeStream(stream);
-    }
-    /**
-     * Accept a native Load durably ([#173](https://github.com/zanminwang/axton/issues/173))
-     * and answer its handle after the local commit; it needs no connection.
-     * Rust persists, schedules and applies every page; `options` are the
-     * call-site once controls, never sent to the backend.
-     */
-    startLoad<Name extends string>(
-      name: Name,
-      version: number,
-      args: object,
-      options?: LoadOptions,
-    ): Promise<Load<Name>> {
-      return this.#loads.start(name, version, args, options);
-    }
-    /** Reattach to a job of this replica: a fresh handle, or `null`. */
-    getLoad(id: string): Promise<Load | null> {
-      return this.#loads.get(id);
-    }
-    /** The most recently started jobs, newest first; `limit` 1..100, 50 by default. */
-    listLoads(options?: { limit?: number }): Promise<LoadStatus[]> {
-      return this.#loads.list(options);
-    }
-    /** Remove the once mappings of one Load argument set, offline, in a local commit. */
-    invalidateLoad(name: string, args: object): Promise<void> {
-      return this.#loads.invalidate(name, args);
-    }
-    /** Remove whatever registration this Stream name has; its handle stops. */
-    async unsubscribe(stream: string): Promise<void> {
-      this.#guard();
-      return this.#subscriptions.unsubscribeStream(stream);
-    }
     /**
      * Connect to `server`: install the effects the runtime will ask for, then
      * hand it the connection. The runtime runs both lanes and direct calls

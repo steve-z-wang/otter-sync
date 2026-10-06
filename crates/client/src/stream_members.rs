@@ -37,7 +37,7 @@ impl<S: ClientStore> Engine<'_, S> {
         )?;
         Ok(())
     }
-    fn local_layer(&mut self, key: &RecordKey) -> Result<Vec<Operation>> {
+    pub(crate) fn local_layer(&mut self, key: &RecordKey) -> Result<Vec<Operation>> {
         self.scalar(
             "SELECT operations FROM axton_local_replica_layer WHERE model=? AND identity=?",
             &[json!(key.model), json!(key.encoded_identity()?)],

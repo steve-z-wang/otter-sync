@@ -10,7 +10,7 @@ import {
   callbackRefusal,
   expiredRefusal,
   submitMutation,
-  type MutationOptions,
+  type MutationInput,
   type MutationPort,
   type SubmissionHost,
 } from "./local.mts";
@@ -18,10 +18,11 @@ export { strictJson, type RecordValue, type QuerySpec } from "./values.mts";
 export {
   LocalTransaction,
   type LocalCallback,
-  type MutationOptions,
+  type MutationInput,
   type MutationPort,
 } from "./local.mts";
 /** One open savepoint: the scope token the runtime issued for it, once known. */
+const callbackOwner = new AsyncLocalStorage<object>();
 type Frame = { scope?: string };
 /**
  * The commands of one application transaction callback. The runtime runs
@@ -59,6 +60,7 @@ export class Transaction {
       running: (delta) => void (this.#locals += delta),
       expired: () => expiredRefusal(this.#open, this.#poison),
       mutations,
+      localAdmit: () => this.#foreign(),
     };
   }
   /** Record a structural refusal: the transaction fails whatever is caught. */
@@ -68,20 +70,6 @@ export class Transaction {
   /** Runtime cancellation fences an escaped handle before user code settles. */
   cancel(): void {
     this.#open = false;
-  }
-  /** Local Stream intent inside this transaction; no Subscription handle. */
-  get streams(): {
-    subscribe(stream: string): Promise<void>;
-    unsubscribe(stream: string): Promise<void>;
-  } {
-    return {
-      subscribe: (stream) =>
-        this.#call({ kind: "stream", stream, subscribed: true }).then(() => {}),
-      unsubscribe: (stream) =>
-        this.#call({ kind: "stream", stream, subscribed: false }).then(
-          () => {},
-        ),
-    };
   }
   /** Dismiss a refusal as part of this transaction. */
   get rejections(): TransactionRejections {
@@ -96,7 +84,9 @@ export class Transaction {
   }
   async runCallback<T>(body: () => Promise<T>): Promise<T> {
     try {
-      return await this.#publicContext.run(this.#publicToken, body);
+      return await callbackOwner.run(this, () =>
+        this.#publicContext.run(this.#publicToken, body),
+      );
     } finally {
       this.#publicContext.disable();
     }
@@ -132,7 +122,18 @@ export class Transaction {
     return this.#admit() ?? this.#queue(command);
   }
   /** The refusal of an outer command, if any, before it is submitted. */
+  #foreign(): Error | undefined {
+    const owner = callbackOwner.getStore();
+    if (owner !== undefined && owner !== this) {
+      const error = Error("foreign transaction scope");
+      this.#poison(error);
+      return error;
+    }
+    return undefined;
+  }
   #admit(): Promise<never> | undefined {
+    const foreign = this.#foreign();
+    if (foreign) return Promise.reject(foreign);
     // Object lifetime: an escaped transaction object refuses before admission.
     if (!this.#open) return Promise.reject(Error("transaction_closed"));
     // A `local` callback owns the transaction until its submission settles:
@@ -156,11 +157,10 @@ export class Transaction {
   submitMutation<T>(
     name: string,
     version: number,
-    args: object,
+    input: MutationInput,
     decode: (value: unknown) => T,
-    options?: MutationOptions,
   ): Promise<Call<T>> {
-    return submitMutation(this.#host, name, version, args, decode, options);
+    return submitMutation(this.#host, name, version, input, decode);
   }
   /**
    * The callback returned. Promise lifetime decides "unawaited": a command
@@ -212,6 +212,8 @@ export class Transaction {
     return this.#call({ kind: "direct", operation });
   }
   savepoint<T>(body: () => Promise<T>): Promise<T> {
+    const foreign = this.#foreign();
+    if (foreign) return Promise.reject(foreign);
     if (!this.#open) return Promise.reject(Error("transaction_closed"));
     const refused = callbackRefusal(this.#locals, this.#poison);
     if (refused) return refused;

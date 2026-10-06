@@ -732,19 +732,7 @@
       "requirements": [],
       "sequence": null,
       "version": 1
-    }
-  ],
-  "clientPolicies": [],
-  "enums": [
-    {
-      "name": "Status",
-      "values": [
-        "open",
-        "closed"
-      ]
-    }
-  ],
-  "loads": [
+    },
     {
       "input": {
         "enums": [
@@ -784,6 +772,7 @@
           }
         }
       ],
+      "kind": "query",
       "name": "TodoPages",
       "outputEnums": [],
       "outputs": [
@@ -830,7 +819,20 @@
           "source": "handlerIdentity"
         }
       ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
       "version": 1
+    }
+  ],
+  "clientPolicies": [],
+  "enums": [
+    {
+      "name": "Status",
+      "values": [
+        "open",
+        "closed"
+      ]
     }
   ],
   "models": [

@@ -6,34 +6,26 @@ Use this index to find the interface you call or implement. Local Model examples
 
 | Interface | Use it to | Reference |
 | --- | --- | --- |
-| `GeneratedClient.open` | Open a local database and optionally start background sync | [Generated client](frontend/client-api.md#open-a-client) |
-| `onStore`, `StoreHooks`, `StoreChange` | React to typed incoming Model changes inside their local storage transaction | [React to incoming records](frontend/client-api.md#react-to-incoming-records) |
+| `GeneratedClient.open` | Bind a local database to one Stream and stable connection identity | [Generated client](frontend/client-api.md#open-a-client) |
 | `client.models.<model>` | Read, query, watch and follow relations in local data | [Model APIs](frontend/client-api.md#model-apis) |
 | `client.readSql`, `client.watchSql` | Read local data with SQL once, or keep a SQL answer over several Models current | [Escape-hatch reads](frontend/runtime.md#escape-hatch-reads), [Watch SQL](frontend/runtime.md#watch-sql-over-several-models), [Local table layout](frontend/runtime.md#local-table-layout) |
 | `client.fetch.<model>` | Read one record from the backend through its Loader, stored locally by default | [Fetch a record](frontend/client-api.md#fetch-a-record-from-the-backend) |
 | `client.transaction` | Commit local reads, direct writes and queued Mutations together | [Transactions](frontend/client-api.md#transactions) |
 | `tx.models.<model>` | Create, update or delete local-only records | [Local-only writes](frontend/client-api.md#local-only-writes) |
-| `tx.streams.subscribe / unsubscribe` | Change local Stream intent inside a transaction, including an `onStore` callback | [React to incoming records](frontend/client-api.md#react-to-incoming-records), [Transactions](frontend/client-api.md#transactions) |
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
-| `tx.mutations.<name>(args, { local })` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
-| `client.mutations.call.<name>` | Run a Mutation directly and await its final result | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
-| `client.queries.<name>`, `client.queries.enqueue.<name>` | Run a Query directly, or queue it durably and receive a `Call<Output>` | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
+| `tx.mutations.<name>(inputOrCallback)` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
+| `client.queries.<name>` | Read an invocation snapshot with request-level boolean storage policy | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `client.queries.<name>(args, { once, refresh })`, `client.queries.invalidate.<name>` | Reuse, refresh or discard the saved complete result of a direct Query | [Reuse a Query result](frontend/client-api.md#reuse-a-query-result-with-once) |
-| `client.loads.<name>(args, { once, refresh })`, `Load`, `LoadStatus`, `LoadPhase`, `LoadOptions` | Start a durable paged Load, or reuse or refresh a recorded one; observe, wait, cancel, retry or forget it | [Load data in pages](frontend/loads.md) |
-| `client.loads.invalidate.<name>`, `client.loads.get`, `client.loads.list` | Forget a recorded `once` job, reattach to a job by ID, list recent jobs | [Fresh start, once and reattach](frontend/loads.md#fresh-start-once-and-reattach) |
-| `LoadError`, Dart `LoadException` | Read the `code` and `message` of a failed, cancelled or refused Load | [Errors](frontend/loads.md#errors) |
-| `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` / `CallStore` | Read a durable outcome, handle failures and choose which Model outputs are stored | [Storing Model results](frontend/client-api.md#storing-model-results) |
-| `client.streams`, `Subscription` | Subscribe to a named stream and follow that registration's status | [Streams](frontend/client-api.md#streams) |
-| `subscription.bootstrap()`, `status.bootstrap` | Load what the stream held before this subscription started, and follow that load | [Streams](frontend/client-api.md#streams) |
+| `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` | Read a durable outcome, handle failures and handle failures; Query/Fetch choose a boolean storage policy | [Storing Model results](frontend/client-api.md#storing-model-results) |
+| `client.bootstrap()` | Await the marked initial manifest and actual Stream catch-up | [Bootstrap](frontend/loads.md) |
 | `client.connection` | Pause, resume or wake background sync | [Connections](frontend/runtime.md#connection-controls) |
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |
 | Dart `toAxtonPrecision()` (`AxtonDateTime`) | Get the UTC, millisecond `DateTime` AXTON stores for a value, to compare it with one read back | [Dates and times](frontend/client-api.md#dates-and-times) |
 | `Mutations<Tx>`, `Queries<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>` | Implement each operation's authoritative business logic | [Handlers](backend/api.md#handlers) |
-| `Loads<Tx>`, `LoadContext<Tx>`, `LoadStream`, `LoadHandlerCall`, `LoadNext`, `JsonValue` | Implement each Load's paged enumeration, optionally adding the records it returns to Streams | [Implement the backend handler](frontend/loads.md#implement-the-backend-handler), [Load handlers](backend/api.md#load-handlers) |
 | `Loaders<Tx>`, `LoaderCall` | Return current records for synchronization | [Loaders](backend/api.md#loaders) |
-| `invalidate`, `RecordDeclaration` | Declare a record a handler changed beyond its Model inputs, so it is stamped and delivered to its Streams (not returned to the caller) | [Streams](backend/api.md#streams) |
-| `stream(nameOrNames)`, `Stream`, `LoadStream`, `RecordDeclaration`, `RecordRef`, Model reference functions | Track records durably and request selected authority invalidation | [Streams](backend/api.md#streams) |
+| `invalidate`, `RecordDeclaration` | Declare a record a handler changed beyond its Model inputs, so holding Streams receive current authority (not a business result) | [Streams](backend/api.md#streams) |
+| `ctx.stream`, `ctx.streams(names)`, `Stream`, `BootstrapStream`, `RecordDeclaration`, `RecordRef`, Model reference functions | Track records durably and request selected authority invalidation | [Streams](backend/api.md#streams) |
 | `createBackend`, `Options<Tx>` | Connect your implementations to the backend runtime | [Backend setup](backend/api.md#createbackend), [What your backend owns](backend/api.md#what-your-backend-owns) |
 | `backend.listen` | Serve sync requests and close the listener | [Listener](backend/api.md#listener), [Deploy the backend](backend/deployment.md) |
 | `Authenticate`, `devAuth` | Identify the caller | [Authentication](backend/api.md#authentication) |

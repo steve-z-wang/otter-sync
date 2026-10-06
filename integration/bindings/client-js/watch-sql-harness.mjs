@@ -1,3 +1,4 @@
+import {openStore,offlineNetwork} from './store-fixture.mjs';
 // Watched read-only SQL over several Models (#184) through the real native
 // runtime: SQLite names the tables a statement reads, and the runtime re-runs
 // it only after a commit that writes one of them. Shared by the Node and
@@ -71,10 +72,8 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 async function withClient(Transaction, body) {
   const directory = await mkdtemp(join(tmpdir(), "axton-watch-sql-"));
-  const Client = createClient(native, Transaction, () => {
-    throw Error("no network");
-  });
-  const client = await Client.open({
+  const Client = createClient(native, Transaction, offlineNetwork);
+  const client = await openStore(Client,{
     path: join(directory, "client.sqlite"),
     schema,
   });
@@ -207,10 +206,8 @@ export function watchSqlTests(test, Transaction, { exactGuard }) {
 
   test("closing the client ends a watched statement", async () => {
     const directory = await mkdtemp(join(tmpdir(), "axton-watch-sql-"));
-    const Client = createClient(native, Transaction, () => {
-      throw Error("no network");
-    });
-    const client = await Client.open({
+    const Client = createClient(native, Transaction, offlineNetwork);
+    const client = await openStore(Client,{
       path: join(directory, "client.sqlite"),
       schema,
     });

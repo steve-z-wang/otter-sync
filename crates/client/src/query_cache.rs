@@ -138,6 +138,7 @@ pub(crate) fn derive_key(
     version: u64,
     args: &Value,
     store: &ActionStore,
+    protocol04: bool,
 ) -> Result<QueryCacheKey> {
     let action = schema.action(name, version)?;
     if action.kind != CallKind::Query {
@@ -155,14 +156,21 @@ pub(crate) fn derive_key(
         .iter()
         .filter(|output| axton_core::store_eligible(output))
         .peekable();
-    let store = match store.clone().canonical() {
-        _ if eligible.peek().is_none() => ActionStore::All,
-        ActionStore::Outputs(map)
-            if eligible.all(|output| map.get(&output.name) == Some(&false)) =>
-        {
-            ActionStore::None
+    let store = if protocol04 {
+        match store {
+            ActionStore::All | ActionStore::None => store.clone(),
+            _ => return Err(invalid("Query store must be a boolean")),
         }
-        other => other,
+    } else {
+        match store.clone().canonical() {
+            _ if eligible.peek().is_none() => ActionStore::All,
+            ActionStore::Outputs(map)
+                if eligible.all(|output| map.get(&output.name) == Some(&false)) =>
+            {
+                ActionStore::None
+            }
+            other => other,
+        }
     };
     let store = canonical_json(&store.wire().unwrap_or(json!(true)))?;
     let key = sha256_hex(&canonical_json(&json!({
@@ -338,6 +346,7 @@ impl<S: ClientStore> Client<S> {
             version,
             args,
             store,
+            self.context04.is_some(),
         )
     }
     /// The committed row for `key`, if any.
@@ -506,5 +515,23 @@ impl<S: ClientStore> Client<S> {
         } else {
             false
         }
+    }
+}
+impl<S: ClientStore> Client<S> {
+    pub(crate) fn finish_query_once04(
+        &mut self,
+        flight_id: &str,
+        request: &axton_core::v04::ReadIntent,
+        response: &axton_core::v04::ReadResponse,
+    ) -> Result<ApplyReport> {
+        let flight = self
+            .query_flights
+            .take(flight_id)
+            .ok_or_else(|| invalid("unknown query once flight"))?;
+        self.apply_query04(
+            request,
+            response,
+            Some((&flight.key, flight.generation.as_deref())),
+        )
     }
 }

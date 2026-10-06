@@ -1,24 +1,27 @@
 library;
 
-export 'src/client.dart';
+export 'src/client.dart'
+    show
+        Client,
+        Transaction,
+        LocalTransaction,
+        ActOperation,
+        RefusedAct,
+        FailedAct,
+        FailedTask,
+        SubmittedAct,
+        ClientRejections,
+        ClientFailures,
+        ClientOutbound,
+        TransactionRejections,
+        TransactionFailures;
 export 'src/date_time.dart';
 export 'src/actions.dart'
-    show
-        Call,
-        CallOutcome,
-        CallSuccess,
-        CallFailure,
-        CallStatus,
-        CallStore,
-        CallError;
-export 'src/loads.dart' show Load, LoadStatus, LoadPhase, LoadException;
+    show Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError;
 export 'src/port.dart';
 export 'src/sync_state.dart';
 export 'src/subscriptions.dart'
     show
-        Subscription,
-        SubscriptionStatus,
-        SubscriptionState,
         SubscriptionInitialization,
         SubscriptionConnection,
         SubscriptionClosedException,
@@ -35,8 +38,8 @@ export 'src/connection.dart'
         AdmissionRefused,
         ActionTransportException,
         AxtonReport,
-        StoreHookFailure,
         PrerequisiteRetry,
         PrerequisiteHandler;
 
-export 'src/live.dart' show SyncServer, HttpFailure;
+export 'src/live.dart'
+    show SyncServer, StoreConnection, StoreIdentity, HttpFailure;

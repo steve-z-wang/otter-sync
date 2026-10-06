@@ -1,3 +1,4 @@
+import {openStore} from '../client-js/store-fixture.mjs';
 // The React Native host shares the TypeScript runtime; this checks Query
 // once through its own transaction adapter and the real native runtime.
 import test from "node:test";
@@ -24,8 +25,9 @@ test("mobile once callers share one request, hit offline and refuse transactions
       requests++;
       await new Promise((resolve) => setTimeout(resolve, 10));
       return JSON.stringify({
+        context: body.context,
         completion: {
-          callId: body.call.callId,
+          callId: body.callId,
           outcome: {
             status: "succeeded",
             result: {
@@ -39,14 +41,14 @@ test("mobile once callers share one request, hit offline and refuse transactions
           {
             model: "Todo",
             identity: { id: "a" },
-            stamp: 1,
+            cursor: null,
             state: { title: "A" },
           },
         ],
       });
     },
   }));
-  const client = await Client.open({ path: join(directory, "db"), schema });
+  const client = await openStore(Client,{ path: join(directory, "db"), schema });
   const once = () =>
     client.invokeQuery("GetTodos", 1, { project: "p" }, (value) => value, {
       once: true,

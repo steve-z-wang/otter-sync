@@ -1,3 +1,5 @@
+import 'store_fixture.dart';
+import 'protocol4_transport.dart';
 // Query once through the real native runtime (#158): Rust decides Cached /
 // Join / Fetch; this host executes direct I/O over a real HTTP carrier,
 // shares one flight per decision and decodes an independent result per caller.
@@ -99,13 +101,19 @@ void main() {
   final arrivals = <int, Completer<void>>{};
 
   Future<Client> open() => Client.open(
+    stream: 'User:viewer',
+    connection: offlineStoreConnection(),
     path: '${directory.path}/db',
     schema: _schema,
     libraryPath: Platform.environment['AXTON_LIBRARY']!,
   );
-  Future<RuntimeConnection> connect(Client client) => client.connect(
-    SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => 'a'),
-  );
+  Future<RuntimeConnection> connect(Client client) async {
+    await client.connection?.close();
+    return client.connect(
+      SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => 'a'),
+    );
+  }
+
   Future<Map<String, dynamic>> once(
     Client client, {
     String project = 'p',
@@ -127,6 +135,7 @@ void main() {
     directory = await Directory.systemTemp.createTemp('axton-query-once-');
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     served = server.listen((request) async {
+      if (await answerEmptyBackground(request)) return;
       if (request.uri.path != '/sync/actions') {
         request.response.statusCode = 404;
         await request.response.close();
@@ -142,9 +151,10 @@ void main() {
         return;
       }
       final title = 'v$n';
-      final call = body['call'] as Map;
+      final call = body;
       request.response.write(
         jsonEncode({
+          'context': body['context'],
           'completion': {
             'callId': call['callId'],
             'outcome': {
@@ -163,7 +173,7 @@ void main() {
                   {
                     'model': 'Todo',
                     'identity': {'id': 'a'},
-                    'stamp': n,
+                    'cursor': null,
                     'state': {'title': title},
                   },
                 ],

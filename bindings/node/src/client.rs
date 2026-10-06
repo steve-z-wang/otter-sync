@@ -34,7 +34,9 @@ pub fn runtime_open(env: Env, request: String, wake: Wake) -> Result<String> {
     let owner = env.raw() as usize;
     OWNERS.watch(owner, || {
         env.add_env_cleanup_hook(owner, |owner| {
-            OWNERS.lost(owner);
+            for runtime in OWNERS.lost(owner) {
+                actor::join_closed(runtime);
+            }
         })
         .map(drop)
     })?;

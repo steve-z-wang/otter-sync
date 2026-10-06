@@ -231,17 +231,35 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     name,
                     version,
                     args.clone(),
-                    ActionCallOptions { store },
+                    ActionCallOptions {
+                        store: store.clone(),
+                    },
                 )
                 .map_err(|e| e.to_string())?;
-            let body = prepared.encode().map_err(|e| e.to_string())?;
+            let body = if self.client.request_context().is_ok() {
+                let request = self
+                    .client
+                    .freeze_query04(&prepared, &store)
+                    .map_err(|e| e.to_string())?;
+                axton_core::v04::encode(&request).map_err(|e| e.to_string())?
+            } else {
+                prepared.encode().map_err(|e| e.to_string())?
+            };
             let body = String::from_utf8(body).map_err(|_| "utf8".to_string())?;
             self.send_direct(request_id, prepared.call.call_id, body, None, None)?;
             return Ok(None);
         }
         let decision = self
             .client
-            .begin_query_once(name, version, args, &QueryOnceOptions { store, refresh })
+            .begin_query_once(
+                name,
+                version,
+                args,
+                &QueryOnceOptions {
+                    store: store.clone(),
+                    refresh,
+                },
+            )
             .map_err(|e| e.to_string())?;
         match decision {
             QueryOnce::Cached { result } => Ok(Some(
@@ -270,7 +288,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     self.client.fail_query_once(&flight_id);
                     return Err(UNAVAILABLE.into());
                 }
-                let body = request.encode().map_err(|e| e.to_string())?;
+                let body = if self.client.request_context().is_ok() {
+                    let read = self
+                        .client
+                        .freeze_query04(&request, &store)
+                        .map_err(|e| e.to_string())?;
+                    axton_core::v04::encode(&read).map_err(|e| e.to_string())?
+                } else {
+                    request.encode().map_err(|e| e.to_string())?
+                };
                 let body = String::from_utf8(body).map_err(|_| "utf8".to_string())?;
                 if let Err(error) = self.send_direct(
                     request_id,
@@ -502,16 +528,17 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         {
             return self.apply_fetch(request_id, response, now, entropy);
         }
-        let candidate = serde_json::from_str::<Value>(&response)
-            .ok()
-            .and_then(|raw| raw["records"].as_array().cloned())
-            .is_some_and(|records| {
-                self.has_store_hook_candidate(
-                    records
-                        .into_iter()
-                        .filter_map(|record| record["model"].as_str().map(str::to_string)),
-                )
-            });
+        let candidate = self.client.request_context().is_err()
+            && serde_json::from_str::<Value>(&response)
+                .ok()
+                .and_then(|raw| raw["records"].as_array().cloned())
+                .is_some_and(|records| {
+                    self.has_store_hook_candidate(
+                        records
+                            .into_iter()
+                            .filter_map(|record| record["model"].as_str().map(str::to_string)),
+                    )
+                });
         if candidate {
             let Some(call) = self.directs.calls.get(&request_id) else {
                 return;
@@ -554,11 +581,27 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .and_then(|flight| self.directs.joined.remove(flight))
             .unwrap_or_default();
         let generation = self.client.generation();
-        let applied = match &call.flight {
-            Some(flight) => self.client.finish_query_once(flight, response.as_bytes()),
-            None => self
-                .client
-                .apply_action_response_bytes(call.body.as_bytes(), response.as_bytes()),
+        let applied = if self.client.request_context().is_ok() {
+            axton_core::v04::decode::<axton_core::v04::ReadIntent>(call.body.as_bytes()).and_then(
+                |request| {
+                    let response = axton_core::v04::decode::<axton_core::v04::ReadResponse>(
+                        response.as_bytes(),
+                    )?;
+                    match &call.flight {
+                        Some(flight) => {
+                            self.client.finish_query_once04(flight, &request, &response)
+                        }
+                        None => self.client.apply_query04(&request, &response, None),
+                    }
+                },
+            )
+        } else {
+            match &call.flight {
+                Some(flight) => self.client.finish_query_once(flight, response.as_bytes()),
+                None => self
+                    .client
+                    .apply_action_response_bytes(call.body.as_bytes(), response.as_bytes()),
+            }
         };
         self.client.retire_request(&call.call_id);
         self.committed_since(generation);
@@ -651,21 +694,35 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             if !self.client.store_hooks_active() {
                 return Err((FETCH_SCHEMA_PENDING.into(), code(FETCH_SCHEMA_PENDING)));
             }
-            let request = self
-                .client
-                .prepare_fetch(model, version, identity, store)
-                .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+            let (call_id, identity, body) = if self.client.request_context().is_ok() {
+                let request = self
+                    .client
+                    .prepare_fetch04(model, version, identity, store)
+                    .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+                let body = axton_core::v04::encode(&request)
+                    .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+                (request.call_id, request.identity, body)
+            } else {
+                let request = self
+                    .client
+                    .prepare_fetch(model, version, identity, store)
+                    .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+                let body = request
+                    .encode()
+                    .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+                (request.call_id, request.identity, body)
+            };
             let key = FetchKey {
                 replica: self.directs.replica,
-                model: request.model.clone(),
-                version: request.version,
-                identity: crate::canonical_json(&request.identity)
+                model: model.into(),
+                version,
+                identity: crate::canonical_json(&identity)
                     .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?,
                 store,
             };
             if let Some(owner) = self.directs.fetches.get(&key).cloned() {
                 // The join uses the owning flight's original token.
-                self.client.retire_request(&request.call_id);
+                self.client.retire_request(&call_id);
                 self.directs
                     .fetch_joined
                     .entry(owner)
@@ -674,16 +731,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 return Ok(());
             }
             if self.connection.is_none() {
-                self.client.retire_request(&request.call_id);
+                self.client.retire_request(&call_id);
                 return Err((FETCH_UNAVAILABLE.into(), code(FETCH_UNAVAILABLE)));
             }
-            let body = request
-                .encode()
-                .map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))
-                .and_then(|body| {
-                    String::from_utf8(body).map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))
-                })?;
-            self.send_direct(request_id, request.call_id, body, None, Some(key.clone()))
+            let body = String::from_utf8(body).map_err(|e| refuse(FETCH_INVALID_OPTIONS, &e))?;
+            self.send_direct(request_id, call_id, body, None, Some(key.clone()))
                 .map_err(|_| (FETCH_UNAVAILABLE.to_string(), code(FETCH_UNAVAILABLE)))?;
             self.directs.fetches.insert(key, request_id.to_string());
             Ok(())
@@ -714,6 +766,37 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 FETCH_SCHEMA_PENDING,
                 code(FETCH_SCHEMA_PENDING),
             );
+        }
+        if self.client.request_context().is_ok() {
+            let decoded =
+                axton_core::v04::decode::<axton_core::v04::FetchIntent>(call.body.as_bytes())
+                    .and_then(|request| {
+                        axton_core::v04::decode::<axton_core::v04::ReadResponse>(
+                            response.as_bytes(),
+                        )
+                        .map(|response| (request, response))
+                    });
+            let (request, response) = match decoded {
+                Ok(pair) => pair,
+                Err(error) => {
+                    return self.fail_direct(
+                        &request_id,
+                        FETCH_INVALID_RESPONSE,
+                        caused(FETCH_INVALID_RESPONSE, error),
+                    );
+                }
+            };
+            let generation = self.client.generation();
+            let applied = self.client.apply_fetch04(&request, &response);
+            self.committed_since(generation);
+            return match applied {
+                Ok(report) => self.finish_fetch(request_id, report),
+                Err(error) => self.fail_direct(
+                    &request_id,
+                    FETCH_STORE_FAILED,
+                    caused(FETCH_STORE_FAILED, error),
+                ),
+            };
         }
         let (request, response) = match self
             .client

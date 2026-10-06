@@ -1,3 +1,4 @@
+import 'store_fixture.dart';
 // Unsent work (#186, #205, #204): refused and failed acts as streams, their
 // resolutions on the client and inside a transaction. The real runtime and
 // SQLite underneath.
@@ -95,11 +96,14 @@ void main() {
     Map<String, PrerequisiteHandler> prerequisites = const {},
   ]) async {
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: '${dir.path}/db',
       schema: _schema,
       libraryPath: Platform.environment['AXTON_LIBRARY']!,
       prerequisites: prerequisites,
     );
+    await client.connection!.pause();
     await client.direct({
       'model': 'Note',
       'op': 'create',
@@ -118,94 +122,13 @@ void main() {
     }
   }
 
+  String? code(CallOutcome<dynamic> result) =>
+      result is CallFailure ? result.error.code : null;
+  Future<String?> text(Client client) async =>
+      (await client.read('Note', {'id': 'n'}))?['text'] as String?;
+
   Future<bool> failed(Client client) async =>
       (await client.pendingTasks()).any((task) => task['state'] == 'failed');
-
-  /// Freeze the queue and answer it: [refuse] maps an ordinal to its code.
-  Future<void> settle(
-    Client client,
-    int sequence, {
-    Map<int, String> refuse = const {},
-    List<Map<String, dynamic>> records = const [],
-  }) async {
-    final request = jsonDecode((await client.freeze())!) as Map;
-    final rejections = <Map<String, dynamic>>[];
-    final completions = <Map<String, dynamic>>[];
-    for (final call in request['mutations'] as List) {
-      final code = refuse[call['ordinal']];
-      if (code != null) {
-        rejections.add({'ordinal': call['ordinal'], 'code': code});
-      }
-      completions.add({
-        'callId': call['callId'],
-        'outcome': code == null
-            ? {'status': 'succeeded', 'result': null}
-            : {'status': 'failed', 'code': code, 'execution': 'rejected'},
-      });
-    }
-    await client.acknowledge(sequence, {
-      'clientId': client.clientId,
-      'batchSequence': sequence,
-      'rejections': rejections,
-      'completions': completions,
-      'records': records,
-    });
-  }
-
-  Future<String> text(Client client) async =>
-      (await client.read('Note', {'id': 'n'}))!['text'] as String;
-
-  String? code(CallOutcome<dynamic> outcome) =>
-      outcome is CallFailure ? outcome.error.code : null;
-
-  test('a refusal keeps the act as submitted until it is dismissed', () async {
-    final client = await open();
-    try {
-      final refused = <List<RefusedAct>>[];
-      final pending = <int>[];
-      final a = client.rejections.watch().listen(refused.add);
-      final b = client.outbound.watchPending().listen(pending.add);
-      await until(() => refused.length == 1 && pending.length == 1);
-      expect(refused.single, isEmpty);
-      final call = await client.invokeAction(
-        'Write',
-        1,
-        _write("the author's words"),
-        _identity,
-      );
-      await settle(client, 1, refuse: {1: 'note.denied'});
-      await until(() => refused.length == 2 && pending.length == 3);
-      expect(pending, [0, 1, 0], reason: 'distinct values only');
-      final item = refused.last.single;
-      expect(
-        [item.id, item.name, item.version, item.code],
-        [1, 'Write', 1, 'note.denied'],
-      );
-      // The author's words come back from the retained act.
-      expect(item.act.args, _write("the author's words"));
-      final op = item.act.operations.single;
-      expect(
-        [op.model, op.op, op.identity, op.values],
-        [
-          'Note',
-          'update',
-          {'id': 'n'},
-          {'text': "the author's words", 'blob': null},
-        ],
-      );
-      expect(await text(client), 'base');
-      expect(code(await call.wait()), 'note.denied');
-      expect((await client.rejections.get(1))!.act.args, item.act.args);
-      expect(await client.rejections.get(2), isNull);
-      await client.rejections.dismiss(1);
-      await until(() => refused.length == 3);
-      expect(refused.last, isEmpty);
-      await a.cancel();
-      await b.cancel();
-    } finally {
-      await client.close();
-    }
-  });
 
   test(
     'a terminal handler failure lists the act; a retry runs the handler again',
@@ -219,7 +142,12 @@ void main() {
       try {
         final failures = <List<FailedAct>>[];
         final sub = client.failures.watch().listen(failures.add);
-        await client.submitAction('Write', 1, _write('photo', 'X'));
+        await client.submitMutation(
+          'Write',
+          1,
+          _write('photo', 'X'),
+          _identity,
+        );
         await until(() => failures.any((items) => items.isNotEmpty));
         final act = failures.last.single;
         expect([act.ordinal, act.name, act.version], [1, 'Write', 1]);
@@ -257,17 +185,20 @@ void main() {
       try {
         final failures = <List<FailedAct>>[];
         final sub = client.failures.watch().listen(failures.add);
-        await client.submitAction('Write', 1, _write('one', 'X'));
+        await client.submitMutation('Write', 1, _write('one', 'X'), _identity);
         await until(() => failures.any((items) => items.length == 1));
-        await client.submitAction('Write', 1, _write('two', 'X'));
+        await client.submitMutation('Write', 1, _write('two', 'X'), _identity);
         await until(() => failures.any((items) => items.length == 2));
         expect(failures.last.map((act) => act.ordinal), [1, 2]);
         expect(calls, 1, reason: 'the failed task is not reset');
         await client.failures.retry([_blob('X')]);
         await until(() async => (await client.pendingTasks()).isEmpty);
         expect(calls, 2, reason: 'one handler run covers both acts');
-        final request = jsonDecode((await client.freeze())!) as Map;
-        expect((request['mutations'] as List).map((m) => m['ordinal']), [1, 2]);
+        expect((await client.syncState())['pending'], 2);
+        expect(
+          (await client.recordSyncState('Note', {'id': 'n'}))['pending'].length,
+          2,
+        );
         await sub.cancel();
       } finally {
         await client.close();
@@ -280,10 +211,10 @@ void main() {
     () async {
       final client = await open();
       try {
-        final created = await client.invokeAction('Create', 1, {
+        final created = await client.submitMutation('Create', 1, {
           'note': {'id': 'm', 'text': 'new', 'blob': null},
         }, _identity);
-        final edited = await client.invokeAction('Write', 1, {
+        final edited = await client.submitMutation('Write', 1, {
           'note': {'id': 'm', 'text': 'edited', 'blob': null},
         }, _identity);
         await client.failures.drop(1);
@@ -294,6 +225,12 @@ void main() {
         expect(refused.map((r) => [r.id, r.code]), [
           [2, 'dependency.rejected'],
         ]);
+        expect(refused.single.act.args, {
+          'note': {'id': 'm', 'text': 'edited', 'blob': null},
+        });
+        expect(refused.single.act.operations.single.values!['text'], 'edited');
+        await client.rejections.dismiss(2);
+        expect(await client.rejections.get(2), isNull);
       } finally {
         await client.close();
       }
@@ -308,7 +245,7 @@ void main() {
             throw StateError('upload refused'),
       });
       try {
-        final original = await client.invokeAction(
+        final original = await client.submitMutation(
           'Write',
           1,
           _write('draft', 'X'),
@@ -340,19 +277,8 @@ void main() {
           ],
           reason: 'not sequenced after the original',
         );
-        await settle(
-          client,
-          1,
-          records: [
-            {
-              'model': 'Note',
-              'identity': {'id': 'n'},
-              'stamp': 1,
-              'state': {'text': 'fixed', 'blob': null},
-            },
-          ],
-        );
-        expect(code(await replacement.wait()), isNull, reason: 'accepted');
+        expect(replacement.status, CallStatus.pending);
+        expect((await client.syncState())['pending'], 1);
       } finally {
         await client.close();
       }
@@ -367,7 +293,12 @@ void main() {
             throw StateError('upload refused'),
       });
       try {
-        await client.submitAction('Write', 1, _write('draft', 'X'));
+        await client.submitMutation(
+          'Write',
+          1,
+          _write('draft', 'X'),
+          _identity,
+        );
         await until(() => failed(client));
         await expectLater(
           client.transaction((tx) async {
@@ -402,10 +333,10 @@ void main() {
         'identity': {'id': 'n'},
         'values': {'text': 'local'},
       });
-      await client.submitAction('Write', 1, _write('one'));
+      await client.submitMutation('Write', 1, _write('one'), _identity);
       await until(() => counts.length == 2);
       await sub.cancel();
-      await client.submitAction('Write', 1, _write('two'));
+      await client.submitMutation('Write', 1, _write('two'), _identity);
       expect(counts, [0, 1], reason: 'no value after cancel');
       // Inside a transaction a stream is refused.
       await client.transaction((tx) async {

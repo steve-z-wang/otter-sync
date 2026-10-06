@@ -67,25 +67,29 @@ test("throwing mobile diagnostic listener does not stop later native Query compl
       { name: "Ping", version: 1, kind: "query", inputs: [], outputs: [] },
     ],
   };
-  const client = await openStore(Client, {
-      path: join(directory, "store"),
-      schema,
-    }),
-    previous = globalThis.reportError,
+  const previous = globalThis.reportError,
     diagnostic = Error("mobile listener failed"),
     observed = [],
     reports = [];
+  let client;
   globalThis.reportError = (error) => observed.push(error);
   try {
-    await client.connect(
-      { url: "http://fixture", token: "mobile" },
-      {
-        onError: (report) => {
-          reports.push(report);
-          throw diagnostic;
+    // Bound open activates transport: register diagnostics before its first pull.
+    client = await openStore(Client, {
+      path: join(directory, "store"),
+      schema,
+      connection: {
+        url: "http://fixture",
+        token: "mobile",
+        identity: { backend: "sdk-test", viewer: "viewer", contract: "v04" },
+        options: {
+          onError: (report) => {
+            reports.push(report);
+            throw diagnostic;
+          },
         },
       },
-    );
+    });
     await client.bootstrap();
     for (let i = 0; i < 3; i++)
       assert.equal(
@@ -99,7 +103,7 @@ test("throwing mobile diagnostic listener does not stop later native Query compl
     assert.equal((await client.syncState()).pending, 0);
   } finally {
     globalThis.reportError = previous;
-    await client.close();
+    await client?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

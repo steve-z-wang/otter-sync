@@ -4,7 +4,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createClient} from '../../../packages/client-js/runtime.mts';
-import {openStore} from './store-fixture.mjs';
+import {openStore,offlineNetwork} from './store-fixture.mjs';
 const native=createRequire(import.meta.url)('../../../bindings/node/axton-node.node');
 const schema={models:[],enums:[],actions:[{name:'Ping',kind:'query',version:1,inputs:[],outputs:[]}]};
 const until=async(probe)=>{const deadline=Date.now()+5000;while(!probe()){assert.ok(Date.now()<deadline,'Bootstrap fixture timed out');await new Promise(r=>setTimeout(r,2));}};
@@ -12,7 +12,8 @@ export function bootstrapSuite(test,Transaction){
  async function harness(body){
   const directory=await mkdtemp(join(tmpdir(),'axton-bootstrap-'));const requests=[];let releaseTail;
   let held=false;const gate=new Promise(resolve=>releaseTail=resolve);
-  const Client=createClient(native,Transaction,()=>({open(){},async push(kind,text){
+  const Client=createClient(native,Transaction,options=>({open(){},async push(kind,text){
+   if(options.url!=='http://fixture')return offlineNetwork().push(kind,text);
    assert.equal(kind,'pull');const value=JSON.parse(text);requests.push(value);
    if(value.kind==='start')return JSON.stringify({context:value.context,manifestId:'fixed',start:0,total:0});
    if(value.kind==='tail'){if(held)await gate;return JSON.stringify({context:value.context,manifestId:'fixed',head:0});}

@@ -63,6 +63,9 @@ pub async fn process_fetch(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
+    if crate::protocol_v04::is_request(bytes) {
+        return crate::protocol_v04::fetch(config, owner, bytes, host).await;
+    }
     crate::admit_protocol(bytes)?;
     principal(owner)?;
     let mut request = FetchRequest::decode_envelope(bytes).map_err(request_invalid)?;

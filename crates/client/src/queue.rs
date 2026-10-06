@@ -163,6 +163,7 @@ impl<S: ClientStore> Engine<'_, S> {
         op: &Operation,
     ) -> Result<()> {
         let key = self.schema.record_key(&op.model, &op.identity)?;
+        self.capture_operation04(ordinal, position, &key)?;
         self.exec(
             "axton_mutation_operation",
             "INSERT INTO axton_mutation_operation (ordinal, position, kind, model, identity, op, \"values\") VALUES (?,?,?,?,?,?,?)",
@@ -200,6 +201,7 @@ impl<S: ClientStore> Engine<'_, S> {
         mutation: &Mutation,
         ordered: &[(OpKind, &Operation)],
     ) -> Result<()> {
+        self.freeze_mutation04(ordinal, mutation)?;
         let args = mutation.args.as_ref().map(canonical_json).transpose()?;
         // NULL is the default (all) policy, including for rows written
         // before the column existed.

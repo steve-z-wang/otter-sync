@@ -516,6 +516,9 @@ pub struct EnumDecl {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelDecl {
     pub name: String,
+    pub abstract_model: bool,
+    pub parent: Option<String>,
+    pub bootstrap: bool,
     /// The read-contract version declared by `@@version(n)`; 1 when omitted.
     pub version: u64,
     pub identity: Vec<String>,
@@ -664,7 +667,15 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
                 "action declarations were replaced: declare mutation Name(...) or query Name(...)",
             ));
         }
-        let kind = p.take();
+        let abstract_model = p.eat("abstract");
+        if abstract_model {
+            p.need("model")?;
+        }
+        let kind = if abstract_model {
+            "model".into()
+        } else {
+            p.take()
+        };
         let name = p.ident()?;
         // `mutation Name(` and `query Name(` are operations; the older
         // `mutation Name { slots }` block keeps its own grammar below.
@@ -750,6 +761,14 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
             d.prerequisites.push(PrerequisiteDecl { name, fields, pos });
             continue;
         }
+        let parent = if kind == "model" && p.eat("extends") {
+            Some(p.ident()?)
+        } else {
+            None
+        };
+        if abstract_model && leading_version_seen {
+            return Err(at(pos, "abstract models cannot declare a runtime version"));
+        }
         p.need("{")?;
         match kind.as_str() {
             "enum" => {
@@ -780,6 +799,7 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
                 });
             }
             "model" => {
+                let mut bootstrap = false;
                 let (mut fields, mut identity, mut unique) = (vec![], vec![], vec![]);
                 let (mut version, mut version_seen) = (leading_version, leading_version_seen);
                 while !p.eat("}") {
@@ -787,6 +807,19 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
                     if p.eat("@") {
                         p.need("@")?;
                         let attr = p.ident()?;
+                        if abstract_model {
+                            return Err(at(
+                                directive_pos,
+                                "abstract models cannot declare model directives",
+                            ));
+                        }
+                        if attr == "bootstrap" {
+                            if bootstrap {
+                                return Err(at(directive_pos, "duplicate bootstrap"));
+                            }
+                            bootstrap = true;
+                            continue;
+                        }
                         if attr == "version" {
                             version = p.version(&mut version_seen)?;
                             continue;
@@ -812,6 +845,9 @@ pub fn parse(source: &str) -> Result<Declarations, String> {
                 }
                 d.models.push(ModelDecl {
                     name,
+                    abstract_model,
+                    parent,
+                    bootstrap,
                     version,
                     identity,
                     fields,

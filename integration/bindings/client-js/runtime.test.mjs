@@ -1,3 +1,4 @@
+import {openStore} from './store-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -6,7 +7,8 @@ import { join } from 'node:path';
 import { Client } from '../../../packages/client-js/index.mts';
 
 const schema = JSON.parse(await readFile(new URL('../../../fixtures/schemas/entry.json', import.meta.url), 'utf8'));
-const edit = (id, text) => ({ name: 'Edit', operations: [{ model: 'Entry', op: 'update', identity: { id }, values: { text } }] });
+const edit=(id,text)=>({entry:{id,text}});
+schema.actions=['Edit','Create'].map(name=>({name,version:1,kind:'mutation',inputs:[{kind:'model',name:'entry',model:'Entry',operation:name==='Edit'?'update':'create',cardinality:'single',allowedFields:['text','note']}],outputs:[]}));
 async function within(promise, ms) {
  let timeout;
  try {
@@ -16,16 +18,16 @@ async function within(promise, ms) {
 
 test('a captured client mutate rejects promptly inside its transaction callback', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-runtime-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  let release, entered;
  const gate = new Promise(resolve => { release = resolve; });
  const started = new Promise(resolve => { entered = resolve; });
  let attempt;
  try {
   await client.transaction(tx => tx.direct({ model: 'Entry', op: 'create', identity: { id: 'e' }, values: { text: 'A' } }));
-  const capturedMutate = client.mutate.bind(client);
+  const capturedMutate = client.submitMutation.bind(client,'Edit',1);
   const transaction = client.transaction(async () => {
-   attempt = capturedMutate(edit('e', 'B')).then(() => 'accepted', error => error.message);
+   attempt = capturedMutate(edit('e', 'B'),value=>value).then(() => 'accepted', error => error.message);
    entered();
    await gate;
   });
@@ -37,14 +39,14 @@ test('a captured client mutate rejects promptly inside its transaction callback'
    await transaction;
   }
   assert.equal((await client.syncState()).pending, 0);
-  assert.equal(await client.mutate(edit('e', 'C')), 1);
+  assert.equal((await client.submitMutation('Edit',1,edit('e','C'),value=>value)).status,'pending');
   assert.equal((await client.read('Entry', { id: 'e' })).text, 'C');
  } finally { await client.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('an unrelated Node async context waits for a transaction then enqueues', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-runtime-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  let release, entered;
  const gate = new Promise(resolve => { release = resolve; });
  const started = new Promise(resolve => { entered = resolve; });
@@ -52,28 +54,22 @@ test('an unrelated Node async context waits for a transaction then enqueues', as
   await client.transaction(tx => tx.direct({ model: 'Entry', op: 'create', identity: { id: 'e' }, values: { text: 'A' } }));
   const transaction = client.transaction(async tx => { entered(); assert.equal('mutate' in tx, false); await gate; });
   await started;
-  const mutation = client.mutate(edit('e', 'B'));
+  const mutation = client.submitMutation('Edit',1,edit('e','B'),value=>value);
   assert.equal(await within(mutation.then(() => 'committed'), 50), 'timeout');
   release();
   await transaction;
-  assert.equal(await mutation, 1);
+  assert.equal((await mutation).status,'pending');
   assert.equal((await client.read('Entry', { id: 'e' })).text, 'B');
  } finally { release?.(); await client.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('failed standalone enqueue rolls back its queue entry and optimistic record', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-runtime-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  try {
-  await assert.rejects(client.mutate({ name: 'Broken', operations: [
-   { model: 'Entry', op: 'create', identity: { id: 'failed' }, values: { text: 'optimistic' } },
-   { model: 'Missing', op: 'create', identity: { id: 'missing' }, values: { text: 'invalid' } },
-  ] }));
-  assert.equal((await client.syncState()).pending, 0);
-  assert.equal(await client.read('Entry', { id: 'failed' }), null);
-  assert.equal(await client.mutate({ name: 'Create', operations: [
-   { model: 'Entry', op: 'create', identity: { id: 'good' }, values: { text: 'committed' } },
-  ] }), 1);
+  await assert.rejects(client.submitMutation('Create',1,{entry:{id:'failed',text:'optimistic',unknown:'invalid'}},value=>value));
+  assert.equal((await client.syncState()).pending,0);assert.equal(await client.read('Entry',{id:'failed'}),null);
+  assert.equal((await client.submitMutation('Create',1,{entry:{id:'good',text:'committed',note:null}},value=>value)).status,'pending');
  } finally { await client.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -82,12 +78,10 @@ test('standalone queued mutation and optimistic value survive SQLite reopen', as
  const path = join(dir, 'client.sqlite');
  let client;
  try {
-  client = await Client.open({ path, schema });
-  assert.equal(await client.mutate({ name: 'Create', operations: [
-   { model: 'Entry', op: 'create', identity: { id: 'queued' }, values: { text: 'persistent' } },
-  ] }), 1);
+  client = await openStore(Client,{ path, schema });
+  await client.submitMutation('Create',1,{entry:{id:'queued',text:'persistent',note:null}},value=>value);
   await client.close();
-  client = await Client.open({ path, schema });
+  client = await openStore(Client,{ path, schema });
   assert.equal((await client.syncState()).pending, 1);
   assert.equal((await client.read('Entry', { id: 'queued' })).text, 'persistent');
  } finally { await client?.close(); await rm(dir, { recursive: true, force: true }); }
@@ -106,7 +100,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 30));
 
 test('watch delivers the committed rows, then only a result that changed, and nothing after stop', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-watch-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  try {
   const seen = [];
   const errors = [];
@@ -134,7 +128,7 @@ test('watch delivers the committed rows, then only a result that changed, and no
 
 test('a watch listener that throws is reported to onError and hears every later result', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-watch-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  try {
   const seen = [];
   const errors = [];
@@ -187,7 +181,8 @@ async function scriptedWatchClient() {
   runtimeDetach() {},
  };
  const Scripted = createClient(carrier, Transaction, () => ({ push: async () => '', open() {} }));
- const client = await Scripted.open({ path: 'unused', schema });
+ const client = await openStore(Scripted,{ path: 'unused', schema });
+ tasks.length=0;
  return { client, tasks, publish(...events) { outbox.push(...events); wake('1'); } };
 }
 
@@ -217,7 +212,7 @@ test('stop unregisters the watch by its observer id; a watch stopped before regi
 
 test('inside a callback, every task of the outer client rejects promptly with transaction_active', async () => {
  const dir = await mkdtemp(join(tmpdir(), 'axton-runtime-guard-'));
- const client = await Client.open({ path: join(dir, 'client.sqlite'), schema });
+ const client = await openStore(Client,{ path: join(dir, 'client.sqlite'), schema });
  try {
   await client.direct(create('e', 'A'));
   const outcomes = {};
@@ -234,10 +229,8 @@ test('inside a callback, every task of the outer client rejects promptly with tr
    outcomes.querySpec = await message(client.querySpec('Entry'));
    outcomes.syncState = await message(client.syncState());
    outcomes.recordState = await message(client.syncState('Entry', { id: 'e' }));
-   outcomes.subscribe = await message(client.subscribe('scope'));
-   outcomes.subscribeStream = await message(client.subscribeStream('scope'));
-   outcomes.unsubscribe = await message(client.unsubscribe('scope'));
-   outcomes.rebuild = await message(client.rebuild());
+   outcomes.bootstrap=await message(client.bootstrap());
+   outcomes.resetStore=await message(client.resetStore());
    outcomes.pendingTasks = await message(client.pendingTasks());
    outcomes.setReadiness = await message(client.setReadiness('k', 'ready'));
    outcomes.drop = await message(client.drop(1));
@@ -252,6 +245,6 @@ test('inside a callback, every task of the outer client rejects promptly with tr
   assert.deepEqual(rows, [], 'no nested body ran and no watch delivered');
   // Nothing was left parked behind the transaction.
   assert.equal((await client.read('Entry', { id: 'e' })).text, 'inside');
-  assert.deepEqual((await client.syncState()).streams, []);
+  assert.equal((await client.syncState()).pending,0);
  } finally { await client.close(); await rm(dir, { recursive: true, force: true }); }
 });

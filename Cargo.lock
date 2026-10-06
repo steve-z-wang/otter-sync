@@ -56,6 +56,7 @@ dependencies = [
  "serde",
  "serde_jcs",
  "serde_json",
+ "sha2",
  "thiserror",
  "uuid",
 ]
@@ -84,12 +85,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "uuid",
 ]
 
 [[package]]
 name = "axton-sim"
 version = "0.3.0"
 dependencies = [
+ "axton-binding",
  "axton-client",
  "axton-core",
  "axton-server",

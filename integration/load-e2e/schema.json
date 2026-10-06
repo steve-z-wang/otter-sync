@@ -59,6 +59,134 @@
     {
       "input": {
         "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "project",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Item"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Item",
+          "name": "item",
+          "operation": "create"
+        }
+      ],
+      "kind": "mutation",
+      "name": "AddItem",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "single",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Item"
+          },
+          "kind": "model",
+          "model": "Item",
+          "modelReadVersion": 1,
+          "name": "item",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 2
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "shelf",
+          "nullable": true,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "query",
+      "name": "Catalog",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Item"
+          },
+          "kind": "model",
+          "model": "Item",
+          "modelReadVersion": 1,
+          "name": "items",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
         "models": []
       },
       "inputs": [
@@ -79,6 +207,77 @@
       "name": "Ping",
       "outputEnums": [],
       "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "project",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "query",
+      "name": "ProjectItems",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Item"
+          },
+          "kind": "model",
+          "model": "Item",
+          "modelReadVersion": 1,
+          "name": "items",
+          "source": "handlerIdentity"
+        },
+        {
+          "cardinality": "list",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Tag"
+          },
+          "kind": "model",
+          "model": "Tag",
+          "modelReadVersion": 1,
+          "name": "tags",
+          "source": "handlerIdentity"
+        }
+      ],
       "prerequisites": [],
       "requirements": [],
       "sequence": null,
@@ -134,81 +333,55 @@
       "requirements": [],
       "sequence": null,
       "version": 1
-    }
-  ],
-  "clientPolicies": [],
-  "enums": [],
-  "loads": [
-    {
-      "input": {
-        "enums": [],
-        "models": []
-      },
-      "inputs": [
-        {
-          "cardinality": "single",
-          "kind": "value",
-          "list": false,
-          "name": "shelf",
-          "nullable": true,
-          "required": true,
-          "type": {
-            "kind": "scalar",
-            "name": "string"
-          }
-        }
-      ],
-      "name": "Catalog",
-      "outputEnums": [],
-      "outputs": [
-        {
-          "cardinality": "list",
-          "handlerType": {
-            "fields": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "scalar",
-                  "name": "string"
-                }
-              }
-            ],
-            "kind": "identity",
-            "model": "Item"
-          },
-          "kind": "model",
-          "model": "Item",
-          "modelReadVersion": 1,
-          "name": "items",
-          "source": "handlerIdentity"
-        }
-      ],
-      "version": 1
     },
     {
       "input": {
         "enums": [],
-        "models": []
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "title",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Item"
+          }
+        ]
       },
       "inputs": [
         {
+          "allowedPatchFields": [
+            "title"
+          ],
           "cardinality": "single",
-          "kind": "value",
-          "list": false,
-          "name": "project",
-          "nullable": false,
-          "required": true,
-          "type": {
-            "kind": "scalar",
-            "name": "string"
-          }
+          "kind": "model",
+          "model": "Item",
+          "name": "item",
+          "operation": "update"
         }
       ],
-      "name": "ProjectItems",
+      "kind": "mutation",
+      "name": "RenameItem",
       "outputEnums": [],
       "outputs": [
         {
-          "cardinality": "list",
+          "cardinality": "single",
           "handlerType": {
             "fields": [
               {
@@ -225,36 +398,21 @@
           "kind": "model",
           "model": "Item",
           "modelReadVersion": 1,
-          "name": "items",
-          "source": "handlerIdentity"
-        },
-        {
-          "cardinality": "list",
-          "handlerType": {
-            "fields": [
-              {
-                "name": "id",
-                "type": {
-                  "kind": "scalar",
-                  "name": "string"
-                }
-              }
-            ],
-            "kind": "identity",
-            "model": "Tag"
-          },
-          "kind": "model",
-          "model": "Tag",
-          "modelReadVersion": 1,
-          "name": "tags",
+          "name": "item",
           "source": "handlerIdentity"
         }
       ],
-      "version": 1
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 2
     }
   ],
+  "clientPolicies": [],
+  "enums": [],
   "models": [
     {
+      "bootstrap": true,
       "fields": [
         {
           "name": "id",

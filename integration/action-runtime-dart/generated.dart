@@ -2,11 +2,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
-export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, StoreIdentity, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
-final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","list":true,"name":"moods","nullable":false,"required":true,"type":{"kind":"enum","name":"Mood"}},{"cardinality":"single","kind":"value","list":false,"name":"maybe","nullable":true,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"mutation","name":"Echo","outputEnums":[{"name":"Mood","values":["calm","loud"]}],"outputs":[{"cardinality":"single","kind":"value","name":"result","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","name":"moods","source":"handlerValue","type":{"kind":"enum","name":"Mood"}},{"cardinality":"optional","kind":"value","name":"maybe","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"query","name":"Now","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Note","name":"note","operation":"create"},{"allowedPatchFields":["at"],"cardinality":"optional","kind":"model","model":"Note","name":"changed","operation":"update"}],"kind":"mutation","name":"Touch","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"stamp","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[{"name":"Mood","values":["calm","loud"]}],"loads":[{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"since","nullable":true,"required":true,"type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","list":true,"name":"moods","nullable":false,"required":true,"type":{"kind":"enum","name":"Mood"}}],"name":"NotesSince","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"notes","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"pinned","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[{"name":"Mood","values":["calm","loud"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","version":1}]}') as Map<String,dynamic>;
+final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","list":true,"name":"moods","nullable":false,"required":true,"type":{"kind":"enum","name":"Mood"}},{"cardinality":"single","kind":"value","list":false,"name":"maybe","nullable":true,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"mutation","name":"Echo","outputEnums":[{"name":"Mood","values":["calm","loud"]}],"outputs":[{"cardinality":"single","kind":"value","name":"result","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","name":"moods","source":"handlerValue","type":{"kind":"enum","name":"Mood"}},{"cardinality":"optional","kind":"value","name":"maybe","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"since","nullable":true,"required":true,"type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"list","kind":"value","list":true,"name":"moods","nullable":false,"required":true,"type":{"kind":"enum","name":"Mood"}}],"kind":"query","name":"NotesSince","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"notes","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"pinned","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"query","name":"Now","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Note","name":"note","operation":"create"},{"allowedPatchFields":["at"],"cardinality":"optional","kind":"model","model":"Note","name":"changed","operation":"update"}],"kind":"mutation","name":"Touch","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"stamp","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[{"name":"Mood","values":["calm","loud"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[{"name":"Mood","values":["calm","loud"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"at","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"label","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","version":1}]}') as Map<String,dynamic>;
 enum Mood { calm, loud }
 /// What a fresh create of Note accepts: a complete [Note], or a [NoteCreate] that may omit fields with creation defaults.
 abstract interface class NoteCreateInput { Map<String,dynamic> toCreateRecord(); }
@@ -111,6 +110,17 @@ class NoteUpdate implements _DartActionRecord {
  if (label != null) 'label': _dartActionEncode(label!.value),
  };
 }
+class EchoHandlerInput implements _DartActionRecord {
+ final DateTime at;
+ final List<Mood> moods;
+ final DateTime? maybe;
+ const EchoHandlerInput({required this.at,required this.moods,required this.maybe});
+ Map<String,dynamic> toRecord() => {
+ 'at': _dartActionEncode(at),
+ 'moods': _dartActionEncode(moods),
+ 'maybe': _dartActionEncode(maybe),
+ };
+}
 class EchoInput implements _DartActionRecord {
  final DateTime at;
  final List<Mood> moods;
@@ -144,6 +154,49 @@ class EchoHandlerOutput implements _DartActionRecord {
  'maybe': _dartActionEncode(maybe),
  };
 }
+class NotesSinceHandlerInput implements _DartActionRecord {
+ final DateTime? since;
+ final List<Mood> moods;
+ const NotesSinceHandlerInput({required this.since,required this.moods});
+ Map<String,dynamic> toRecord() => {
+ 'since': _dartActionEncode(since),
+ 'moods': _dartActionEncode(moods),
+ };
+}
+class NotesSinceInput implements _DartActionRecord {
+ final DateTime? since;
+ final List<Mood> moods;
+ const NotesSinceInput({required this.since,required this.moods});
+ Map<String,dynamic> toRecord() => {
+ 'since': _dartActionEncode(since),
+ 'moods': _dartActionEncode(moods),
+ };
+}
+class NotesSinceOutput implements _DartActionRecord {
+ final List<Note> notes;
+ final List<Note> pinned;
+ const NotesSinceOutput({required this.notes,required this.pinned});
+ Map<String,dynamic> toRecord() => {
+ 'notes': _dartActionEncode(notes),
+ 'pinned': _dartActionEncode(pinned),
+ };
+}
+class NotesSinceHandlerOutput implements _DartActionRecord {
+ final List<NoteIdentity> notes;
+ final List<NoteIdentity> pinned;
+ const NotesSinceHandlerOutput({required this.notes,required this.pinned});
+ Map<String,dynamic> toRecord() => {
+ 'notes': _dartActionEncode(notes),
+ 'pinned': _dartActionEncode(pinned),
+ };
+}
+class NowHandlerInput implements _DartActionRecord {
+ final DateTime at;
+ const NowHandlerInput({required this.at});
+ Map<String,dynamic> toRecord() => {
+ 'at': _dartActionEncode(at),
+ };
+}
 class NowInput implements _DartActionRecord {
  final DateTime at;
  const NowInput({required this.at});
@@ -165,6 +218,11 @@ class NowHandlerOutput implements _DartActionRecord {
  'at': _dartActionEncode(at),
  };
 }
+class PingHandlerInput implements _DartActionRecord {
+ const PingHandlerInput();
+ Map<String,dynamic> toRecord() => {
+ };
+}
 class PingInput implements _DartActionRecord {
  const PingInput();
  Map<String,dynamic> toRecord() => {
@@ -181,8 +239,17 @@ class TouchChangedUpdate implements _DartActionRecord {
  if (at != null) 'at': _dartActionEncode(at!.value),
  };
 }
-class TouchInput implements _DartActionRecord {
+class TouchHandlerInput implements _DartActionRecord {
  final Note note;
+ final TouchChangedUpdate? changed;
+ const TouchHandlerInput({required this.note,this.changed});
+ Map<String,dynamic> toRecord() => {
+ 'note': _dartActionEncode(note),
+ 'changed': _dartActionEncode(changed),
+ };
+}
+class TouchInput implements _DartActionRecord {
+ final NoteCreateInput note;
  final TouchChangedUpdate? changed;
  const TouchInput({required this.note,this.changed});
  Map<String,dynamic> toRecord() => {
@@ -211,20 +278,24 @@ abstract interface class MutationHandlers<Ctx> {
  MutationTouchHandlers<Ctx> get touch;
 }
 abstract interface class MutationEchoHandlers<Ctx> {
- Future<EchoHandlerOutput> v1(MutationHandlerCall<Ctx, EchoInput> call);
+ Future<EchoHandlerOutput> v1(MutationHandlerCall<Ctx, EchoHandlerInput> call);
 }
 abstract interface class MutationPingHandlers<Ctx> {
- Future<PingHandlerOutput> v1(MutationHandlerCall<Ctx, PingInput> call);
+ Future<PingHandlerOutput> v1(MutationHandlerCall<Ctx, PingHandlerInput> call);
 }
 abstract interface class MutationTouchHandlers<Ctx> {
- Future<TouchHandlerOutput> v1(MutationHandlerCall<Ctx, TouchInput> call);
+ Future<TouchHandlerOutput> v1(MutationHandlerCall<Ctx, TouchHandlerInput> call);
 }
 abstract interface class QueryHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
 abstract interface class QueryHandlers<Ctx> {
+ QueryNotesSinceHandlers<Ctx> get notesSince;
  QueryNowHandlers<Ctx> get now;
 }
+abstract interface class QueryNotesSinceHandlers<Ctx> {
+ Future<NotesSinceHandlerOutput> v1(QueryHandlerCall<Ctx, NotesSinceHandlerInput> call);
+}
 abstract interface class QueryNowHandlers<Ctx> {
- Future<NowHandlerOutput> v1(QueryHandlerCall<Ctx, NowInput> call);
+ Future<NowHandlerOutput> v1(QueryHandlerCall<Ctx, NowHandlerInput> call);
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
@@ -237,90 +308,20 @@ dynamic _dartActionEncode(dynamic value) {
  if (value is NoteIdentity) return value.toRecord();
  return value;
 }
-/// Which explicit Model outputs of Echo also update local Models.
-final class EchoStore extends CallStore {
- /// Store every eligible output (the default).
- const EchoStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const EchoStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of Now also update local Models.
-final class NowStore extends CallStore {
- /// Store every eligible output (the default).
- const NowStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const NowStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of Ping also update local Models.
-final class PingStore extends CallStore {
- /// Store every eligible output (the default).
- const PingStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const PingStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of Touch also update local Models.
-final class TouchStore extends CallStore {
- /// Store every eligible output (the default).
- const TouchStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const TouchStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Mutations resolve after local acceptance (durable); [call] waits for the backend outcome.
-class Mutations {
- final Client client; Mutations(this.client);
- late final DirectMutations call = DirectMutations(client);
- Future<Call<EchoOutput>> echo({required DateTime at, required List<Mood> moods, required DateTime? maybe, EchoStore? store}) => client.invokeAction<EchoOutput>('Echo', 1, {'at': _dartActionEncode(at), 'moods': _dartActionEncode(moods), 'maybe': _dartActionEncode(maybe)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); }, store: store);
- Future<Call<PingOutput>> ping({PingStore? store}) => client.invokeAction<PingOutput>('Ping', 1, {}, (_) {}, store: store);
- Future<Call<TouchOutput>> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store}) => client.invokeAction<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store);
-}
-/// Mutations that wait for the backend outcome and applied authority.
-class DirectMutations {
- final Client client; DirectMutations(this.client);
- Future<EchoOutput> echo({required DateTime at, required List<Mood> moods, required DateTime? maybe, EchoStore? store}) => client.invokeDirectAction<EchoOutput>('Echo', 1, {'at': _dartActionEncode(at), 'moods': _dartActionEncode(moods), 'maybe': _dartActionEncode(maybe)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); }, store: store);
- Future<PingOutput> ping({PingStore? store}) => client.invokeDirectAction<PingOutput>('Ping', 1, {}, (_) {}, store: store);
- Future<TouchOutput> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store}) => client.invokeDirectAction<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store);
-}
-/// Queries resolve with the backend result (direct); `once` reuses a saved complete result, [enqueue] accepts them durably and [invalidate] discards saved results.
+/// Named Mutations use the same owned local scope on client and transaction.
+class Mutations extends TransactionMutations { Mutations(super.port); }
+/// Query results are invocation snapshots.
 class Queries {
  final Client client; Queries(this.client);
- late final QueuedQueries enqueue = QueuedQueries(client);
  late final QueryInvalidations invalidate = QueryInvalidations(client);
- Future<NowOutput> now({required DateTime at, NowStore? store, bool once = false, bool refresh = false}) => client.invokeQuery<NowOutput>('Now', 1, {'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return NowOutput(at: DateTime.parse(row['at'] as String)); }, store: store, once: once, refresh: refresh);
-}
-/// Queries accepted durably; each reads when it executes.
-class QueuedQueries {
- final Client client; QueuedQueries(this.client);
- Future<Call<NowOutput>> now({required DateTime at, NowStore? store}) => client.invokeAction<NowOutput>('Now', 1, {'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return NowOutput(at: DateTime.parse(row['at'] as String)); }, store: store);
+ Future<NotesSinceOutput> notesSince({required DateTime? since, required List<Mood> moods, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<NotesSinceOutput>('NotesSince', 1, {'since': _dartActionEncode(since), 'moods': _dartActionEncode(moods)}, (value) { final row = (value as Map).cast<String,dynamic>(); return NotesSinceOutput(notes: (row['notes'] as List).map((e) => Note.fromRecord((e as Map).cast<String,dynamic>())).toList(), pinned: (row['pinned'] as List).map((e) => Note.fromRecord((e as Map).cast<String,dynamic>())).toList()); }, store: store, once: once, refresh: refresh);
+ Future<NowOutput> now({required DateTime at, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<NowOutput>('Now', 1, {'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return NowOutput(at: DateTime.parse(row['at'] as String)); }, store: store, once: once, refresh: refresh);
 }
 /// Discards the saved `once` results of one Query argument set, for every store policy.
 class QueryInvalidations {
  final Client client; QueryInvalidations(this.client);
- Future<void> now({required DateTime at}) => client.invalidateQuery('Now', 1, {'at': _dartActionEncode(at)});
-}
-/// Loads resolve after durable local acceptance with a [Load] handle and need no connection; `once` reuses the job an earlier once start registered, [invalidate] removes that registration offline, [get] reattaches by ID and [list] shows the most recent jobs.
-class Loads {
- final Client client; Loads(this.client);
- late final LoadInvalidations invalidate = LoadInvalidations(client);
- Future<Load> notesSince({required DateTime? since, required List<Mood> moods, bool once = false, bool refresh = false}) => client.startLoad('NotesSince', 1, {'since': since == null ? null : since.toAxtonPrecision().toIso8601String(), 'moods': moods.map((e) => e.name).toList()}, once: once, refresh: refresh);
- Future<Load?> get(String id) => client.getLoad(id);
- Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);
-}
-/// Removes the once registrations of one Load argument set across its retained versions, offline; no job is cancelled and no Model deleted.
-class LoadInvalidations {
- final Client client; LoadInvalidations(this.client);
- Future<void> notesSince({required DateTime? since, required List<Mood> moods}) => client.invalidateLoad('NotesSince', {'since': since == null ? null : since.toAxtonPrecision().toIso8601String(), 'moods': moods.map((e) => e.name).toList()});
+ Future<void> notesSince({required DateTime? since, required List<Mood> moods}) => this.client.invalidateQuery('NotesSince', 1, {'since': _dartActionEncode(since), 'moods': _dartActionEncode(moods)});
+ Future<void> now({required DateTime at}) => this.client.invalidateQuery('Now', 1, {'at': _dartActionEncode(at)});
 }
 class LiveModels { final Client port; LiveModels(this.port);
  late final NoteLiveModel note = NoteLiveModel(port);
@@ -328,58 +329,47 @@ class LiveModels { final Client port; LiveModels(this.port);
 class TxModels { final WritePort port; TxModels(this.port);
  late final NoteTxModel note = NoteTxModel(port);
 }
-/// The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration.
-class Streams { final Client client; Streams(this.client);
- Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);
-}
-/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local cache writes.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);
 }
-sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
-final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
-final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
-typedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);
-class StoreHooks {
- final StoreHandler<NoteIdentity,Note>? note;
- const StoreHooks({this.note});
-}
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final streams = transaction.streams; GeneratedTransaction(this.transaction); }
-/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Streams, watch or savepoints.
+class GeneratedTransaction { final Transaction transaction; late final TxModels models=TxModels(transaction); GeneratedTransaction(this.transaction); }
 class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
-/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
 class TransactionMutations {
- final SubmitMutationPort _port; TransactionMutations(this._port);
- Future<Call<EchoOutput>> echo({required DateTime at, required List<Mood> moods, required DateTime? maybe, EchoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<EchoOutput>('Echo', 1, {'at': _dartActionEncode(at), 'moods': _dartActionEncode(moods), 'maybe': _dartActionEncode(maybe)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<PingOutput>> ping({PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<TouchOutput>> touch({required NoteCreateInput note, TouchChangedUpdate? changed, TouchStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<TouchOutput>('Touch', 1, {'note': _dartActionEncode(note), if (changed != null) 'changed': _dartActionEncode(changed)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ final SubmitMutationPort port; TransactionMutations(this.port);
+ late final EchoMutation echo = EchoMutation(port);
+ late final PingMutation ping = PingMutation(port);
+ late final TouchMutation touch = TouchMutation(port);
 }
-/// The application transaction: local Models and Streams, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+class EchoMutation {
+ final SubmitMutationPort port; EchoMutation(this.port);
+ Map<String,dynamic> _encode(EchoInput input) => {'at': _dartActionEncode(input.at), 'moods': _dartActionEncode(input.moods), 'maybe': _dartActionEncode(input.maybe)};
+ Future<Call<EchoOutput>> call(EchoInput input) => port.submitMutation<EchoOutput>('Echo', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); });
+ Future<Call<EchoOutput>> withTransaction(FutureOr<EchoInput> Function(CompanionContext tx) body) => port.submitMutation<EchoOutput>('Echo', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return EchoOutput(result: DateTime.parse(row['result'] as String), moods: (row['moods'] as List).map((e) => Mood.values.byName(e as String)).toList(), maybe: row['maybe'] == null ? null : DateTime.parse(row['maybe'] as String)); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class PingMutation {
+ final SubmitMutationPort port; PingMutation(this.port);
+ Map<String,dynamic> _encode(PingInput input) => {};
+ Future<Call<PingOutput>> call(PingInput input) => port.submitMutation<PingOutput>('Ping', 1, _encode(input), (_) {});
+ Future<Call<PingOutput>> withTransaction(FutureOr<PingInput> Function(CompanionContext tx) body) => port.submitMutation<PingOutput>('Ping', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class TouchMutation {
+ final SubmitMutationPort port; TouchMutation(this.port);
+ Map<String,dynamic> _encode(TouchInput input) => {'note': _dartActionEncode(input.note), 'changed': _dartActionEncode(input.changed)};
+ Future<Call<TouchOutput>> call(TouchInput input) => port.submitMutation<TouchOutput>('Touch', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); });
+ Future<Call<TouchOutput>> withTransaction(FutureOr<TouchInput> Function(CompanionContext tx) body) => port.submitMutation<TouchOutput>('Touch', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return TouchOutput(stamp: DateTime.parse(row['stamp'] as String)); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
 class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
- /// The runtime handle (internal); application code uses the members below.
- final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
- late final Streams streams = Streams(client);
- /// Durable by default; `mutations.call` waits for the backend outcome.
- late final Mutations mutations = Mutations(client);
- /// Direct by default; `queries.enqueue` accepts durably.
- late final Queries queries = Queries(client);
- /// Native Loads: resolve after durable local acceptance with a [Load] handle; `once` reuses a registered job and [Loads.invalidate] removes that registration.
- late final Loads loads = Loads(client);
- /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
- late final FetchModels fetch = FetchModels(client);
- GeneratedClient._(this.client, this.connection);
- /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
- static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, Map<String, PrerequisiteHandler>? prerequisites, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
-  final rawHooks = <String, StoreHook>{};
-  final noteHook = onStore?.note;
-  if (noteHook != null) rawHooks['Note'] = (tx, changes) => noteHook(GeneratedTransaction(tx), changes.map<StoreChange<NoteIdentity,Note>>((change) { final identity=NoteIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<NoteIdentity,Note>(identity,Note.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<NoteIdentity,Note>(identity); }).toList());
-  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks, prerequisites:prerequisites);
-  try {
-  final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
-  return GeneratedClient._(client, connection);
-  } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
- }
+ final Client client; RuntimeConnection? get connection => client.connection; late final LiveModels models=LiveModels(client);
+ late final Mutations mutations=Mutations(client);
+ late final Queries queries=Queries(client);
+ late final FetchModels fetch=FetchModels(client);
+ GeneratedClient._(this.client);
+ static Future<GeneratedClient> open({required String path, required String stream, required StoreConnection connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
+ Future<void> bootstrap() => client.bootstrap();
+ Future<RuntimeConnection> connect(SyncServer server,{void Function(Object)? onError,Future<void> Function()? refreshAuth,Duration directTimeout=const Duration(seconds:30)}) => client.connect(server,onError:onError,refreshAuth:refreshAuth,directTimeout:directTimeout);
+ Future<void> resetStore({bool discardPending=false}) => client.resetStore(discardPending:discardPending);
  Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
@@ -400,8 +390,6 @@ class GeneratedClient {
  late final failures = client.failures;
  /// The queue of unsettled acts: `watchPending`.
  late final outbound = client.outbound;
- /// Start the background connection when `open` was called without a server.
- Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.
  Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);
  /// Escape hatch: read-only SQL over the local database.

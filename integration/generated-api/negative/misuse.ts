@@ -2,43 +2,21 @@
 // integration/generated-api` type-checks this file, and every
 // `@ts-expect-error` below has to be the error it names; the Dart twin is
 // misuse.dart ([#150](https://github.com/zanminwang/axton/issues/150)).
-import type {GeneratedClient, GeneratedTransaction, Subscription, Draft, DraftCreate, AddDraftArgs, StoreHooks, Entry, ApplicationTransaction, CompanionContext, PublishEntryOutput} from '../client.ts';
+import {GeneratedClient, type GeneratedTransaction, Draft, DraftCreate, AddDraftArgs, Entry, ApplicationTransaction, CompanionContext, PublishEntryOutput} from '../client.ts';
 
-const badHooks:StoreHooks={
- entry:async(tx,changes)=>{
-  const change=changes[0]!;
-  if(change.kind==='upsert'){
-  // @ts-expect-error the incoming row has no invented field
-   void change.row.missing;
-  }
-  // @ts-expect-error onStore queues no Mutation: its transaction is local-only
-  void tx.mutations;
-  // @ts-expect-error Fetch is unavailable within the onStore transaction
-  void tx.fetch;
-  // @ts-expect-error onStore subscribes locally; it has no server Channel enrollment
-  tx.stream('c').track.entry({id:'e'});
- },
- // @ts-expect-error unknown Models cannot register hooks
- unknown:async()=>{},
-};
-void badHooks;
-
-export function scopeMisuse(client:GeneratedClient,subscription:Subscription){
- // @ts-expect-error a status snapshot is immutable
- subscription.status.active=false;
- // @ts-expect-error the Scope a handle names is fixed for its lifetime
- subscription.stream='other';
- // @ts-expect-error the first Scope API deliberately omits a get-only accessor
- void client.streams.get('project:123');
- // The load status is part of that immutable snapshot, and this milestone
- // introduces no task-cancel or forced-refresh API
- // ([#151](https://github.com/zanminwang/axton/issues/151)).
- // @ts-expect-error a load status is immutable too
- subscription.status.bootstrap.phase='complete';
- // @ts-expect-error a registered task cannot be cancelled
- void subscription.bootstrap.cancel();
- // @ts-expect-error there is no forced refresh
- void subscription.refresh();
+export function boundSurfaceMisuse(client:GeneratedClient,tx:GeneratedTransaction){
+ // @ts-expect-error exactly one Stream is selected at bound open
+ void client.streams;
+ // @ts-expect-error callbacks cannot mutate Store enrollment
+ void tx.streams;
+ // @ts-expect-error anonymous remote writes are retired
+ void client.mutate;
+ // @ts-expect-error queued Query lane is retired
+ void client.queries.enqueue;
+ // @ts-expect-error split Mutation direct lane is retired
+ void client.mutations.call;
+ // @ts-expect-error path alone cannot establish binding
+ void GeneratedClient.open({path:'only.sqlite'});
 }
 
 // Creation defaults (#27): only a create input may omit defaulted fields.
@@ -86,9 +64,7 @@ export async function fetchMisuse(client:GeneratedClient,tx:GeneratedTransaction
  void result.label;
 }
 
-// Transactional Mutation enqueue: an application transaction queues typed
-// Mutations only, `local` is a transaction-only option, and a Mutation's
-// `local` callback has Models only. The runtime refuses the same misuse.
+// Named Mutation callbacks return typed input and expose local Models only.
 export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTransaction,local:CompanionContext,row:Entry){
  const id=row.id;
  // @ts-expect-error there is no direct route inside a transaction
@@ -107,9 +83,9 @@ export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTra
  await tx.mutations.publishEntry({entry:row,composition:id},{store:{missing:false}});
  // @ts-expect-error the Call observes the declared output
  const wrong:Promise<import('../client.ts').Call<string>>=tx.mutations.publishEntry({entry:row,composition:id});
- // @ts-expect-error standalone Mutations take no local callback
+ // @ts-expect-error legacy local option is retired
  await client.mutations.rename({id,title:'t'},{local:async()=>{}});
- // @ts-expect-error direct Mutations take no local callback
+ // @ts-expect-error split direct Mutation lane is retired
  await client.mutations.call.rename({id,title:'t'},{local:async()=>{}});
  // @ts-expect-error the callback queues no Mutation
  void local.mutations;
@@ -123,10 +99,11 @@ export async function transactionMisuse(client:GeneratedClient,tx:ApplicationTra
  local.models.composition.watch({},()=>{});
  // @ts-expect-error the callback reads no sync state
  void local.models.composition.syncState;
- await tx.mutations.publishEntry({entry:row,composition:id},{local:async inner=>{
+ await tx.mutations.publishEntry(async inner=>{
   // @ts-expect-error nested enqueue is unavailable inside the callback
   await inner.mutations.rename({id,title:'t'});
- }});
+  return {entry:row,composition:id};
+ });
  const call:PublishEntryOutput|undefined=(await (await tx.mutations.publishEntry({entry:row,composition:id})).wait()).result;
  return [wrong,call];
 }
@@ -136,7 +113,22 @@ async function retiredScopeAliases(client:GeneratedClient,tx:GeneratedTransactio
  void client.channels;
  // @ts-expect-error the generated transaction exposes scopes only
  void tx.channels;
- await tx.streams.subscribe('U');
- await tx.streams.unsubscribe('U');
+ // @ts-expect-error no enrollment facade in local transactions
+ void tx.streams;
 }
 void retiredScopeAliases;
+
+// Field inheritance keeps complete records separate from defaultable inputs.
+import type {DraftFields, DraftIdentity} from '../generated.ts';
+const defaultableDraft = {memo:null} as DraftCreate;
+// @ts-expect-error a create input may omit shared fields with defaults
+const fieldsFromCreate:DraftFields = defaultableDraft;
+// @ts-expect-error abstract field types have no concrete identity helper
+const identityFromFields:DraftIdentity = fieldsFromCreate.identity;
+void identityFromFields;
+
+function abstractModelCrudMisuse(client:GeneratedClient) {
+ // @ts-expect-error abstract fields have no local Model/table accessor
+ client.models.draftFields;
+}
+void abstractModelCrudMisuse;

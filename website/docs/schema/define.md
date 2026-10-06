@@ -83,11 +83,11 @@ Mutations and Queries share one namespace, so a name is declared once across bot
 | --- | --- |
 | `client.models.entry` | Local get, query and watch |
 | `client.mutations.editEntry` | Apply inferred local optimism and queue `EditEntry` |
-| `client.mutations.call.editEntry` | Execute `EditEntry` directly and return its final output |
-| `client.queries.searchTodos` | Execute a Query directly and return its output (`queries.enqueue` queues it instead) |
+| `call.wait()` | Await the backend outcome and owned local settlement of `EditEntry` |
+| `client.queries.searchTodos` | Execute a Query directly and return its output |
 | `Mutations<Tx>.editEntry`, `Queries<Tx>.searchTodos` | Implement authoritative business logic for each operation |
 | `Loaders<Tx>.entry` | Return current records from your backend; left out for a [device-only Model](../backend/api.md#device-only-models) |
-| Backend `Entry(identity)` | Name a record in a mixed Stream list, `stream(name).track([Entry({ id })])` |
+| Backend `Entry(identity)` | Name a record in a mixed Stream list, `ctx.streams(names).track([Entry({ id })])` |
 
 An update operand is one flat object: the identity fields plus the changed fields it allows (`EntryUpdate<'text' | 'note'>` in TypeScript), both in the client call and in the handler's `args`. Dart exposes a typed update operand whose changed fields use `Present`.
 

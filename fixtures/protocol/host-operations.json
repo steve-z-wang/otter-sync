@@ -2,6 +2,271 @@
   "comment": "One canonical request and one response per variant for every host operation. Shared by crates/server/tests/host_contract.rs (Rust types) and integration/persistence/server/host-contract.test.mjs (TypeScript host). The examples describe a backend with one model Task {id, title} and one mutation edit v1 with an update slot named task.",
   "operations": [
     {
+      "op": "admitContext",
+      "request": {
+        "op": "admitContext",
+        "owner": "alice",
+        "context": {
+          "protocol": 4,
+          "binding": {
+            "backend": "api",
+            "viewer": "alice",
+            "stream": "User:alice",
+            "contract": "app"
+          },
+          "materialization": "m1",
+          "incarnation": "store1"
+        },
+        "durable": false
+      },
+      "responses": [
+        {
+          "variant": "allowed",
+          "value": true
+        }
+      ]
+    },
+    {
+      "op": "publicationFence",
+      "request": {
+        "op": "publicationFence"
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
+    },
+    {
+      "op": "handleBootstrap",
+      "request": {
+        "op": "handleBootstrap",
+        "owner": "alice",
+        "callId": "01890f47-1234-7123-8123-123456789ab1",
+        "context": {
+          "protocol": 4,
+          "binding": {
+            "backend": "api",
+            "viewer": "alice",
+            "stream": "User:alice",
+            "contract": "app"
+          },
+          "materialization": "m1",
+          "incarnation": "store1"
+        }
+      },
+      "responses": [
+        {
+          "variant": "result",
+          "value": {
+            "declarations": []
+          }
+        }
+      ]
+    },
+    {
+      "op": "createManifest",
+      "request": {
+        "op": "createManifest",
+        "owner": "alice",
+        "manifestId": "manifest",
+        "context": {
+          "protocol": 4,
+          "binding": {
+            "backend": "api",
+            "viewer": "alice",
+            "stream": "User:alice",
+            "contract": "app"
+          },
+          "materialization": "m1",
+          "incarnation": "store1"
+        },
+        "start": 7,
+        "models": {
+          "Task": 1
+        },
+        "selected": [
+          "Task"
+        ],
+        "held": [],
+        "budget": 100
+      },
+      "responses": [
+        {
+          "variant": "result",
+          "value": {
+            "start": 7,
+            "total": 1,
+            "models": {
+              "Task": 1
+            },
+            "from": 0,
+            "to": 0,
+            "keys": [],
+            "companions": []
+          }
+        }
+      ]
+    },
+    {
+      "op": "readCall",
+      "request": {
+        "op": "readCall",
+        "owner": "alice",
+        "callId": "01890f47-1234-7123-8123-123456789ab1"
+      },
+      "responses": [
+        {
+          "variant": "result",
+          "value": null
+        }
+      ]
+    },
+    {
+      "op": "readManifest",
+      "request": {
+        "op": "readManifest",
+        "owner": "alice",
+        "manifestId": "manifest",
+        "context": {
+          "protocol": 4,
+          "binding": {
+            "backend": "api",
+            "viewer": "alice",
+            "stream": "User:alice",
+            "contract": "app"
+          },
+          "materialization": "m1",
+          "incarnation": "store1"
+        },
+        "from": 0,
+        "limit": 1,
+        "uniqueModels": []
+      },
+      "responses": [
+        {
+          "variant": "result",
+          "value": {
+            "start": 7,
+            "total": 1,
+            "models": {
+              "Task": 1
+            },
+            "from": 0,
+            "to": 1,
+            "keys": [
+              {
+                "model": "Task",
+                "identityKey": "{\"id\":\"t-1\"}"
+              }
+            ],
+            "companions": []
+          }
+        }
+      ]
+    },
+    {
+      "op": "captureTail",
+      "request": {
+        "op": "captureTail",
+        "owner": "alice",
+        "manifestId": "manifest",
+        "context": {
+          "protocol": 4,
+          "binding": {
+            "backend": "api",
+            "viewer": "alice",
+            "stream": "User:alice",
+            "contract": "app"
+          },
+          "materialization": "m1",
+          "incarnation": "store1"
+        },
+        "head": 8
+      },
+      "responses": [
+        {
+          "variant": "result",
+          "value": 8
+        }
+      ]
+    },
+    {
+      "op": "savePublicationGroups",
+      "request": {
+        "op": "savePublicationGroups",
+        "positions": [
+          {
+            "stream": "shared",
+            "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}",
+            "cursor": 4,
+            "kind": "upsert"
+          }
+        ]
+      },
+      "responses": [
+        {
+          "variant": "acknowledged",
+          "value": null
+        }
+      ]
+    },
+    {
+      "op": "readPublicationGroups",
+      "request": {
+        "op": "readPublicationGroups",
+        "stream": "shared",
+        "after": 0,
+        "limit": 10
+      },
+      "responses": [
+        {
+          "variant": "groups",
+          "value": [
+            {
+              "from": 3,
+              "through": 4,
+              "keys": [
+                {
+                  "model": "Task",
+                  "identityKey": "{\"id\":\"t-1\"}"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "op": "readPositions",
+      "request": {
+        "op": "readPositions",
+        "stream": "shared",
+        "records": [
+          {
+            "model": "Task",
+            "identityKey": "{\"id\":\"t-1\"}"
+          }
+        ]
+      },
+      "responses": [
+        {
+          "variant": "positions",
+          "value": [
+            {
+              "stream": "shared",
+              "model": "Task",
+              "identityKey": "{\"id\":\"t-1\"}",
+              "cursor": 4,
+              "kind": "upsert"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "op": "claim",
       "request": {
         "op": "claim",

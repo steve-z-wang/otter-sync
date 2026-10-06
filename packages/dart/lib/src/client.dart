@@ -2,38 +2,25 @@ import 'actions.dart';
 import 'bridge.dart';
 import 'connection.dart';
 import 'live.dart';
-import 'loads.dart';
 import 'port.dart';
 import 'subscriptions.dart';
 import 'dart:async';
 
 part 'unsent.dart';
 
-/// A raw Model store hook; generated clients decode changes before calling it.
-typedef StoreHook =
-    FutureOr<void> Function(Transaction tx, List<Map<String, dynamic>> changes);
-
-/// A hook body keeps no decoded payload after handing it to user code.
-class _StoreHookInvocation {
-  _StoreHookInvocation(this.hook, this.changes);
-  StoreHook? hook;
-  List<Map<String, dynamic>>? changes;
-
-  FutureOr<void> run(Transaction tx) {
-    final callback = hook!;
-    final delivered = changes!;
-    hook = null;
-    changes = null;
-    return callback(tx, delivered);
-  }
-}
+final Object _callbackOwnerKey = Object();
 
 /// Typed generated model APIs delegate to this generic native client.
-class Client implements WritePort, MutatePort {
+class Client implements WritePort, SubmitMutationPort {
+  /// Initialize the process-wide durable application container before opening
+  /// any Store. Android hosts must provide their stable files/support directory.
+  /// Reusing the same directory is safe; changing it in a running process is refused.
+  static void configureApplicationData(String path, {String? libraryPath}) =>
+      Bridge.configureApplicationData(path, libraryPath: libraryPath);
+
   /// The Rust-owned runtime: it orders every task and owns the database.
   final Bridge _bridge;
   final String clientId;
-  bool _closed = false;
   RuntimeConnection? _connection;
 
   /// Connects not settled yet: close waits for them, so a connection set up
@@ -47,7 +34,14 @@ class Client implements WritePort, MutatePort {
   /// Every `callCompleted` as `{callId, outcome}`, after its [Call] handle
   /// settled.
   Stream<Map<String, dynamic>> get actionCompletions => _completions.stream;
-  late final ActionObservers _actionObservers = ActionObservers();
+  late final ActionObservers _actionObservers = ActionObservers(
+    admit: () {
+      if (_inTransaction) throw StateError('transaction_active');
+    },
+    lookup: (id) async =>
+        (await _bridge.task({'kind': 'callCompletion', 'callId': id}))
+            as Map<String, dynamic>?,
+  );
 
   /// One `callCompleted`: the handle's waiter first, then the stream.
   void _callCompleted(String callId, dynamic outcome) {
@@ -91,11 +85,6 @@ class Client implements WritePort, MutatePort {
   /// publishes for them.
   late final Subscriptions _subscriptions = Subscriptions(_bridge);
 
-  /// The Stream surface the generated `streams` facade delegates to, with no
-  /// logic of its own.
-  late final ClientStreams streams = ClientStreams(this);
-
-  /// The refusals retained until dismissed, each with the act as submitted.
   late final ClientRejections rejections = ClientRejections._(this);
 
   /// The unsent acts blocked on a terminally failed prerequisite task.
@@ -132,65 +121,73 @@ class Client implements WritePort, MutatePort {
     // rollback, whether or not anybody observes them.
     _bridge.onCallState = _actionObservers.transition;
   }
+  late final String _stream;
+  RuntimeConnection? get connection => _connection;
   static Future<Client> open({
     required String path,
     required Map<String, dynamic> schema,
+    required String stream,
+    required StoreConnection connection,
     String? libraryPath,
-    Map<String, dynamic>? migration,
-
-    /// Rebuild at once when the schema is incompatible, leaving unsent work in the old file.
-    bool discardPending = false,
-
-    /// Test seam: the carrier to drive instead of the library's C ABI.
     Carrier? carrier,
-    Map<String, StoreHook>? onStore,
-
-    /// Prerequisite handlers by the schema's prerequisite name, fixed for the
-    /// client's lifetime. The runtime runs one whenever a task of that name
-    /// becomes pending - after a commit, at open, after a reset - and retries
-    /// a [PrerequisiteRetry] with backoff.
     Map<String, PrerequisiteHandler>? prerequisites,
   }) async {
-    final hooks = Map<String, StoreHook>.of(onStore ?? const {});
     final required = Map<String, PrerequisiteHandler>.of(
       prerequisites ?? const {},
     );
-    late Client client;
     final bridge = await Bridge.open(
       path: path,
       schema: schema,
+      binding: connection.identity.binding(stream),
+      projectionGeneration: connection.projectionGeneration,
       libraryPath: libraryPath,
-      migration: migration,
-      discardPending: discardPending,
       carrier: carrier,
-      onStore: {
-        for (final entry in hooks.entries)
-          entry.key:
-              (
-                String transactionId,
-                List<Map<String, dynamic>> changes,
-                StoreCancellation cancellation,
-              ) => client._runTransactionBody(
-                transactionId,
-                _StoreHookInvocation(entry.value, changes).run,
-                cancellation,
-              ),
-      },
       prerequisiteHandlers: required.keys.toList(),
-      // Timers and prerequisite handlers are asked for from the first step,
-      // with or without a connection.
       effects: {
         'timer': timerHandler(),
         if (required.isNotEmpty) 'prerequisite': prerequisiteHandler(required),
       },
     );
-    client = Client._(bridge, bridge.opened['clientId'] as String);
+    final client = Client._(bridge, bridge.opened['clientId'] as String)
+      .._stream = stream;
+    try {
+      await client.connect(
+        connection,
+        onError: connection.onError,
+        refreshAuth: connection.refreshAuth,
+        directTimeout: connection.directTimeout,
+      );
+    } catch (_) {
+      await client.close();
+      rethrow;
+    }
     return client;
+  }
+
+  Future<void> bootstrap() async {
+    if (_inTransaction) throw StateError('transaction_active');
+    final handle = await _subscriptions.subscribe(_stream);
+    await handle.bootstrap();
+  }
+
+  Future<void> resetStore({bool discardPending = false}) async {
+    await _task({'kind': 'resetStore', 'discardPending': discardPending});
   }
 
   /// Rust runs [body] as the callback of a local transaction it owns: ordinary
   /// reads and writes wait until it commits or rolls back, and the result is
   /// returned only once the commit is confirmed.
+  @override
+  Future<Call<T>> submitMutation<T>(
+    String name,
+    int version,
+    Map<String, dynamic>? args,
+    T Function(dynamic) decode, {
+    Future<Map<String, dynamic>> Function(WritePort tx)? input,
+  }) => transaction(
+    (tx) => tx.submitMutation(name, version, args, decode, input: input),
+  );
+
   Future<T> transaction<T>(Future<T> Function(Transaction tx) body) async {
     if (_inTransaction) throw StateError('transaction_active');
     late T result;
@@ -212,7 +209,7 @@ class Client implements WritePort, MutatePort {
     try {
       final result = await runZoned(
         () => Future<T>.sync(() => body(tx)),
-        zoneValues: {_txZoneKey: token},
+        zoneValues: {_txZoneKey: token, _callbackOwnerKey: tx},
       );
       await tx._finish();
       return result;
@@ -280,67 +277,11 @@ class Client implements WritePort, MutatePort {
               })
               as List)
           .cast<Map<String, dynamic>>();
-  Future<int> mutate(Map<String, dynamic> mutation) =>
-      _submitMutation(mutation);
-
-  /// One framework-owned local transaction; no backend work is queued.
   Future<void> direct(Map<String, dynamic> operation) =>
       transaction((tx) => tx.direct(operation));
 
-  Future<Call<T>> invokeAction<T>(
-    String name,
-    int version,
-    Map<String, dynamic> args,
-    T Function(dynamic) decode, {
-    CallStore? store,
-  }) async {
-    Call<T>? call;
-    final closedBefore = _closed;
-    try {
-      await submitAction(
-        name,
-        version,
-        args,
-        onCommitted: (callId, _) {
-          call = _actionObservers.register(callId, decode);
-        },
-        store: store,
-      );
-    } catch (error) {
-      // Close is priority control: a submission still queued when the client
-      // began closing never runs. Its caller gets the handle close gives every
-      // call it can no longer observe, as when the submission ran first.
-      // Platform-specific: only this client object knows the call began
-      // before its own close; the runtime answers `client_closed` either way.
-      if (!closedBefore &&
-          _closing != null &&
-          error is StateError &&
-          error.message == 'client_closed') {
-        return _actionObservers.register<T>('', decode);
-      }
-      throw _publicActionError(error);
-    }
-    return call!;
-  }
-
-  Future<T> invokeDirectAction<T>(
-    String name,
-    int version,
-    Map<String, dynamic> args,
-    T Function(dynamic) decode, {
-    CallStore? store,
-  }) async {
-    late final Map<String, dynamic> invoked;
-    try {
-      invoked = await callAction(name, version, args, store: store);
-    } catch (error) {
-      throw _publicActionError(error);
-    }
-    return _decodeOutcome(invoked['outcome'] as Map, decode);
-  }
-
   /// Execute a direct Query. Without [once] it is exactly
-  /// [invokeDirectAction]: a fresh request that reads and writes no
+  /// a fresh request that reads and writes no
   /// snapshot. With [once], Rust decides: a saved result is decoded without
   /// any request or Model write, an active request is joined, or a new one
   /// is executed and its successful result saved with its authority.
@@ -350,7 +291,7 @@ class Client implements WritePort, MutatePort {
     int version,
     Map<String, dynamic> args,
     T Function(dynamic) decode, {
-    CallStore? store,
+    bool? store,
     bool once = false,
     bool refresh = false,
   }) async {
@@ -380,7 +321,7 @@ class Client implements WritePort, MutatePort {
   /// a new one, and by default stores the reply before answering; this
   /// submits the task and decodes this caller's own copy of the snapshot.
   /// `null` when the Loader has no readable record. With `store: false` the
-  /// snapshot is returned without local storage or onStore.
+  /// snapshot is returned without local cache writes.
   Future<T?> fetchModel<T>(
     String model,
     int version,
@@ -471,59 +412,18 @@ class Client implements WritePort, MutatePort {
     }
   }
 
-  /// One task: Rust enqueues the mutation in its own local transaction.
-  Future<int> _submitMutation(Map<String, dynamic> mutation) async {
-    return await _task({'kind': 'enqueue', 'mutation': mutation}) as int;
-  }
-
   /// Internal Action seam: [onCommitted] runs while the submission's
   /// completion is dispatched, so a `callCompleted` later in the same batch
   /// always finds the handle it registers.
-  Future<Map<String, dynamic>> submitAction(
-    String name,
-    int version,
-    Map<String, dynamic> args, {
-    void Function(String callId, int ordinal)? onCommitted,
-    CallStore? store,
-  }) async {
-    final wire = store?.toWire();
-    return await _task(
-          {
-            'kind': 'submitAction',
-            'name': name,
-            'version': version,
-            'args': args,
-            if (wire != null) 'store': wire,
-          },
-          onValue: onCommitted == null
-              ? null
-              : (value) => onCommitted(
-                  (value as Map)['callId'] as String,
-                  value['ordinal'] as int,
-                ),
-        )
-        as Map<String, dynamic>;
-  }
-
-  /// One direct call: the runtime prepares the request, sends it, bounds it
-  /// and applies the response; the value is `{outcome}`. A call the runtime
-  /// could not complete throws [ActionTransportException] with its code.
-  Future<Map<String, dynamic>> callAction(
-    String name,
-    int version,
-    Map<String, dynamic> args, {
-    CallStore? store,
-  }) => _invoke(name, version, args, store, false, false);
-
   Future<Map<String, dynamic>> _invoke(
     String name,
     int version,
     Map<String, dynamic> args,
-    CallStore? store,
+    bool? store,
     bool once,
     bool refresh,
   ) async {
-    final wire = store?.toWire();
+    final wire = store;
     try {
       return (await _task({
             'kind': 'invoke',
@@ -565,50 +465,6 @@ class Client implements WritePort, MutatePort {
         ? HttpFailure.reported(message, status)
         : StateError(message);
   }
-
-  /// Load handles; the runtime owns every job and publishes its status.
-  late final Loads _loads = Loads(_bridge, () => _inTransaction);
-
-  /// Accept a native Load durably
-  /// ([#173](https://github.com/zanminwang/axton/issues/173)) and answer its
-  /// handle after the local commit; it needs no connection. Rust persists,
-  /// schedules and applies every page; [once] and [refresh] are call-site
-  /// controls, never sent to the backend.
-  Future<Load> startLoad(
-    String name,
-    int version,
-    Map<String, dynamic> args, {
-    bool once = false,
-    bool refresh = false,
-  }) => _loads.start(name, version, args, once: once, refresh: refresh);
-
-  /// Reattach to a job of this replica: a fresh handle, or `null`.
-  Future<Load?> getLoad(String id) => _loads.get(id);
-
-  /// The most recently started jobs, newest first; [limit] is 1..100.
-  Future<List<LoadStatus>> listLoads({int limit = 50}) =>
-      _loads.list(limit: limit);
-
-  /// Remove the once mappings of one Load argument set, offline, in a local
-  /// commit.
-  Future<void> invalidateLoad(String name, Map<String, dynamic> args) =>
-      _loads.invalidate(name, args);
-
-  /// Register durable intent to follow [stream] and answer with its handle. It
-  /// resolves when the local transaction commits: it awaits no
-  /// authentication, connection or acknowledgement, and the same Stream answers
-  /// with the same handle while its registration lives. The socket is never
-  /// cancelled here; the Downlink worker sees the committed change and
-  /// reconciles its own session.
-  Future<Subscription> subscribeStream(String stream) => _inTransaction
-      ? Future.error(StateError('transaction_active'))
-      : _subscriptions.subscribe(stream);
-  Future<Subscription> subscribe(String stream) => subscribeStream(stream);
-
-  /// Remove whatever registration this Stream name has; its handle stops.
-  Future<void> unsubscribe(String stream) => _inTransaction
-      ? Future.error(StateError('transaction_active'))
-      : _subscriptions.unsubscribeStream(stream);
 
   /// Connect to [server]: the runtime runs both lanes and every direct call
   /// from here on, and this client only executes the effects it asks for.
@@ -830,21 +686,11 @@ class Client implements WritePort, MutatePort {
       _abandonConnection();
       await closing;
     } finally {
-      _closed = true;
       _subscriptions.close();
       _actionObservers.ended();
       await _completions.close();
     }
   }
-}
-
-/// The Stream surface of one client: what the generated `streams` facade
-/// delegates to.
-class ClientStreams {
-  final Client _client;
-  const ClientStreams(this._client);
-  Future<Subscription> subscribe(String stream) =>
-      _client.subscribeStream(stream);
 }
 
 /// The runtime's refusal of an outer transaction command issued while a
@@ -869,8 +715,6 @@ class Transaction implements WritePort, SubmitMutationPort {
   int _locals = 0;
   Transaction._(this._client, this._transactionId);
   void _cancel() => _open = false;
-
-  late final streams = TransactionStreams._(this);
 
   /// Dismiss a refusal as part of this transaction.
   late final TransactionRejections rejections = TransactionRejections._(this);
@@ -926,14 +770,23 @@ class Transaction implements WritePort, SubmitMutationPort {
       _refusal() ?? _queue(command, _scopeOf(Zone.current));
 
   /// Why an outer command is refused before it is submitted, if it is.
+  Future<Never>? _foreignRefusal() {
+    final owner = Zone.current[_callbackOwnerKey];
+    if (owner != null && !identical(owner, this)) {
+      _structural ??= StateError('foreign transaction scope');
+      return Future.error(_structural!);
+    }
+    return null;
+  }
+
   Future<Never>? _refusal() {
+    final foreign = _foreignRefusal();
+    if (foreign != null) return foreign;
     // The callback's Future ended: a late command must not reach the runtime
     // before the callback's result does.
     if (!_open) return Future.error(StateError('transaction_closed'));
     // A `local` callback owns the transaction until its submission completes:
     // a captured or pipelined parent command is refused as the runtime would.
-    final refused = _callbackRefusal();
-    if (refused != null) return refused;
     if (_active != null && Zone.current[_zoneKey] != _active) {
       _structural = StateError('overlapping savepoint work');
       return Future.error(_structural!);
@@ -971,16 +824,14 @@ class Transaction implements WritePort, SubmitMutationPort {
   Future<Call<T>> submitMutation<T>(
     String name,
     int version,
-    Map<String, dynamic> args,
+    Map<String, dynamic>? args,
     T Function(dynamic) decode, {
-    CallStore? store,
-    Future<void> Function(WritePort local)? local,
+    Future<Map<String, dynamic>> Function(WritePort tx)? input,
   }) {
     final refused = _refusal();
     if (refused != null) return refused;
-    final wire = store?.toWire();
     late final Call<T> call;
-    if (local != null) _locals++;
+    if (input != null) _locals++;
     final work = _track(
       _client._bridge.submitMutation(
         _transactionId,
@@ -989,11 +840,10 @@ class Transaction implements WritePort, SubmitMutationPort {
           'kind': 'submitMutation',
           'name': name,
           'version': version,
-          'args': args,
-          if (wire != null) 'store': wire,
-          if (local != null) 'local': true,
+          if (input == null) 'args': args,
+          if (input != null) 'local': true,
         },
-        local: local == null ? null : LocalTransaction._run(local, _expired),
+        local: input == null ? null : LocalTransaction._run(input, _expired),
         // Routed while the answer is dispatched: the transaction's rollback
         // may follow it in the same batch.
         onValue: (value) => call = _client._actionObservers.register<T>(
@@ -1003,7 +853,7 @@ class Transaction implements WritePort, SubmitMutationPort {
         ),
       ),
     );
-    if (local != null) {
+    if (input != null) {
       work.then<void>(
         (_) => _locals--,
         onError: (Object _, StackTrace _) => _locals--,
@@ -1082,6 +932,8 @@ class Transaction implements WritePort, SubmitMutationPort {
   }
 
   Future<T> savepoint<T>(Future<T> Function() body) {
+    final foreign = _foreignRefusal();
+    if (foreign != null) return foreign;
     if (!_open) return Future.error(StateError('transaction_closed'));
     final refused = _callbackRefusal();
     if (refused != null) return refused;
@@ -1157,7 +1009,9 @@ class Transaction implements WritePort, SubmitMutationPort {
 /// unawaited-work rule is the transaction's, and a failed command it caught
 /// is the runtime's to refuse with the submission.
 class LocalTransaction implements WritePort {
-  LocalTransaction._(this._submit, this._expired);
+  LocalTransaction._(this._submit, this._expired)
+    : _owner = Zone.current[_callbackOwnerKey];
+  final Object? _owner;
   final Future<dynamic> Function(Map<String, dynamic> command) _submit;
 
   /// The refusal of a command sent after the callback returned.
@@ -1170,23 +1024,29 @@ class LocalTransaction implements WritePort {
   /// checks to it. [expired] answers a command sent through its handle after
   /// it returned.
   static LocalRun _run(
-    Future<void> Function(WritePort local) callback,
+    Future<Map<String, dynamic>> Function(WritePort tx) callback,
     StateError Function() expired,
   ) => (send) async {
     final local = LocalTransaction._(send, expired);
     try {
-      await callback(local);
+      final input = await callback(local);
+      await local._finish();
+      return input;
     } catch (error, stack) {
       try {
         await local._finish();
       } catch (_) {}
       Error.throwWithStackTrace(error, stack);
     }
-    await local._finish();
   };
 
   Future<dynamic> _send(Map<String, dynamic> command) {
     if (!_open) return Future.error(_expired());
+    if (Zone.current[_callbackOwnerKey] != null &&
+        !identical(Zone.current[_callbackOwnerKey], _owner)) {
+      _expired();
+      return Future.error(StateError('foreign transaction scope'));
+    }
     _pending++;
     final work = _submit(command);
     final settled = work.then<void>(
@@ -1275,14 +1135,3 @@ class LocalTransaction implements WritePort {
 }
 
 /// Local Stream intent in a transaction; no live Subscription handle.
-class TransactionStreams {
-  final Transaction _tx;
-  const TransactionStreams._(this._tx);
-  Future<void> subscribe(String stream) async {
-    await _tx._send({'kind': 'stream', 'stream': stream, 'subscribed': true});
-  }
-
-  Future<void> unsubscribe(String stream) async {
-    await _tx._send({'kind': 'stream', 'stream': stream, 'subscribed': false});
-  }
-}

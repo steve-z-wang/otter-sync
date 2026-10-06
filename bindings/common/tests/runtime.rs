@@ -15,6 +15,9 @@ const LOST_WAKE: Duration = Duration::from_secs(20);
 fn schema() -> Value {
     serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap()
 }
+fn binding() -> Value {
+    json!({"backend":"native-tests","viewer":"a","stream":"User:a","contract":"app"})
+}
 fn wake_sink() -> (WakeSink, Receiver<u64>) {
     let (sender, receiver) = mpsc::channel();
     (
@@ -34,7 +37,7 @@ impl Carrier {
     fn open(path: &std::path::Path) -> (Self, Value) {
         let (sink, wakes) = wake_sink();
         let id = actor::open(
-            json!({"type":"open","requestId":"open","path":path,"schema":schema()}),
+            json!({"type":"open","requestId":"open","path":path,"schema":schema(),"binding":binding()}),
             sink,
         )
         .unwrap();
@@ -88,7 +91,7 @@ fn read(id: &str) -> Value {
 }
 
 #[test]
-fn native_open_validates_store_hook_model_names() {
+fn native_open_rejects_retired_store_hook_registration() {
     let dir = tempfile::tempdir().unwrap();
     for hooks in [
         json!(["Missing"]),
@@ -97,7 +100,7 @@ fn native_open_validates_store_hook_model_names() {
         json!("Entry"),
     ] {
         let (sink, wakes) = wake_sink();
-        let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema(),"storeHooks":hooks}), sink).unwrap();
+        let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema(),"binding":binding(),"storeHooks":hooks}), sink).unwrap();
         let mut carrier = Carrier {
             id,
             wakes,
@@ -109,13 +112,14 @@ fn native_open_validates_store_hook_model_names() {
         actor::detach(id);
     }
     let (sink, wakes) = wake_sink();
-    let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("valid"),"schema":schema(),"storeHooks":["Entry"]}), sink).unwrap();
+    let id = actor::open(json!({"type":"open","requestId":"open","path":dir.path().join("valid"),"schema":schema(),"binding":binding(),"storeHooks":["Entry"]}), sink).unwrap();
     let mut carrier = Carrier {
         id,
         wakes,
         seen: vec![],
     };
-    assert_eq!(carrier.completed("open")["ok"], true);
+    assert_eq!(carrier.completed("open")["ok"], false);
+    carrier.until(|e| e["type"] == "runtimeClosed");
     actor::detach(id);
 }
 
@@ -150,7 +154,7 @@ fn open_answers_on_the_wake_and_a_failed_open_closes_the_runtime() {
     let (sink, wakes) = wake_sink();
     let missing = dir.path().join("missing").join("sub").join("db");
     let id = actor::open(
-        json!({"type":"open","requestId":"7","path":missing,"schema":schema()}),
+        json!({"type":"open","requestId":"7","path":missing,"schema":schema(),"binding":binding()}),
         sink,
     )
     .unwrap();
@@ -301,7 +305,7 @@ fn detach_stops_wakes_before_it_returns_and_closes_a_live_runtime() {
         })
     };
     let id = actor::open(
-        json!({"type":"open","requestId":"open","path":dir.path().join("live"),"schema":schema()}),
+        json!({"type":"open","requestId":"open","path":dir.path().join("live"),"schema":schema(),"binding":binding()}),
         sink,
     )
     .unwrap();
@@ -401,7 +405,7 @@ fn transaction_isolation_and_closed_handles_match_the_session_contract() {
         json!({"type":"callbackResult","effectId":effect["effectId"],"transactionId":tx,"ok":true}),
     );
     assert_eq!(c.completed("3")["ok"], true);
-    assert_eq!(c.completed("sync0")["ok"], true);
+    assert_eq!(c.completed("sync0")["ok"], false); // The retired batch seam cannot mutate a bound Store.
     assert_eq!(c.completed("sync1")["value"]["pending"], 0);
     assert_eq!(c.completed("sync2")["ok"], true);
     // After the commit the same token is closed again.
@@ -424,10 +428,11 @@ fn transaction_isolation_and_closed_handles_match_the_session_contract() {
 fn a_client_waiting_on_the_network_holds_no_writer_and_no_other_client_waits() {
     let dir = tempfile::tempdir().unwrap();
     let mut with_action = schema();
-    with_action["actions"] = json!([{"name":"Rename","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],"outputs":[]}]);
+    with_action["actions"] =
+        json!([{"name":"Ping","kind":"query","version":1,"inputs":[],"outputs":[]}]);
     let (sink, wakes) = wake_sink();
     let id = actor::open(
-        json!({"type":"open","requestId":"open","path":dir.path().join("a"),"schema":with_action}),
+        json!({"type":"open","requestId":"open","path":dir.path().join("a"),"schema":with_action,"binding":binding()}),
         sink,
     )
     .unwrap();
@@ -441,7 +446,7 @@ fn a_client_waiting_on_the_network_holds_no_writer_and_no_other_client_waits() {
     assert_eq!(a.completed("connect")["ok"], true);
     a.task(
         "call",
-        json!({"kind":"invoke","name":"Rename","version":1,"args":{"entry":{"id":"e","text":"server"}}}),
+        json!({"kind":"invoke","name":"Ping","version":1,"args":{}}),
     );
     let request = a.until(|e| e["type"] == "effect" && e["operation"]["route"] == "action");
     let body: Value = serde_json::from_str(request["operation"]["body"].as_str().unwrap()).unwrap();
@@ -471,7 +476,7 @@ fn a_client_waiting_on_the_network_holds_no_writer_and_no_other_client_waits() {
     );
 
     // The response arrives: the call succeeds once its apply committed.
-    let response = json!({"completion":{"callId":body["call"]["callId"],"outcome":{"status":"succeeded","result":null}},"records":[{"model":"Entry","identity":{"id":"e"},"stamp":1,"state":{"text":"server","note":null}}]});
+    let response = json!({"context":body["context"],"completion":{"callId":body["callId"],"outcome":{"status":"succeeded","result":null}},"records":[{"model":"Entry","identity":{"id":"e"},"cursor":null,"state":{"text":"server","note":null}}]});
     a.submit(json!({"type":"effectResult","effectId":request["effectId"],"outcome":{"ok":true,"value":{"status":200,"body":response.to_string()}}}));
     let done = a.completed("call");
     assert_eq!(
@@ -514,7 +519,7 @@ fn observer_snapshots_arrive_after_the_commit_they_describe() {
 
     carrier.task(
         "subscribe",
-        json!({"kind":"streamSubscribe","stream":"book"}),
+        json!({"kind":"streamSubscribe","stream":"User:a"}),
     );
     let events = carrier.through(|e| e["type"] == "observerChanged");
     let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
@@ -629,12 +634,10 @@ fn ffi_detach_is_safe_from_any_thread_repeatedly_and_for_unknown_ids() {
     assert!(actor::wait_closed(id, LOST_WAKE), "the actor never ended");
 }
 
-/// A native Load goes through the carrier like any other runtime work: the
-/// start answers with its handle, the page request is an `http` effect on the
-/// `load` route, and the wait completes only after the page's commit
-/// ([#173](https://github.com/zanminwang/axton/issues/173)).
+/// A bound native runtime refuses the retired Load command before it can
+/// persist work or enter the obsolete transport lane.
 #[test]
-fn a_native_load_runs_through_the_carrier() {
+fn native_load_commands_are_retired_for_protocol04() {
     let mut schema = schema();
     let fields = schema["models"][0]["fields"].clone();
     schema["models"][0]["version"] = json!(1);
@@ -648,7 +651,7 @@ fn a_native_load_runs_through_the_carrier() {
     let dir = tempfile::tempdir().unwrap();
     let (sink, wakes) = wake_sink();
     let id = actor::open(
-        json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema}),
+        json!({"type":"open","requestId":"open","path":dir.path().join("db"),"schema":schema,"binding":binding()}),
         sink,
     )
     .unwrap();
@@ -663,23 +666,13 @@ fn a_native_load_runs_through_the_carrier() {
         json!({"kind":"loadStart","name":"Recent","version":1,"args":{}}),
     );
     let started = carrier.completed("start");
-    let load = started["value"]["loadId"].as_str().unwrap().to_string();
-    assert_eq!(started["value"]["status"]["phase"], "waiting");
-    carrier.task("wait", json!({"kind":"loadWait","loadId":load}));
-    carrier.task("connect", json!({"kind":"connect"}));
-    carrier.completed("connect");
-    let effect = carrier.until(|e| e["type"] == "effect" && e["operation"]["route"] == "load");
-    let body: Value = serde_json::from_str(effect["operation"]["body"].as_str().unwrap()).unwrap();
-    let intent = &body["loads"][0];
-    assert_eq!(intent["loadId"], load.as_str());
-    let answer = json!({"loads":[{"loadId":intent["loadId"],"callId":intent["callId"],
-        "outcome":{"status":"succeeded","data":{"entries":[{"id":"a"}]},"next":null},
-        "records":[{"model":"Entry","identity":{"id":"a"},"stamp":1,"state":{"text":"A","note":null}}]}]});
-    carrier.submit(json!({"type":"effectResult","effectId":effect["effectId"],
-        "outcome":{"ok":true,"value":{"status":200,"body":answer.to_string()}}}));
-    assert_eq!(carrier.completed("wait")["ok"], true);
-    carrier.task("read", read("a"));
-    assert_eq!(carrier.completed("read")["value"]["text"], "A");
+    assert_eq!(started["ok"], false);
+    assert!(
+        started["error"]
+            .as_str()
+            .unwrap()
+            .contains("Load is retired")
+    );
     carrier.submit(json!({"type":"close"}));
     carrier.until(|e| e["type"] == "runtimeClosed");
     actor::detach(id);

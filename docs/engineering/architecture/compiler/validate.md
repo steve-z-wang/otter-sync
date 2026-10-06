@@ -12,6 +12,8 @@ Validate refuses schemas the runtimes could not execute consistently and schema 
 
 ## 5. Building Block View
 
+Inheritance expands full `FieldDecl` values before ordinary model validation. The expansion checks names, abstract parents, cycles, duplicate fields and abstract relation targets. Only concrete models enter runtime model, relation and operation namespaces. Abstract field types and parent names remain compiler-only data for generation, so concrete identity and input helpers never inherit model-level policy. Generated names include Dart’s lower-first top-level Mutation encoder; it cannot collide with a field type or another encoder.
+
 Checks run in this order:
 
 1. **Descriptor rules at the declaration.** Duplicate enum or model names, reserved model names (`axton_` and `sqlite_` prefixes, compared case-insensitively because SQLite table names are), duplicate fields, nullable lists, a missing `@@id`, and identity fields that are nullable, lists or unknown ([Models](../schema/models.md)).

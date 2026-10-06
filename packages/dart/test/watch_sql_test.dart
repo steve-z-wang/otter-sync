@@ -1,3 +1,4 @@
+import 'store_fixture.dart';
 // Watched read-only SQL over several Models
 // (https://github.com/zanminwang/axton/issues/184) through the real native
 // runtime: SQLite names the tables a statement reads, and the runtime re-runs
@@ -92,6 +93,8 @@ void main() {
   setUp(() async {
     dir = await Directory.systemTemp.createTemp('axton-watch-sql-');
     client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: '${dir.path}/db',
       schema: await _schema(),
       libraryPath: Platform.environment['AXTON_LIBRARY']!,

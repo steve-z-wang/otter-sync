@@ -119,6 +119,7 @@ pub(crate) async fn resolve_records(
             .collect();
         let loaded: Loaded = host
             .call_typed(HostRequest::Load {
+                mode: None,
                 model: model.clone(),
                 version,
                 identities: identities.clone(),
@@ -155,6 +156,7 @@ pub(crate) async fn resolve_records(
                 for identity in &identities {
                     let one: Loaded = host
                         .call_typed(HostRequest::Load {
+                            mode: None,
                             model: model.clone(),
                             version,
                             identities: vec![identity.clone()],

@@ -16,6 +16,8 @@ pub struct Negotiation {
     /// The read contracts the client declared; every page of the session is
     /// pulled at these versions.
     pub models: BTreeMap<String, u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<axton_core::v04::RequestContext>,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +38,33 @@ pub async fn negotiate(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<Negotiation> {
+    if crate::protocol_v04::is_request(bytes) {
+        let request: axton_core::v04::SubscribeIntent =
+            axton_core::v04::decode(bytes).map_err(crate::request_invalid)?;
+        crate::protocol_v04::admit(config, owner, &request.context, false, host).await?;
+        if crate::protocol_v04::models(config, &request.context)? != request.models {
+            return Err(Error::code("context_mismatch"));
+        }
+        let head = head(host, &request.context.binding.stream).await?;
+        if request.cursor > head {
+            return Err(crate::request_invalid("cursor ahead of head"));
+        }
+        let response = String::from_utf8(
+            axton_core::v04::encode(&axton_core::v04::SubscribeAcknowledged {
+                context: request.context.clone(),
+                cursor: request.cursor,
+                head,
+            })
+            .map_err(crate::internal)?,
+        )
+        .map_err(crate::internal)?;
+        return Ok(Negotiation {
+            response,
+            heads: BTreeMap::from([(request.context.binding.stream.clone(), request.cursor)]),
+            models: request.models,
+            context: Some(request.context),
+        });
+    }
     crate::admit_protocol(bytes)?;
     principal(owner)?;
     let request = decode_subscribe(bytes)?;
@@ -53,6 +82,7 @@ pub async fn negotiate(
         response,
         heads,
         models: request.models,
+        context: None,
     })
 }
 
@@ -101,6 +131,8 @@ pub enum LiveAction {
     /// Run `pull(owner, cursors, models)` in a transaction and report the page
     /// as [`LiveEvent::Pulled`]. At most one pull is outstanding per session;
     /// `models` are the session's declared read contracts.
+    /// Existing pull carrier with a strict immutable v04 DeltaIntent.
+    PullV04 { request: String },
     Pull {
         cursors: BTreeMap<String, u64>,
         models: BTreeMap<String, u64>,
@@ -130,6 +162,8 @@ pub struct Subscriptions {
     running: Option<BTreeMap<String, u64>>,
     closed: bool,
     models: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<axton_core::v04::RequestContext>,
 }
 
 impl Subscriptions {
@@ -157,16 +191,18 @@ impl Subscriptions {
             .iter()
             .map(|state| (state.stream.clone(), state.cursor))
             .collect();
-        actions.push(LiveAction::Pull {
-            cursors: cursors.clone(),
-            models: negotiation.models.clone(),
-        });
+        actions.push(pull_action(
+            &cursors,
+            &negotiation.models,
+            negotiation.context.as_ref(),
+        ));
         (
             Self {
                 streams,
                 running: Some(cursors),
                 closed: false,
                 models: negotiation.models,
+                context: negotiation.context,
             },
             actions,
         )
@@ -205,7 +241,30 @@ impl Subscriptions {
                 if self.closed {
                     return Ok(vec![]);
                 }
-                let progress = stream_page_progress(&page, &asked)?;
+                let progress = if let Some(context) = &self.context {
+                    let decoded: axton_core::v04::DeltaPage =
+                        axton_core::v04::decode(page.as_bytes())
+                            .map_err(|e| Error::new(code::LIVE_INVALID_PAGE, e.to_string()))?;
+                    if &decoded.context != context
+                        || asked.len() != 1
+                        || asked.get(&context.binding.stream) != Some(&decoded.from)
+                    {
+                        return Err(Error::code(code::LIVE_INVALID_PAGE));
+                    }
+                    PageProgress {
+                        page,
+                        cursors: BTreeMap::from([(
+                            context.binding.stream.clone(),
+                            CursorRange {
+                                from: decoded.from,
+                                to: decoded.to,
+                                head: decoded.head,
+                            },
+                        )]),
+                    }
+                } else {
+                    stream_page_progress(&page, &asked)?
+                };
                 let mut actions = vec![];
                 let advanced = progress.cursors.values().any(|range| range.to > range.from);
                 if advanced {
@@ -253,10 +312,7 @@ impl Subscriptions {
             }
         }
         self.running = Some(cursors.clone());
-        Some(LiveAction::Pull {
-            cursors,
-            models: self.models.clone(),
-        })
+        Some(pull_action(&cursors, &self.models, self.context.as_ref()))
     }
 
     /// The accepted streams in acknowledgement order, with their drain state.
@@ -325,4 +381,32 @@ pub async fn stream_pull(
             .map_err(crate::internal)?;
     let page = crate::process_stream_pull(config, owner, &request, host).await?;
     stream_page_progress(&page, cursors)
+}
+
+fn pull_action(
+    cursors: &BTreeMap<String, u64>,
+    models: &BTreeMap<String, u64>,
+    context: Option<&axton_core::v04::RequestContext>,
+) -> LiveAction {
+    match context {
+        None => LiveAction::Pull {
+            cursors: cursors.clone(),
+            models: models.clone(),
+        },
+        Some(context) => {
+            let intent = axton_core::v04::DeltaIntent {
+                context: context.clone(),
+                call_id: uuid::Uuid::new_v4().to_string(),
+                after: cursors[&context.binding.stream],
+                models: models.clone(),
+                limit: 1000,
+            };
+            LiveAction::PullV04 {
+                request: String::from_utf8(
+                    axton_core::v04::encode(&intent).expect("validated live context and cursor"),
+                )
+                .expect("JSON is UTF8"),
+            }
+        }
+    }
 }

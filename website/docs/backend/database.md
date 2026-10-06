@@ -1,6 +1,6 @@
 # Database
 
-AXTON's backend runs on PostgreSQL. Your business tables, AXTON's six metadata tables and every sync operation share one database transaction, so a push commits business writes, stamps, Stream memberships, publications and the receipt together. Local client storage is SQLite regardless.
+AXTON's backend runs on PostgreSQL. Business writes, explicit publications, Stream membership and durable Mutation receipts share the application transaction. Local client storage is SQLite regardless.
 
 `@axtonjs/postgres` (`packages/postgres`) holds every statement AXTON runs, the metadata migration and one small driver interface. You pick the shim for the tool your application already uses to talk to PostgreSQL; handlers and loaders receive that tool's own transaction object.
 
@@ -23,7 +23,7 @@ const database = prisma(db, { retries: 3, timeout: 20_000 });
 
 ## Apply the migration
 
-Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs six metadata tables: `axton_client`, `axton_call`, `axton_stream`, `axton_record`, `axton_stream_member` and `axton_stream_log`. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Existing databases follow the [forward migration chain](#stream-forward-migration).
+Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs call, Stream and record metadata plus the persisted publication fence, publication groups and immutable Bootstrap manifest/identity/range storage. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Existing databases follow the [forward migration chain](https://github.com/zanminwang/axton/blob/v0.3.0/website/docs/backend/database.md#stream-forward-migration).
 
 ## The driver interface
 
@@ -47,26 +47,20 @@ For a PostgreSQL tool without a shipped shim, write these two methods and pass `
 | `persistence(driver)` | The `database` option built on any driver |
 | `PostgresDriver<Tx>`, `DriverOptions` | The interface and the options every shim accepts |
 
-Run the driver conformance suite ([driver-conformance.test.mjs](https://github.com/zanminwang/axton/blob/main/integration/persistence/server/driver-conformance.test.mjs)) against a new driver: it proves claim locking, receipt replay, stamp allocation, `ensureStamp` under concurrency, Stream range reservation, kept positions, removal scans, savepoints, serialization retry and rollback on a real database, once per shim.
+The retained 0.3 driver conformance suite ([driver-conformance.test.mjs](https://github.com/zanminwang/axton/blob/main/integration/persistence/server/driver-conformance.test.mjs)) exercises legacy persistence: it proves claim locking, receipt replay, stamp allocation, `ensureStamp` under concurrency, Stream range reservation, kept positions, removal scans, savepoints, serialization retry and rollback on a real database, once per shim.
 
-## What the persistence does
+## Current 0.4 persistence
 
-`claim` locks a client row so a repeated batch replays its receipt. `claimCall`/`saveCall` retain immutable Mutation, Query, Fetch and Load outcomes in the application transaction; saved IDs replay without rerunning handlers, Loaders or declarations. Existing single-record stamp operations remain for read paths. Delivery settlement uses bulk `readTracking` and `guardRecords`, then `lockStreams` and `applyStreamMembers`. `scan` reads compacted upsert/removal positions: upserts resolve current stamps and viewer Loaders; retained removals use identity and invoke no Loader.
+Strict carriers bind backend, viewer, Stream, contract, materialization and persisted client incarnation. Call IDs retain exact frozen intent and durable outcome. Compatible schema evolution retains complete prior descriptors for replay; an arbitrary detached response cannot acquire current authority.
 
-## Stream persistence constraints
+A persisted namespace-wide fence is acquired before relevant application work. Its Serializable UPDATE creates an actual conflict against a stale snapshot. Read transactions can upgrade only by retrying the whole body, including the handler. Background callbacks acquire early; a caller-owned transaction must explicitly acquire before its business writes. Advisory locking or publication after a stale read does not establish this guarantee.
 
-Tracking is unique per Stream/record and survives Loader absence. Streams own ordered heads; catalog IDs stay internal bigints, while stamps/cursors are positive safe integers. There are no tag dictionaries or joins in the fresh layout and no public withdrawal operation. Historical removal logs and client holdings remain supported.
+Publication groups persist actual identities, dependency evidence and Stream spans atomically with writes. Delta plans bind context, ordered units, payload and covered ranges with a domain-tagged SHA-256 digest. Every unit advances only its proved prefix; later independent units may fail without invalidating earlier committed progress. Compaction cannot erase required group evidence. Transferable secondary uniqueness may require conservative same-Model closure, including retained removed identities; identity-only uniqueness does not require full-Model grouping. Oversized groups fail explicitly.
 
-Custom hosts answer `readTracking({records, pairs})` with the deduplicated union of all holders for named records and existing explicit candidates. `guardRecords` accepts canonically ordered mixed `advance`/`ensure`/`lock` records and returns request-aligned stamps (null only for absent lock metadata). `lockStreams` precedes record guards in canonical UTF-8 order; `applyStreamMembers` writes final pairs, reserves grouped head ranges and validates matching positions. See [host interfaces](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/backend-interface.md#9-architecture-decisions).
+Bootstrap captures a bounded immutable manifest. `@@bootstrap` filters initial historical types; coarse publication groups cannot pull unrelated unmarked history into it. Explicit held-identity rematerialization validates current viewer/Stream authority without tracking. Receipt-target materialization validates the exact saved accepted receipt and serves only its Stream targets without rerunning Bootstrap preparation, allocating a cursor or enrolling records. Page coverage commits with installed authority; tail capture does not advance ordinary Stream progress.
 
-The adapter chunks set-based SQL at 1,000 items. Host round trips and statement counts scale with chunks, rather than one call/statement per record. Row, lock, WAL and log work still scale with affected records and pairs. Mixed guard acquisition order spans chunks, retains no-op write conflict fencing and cannot be established merely by sorting returned rows. A changed global recipient set requires whole-transaction retry; locks are never extended out of order. Caller-owned transactions retain their commit/retry responsibilities.
+Saved calls, tracking, logs, manifests and publication dependency evidence have no unsafe age-based pruning. Loader failure is not absence and cannot discharge progress. Membership Remove retains identity evidence; canonical Stream null supplies deletion authority. Ordinary Query/Fetch carry null-cursor snapshots.
 
-Saved outcomes, tracking and logs have no TTL or automatic pruning. Tracking is durable interest, not permission or a retention guarantee. Loader errors retain local content; `null` is authority absence, never automatic server tracking removal.
+Run both driver conformance and `protocol-v04.test.mts` / `protocol-v04-concurrency.test.mts` through the formal PostgreSQL runner when changing a shim. They cover real Serializable retry, fence ordering, receipts, immutable manifests, grouping, uniqueness transfer and bounded delivery.
 
-## Stream forward migration
-
-Stop old writers before the complete migration transaction. Scope installations apply [2026-10-01-streams.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-10-01-streams.sql); Channel installations first apply [2026-09-30-scopes.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-09-30-scopes.sql). Earlier v0.1 installations first apply [2026-09-30-channel-members.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-09-30-channel-members.sql). Apply current DDL only after the installed layout has been upgraded. Older-layout migrations are not rerun after cutover.
-
-The forward upgrade preserves tracking pairs, heads, catalog IDs, stamps, retained removals, receipts and calls. It rewrites only top-level framework `memberships[*].scope` claim keys, never opaque names or business JSON. The Stream migration retires tag-only tables. All changes roll back on inconsistency and reapplication is idempotent. Coordinate matching backend, adapter, tooling and clients through [stream-authority-v1 cutover](deployment.md#stream-membership-cutover); source version `0.2.0` is not a registry release decision.
-
-After prior layout upgrades, keep writers and live sessions stopped while applying [local-authority repair](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-10-01-local-authority.sql). It restores historical removed pairs and publishes newer current authority to all tracking viewers without rewriting saved business bytes. Reapplication allocates nothing. Deploy coordinated authority-capable admission before resuming traffic; never reset/rewind cursors or turn Remove into null ([cutover](deployment.md#stream-membership-cutover)). Server tracking remains durable; clients have no holding table.
+The retained 0.3 batch, stamp and migration methods remain internal compatibility paths. They are not the current public write/read contract. Apply the forward SQL migration chain before current traffic; never replace populated metadata with parallel empty tables.

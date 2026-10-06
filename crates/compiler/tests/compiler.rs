@@ -10,12 +10,12 @@ fn generated_actions_bind_to_shared_runtime_and_backend() {
     let model = axton_compiler::typescript(&descriptor);
     let client = axton_compiler::client_typescript(&descriptor, "@axtonjs/client");
     let backend = axton_compiler::backend_typescript(&descriptor, "@axtonjs/server");
-    assert!(model.contains("import type { Call, CallOptions, OnceOptions } from './client.ts'"));
+    assert!(model.contains("import type { Call, QueryOptions } from './client.ts'"));
     assert!(client.contains("type CallOutcome"));
     assert!(client.contains("readonly mutations:"));
     assert!(client.contains("readonly queries:"));
     assert!(!client.contains("readonly actions:"), "{client}");
-    assert!(model.contains("invokeAction"));
+    assert!(model.contains("submitMutation"));
     assert!(backend.contains("export function createBackend"));
     assert!(backend.contains("MutationContext<Tx>"));
     assert!(backend.contains("QueryContext<Tx>"));
@@ -383,7 +383,7 @@ fn explicit_results_generate_separate_client_and_handler_types() {
         "export type EditOutput = void;",
         "function decodeEditOutput(_value:unknown):void { return undefined; }",
         "export interface EditAndReadOutput {\n todo: Todo;\n}",
-        "export type EditAndReadOptions = CallOptions<'todo'>;",
+        "export function makeTransactionMutations",
     ] {
         assert!(ts.contains(expected), "missing {expected}: {ts}");
     }
@@ -520,37 +520,22 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
     ] {
         assert!(!ts.contains(retired), "{retired}: {ts}");
     }
-    assert!(ts.contains("export interface Stream {"), "{ts}");
+    assert!(
+        ts.contains("export interface Stream { readonly track:"),
+        "{ts}"
+    );
     assert!(ts.contains("export interface RecordDeclaration {\n (records: RecordRef | readonly RecordRef[]): void;\n todo(ids: TodoIdentity | TodoIdentity[\"id\"] | readonly (TodoIdentity | TodoIdentity[\"id\"])[]): void;\n pin(ids: PinIdentity | readonly (PinIdentity)[]): void;\n}\n"), "{ts}");
-    // Concrete contexts: a Mutation, a legacy handler and an external
-    // transaction declare through the generated handles; a Query cannot.
-    assert!(ts.contains("export interface MutationContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
-    assert!(
-        ts.contains(
-            "export interface QueryContext<Tx> {\n tx: Tx;\n userId: string;\n callId: string;\n}\n"
-        ),
-        "{ts}"
-    );
-    assert!(ts.contains("export interface HandlerCall<Tx, Input> {\n input: Input;\n tx: Tx;\n userId: string;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
-    assert!(ts.contains("export interface TransactionCall<Tx> {\n tx: Tx;\n stream(names: string | readonly string[]): Stream;\n invalidate: RecordDeclaration;\n}\n"), "{ts}");
-    // `backend.transaction` hands its body the same generated handles.
-    assert!(
-        ts.contains(" return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options,"),
-        "{ts}"
-    );
-    // The broad runtime contexts and the retired helpers are not re-exported.
-    assert!(ts.contains("export { CallRejected, MutationRejected, devAuth, type LoaderCall } from \"@axtonjs/server\";\n"), "{ts}");
-    for retired in [
-        "type MutationContext,",
-        "type HandlerCall,",
-        "type RecordRef }",
-        "Publish",
-        "publish",
-        "changes",
-        "encodeTodoIdentity",
+    for expected in [
+        "stream: Stream;",
+        "streams(names: readonly string[]): Stream;",
+        "stream: LoadStream;",
+        "streams(names: readonly string[]): LoadStream;",
+        "export interface PreparationContext<Tx>",
+        "bootstrap?: (call: {ctx: QueryContext<Tx>}) => void | Promise<void>",
     ] {
-        assert!(!ts.contains(retired), "{retired}: {ts}");
+        assert!(ts.contains(expected), "{expected}: {ts}");
     }
+    assert!(!ts.contains("stream(names:"));
     // Without Models, a Stream has only its mixed verbs and nothing to name.
     let empty =
         axton_compiler::backend_typescript(&compile("mutation Ping()").unwrap(), "@axtonjs/server");
@@ -558,7 +543,10 @@ fn backend_emitter_generates_scope_touch_and_contexts_per_schema() {
         empty.contains("export type RecordRef = never;\n"),
         "{empty}"
     );
-    assert!(empty.contains("export interface Stream {"), "{empty}");
+    assert!(
+        empty.contains("export interface Stream { readonly track:"),
+        "{empty}"
+    );
     assert!(
         empty.contains(
             "export interface RecordDeclaration {\n (records: RecordRef | readonly RecordRef[]): void;\n}\n"
@@ -612,215 +600,110 @@ fn backend_emitter_accepts_a_bare_function_only_for_a_v1_only_mutation() {
 
 #[test]
 fn generated_clients_expose_one_server_connection() {
-    let schema = compile("model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> }").unwrap();
-    let ts = axton_compiler::client_typescript(&schema, "@example/custom-runtime");
-    assert!(ts.contains("type ServerOptions"));
-    assert!(ts.contains("server?: ServerOptions"));
-    assert!(ts.contains("client.connect(options.server"));
-    assert!(!ts.contains("LiveTransport"));
-    assert!(!ts.contains("transport?:"));
-    assert!(
-        ts.find("connection options were removed").unwrap() < ts.find("await Client.open").unwrap()
-    );
-    let schema = compile("model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> }").unwrap();
+    let schema =
+        compile("model Entry { id String @@id(id) } mutation Edit(entry Entry.delete)").unwrap();
+    let ts = axton_compiler::client_typescript(&schema, "@example/runtime");
     let dart = axton_compiler::dart(&schema);
-    assert!(dart.contains("show RuntimeConnection, SyncServer"));
-    assert!(dart.contains("SyncServer? server"));
-    // An admission refusal is observed through the generated import alone
-    // (#181), and no Model may take its name.
-    assert!(dart.contains("SyncServer, AdmissionRefused, Call,"));
     assert!(
-        axton_compiler::client_typescript(&schema, "@example/custom-runtime")
-            .contains("export { AdmissionRefused, CallError,")
+        ts.contains("stream:string; connection:StoreConnection"),
+        "{ts}"
     );
-    let error = compile("model AdmissionRefused { id String @@id(id) }").unwrap_err();
-    assert!(error.contains("the generated client uses"), "{error}");
-    // The prerequisite handler types are re-exported the same way (#185),
-    // and so are the unsent-work item types (#186).
+    assert!(ts.contains("Client.open({...options,schema})"), "{ts}");
+    assert!(
+        dart.contains("required String stream, required StoreConnection connection"),
+        "{dart}"
+    );
+    assert!(dart.contains("connection:connection"), "{dart}");
     for name in [
-        "PrerequisiteRetry",
+        "AdmissionRefused",
+        "StoreConnection",
+        "StoreIdentity",
         "PrerequisiteHandler",
         "RefusedAct",
         "FailedAct",
-        "FailedTask",
         "SubmittedAct",
-        "ActOperation",
     ] {
-        let error = compile(&format!("model {name} {{ id String @@id(id) }}")).unwrap_err();
         assert!(
-            error.contains("the generated client uses"),
-            "{name}: {error}"
+            compile(&format!("model {name} {{ id String @@id(id) }}")).is_err(),
+            "{name}"
         );
     }
-    assert!(dart.contains("client.connect(server"));
-    assert!(!dart.contains("LiveTransport"));
-    assert!(!dart.contains("Transport? transport"));
 }
 
-/// The generated client is the whole client: typed models (with a per-record
-/// sync state), top-level mutations and the runtime members, in both languages.
 #[test]
 fn generated_clients_are_the_whole_client() {
-    let schema = compile("model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> }").unwrap();
-    let ts = axton_compiler::client_typescript(&schema, "@example/custom-runtime");
-    for member in [
-        "readonly mutate: Mutate;",
-        "this.mutate = new Mutate(client)",
-        "syncState(): Promise<ClientSyncState>",
-        "dismissRejection(ordinal: number)",
-        "drop(ordinal: number)",
-        "pendingTasks()",
-        "setReadiness(key: string",
-        "prerequisites?: Record<string, PrerequisiteHandler>",
-        "...(options.prerequisites === undefined ? {} : { prerequisites: options.prerequisites })",
-        "export { AdmissionRefused, CallError, PrerequisiteRetry,",
-        "type RefusedAct, type SubmittedAct }",
-        "get rejections(): Client[\"rejections\"] { return this.client.rejections; }",
-        "get failures(): Client[\"failures\"] { return this.client.failures; }",
-        "get outbound(): Client[\"outbound\"] { return this.client.outbound; }",
-        "async connect(server: ServerOptions",
-        "querySpec(model: string",
-        "readSql(sql: string",
-        "watchSql(sql: string, parameters: unknown[] = [], listener: (rows: RecordValue[]) => void, onError?: (error: unknown) => void): () => void { return this.client.watchSql(sql, parameters, listener, onError); }",
-    ] {
-        assert!(ts.contains(member), "missing {member}: {ts}");
-    }
-    assert!(!ts.contains("status()"), "{ts}");
-    assert!(
-        !ts.contains("runPrerequisites"),
-        "handlers are registered at open: {ts}"
-    );
     let schema = compile(
-        "model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> } mutation Touch { entry Entry.update<title> }",
+        "model Entry { id String title String @@id(id) } mutation Edit(entry Entry.update<title>)",
     )
     .unwrap();
-    let model = axton_compiler::typescript(&schema);
-    assert!(
-        model.contains("export type MutationName = 'Edit'|'Touch';"),
-        "{model}"
-    );
-    assert!(
-        model.contains("async syncState(identity:EntryIdentity):Promise<SyncState>"),
-        "{model}"
-    );
-    assert!(
-        model.contains("export class Mutate { readonly port:MutatePort;"),
-        "{model}"
-    );
-    assert!(
-        model.contains(
-            "interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }"
-        ),
-        "transactions expose direct writes without mutation submission: {model}"
-    );
-    let write_port = model
-        .lines()
-        .find(|line| line.starts_with("export interface WritePort "))
-        .unwrap();
-    assert!(!write_port.contains("mutate"), "{write_port}");
+    let ts = axton_compiler::client_typescript(&schema, "@example/runtime");
     let dart = axton_compiler::dart(&schema);
     for member in [
-        "late final Mutate mutate = Mutate(client);",
-        "Future<Map<String,dynamic>> syncState() => client.syncState();",
-        "Future<void> dismissRejection(int ordinal)",
-        "Future<void> drop(int ordinal)",
-        "Future<RuntimeConnection> connect(SyncServer server",
-        "Future<SyncState> syncState(EntryIdentity identity)",
-        "class Mutate { final MutatePort port;",
-        "Map<String, PrerequisiteHandler>? prerequisites,",
-        "onStore:rawHooks, prerequisites:prerequisites);",
-        "ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;",
-        "Stream<List<Map<String,dynamic>>> watchSql(String sql, {List<dynamic> parameters = const []}) => client.watchSql(sql, parameters: parameters);",
-        "late final rejections = client.rejections;",
-        "late final failures = client.failures;",
-        "late final outbound = client.outbound;",
+        "syncState()",
+        "dismissRejection(",
+        "drop(",
+        "pendingTasks()",
+        "setReadiness(",
+        "querySpec(",
+        "readSql(",
+        "watchSql(",
+        "bootstrap()",
+        "resetStore(",
+        "get rejections()",
+        "get failures()",
+        "get outbound()",
     ] {
-        assert!(dart.contains(member), "missing {member}: {dart}");
+        assert!(ts.contains(member), "{member}: {ts}");
     }
-    assert!(!dart.contains("runPrerequisites"), "{dart}");
+    for member in [
+        "syncState()",
+        "dismissRejection(",
+        "drop(",
+        "pendingTasks()",
+        "setReadiness(",
+        "querySpec(",
+        "readSql(",
+        "watchSql(",
+        "bootstrap()",
+        "resetStore(",
+        "late final rejections",
+        "late final failures",
+        "late final outbound",
+    ] {
+        assert!(dart.contains(member), "{member}: {dart}");
+    }
+    for text in [&ts, &dart] {
+        assert!(!text.contains("Mutate("));
+        assert!(!text.contains("onStore"));
+        assert!(!text.contains("Loads"));
+    }
 }
 
 #[test]
 fn generated_transaction_facades_are_local_only() {
-    let schema = compile("model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> }").unwrap();
+    let schema =
+        compile("model Entry { id String @@id(id) } mutation Edit(entry Entry.delete)").unwrap();
     let ts = axton_compiler::typescript(&schema);
-    let ts_transaction = ts
-        .lines()
-        .find(|line| line.starts_with("export class GeneratedTransaction "))
-        .unwrap();
-    assert!(
-        ts_transaction.contains("readonly models:TxModels;"),
-        "{ts_transaction}"
-    );
-    assert!(!ts_transaction.contains("mutate"), "{ts_transaction}");
-    assert!(
-        ts.contains("export class Mutate { readonly port:MutatePort;"),
-        "{ts}"
-    );
-    let ts_client = axton_compiler::client_typescript(&schema, "@example/custom-runtime");
-    assert!(
-        ts_client.contains("this.mutate = new Mutate(client)"),
-        "{ts_client}"
-    );
-
     let dart = axton_compiler::dart(&schema);
-    let dart_transaction = dart
-        .lines()
-        .find(|line| line.starts_with("class GeneratedTransaction "))
-        .unwrap();
-    assert!(
-        dart_transaction.contains("late final TxModels models"),
-        "{dart_transaction}"
-    );
-    assert!(!dart_transaction.contains("mutate"), "{dart_transaction}");
-    assert!(
-        dart.contains("class Mutate { final MutatePort port;"),
-        "{dart}"
-    );
-    assert!(
-        dart.contains("late final Mutate mutate = Mutate(client);"),
-        "{dart}"
-    );
+    assert!(ts.contains("readonly models:TxModels"));
+    assert!(ts.contains("readonly mutations:"));
+    assert!(dart.contains("late final TxModels models"));
+    assert!(dart.contains("late final TransactionMutations mutations"));
+    for text in [&ts, &dart] {
+        assert!(!text.contains("class Mutate"));
+        assert!(!text.contains("TransactionStreams"));
+    }
 }
 
 #[test]
 fn generated_store_hooks_are_typed_and_decode_incoming_records() {
-    let schema = compile("enum Status { active closed } model Entry { tenant String id String at DateTime status Status @@id(tenant, id) }").unwrap();
+    let schema = compile("enum Status { active closed } model Entry { tenant String id String at DateTime status Status @@id(tenant,id) }").unwrap();
     let ts = axton_compiler::typescript(&schema);
-    let client = axton_compiler::client_typescript(&schema, "@axtonjs/client");
     let dart = axton_compiler::dart(&schema);
-    assert!(
-        ts.contains("export type StoreChange<Identity, Model>"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("entry?: StoreHandler<EntryIdentity, Entry>"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("tenant: row.tenant as string"),
-        "composite identity decoder: {ts}"
-    );
-    assert!(
-        ts.contains("id: row.id as string"),
-        "composite identity decoder: {ts}"
-    );
-    assert!(ts.contains("readonly streams:"), "{ts}");
-    assert!(client.contains("onStore?: StoreHooks"), "{client}");
-    assert!(
-        client.contains("decodeEntryIdentity(change.identity)"),
-        "{client}"
-    );
-    assert!(client.contains("decodeEntry(change.row)"), "{client}");
-    assert!(dart.contains("sealed class StoreChange<I, M>"), "{dart}");
-    assert!(dart.contains("StoreUpsert<I, M>"), "{dart}");
-    assert!(dart.contains("StoreDelete<I, M>"), "{dart}");
-    assert!(dart.contains("EntryIdentity.fromRecord"), "{dart}");
-    assert!(
-        dart.contains("tenant: row['tenant'] as String"),
-        "composite identity decoder: {dart}"
-    );
-    assert!(dart.contains("Entry.fromRecord"), "{dart}");
+    assert!(ts.contains("tenant: row.tenant as string"));
+    assert!(dart.contains("tenant: row['tenant'] as String"));
+    assert!(!ts.contains("StoreHooks"));
+    assert!(!dart.contains("StoreHooks"));
 }
 
 #[test]
@@ -830,15 +713,10 @@ fn store_hooks_emit_for_model_only_and_model_free_schemas() {
         "query Ping() { value String }",
     ] {
         let schema = compile(source).unwrap();
-        assert!(axton_compiler::typescript(&schema).contains("export interface StoreHooks"));
-        assert!(
-            axton_compiler::client_typescript(&schema, "@axtonjs/client")
-                .contains("onStore?: StoreHooks")
-        );
-        assert!(axton_compiler::dart(&schema).contains("class StoreHooks"));
+        assert!(!axton_compiler::typescript(&schema).contains("StoreHooks"));
+        assert!(!axton_compiler::client_typescript(&schema, "@axtonjs/client").contains("onStore"));
+        assert!(!axton_compiler::dart(&schema).contains("StoreHooks"));
     }
-    let free = compile("query Ping() { value String }").unwrap();
-    assert!(axton_compiler::dart(&free).contains("const StoreHooks();"));
 }
 
 #[test]
@@ -850,16 +728,10 @@ fn store_hook_generated_names_are_reserved() {
         "StoreUpsert",
         "StoreDelete",
         "StoreHook",
-        "FutureOr",
     ] {
-        for declaration in [
-            format!("model {name} {{ id String @@id(id) }}"),
-            format!("enum {name} {{ one two }}"),
-        ] {
-            let error = compile(&declaration).unwrap_err();
-            assert!(error.contains("generated client"), "{declaration}: {error}");
-        }
+        compile(&format!("model {name} {{ id String @@id(id) }}")).unwrap();
     }
+    assert!(compile("model FutureOr { id String @@id(id) }").is_err());
 }
 
 fn line_of(error: &str) -> usize {
@@ -953,12 +825,9 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
     for name in [
         "SyncState",
         "Rejection",
-        "Mutate",
         "GeneratedClient",
         "Mutations",
         "Queries",
-        "DirectMutations",
-        "QueuedQueries",
         "CallPort",
         "CallRejected",
         // The shared call handle vocabulary every generated client re-exports.
@@ -967,18 +836,11 @@ fn rejects_model_and_enum_names_the_generated_client_uses() {
         "CallOutcome",
         "CallError",
         "CallOptions",
-        "CallStore",
         "CallSuccess",
         "CallFailure",
         "Transaction",
         // The Stream facade and the handle types it re-exports
         // ([#150](https://github.com/zanminwang/axton/issues/150)).
-        "Streams",
-        "Subscription",
-        "SubscriptionStatus",
-        "SubscriptionInitialization",
-        "SubscriptionConnection",
-        "SubscriptionClosedException",
     ] {
         let e = compile(&format!("model {name} {{ id UUID @@id(id) }}")).unwrap_err();
         assert!(e.contains("generated client"), "{name}: {e}");
@@ -1288,7 +1150,7 @@ fn deprecations_reach_every_generated_surface_and_leave_the_descriptors_alone() 
     );
     assert!(dart.contains("class TaskFilter {\n final Present<String>? id;\n @Deprecated('renamed to title')\n final Present<String>? name;\n"), "{dart}");
     assert!(dart.contains("Map<String,dynamic> edit({required EditTaskUpdate task,@Deprecated('use task') EditOldUpdate? old})"), "{dart}");
-    assert!(dart.contains(" Future<int> edit({required EditTaskUpdate task,@Deprecated('use task') EditOldUpdate? old})"), "{dart}");
+    assert!(dart.contains("@Deprecated('use task')"), "{dart}");
 }
 #[test]
 fn action_descriptors_separate_values_operands_and_output_sources() {
@@ -1413,35 +1275,21 @@ fn retained_generated_action_binding_validates_without_relation_snapshots() {
 
 #[test]
 fn action_typescript_emits_flattened_operands_for_generated_client() {
-    let v = compile("model Todo { id String title String @@id(id) } mutation AddTodo(todo Todo.create, patch Todo.update<title>?, gone Todo.delete[], label String?) { related Todo? matches Todo[] count Int }").unwrap();
+    let v=compile("model Todo { id String title String @@id(id) } mutation AddTodo(todo Todo.create, patch Todo.update<title>?, gone Todo.delete[], label String?) { related Todo? }").unwrap();
     let ts = axton_compiler::typescript(&v);
-    // Without creation defaults a create input requires every field.
-    assert!(
-        ts.contains("export interface TodoCreate {\n id: string;\n title: string;\n}"),
-        "{ts}"
-    );
-    assert!(ts.contains("export type TodoUpdate<K extends keyof TodoPatch = keyof TodoPatch> = TodoIdentity & Partial<Pick<TodoPatch, K>>;"), "{ts}");
-    assert!(
-        ts.contains("export type TodoDelete = TodoIdentity;"),
-        "{ts}"
-    );
-    assert!(ts.contains("export interface AddTodoInput"), "{ts}");
-    assert!(ts.contains("label: string | null;"), "{ts}");
-    assert!(
-        ts.contains("import type { Call, CallOptions, OnceOptions } from './client.ts'"),
-        "{ts}"
-    );
-    assert!(!ts.contains("makeActions"), "{ts}");
-    // Mutations default to the durable route; `call` is direct.
-    assert!(
-        ts.contains("export function makeMutations(port:CallPort) { return {\n addTodo: (args:AddTodoInput, options?:AddTodoOptions):Promise<Call<AddTodoOutput>> => port.invokeAction('AddTodo',1,encodeAddTodoInput(args),decodeAddTodoOutput,options),\n call: {\n  addTodo: (args:AddTodoInput, options?:AddTodoOptions):Promise<AddTodoOutput> => port.invokeDirectAction('AddTodo',1,encodeAddTodoInput(args),decodeAddTodoOutput,options),\n }\n}; }"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("export function makeQueries(port:CallPort) { return {\n enqueue: {\n },\n invalidate: {\n }\n}; }"),
-        "{ts}"
-    );
-    assert!(!ts.contains("class GeneratedClient {"), "{ts}");
+    for expected in [
+        "export interface TodoCreate",
+        "export type TodoUpdate",
+        "export type TodoDelete = TodoIdentity",
+        "export interface AddTodoInput",
+        "label: string | null",
+        "export function makeMutations(port:SubmitMutationPort)",
+        "makeTransactionMutations(port)",
+    ] {
+        assert!(ts.contains(expected), "{expected}: {ts}");
+    }
+    assert!(!ts.contains("invokeDirectAction"));
+    assert!(!ts.contains("enqueue:"));
 }
 
 #[test]
@@ -1504,39 +1352,22 @@ fn mixed_action_and_legacy_backend_keeps_handler_context_in_scope() {
 
 #[test]
 fn action_dart_emits_concrete_client_and_versioned_handler_contracts() {
-    let v = compile("model Todo { id String title String @@id(id) } query Search(query String?) { relatedTodo Todo? } mutation Ping()").unwrap();
-    let dart = axton_compiler::dart(&v);
+    let dart=axton_compiler::dart(&compile("model Todo { id String title String @@id(id) } query Search(query String?) { relatedTodo Todo? } mutation Ping()").unwrap());
     for expected in [
-        "show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
-        "required String? query",
-        "class TodoIdentity",
-        "required this.relatedTodo",
+        "TodoIdentity",
         "TodoIdentity? relatedTodo",
         "Todo? relatedTodo",
-        "late final Mutations mutations = Mutations(client);",
-        "late final Queries queries = Queries(client);",
-        "late final DirectMutations call = DirectMutations(client);",
-        "late final QueuedQueries enqueue = QueuedQueries(client);",
-        "typedef PingOutput = void;",
-        "abstract interface class QuerySearchHandlers<Ctx> {\n Future<SearchHandlerOutput> v1(QueryHandlerCall<Ctx, SearchInput> call);",
-        "abstract interface class MutationPingHandlers<Ctx> {\n Future<PingHandlerOutput> v1(MutationHandlerCall<Ctx, PingInput> call);",
+        "late final Queries queries",
+        "Future<SearchOutput> search(",
+        "class PingMutation",
+        "Future<Call<PingOutput>> call(PingInput input)",
+        "SearchHandlerInput> call",
+        "PingHandlerInput> call",
     ] {
-        assert!(dart.contains(expected), "missing {expected}: {dart}");
+        assert!(dart.contains(expected), "{expected}: {dart}");
     }
-    // Each route fixes its return type: the Query is direct by default and
-    // durable under `enqueue`; the Mutation the other way round.
-    let class = |name: &str| {
-        let start = dart.find(&format!("\nclass {name} {{")).unwrap();
-        let end = dart[start + 1..].find("\n}\n").unwrap();
-        dart[start..start + 1 + end].to_string()
-    };
-    assert!(class("Queries").contains("Future<SearchOutput> search("));
-    assert!(class("QueuedQueries").contains("Future<Call<SearchOutput>> search("));
-    assert!(class("Mutations").contains("Future<Call<PingOutput>> ping("));
-    assert!(class("DirectMutations").contains("Future<PingOutput> ping("));
-    assert!(!class("Mutations").contains("search("));
-    assert!(!class("Queries").contains("ping("));
-    assert!(!dart.contains("class Actions"));
+    assert!(!dart.contains("QueuedQueries"));
+    assert!(!dart.contains("DirectMutations"));
 }
 
 #[test]
@@ -1553,30 +1384,26 @@ fn model_only_dart_keeps_local_crud_without_action_symbols() {
 
 #[test]
 fn action_dart_binds_shared_runtime_and_retained_codecs() {
-    let v = compile("enum Mood { calm loud } model Note { id String at DateTime mood Mood @@id(id) } mutation Save(note Note.create, changed Note.update<at>?, stamps DateTime[], when DateTime?) { saved Note? at DateTime moods Mood[] }").unwrap();
-    let dart = axton_compiler::dart(&v);
+    let dart=axton_compiler::dart(&compile("enum Mood { calm loud } model Note { id String at DateTime mood Mood @@id(id) } mutation Save(note Note.create, changed Note.update<at>?, stamps DateTime[], when DateTime?) { saved Note? at DateTime moods Mood[] }").unwrap());
     for expected in [
-        "show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore",
-        "late final Mutations mutations = Mutations(client)",
-        "client.invokeAction<SaveOutput>('Save', 1",
-        "client.invokeDirectAction<SaveOutput>('Save', 1",
-        "Duration directTimeout = const Duration(seconds: 30)",
-        "directTimeout:directTimeout",
+        "StoreConnection, StoreIdentity",
         "DateTime.parse(",
         ".toAxtonPrecision().toIso8601String()",
-        "if (changed != null)",
         "class NoteLiveModel extends NoteTxModel",
+        "port.submitMutation<SaveOutput>",
+        "withTransaction(FutureOr<SaveInput>",
     ] {
-        assert!(dart.contains(expected), "missing {expected}: {dart}");
+        assert!(dart.contains(expected), "{expected}: {dart}");
     }
-    assert!(!dart.contains("abstract interface class Call<T>"), "{dart}");
+    assert!(!dart.contains("abstract interface class Call<T>"));
+    assert!(!dart.contains("invokeDirectAction"));
 }
 
 #[test]
 fn dart_encodes_every_date_time_at_axton_precision() {
     // #189: every DateTime generated Dart writes or sends goes through the
     // SDK's one truncation to UTC milliseconds, the precision the core stores.
-    let v = compile("model Slot { shelf String at DateTime moved DateTime? @@id(shelf, at) } mutation Move(slot Slot.update<moved>?, when DateTime, maybe DateTime?, stamps DateTime[]) { at DateTime } query Near(at DateTime) { at DateTime } load Since(at DateTime?) { slots Slot[] }").unwrap();
+    let v = compile("model Slot { shelf String at DateTime moved DateTime? @@id(shelf, at) } mutation Move(slot Slot.update<moved>?, when DateTime, maybe DateTime?, stamps DateTime[]) { at DateTime } query Near(at DateTime) { at DateTime } query Since(at DateTime?) { slots Slot[] }").unwrap();
     let dart = axton_compiler::dart(&v);
     for expected in [
         "'at': at.toAxtonPrecision().toIso8601String(),",
@@ -1584,7 +1411,7 @@ fn dart_encodes_every_date_time_at_axton_precision() {
         "if (moved != null) 'moved': moved!.value == null ? null : moved!.value!.toAxtonPrecision().toIso8601String(),",
         "if(at!=null)'at':at!.value.toAxtonPrecision().toIso8601String(),",
         "if (value is DateTime) return value.toAxtonPrecision().toIso8601String();",
-        "{'at': at == null ? null : at.toAxtonPrecision().toIso8601String()}",
+        "'at': _dartActionEncode(at)",
         "PrerequisiteHandler, AxtonDateTime,",
     ] {
         assert!(dart.contains(expected), "missing {expected}: {dart}");
@@ -1656,10 +1483,6 @@ fn action_generated_identifiers_reject_current_collisions_with_positions() {
         (
             "model Mutations { id String @@id(id) } mutation Fetch()",
             "Mutations",
-        ),
-        (
-            "enum QueuedQueries { open } model Todo { id String @@id(id) } query Fetch()",
-            "QueuedQueries",
         ),
         (
             "model CallPort { id String @@id(id) } mutation Fetch()",
@@ -1774,140 +1597,60 @@ fn action_only_and_model_only_clients_have_no_legacy_mutate_facade() {
 /// ([#150](https://github.com/zanminwang/axton/issues/150)).
 #[test]
 fn generated_clients_expose_the_scope_facade() {
-    let schema = compile("model Entry { id String title String @@id(id) } mutation Edit { entry Entry.update<title> }").unwrap();
-    let ts = axton_compiler::client_typescript(&schema, "@example/custom-runtime");
-    for line in [
-        "type Subscription, type SubscriptionStatus",
-        " subscribe(stream: string): Promise<Subscription> { return this.#client.subscribeStream(stream); }",
-        " readonly streams: Streams;",
-        "this.streams = new Streams(client);",
-    ] {
-        assert!(ts.contains(line), "{line} missing from {ts}");
-    }
-    assert!(
-        !ts.contains("get(stream"),
-        "a get-only accessor is deliberately omitted: {ts}"
-    );
+    let schema = compile("model Entry { id String @@id(id) }").unwrap();
+    let ts = axton_compiler::client_typescript(&schema, "@axtonjs/client");
     let dart = axton_compiler::dart(&schema);
-    for line in [
-        "Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection",
-        "class Streams { final Client client; Streams(this.client);",
-        " Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);",
-        " late final Streams streams = Streams(client);",
-    ] {
-        assert!(dart.contains(line), "{line} missing from {dart}");
+    assert!(ts.contains("bootstrap():Promise<void>"));
+    assert!(dart.contains("Future<void> bootstrap()"));
+    for text in [&ts, &dart] {
+        assert!(!text.contains("subscribe("));
+        assert!(!text.contains("class Streams"));
     }
-    assert!(
-        !dart.contains("get(String stream"),
-        "a get-only accessor is deliberately omitted: {dart}"
-    );
 }
 
 #[test]
 fn action_store_options_name_only_explicit_model_outputs_in_both_languages() {
-    let v = compile("model Todo { id String title String @@id(id) } mutation AddTodo(todo Todo.create, gone Todo.delete[]) { related Todo? matches Todo[] count Int } mutation Ping() query Open(store String) { main Todo }").unwrap();
+    let v = compile("model Todo { id String @@id(id) } mutation AddTodo(todo Todo.create) { related Todo? } query Open(store String) { main Todo }").unwrap();
     let ts = axton_compiler::typescript(&v);
-    // Input-bound, Delete-confirmation and scalar outputs are not keys.
-    assert!(
-        ts.contains("export type AddTodoOptions = CallOptions<'related'|'matches'>;"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("export type PingOptions = { store?: boolean };"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains("export type OpenOptions = CallOptions<'main'>;"),
-        "{ts}"
-    );
-    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
-    assert!(client.contains("type CallOptions"), "{client}");
-    // Both routes of each kind take the same typed store options; the
-    // direct Query route adds its once controls.
-    assert!(
-        ts.contains("  open: (args:OpenInput, options?:OpenOptions):Promise<Call<OpenOutput>> => port.invokeAction('Open',1,"),
-        "{ts}"
-    );
-    assert!(
-        ts.contains(" open: (args:OpenInput, options?:OpenOptions & OnceOptions):Promise<OpenOutput> => port.invokeQuery('Open',1,"),
-        "{ts}"
-    );
     let dart = axton_compiler::dart(&v);
     assert!(
-        dart.contains("const AddTodoStore.outputs({this.related, this.matches}) : _mode = 2;"),
-        "{dart}"
+        ts.contains("export type OpenOptions = QueryOptions"),
+        "{ts}"
     );
+    assert!(!ts.contains("AddTodoOptions"));
+    assert!(!dart.contains("AddTodoStore"));
     assert!(
-        dart.contains("const PingStore.none() : _mode = 1;"),
+        dart.contains("required String store, bool outputStore = true"),
         "{dart}"
     );
-    assert!(!dart.contains("PingStore.outputs"), "{dart}");
-    assert!(
-        dart.contains("Future<Call<PingOutput>> ping({PingStore? store})"),
-        "{dart}"
-    );
-    // A business input named store keeps its name; the selector moves aside.
-    assert!(
-        dart.contains("Future<OpenOutput> open({required String store, OpenStore? outputStore, bool once = false, bool refresh = false})"),
-        "{dart}"
-    );
-    assert!(
-        dart.contains(
-            "Future<Call<OpenOutput>> open({required String store, OpenStore? outputStore})"
-        ),
-        "{dart}"
-    );
-    assert!(dart.contains("store: outputStore);"), "{dart}");
-    // The option is a call-time choice: no descriptor or history policy.
-    let descriptor = serde_json::to_string(&v).unwrap();
-    assert!(!descriptor.contains("ephemeral"), "{descriptor}");
+    assert!(dart.contains("store: outputStore, once:"), "{dart}");
     for output in v["actions"][0]["outputs"].as_array().unwrap() {
-        assert!(output.get("store").is_none(), "{output}");
+        assert!(output.get("store").is_none());
     }
 }
 
 #[test]
 fn action_store_selector_names_join_generated_identifier_checks() {
-    let error = compile("model PingStore { id String @@id(id) } mutation Ping()").unwrap_err();
-    assert!(error.contains("PingStore"), "{error}");
-    let error = compile("model PingOptions { id String @@id(id) } mutation Ping()").unwrap_err();
-    assert!(error.contains("PingOptions"), "{error}");
+    compile("model PingStore { id String @@id(id) } mutation Ping()").unwrap();
+    compile("model PingOptions { id String @@id(id) } mutation Ping()").unwrap();
+    assert!(compile("model FindOptions { id String @@id(id) } query Find()").is_err());
 }
 
 #[test]
 fn store_eligible_outputs_cannot_reuse_dart_selector_member_names() {
-    for member in [
-        "toWire",
-        "toString",
-        "hashCode",
-        "runtimeType",
-        "noSuchMethod",
-    ] {
-        let error = compile(&format!(
-            "model Todo {{ id String @@id(id) }} mutation Find() {{ {member} Todo? }}"
-        ))
-        .unwrap_err();
-        assert!(
-            error.contains(&format!("output {member} is reserved")),
-            "{error}"
-        );
-        assert!(error.contains("FindStore"), "{error}");
-    }
-    // A scalar output is not a selector field and keeps the name.
+    compile(
+        "model Todo { id String @@id(id) } mutation Find() { toWire Todo? all Todo? none Todo[] }",
+    )
+    .unwrap();
     compile("mutation Count() { toWire Int }").unwrap();
-    // Other store-eligible names still compile.
-    compile("model Todo { id String @@id(id) } mutation Find() { all Todo? none Todo[] }").unwrap();
 }
 
 #[test]
 fn generated_dart_reexports_action_store() {
-    let v = compile("mutation Ping()").unwrap();
-    let dart = axton_compiler::dart(&v);
-    assert!(dart.contains("CallError, CallStore,"), "{dart}");
-    assert!(
-        dart.contains("final class PingStore extends CallStore"),
-        "{dart}"
-    );
+    let dart = axton_compiler::dart(&compile("mutation Ping()").unwrap());
+    assert!(dart.contains("CallError"));
+    assert!(!dart.contains("CallStore"));
+    assert!(!dart.contains("PingStore"));
 }
 
 #[test]
@@ -2045,11 +1788,11 @@ fn a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind() {
     // Current clients expose the name only under its current kind.
     let ts = axton_compiler::typescript(&retained);
     assert!(
-        ts.contains("export function makeMutations(port:CallPort) { return {\n call: {\n }\n}; }"),
+        ts.contains("export function makeMutations(_port:CallPort) { return {}; }"),
         "{ts}"
     );
     assert!(
-        ts.contains(" find: (args:FindInput, options?:FindOptions & OnceOptions):Promise<FindOutput> => port.invokeQuery('Find',2,"),
+        ts.contains(" find: (args:FindInput, options?:FindOptions):Promise<FindOutput> => port.invokeQuery('Find',2,"),
         "{ts}"
     );
     let dart = axton_compiler::dart(&retained);
@@ -2058,7 +1801,7 @@ fn a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind() {
         "{dart}"
     );
     assert!(
-        dart.contains("abstract interface class QueryFindHandlers<Ctx> {\n Future<FindHandlerOutput> v2(QueryHandlerCall<Ctx, FindInput> call);\n}"),
+        dart.contains("abstract interface class QueryFindHandlers<Ctx> {\n Future<FindHandlerOutput> v2(QueryHandlerCall<Ctx, FindHandlerInput> call);\n}"),
         "{dart}"
     );
     axton_compiler::check_action_names(&retained).unwrap();
@@ -2066,63 +1809,26 @@ fn a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind() {
 
 #[test]
 fn direct_queries_generate_once_options_and_typed_invalidators() {
-    let v = compile("model Todo { id String title String @@id(id) } query GetTodos(projectId String) { todos Todo[] total Int } query Ping() mutation Rename(todo Todo.update)").unwrap();
+    let v=compile("model Todo { id String @@id(id) } query GetTodos(projectId String) { todos Todo[] } query Ping() mutation Rename(todo Todo.update)").unwrap();
     let ts = axton_compiler::typescript(&v);
-    for expected in [
-        "import type { Call, CallOptions, OnceOptions } from './client.ts'",
-        "invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:CallOptions&OnceOptions):Promise<T>;",
-        "invalidateQuery(name:string,version:number,args:object):Promise<void>;",
-        "export function makeQueries(port:CallPort) { return {\n getTodos: (args:GetTodosInput, options?:GetTodosOptions & OnceOptions):Promise<GetTodosOutput> => port.invokeQuery('GetTodos',1,encodeGetTodosInput(args),decodeGetTodosOutput,options),\n ping: (args:PingInput, options?:PingOptions & OnceOptions):Promise<PingOutput> => port.invokeQuery('Ping',1,encodePingInput(args),decodePingOutput,options),\n enqueue: {\n  getTodos: (args:GetTodosInput, options?:GetTodosOptions):Promise<Call<GetTodosOutput>> => port.invokeAction(",
-        " invalidate: {\n  getTodos: (args:GetTodosInput):Promise<void> => port.invalidateQuery('GetTodos',1,encodeGetTodosInput(args)),\n  ping: (args:PingInput):Promise<void> => port.invalidateQuery('Ping',1,encodePingInput(args)),\n }\n}; }",
-    ] {
-        assert!(ts.contains(expected), "missing {expected}: {ts}");
-    }
-    // Mutation routes keep the store-only options and the generic methods.
-    let mutations = &ts[ts.find("export function makeMutations").unwrap()
-        ..ts.find("export function makeQueries").unwrap()];
-    assert!(!mutations.contains("OnceOptions"), "{mutations}");
-    assert!(!mutations.contains("invokeQuery"), "{mutations}");
-    let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
-    assert!(client.contains("type OnceOptions"), "{client}");
     let dart = axton_compiler::dart(&v);
-    let class = |name: &str| {
-        let start = dart.find(&format!("\nclass {name} {{")).unwrap();
-        let end = dart[start + 1..].find("\n}\n").unwrap();
-        dart[start..start + 1 + end].to_string()
-    };
-    let queries = class("Queries");
-    assert!(
-        queries.contains("Future<GetTodosOutput> getTodos({required String projectId, GetTodosStore? store, bool once = false, bool refresh = false}) => client.invokeQuery<GetTodosOutput>('GetTodos', 1, {'projectId': _dartActionEncode(projectId)}, "),
-        "{queries}"
-    );
-    assert!(
-        queries.contains("store: store, once: once, refresh: refresh);"),
-        "{queries}"
-    );
-    assert!(
-        queries.contains(
-            "Future<PingOutput> ping({PingStore? store, bool once = false, bool refresh = false})"
-        ),
-        "{queries}"
-    );
-    assert!(
-        queries.contains("late final QueryInvalidations invalidate = QueryInvalidations(client);"),
-        "{queries}"
-    );
-    let invalidations = class("QueryInvalidations");
-    assert!(
-        invalidations.contains("Future<void> getTodos({required String projectId}) => client.invalidateQuery('GetTodos', 1, {'projectId': _dartActionEncode(projectId)});"),
-        "{invalidations}"
-    );
-    assert!(
-        invalidations.contains("Future<void> ping() => client.invalidateQuery('Ping', 1, {});"),
-        "{invalidations}"
-    );
-    for route in ["QueuedQueries", "Mutations", "DirectMutations"] {
-        let body = class(route);
-        assert!(!body.contains("once"), "{route}: {body}");
-        assert!(!body.contains("invokeQuery"), "{route}: {body}");
+    for expected in [
+        "options?:QueryOptions",
+        "getTodos: (args:GetTodosInput, options?:GetTodosOptions)",
+        "port.invokeQuery('GetTodos',1",
+        "port.invalidateQuery('GetTodos',1",
+    ] {
+        assert!(ts.contains(expected), "{expected}: {ts}");
     }
+    for expected in [
+        "required String projectId, bool store = true, bool once = false, bool refresh = false",
+        "store: store, once: once, refresh: refresh",
+        "client.invalidateQuery('GetTodos', 1",
+    ] {
+        assert!(dart.contains(expected), "{expected}: {dart}");
+    }
+    assert!(!ts.contains("enqueue:"));
+    assert!(!dart.contains("QueuedQueries"));
 }
 
 #[test]
@@ -2132,7 +1838,7 @@ fn once_controls_take_collision_safe_dart_names_beside_business_inputs() {
             .unwrap();
     let dart = axton_compiler::dart(&v);
     assert!(
-        dart.contains("Future<FindOutput> find({required bool once, required bool refresh, required String store, required int callOnce, FindStore? outputStore, bool callOnce$ = false, bool callRefresh = false}) => client.invokeQuery<FindOutput>('Find', 1, "),
+        dart.contains("Future<FindOutput> find({required bool once, required bool refresh, required String store, required int callOnce, bool outputStore = true, bool callOnce$ = false, bool callRefresh = false}) => this.client.invokeQuery<FindOutput>('Find', 1, "),
         "{dart}"
     );
     assert!(
@@ -2140,7 +1846,7 @@ fn once_controls_take_collision_safe_dart_names_beside_business_inputs() {
         "{dart}"
     );
     assert!(
-        dart.contains("Future<void> find({required bool once, required bool refresh, required String store, required int callOnce}) => client.invalidateQuery('Find', 1, "),
+        dart.contains("Future<void> find({required bool once, required bool refresh, required String store, required int callOnce}) => this.client.invalidateQuery('Find', 1, "),
         "{dart}"
     );
 }
@@ -2205,9 +1911,9 @@ fn model_fetch_generates_one_typed_method_per_model_in_both_languages() {
     );
     let client = axton_compiler::client_typescript(&v, "@axtonjs/client");
     for line in [
-        "import { fetchModels, type FetchModels } from \"./generated.ts\";",
+        "fetchModels",
         " readonly fetch: FetchModels;",
-        "this.fetch = fetchModels(client);",
+        "this.fetch=fetchModels(client);",
     ] {
         assert!(client.contains(line), "{line} missing from {client}");
     }
@@ -2216,7 +1922,7 @@ fn model_fetch_generates_one_typed_method_per_model_in_both_languages() {
         "class FetchModels { final Client _client; FetchModels(this._client);",
         " Future<Pin?> pin(PinIdentity identity, {bool store = true}) => _client.fetchModel('Pin', 3, identity.toRecord(), Pin.fromRecord, store: store);",
         " Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);",
-        " late final FetchModels fetch = FetchModels(client);",
+        "late final FetchModels fetch=FetchModels(client);",
     ] {
         assert!(dart.contains(line), "{line} missing from {dart}");
     }
@@ -2247,8 +1953,7 @@ fn model_fetch_is_generated_for_model_only_schemas_and_omitted_without_models() 
             .contains(" readonly fetch: FetchModels;")
     );
     assert!(
-        axton_compiler::dart(&only)
-            .contains(" late final FetchModels fetch = FetchModels(client);")
+        axton_compiler::dart(&only).contains("late final FetchModels fetch=FetchModels(client);")
     );
     let free = compile("query Ping() { value String }").unwrap();
     let ts = axton_compiler::typescript(&free);

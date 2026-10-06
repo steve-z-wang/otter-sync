@@ -9,7 +9,6 @@ import {
   type Mutations,
   type Queries,
   type Loaders,
-  type Loads,
   type PutV1Input,
   type Stream,
   type RecordDeclaration,
@@ -34,7 +33,7 @@ test("generated backend decodes Date values and declares canonical identities th
     moment.at = new Date(second);
     ctx.invalidate.moment(moment);
     ctx.invalidate.moment({ at: new Date(second) });
-    const scope = ctx.stream("todos");
+    const scope = ctx.streams(["todos"]);
     scope.track.todo(args.todo);
     scope.track([
       Moment({ at: new Date("2026-01-03T00:00:00.000Z") }),
@@ -63,6 +62,7 @@ test("generated backend decodes Date values and declares canonical identities th
     },
   };
   const queries: Queries<Tx> = {
+    ...emptyQueries(),
     find: {
       async v2() {
         return { todo: null };
@@ -94,6 +94,7 @@ test("generated backend decodes Date values and declares canonical identities th
           await callback(
             JSON.stringify({
               op: "handleAction",
+              context: { binding: { stream: "todos" } },
               name: "Put",
               version,
               owner: "alice",
@@ -162,7 +163,7 @@ test("generated backend decodes Date values and declares canonical identities th
     mutations,
     queries,
     loaders,
-    loads: emptyLoads(),
+
     native,
   });
   await backend.action("alice", "{}");
@@ -255,9 +256,9 @@ const loaders: Loaders<Tx> = {
   },
 };
 /** A TodoPages handler that completes with no identities. */
-function emptyLoads(): Loads<Tx> {
+function emptyQueries() {
   return {
-    todoPages: async () => ({ data: { todos: [], moments: [] }, next: null }),
+    todoPages: async () => ({ todos: [], moments: [] }),
   };
 }
 function mutationHandlers(): Mutations<Tx> {
@@ -284,12 +285,13 @@ function mutationHandlers(): Mutations<Tx> {
   };
 }
 
-test("Query handlers receive no effect capabilities and settle without effects", async () => {
+test("Query handlers receive track-only capabilities and no invalidation", async () => {
   const seen: Record<string, unknown>[] = [];
   const answers: unknown[] = [];
   const at = "2026-01-01T00:00:00.000Z";
   const call = (name: string, version: number) => ({
     op: "handleAction",
+              context: { binding: { stream: "todos" } },
     name,
     version,
     owner: "alice",
@@ -310,14 +312,15 @@ test("Query handlers receive no effect capabilities and settle without effects",
       },
     },
     queries: {
+      ...emptyQueries(),
       find: {
         async v2({ ctx, args }) {
           seen.push({ kind: "query", keys: Object.keys(ctx).sort() });
           assert.equal(ctx.userId, "alice");
           assert.equal(ctx.callId, "Find-2");
           assert.ok(args.at instanceof Date);
-          // @ts-expect-error a Query context has no membership writer
-          assert.equal(ctx.stream, undefined);
+          assert.equal(typeof ctx.stream.track, "function");
+          assert.equal("invalidate" in ctx.stream, false);
           // @ts-expect-error a Query context has no change declaration
           assert.equal(ctx.invalidate, undefined);
           return { todo: { id: "one" } };
@@ -325,13 +328,13 @@ test("Query handlers receive no effect capabilities and settle without effects",
       },
     },
     loaders,
-    loads: emptyLoads(),
+
     native: nativeHost([call("Find", 1), call("Find", 2)], answers),
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "invalidate", "stream", "tx", "userId"] },
-    { kind: "query", keys: ["callId", "tx", "userId"] },
+    { kind: "mutation", keys: ["callId", "invalidate", "stream", "streams", "tx", "userId"] },
+    { kind: "query", keys: ["callId", "stream", "streams", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
     {
@@ -351,9 +354,9 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
       database,
       authenticate: () => "alice",
       mutations: mutationHandlers(),
-      queries: { find: { v2: async () => ({ todo: null }) } },
+      queries: { ...emptyQueries(), find: { v2: async () => ({ todo: null }) } },
       loaders,
-      loads: emptyLoads(),
+
       native: nativeHost([], []),
       ...options,
     } as Parameters<typeof createBackend<Tx>>[0]);
@@ -369,6 +372,7 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
     [
       {
         queries: {
+          ...emptyQueries(),
           find: { v2: async () => ({ todo: null }) },
           ping: async () => {},
         } as unknown as Queries<Tx>,
@@ -400,6 +404,7 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
     [
       {
         queries: {
+          ...emptyQueries(),
           find: { v1: async () => ({ todo: null }), v2: async () => ({ todo: null }) },
         } as unknown as Queries<Tx>,
       },
@@ -409,42 +414,9 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
       { handlers: { ping: async () => {} } } as never,
       /Handler ping names Ping v1 \(mutation\); register each version under mutations or queries by its kind/,
     ],
-    // Loads register under `loads`, and nothing else does.
-    [{ loads: undefined }, /Missing load todoPages for TodoPages v1/],
-    [
-      { loads: { todoPages: { v2: emptyLoads().todoPages } } } as never,
-      /Missing load todoPages\.v1 for TodoPages v1/,
-    ],
-    [
-      {
-        queries: {
-          find: { v2: async () => ({ todo: null }) },
-          todoPages: emptyLoads().todoPages,
-        } as unknown as Queries<Tx>,
-      },
-      /queries\.todoPages: TodoPages v1 \(load\) retains no query version; register it under loads/,
-    ],
-    [
-      {
-        mutations: {
-          ...mutationHandlers(),
-          todoPages: emptyLoads().todoPages,
-        } as unknown as Mutations<Tx>,
-      },
-      /mutations\.todoPages: TodoPages v1 \(load\) retains no mutation version; register it under loads/,
-    ],
-    [
-      { loads: { ...emptyLoads(), ping: async () => {} } } as never,
-      /loads\.ping: Ping v1 \(mutation\) retains no load version; register it under mutations/,
-    ],
-    [
-      { loads: { ...emptyLoads(), find: async () => ({}) } } as never,
-      /loads\.find: Find v1 \(mutation\), v2 \(query\) retains no load version; register it under mutations or queries/,
-    ],
-    [
-      { handlers: { todoPages: async () => {} } } as never,
-      /Handler todoPages names TodoPages v1 \(load\); register each version under mutations, queries or loads by its kind/,
-    ],
+    [{ queries: { find: { v2: async () => ({ todo: null }) } } as Queries<Tx> }, /Missing query todoPages/],
+    [{ mutations: { ...mutationHandlers(), todoPages: async () => ({}) } as never }, /retains no mutation version/],
+
   ];
   for (const [options, message] of cases)
     assert.throws(() => start(options), message);
@@ -452,7 +424,7 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
 
 test("declaration handles close when the handler or external body settles, even when it throws", async () => {
   const escaped: {
-    stream: (name: string) => Stream;
+    streams: (names: readonly string[]) => Stream;
     invalidate: RecordDeclaration;
   }[] = [];
   const answers: unknown[] = [];
@@ -460,6 +432,7 @@ test("declaration handles close when the handler or external body settles, even 
   const at = "2026-01-01T00:00:00.000Z";
   const call = (ordinal: number) => ({
     op: "handleAction",
+              context: { binding: { stream: "todos" } },
     name: "Find",
     version: 1,
     owner: "alice",
@@ -480,15 +453,15 @@ test("declaration handles close when the handler or external body settles, even 
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx }) => {
-        escaped.push({ stream: ctx.stream, invalidate: ctx.invalidate });
-        ctx.stream("found").track.todo({ id: "one" });
+        escaped.push({ streams: ctx.streams, invalidate: ctx.invalidate });
+        ctx.streams(["found"]).track.todo({ id: "one" });
         if (ctx.callId === "find-2") throw new Error("after declaring");
         return { todo: null };
       },
     },
-    queries: { find: { v2: async () => ({ todo: null }) } },
+    queries: { ...emptyQueries(), find: { v2: async () => ({ todo: null }) } },
     loaders,
-    loads: emptyLoads(),
+
     native,
     onError: () => {},
   });
@@ -508,10 +481,10 @@ test("declaration handles close when the handler or external body settles, even 
     { error: "after declaring" },
   ]);
   // The external body answers its own value; its declarations settle after it.
-  const value = await backend.transaction(async ({ stream: scope, invalidate: touch }) => {
-    escaped.push({ stream: scope, invalidate: touch });
+  const value = await backend.transaction(async ({ streams: scope, invalidate: touch }) => {
+    escaped.push({ streams: scope, invalidate: touch });
     touch.pin({ todo: "one", at: new Date(at) });
-    scope("found").invalidate.todo({ id: "one" });
+    scope(["found"]).invalidate.todo({ id: "one" });
     return { arbitrary: [1, 2] };
   });
   assert.deepEqual(value, { arbitrary: [1, 2] });
@@ -527,241 +500,16 @@ test("declaration handles close when the handler or external body settles, even 
     ],
   });
   await assert.rejects(
-    backend.transaction(async ({ stream: scope, invalidate: touch }) => {
-      escaped.push({ stream: scope, invalidate: touch });
+    backend.transaction(async ({ streams: scope, invalidate: touch }) => {
+      escaped.push({ streams: scope, invalidate: touch });
       throw new Error("body failed");
     }),
     /body failed/,
   );
   assert.equal(settled.length, 1, "a failed body settles nothing");
   assert.equal(escaped.length, 4);
-  for (const { stream: scope, invalidate: touch } of escaped) {
-    assert.throws(() => scope("late"), /closed/);
+  for (const { streams: scope, invalidate: touch } of escaped) {
+    assert.throws(() => scope(["late"]), /closed/);
     assert.throws(() => touch.todo({ id: "late" }), /closed/);
   }
-});
-
-test("Load handlers take decoded args and a context with a scope and no touch, and answer identity pages", async () => {
-  const at = "2026-01-01T00:00:00.000Z";
-  const seen: Record<string, unknown>[] = [];
-  const answers: unknown[] = [];
-  const errors: unknown[] = [];
-  const page = (callId: string, continuation: unknown) => ({
-    op: "handleLoad",
-    name: "TodoPages",
-    version: 1,
-    arguments: { since: at, statuses: ["open", "closed"] },
-    continuation,
-    owner: "alice",
-    callId,
-    loadId: "load-1",
-  });
-  const requests = [
-    page("first", null),
-    page("null-state", { state: null }),
-    page("nan", { state: 1 }),
-    page("unsafe", { state: 2 }),
-  ];
-  const native = {
-    ...nativeHost([], []),
-    validateLoadBatch: () => ["item"],
-    // Assembles the committed pages as the engine's encoder would.
-    encodeLoadBatch: (_items: string[], answers: { page: string }[]) =>
-      `{"loads":[${answers.map(({ page }) => page).join(",")}]}`,
-    async processLoad(
-      _config: string,
-      _owner: string,
-      _item: string,
-      callback: (request: string) => Promise<string>,
-    ) {
-      for (const request of requests)
-        answers.push(JSON.parse(await callback(JSON.stringify(request))));
-      return '{"page":1}';
-    },
-  };
-  const loads: Loads<Tx> = {
-    async todoPages({ ctx, args, continuation }) {
-      seen.push({
-        keys: Object.keys(ctx).sort(),
-        callId: ctx.callId,
-        loadId: ctx.loadId,
-        userId: ctx.userId,
-        since: args.since instanceof Date && args.since.toISOString(),
-        statuses: args.statuses,
-        continuation,
-      });
-      // Type-legal numbers the JSON bridge would silently coerce.
-      if (ctx.callId === "nan")
-        return { data: { todos: [], moments: [] }, next: { state: NaN } };
-      if (ctx.callId === "unsafe")
-        return {
-          data: { todos: [], moments: [] },
-          next: { state: { n: 2 ** 53 } },
-        };
-      return {
-        data: { todos: [{ id: "one" }], moments: [{ at: args.since }] },
-        next: continuation === null ? { state: { after: "one" } } : null,
-      };
-    },
-  };
-  const backend = createBackend<Tx>({
-    database,
-    authenticate: () => "alice",
-    mutations: mutationHandlers(),
-    queries: { find: { v2: async () => ({ todo: null }) } },
-    loaders,
-    loads,
-    native,
-    onError: (error) => errors.push(error),
-  });
-  assert.equal(await backend.loads("alice", "{}"), '{"loads":[{"page":1}]}');
-  assert.deepEqual(
-    seen.map(({ keys, since, statuses, loadId, userId }) => ({
-      keys,
-      since,
-      statuses,
-      loadId,
-      userId,
-    })),
-    requests.map(() => ({
-      keys: ["callId", "loadId", "stream", "tx", "userId"],
-      since: at,
-      statuses: ["open", "closed"],
-      loadId: "load-1",
-      userId: "alice",
-    })),
-  );
-  // First and end are `null`; `{state: null}` is a distinct continuation.
-  assert.deepEqual(
-    seen.map(({ continuation }) => continuation),
-    [null, { state: null }, { state: 1 }, { state: 2 }],
-  );
-  assert.deepEqual(answers, [
-    {
-      data: { todos: [{ id: "one" }], moments: [{ at }] },
-      next: { state: { after: "one" } },
-    },
-    { data: { todos: [{ id: "one" }], moments: [{ at }] }, next: null },
-    { rejection: "load.invalid_continuation" },
-    { rejection: "load.invalid_continuation" },
-  ]);
-  assert.equal(errors.length, 2);
-});
-
-/** Claim/save storage in memory: enough of the host contract for real Load pages. */
-function memoryDatabase(rows: Map<string, Todo>) {
-  const saved = new Map<string, { request: string; response: string }>();
-  const operations: string[] = [];
-  const database = {
-    transaction: async <R,>(body: (tx: Tx) => Promise<R>) => body({ rows }),
-    persistence: () => ({
-      async call(request: any): Promise<any> {
-        operations.push(request.op);
-        const key = `${request.owner}:${request.callId}`;
-        switch (request.op) {
-          case "claimCall": {
-            const found = saved.get(key);
-            return found
-              ? { fresh: false, ...found }
-              : { fresh: true, request: request.request, response: null };
-          }
-          case "saveCall":
-            saved.set(key, {
-              request: saved.get(key)?.request ?? "",
-              response: request.response,
-            });
-            return null;
-          case "savepoint":
-          case "rollback":
-          case "release":
-            return null;
-          case "readStamps":
-            return request.identityKeys.map(() => 1);
-          default:
-            throw new Error(`unexpected ${request.op}`);
-        }
-      },
-    }),
-  };
-  return { database, operations };
-}
-
-test("the native engine refuses a full Model value that type-checks as an identity", async () => {
-  const at = new Date("2026-01-01T00:00:00.000Z");
-  const todo: Todo = {
-    id: "one",
-    title: "full",
-    at,
-    status: "open",
-    note: null,
-  };
-  const { database } = memoryDatabase(new Map([[todo.id, todo]]));
-  const errors: unknown[] = [];
-  // A record structurally satisfies `TodoIdentity`: only a fresh object
-  // literal is refused at compile time, so the engine refuses the rest.
-  const loads: Loads<Tx> = {
-    async todoPages({ ctx, continuation }) {
-      const row = ctx.tx.rows.get("one")!;
-      if (continuation === null)
-        return { data: { todos: [row], moments: [] }, next: null };
-      return {
-        data: { todos: [{ id: row.id }], moments: [{ at: row.at }] },
-        next: null,
-      };
-    },
-  };
-  const backend = createBackend<Tx>({
-    database,
-    authenticate: () => "alice",
-    mutations: mutationHandlers(),
-    queries: { find: { v2: async () => ({ todo: null }) } },
-    loaders: {
-      ...loaders,
-      async todo({ ids, tx }) {
-        return ids.map(({ id }) => tx.rows.get(id) ?? null);
-      },
-      async moment({ ids }) {
-        return ids.map(({ at }) => ({ at, title: "moment" }));
-      },
-    },
-    loads,
-    onError: (error) => errors.push(error),
-  });
-  const item = (index: number, continuation: unknown) => ({
-    loadId: `00000000-0000-4000-8000-00000000000${index}`,
-    callId: `00000000-0000-4000-8000-00000000001${index}`,
-    name: "TodoPages",
-    version: 1,
-    args: { since: "2026-01-01T00:00:00.000Z", statuses: ["open"] },
-    continuation,
-    models: { Todo: 1, Moment: 1 },
-  });
-  const response = JSON.parse(
-    await backend.loads(
-      "alice",
-      JSON.stringify({
-        capabilities: ["stream-authority-v1"],
-        loads: [item(1, null), item(2, { state: "ids" })],
-      }),
-    ),
-  );
-  const [full, identities] = [1, 2].map((index) =>
-    response.loads.find(
-      (page: { loadId: string }) => page.loadId === item(index, null).loadId,
-    ),
-  );
-  assert.equal(full.outcome.status, "failed");
-  assert.equal(full.outcome.error.code, "handler.invalid");
-  assert.match(full.outcome.error.message, /exactly identity fields/);
-  assert.deepEqual(full.records, []);
-  assert.equal(identities.outcome.status, "succeeded");
-  assert.deepEqual(identities.outcome.data, {
-    todos: [{ id: "one" }],
-    moments: [{ at: "2026-01-01T00:00:00.000Z" }],
-  });
-  assert.equal(identities.outcome.next, null);
-  assert.deepEqual(
-    identities.records.map((record: { model: string }) => record.model).sort(),
-    ["Moment", "Todo"],
-  );
 });

@@ -67,10 +67,16 @@ pub(super) struct LocalCallback {
     /// The `submitMutation` command answered at its end.
     pub(super) request_id: String,
     call: SubmittedCall,
+    deferred: Option<DeferredMutation>,
     /// The first failure of its own commands.
     failure: Option<String>,
-    /// Its result, once it arrived: `(ok, error)`.
-    finishing: Option<(bool, Option<String>)>,
+    /// Its result includes the input returned after the local callback.
+    finishing: Option<(bool, Option<String>, Option<Value>)>,
+}
+struct DeferredMutation {
+    name: String,
+    version: u64,
+    operations: Vec<crate::Operation>,
 }
 impl Transaction {
     fn new(owner: TransactionOwner, transaction_id: String, effect_id: String) -> Self {
@@ -256,7 +262,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     pub(super) fn open_transaction(&mut self, request_id: String) {
         let issued = self.issue().and_then(|transaction| {
             self.issue()
-                .map(|effect| (format!("tx{transaction}"), effect.to_string()))
+                .map(|effect| (self.capability_token("tx", transaction), effect.to_string()))
         });
         let (transaction_id, effect_id) = match issued {
             Ok(ids) => ids,
@@ -352,7 +358,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             return;
         }
         let transaction_id = match self.issue() {
-            Ok(id) => format!("tx{id}"),
+            Ok(id) => self.capability_token("tx", id),
             Err(error) => {
                 self.abort_authority_session();
                 continuation.fail(self, error, None, None, &[], now, entropy);
@@ -424,6 +430,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         companion_id: Option<&str>,
         ok: bool,
         error: Option<String>,
+        input: Option<Value>,
     ) {
         let Some(open) = &mut self.transaction else {
             return;
@@ -443,7 +450,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     && local.effect_id == effect_id
                     && local.finishing.is_none()
                 {
-                    local.finishing = Some((ok, error));
+                    local.finishing = Some((ok, error, input));
                 }
             }
         }
@@ -458,8 +465,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.finish_transaction(ok, error, now, entropy);
             return true;
         }
-        if let Some((ok, error)) = open.local.as_mut().and_then(|l| l.finishing.take()) {
-            self.finish_local(ok, error);
+        if let Some((ok, error, input)) = open.local.as_mut().and_then(|l| l.finishing.take()) {
+            self.finish_local(ok, error, input);
             return true;
         }
         let Some(command) = open.lane.pop_front() else {
@@ -562,13 +569,34 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             // The local callback's writes are its call's companions (`own`
             // guarantees an open local callback).
             TransactionCommand::Direct { operation } if own => {
-                match open.local.as_ref().map(|local| local.call.ordinal) {
-                    None => Err(crate::invalid("companion write without its local callback")),
-                    Some(ordinal) => {
-                        let operation = operation.clone();
-                        self.client
-                            .session(|tx| tx.append_companion(ordinal, operation))
-                            .map(|()| Some(Value::Null))
+                if open
+                    .local
+                    .as_ref()
+                    .is_some_and(|local| local.deferred.is_some())
+                {
+                    self.client
+                        .session(|tx| tx.preview_callback04(operation.clone()))
+                        .map(|operations| {
+                            self.transaction
+                                .as_mut()
+                                .unwrap()
+                                .local
+                                .as_mut()
+                                .unwrap()
+                                .deferred
+                                .as_mut()
+                                .unwrap()
+                                .operations
+                                .extend(operations);
+                            Some(Value::Null)
+                        })
+                } else {
+                    match open.local.as_ref().map(|local| local.call.ordinal) {
+                        None => Err(crate::invalid("companion write without its local callback")),
+                        Some(ordinal) => self
+                            .client
+                            .session(|tx| tx.append_companion(ordinal, operation.clone()))
+                            .map(|()| Some(Value::Null)),
                     }
                 }
             }
@@ -579,7 +607,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             Err(e) => {
                 let error = e.to_string();
                 if let Some(open) = &mut self.transaction {
-                    open.failure.get_or_insert_with(|| error.clone());
+                    if !(own
+                        && open
+                            .local
+                            .as_ref()
+                            .is_some_and(|local| local.deferred.is_some()))
+                    {
+                        open.failure.get_or_insert_with(|| error.clone());
+                    }
                     if own && let Some(local) = &mut open.local {
                         local.failure.get_or_insert_with(|| error.clone());
                     }
@@ -611,10 +646,33 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 ));
             }
         };
-        let options = commands::options(store)?;
-        let call = self
-            .client
-            .session(|tx| tx.submit_mutation(name, version, args.clone(), options))?;
+        let bound = self.client.request_context().is_ok();
+        if bound && store.is_some() {
+            return Err(crate::invalid("Mutation does not accept store"));
+        }
+        let deferred = if bound && local {
+            if self.client.schema.action(name, version)?.kind != axton_core::CallKind::Mutation {
+                return Err(crate::invalid("only a Mutation can be submitted"));
+            }
+            self.client.session_savepoint()?;
+            Some(DeferredMutation {
+                name: name.into(),
+                version,
+                operations: vec![],
+            })
+        } else {
+            None
+        };
+        let call = if deferred.is_some() {
+            SubmittedCall {
+                call_id: String::new(),
+                ordinal: 0,
+            }
+        } else {
+            let options = commands::options(store)?;
+            self.client
+                .session(|tx| tx.submit_mutation(name, version, args.clone(), options))?
+        };
         if !local {
             let answer = submission(&call);
             if let Some(open) = &mut self.transaction {
@@ -622,7 +680,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
             return Ok(Some(answer));
         }
-        let companion_id = format!("c{}", self.issue().map_err(crate::invalid)?);
+        let companion = self.issue().map_err(crate::invalid)?;
+        let companion_id = self.capability_token("c", companion);
         let effect_id = self.issue().map_err(crate::invalid)?.to_string();
         let Some(open) = &mut self.transaction else {
             return Err(crate::invalid(CLOSED));
@@ -633,6 +692,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             effect_id: effect_id.clone(),
             request_id: request_id.to_string(),
             call,
+            deferred,
             failure: None,
             finishing: None,
         });
@@ -652,11 +712,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// and its submission is answered - with the call, which is then
     /// provisional like any other, or with the first failure, which poisons
     /// the transaction. The parent's capability is back either way.
-    fn finish_local(&mut self, ok: bool, error: Option<String>) {
+    fn finish_local(&mut self, ok: bool, error: Option<String>, input: Option<Value>) {
         let Some(open) = &mut self.transaction else {
             return;
         };
-        let Some(local) = open.local.take() else {
+        let Some(mut local) = open.local.take() else {
             return;
         };
         let token = Some(local.companion_id.clone());
@@ -664,17 +724,44 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .into_iter()
             .partition(|command| command.companion_id == token);
         open.lane = lane;
-        let refusal = if !ok {
+        let mut refusal = if !ok {
             Some(error.unwrap_or_else(|| "local callback failed".into()))
         } else if !unawaited.is_empty() {
             Some(UNAWAITED.to_string())
         } else {
             local.failure
         };
+        let deferred = local.deferred.take();
+        let isolated = deferred.is_some();
+        if let Some(deferred) = deferred {
+            if let Err(error) = self.client.session_rollback_savepoint() {
+                refusal = Some(error.to_string());
+            }
+            if refusal.is_none() {
+                let submitted = input
+                    .ok_or_else(|| crate::invalid("Mutation callback must return input"))
+                    .and_then(|input| {
+                        self.client.session(|tx| {
+                            tx.submit_mutation_companions_first04(
+                                &deferred.name,
+                                deferred.version,
+                                input,
+                                deferred.operations,
+                            )
+                        })
+                    });
+                match submitted {
+                    Ok(call) => local.call = call,
+                    Err(error) => refusal = Some(error.to_string()),
+                }
+            }
+        }
+        let open = self.transaction.as_mut().unwrap();
         match &refusal {
-            Some(refusal) => {
+            Some(refusal) if !isolated => {
                 open.failure.get_or_insert_with(|| refusal.clone());
             }
+            Some(_) => {}
             None => open.calls.push(local.call.call_id.clone()),
         }
         self.effects.remove(&local.effect_id);
@@ -695,7 +782,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
     fn savepoint(&mut self) -> Result<Value> {
-        let token = format!("sp{}", self.issue().map_err(crate::invalid)?);
+        let scope = self.issue().map_err(crate::invalid)?;
+        let token = self.capability_token("sp", scope);
         self.client.session_savepoint()?;
         if let Some(open) = &mut self.transaction {
             let failure = open.failure.clone();
@@ -779,7 +867,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             } = open.owner
             {
                 if !pending.is_empty() {
-                    let transaction_id = self.issue().map(|id| format!("tx{id}"));
+                    let transaction_id = self.issue().map(|id| self.capability_token("tx", id));
                     let effect_id = self.issue().map(|id| id.to_string());
                     match (transaction_id, effect_id) {
                         (Ok(transaction_id), Ok(effect_id)) => {

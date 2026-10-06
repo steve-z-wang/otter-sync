@@ -147,6 +147,9 @@ impl<S: ClientStore> Engine<'_, S> {
 impl<S: ClientStore> Client<S> {
     /// Apply canonical Stream authority and delivery progress atomically.
     pub fn apply_stream_page(&mut self, page: axton_core::StreamPullPage) -> Result<ApplyReport> {
+        if self.context04.is_some() {
+            return Err(invalid("legacy protocol seam is retired in protocol 4"));
+        }
         page.validate()?;
         let legacy = PullPage {
             cursors: page.cursors.clone(),

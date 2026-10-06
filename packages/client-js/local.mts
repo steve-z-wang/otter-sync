@@ -1,25 +1,12 @@
 import type { QuerySpec, RecordValue } from "./values.mts";
-import {
-  CallError,
-  assertNoOnce,
-  type Call,
-  type CallOptions,
-} from "./actions.mts";
+import { CallError, type Call } from "./actions.mts";
 
-/**
- * A Mutation's `local` callback. It runs inside the submission, in the open
- * transaction, after the Mutation's optimism; its writes are that call's
- * local companions, never sent to the backend.
- */
-export type LocalCallback = (local: LocalTransaction) => void | Promise<void>;
-/** A Mutation submitted in a transaction: store policy plus the optional `local` callback. */
-export type MutationOptions<K extends string = string> = CallOptions<K> & {
-  local?: LocalCallback;
-};
-/** Runs a local callback over its capability's commands; rejects with its failure. */
+/** Callback input is produced inside the Mutation's owned local scope. */
+export type LocalCallback = (tx: LocalTransaction) => object | Promise<object>;
+export type MutationInput = object | LocalCallback;
 export type LocalRun = (
   send: (command: RecordValue) => Promise<any>,
-) => Promise<void>;
+) => Promise<object>;
 /**
  * The host's `submitMutation`: the runtime's answer registers a provisional
  * Call while it is dispatched, and `local` runs when the runtime asks for it.
@@ -79,6 +66,7 @@ export type SubmissionHost = {
   /** The refusal of a command sent through an expired `local` handle. */
   expired(): Error;
   mutations: MutationPort | undefined;
+  localAdmit?(): Error | undefined;
 };
 
 /**
@@ -91,13 +79,12 @@ export function submitMutation<T>(
   host: SubmissionHost,
   name: string,
   version: number,
-  args: object,
+  input: MutationInput,
   decode: (value: unknown) => T,
-  options?: MutationOptions,
 ): Promise<Call<T>> {
   let submission: ReturnType<typeof mutationCommand>;
   try {
-    submission = mutationCommand(name, version, args, options);
+    submission = mutationCommand(name, version, input);
   } catch (error) {
     return Promise.reject(error);
   }
@@ -112,7 +99,7 @@ export function submitMutation<T>(
       command,
       scope,
       decode,
-      local && runLocal(local, host.expired),
+      local && runLocal(local, host.expired, host.localAdmit),
     );
   });
   if (local) {
@@ -122,30 +109,22 @@ export function submitMutation<T>(
   return work;
 }
 
-/** Validate the options and build the runtime command, before any I/O. */
+/** Only named input or a callback can select the submission scope. */
 function mutationCommand(
   name: string,
   version: number,
-  args: object,
-  options?: MutationOptions,
+  input: MutationInput,
 ): { command: RecordValue; local: LocalCallback | undefined } {
-  assertNoOnce(options);
-  const local = options?.local;
-  if (local !== undefined && typeof local !== "function")
-    throw new CallError(
-      "action.invalid_options",
-      "rejected",
-      Error("local must be a function"),
-    );
-  const store = options?.store;
+  const local =
+    typeof input === "function" ? (input as LocalCallback) : undefined;
+  if (input === null || (typeof input !== "object" && !local))
+    throw new CallError("action.invalid", "rejected");
   return {
     command: {
       kind: "submitMutation",
       name,
       version,
-      args,
-      ...(store === undefined ? {} : { store }),
-      ...(local === undefined ? {} : { local: true }),
+      ...(local ? { local: true } : { args: input }),
     },
     local,
   };
@@ -154,6 +133,7 @@ function mutationCommand(
 let open!: (
   send: (command: RecordValue) => Promise<any>,
   expired: () => Error,
+  admit?: () => Error | undefined,
 ) => LocalTransaction;
 let finish!: (local: LocalTransaction) => Promise<void>;
 
@@ -161,16 +141,21 @@ let finish!: (local: LocalTransaction) => Promise<void>;
  * Run `callback` as a local callback, then apply the transaction's checks to
  * it. `expired` answers a command sent through its handle after it returned.
  */
-function runLocal(callback: LocalCallback, expired: () => Error): LocalRun {
+function runLocal(
+  callback: LocalCallback,
+  expired: () => Error,
+  admit?: () => Error | undefined,
+): LocalRun {
   return async (send) => {
-    const local = open(send, expired);
+    const local = open(send, expired, admit);
     try {
-      await callback(local);
+      const input = await callback(local);
+      await finish(local);
+      return input;
     } catch (error) {
       await finish(local).catch(() => {});
       throw error;
     }
-    await finish(local);
   };
 }
 
@@ -184,6 +169,7 @@ function runLocal(callback: LocalCallback, expired: () => Error): LocalRun {
 export class LocalTransaction {
   #send: (command: RecordValue) => Promise<any>;
   #expired: () => Error;
+  #admit: (() => Error | undefined) | undefined;
   #open = true;
   #tail: Promise<unknown> = Promise.resolve();
   #pending = 0;
@@ -191,16 +177,20 @@ export class LocalTransaction {
   private constructor(
     send: (command: RecordValue) => Promise<any>,
     expired: () => Error,
+    admit?: () => Error | undefined,
   ) {
+    this.#admit = admit;
     this.#send = send;
     this.#expired = expired;
   }
   static {
-    open = (send, expired) => new LocalTransaction(send, expired);
+    open = (send, expired, admit) => new LocalTransaction(send, expired, admit);
     finish = (local) => local.#finish();
   }
   #call(command: RecordValue): Promise<any> {
     if (!this.#open) return Promise.reject(this.#expired());
+    const refused = this.#admit?.();
+    if (refused) return Promise.reject(refused);
     this.#pending++;
     let work: Promise<any>;
     try {

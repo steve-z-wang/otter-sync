@@ -6,12 +6,15 @@ import {
   createBackend,
   devAuth,
   Entry,
-  MutationRejected,
-  type Handlers,
+  CallRejected,
+  type Mutations,
   type Loaders,
 } from "./generated/backend.ts";
 import { schema } from "./generated/generated.ts";
 import { sqlStatements } from "../../../../packages/postgres/src/statements.mts";
+
+import { drainedDatabase } from "../../../load-e2e/lifecycle.mts";
+import { isRetryableTransactionError } from "../../../../packages/server/index.mts";
 
 type Tx = Prisma.TransactionClient;
 
@@ -19,38 +22,78 @@ export async function createExample() {
   const db = new PrismaClient();
   let calls = 0;
   let loaderCalls = 0;
-  const handlers: Handlers<Tx> = {
-    async edit({ input, tx }) {
+  const mutations: Mutations<Tx> = {
+    async editEntry({ ctx, args }) {
       calls++;
-      const { identity, patch } = input.entry;
-      if (patch.text === "reject") throw new MutationRejected("entry.denied");
-      await tx.entry.update({
-        where: identity,
-        data: { ...patch, ...(typeof patch.text === "string" ? { text: patch.text.trim() } : {}) },
+      const { id, ...patch } = args.entry;
+      if (patch.text === "reject") throw new CallRejected("entry.denied");
+      await ctx.tx.entry.update({
+        where: { id },
+        data: {
+          ...patch,
+          ...(typeof patch.text === "string"
+            ? { text: patch.text.trim() }
+            : {}),
+        },
       });
-      // The edited entry is stamped and read back for the receipt, and that same
-      // version reaches every Scope it is a member of: no enrollment here.
+      ctx.invalidate.entry(id);
+      return { entry: { id } };
     },
   };
-  /**
-   * Entry ids whose read fails, as `failLoads` sets them. A Loader may throw;
-   * the framework then asks for each identity on its own, so exactly these
-   * become `loader.failed` error records and the rest of the page still
-   * resolves (guarantee D7).
-   */
   const refusing = new Set<string>();
+  let expectedLoaderFailure = false;
   const loaders: Loaders<Tx> = {
     async entry({ ids, tx }) {
       loaderCalls++;
       if (ids.some((identity) => refusing.has(identity.id)))
-        throw new Error(`the Entry loader refuses ${ids.map((i) => i.id).join(", ")}`);
-      return Promise.all(ids.map((identity) => tx.entry.findUnique({ where: identity })));
+        throw new Error(
+          `the Entry loader refuses ${ids.map((i) => i.id).join(", ")}`,
+        );
+      return Promise.all(
+        ids.map((identity) => tx.entry.findUnique({ where: identity })),
+      );
     },
   };
+  const lifecycle = drainedDatabase(prisma(db));
+  const unexpected: unknown[] = [];
   const backend = createBackend<Tx>({
-    database: prisma(db),
+    database: lifecycle.database,
+    onError(error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("the Entry loader refuses") && refusing.size > 0)
+        return;
+      // The native refusal reports the same explicitly injected Loader fault.
+      if (message === "loader.failed" && expectedLoaderFailure) return;
+      if (
+        message === "live handshake closed" ||
+        isRetryableTransactionError(error)
+      )
+        return;
+      unexpected.push(error);
+    },
     authenticate: devAuth(),
-    handlers,
+    protocol4: {
+      backendId: "round-trip",
+      contractId: "round-trip-v04",
+      authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
+    },
+    handlers: {
+      async edit({ input, tx }) {
+        const { identity, patch } = input.entry;
+        await tx.entry.update({ where: identity, data: patch });
+      },
+    },
+    mutations,
+    queries: {
+      async findEntry({ ctx, args }) {
+        const row = await ctx.tx.entry.findUnique({ where: { id: args.id } });
+        return { entry: row ? { id: row.id } : null };
+      },
+    },
+    bootstrap: async ({ ctx }) => {
+      const rows = await ctx.tx.entry.findMany();
+      for (const row of rows) ctx.stream.track.entry(row.id);
+    },
     loaders,
   });
   let server: Awaited<ReturnType<typeof backend.listen>> | undefined;
@@ -58,12 +101,15 @@ export async function createExample() {
     db,
     backend,
     schema,
-    get loaderCalls() { return loaderCalls; },
+    get loaderCalls() {
+      return loaderCalls;
+    },
     async members(scope: string) {
       const rows = await db.$queryRawUnsafe<{ identity_key: string }[]>(
-        "SELECT r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model='Entry' ORDER BY r.identity_key", scope,
+        "SELECT r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model='Entry' ORDER BY r.identity_key",
+        scope,
       );
-      return rows.map(row => JSON.parse(row.identity_key).id);
+      return rows.map((row) => JSON.parse(row.identity_key).id);
     },
     get handlerCalls() {
       return calls;
@@ -74,94 +120,92 @@ export async function createExample() {
         "utf8",
       );
       // Prisma runs one statement per call.
-      for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
+      for (const sql of sqlStatements(migration))
+        await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "Entry" (id TEXT PRIMARY KEY,text TEXT NOT NULL,note TEXT)',
       );
-      await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
-        await tx.entry.upsert({
-          where: { id: "entry-1" },
-          create: { id: "entry-1", text: "Hello from the server" },
-          update: {},
-        });
-        touch.entry({ id: "entry-1" });
-        scope("book:demo").track.entry({ id: "entry-1" });
-      });
+      await backend.transaction(
+        async ({ tx, streams: scopes, invalidate: touch }) => {
+          await tx.entry.upsert({
+            where: { id: "entry-1" },
+            create: { id: "entry-1", text: "Hello from the server" },
+            update: { text: "Hello from the server", note: null },
+          });
+          touch.entry({ id: "entry-1" });
+          scopes(["User:demo-user"]).track.entry({ id: "entry-1" });
+        },
+      );
     },
-    /**
-     * Touch the current `Entry` rows, enrolling them on `name`: a new stamp and a
-     * new position on every Scope they belong to. A subscription's origin is
-     * the first head its handshake acknowledges
-     * ([#150](https://github.com/zanminwang/axton/issues/150)), so a client that
-     * subscribes after `initialize` meets the seeded rows either this way or
-     * through `subscription.bootstrap()`
-     * ([#151](https://github.com/zanminwang/axton/issues/151)); `invalidateRecords` below is
-     * the version that moves a position without touching the stamp.
-     */
-    async notify(ids: string[] = ["entry-1"], name = "book:demo") {
-      await backend.transaction(async ({ stream: scope, invalidate: touch }) => {
-        for (const id of ids) {
-          touch.entry({ id });
-          scope(name).track.entry({ id });
-        }
-      });
+    async notify(ids: string[] = ["entry-1"], name = "User:demo-user") {
+      await backend.transaction(
+        async ({ streams: scopes, invalidate: touch }) => {
+          for (const id of ids) {
+            touch.entry({ id });
+            scopes([name]).track.entry({ id });
+          }
+        },
+      );
     },
-    /**
-     * Write `count` new `Entry` rows and publish them on `scope`, each at its
-     * own cursor. Written in batches, because one interactive PostgreSQL
-     * transaction per hundred records runs into the driver's transaction
-     * timeout; the returned ids are in publication order.
-     */
     async publishMany(
       count: number,
       options: { scope: string; prefix: string; from?: number; batch?: number },
     ): Promise<string[]> {
       const from = options.from ?? 1;
       const size = options.batch ?? 20;
-      const ids = Array.from({ length: count }, (_, i) => `${options.prefix}-${from + i}`);
+      const ids = Array.from(
+        { length: count },
+        (_, i) => `${options.prefix}-${from + i}`,
+      );
       for (let start = 0; start < ids.length; start += size) {
         const batch = ids.slice(start, start + size);
-        await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
-          for (const id of batch) {
-            await tx.entry.upsert({
-              where: { id },
-              create: { id, text: `${id} text` },
-              update: { text: `${id} text` },
-            });
-            touch.entry({ id });
-            scope(options.scope).track.entry({ id });
-          }
-        });
+        await backend.transaction(
+          async ({ tx, streams: scopes, invalidate: touch }) => {
+            for (const id of batch) {
+              await tx.entry.upsert({
+                where: { id },
+                create: { id, text: `${id} text` },
+                update: { text: `${id} text` },
+              });
+              touch.entry({ id });
+              scopes([options.scope]).track.entry({ id });
+            }
+          },
+        );
       }
       return ids;
     },
-    /** Write one `Entry` and enroll it on every named Scope: one stamp, one position on each. */
-    async publishOne(id: string, text: string, scopes: string[]): Promise<void> {
-      await backend.transaction(async ({ tx, stream: scope, invalidate: touch }) => {
-        await tx.entry.upsert({ where: { id }, create: { id, text }, update: { text } });
-        touch.entry({ id });
-        for (const name of scopes) scope(name).track.entry({ id });
-      });
+    async publishOne(id: string, text: string, names: string[]): Promise<void> {
+      await backend.transaction(
+        async ({ tx, streams: scopes, invalidate: touch }) => {
+          await tx.entry.upsert({
+            where: { id },
+            create: { id, text },
+            update: { text },
+          });
+          touch.entry({ id });
+          for (const name of names) scopes([name]).track.entry({ id });
+        },
+      );
     },
-    /** Invalidate selected tracked records without changing their business rows. */
     async invalidateRecords(ids: string[], name: string): Promise<void> {
-      await backend.transaction(async (ctx) => ctx.stream(name).invalidate(ids.map((id) => Entry({ id }))));
+      await backend.transaction(async (ctx) =>
+        ctx.streams([name]).invalidate(ids.map((id) => Entry({ id }))),
+      );
     },
-    /** Delete the row and touch it: its members' Loader answers `null`, an authoritative deletion (D6). */
     async tombstone(id: string): Promise<void> {
       await backend.transaction(async ({ tx, invalidate: touch }) => {
         await tx.entry.delete({ where: { id } });
         touch.entry({ id });
       });
     },
-    /** Make the `Entry` Loader fail for these ids until `allowLoads` clears them. */
     failLoads(...ids: string[]) {
+      expectedLoaderFailure = true;
       for (const id of ids) refusing.add(id);
     },
     allowLoads(...ids: string[]) {
       for (const id of ids) refusing.delete(id);
     },
-    /** The scope head: the highest cursor the invalidation log has allocated. */
     async head(scope: string): Promise<number> {
       const rows = await db.$queryRawUnsafe<{ head: bigint }[]>(
         "SELECT head FROM axton_stream WHERE stream = $1",
@@ -169,7 +213,6 @@ export async function createExample() {
       );
       return rows.length === 0 ? 0 : Number(rows[0]!.head);
     },
-    /** The one retained position `id` has on `scope`, or `null`; a later publication replaces it in place. */
     async positionOf(scope: string, id: string): Promise<number | null> {
       const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
         "SELECT l.cursor FROM axton_stream_log l JOIN axton_record r ON r.id = l.record_id WHERE l.stream = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
@@ -178,17 +221,13 @@ export async function createExample() {
       );
       return rows.length === 0 ? null : Number(rows[0]!.cursor);
     },
-    /**
-     * Empty every AXTON table and the `Entry` rows. A bootstrap scenario asserts
-     * cursors and scope heads, so it starts from an empty log rather than from
-     * whatever an earlier scenario in the same database left behind.
-     */
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_stream_member, axton_stream_log, axton_stream, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_bootstrap_range, axton_bootstrap_identity, axton_bootstrap_manifest, axton_publication_group, axton_stream_member, axton_stream_log, axton_stream, axton_record, axton_client, axton_call",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();
+      expectedLoaderFailure = false;
     },
     listen(port: number) {
       return backend.listen({ port }).then((started) => {
@@ -198,7 +237,13 @@ export async function createExample() {
     },
     async close() {
       await server?.close();
+      await lifecycle.drain();
       await db.$disconnect();
+      if (unexpected.length)
+        throw new AggregateError(
+          unexpected,
+          "Unexpected round-trip backend errors",
+        );
     },
   };
 }

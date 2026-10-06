@@ -6,11 +6,14 @@ A model declares the records an application stores: the stored fields, the ident
 
 ## 3. Context and Scope
 
-- Source: `model Name { field Type[]? … @@id(a, b) @@unique(x, y) @@version(n) }`.
-- Descriptor: `{name, version, identity, fields, relations, unique}`; a field is `{name, type, nullable}` plus an optional `createDefault` from `@default`. Fields typed as another model are not stored fields; they become [Relations](relations.md).
+- Source: `abstract model Fields { … }` and `model Name extends Fields { field Type[]? … @@id(a, b) @@unique(x, y) @@version(n) @@bootstrap }`; `extends` and `@@bootstrap` are optional.
+- Descriptor: `{name, version, identity, fields, relations, unique, bootstrap?}`; a field is `{name, type, nullable}` plus an optional `createDefault` from `@default`. Fields typed as another model are not stored fields; they become [Relations](relations.md).
 - Consumers: [Client / Storage](../client/storage/README.md) creates one table per model plus a before-image twin; [Compiler / Generate](../compiler/generate.md) emits the `Name`, `NameIdentity`, `NamePatch` and `NameCreate` types; the server keys loaders by model name ([Backend interface](../server/backend-interface.md)).
 
 ## 5. Building Block View
+
+- **Shared fields.** `abstract model` declares reusable fields and may extend one other abstract model. A concrete model may extend one abstract parent. Inheritance copies complete field declarations, including defaults, prerequisites, deprecation and relation annotations, then validates them in each concrete model. Cycles, duplicate fields, concrete parents and relations targeting abstract models are refused. Abstract models declare no model-level directives, identity, table or CRUD helpers. Each concrete model declares its own `@@id`, constraints and version.
+- **Bootstrap selection.** `@@bootstrap` emits `bootstrap: true` on a concrete descriptor; omission means false. This marks the type for initial history selection and imposes no restriction on later Stream records. It is metadata, not a stored field or a read-contract member. Runtime Bootstrap consumption belongs to the 0.4 engine work.
 
 - **Fields.** `name Type[]?` with at most one each of the directives `@reference`, `@inverse`, `@requires`, `@default(…)` and `@deprecated(reason: "…")` (the reason optional). Names are ASCII identifiers and unique within the model.
 - **Identity.** Exactly one `@@id(...)` naming non-nullable scalar fields. Its order is the primary-key order. A model without `@@id` is invalid.
@@ -42,6 +45,8 @@ Creation policy is not part of any backend contract. `createDefault` is projecte
 A field marked `@deprecated` keeps its place in every contract; the notice is generated code only ([Mutations](mutations.md#9-architecture-decisions)). See [Typed API / Server](../sdks/typed-api/server.md#9-architecture-decisions) for loader registration and [Generate](../compiler/generate.md#9-architecture-decisions) for history storage. Contract history does not migrate existing local records; the client applies the same compatibility rule at open, shared through `Schema::compatibility` in `axton-core`, and rebuilds an incompatible replica ([Reconciliation](../client/storage/reconciliation.md)).
 
 ## 10. Quality Requirements
+
+- Abstract fields preserve every field declaration through concrete validation; shared TypeScript interfaces extend their parent and Dart field interfaces implement it. Concrete records implement the shared fields while identity, create-input optionality and patch helpers stay independent. Evidence: [compiler/tests/inheritance.rs](../../../../crates/compiler/tests/inheritance.rs), positive and negative [generated API fixtures](../../../../integration/generated-api/verify.sh).
 
 - An invalid identity (nullable, non-scalar, missing, duplicated) is refused at compile time. Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `rejects_invalid_identity`, `schema_and_mutations`.
 - A unique constraint holds atomically within a local transaction: a violating write rolls back only its own savepoint (guarantee L3). Evidence: [sqlite/tests/client.rs](../../../../crates/sqlite/tests/client.rs) `declared_unique_constraint_is_atomic`.

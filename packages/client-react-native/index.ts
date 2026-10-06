@@ -6,7 +6,7 @@ export {
   Transaction,
   LocalTransaction,
   type LocalCallback,
-  type MutationOptions,
+  type MutationInput,
 } from "./transaction.mts";
 export {
   CallError,
@@ -18,9 +18,7 @@ export {
   type CallStatus,
 } from "../client-js/actions.mts";
 export type { QuerySpec, RecordValue } from "../client-js/values.mts";
-export type { FetchOptions, RawStoreChange } from "../client-js/runtime.mts";
-export type StoreHook =
-  import("../client-js/runtime.mts").StoreHook<Transaction>;
+export type { FetchOptions, StoreConnection } from "../client-js/runtime.mts";
 export type {
   Connection,
   ConnectionOptions,
@@ -33,20 +31,8 @@ export {
   type PrerequisiteHandler,
 } from "../client-js/connection.mts";
 export type { ServerOptions } from "../client-js/live.mts";
-export {
-  LoadError,
-  type Load,
-  type LoadOptions,
-  type LoadPhase,
-  type LoadStatus,
-} from "../client-js/loads.mts";
-export type {
-  BootstrapPhase,
-  BootstrapStatus,
-  Subscription,
-  SubscriptionState,
-  SubscriptionStatus,
-} from "../client-js/runtime.mts";
+
+export type { BootstrapPhase, BootstrapStatus } from "../client-js/runtime.mts";
 export type {
   ClientSyncState,
   ModelSyncState,

@@ -1,61 +1,37 @@
 # Local storage
 
-AXTON stores cached records, queued Mutation and Query intent, durable Load jobs, stream progress and rejection details in a local SQLite file. It does not persist completed business result objects on the client. This page explains how to manage the file and recover from storage or synchronization failures.
+AXTON persists Models, named Mutation intent and ownership, durable Call completion, Query once results, Stream progress, record guards and Bootstrap manifests in one SQLite Store.
 
 ## Choose a database path
 
-Choose a writable directory owned by your application. Use one active client per file and a separate file per signed-in user. Closing the client releases its connection and native resources; reopening the same file preserves local records and pending work.
+Use a writable application directory and one active client per physical file. A Store binds backend, viewer, Stream and contract; changing credentials cannot change that binding. Normal close/reopen retains its incarnation and frozen request identities. Independently writable copies must not send the same queued calls.
 
-The database contains a persistent client identity used for request deduplication. Do not let independently writable copies of the same file send calls to the same backend. Switch accounts by closing the current client and opening the appropriate user's file, rather than changing only its authentication token.
+Android Dart hosts call `Client.configureApplicationData` once with their stable application container before opening Stores. The directory is process-wide; it is not a per-client lock-root option. See [runtime setup](runtime.md#opening-and-schema-changes).
 
 ## Change the schema
 
-Each database records the schema it was built for. Opening it with a newer generated schema takes one of three ways:
+Compatible changes, including a new Model or nullable field, adapt local tables without dropping pending operations. The Store retains full prior descriptors for durable frozen Mutation contracts. Active rematerialization installs current-compatible authority at the same Stream position while preserving later local operation overlays.
 
-| Change | What happens |
-| --- | --- |
-| None | The database opens. |
-| A new Model, or a new nullable field | Applied in place; cached records, queued calls and frozen request bytes are preserved. |
-| Anything else: a required field, a removed or retyped field, a changed identity, unique constraint, relation, enum or model version, a removed model, or a file from an earlier AXTON runtime | The file is left untouched and a fresh database is opened beside it (`<path>.1`, `<path>.2`, …). A small `<path>.current` file names the one in use. The new database keeps the old subscriptions and synchronises from the beginning. |
+Unsupported changes fail without silently discarding pending work. Explicit `resetStore` changes incarnation, rebuilds the Store and ends old handles. Pending work prevents reset unless `discardPending` is explicitly chosen. Update backend business tables through your own forward migrations. See [opening and schema changes](runtime.md#opening-and-schema-changes).
 
-Durable [Loads](loads.md) are not carried into a rebuilt database: the rebuild report lists the abandoned Load IDs (`abandonedLoads`) and the application starts new Loads ([Schema changes](loads.md#schema-changes)).
+## Transactions and pending work
 
-Before switching, the runtime looks at the old database's unsent calls. If there are any, it keeps that database open so they can still be sent; `syncState().schema.pending` reports how many remain and why the schema is incompatible. When they are sent, call `rebuild()`. If they cannot be sent, call `rebuild({ discardPending: true })`: the report tells you how many queued calls and local-only records stay in the old file. Nothing is copied between schemas, and the runtime never deletes an old file; delete numbered files you no longer need. See [opening and schema changes](runtime.md#opening-and-schema-changes). Update backend tables separately through your database's migration process.
+A local transaction commits direct local writes and each named Mutation's input, optimism and companions together. A crash before commit saves none; a crash after commit preserves all. The callback itself is never replayed. Acceptance keeps companions; refusal removes only the original Call's owned work. Later independent local changes retain their order.
 
-## Transactions that queue Mutations
+Retry uses the exact persisted Mutation intent and retained context. A request timeout does not imply server refusal: the handler may already have committed its receipt. An accepted Call remains pending until its required authority or receipt-proved materialization settles locally. Check connection diagnostics, prerequisites and [unsent work](runtime.md#unsent-work); do not edit internal queue, guard, cursor or receipt tables.
 
-A [transaction that queues Mutations](client-api.md#queue-mutations-in-a-transaction) saves its local writes, each queued Mutation and each Mutation's `local` changes in one local commit. If the app is killed before that commit, none of them are saved; after it, all of them survive a restart. AXTON stores the `local` changes, not the callback, so reopening resumes the queued Mutation and later applies its outcome to those changes without running your code again: acceptance keeps them and rejection undoes them. Later local writes keep their place either way, and newer server data for the same record still replaces them.
+## Cached data and progress
 
-## Recover pending work
+The Store follows its single bound Stream. A membership Remove retains cached Models and record guards while releasing live-content protection; a true Stream tombstone remains protected. Cache presence grants no permission. Viewer Loaders and current application access rules decide visibility.
 
-| Situation | What to do |
-| --- | --- |
-| A request times out | Let sync retry the persisted frozen request. The backend may already have committed it. |
-| Frozen work remains pending | Check connectivity and authentication; a receipt AXTON cannot apply is refused and the batch resent, so check `onError` on both sides. |
-| A Mutation or Query is rejected | Inspect its `wait()` outcome and record `syncState`, then dismiss the handled rejection. |
-| A prerequisite fails | Resolve its cause, then reset its readiness to `pending`; the client runs its handler again. |
-| Another client wrote to the same file | Close the stale instance and reopen it; keep one active client per file. |
+Bootstrap manifest coverage and ordinary Stream progress persist separately. A page commits its actual atomic units and coverage together; a failure cannot skip an identity or advance progress. Tail capture records a head, and completion waits for actual Delta installation through that head. Reopen resumes the saved manifest and cursor.
 
-Do not manually delete pending batches, stream cursors or backend receipts to clear an error. These records work together to prevent duplicate execution and complete local changes from their receipts. Preserve the database for diagnosis when an error cannot be resolved through the public APIs.
+Ordinary Query and Fetch records carry null cursors. They may populate unprotected cache, but never advance Stream progress, replace current Stream authority or clear a tombstone. An ordinary null returns absence without deleting a cached row. Returned invocation snapshots and the current Model projection are distinct.
 
-[Sync and recovery](sync.md) shows the application calls for these cases.
+Query `once` results persist by the active materialization contract, Query name/version, normalized arguments and store boolean. Hits return saved business snapshots without applying them again to Models. `refresh` replaces a saved result only after success; `queries.invalidate.<name>` removes all store-policy variants for those arguments and fences older in-flight saves.
 
-## Manage cached data
+## Storage size and SQL
 
-Unsubscribing stops that stream's synchronization and removes nothing: cached records, their stamps, before images and pending edits stay, and another subscribed stream can still update them. It does remove the subscription itself, including its receive position and any `bootstrap()` progress, so subscribing to that name again is a new subscription that starts at the position the server acknowledges next and downloads the stream's history only if you ask for it again. Retained records are readable but not kept fresh without a stream that delivers them. Permissions are enforced by your backend. When a record is no longer visible, publish it to the affected streams so their loaders can return null. There is no automatic eviction of cached records.
+No automatic cache eviction or outcome TTL is provided. Applications bound the argument sets retained by Query once and invalidate results when appropriate. The backend retains publication dependency evidence needed to prove safe delivery groups; configured capacity failures are explicit.
 
-A subscription, its receive position and the progress of a `bootstrap()` load are stored in the local database, so they survive a restart: reopening resumes from the saved position instead of starting over, and an unfinished load continues without being called again. A rebuilt local database ([change the schema](#change-the-schema)) keeps the stream names you subscribed to but not their positions or their load progress, so each one starts again at the position the server acknowledges next.
-
-Results saved by [`once` Query calls](client-api.md#reuse-a-query-result-with-once) are stored in the same local database and are reused offline and after a restart. They are keyed by the compiled client schema: a schema change starts a new set and removes the previous one when the database opens, and a rebuilt database starts with none. They are scoped to the database file, not to a user: open a separate database for each backend, account or tenant, or delete it when the signed-in identity changes. Remove saved results with `client.queries.invalidate.<name>(args)`; nothing expires them automatically.
-
-Receipts and pull changes carry a per-record stamp. A newer stamp replaces the record's authoritative state; a delayed lower stamp cannot overwrite it, whichever path delivers it. Deletions apply across streams, and the deleted record's stamp is kept so older content cannot resurrect it. See [how state moves](../concepts.md) for the relationship between records, streams and pending writes.
-
-## Storage size
-
-Cached records, queued calls, rejection details, saved `once` Query results and backend receipts persist. Client business results held by live `Call` handles are memory-only. Saved `once` results have no size limit; your application bounds them through the argument sets it uses and `invalidate`. The runtime does not impose a cache-size limit or automatically expire these entries. Backend call outcomes are retained without TTL or automatic pruning; backend invalidations compact by stream/Model/identity, but distinct identities still consume space.
-
-Measure database size, pending work and synchronization lag with your application's working set. Local reads, including read-only SQL, use on-disk SQLite tables. They do not copy the full record set into a separate query projection.
-
-## Read the tables with SQL
-
-Each Model has a table named exactly the Model name, with one column per field named exactly the field name. Every table AXTON owns is named `axton_*`; do not read or change those. Both rules are a stable contract, so SQL you write with `readSql` or `watchSql` keeps working across upgrades. See [local table layout](runtime.md#local-table-layout).
+Each Model has a table named exactly the Model, with one column per field. Read these tables using `readSql` or `watchSql`. Tables beginning `axton_` belong to the engine; do not read or modify them. Local SQL reads use the on-disk SQLite projection rather than a separate full-record copy.

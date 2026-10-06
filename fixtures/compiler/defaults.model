@@ -1,13 +1,13 @@
 // Creation defaults (#27): filled by the client only when a fresh create
 // omits the field. The body default exercises generated-source escaping.
 enum Mood { calm busy }
-model Draft {
+abstract model DraftFields {
  id UUID @default(uuid())
  body String @default("q 'single' \"double\" ''' \"\"\" $dollar ${x} \\ back\nline")
  mood Mood @default(busy)
  created DateTime @default(now())
  note String? @default("n")
  memo String?
- @@id(id)
 }
+model Draft extends DraftFields { @@id(id) }
 mutation AddDraft { draft Draft.create }

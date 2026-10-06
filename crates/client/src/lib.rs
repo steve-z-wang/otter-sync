@@ -6,7 +6,9 @@ mod bootstrap_ledger;
 pub mod connection;
 pub mod ddl;
 mod defaults;
+mod delivery04;
 mod downlink;
+mod downlink04;
 pub mod downlink_worker;
 pub mod engine;
 mod fetch;
@@ -17,13 +19,18 @@ pub mod load_worker;
 pub mod loads;
 mod mutate;
 mod policies;
+mod progress04;
+mod protocol04;
+pub use protocol04::ResetStoreReport;
 mod push;
 pub mod query;
 pub mod query_cache;
 pub mod queue;
+mod reads04;
 pub mod rows;
 pub mod runtime;
 pub mod schema_store;
+mod settlement04;
 pub mod store;
 mod store_delivery;
 mod store_epoch;
@@ -240,6 +247,7 @@ struct SessionSavepoint {
 
 pub struct Client<S: ClientStore> {
     store: S,
+    context04: Option<v04::RequestContext>,
     store_epoch: StoreToken,
     request_tokens: std::cell::RefCell<BTreeMap<String, StoreToken>>,
     schema: Schema,
@@ -310,7 +318,8 @@ pub struct RebuildReport {
     /// once mapping, continues in the new replica.
     pub abandoned_loads: Vec<String>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AbandonedCall {
     pub call_id: String,
     pub frozen: bool,
@@ -438,7 +447,10 @@ impl<S: ClientStore> Client<S> {
         }
         store.execute_batch(ddl::FRAMEWORK_DDL)?;
         ddl::add_framework_columns(&mut store)?;
-        let query_contract = query_cache::contract_fingerprint(&schema)?;
+        let mut query_contract = query_cache::contract_fingerprint(&schema)?;
+        if let Some(context) = protocol04::read_context(&mut store)? {
+            query_contract = format!("{query_contract}:{}", context.materialization);
+        }
         store.begin()?;
         let opened = (|| {
             ddl::reconcile(&mut store, &schema)?;
@@ -480,8 +492,10 @@ impl<S: ClientStore> Client<S> {
         let store_epoch = StoreToken {
             epoch: engine::as_u64(&store_epoch.rows[0][0])?,
         };
+        let context04 = protocol04::read_context(&mut store)?;
         Ok(Self {
             store,
+            context04,
             store_epoch,
             request_tokens: Default::default(),
             schema,
@@ -1141,6 +1155,9 @@ impl<S: ClientStore> Client<S> {
         self.freeze_with_limit(limits::PUSH_BYTES)
     }
     pub fn freeze_with_limit(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        if self.context04.is_some() {
+            return Err(invalid("legacy protocol seam is retired in protocol 4"));
+        }
         self.write(|e| e.freeze(max_bytes))?
             .map(|bytes| with_capabilities(&bytes, &[STREAM_AUTHORITY_CAPABILITY]))
             .transpose()
@@ -1149,6 +1166,9 @@ impl<S: ClientStore> Client<S> {
     /// lands, the completed operations leave the queue and what remains
     /// replays, in one transaction. Nothing waits for a stream.
     pub fn acknowledge(&mut self, sequence: u64, receipt: PushReceipt) -> Result<ApplyReport> {
+        if self.context04.is_some() {
+            return Err(invalid("legacy protocol seam is retired in protocol 4"));
+        }
         self.write(|e| e.acknowledge(sequence, &receipt))
     }
     pub(crate) fn validate_push_receipt(
@@ -1360,6 +1380,11 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     /// already subscribed stream is not a membership change: it touches no
     /// cursor and leaves the subscription generation alone.
     pub fn set_stream(&mut self, stream: String, subscribed: bool) -> Result<()> {
+        if let Some(context) = self.engine.context04()?
+            && (context.binding.stream != stream || !subscribed)
+        {
+            return Err(invalid("bound Stream cannot be changed"));
+        }
         if subscribed {
             // Registration is intent only: the first delivery boundary is the
             // head the Downlink worker's next handshake acknowledges, not zero
@@ -1407,6 +1432,33 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         let ordinal = self.enqueue(mutation)?;
         self.submitted.insert(ordinal);
         Ok(SubmittedCall { call_id, ordinal })
+    }
+    pub(crate) fn preview_callback04(&mut self, operation: Operation) -> Result<Vec<Operation>> {
+        self.savepoint(|tx| tx.engine.preview_callback04(operation))
+    }
+    pub(crate) fn submit_mutation_companions_first04(
+        &mut self,
+        name: &str,
+        version: u64,
+        args: Value,
+        companions: Vec<Operation>,
+    ) -> Result<SubmittedCall> {
+        self.savepoint(|tx| {
+            if tx.local_only {
+                return Err(invalid(STORE_HOOK_SUBMIT));
+            }
+            let action = tx.engine.schema.action(name, version)?;
+            if action.kind != CallKind::Mutation {
+                return Err(invalid("only a Mutation can be submitted"));
+            }
+            let mut mutation =
+                actions::fresh_call(tx.engine.schema, action, args, ActionCallOptions::default())?;
+            mutation.companion = companions;
+            let call_id = mutation.call_id.clone().unwrap_or_default();
+            let ordinal = tx.engine.enqueue_companions_first(mutation)?;
+            tx.submitted.insert(ordinal);
+            Ok(SubmittedCall { call_id, ordinal })
+        })
     }
     /// Record `operation` as a local companion of call `ordinal`: applied
     /// now, stored with the call and settled with its outcome, never sent.

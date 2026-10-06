@@ -1,0 +1,64 @@
+{
+  "actions": [],
+  "clientPolicies": [],
+  "enums": [],
+  "models": [
+    {
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Item",
+      "relations": [],
+      "unique": [],
+      "version": 1
+    }
+  ],
+  "prerequisites": [],
+  "requirements": [],
+  "resultModels": [
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "label",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Item",
+      "version": 1
+    }
+  ]
+}

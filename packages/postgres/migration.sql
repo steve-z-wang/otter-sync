@@ -73,3 +73,36 @@ DO $$ BEGIN
  CREATE TRIGGER axton_stream_member_fixed BEFORE UPDATE ON axton_stream_member FOR EACH ROW EXECUTE FUNCTION axton_stream_owner_fixed();
  END IF;
 END $$;
+
+-- One namespace-wide publication serialization fence, retained across restarts.
+CREATE TABLE IF NOT EXISTS axton_publication_fence (id integer PRIMARY KEY CHECK(id=1), held boolean NOT NULL DEFAULT true);
+INSERT INTO axton_publication_fence(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
+
+-- Original publication transaction spans/keys are durable coverage evidence.
+-- Never garbage-collect by age: compacted members may still need this group.
+CREATE TABLE IF NOT EXISTS axton_publication_group (
+ stream text NOT NULL REFERENCES axton_stream(stream),
+ transaction_id xid8 NOT NULL DEFAULT pg_current_xact_id(),
+ from_cursor bigint NOT NULL CHECK(from_cursor>=0),
+ through_cursor bigint NOT NULL CHECK(through_cursor>from_cursor),
+ keys jsonb NOT NULL CHECK(jsonb_typeof(keys)='array'),
+ PRIMARY KEY(stream,transaction_id), UNIQUE(stream,through_cursor)
+);
+
+CREATE TABLE IF NOT EXISTS axton_bootstrap_manifest (
+ owner_id text NOT NULL, manifest_id text NOT NULL, context jsonb NOT NULL,
+ start_cursor bigint NOT NULL CHECK(start_cursor>=0), total bigint NOT NULL CHECK(total>=0),
+ models jsonb NOT NULL, tail bigint CHECK(tail>=start_cursor),
+ PRIMARY KEY(owner_id,manifest_id)
+);
+CREATE TABLE IF NOT EXISTS axton_bootstrap_identity (
+ owner_id text NOT NULL,manifest_id text NOT NULL,ordinal bigint NOT NULL CHECK(ordinal>=0),
+ model text NOT NULL,identity_key text NOT NULL,
+ PRIMARY KEY(owner_id,manifest_id,ordinal), UNIQUE(owner_id,manifest_id,model,identity_key),
+ FOREIGN KEY(owner_id,manifest_id) REFERENCES axton_bootstrap_manifest(owner_id,manifest_id)
+);
+CREATE TABLE IF NOT EXISTS axton_bootstrap_range (
+ owner_id text NOT NULL,manifest_id text NOT NULL,from_ordinal bigint NOT NULL,to_ordinal bigint NOT NULL CHECK(to_ordinal>=from_ordinal),
+ PRIMARY KEY(owner_id,manifest_id,from_ordinal,to_ordinal),
+ FOREIGN KEY(owner_id,manifest_id) REFERENCES axton_bootstrap_manifest(owner_id,manifest_id)
+);

@@ -27,13 +27,22 @@ if [[ "$packs" == --registry ]]; then
 elif [[ -z "$packs" ]]; then
   bash "$root/scripts/build.sh"
   host="$(node -p 'require(process.argv[1]).host.find((t) => t.rust === process.argv[2]).name' "$root/scripts/release/targets.json" "$(rustc -vV | sed -n 's/^host: //p')")"
-  (cd "$root" && cargo build --release --locked -p axton-compiler)
+  (cd "$root" && cargo build --release --locked -p axton-compiler -p axton-dart)
   "$root/node_modules/.bin/napi" build --platform --release --cwd "$root/packages/native" \
     --manifest-path ../../bindings/node/Cargo.toml --output-dir "$work/artifacts" --no-js
   mkdir -p "$work/artifacts/$host"
   cp "$root/target/release/axton" "$work/artifacts/$host/axton"
+  version="$(node -p 'require(process.argv[1]).version' "$root/package.json")"
+  case "$(uname -s)" in
+    Darwin) dart_ext=dylib ;;
+    Linux) dart_ext=so ;;
+    *) fail "no Dart artifact suffix for this host" ;;
+  esac
+  cp "$root/target/release/libaxton_dart.$dart_ext" "$work/artifacts/libaxton_dart-$version-$host.$dart_ext"
+
   packs="$work/packs"
   bash "$root/scripts/release/pack.sh" "$packs" "$work/artifacts" "$host"
+  cp "$work/artifacts"/libaxton_dart-* "$packs/"
 fi
 if [[ ${#archives[@]} -eq 0 ]]; then
   packs="$(cd "$packs" && pwd)"
@@ -87,6 +96,12 @@ port="$(node -e 'const s=require("net").createServer().listen(0,"127.0.0.1",()=>
 mkdir -p "$work/pg"
 initdb -D "$work/pg/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$work/pg/data" -l "$work/pg/log" -o "-p $port -h 127.0.0.1 -k $work/pg" start >/dev/null
+# A staged Dart native manifest and host library opt into the same real
+# installed backend round trip; --registry remains the explicit registry path.
+if [[ "${1:-}" != --registry && -f "$packs/axton-dart-$version.tar.gz" ]] && compgen -G "$packs/libaxton_dart-*" >/dev/null; then
+  export AXTON_STAGED_DART="$packs"
+  export AXTON_VERIFY_DART="$root/integration/release/verify-dart.sh"
+fi
 DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres" node --test installed.test.mts
 node --test loading.test.mjs
 echo "verify-installed: verified ${archives[*]}"

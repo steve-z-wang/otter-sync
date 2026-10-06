@@ -1,5 +1,7 @@
 # Engine
 
+[Protocol 4](../protocol4.md) owns current bound-request execution, fenced Stream publication and materialization. The stamp, legacy batch and Load descriptions below document retained protocol-3 machinery, not alternative 0.4 authority paths.
+
 The server engine is pure protocol logic in Rust: it never opens a connection or a transaction itself, but drives the host through a fixed set of operations.
 
 - [Push](push.md) — Validate and deduplicate legacy mutation batches, invoke handlers and produce receipts.

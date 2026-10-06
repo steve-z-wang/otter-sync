@@ -1,3 +1,4 @@
+import 'store_fixture.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -27,10 +28,24 @@ class Fixture {
     return Fixture(dir, schema);
   }
 
-  Future<Client> client() =>
-      Client.open(path: path, schema: schema, libraryPath: library);
-  Future<Bridge> bridge() =>
-      Bridge.open(path: path, schema: schema, libraryPath: library);
+  Future<Client> client() async {
+    final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
+      path: path,
+      schema: schema,
+      libraryPath: library,
+    );
+    await client.connection?.close();
+    return client;
+  }
+
+  Future<Bridge> bridge() => Bridge.open(
+    path: path,
+    schema: schema,
+    binding: offlineStoreConnection().identity.binding('User:viewer'),
+    libraryPath: library,
+  );
   Future<void> dispose() => dir.delete(recursive: true);
 }
 
@@ -67,341 +82,9 @@ void main() {
   setUp(() async => fixture = await Fixture.create('axton-bridge-'));
   tearDown(() => fixture.dispose());
 
-  test(
-    'store callback runs without a public task and snapshots its handler',
-    () async {
-      final carrier = FakeCarrier((envelope) {
-        if (envelope['type'] == 'transactionCommand') {
-          return [completed(envelope['requestId'] as String)];
-        }
-        return null;
-      });
-      final observed = <List<dynamic>>[];
-      final handlers = <String, StoreHook>{
-        'Entry': (tx, changes) async {
-          observed.add(changes);
-          await tx.streams.subscribe('project:p1');
-        },
-      };
-      final client = await Client.open(
-        path: 'unused',
-        schema: const {},
-        carrier: carrier,
-        onStore: handlers,
-      );
-      expect(carrier.openedRequest['storeHooks'], ['Entry']);
-      expect(carrier.openedRequest.containsKey('onStore'), isFalse);
-      handlers['Entry'] = (_, _) async => throw StateError('changed handler');
-      carrier.publish([
-        {
-          'type': 'effect',
-          'effectId': 'store',
-          'operation': {
-            'kind': 'storeCallback',
-            'transactionId': 'tx',
-            'model': 'Entry',
-            'changes': [
-              {
-                'kind': 'delete',
-                'identity': {'id': 'e'},
-              },
-            ],
-          },
-        },
-      ]);
-      await pumpEventQueue();
-      expect(observed, [
-        [
-          {
-            'kind': 'delete',
-            'identity': {'id': 'e'},
-          },
-        ],
-      ]);
-      expect(
-        carrier.commands,
-        equals([
-          {'kind': 'stream', 'stream': 'project:p1', 'subscribed': true},
-        ]),
-      );
-      expect(
-        carrier.admitted.where((e) => e['type'] == 'callbackResult').single,
-        Bridge.callbackResultEnvelope('store', 'tx', ok: true),
-      );
-      await client.close();
-    },
-  );
-
-  test(
-    'closing cancels an unresolved store callback and invalidates its transaction',
-    () async {
-      final carrier = FakeCarrier();
-      final entered = Completer<Transaction>();
-      final gate = Completer<void>();
-      final client = await Client.open(
-        path: 'unused',
-        schema: const {},
-        carrier: carrier,
-        onStore: {
-          'Entry': (tx, _) async {
-            entered.complete(tx);
-            await gate.future;
-          },
-        },
-      );
-      carrier.publish([
-        {
-          'type': 'effect',
-          'effectId': 'held',
-          'operation': {
-            'kind': 'storeCallback',
-            'transactionId': 'tx2',
-            'model': 'Entry',
-            'changes': <dynamic>[],
-          },
-        },
-      ]);
-      final tx = await entered.future;
-      await client.close();
-      await expectLater(
-        tx.read('Entry', {'id': 'e'}),
-        throwsA(
-          isA<StateError>().having(
-            (e) => e.message,
-            'message',
-            'transaction_closed',
-          ),
-        ),
-      );
-      gate.complete();
-    },
-  );
-
-  test(
-    'store hooks share guards, unawaited checks, and savepoint failure',
-    () async {
-      final carrier = FakeCarrier((envelope) {
-        if (envelope['type'] == 'transactionCommand') {
-          return [
-            completed(
-              envelope['requestId'] as String,
-              (envelope['command'] as Map)['kind'] == 'savepoint'
-                  ? {'scope': 'sp1'}
-                  : null,
-            ),
-          ];
-        }
-        return null;
-      });
-      late Client client;
-      client = await Client.open(
-        path: 'unused',
-        schema: const {},
-        carrier: carrier,
-        onStore: {
-          'Entry': (tx, changes) async {
-            await expectLater(
-              client.read('Entry', {'id': 'x'}),
-              throwsA(
-                isA<StateError>().having(
-                  (e) => e.message,
-                  'message',
-                  'transaction_active',
-                ),
-              ),
-            );
-            final id = (changes.single['identity'] as Map)['id'];
-            if (id == 'unawaited') {
-              unawaited(tx.streams.subscribe('x'));
-            } else {
-              await tx.savepoint(
-                () => tx.savepoint<void>(
-                  () async => throw StateError('nested failure'),
-                ),
-              );
-            }
-          },
-        },
-      );
-      for (final id in ['unawaited', 'nested']) {
-        carrier.publish([
-          {
-            'type': 'effect',
-            'effectId': id,
-            'operation': {
-              'kind': 'storeCallback',
-              'transactionId': 'tx-$id',
-              'model': 'Entry',
-              'changes': [
-                {
-                  'kind': 'delete',
-                  'identity': {'id': id},
-                },
-              ],
-            },
-          },
-        ]);
-        await pumpEventQueue();
-      }
-      final results = carrier.admitted
-          .where((e) => e['type'] == 'callbackResult')
-          .toList();
-      expect(results, hasLength(2));
-      expect(results[0]['ok'], isFalse);
-      expect(results[0]['error'], contains('unawaited transaction operation'));
-      expect(results[1]['ok'], isFalse);
-      expect(results[1]['error'], contains('nested failure'));
-      await client.close();
-    },
-  );
-
-  test(
-    'joined once callers and onError keep the original hook cause and registration zone',
-    () async {
-      final thrown = StateError('hook broke');
-      final key = Object();
-      final requests = <String>[];
-      late FakeCarrier carrier;
-      carrier = FakeCarrier((envelope) {
-        final command = envelope['command'];
-        if (command is Map && command['kind'] == 'connect') {
-          return [completed(envelope['requestId'] as String)];
-        }
-        if (command is Map && command['kind'] == 'invoke') {
-          requests.add(envelope['requestId'] as String);
-        }
-        if (envelope['type'] == 'callbackResult') {
-          expect(envelope['ok'], isFalse);
-          return [
-            {
-              'type': 'report',
-              'diagnostic': {
-                'kind': 'storeHook',
-                'code': 'store_hook_failed',
-                'model': 'Entry',
-                'path': 'direct',
-                'message': envelope['error'],
-                'callbackEffectId': envelope['effectId'],
-              },
-            },
-            for (final requestId in requests)
-              {
-                'type': 'taskCompleted',
-                'requestId': requestId,
-                'ok': false,
-                'error': 'hook broke',
-                'details': {
-                  'code': 'store_hook_failed',
-                  'model': 'Entry',
-                  'path': 'direct',
-                  'callbackEffectId': envelope['effectId'],
-                },
-              },
-          ];
-        }
-        return null;
-      });
-      final client = await runZoned(
-        () => Client.open(
-          path: 'unused',
-          schema: const {},
-          carrier: carrier,
-          onStore: {
-            'Entry': (_, __) async {
-              expect(Zone.current[key], 'registered');
-              throw thrown;
-            },
-          },
-        ),
-        zoneValues: {key: 'registered'},
-      );
-      final reported = <Object>[];
-      try {
-        await client.connect(
-          SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
-          onError: reported.add,
-        );
-        final a = client.invokeQuery(
-          'Lookup',
-          1,
-          {},
-          (value) => value,
-          once: true,
-        );
-        final b = client.invokeQuery(
-          'Lookup',
-          1,
-          {},
-          (value) => value,
-          once: true,
-        );
-        expect(requests, hasLength(2));
-        carrier.publish([
-          {
-            'type': 'effect',
-            'effectId': 'store3',
-            'operation': {
-              'kind': 'storeCallback',
-              'transactionId': 'tx3',
-              'model': 'Entry',
-              'changes': <dynamic>[],
-            },
-          },
-        ]);
-        for (final caller in [a, b]) {
-          await expectLater(
-            caller,
-            throwsA(
-              isA<CallError>()
-                  .having((e) => e.code, 'code', 'store_hook_failed')
-                  .having((e) => e.cause, 'cause', same(thrown)),
-            ),
-          );
-        }
-        expect(
-          reported.single,
-          isA<StoreHookFailure>()
-              .having((e) => e.model, 'model', 'Entry')
-              .having((e) => e.path, 'path', 'direct')
-              .having((e) => e.cause, 'cause', same(thrown)),
-        );
-      } finally {
-        await client.close();
-      }
-    },
-  );
-
-  test(
-    'store callback sends a bounded failure when its cause cannot stringify',
-    () async {
-      final carrier = FakeCarrier();
-      final client = await Client.open(
-        path: 'unused',
-        schema: const {},
-        carrier: carrier,
-        onStore: {'Entry': (_, __) => throw _BadString()},
-      );
-      carrier.publish([
-        {
-          'type': 'effect',
-          'effectId': 'bad-string',
-          'operation': {
-            'kind': 'storeCallback',
-            'transactionId': 'tx-bad',
-            'model': 'Entry',
-            'changes': <dynamic>[],
-          },
-        },
-      ]);
-      await pumpEventQueue();
-      final result = carrier.admitted
-          .where((e) => e['type'] == 'callbackResult')
-          .single;
-      expect(result['ok'], isFalse);
-      expect((result['error'] as String).length, lessThanOrEqualTo(1024));
-      await client.close();
-    },
-  );
+  // Application store callbacks were removed in 0.4. Public negative analyzer
+  // fixtures fence that API; current authority/cascade admission is tested by
+  // the native engine and generated host fixtures, not a host callback lane.
 
   test('overlapping tasks return to the waiter that submitted them', () async {
     final client = await fixture.client();
@@ -527,6 +210,7 @@ void main() {
     final before = Bridge.attached.toSet();
     await expectLater(
       Bridge.open(
+        binding: offlineStoreConnection().identity.binding('User:viewer'),
         path: '${fixture.dir.path}/missing/dir/db',
         schema: fixture.schema,
         libraryPath: Fixture.library,
@@ -669,8 +353,13 @@ void main() {
 
   test('close cancels connection setup before its completion', () async {
     String? connectingId;
+    var initial = true;
     final carrier = FakeCarrier((envelope) {
       if ((envelope['command'] as Map?)?['kind'] == 'connect') {
+        if (initial) {
+          initial = false;
+          return [completed(envelope['requestId'] as String)];
+        }
         connectingId = envelope['requestId'] as String;
         return const [];
       }
@@ -688,10 +377,13 @@ void main() {
       return null;
     });
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: 'unused',
       schema: const {},
       carrier: carrier,
     );
+    await client.connection?.close();
     final errors = <Object>[];
     final starting = client.connect(
       SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
@@ -724,10 +416,13 @@ void main() {
       return null;
     });
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: 'unused',
       schema: const {},
       carrier: carrier,
     );
+    await client.connection?.close();
     final errors = <Object>[];
     final starting = client.connect(
       SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
@@ -779,6 +474,8 @@ void main() {
       ];
     });
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: 'unused',
       schema: const {},
       carrier: carrier,
@@ -805,6 +502,8 @@ void main() {
     // The same answer as the Node bridge gives, so diagnostics agree.
     final carrier = FakeCarrier((_) => null);
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: 'unused',
       schema: const {},
       carrier: carrier,
@@ -856,6 +555,8 @@ void main() {
       ];
     });
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: 'unused',
       schema: const {},
       carrier: carrier,
@@ -982,214 +683,42 @@ void main() {
     });
   });
 
-  test('the commands the client builds match the shared fixtures', () async {
-    final fixtures = await envelopeFixtures();
-    final byId = <String, Map<String, dynamic>>{
-      for (final input
-          in (fixtures['inputs'] as List).cast<Map<String, dynamic>>())
-        if (input['requestId'] case final String id) id: input,
-    };
-    Map<String, dynamic> command(String id) =>
-        byId[id]!['command'] as Map<String, dynamic>;
-    // A runtime that answers every command at once, and runs the one
-    // transaction's callback.
-    String? transaction;
-    final carrier = FakeCarrier((envelope) {
-      final requestId = envelope['requestId'] as String?;
-      final kind = (envelope['command'] as Map?)?['kind'];
-      if (envelope['type'] == 'callbackResult') {
-        return [completed(transaction!)];
+  test(
+    'bound client commands use native ownership and boolean read policy',
+    () async {
+      final carrier = FakeCarrier((envelope) {
+        final id = envelope['requestId'] as String?;
+        if (id == null) return null;
+        return [completed(id, null)];
+      });
+      final client = await Client.open(
+        path: 'unused',
+        schema: const {},
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
+        carrier: carrier,
+      );
+      try {
+        await client.read('Todo', {'id': 't'});
+        expect(carrier.commands.last, {
+          'kind': 'read',
+          'key': {
+            'model': 'Todo',
+            'identity': {'id': 't'},
+          },
+        });
+        await client.invalidateQuery('GetTodo', 1, {'id': 't'});
+        expect(carrier.commands.last, {
+          'kind': 'invalidateQueryOnce',
+          'name': 'GetTodo',
+          'version': 1,
+          'args': {'id': 't'},
+        });
+      } finally {
+        await client.close();
       }
-      if (kind == 'transaction') {
-        transaction = requestId;
-        return [
-          {
-            'type': 'effect',
-            'effectId': '5',
-            'operation': {
-              'kind': 'callback',
-              'transactionId': 'tx7',
-              'requestId': requestId,
-            },
-          },
-        ];
-      }
-      if (requestId == null) return null;
-      return [
-        completed(requestId, switch (kind) {
-          'query' || 'sql' || 'querySpec' || 'referencing' || 'tasks' => [],
-          'status' || 'recordStatus' || 'rebuild' || 'pull' => {},
-          'enqueue' => 1,
-          'submitAction' => {'callId': 'c1', 'ordinal': 1},
-          'invoke' => {
-            'outcome': {'status': 'succeeded', 'result': null},
-          },
-          'streamSubscribe' => {
-            'state': {'stream': 'book', 'subscriptionId': 1},
-            'observerId': '9',
-          },
-          'watch' || 'watchSql' => {'observerId': '3'},
-          'savepoint' => {'scope': 'sp1'},
-          _ => null,
-        }),
-      ];
-    });
-    final client = await Client.open(
-      path: 'unused',
-      schema: const {},
-      carrier: carrier,
-    );
-    final expected = <Map<String, dynamic>>[];
-    Future<T> step<T>(String id, Future<T> Function() call) {
-      expected.add(command(id));
-      return call();
-    }
-
-    try {
-      await step('101', () => client.read('Todo', {'id': 't'}));
-      await step('102', () => client.query('Todo', where: {'done': false}));
-      await step(
-        '103',
-        () => client.readSql(
-          'SELECT count(*) AS n FROM Todo WHERE done = ?',
-          parameters: [false],
-        ),
-      );
-      await step(
-        '104',
-        () => client.querySpec(
-          'Todo',
-          command('104')['query'] as Map<String, dynamic>,
-        ),
-      );
-      await step('105', () => client.related('Todo', {'id': 't'}, 'owner'));
-      await step(
-        '106',
-        () => client.referencing('User', {'id': 'u'}, 'Todo', 'owner'),
-      );
-      await step('107', client.syncState);
-      await step('108', () => client.recordSyncState('Todo', {'id': 't'}));
-      await step('109', client.pendingTasks);
-      await step(
-        '110',
-        () => client.mutate(command('110')['mutation'] as Map<String, dynamic>),
-      );
-      await step(
-        '113',
-        () => client.submitAction('Ping', 1, {}, store: const _Store(false)),
-      );
-      await step('114', () => client.setReadiness('k', 'ready'));
-      await step('115', () => client.drop(3));
-      await step('116', () => client.dismissRejection(4));
-      await step('193', () => client.rejections.get(4));
-      await step('194', () => client.failures.retry(['k']));
-      await step('195', () => client.failures.drop(3));
-      await step(
-        '117',
-        () => client.invalidateQuery('GetTodo', 1, {'id': 't'}),
-      );
-      await step('118', () => client.rebuild(discardPending: true));
-      await step('119', client.freeze);
-      await step(
-        '120',
-        () => client.acknowledge(
-          1,
-          command('120')['receipt'] as Map<String, dynamic>,
-        ),
-      );
-      await step(
-        '121',
-        () => client.applyPull(command('121')['page'] as Map<String, dynamic>),
-      );
-      final subscription = await step(
-        '122',
-        () => client.subscribeStream('book'),
-      );
-      await step('124', subscription.bootstrap);
-      await step('126', subscription.unsubscribe);
-      await step(
-        '127',
-        () => client.transaction((tx) async {
-          await step('134', () => tx.read('Todo', {'id': 't'}));
-          await step('136', () => tx.readSql('SELECT 1 AS one'));
-          await step(
-            '137',
-            () => tx.querySpec(
-              'Todo',
-              command('137')['query'] as Map<String, dynamic>,
-            ),
-          );
-          await step('138', () => tx.related('Todo', {'id': 't'}, 'owner'));
-          await step(
-            '139',
-            () => tx.referencing('User', {'id': 'u'}, 'Todo', 'owner'),
-          );
-          await step('196', () => tx.rejections.dismiss(4));
-          await step('197', () => tx.failures.retry(['k']));
-          // A savepoint's own commands carry the scope Rust issued for it.
-          await step(
-            '143',
-            () => tx.savepoint(
-              () => step(
-                '141',
-                () => tx.direct(
-                  command('141')['operation'] as Map<String, dynamic>,
-                ),
-              ),
-            ),
-          );
-          expected
-            ..add(command('144'))
-            ..add(command('143'))
-            // A rollback names the scope it closes, the spelling the
-            // fixture shows for `release`; Rust accepts either.
-            ..add({...command('145'), 'scope': 'sp1'});
-          await tx
-              .savepoint<void>(() async => throw StateError('rolled back'))
-              .then((_) {}, onError: (Object _) {});
-        }),
-      );
-      final connection = await step(
-        '128',
-        () => client.connect(
-          SyncServer(url: 'http://127.0.0.1:1', token: () => 't'),
-          refreshAuth: () async {},
-        ),
-      );
-      await step('129', connection.pause);
-      await step(
-        '130',
-        () => client.invokeQuery(
-          'GetTodo',
-          1,
-          {'id': 't'},
-          (value) => value,
-          store: const _Store({'todo': false}),
-          once: true,
-          refresh: true,
-        ),
-      );
-      final rows = step(
-        '132',
-        () async => client.watch('Todo', where: {'done': false}).listen((_) {}),
-      );
-      await pumpEventQueue();
-      await step('133', () async => (await rows).cancel());
-      final joined = step(
-        '131',
-        () async => client
-            .watchSql(command('131')['sql'] as String, parameters: [false])
-            .listen((_) {}),
-      );
-      await pumpEventQueue();
-      expected.add(command('133'));
-      await (await joined).cancel();
-      // Close is priority control: it stops the connection without a task.
-    } finally {
-      await client.close();
-    }
-    expect(carrier.commands, expected);
-  });
+    },
+  );
 
   test(
     'a throwing observer listener cannot stop the completion in its batch',
@@ -1198,7 +727,10 @@ void main() {
       try {
         final reported = <Object>[];
         final subscribed =
-            await bridge.task({'kind': 'streamSubscribe', 'stream': 'book'})
+            await bridge.task({
+                  'kind': 'streamSubscribe',
+                  'stream': 'User:viewer',
+                })
                 as Map;
         runZonedGuarded(
           () => bridge.listen(
@@ -1207,20 +739,12 @@ void main() {
           ),
           (error, _) => reported.add(error),
         );
-        // The removal publishes the terminal snapshot before its own
-        // completion, in the same batch.
-        final state = subscribed['state'] as Map;
-        await bridge
-            .task({
-              'kind': 'streamUnsubscribe',
-              'stream': 'book',
-              'subscriptionId': state['subscriptionId'],
-            })
-            .timeout(const Duration(seconds: 5));
+        // Runtime close publishes the terminal observer snapshot while its
+        // lifetime completion continues despite the listener's exception.
+        await bridge.close();
         expect(reported, [
           isA<StateError>().having((e) => e.message, 'message', 'listener'),
         ]);
-        expect(await bridge.task({'kind': 'status'}), isA<Map>());
       } finally {
         await bridge.close();
       }
@@ -1235,7 +759,7 @@ void main() {
         final heard = <Map<String, dynamic>>[];
         String? claimed;
         final value = await bridge.task(
-          {'kind': 'streamSubscribe', 'stream': 'book'},
+          {'kind': 'streamSubscribe', 'stream': 'User:viewer'},
           onValue: (value) {
             claimed = (value as Map)['observerId'] as String;
             expect(heard, isEmpty, reason: 'claimed before its first snapshot');
@@ -1262,7 +786,7 @@ void main() {
       await expectLater(
         bridge.task({
           'kind': 'streamBootstrap',
-          'stream': 'book',
+          'stream': 'User:viewer',
           'subscriptionId': 99,
         }),
         throwsA(
@@ -1307,15 +831,3 @@ void main() {
 }
 
 class _Thrown {}
-
-class _BadString {
-  @override
-  String toString() => throw StateError('cannot stringify');
-}
-
-class _Store extends CallStore {
-  const _Store(this.wire);
-  final Object? wire;
-  @override
-  Object? toWire() => wire;
-}

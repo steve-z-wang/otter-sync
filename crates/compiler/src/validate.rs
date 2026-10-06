@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Validated {
     pub enums: Vec<Enum>,
     pub models: Vec<Model>,
+    /// Compiler-only shared field types; abstract models never have runtime descriptors.
+    pub abstract_models: Vec<AbstractModel>,
     /// Every `@@unique`, in declaration order across models.
     pub unique_constraints: Vec<UniqueConstraint>,
     /// Model-typed fields without `@reference`, resolved to the reference they mirror.
@@ -57,8 +59,16 @@ pub struct Enum {
     pub values: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbstractModel {
+    pub name: String,
+    pub parent: Option<String>,
+    pub fields: Vec<Field>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {
     pub name: String,
+    pub parent: Option<String>,
+    pub bootstrap: bool,
     /// The read-contract version declared by `@@version(n)`; 1 when omitted.
     /// Parse enforces the range and uniqueness rules it shares with the
     /// mutation directive; the history compares versions across compiles.
@@ -831,14 +841,14 @@ const GENERATED_NAMES: &[&str] = &[
     "CallPort",
     "CallRejected",
     "CallStatus",
-    "CallStore",
     "CallSuccess",
-    "Streams",
     "Client",
     "ClientClosedException",
     "ClientSyncState",
     "Connection",
-    "DirectMutations",
+    "StoreConnection",
+    "StoreIdentity",
+    "QueryOptions",
     "FailedAct",
     "FailedTask",
     "GeneratedClient",
@@ -846,8 +856,6 @@ const GENERATED_NAMES: &[&str] = &[
     "FutureOr",
     "LiveModels",
     "LivePort",
-    "Mutate",
-    "MutatePort",
     "MutationHandlerCall",
     "MutationHandlers",
     "MutationName",
@@ -859,24 +867,11 @@ const GENERATED_NAMES: &[&str] = &[
     "Queries",
     "QueryHandlerCall",
     "QueryHandlers",
-    "QueuedQueries",
     "ReadPort",
     "RebuildReport",
     "RefusedAct",
     "Rejection",
     "RuntimeConnection",
-    "Streams",
-    "Subscription",
-    "SubscriptionClosedException",
-    "SubscriptionConnection",
-    "SubscriptionInitialization",
-    "SubscriptionStatus",
-    "StoreChange",
-    "StoreDelete",
-    "StoreHandler",
-    "StoreHook",
-    "StoreHooks",
-    "StoreUpsert",
     "SyncServer",
     "SubmittedAct",
     "SyncState",
@@ -897,6 +892,8 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
     "QueryContext",
     "RecordRef",
     "TransactionCall",
+    "LoaderHooks",
+    "PreparationContext",
 ];
 
 /// Top-level names the Model Fetch facade declares
@@ -904,7 +901,137 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
 /// only beside a Model, so they are reserved only then.
 const GENERATED_FETCH_NAMES: &[&str] = &["FetchModels", "FetchPort"];
 
+fn reference_relation(
+    m: &ModelDecl,
+    f: &FieldDecl,
+    target: &ModelDecl,
+    reference: &Value,
+) -> Result<Relation, String> {
+    if f.list {
+        return Err(at(f.pos, "reference must be singular"));
+    }
+    if reference
+        .as_object()
+        .unwrap()
+        .keys()
+        .any(|k| !["0", "via", "onTargetDelete"].contains(&k.as_str()))
+    {
+        return Err(at(f.pos, "unknown reference argument"));
+    }
+    let via = reference["via"]
+        .as_array()
+        .ok_or_else(|| at(f.pos, "reference requires via fields"))?;
+    if via.len() != target.identity.len() {
+        return Err(at(f.pos, "reference identity arity mismatch"));
+    }
+    for (local, remote) in via.iter().zip(&target.identity) {
+        let Some(lf) = m.fields.iter().find(|x| x.name == *local) else {
+            // An abstract parent can leave foreign-key fields to its concrete
+            // descendants. Concrete validation never takes this allowance.
+            if m.abstract_model {
+                continue;
+            }
+            return Err(at(f.pos, "unknown reference field"));
+        };
+        let rf = field(target, remote).ok_or_else(|| at(f.pos, "unknown target identity"))?;
+        if lf.type_name != rf.type_name || lf.list {
+            return Err(at(f.pos, "reference field type mismatch"));
+        }
+    }
+    let on_delete = match reference.get("onTargetDelete") {
+        None => OnDelete::None,
+        Some(v) if v == "none" => OnDelete::None,
+        Some(v) if v == "delete" => OnDelete::Delete,
+        Some(_) => return Err(at(f.pos, "unsupported onTargetDelete")),
+    };
+    Ok(Relation {
+        name: f.name.clone(),
+        target: target.name.clone(),
+        fields: strings(via),
+        target_fields: target.identity.clone(),
+        on_delete,
+    })
+}
+
+/// Expand complete field declarations before concrete validation. Parent directives
+/// have no place in this expansion; each concrete model owns its identity and contract.
+fn expand_inheritance(d: &Declarations) -> Result<Declarations, String> {
+    fn fields(
+        d: &Declarations,
+        m: &ModelDecl,
+        visiting: &mut Vec<String>,
+    ) -> Result<Vec<FieldDecl>, String> {
+        if visiting.contains(&m.name) {
+            return Err(at(m.pos, format!("inheritance cycle at {}", m.name)));
+        }
+        visiting.push(m.name.clone());
+        let mut out = if let Some(parent) = &m.parent {
+            let p = d
+                .models
+                .iter()
+                .find(|p| &p.name == parent)
+                .ok_or_else(|| at(m.pos, format!("unknown parent {parent}")))?;
+            if !p.abstract_model {
+                return Err(at(m.pos, "inheritance requires an abstract parent"));
+            }
+            fields(d, p, visiting)?
+        } else {
+            vec![]
+        };
+        let mut names: BTreeSet<String> = out.iter().map(|f| f.name.clone()).collect();
+        for f in &m.fields {
+            if !names.insert(f.name.clone()) {
+                return Err(at(
+                    f.pos,
+                    format!("duplicate field {} in {}", f.name, m.name),
+                ));
+            }
+            if d.models
+                .iter()
+                .any(|target| target.abstract_model && target.name == f.type_name)
+            {
+                return Err(at(f.pos, "relations cannot target an abstract model"));
+            }
+            out.push(f.clone());
+        }
+        visiting.pop();
+        Ok(out)
+    }
+    let mut names = BTreeSet::new();
+    let mut declarations: Vec<_> = d
+        .enums
+        .iter()
+        .map(|e| (&e.name, e.pos))
+        .chain(d.models.iter().map(|m| (&m.name, m.pos)))
+        .collect();
+    declarations.sort_by_key(|(_, pos)| (pos.line, pos.col));
+    for (name, pos) in declarations {
+        if !names.insert(name) {
+            return Err(at(pos, format!("duplicate declaration {name}")));
+        }
+    }
+    let mut expanded = d.clone();
+    for m in &mut expanded.models {
+        if m.abstract_model
+            && (!m.identity.is_empty() || !m.unique.is_empty() || m.bootstrap || m.version != 1)
+        {
+            return Err(at(m.pos, "abstract models cannot declare model directives"));
+        }
+        m.fields = fields(d, m, &mut vec![])?;
+    }
+    Ok(expanded)
+}
+
 pub fn validate(d: &Declarations) -> Result<Validated, String> {
+    if !d.loads.is_empty() {
+        return Err("Load declarations were removed in 0.4; use Bootstrap or a named Query".into());
+    }
+    let expanded = expand_inheritance(d)?;
+    // Keep abstract declarations available for generated field interfaces, but
+    // remove them from every runtime namespace before validating references/actions.
+    let mut concrete = expanded.clone();
+    concrete.models.retain(|m| !m.abstract_model);
+    let d = &concrete;
     let eof = d.end;
     let enums: Vec<Enum> = d
         .enums
@@ -914,6 +1041,74 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
             values: e.values.clone(),
         })
         .collect();
+    let mut abstract_models = vec![];
+    for m in expanded.models.iter().filter(|m| m.abstract_model) {
+        if GENERATED_NAMES.contains(&m.name.as_str())
+            || (!d.models.is_empty() && GENERATED_FETCH_NAMES.contains(&m.name.as_str()))
+            || GENERATED_BACKEND_NAMES.contains(&m.name.as_str())
+            || axton_core::reserved_model_name(&m.name)
+        {
+            return Err(at(
+                m.pos,
+                format!("abstract model name {} is reserved", m.name),
+            ));
+        }
+        let mut fields = vec![];
+        for f in &m.fields {
+            if f.list && f.nullable {
+                return Err(at(f.pos, "lists cannot be nullable"));
+            }
+            // Relations are resolved again in every concrete model. They are
+            // accessors, not stored fields of the shared record interface.
+            if let Some(target) = is_model(d, &f.type_name) {
+                if let Some(default) = &f.default {
+                    return Err(at(
+                        default.pos,
+                        format!("@default is unsupported on relation field {}", f.name),
+                    ));
+                }
+                if let Some(reference) = f.attributes.get("reference") {
+                    reference_relation(m, f, target, reference)?;
+                }
+                if let Some(inverse) = f.attributes.get("inverse") {
+                    let args = inverse.as_object().unwrap();
+                    if args.keys().any(|k| k != "0")
+                        || args.get("0").is_some_and(|v| !v.is_string())
+                    {
+                        return Err(at(f.pos, "inverse relation name must be an identifier"));
+                    }
+                }
+                continue;
+            }
+            if f.attributes.contains_key("reference") || f.attributes.contains_key("inverse") {
+                return Err(at(f.pos, "relation directive requires model type"));
+            }
+            let mut ty = if let Some(s) = Scalar::from_source(&f.type_name) {
+                FieldType::Scalar(s)
+            } else if enums.iter().any(|e| e.name == f.type_name) {
+                FieldType::Enum(f.type_name.clone())
+            } else {
+                return Err(at(
+                    f.pos,
+                    format!("unknown or unsupported field type {}", f.type_name),
+                ));
+            };
+            if f.list {
+                ty = FieldType::List(Box::new(ty));
+            }
+            fields.push(Field {
+                name: f.name.clone(),
+                create_default: create_default(f, &ty, &enums)?,
+                ty,
+                nullable: f.nullable,
+            });
+        }
+        abstract_models.push(AbstractModel {
+            name: m.name.clone(),
+            parent: m.parent.clone(),
+            fields,
+        });
+    }
     let mut unique_constraints = vec![];
     let mut constraint_pos: Vec<Pos> = vec![];
     for m in &d.models {
@@ -1013,7 +1208,16 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
     // Inverse candidates: (declaring model, field, position).
     let mut inverse_fields: Vec<(&ModelDecl, &FieldDecl)> = vec![];
     // Requirement candidates: (declaring model, field, `@requires` arguments).
-    let mut requirement_fields: Vec<(&ModelDecl, &FieldDecl, &Value)> = vec![];
+    let mut requirement_fields: Vec<(&ModelDecl, &FieldDecl, &Value)> = expanded
+        .models
+        .iter()
+        .filter(|m| m.abstract_model)
+        .flat_map(|m| {
+            m.fields
+                .iter()
+                .filter_map(move |f| f.attributes.get("requires").map(|args| (m, f, args)))
+        })
+        .collect();
     for m in &d.models {
         let mut relations = vec![];
         let mut stored: Vec<&FieldDecl> = vec![];
@@ -1029,48 +1233,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                     ));
                 }
                 if let Some(reference) = f.attributes.get("reference") {
-                    if f.list {
-                        return Err(at(f.pos, "reference must be singular"));
-                    }
-                    if reference
-                        .as_object()
-                        .unwrap()
-                        .keys()
-                        .any(|k| !["0", "via", "onTargetDelete"].contains(&k.as_str()))
-                    {
-                        return Err(at(f.pos, "unknown reference argument"));
-                    }
-                    let via = reference["via"]
-                        .as_array()
-                        .ok_or_else(|| at(f.pos, "reference requires via fields"))?;
-                    if via.len() != target.identity.len() {
-                        return Err(at(f.pos, "reference identity arity mismatch"));
-                    }
-                    for (local, remote) in via.iter().zip(&target.identity) {
-                        let lf = m
-                            .fields
-                            .iter()
-                            .find(|x| x.name == *local)
-                            .ok_or_else(|| at(f.pos, "unknown reference field"))?;
-                        let rf = field(target, remote)
-                            .ok_or_else(|| at(f.pos, "unknown target identity"))?;
-                        if lf.type_name != rf.type_name || lf.list {
-                            return Err(at(f.pos, "reference field type mismatch"));
-                        }
-                    }
-                    let on_delete = match reference.get("onTargetDelete") {
-                        None => OnDelete::None,
-                        Some(v) if v == "none" => OnDelete::None,
-                        Some(v) if v == "delete" => OnDelete::Delete,
-                        Some(_) => return Err(at(f.pos, "unsupported onTargetDelete")),
-                    };
-                    relations.push(Relation {
-                        name: f.name.clone(),
-                        target: target.name.clone(),
-                        fields: strings(via),
-                        target_fields: target.identity.clone(),
-                        on_delete,
-                    });
+                    relations.push(reference_relation(m, f, target, reference)?);
                 } else {
                     inverse_fields.push((m, f));
                 }
@@ -1111,6 +1274,8 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
         models.push(Model {
             name: m.name.clone(),
+            parent: m.parent.clone(),
+            bootstrap: m.bootstrap,
             version: m.version,
             identity: m.identity.clone(),
             fields,
@@ -1301,6 +1466,9 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
             if f.type_name != field.type_name {
                 return Err(at(rpos, "prerequisite argument type mismatch"));
             }
+        }
+        if m.abstract_model {
+            continue;
         }
         requirements.push(Requirement {
             model: m.name.clone(),
@@ -1578,6 +1746,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
         }
     }
     let validated = Validated {
+        abstract_models,
         enums,
         models,
         unique_constraints,
@@ -1598,7 +1767,7 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
                     });
                 }
             }
-            for m in &d.models {
+            for m in &expanded.models {
                 for f in &m.fields {
                     if let Some(reason) = &f.deprecated {
                         list.push(Deprecation::Field {

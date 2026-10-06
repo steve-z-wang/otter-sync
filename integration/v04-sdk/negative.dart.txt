@@ -1,0 +1,10 @@
+import 'generated.dart';
+Future<void> invalidForms(GeneratedClient client) async {
+  await client.mutations.publish.withTransaction((tx) async => 'untyped');
+  await client.mutations.publish('not an Input');
+  await client.mutations.call.publish(const PublishInput(entry:EntryCreate(id:'e',text:'x'),call:'x'));
+  await client.queries.find(id:'e',store:{'entry':true});
+  await client.queries.enqueue.find(id:'e');
+  await client.loads.loadEntries();
+  await client.streams.subscribe('another');
+}

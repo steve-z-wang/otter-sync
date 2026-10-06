@@ -1,23 +1,66 @@
-import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
-import {pathToFileURL} from 'node:url';
-const {GeneratedClient}=await import(pathToFileURL(`${process.argv[2]}/client.ts`).href);
-const path=process.argv[3];
-let first;
-for(let run=0;run<2;run++){
- const c=await GeneratedClient.open({path});
- try{
-  assert.equal(c.client.clientId,'fixture-client');
-  assert.equal((await c.models.todo.get({id:'live'})).channel,'second queued Channel');
-  assert.deepEqual(await c.client.readSql("SELECT name FROM sqlite_master WHERE name='axton_stream_member'",[]),[]);
-  assert.equal((await c.client.readSql('SELECT local_authority_version FROM axton_client',[]))[0].local_authority_version,1);
-  assert.equal((await c.client.readSql("SELECT count(*) AS n FROM sqlite_master WHERE name LIKE 'axton_channel%'",[]))[0].n,0);
-  assert.equal((await c.client.readSql("SELECT cursor,reconcile_run FROM axton_subscription WHERE stream='Channel:business-scope'",[]))[0].cursor,11);
-  const bytes=await c.client.freeze();
-  const logical=JSON.parse(bytes);assert.deepEqual(logical.capabilities,['stream-authority-v1']);delete logical.capabilities;
-  const expected=JSON.parse(await readFile(new URL('../../../crates/sqlite/tests/fixtures/frozen-push-logical.json',import.meta.url),'utf8'));
-  assert.deepEqual(logical,expected);
-  if(run===0)first=bytes;else assert.equal(bytes,first);
- }finally{await c.close();}
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { GeneratedClient } = await import(
+  pathToFileURL(`${process.argv[2]}/client.ts`).href
+);
+const path = process.argv[3];
+const connection = {
+  url: "http://127.0.0.1:1",
+  token: "offline",
+  identity: {
+    backend: "persistence",
+    viewer: "viewer",
+    contract: "persistence-v04",
+  },
+};
+for (let run = 0; run < 2; run++) {
+  await assert.rejects(
+    GeneratedClient.open({ path, stream: "User:viewer", connection }),
+    /protocol_mismatch/,
+  );
 }
-console.log('generated JS original-v0.2 native reopen twice: authority migration, cursors, opaque channel and frozen work preserved');
+let first;
+for (let run = 0; run < 2; run++) {
+  const c = await GeneratedClient.open({
+    path: `${path}.bound`,
+    stream: "User:viewer",
+    connection,
+  });
+  await c.client.connection?.pause();
+  try {
+    if (run === 0) {
+      await c.models.todo.create({
+        id: "live",
+        title: "persisted",
+        channel: "opaque Channel",
+      });
+      await c.transaction((tx) =>
+        tx.models.todo.update({ id: "live" }, { title: "local edited" }),
+      );
+      await c.mutations.edit({
+        todo: { id: "live", channel: "pending Channel" },
+      });
+    }
+    assert.equal(
+      (await c.models.todo.get({ id: "live" })).title,
+      "local edited",
+    );
+    assert.equal(
+      (await c.models.todo.get({ id: "live" })).channel,
+      "pending Channel",
+    );
+    assert.equal((await c.syncState()).pending, 1);
+    const saved = await c.client.readSql(
+      "SELECT intent FROM axton_v04_call",
+      [],
+    );
+    assert.equal(saved.length, 1);
+    if (run === 0) first = saved;
+    else assert.deepEqual(saved, first);
+  } finally {
+    await c.close();
+  }
+}
+console.log(
+  "generated JS: legacy adoption refused twice; bound local CRUD and exact queued intent survive reopen",
+);

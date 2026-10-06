@@ -61,6 +61,7 @@ pub(crate) async fn read_back(
             .collect();
         let loaded: Loaded = host
             .call_typed(HostRequest::Load {
+                mode: None,
                 model: model.to_string(),
                 version,
                 identities,

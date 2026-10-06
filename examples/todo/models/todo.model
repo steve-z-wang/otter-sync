@@ -2,6 +2,7 @@ model User {
   id String
   name String
   @@id(id)
+  @@bootstrap
 }
 
 model Todo {
@@ -11,6 +12,7 @@ model Todo {
   createdById String
   createdBy User @reference(via: [createdById])
   @@id(id)
+  @@bootstrap
 }
 
 mutation AddTodo(todo Todo.create)

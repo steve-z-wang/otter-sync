@@ -2,6 +2,7 @@
 
 The client runtime keeps local state in SQLite and synchronizes it with a server.
 
+- [Protocol 4](protocol4.md) — Bound Store identity, null-cache/Stream authority, finite materialization and durable settlement.
 - [Runtime](runtime.md) — Own every task from submission to outcome: scheduling, the application transaction, the connection lanes, direct calls and observers.
 - [Frontend interface](frontend-interface.md) — Expose reads, writes, subscriptions and status to the runtime.
 - [Engine](engine/README.md) — Local reads and writes, mutations, cursors, rollback and completion from receipts.

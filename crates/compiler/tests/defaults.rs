@@ -249,8 +249,11 @@ fn dart_create_inputs_distinguish_omission_from_explicit_null() {
         assert!(create.contains(line), "{line}\n{create}");
     }
     // The client accepts either create input; handlers receive complete records.
-    assert!(dart.contains("required TodoCreateInput todo, TodoCreateInput? maybe, required List<TodoCreateInput> many"), "{dart}");
-    let input = section(&dart, "class AddTodoInput implements _DartActionRecord {");
+    assert!(dart.contains("final TodoCreateInput todo;"), "{dart}");
+    let input = section(
+        &dart,
+        "class AddTodoHandlerInput implements _DartActionRecord {",
+    );
     assert!(
         input.contains(" final Todo todo;\n final Todo? maybe;\n final List<Todo> many;"),
         "{input}"

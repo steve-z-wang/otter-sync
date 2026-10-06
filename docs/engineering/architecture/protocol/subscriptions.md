@@ -1,5 +1,7 @@
 # Subscriptions
 
+Current bound clients have one Stream fixed at open; [protocol 4](0.4.md) defines their subscribe/ACK and repair evidence. Multiple registered Streams and the legacy frame format below belong to protocol 3.
+
 Engine behavior: [Client / Connection / Controller](../client/connection/controller/README.md), [Server / Connection / Controller](../server/connection/controller.md).
 
 ## 3. Context and Scope

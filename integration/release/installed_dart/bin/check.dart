@@ -30,8 +30,23 @@ const _schema = {
 Future<void> main() async {
   final directory = await Directory.systemTemp.createTemp('axton-installed-');
   final path = '${directory.path}/client.sqlite';
+  final connection = StoreConnection(
+    url: 'http://127.0.0.1:1',
+    token: () => 'offline',
+    identity: const StoreIdentity(
+      backend: 'installed',
+      viewer: 'viewer',
+      contract: 'installed-v04',
+    ),
+  );
+  Client.configureApplicationData(directory.path);
   try {
-    final client = await Client.open(path: path, schema: _schema);
+    final client = await Client.open(
+      path: path,
+      schema: _schema,
+      stream: 'User:viewer',
+      connection: connection,
+    );
     await client.transaction((tx) async {
       await tx.direct({
         'model': 'Entry',
@@ -41,7 +56,12 @@ Future<void> main() async {
       });
     });
     await client.close();
-    final reopened = await Client.open(path: path, schema: _schema);
+    final reopened = await Client.open(
+      path: path,
+      schema: _schema,
+      stream: 'User:viewer',
+      connection: connection,
+    );
     final row = await reopened.read('Entry', {'id': 'installed'});
     await reopened.close();
     if (row?['text'] != 'kept') {

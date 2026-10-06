@@ -2,11 +2,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
-export 'package:axton/axton.dart' show Load, LoadStatus, LoadPhase, LoadException;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, StoreIdentity, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
-final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]}') as Map<String,dynamic>;
+final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2}],"clientPolicies":[],"enums":[],"models":[{"bootstrap":true,"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]}') as Map<String,dynamic>;
 /// What a fresh create of Item accepts: a complete [Item], or a [ItemCreate] that may omit fields with creation defaults.
 abstract interface class ItemCreateInput { Map<String,dynamic> toCreateRecord(); }
 class Item implements ItemCreateInput {
@@ -259,15 +258,113 @@ class SeenUpdate implements _DartActionRecord {
  if (hits != null) 'hits': _dartActionEncode(hits!.value),
  };
 }
-class AddItemInput implements _DartActionRecord {
+class AddItemV1ItemCreate implements _DartActionRecord {
+ final String id;
+ final String project;
+ final String title;
+ const AddItemV1ItemCreate({required this.id,required this.project,required this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ 'project': _dartActionEncode(project),
+ 'title': _dartActionEncode(title),
+ };
+}
+class AddItemV1ItemIdentity implements _DartActionRecord {
+ final String id;
+ const AddItemV1ItemIdentity({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ };
+}
+class AddItemV1ItemDelete implements _DartActionRecord {
+ final String id;
+ const AddItemV1ItemDelete({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ };
+}
+class AddItemV1ItemUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? project;
+ final Present<String>? title;
+ const AddItemV1ItemUpdate({required this.id,this.project,this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (project != null) 'project': _dartActionEncode(project!.value),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ };
+}
+class AddItemV1Input implements _DartActionRecord {
+ final AddItemV1ItemCreate item;
+ const AddItemV1Input({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+typedef AddItemV1HandlerOutput = void;
+class AddItemHandlerInput implements _DartActionRecord {
  final Item item;
+ const AddItemHandlerInput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+class AddItemInput implements _DartActionRecord {
+ final ItemCreateInput item;
  const AddItemInput({required this.item});
  Map<String,dynamic> toRecord() => {
  'item': _dartActionEncode(item),
  };
 }
-typedef AddItemOutput = void;
-typedef AddItemHandlerOutput = void;
+class AddItemOutput implements _DartActionRecord {
+ final Item item;
+ const AddItemOutput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+class AddItemHandlerOutput implements _DartActionRecord {
+ final ItemIdentity item;
+ const AddItemHandlerOutput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+class CatalogHandlerInput implements _DartActionRecord {
+ final String? shelf;
+ const CatalogHandlerInput({required this.shelf});
+ Map<String,dynamic> toRecord() => {
+ 'shelf': _dartActionEncode(shelf),
+ };
+}
+class CatalogInput implements _DartActionRecord {
+ final String? shelf;
+ const CatalogInput({required this.shelf});
+ Map<String,dynamic> toRecord() => {
+ 'shelf': _dartActionEncode(shelf),
+ };
+}
+class CatalogOutput implements _DartActionRecord {
+ final List<Item> items;
+ const CatalogOutput({required this.items});
+ Map<String,dynamic> toRecord() => {
+ 'items': _dartActionEncode(items),
+ };
+}
+class CatalogHandlerOutput implements _DartActionRecord {
+ final List<ItemIdentity> items;
+ const CatalogHandlerOutput({required this.items});
+ Map<String,dynamic> toRecord() => {
+ 'items': _dartActionEncode(items),
+ };
+}
+class PingHandlerInput implements _DartActionRecord {
+ final String note;
+ const PingHandlerInput({required this.note});
+ Map<String,dynamic> toRecord() => {
+ 'note': _dartActionEncode(note),
+ };
+}
 class PingInput implements _DartActionRecord {
  final String note;
  const PingInput({required this.note});
@@ -277,6 +374,87 @@ class PingInput implements _DartActionRecord {
 }
 typedef PingOutput = void;
 typedef PingHandlerOutput = void;
+class ProjectItemsHandlerInput implements _DartActionRecord {
+ final String project;
+ const ProjectItemsHandlerInput({required this.project});
+ Map<String,dynamic> toRecord() => {
+ 'project': _dartActionEncode(project),
+ };
+}
+class ProjectItemsInput implements _DartActionRecord {
+ final String project;
+ const ProjectItemsInput({required this.project});
+ Map<String,dynamic> toRecord() => {
+ 'project': _dartActionEncode(project),
+ };
+}
+class ProjectItemsOutput implements _DartActionRecord {
+ final List<Item> items;
+ final List<Tag> tags;
+ const ProjectItemsOutput({required this.items,required this.tags});
+ Map<String,dynamic> toRecord() => {
+ 'items': _dartActionEncode(items),
+ 'tags': _dartActionEncode(tags),
+ };
+}
+class ProjectItemsHandlerOutput implements _DartActionRecord {
+ final List<ItemIdentity> items;
+ final List<TagIdentity> tags;
+ const ProjectItemsHandlerOutput({required this.items,required this.tags});
+ Map<String,dynamic> toRecord() => {
+ 'items': _dartActionEncode(items),
+ 'tags': _dartActionEncode(tags),
+ };
+}
+class RenameItemV1ItemCreate implements _DartActionRecord {
+ final String id;
+ final String title;
+ const RenameItemV1ItemCreate({required this.id,required this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ 'title': _dartActionEncode(title),
+ };
+}
+class RenameItemV1ItemIdentity implements _DartActionRecord {
+ final String id;
+ const RenameItemV1ItemIdentity({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ };
+}
+class RenameItemV1ItemDelete implements _DartActionRecord {
+ final String id;
+ const RenameItemV1ItemDelete({required this.id});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ };
+}
+class RenameItemV1ItemUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? title;
+ const RenameItemV1ItemUpdate({required this.id,this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ };
+}
+class RenameItemV1ItemSlotUpdate implements _DartActionRecord {
+ final String id;
+ final Present<String>? title;
+ const RenameItemV1ItemSlotUpdate({required this.id,this.title});
+ Map<String,dynamic> toRecord() => {
+ 'id': _dartActionEncode(id),
+ if (title != null) 'title': _dartActionEncode(title!.value),
+ };
+}
+class RenameItemV1Input implements _DartActionRecord {
+ final RenameItemV1ItemSlotUpdate item;
+ const RenameItemV1Input({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+typedef RenameItemV1HandlerOutput = void;
 class RenameItemItemUpdate implements _DartActionRecord {
  final String id;
  final Present<String>? title;
@@ -286,6 +464,13 @@ class RenameItemItemUpdate implements _DartActionRecord {
  if (title != null) 'title': _dartActionEncode(title!.value),
  };
 }
+class RenameItemHandlerInput implements _DartActionRecord {
+ final RenameItemItemUpdate item;
+ const RenameItemHandlerInput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
 class RenameItemInput implements _DartActionRecord {
  final RenameItemItemUpdate item;
  const RenameItemInput({required this.item});
@@ -293,8 +478,20 @@ class RenameItemInput implements _DartActionRecord {
  'item': _dartActionEncode(item),
  };
 }
-typedef RenameItemOutput = void;
-typedef RenameItemHandlerOutput = void;
+class RenameItemOutput implements _DartActionRecord {
+ final Item item;
+ const RenameItemOutput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
+class RenameItemHandlerOutput implements _DartActionRecord {
+ final ItemIdentity item;
+ const RenameItemHandlerOutput({required this.item});
+ Map<String,dynamic> toRecord() => {
+ 'item': _dartActionEncode(item),
+ };
+}
 abstract interface class MutationHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
 abstract interface class MutationHandlers<Ctx> {
  MutationAddItemHandlers<Ctx> get addItem;
@@ -302,16 +499,26 @@ abstract interface class MutationHandlers<Ctx> {
  MutationRenameItemHandlers<Ctx> get renameItem;
 }
 abstract interface class MutationAddItemHandlers<Ctx> {
- Future<AddItemHandlerOutput> v1(MutationHandlerCall<Ctx, AddItemInput> call);
+ Future<AddItemV1HandlerOutput> v1(MutationHandlerCall<Ctx, AddItemV1Input> call);
+ Future<AddItemHandlerOutput> v2(MutationHandlerCall<Ctx, AddItemHandlerInput> call);
 }
 abstract interface class MutationPingHandlers<Ctx> {
- Future<PingHandlerOutput> v1(MutationHandlerCall<Ctx, PingInput> call);
+ Future<PingHandlerOutput> v1(MutationHandlerCall<Ctx, PingHandlerInput> call);
 }
 abstract interface class MutationRenameItemHandlers<Ctx> {
- Future<RenameItemHandlerOutput> v1(MutationHandlerCall<Ctx, RenameItemInput> call);
+ Future<RenameItemV1HandlerOutput> v1(MutationHandlerCall<Ctx, RenameItemV1Input> call);
+ Future<RenameItemHandlerOutput> v2(MutationHandlerCall<Ctx, RenameItemHandlerInput> call);
 }
 abstract interface class QueryHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
 abstract interface class QueryHandlers<Ctx> {
+ QueryCatalogHandlers<Ctx> get catalog;
+ QueryProjectItemsHandlers<Ctx> get projectItems;
+}
+abstract interface class QueryCatalogHandlers<Ctx> {
+ Future<CatalogHandlerOutput> v1(QueryHandlerCall<Ctx, CatalogHandlerInput> call);
+}
+abstract interface class QueryProjectItemsHandlers<Ctx> {
+ Future<ProjectItemsHandlerOutput> v1(QueryHandlerCall<Ctx, ProjectItemsHandlerInput> call);
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
@@ -330,79 +537,20 @@ dynamic _dartActionEncode(dynamic value) {
  if (value is SeenIdentity) return value.toRecord();
  return value;
 }
-/// Which explicit Model outputs of AddItem also update local Models.
-final class AddItemStore extends CallStore {
- /// Store every eligible output (the default).
- const AddItemStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const AddItemStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of Ping also update local Models.
-final class PingStore extends CallStore {
- /// Store every eligible output (the default).
- const PingStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const PingStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of RenameItem also update local Models.
-final class RenameItemStore extends CallStore {
- /// Store every eligible output (the default).
- const RenameItemStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const RenameItemStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Mutations resolve after local acceptance (durable); [call] waits for the backend outcome.
-class Mutations {
- final Client client; Mutations(this.client);
- late final DirectMutations call = DirectMutations(client);
- Future<Call<AddItemOutput>> addItem({required ItemCreateInput item, AddItemStore? store}) => client.invokeAction<AddItemOutput>('AddItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store);
- Future<Call<PingOutput>> ping({required String note, PingStore? store}) => client.invokeAction<PingOutput>('Ping', 1, {'note': _dartActionEncode(note)}, (_) {}, store: store);
- Future<Call<RenameItemOutput>> renameItem({required RenameItemItemUpdate item, RenameItemStore? store}) => client.invokeAction<RenameItemOutput>('RenameItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store);
-}
-/// Mutations that wait for the backend outcome and applied authority.
-class DirectMutations {
- final Client client; DirectMutations(this.client);
- Future<AddItemOutput> addItem({required ItemCreateInput item, AddItemStore? store}) => client.invokeDirectAction<AddItemOutput>('AddItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store);
- Future<PingOutput> ping({required String note, PingStore? store}) => client.invokeDirectAction<PingOutput>('Ping', 1, {'note': _dartActionEncode(note)}, (_) {}, store: store);
- Future<RenameItemOutput> renameItem({required RenameItemItemUpdate item, RenameItemStore? store}) => client.invokeDirectAction<RenameItemOutput>('RenameItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store);
-}
-/// Queries resolve with the backend result (direct); `once` reuses a saved complete result, [enqueue] accepts them durably and [invalidate] discards saved results.
+/// Named Mutations use the same owned local scope on client and transaction.
+class Mutations extends TransactionMutations { Mutations(super.port); }
+/// Query results are invocation snapshots.
 class Queries {
  final Client client; Queries(this.client);
- late final QueuedQueries enqueue = QueuedQueries(client);
  late final QueryInvalidations invalidate = QueryInvalidations(client);
-}
-/// Queries accepted durably; each reads when it executes.
-class QueuedQueries {
- final Client client; QueuedQueries(this.client);
+ Future<CatalogOutput> catalog({required String? shelf, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<CatalogOutput>('Catalog', 1, {'shelf': _dartActionEncode(shelf)}, (value) { final row = (value as Map).cast<String,dynamic>(); return CatalogOutput(items: (row['items'] as List).map((e) => Item.fromRecord((e as Map).cast<String,dynamic>())).toList()); }, store: store, once: once, refresh: refresh);
+ Future<ProjectItemsOutput> projectItems({required String project, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<ProjectItemsOutput>('ProjectItems', 1, {'project': _dartActionEncode(project)}, (value) { final row = (value as Map).cast<String,dynamic>(); return ProjectItemsOutput(items: (row['items'] as List).map((e) => Item.fromRecord((e as Map).cast<String,dynamic>())).toList(), tags: (row['tags'] as List).map((e) => Tag.fromRecord((e as Map).cast<String,dynamic>())).toList()); }, store: store, once: once, refresh: refresh);
 }
 /// Discards the saved `once` results of one Query argument set, for every store policy.
 class QueryInvalidations {
  final Client client; QueryInvalidations(this.client);
-}
-/// Loads resolve after durable local acceptance with a [Load] handle and need no connection; `once` reuses the job an earlier once start registered, [invalidate] removes that registration offline, [get] reattaches by ID and [list] shows the most recent jobs.
-class Loads {
- final Client client; Loads(this.client);
- late final LoadInvalidations invalidate = LoadInvalidations(client);
- Future<Load> catalog({required String? shelf, bool once = false, bool refresh = false}) => client.startLoad('Catalog', 1, {'shelf': shelf}, once: once, refresh: refresh);
- Future<Load> projectItems({required String project, bool once = false, bool refresh = false}) => client.startLoad('ProjectItems', 1, {'project': project}, once: once, refresh: refresh);
- Future<Load?> get(String id) => client.getLoad(id);
- Future<List<LoadStatus>> list({int limit = 50}) => client.listLoads(limit: limit);
-}
-/// Removes the once registrations of one Load argument set across its retained versions, offline; no job is cancelled and no Model deleted.
-class LoadInvalidations {
- final Client client; LoadInvalidations(this.client);
- Future<void> catalog({required String? shelf}) => client.invalidateLoad('Catalog', {'shelf': shelf});
- Future<void> projectItems({required String project}) => client.invalidateLoad('ProjectItems', {'project': project});
+ Future<void> catalog({required String? shelf}) => this.client.invalidateQuery('Catalog', 1, {'shelf': _dartActionEncode(shelf)});
+ Future<void> projectItems({required String project}) => this.client.invalidateQuery('ProjectItems', 1, {'project': _dartActionEncode(project)});
 }
 class LiveModels { final Client port; LiveModels(this.port);
  late final ItemLiveModel item = ItemLiveModel(port);
@@ -414,66 +562,49 @@ class TxModels { final WritePort port; TxModels(this.port);
  late final TagTxModel tag = TagTxModel(port);
  late final SeenTxModel seen = SeenTxModel(port);
 }
-/// The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration.
-class Streams { final Client client; Streams(this.client);
- Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);
-}
-/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local cache writes.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Item?> item(ItemIdentity identity, {bool store = true}) => _client.fetchModel('Item', 1, identity.toRecord(), Item.fromRecord, store: store);
  Future<Tag?> tag(TagIdentity identity, {bool store = true}) => _client.fetchModel('Tag', 1, identity.toRecord(), Tag.fromRecord, store: store);
  Future<Seen?> seen(SeenIdentity identity, {bool store = true}) => _client.fetchModel('Seen', 1, identity.toRecord(), Seen.fromRecord, store: store);
 }
-sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
-final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
-final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
-typedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);
-class StoreHooks {
- final StoreHandler<ItemIdentity,Item>? item;
- final StoreHandler<TagIdentity,Tag>? tag;
- final StoreHandler<SeenIdentity,Seen>? seen;
- const StoreHooks({this.item,this.tag,this.seen});
-}
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final streams = transaction.streams; GeneratedTransaction(this.transaction); }
-/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Streams, watch or savepoints.
+class GeneratedTransaction { final Transaction transaction; late final TxModels models=TxModels(transaction); GeneratedTransaction(this.transaction); }
 class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
-/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
 class TransactionMutations {
- final SubmitMutationPort _port; TransactionMutations(this._port);
- Future<Call<AddItemOutput>> addItem({required ItemCreateInput item, AddItemStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<AddItemOutput>('AddItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<PingOutput>> ping({required String note, PingStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PingOutput>('Ping', 1, {'note': _dartActionEncode(note)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<RenameItemOutput>> renameItem({required RenameItemItemUpdate item, RenameItemStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RenameItemOutput>('RenameItem', 1, {'item': _dartActionEncode(item)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ final SubmitMutationPort port; TransactionMutations(this.port);
+ late final AddItemMutation addItem = AddItemMutation(port);
+ late final PingMutation ping = PingMutation(port);
+ late final RenameItemMutation renameItem = RenameItemMutation(port);
 }
-/// The application transaction: local Models and Streams, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+class AddItemMutation {
+ final SubmitMutationPort port; AddItemMutation(this.port);
+ Map<String,dynamic> _encode(AddItemInput input) => {'item': _dartActionEncode(input.item)};
+ Future<Call<AddItemOutput>> call(AddItemInput input) => port.submitMutation<AddItemOutput>('AddItem', 2, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return AddItemOutput(item: Item.fromRecord((row['item'] as Map).cast<String,dynamic>())); });
+ Future<Call<AddItemOutput>> withTransaction(FutureOr<AddItemInput> Function(CompanionContext tx) body) => port.submitMutation<AddItemOutput>('AddItem', 2, null, (value) { final row = (value as Map).cast<String,dynamic>(); return AddItemOutput(item: Item.fromRecord((row['item'] as Map).cast<String,dynamic>())); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class PingMutation {
+ final SubmitMutationPort port; PingMutation(this.port);
+ Map<String,dynamic> _encode(PingInput input) => {'note': _dartActionEncode(input.note)};
+ Future<Call<PingOutput>> call(PingInput input) => port.submitMutation<PingOutput>('Ping', 1, _encode(input), (_) {});
+ Future<Call<PingOutput>> withTransaction(FutureOr<PingInput> Function(CompanionContext tx) body) => port.submitMutation<PingOutput>('Ping', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class RenameItemMutation {
+ final SubmitMutationPort port; RenameItemMutation(this.port);
+ Map<String,dynamic> _encode(RenameItemInput input) => {'item': _dartActionEncode(input.item)};
+ Future<Call<RenameItemOutput>> call(RenameItemInput input) => port.submitMutation<RenameItemOutput>('RenameItem', 2, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return RenameItemOutput(item: Item.fromRecord((row['item'] as Map).cast<String,dynamic>())); });
+ Future<Call<RenameItemOutput>> withTransaction(FutureOr<RenameItemInput> Function(CompanionContext tx) body) => port.submitMutation<RenameItemOutput>('RenameItem', 2, null, (value) { final row = (value as Map).cast<String,dynamic>(); return RenameItemOutput(item: Item.fromRecord((row['item'] as Map).cast<String,dynamic>())); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
 class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
- /// The runtime handle (internal); application code uses the members below.
- final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
- late final Streams streams = Streams(client);
- /// Durable by default; `mutations.call` waits for the backend outcome.
- late final Mutations mutations = Mutations(client);
- /// Direct by default; `queries.enqueue` accepts durably.
- late final Queries queries = Queries(client);
- /// Native Loads: resolve after durable local acceptance with a [Load] handle; `once` reuses a registered job and [Loads.invalidate] removes that registration.
- late final Loads loads = Loads(client);
- /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
- late final FetchModels fetch = FetchModels(client);
- GeneratedClient._(this.client, this.connection);
- /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
- static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, Map<String, PrerequisiteHandler>? prerequisites, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
-  final rawHooks = <String, StoreHook>{};
-  final itemHook = onStore?.item;
-  if (itemHook != null) rawHooks['Item'] = (tx, changes) => itemHook(GeneratedTransaction(tx), changes.map<StoreChange<ItemIdentity,Item>>((change) { final identity=ItemIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<ItemIdentity,Item>(identity,Item.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<ItemIdentity,Item>(identity); }).toList());
-  final tagHook = onStore?.tag;
-  if (tagHook != null) rawHooks['Tag'] = (tx, changes) => tagHook(GeneratedTransaction(tx), changes.map<StoreChange<TagIdentity,Tag>>((change) { final identity=TagIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<TagIdentity,Tag>(identity,Tag.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<TagIdentity,Tag>(identity); }).toList());
-  final seenHook = onStore?.seen;
-  if (seenHook != null) rawHooks['Seen'] = (tx, changes) => seenHook(GeneratedTransaction(tx), changes.map<StoreChange<SeenIdentity,Seen>>((change) { final identity=SeenIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<SeenIdentity,Seen>(identity,Seen.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<SeenIdentity,Seen>(identity); }).toList());
-  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks, prerequisites:prerequisites);
-  try {
-  final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
-  return GeneratedClient._(client, connection);
-  } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
- }
+ final Client client; RuntimeConnection? get connection => client.connection; late final LiveModels models=LiveModels(client);
+ late final Mutations mutations=Mutations(client);
+ late final Queries queries=Queries(client);
+ late final FetchModels fetch=FetchModels(client);
+ GeneratedClient._(this.client);
+ static Future<GeneratedClient> open({required String path, required String stream, required StoreConnection connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
+ Future<void> bootstrap() => client.bootstrap();
+ Future<RuntimeConnection> connect(SyncServer server,{void Function(Object)? onError,Future<void> Function()? refreshAuth,Duration directTimeout=const Duration(seconds:30)}) => client.connect(server,onError:onError,refreshAuth:refreshAuth,directTimeout:directTimeout);
+ Future<void> resetStore({bool discardPending=false}) => client.resetStore(discardPending:discardPending);
  Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
@@ -494,8 +625,6 @@ class GeneratedClient {
  late final failures = client.failures;
  /// The queue of unsettled acts: `watchPending`.
  late final outbound = client.outbound;
- /// Start the background connection when `open` was called without a server.
- Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.
  Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);
  /// Escape hatch: read-only SQL over the local database.

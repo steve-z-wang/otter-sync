@@ -12,6 +12,21 @@ use std::sync::{Arc, Mutex};
 pub struct SqliteStore {
     writer: Connection,
     reader: Connection,
+    // The actual database inode remains exclusively owned for the Store lifetime.
+    _file_lock: Option<StoreOwnership>,
+}
+
+struct StoreOwnership {
+    _identity: std::fs::File,
+    lock: std::fs::File,
+}
+
+impl Drop for StoreOwnership {
+    fn drop(&mut self) {
+        // This final Store field drops after both SQLite connections. Closing
+        // alone may retain the lock in a pre-exec child's inherited descriptor.
+        let _ = self.lock.unlock();
+    }
 }
 
 fn db(e: rusqlite::Error) -> axton_core::Error {
@@ -152,7 +167,102 @@ fn name_ok(name: &str) -> Result<()> {
     Ok(())
 }
 
+static APPLICATION_DATA: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn application_data_directory() -> Result<std::path::PathBuf> {
+    if let Some(path) = APPLICATION_DATA.get() {
+        return Ok(path.clone());
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let path = if cfg!(any(target_os = "macos", target_os = "ios")) {
+        home.map(|home| home.join("Library/Application Support/AXTON"))
+    } else if cfg!(target_os = "linux") {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.map(|home| home.join(".local/share")))
+            .map(|root| root.join("axton"))
+    } else {
+        None
+    }
+    .filter(|path| path.is_absolute())
+    .ok_or_else(|| invalid("stable application data directory required for Store ownership"))?;
+    let _ = APPLICATION_DATA.set(path.clone());
+    Ok(APPLICATION_DATA.get().cloned().unwrap_or(path))
+}
+
+// Whole-file locking the database conflicts with SQLite's own byte locks on
+// macOS. Keep ownership on a separate OS-locked file named by physical inode.
+// Never unlink these files on unlock: that would split concurrent lock owners.
+#[cfg(unix)]
+fn ownership_lock_path(file: &std::fs::File) -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let identity = file
+        .metadata()
+        .map_err(|error| invalid(format!("store identity: {error}")))?;
+    let root = application_data_directory()?;
+    Ok(root
+        .join("axton-store-locks")
+        .join(format!("{}-{}.lock", identity.dev(), identity.ino())))
+}
+#[cfg(not(unix))]
+fn ownership_lock_path(_file: &std::fs::File) -> Result<std::path::PathBuf> {
+    Err(invalid(
+        "physical Store ownership is unsupported on this target",
+    ))
+}
+
 impl SqliteStore {
+    /// Mobile/native host initialization, once for the application's lifetime.
+    /// This is not a per-client option. Hosts must consistently resolve their
+    /// durable sandbox application-data directory before opening any Store.
+    pub fn set_application_data_directory(path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        if !path.is_absolute() {
+            return Err(invalid("application data directory must be absolute"));
+        }
+        if let Some(saved) = APPLICATION_DATA.get() {
+            if saved != path {
+                return Err(invalid("application data directory already fixed"));
+            }
+            return Ok(());
+        }
+        APPLICATION_DATA
+            .set(path.to_path_buf())
+            .map_err(|_| invalid("application data directory already fixed"))
+    }
+
+    /// Protocol-4 file ownership. Acquire before SQLite can change journal or
+    /// schema state. OS locking follows the inode through aliases/hard links.
+    pub fn open_exclusive(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|error| invalid(format!("sqlite file: {error}")))?;
+        let lock_path = ownership_lock_path(&file)?;
+        std::fs::create_dir_all(lock_path.parent().unwrap())
+            .map_err(|error| invalid(format!("store lock directory: {error}")))?;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .map_err(|error| invalid(format!("store lock file: {error}")))?;
+        lock.try_lock()
+            .map_err(|error| invalid(format!("store_in_use: {error}")))?;
+        let ownership = StoreOwnership {
+            _identity: file,
+            lock,
+        };
+        let mut store = Self::open(path)?;
+        // Keep database identity open too, preventing inode reuse while owned.
+        store._file_lock = Some(ownership);
+        Ok(store)
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let writer = Connection::open(&path).map_err(db)?;
         writer
@@ -177,7 +287,11 @@ impl SqliteStore {
                 .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)
                 .map_err(db)?;
         }
-        Ok(Self { writer, reader })
+        Ok(Self {
+            writer,
+            reader,
+            _file_lock: None,
+        })
     }
 }
 

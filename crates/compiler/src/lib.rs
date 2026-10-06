@@ -4,7 +4,6 @@
 use serde_json::Value;
 mod action_names;
 mod emit;
-mod emit_loads;
 mod emit_stream;
 mod emit_transactions;
 pub mod generate;

@@ -77,23 +77,11 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
 const TRANSACTION_HELPERS: &[&str] = &[
     "ApplicationTransaction",
     "CompanionContext",
-    "CompanionOptions",
-    "SubmitMutationOptions",
     "SubmitMutationPort",
     "TransactionMutations",
     "UnsentResolutionPort",
 ];
 
-/// Members of the generated Dart `{Name}Store` selector (and `Object`).
-const STORE_SELECTOR_MEMBERS: &[&str] = &[
-    "toWire",
-    "toString",
-    "hashCode",
-    "runtimeType",
-    "noSuchMethod",
-];
-
-/// The retained kind of an emitted operation descriptor; omitted is a Mutation.
 pub(crate) fn kind(action: &Value) -> axton_core::CallKind {
     serde_json::from_value(action["kind"].clone()).unwrap_or_default()
 }
@@ -103,13 +91,6 @@ fn label(action: &Value) -> &'static str {
         axton_core::CallKind::Mutation => "Mutation",
         axton_core::CallKind::Query => "Query",
     }
-}
-
-/// Whether an emitted output descriptor may be named by a call's `store`
-/// map: the single rule is [`axton_core::store_eligible`].
-pub(crate) fn store_eligible(output: &Value) -> bool {
-    serde_json::from_value::<axton_core::ActionOutputDescriptor>(output.clone())
-        .is_ok_and(|descriptor| axton_core::store_eligible(&descriptor))
 }
 
 /// Called once for current declarations and again after retained histories are reconciled.
@@ -138,6 +119,9 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
     let schema = &config["schema"];
     for en in values(schema, "enums") {
         add(name(en).into(), format!("enum {}", name(en)))?;
+    }
+    for model in values(config, "abstractModels") {
+        add(name(model).into(), format!("model {}", name(model)))?;
     }
     for model in values(schema, "models") {
         let n = name(model);
@@ -206,37 +190,6 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             )?;
         }
     }
-    // Model-only schemas still emit every per-model type (such as
-    // `{Model}Create`); the remaining names exist only beside operations.
-    if actions.is_empty() {
-        return Ok(());
-    }
-    for helper in [
-        "Call",
-        "CallError",
-        "CallFailure",
-        "CallOptions",
-        "CallOutcome",
-        "CallPort",
-        "CallRejected",
-        "CallStatus",
-        "CallStore",
-        "CallSuccess",
-        "DirectMutations",
-        "MutationContext",
-        "MutationHandlerCall",
-        "MutationHandlers",
-        "Mutations",
-        "OnceOptions",
-        "Queries",
-        "QueryContext",
-        "QueryHandlerCall",
-        "QueryHandlers",
-        "QueryInvalidations",
-        "QueuedQueries",
-    ] {
-        add(helper.into(), "operation helper".into())?;
-    }
     let mutations = if config["backendMutations"].is_array() {
         values(config, "backendMutations")
     } else {
@@ -260,6 +213,43 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             format!("{n}V{version}")
         };
         add(format!("{prefix}Input"), format!("mutation {n} v{version}"))?;
+    }
+    for mutation in values(config, "mutations") {
+        let n = name(mutation);
+        let owner = format!("mutation {n} v{}", mutation["version"]);
+        add(format!("{n}Args"), owner.clone())?;
+        // Dart's encoder is a top-level function in the same library as
+        // generated field classes. Its actual lower-first name must not
+        // shadow a type or another Mutation's encoder.
+        add(crate::emit::lower(n), owner)?;
+    }
+    // Model-only schemas still emit every per-model type (such as
+    // `{Model}Create`); the remaining names exist only beside operations.
+    if actions.is_empty() {
+        return Ok(());
+    }
+    for helper in [
+        "Call",
+        "CallError",
+        "CallFailure",
+        "CallOptions",
+        "CallOutcome",
+        "CallPort",
+        "CallRejected",
+        "CallStatus",
+        "CallSuccess",
+        "MutationContext",
+        "MutationHandlerCall",
+        "MutationHandlers",
+        "Mutations",
+        "OnceOptions",
+        "Queries",
+        "QueryContext",
+        "QueryHandlerCall",
+        "QueryHandlers",
+        "QueryInvalidations",
+    ] {
+        add(helper.into(), "operation helper".into())?;
     }
     let mut latest = BTreeMap::<&str, u64>::new();
     for action in actions {
@@ -293,31 +283,14 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             continue;
         }
         let kind = label(action);
-        add(format!("{n}Options"), format!("{kind} {n} options"))?;
-        add(format!("{n}Store"), format!("{kind} {n} store selector"))?;
-    }
-    // Store-eligible outputs become fields of the generated Dart selector,
-    // so they cannot reuse the names of its inherited or declared members.
-    for action in actions {
-        let n = name(action);
-        if action["version"].as_u64() != Some(latest[n]) {
-            continue;
+        if kind == "Query" {
+            add(format!("{n}Options"), format!("{kind} {n} options"))?;
         }
-        for output in values(action, "outputs") {
-            let output_name = name(output);
-            if store_eligible(output) && STORE_SELECTOR_MEMBERS.contains(&output_name) {
-                let kind = label(action);
-                let owner = format!("{kind} {n}");
-                let message = format!(
-                    "{kind} {n} output {output_name} is reserved: it would collide with a member of the generated {n}Store selector"
-                );
-                return Err(match position(declarations, &owner) {
-                    Some(pos) => format!("{}:{}: {message}", pos.line, pos.col),
-                    None => format!("operation history: {message}"),
-                });
-            }
+        if kind == "Mutation" {
+            add(format!("{n}Mutation"), format!("{kind} {n} invoker"))?;
         }
     }
+
     for action in actions {
         let n = name(action);
         let version = action["version"].as_u64().unwrap();
@@ -332,6 +305,10 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             add(format!("{prefix}{suffix}"), format!("{owner} {suffix}"))?;
         }
         if !retained {
+            add(
+                format!("{prefix}HandlerInput"),
+                format!("{owner} HandlerInput"),
+            )?;
             add(format!("{prefix}Output"), format!("{owner} Output"))?;
         } else {
             for model in values(&action["input"], "models") {

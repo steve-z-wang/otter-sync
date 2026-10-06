@@ -41,7 +41,7 @@ mutation AddTodo(todo Todo.create)
 mutation SetTodoDone(todo Todo.update<done>) { todo Todo }
 ```
 
-`AddTodo` creates a task and `SetTodoDone` changes only `done`. A Model input is not a result: once either call completes, the server's version of the task is already in the local database. `AddTodo` declares no outputs; `SetTodoDone` declares a `todo` output, and its handler returns the identity of the Todo to read for it. Both are Mutations because they change business state. The compiler generates durable `client.mutations.addTodo` / `setTodoDone` and direct `client.mutations.call` methods, plus typed backend `Mutations` / `Loaders` from this file.
+`AddTodo` creates a task and `SetTodoDone` changes only `done`. A Model input is not a result: once either call completes, the server's version of the task is already in the local database. `AddTodo` declares no outputs; `SetTodoDone` declares a `todo` output, and its handler returns the identity of the Todo to read for it. Both are Mutations because they change business state. The compiler generates durable `client.mutations.addTodo` / `setTodoDone` methods returning durable Calls, plus typed backend `Mutations` / `Loaders` from this file.
 
 ## 2. Start the backend
 

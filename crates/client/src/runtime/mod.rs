@@ -173,6 +173,8 @@ pub struct ClientRuntime<S: ClientStore> {
     /// The one counter behind `transactionId`, `scope` and `effectId`: every
     /// identity the runtime issues is fresh for its lifetime.
     issued: u64,
+    /// Capability tokens also fence other Stores and prior runtime opens.
+    capability_namespace: Option<String>,
     events: Vec<Event>,
     lifecycle: Lifecycle,
 }
@@ -202,6 +204,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// Wrap an already opened client.
     pub fn new(client: Client<S>) -> Self {
+        let capability_namespace = client
+            .request_context()
+            .is_ok()
+            .then(|| uuid::Uuid::new_v4().to_string());
         Self {
             client,
             lanes: lanes::Lanes::default(),
@@ -219,6 +225,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             admitted: 0,
             lane_since: None,
             issued: 0,
+            capability_namespace,
             events: vec![],
             lifecycle: Lifecycle::Open,
         }
@@ -230,6 +237,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// Configure an opened runtime before any task is admitted.
     pub fn register_store_hooks(mut self, models: Vec<String>) -> Result<Self> {
+        if self.client.request_context().is_ok() {
+            return Err(crate::invalid(
+                "custom store hooks are retired in protocol 4",
+            ));
+        }
         if self.admitted != 0 || self.lifecycle != Lifecycle::Open || self.transaction.is_some() {
             return Err(crate::invalid("store hooks are fixed at runtime open"));
         }
@@ -246,10 +258,14 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// What a successful open answers: the client id and the schema check's
     /// outcome, as the SDKs report it in `status()`.
     pub fn opened(&self) -> Value {
-        json!({
+        let mut opened = json!({
             "clientId": self.client.client_id(),
             "schema": commands::schema_json(self.client.schema_state()),
-        })
+        });
+        if let Ok(context) = self.client.request_context() {
+            opened["context"] = json!(context);
+        }
+        opened
     }
     /// The events queued since the last call, in order.
     pub fn take_events(&mut self) -> Vec<Event> {
@@ -273,6 +289,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
 impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// A fresh number for an identity the runtime issues. Never reused; an
     /// exhausted counter refuses rather than wraps.
+    fn capability_token(&self, prefix: &str, id: u64) -> String {
+        match &self.capability_namespace {
+            Some(namespace) => format!("{namespace}:{prefix}{id}"),
+            None => format!("{prefix}{id}"),
+        }
+    }
     fn issue(&mut self) -> std::result::Result<u64, String> {
         self.issued = self
             .issued

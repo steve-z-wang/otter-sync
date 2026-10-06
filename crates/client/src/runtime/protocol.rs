@@ -100,6 +100,8 @@ pub enum Input {
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Value>,
     },
     /// The host's answer to one effect. HTTP, timer, credential and
     /// prerequisite effects are single-use: their first result retires the
@@ -158,6 +160,9 @@ pub enum Command {
     Status,
     /// One record's pending mutations and retained rejections.
     RecordStatus { key: RecordKey },
+    /// A durable terminal named Call completion, or null while unfinished.
+    #[serde(rename_all = "camelCase")]
+    CallCompletion { call_id: String },
     /// The prerequisite tasks and their states.
     Tasks,
 
@@ -207,6 +212,13 @@ pub enum Command {
     #[serde(rename_all = "camelCase")]
     Rebuild {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        discard_pending: Option<bool>,
+    },
+
+    /// Atomically retire this bound Store's content and delivery incarnation.
+    #[serde(rename_all = "camelCase")]
+    ResetStore {
+        #[serde(default)]
         discard_pending: Option<bool>,
     },
 
@@ -504,6 +516,7 @@ pub enum TransactionCommand {
         name: String,
         #[serde(deserialize_with = "counter")]
         version: u64,
+        #[serde(default)]
         args: Value,
         #[serde(
             default,

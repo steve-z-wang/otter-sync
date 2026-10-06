@@ -1578,36 +1578,49 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     typeof request === "string"
       ? request
       : new TextDecoder("utf-8", { fatal: true }).decode(request);
-  // A loader row the served contract does not accept is checked by the
-  // engine, which fails only that record (`loader.invalid`). The developer
-  // still hears about each one.
-  const INVALID = '"loader.invalid"';
+  // Only retained protocol-3 carriers have per-record Loader diagnostics.
+  // Reporting after commit must never replace the saved response.
+  const diagnosticItems = (wire: string, field: string): unknown[] => {
+    try {
+      const envelope = JSON.parse(wire);
+      return Array.isArray(envelope?.[field]) ? envelope[field] : [];
+    } catch {
+      return [];
+    }
+  };
+  const reportDiagnostic = (error: Error): void => {
+    try {
+      onError(error);
+    } catch {
+      // The application observer cannot turn a committed answer into failure.
+    }
+  };
   const reportInvalidPage = (page: string): string => {
-    if (!page.includes(INVALID)) return page;
-    const { changes } = JSON.parse(page) as {
-      changes: { model: string; identity: unknown; error?: string }[];
-    };
-    for (const change of changes)
-      if (change.error === "loader.invalid")
-        onError(
+    for (const item of diagnosticItems(page, "changes")) {
+      const change = item as {
+        model?: string;
+        identity?: unknown;
+        error?: string;
+      } | null;
+      if (change?.error === "loader.invalid")
+        reportDiagnostic(
           new Error(
             `loader returned a row the served ${change.model} contract does not accept: ${JSON.stringify(change.identity)}`,
           ),
         );
+    }
     return page;
   };
   const reportInvalidReceipt = (receipt: string): string => {
-    if (!receipt.includes(INVALID)) return receipt;
-    const { rejections } = JSON.parse(receipt) as {
-      rejections: { ordinal: number; code: string }[];
-    };
-    for (const rejection of rejections)
-      if (rejection.code === "loader.invalid")
-        onError(
+    for (const item of diagnosticItems(receipt, "rejections")) {
+      const rejection = item as { ordinal?: number; code?: string } | null;
+      if (rejection?.code === "loader.invalid")
+        reportDiagnostic(
           new Error(
             `loader returned a row the declared contract does not accept while reading back mutation ${rejection.ordinal}`,
           ),
         );
+    }
     return receipt;
   };
   /**

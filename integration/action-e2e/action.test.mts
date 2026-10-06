@@ -287,6 +287,7 @@ test("explicit extra publication reaches another bound file without making it an
   const a = await session();
   const b = await session("bob");
   try {
+    await b.client.bootstrap();
     await (
       await a.client.mutations.addTodo({
         todo: { id: "extra-a", title: "before" },

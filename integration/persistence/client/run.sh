@@ -11,7 +11,13 @@ cargo test --manifest-path "$root/Cargo.toml" -p axton-sqlite --test stream_upgr
 snapshot() {
  python3 - "$1" "$2" <<'PYCODE'
 import sqlite3, sys
-con=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True)
+from pathlib import Path
+path=Path(sys.argv[1]).resolve()
+wal=Path(str(path)+'-wal')
+if wal.exists() and wal.stat().st_size:
+    raise RuntimeError('snapshot requires a closed, checkpointed fixture')
+# Both subprocesses have ended; read the stable image without creating WAL sidecars.
+con=sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)
 with open(sys.argv[2],'w') as out: out.write('\n'.join(con.iterdump()))
 con.close()
 PYCODE

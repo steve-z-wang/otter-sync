@@ -28,7 +28,7 @@ A push answers `200` even when one or more mutations are rejected: `mutation_ver
 
 The live path closes with `1002` when negotiation fails with `request.invalid`, and with `1011` for any other failure (a failed pull, or a controller error such as `live.invalid_page`), which also goes to `onError`. What to pull and send is decided by the Rust controller; `serveLive` only executes its actions ([Controller](controller.md)).
 
-The upgrade path authenticates and admits before accepting the socket and refuses with a raw `401`, `500` (`authenticate` or `admit` threw or answered wrongly), `503` (server closing), or an admission refusal written as a complete HTTP response with its status, JSON body, `Content-Length` and the marker. `close` stops upgrades, closes sockets with `1001`, then closes the server.
+The upgrade path authenticates and admits before accepting the socket and refuses with a raw `401`, `500` (`authenticate` or `admit` threw or answered wrongly), `503` (server closing), or an admission refusal written as a complete HTTP response with its status, JSON body, `Content-Length` and the marker. `close` stops upgrades, closes sockets with `1001`, drains each admitted Live session and its pending database pulls, then closes the HTTP server. Concurrent `close` calls await the same completion. The application may release its database after that completion; closing a socket alone does not cancel its transaction.
 
 Code: `createHttpHandler`, `attachLive`, `serveLive`, `listen` in [server/index.mts](../../../../../packages/server/index.mts).
 
@@ -45,6 +45,8 @@ One Node process runs the listener, the handlers, the loaders and the native eng
 - **Behind a reverse proxy that forwards HTTP and relays the WebSocket upgrade with headers preserved, push, pull and live work; a proxy that strips `Authorization` is refused.** Evidence: `a reverse proxy forwarding HTTP and the WebSocket upgrade with headers serves push, pull and live; a stripped Authorization header is refused` (an in-process proxy with TCP-level upgrade pass-through). Verified 2026-09-14 by `bash integration/persistence/server/run.sh`.
 
 Verified 2026-09-14: `bash integration/persistence/server/run.sh` passed with the proxy and structured-error tests.
+
+- **Listener close drains admitted Live database work before the application disconnects, for protocol 4 and the retained legacy carrier; concurrent close callers share that drain.** Evidence: [live-shutdown.test.mjs](../../../../../integration/persistence/server/live-shutdown.test.mjs) gates a real Space Loader inside PostgreSQL, closes the real WebSocket, and checks successful query completion before database release. Its RED disconnects the fixture’s held backend connection and preserves the resulting Loader/Reporter errors. Ordering uses promise gates and a socket-close event, without timing sleeps.
 
 ## 11. Risks and Technical Debt
 

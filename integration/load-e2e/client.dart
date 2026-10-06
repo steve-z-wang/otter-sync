@@ -1,186 +1,69 @@
-// The generated Dart client against the Load end-to-end backend:
-// `dart run client.dart URL PATH LIBRARY [enroll]`. The backend holds the
-// Items dart-1..3; with `enroll`, the Items dart-enr-1..3 that its
-// ProjectItems handler adds to Scope `items:dart-enr`.
 import 'dart:io';
-import 'package:axton/axton.dart' as sdk;
-
-import 'generated.dart' as app;
+import 'generated.dart';
 
 void check(bool condition, String message) {
   if (!condition) throw StateError(message);
 }
 
-/// One Seen row per stored Item, counting committed hook runs.
-Future<void> countSeen(app.GeneratedTransaction tx, List<app.StoreChange<app.ItemIdentity, app.Item>> changes) async {
-  for (final change in changes) {
-    if (change is! app.StoreUpsert<app.ItemIdentity, app.Item>) continue;
-    final identity = app.SeenIdentity(id: change.identity.id);
-    final seen = await tx.models.seen.get(identity);
-    if (seen == null) {
-      await tx.models.seen.create(app.Seen(id: change.identity.id, hits: 1));
-    } else {
-      await tx.models.seen.update(identity, app.SeenPatch(hits: app.Present(seen.hits + 1)));
-    }
-  }
-}
-
-Future<Map<String, int>> seen(app.GeneratedClient client) async =>
-    {for (final row in await client.models.seen.query()) row.id: row.hits};
-
-Future<sdk.LoadStatus?> statusOf(app.GeneratedClient client, String id) async {
-  for (final status in await client.loads.list(limit: 100)) {
-    if (status.id == id) return status;
-  }
-  return null;
-}
-
-/// Subscribe and wait for the first handshake, then Load records its handler
-/// enrolls: a later change by another client arrives through the Scope with
-/// no second add.
-Future<void> enrollment(sdk.SyncServer server, String path, String libraryPath) async {
-  final reader = await app.GeneratedClient.open(path: '$path.reader', libraryPath: libraryPath, server: server);
-  final writer = await app.GeneratedClient.open(path: '$path.writer', libraryPath: libraryPath, server: server);
-  try {
-    final subscription = await reader.streams.subscribe('items:dart-enr');
-    await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
-    final load = await reader.loads.projectItems(project: 'dart-enr');
-    await load.wait();
-    load.dispose();
-    final loaded = await reader.models.item.query(where: const app.ItemFilter(project: app.Present('dart-enr')));
-    check(loaded.length == 3 && loaded.every((item) => item.title == '${item.id} title'), 'the Load stored its page rows: $loaded');
-    final renamed = reader.models.item
-        .watch(where: const app.ItemFilter(project: app.Present('dart-enr')))
-        .firstWhere((items) => items.any((item) => item.id == 'dart-enr-2' && item.title == 'renamed'));
-    await writer.mutations.call.renameItem(item: const app.RenameItemItemUpdate(id: 'dart-enr-2', title: app.Present('renamed')));
-    await renamed.timeout(const Duration(seconds: 20));
-    stdout.writeln('Dart Load enrollment: passed');
-  } finally {
-    await writer.close();
-    await reader.close();
-  }
-}
-
-Future<void> tracking(sdk.SyncServer server, String path, String libraryPath) async {
-  var reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath, server: server);
-  try {
-    await reader.transaction((tx) async {
-      await tx.streams.subscribe('items:dart-release');
-      await tx.transaction.savepoint(() async {
-        await tx.transaction.savepoint(() async { await tx.streams.subscribe('items:dart-release-other'); });
-      });
-    });
-    final first = await reader.streams.subscribe('items:dart-release');
-    final second = await reader.streams.subscribe('items:dart-release-other');
-    for (final subscription in [first, second]) {
-      await subscription.watch().firstWhere((status) => status.initialization == sdk.SubscriptionInitialization.ready).timeout(const Duration(seconds: 20));
-    }
-    await (await reader.loads.projectItems(project: 'dart-release')).wait();
-    check((await reader.models.item.query()).length == 2, 'Load stored both Items');
-    check((await reader.models.tag.query()).length == 1, 'Load stored its other Model');
-    stdout.writeln('Dart tracking: loaded');
-    await reader.models.item.watch().firstWhere((items) => items.length == 1).timeout(const Duration(seconds: 20));
-    stdout.writeln('Dart tracking: absent');
-    await reader.models.item.watch().firstWhere((items) => items.any((item) => item.id == 'dart-release-1' && item.title == 'global')).timeout(const Duration(seconds: 20));
-    await first.unsubscribe(); await second.unsubscribe();
-    check((await reader.models.item.query()).length == 2, 'unsubscribe retains cache');
-    await reader.close();
-    reader = await app.GeneratedClient.open(path: path, libraryPath: libraryPath);
-    check((await reader.models.item.query()).length == 2, 'cache survives offline reopen');
-    check((await reader.models.item.get(const app.ItemIdentity(id: 'dart-release-1')))?.title == 'global', 'newer authority survives reopen');
-    stdout.writeln('Dart tracking: passed');
-  } finally { await reader.close(); }
-}
-
 Future<void> main(List<String> args) async {
-  final [url, path, libraryPath, ...mode] = args;
-  final server = sdk.SyncServer(url: url, token: () => 'alice');
-  if (mode case ['enroll']) return enrollment(server, path, libraryPath);
-  if (mode case ['tracking']) return tracking(server, path, libraryPath);
-  var hookRuns = 0;
-  Future<void> hook(app.GeneratedTransaction tx, List<app.StoreChange<app.ItemIdentity, app.Item>> changes) async {
-    hookRuns++;
-    await countSeen(tx, changes);
-  }
-
-  var client = await app.GeneratedClient.open(path: path, libraryPath: libraryPath, server: server, onStore: app.StoreHooks(item: hook));
-  late final String onceId;
-  late final String ordinaryId;
+  final dir = await Directory.systemTemp.createTemp('axton-read-dart-');
+  Future<GeneratedClient> open() => GeneratedClient.open(
+    path: '${dir.path}/db',
+    stream: 'User:dart',
+    connection: StoreConnection(
+      url: args[0],
+      token: () => 'dart',
+      identity: const StoreIdentity(
+        backend: 'read-e2e',
+        viewer: 'dart',
+        contract: 'read-v04',
+      ),
+    ),
+    libraryPath:
+        Platform.environment['AXTON_LIBRARY'] ??
+        Platform.environment['AXTON_DART_LIBRARY'],
+  );
+  var client = await open();
+  stderr.writeln('phase:open');
   try {
-    // An ordinary multi-page Load: three Items in pages of two, then an empty page.
-    final load = await client.loads.projectItems(project: 'dart');
-    ordinaryId = load.id;
-    final statuses = <sdk.LoadStatus>[];
-    final watching = load.watch().listen(statuses.add);
-    await load.wait();
-    final done = await statusOf(client, load.id);
-    check(done?.phase == sdk.LoadPhase.complete && done?.pages == 3 && done?.error == null, 'ordinary Load completed in three pages: $done');
-    check(done?.name == 'ProjectItems' && done?.version == 1, 'status names the operation: $done');
-    for (var attempt = 0; attempt < 200 && statuses.lastOrNull?.phase != sdk.LoadPhase.complete; attempt++) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-    await watching.cancel();
-    final pages = statuses.map((status) => status.pages).toList();
-    for (var n = 1; n < pages.length; n++) {
-      check(pages[n] >= pages[n - 1], 'pages never go back: $statuses');
-    }
-    check(statuses.last.phase == sdk.LoadPhase.complete && statuses.last.pages == 3, 'watch ended complete: $statuses');
-    final items = await client.models.item.query(where: const app.ItemFilter(project: app.Present('dart')));
-    check(items.length == 3, 'three Items stored: $items');
-    check((await seen(client)).values.every((hits) => hits == 1), 'onStore ran once per Item');
-
-    // A once start is a new job (ordinary runs register nothing); a second once start joins it.
-    final once = await client.loads.projectItems(project: 'dart', once: true);
-    onceId = once.id;
-    check(once.id != load.id, 'once did not reuse the ordinary job');
-    final joined = await client.loads.projectItems(project: 'dart', once: true);
-    check(joined.id == once.id, 'a second once start shares the job');
-    await once.wait();
-    await joined.wait();
-    joined.dispose();
-    load.dispose();
+    stderr.writeln('phase:read');
+    final first = await client.queries.projectItems(
+      project: 'dart',
+      store: false,
+      once: true,
+    );
+    check(first.items.length == 2, 'Query output');
+    check((await client.models.tag.query()).isEmpty, 'store=false');
+    stderr.writeln('phase:reopen');
+    await client.close();
+    client = await open();
+    stderr.writeln('phase:pause');
+    await client.connection!.pause();
+    stderr.writeln('phase:offline-once');
+    final saved = await client.queries.projectItems(
+      project: 'dart',
+      store: false,
+      once: true,
+    );
+    check(saved.items.first.title == first.items.first.title, 'durable once');
+    stderr.writeln('phase:resume');
+    await client.connection!.resume();
+    stderr.writeln('phase:bootstrap');
+    await client.bootstrap();
+    check((await client.models.item.query()).length == 2, 'Bootstrap');
+    stderr.writeln('phase:mutation');
+    final call = await client.mutations.renameItem(
+      const RenameItemInput(
+        item: RenameItemItemUpdate(
+          id: 'dart-1',
+          title: Present('dart renamed'),
+        ),
+      ),
+    );
+    check(await call.wait() is CallSuccess<RenameItemOutput>, 'named Mutation');
+    stdout.writeln('Dart bound reads: PASS');
   } finally {
     await client.close();
-  }
-
-  // Offline: the completed once job is returned without a request or hook run.
-  client = await app.GeneratedClient.open(path: path, libraryPath: libraryPath, onStore: app.StoreHooks(item: hook));
-  try {
-    final hooksBefore = hookRuns;
-    final seenBefore = await seen(client);
-    final hit = await client.loads.projectItems(project: 'dart', once: true);
-    check(hit.id == onceId, 'offline once hit returns the completed job');
-    check(hit.status.phase == sdk.LoadPhase.complete, 'the hit is complete: ${hit.status}');
-    await hit.wait();
-    check(hookRuns == hooksBefore, 'a complete hit runs no onStore');
-    check((await seen(client)).toString() == seenBefore.toString(), 'and writes nothing');
-    // Invalidation is local; the next once start is new work, waiting offline.
-    await client.loads.invalidate.projectItems(project: 'dart');
-    final fresh = await client.loads.projectItems(project: 'dart', once: true);
-    check(fresh.id != onceId, 'invalidation made the next once start new');
-    check(fresh.status.phase == sdk.LoadPhase.waiting, 'new work waits offline: ${fresh.status}');
-    try {
-      await client.loads.projectItems(project: 'dart', refresh: true);
-      check(false, 'refresh without once must be refused');
-    } on sdk.LoadException catch (error) {
-      check(error.code == 'load.invalid_options', 'refresh without once: ${error.code}');
-    }
-    await fresh.cancel();
-    final cancelled = await statusOf(client, fresh.id);
-    check(cancelled?.phase == sdk.LoadPhase.cancelled, 'cancelled: $cancelled');
-    // Reattach and clean up a terminal job by ID.
-    final reattached = await client.loads.get(ordinaryId);
-    check(reattached?.status.phase == sdk.LoadPhase.complete, 'reattached ordinary job is complete');
-    await reattached!.forget();
-    check(await client.loads.get(ordinaryId) == null, 'a forgotten job is gone');
-    try {
-      await reattached.wait();
-      check(false, 'a forgotten handle must fail');
-    } on sdk.LoadException catch (error) {
-      check(error.code == 'load.not_found', 'forgotten handle: ${error.code}');
-    }
-    stdout.writeln('Dart generated Loads: passed');
-  } finally {
-    await client.close();
+    await dir.delete(recursive: true);
   }
 }

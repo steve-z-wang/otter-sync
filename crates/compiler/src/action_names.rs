@@ -77,23 +77,11 @@ pub(crate) const LOAD_HELPERS: &[&str] = &[
 const TRANSACTION_HELPERS: &[&str] = &[
     "ApplicationTransaction",
     "CompanionContext",
-    "CompanionOptions",
-    "SubmitMutationOptions",
     "SubmitMutationPort",
     "TransactionMutations",
     "UnsentResolutionPort",
 ];
 
-/// Members of the generated Dart `{Name}Store` selector (and `Object`).
-const STORE_SELECTOR_MEMBERS: &[&str] = &[
-    "toWire",
-    "toString",
-    "hashCode",
-    "runtimeType",
-    "noSuchMethod",
-];
-
-/// The retained kind of an emitted operation descriptor; omitted is a Mutation.
 pub(crate) fn kind(action: &Value) -> axton_core::CallKind {
     serde_json::from_value(action["kind"].clone()).unwrap_or_default()
 }
@@ -103,13 +91,6 @@ fn label(action: &Value) -> &'static str {
         axton_core::CallKind::Mutation => "Mutation",
         axton_core::CallKind::Query => "Query",
     }
-}
-
-/// Whether an emitted output descriptor may be named by a call's `store`
-/// map: the single rule is [`axton_core::store_eligible`].
-pub(crate) fn store_eligible(output: &Value) -> bool {
-    serde_json::from_value::<axton_core::ActionOutputDescriptor>(output.clone())
-        .is_ok_and(|descriptor| axton_core::store_eligible(&descriptor))
 }
 
 /// Called once for current declarations and again after retained histories are reconciled.
@@ -256,9 +237,7 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         "CallPort",
         "CallRejected",
         "CallStatus",
-        "CallStore",
         "CallSuccess",
-        "DirectMutations",
         "MutationContext",
         "MutationHandlerCall",
         "MutationHandlers",
@@ -269,7 +248,6 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         "QueryHandlerCall",
         "QueryHandlers",
         "QueryInvalidations",
-        "QueuedQueries",
     ] {
         add(helper.into(), "operation helper".into())?;
     }
@@ -305,31 +283,14 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             continue;
         }
         let kind = label(action);
-        add(format!("{n}Options"), format!("{kind} {n} options"))?;
-        add(format!("{n}Store"), format!("{kind} {n} store selector"))?;
-    }
-    // Store-eligible outputs become fields of the generated Dart selector,
-    // so they cannot reuse the names of its inherited or declared members.
-    for action in actions {
-        let n = name(action);
-        if action["version"].as_u64() != Some(latest[n]) {
-            continue;
+        if kind == "Query" {
+            add(format!("{n}Options"), format!("{kind} {n} options"))?;
         }
-        for output in values(action, "outputs") {
-            let output_name = name(output);
-            if store_eligible(output) && STORE_SELECTOR_MEMBERS.contains(&output_name) {
-                let kind = label(action);
-                let owner = format!("{kind} {n}");
-                let message = format!(
-                    "{kind} {n} output {output_name} is reserved: it would collide with a member of the generated {n}Store selector"
-                );
-                return Err(match position(declarations, &owner) {
-                    Some(pos) => format!("{}:{}: {message}", pos.line, pos.col),
-                    None => format!("operation history: {message}"),
-                });
-            }
+        if kind == "Mutation" {
+            add(format!("{n}Mutation"), format!("{kind} {n} invoker"))?;
         }
     }
+
     for action in actions {
         let n = name(action);
         let version = action["version"].as_u64().unwrap();
@@ -344,6 +305,10 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             add(format!("{prefix}{suffix}"), format!("{owner} {suffix}"))?;
         }
         if !retained {
+            add(
+                format!("{prefix}HandlerInput"),
+                format!("{owner} HandlerInput"),
+            )?;
             add(format!("{prefix}Output"), format!("{owner} Output"))?;
         } else {
             for model in values(&action["input"], "models") {

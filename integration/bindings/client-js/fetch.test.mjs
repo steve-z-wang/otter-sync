@@ -1,3 +1,4 @@
+import {openStore} from './store-fixture.mjs';
 // Model Fetch through the real native runtime (#153): Rust validates, joins
 // or starts the request, stores the reply and completes every caller; this
 // host only executes the `fetch` HTTP effect and decodes each caller's own
@@ -64,7 +65,7 @@ function deferred() {
  * the n-th request's completion outcome and authority. `gates` holds the n-th
  * request until released.
  */
-async function harness(body, { onStore } = {}) {
+async function harness(body) {
   const directory = await mkdtemp(join(tmpdir(), "axton-fetch-"));
   const net = {
     requests: [],
@@ -88,13 +89,13 @@ async function harness(body, { onStore } = {}) {
         ? { status: "failed", code: answer.failure, execution: "rejected" }
         : { status: "succeeded", result: answer.result };
       const records =
-        answer.failure || request.store === false
+        answer.failure
           ? []
           : [
               {
                 model: request.model,
                 identity: request.identity,
-                stamp: answer.stamp,
+                cursor: null,
                 state:
                   answer.result === null
                     ? null
@@ -106,15 +107,15 @@ async function harness(body, { onStore } = {}) {
               },
             ];
       return JSON.stringify({
+        context: request.context,
         completion: { callId: request.callId, outcome },
         records,
       });
     },
   }));
-  const client = await FetchClient.open({
+  const client = await openStore(FetchClient,{
     path: join(directory, "db"),
     schema,
-    ...(onStore ? { onStore } : {}),
   });
   try {
     await body({ client, net });
@@ -128,111 +129,24 @@ const connect = (client) =>
 const fetchEntry = (client, id, options) =>
   client.fetchModel("Entry", 2, { id }, raw, options);
 
-test("default storage applies the snapshot and runs onStore before resolving", async () => {
-  const changes = [];
-  await harness(
-    async ({ client, net }) => {
-      await connect(client);
-      const result = await fetchEntry(client, "a");
-      assert.deepEqual(result, { id: "a", ...state("v1") });
-      assert.deepEqual(net.requests[0].identity, { id: "a" });
-      assert.equal(net.requests[0].model, "Entry");
-      assert.equal(
-        net.requests[0].version,
-        2,
-        "the Model's local read version",
-      );
-      assert.equal("store" in net.requests[0], false, "the default is omitted");
-      assert.equal("once" in net.requests[0], false);
-      assert.deepEqual(await client.read("Entry", { id: "a" }), {
-        id: "a",
-        ...state("v1"),
-      });
-      assert.deepEqual(changes, [["upsert", "a", "v1"]]);
-      // `store: true` is the default spelled out.
-      await fetchEntry(client, "a", { store: true });
-      assert.equal("store" in net.requests[1], false);
-      // Every sequential call reads remotely again.
-      assert.equal(net.requests.length, 2);
-      assert.equal((await client.read("Entry", { id: "a" })).title, "v2");
-    },
-    {
-      onStore: {
-        Entry: (_tx, delivered) => {
-          for (const change of delivered)
-            changes.push([change.kind, change.identity.id, change.row?.title]);
-        },
-      },
-    },
-  );
+test("default storage commits permitted null-cursor cache before resolving", async()=> {
+ await harness(async({client,net})=>{
+  await connect(client);assert.deepEqual(await fetchEntry(client,'a'),{id:'a',...state('v1')});
+  assert.deepEqual(net.requests[0].identity,{id:'a'});assert.equal(net.requests[0].version,2);
+  assert.equal('store' in net.requests[0],false);
+  assert.equal((await client.read('Entry',{id:'a'})).title,'v1');
+  await fetchEntry(client,'a',{store:true});assert.equal(net.requests.length,2);
+  assert.equal((await client.read('Entry',{id:'a'})).title,'v2');
+ });
 });
-
-test("store false returns the snapshot without local storage or onStore", async () => {
-  let hooks = 0;
-  await harness(
-    async ({ client, net }) => {
-      await connect(client);
-      const preview = await fetchEntry(client, "a", { store: false });
-      assert.deepEqual(preview, { id: "a", ...state("v1") });
-      assert.equal(net.requests[0].store, false);
-      assert.equal(await client.read("Entry", { id: "a" }), null);
-      assert.equal(hooks, 0);
-    },
-    { onStore: { Entry: () => void hooks++ } },
-  );
+test("store false returns snapshot without cache writes",async()=>{
+ await harness(async({client,net})=>{await connect(client);assert.deepEqual(await fetchEntry(client,'a',{store:false}),{id:'a',...state('v1')});assert.equal(net.requests[0].store,false);assert.equal(await client.read('Entry',{id:'a'}),null);});
 });
-
-test("an absent record resolves null and removes the stored row", async () => {
-  const changes = [];
-  await harness(
-    async ({ client, net }) => {
-      await connect(client);
-      await fetchEntry(client, "a");
-      net.reply = (_request, n) => ({ result: null, stamp: n });
-      assert.equal(await fetchEntry(client, "a"), null);
-      assert.equal(await client.read("Entry", { id: "a" }), null);
-      assert.deepEqual(changes, ["upsert", "delete"]);
-      // A preview of an absent record changes nothing either.
-      assert.equal(await fetchEntry(client, "b", { store: false }), null);
-    },
-    {
-      onStore: {
-        Entry: (_tx, delivered) => {
-          for (const change of delivered) changes.push(change.kind);
-        },
-      },
-    },
-  );
+test("ordinary null returns absence without deleting cached content",async()=>{
+ await harness(async({client,net})=>{await connect(client);await fetchEntry(client,'a');net.reply=()=>({result:null});assert.equal(await fetchEntry(client,'a'),null);assert.equal((await client.read('Entry',{id:'a'})).title,'v1');assert.equal(await fetchEntry(client,'b',{store:false}),null);});
 });
-
-test("a refused onStore rejects with the hook's cause and stores nothing", async () => {
-  const thrown = Error("hook refused");
-  await harness(
-    async ({ client }) => {
-      await connect(client);
-      await assert.rejects(fetchEntry(client, "a"), (error) => {
-        assert.ok(error instanceof CallError);
-        assert.equal(error.code, "fetch.store_failed");
-        assert.equal(error.cause, thrown);
-        return true;
-      });
-      assert.equal(await client.read("Entry", { id: "a" }), null);
-      assert.equal(await client.read("Entry", { id: "side" }), null);
-    },
-    {
-      onStore: {
-        Entry: async (tx) => {
-          await tx.direct({
-            model: "Entry",
-            op: "create",
-            identity: { id: "side" },
-            values: state("side"),
-          });
-          throw thrown;
-        },
-      },
-    },
-  );
+test("malformed cache state rejects without a partial write",async()=>{
+ await harness(async({client,net})=>{await connect(client);net.reply=()=>({result:{id:'a',title:'missing fields'}});await assert.rejects(fetchEntry(client,'a'),CallError);assert.equal(await client.read('Entry',{id:'a'}),null);});
 });
 
 test("joined callers share one request and decode independent objects", async () => {
@@ -293,7 +207,7 @@ test("local failures keep their fetch codes and transport details", async () => 
     await assert.rejects(
       fetchEntry(client, "a"),
       (error) =>
-        error instanceof CallError && error.code === "fetch.invalid_response",
+        error instanceof CallError && error.code === "fetch.store_failed" && /differs from snapshot/.test(error.cause?.message),
     );
   });
 });
@@ -344,6 +258,7 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    if(request.url==='/sync/pull'){ response.end(JSON.stringify({context:body.context,pageId:'empty',from:body.after,to:body.after,head:body.after,units:[]}));return; }
     seen.push({
       url: request.url,
       authorization: request.headers.authorization,
@@ -354,6 +269,7 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
     }
     response.end(
       JSON.stringify({
+        context: body.context,
         completion: {
           callId: body.callId,
           outcome: {
@@ -361,14 +277,14 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
             result: { id: "a", ...state("http") },
           },
         },
-        records: [],
+        records: [{model:body.model,identity:body.identity,cursor:null,state:state("http")}],
       }),
     );
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const directory = await mkdtemp(join(tmpdir(), "axton-fetch-http-"));
   const HttpClient = createClient(native, Transaction, createServerConnection);
-  const client = await HttpClient.open({ path: join(directory, "db"), schema });
+  const client = await openStore(HttpClient,{ path: join(directory, "db"), schema });
   let token = "first";
   try {
     await client.connect(
@@ -404,7 +320,6 @@ test("a Fetch on a closed client rethrows the admission error", async () => {
 });
 
 test("close while a Fetch waits on the network rejects it unavailable and stores nothing late", async () => {
-  let hooks = 0;
   await harness(
     async ({ client, net }) => {
       await connect(client);
@@ -426,8 +341,7 @@ test("close while a Fetch waits on the network rejects it unavailable and stores
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(net.requests.length, 1);
-      assert.equal(hooks, 0, "the late reply is fenced");
+
     },
-    { onStore: { Entry: () => void hooks++ } },
   );
 });

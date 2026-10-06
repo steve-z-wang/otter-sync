@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, CallStore, Subscription, SubscriptionStatus, SubscriptionInitialization, SubscriptionConnection, SubscriptionClosedException, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, StoreIdentity, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Note","name":"note","operation":"create"}],"kind":"mutation","name":"AddNote","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"uuid"}}],"kind":"identity","model":"Note"},"kind":"model","model":"Note","modelReadVersion":1,"name":"saved","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"create"}],"kind":"mutation","name":"AddTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"uuid"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"AnnotateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"query","name":"CountTodos","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"delete"}],"kind":"mutation","name":"DeleteTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"shown","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"EditAndShow","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todo","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media"},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"list","kind":"model","model":"Media","name":"media","operation":"create"},{"cardinality":"single","kind":"model","model":"Placement","name":"placement","operation":"create"}],"kind":"mutation","name":"PublishEntry","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}}],"identity":["id"],"name":"Note"}]},"inputs":[{"allowedPatchFields":["createdAt"],"cardinality":"optional","kind":"model","model":"Note","name":"note","operation":"update"},{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"mutation","name":"Restamp","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"title","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"RetitleTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"SearchTodos","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"first","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"list","kind":"value","name":"labels","source":"handlerValue","type":{"kind":"scalar","name":"string"}},{"cardinality":"optional","kind":"value","name":"hint","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"to","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"subject","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}},{"cardinality":"single","kind":"value","list":false,"name":"body","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"SendEmail","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"messageId","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"query","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"TodoPage","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Todo"},"kind":"model","model":"Todo","modelReadVersion":1,"name":"todos","source":"handlerIdentity"},{"cardinality":"single","kind":"value","name":"count","source":"handlerValue","type":{"kind":"scalar","name":"int"}},{"cardinality":"single","kind":"value","name":"asOf","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}},{"cardinality":"optional","kind":"value","name":"next","source":"handlerValue","type":{"kind":"scalar","name":"string"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Todo","name":"todo","operation":"update"}],"kind":"mutation","name":"UpdateTodo","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[{"name":"Mood","values":["calm","busy"]}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","relations":[],"unique":[],"version":1},{"fields":[{"createDefault":{"kind":"uuid"},"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"createDefault":{"kind":"literal","value":""},"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"createDefault":{"kind":"literal","value":"calm"},"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"createDefault":{"kind":"now"},"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"createDefault":{"kind":"literal","value":"inbox"},"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Composition","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"url","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Media","version":1},{"enums":[{"name":"Mood","values":["calm","busy"]}],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"uuid"}},{"name":"body","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"mood","nullable":false,"type":{"kind":"enum","name":"Mood"}},{"name":"createdAt","nullable":false,"type":{"kind":"scalar","name":"dateTime"}},{"name":"tag","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Note","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"entryId","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"journal","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"position","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Placement","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Todo","version":1}]}') as Map<String,dynamic>;
@@ -576,8 +576,15 @@ class PlacementUpdate implements _DartActionRecord {
  if (position != null) 'position': _dartActionEncode(position!.value),
  };
 }
-class AddNoteInput implements _DartActionRecord {
+class AddNoteHandlerInput implements _DartActionRecord {
  final Note note;
+ const AddNoteHandlerInput({required this.note});
+ Map<String,dynamic> toRecord() => {
+ 'note': _dartActionEncode(note),
+ };
+}
+class AddNoteInput implements _DartActionRecord {
+ final NoteCreateInput note;
  const AddNoteInput({required this.note});
  Map<String,dynamic> toRecord() => {
  'note': _dartActionEncode(note),
@@ -597,8 +604,15 @@ class AddNoteHandlerOutput implements _DartActionRecord {
  'saved': _dartActionEncode(saved),
  };
 }
-class AddTodoInput implements _DartActionRecord {
+class AddTodoHandlerInput implements _DartActionRecord {
  final Todo todo;
+ const AddTodoHandlerInput({required this.todo});
+ Map<String,dynamic> toRecord() => {
+ 'todo': _dartActionEncode(todo),
+ };
+}
+class AddTodoInput implements _DartActionRecord {
+ final TodoCreateInput todo;
  const AddTodoInput({required this.todo});
  Map<String,dynamic> toRecord() => {
  'todo': _dartActionEncode(todo),
@@ -615,6 +629,17 @@ class AnnotateTodoTodoUpdate implements _DartActionRecord {
  if (title != null) 'title': _dartActionEncode(title!.value),
  };
 }
+class AnnotateTodoHandlerInput implements _DartActionRecord {
+ final AnnotateTodoTodoUpdate todo;
+ final String note;
+ final String body;
+ const AnnotateTodoHandlerInput({required this.todo,required this.note,required this.body});
+ Map<String,dynamic> toRecord() => {
+ 'todo': _dartActionEncode(todo),
+ 'note': _dartActionEncode(note),
+ 'body': _dartActionEncode(body),
+ };
+}
 class AnnotateTodoInput implements _DartActionRecord {
  final AnnotateTodoTodoUpdate todo;
  final String note;
@@ -628,6 +653,11 @@ class AnnotateTodoInput implements _DartActionRecord {
 }
 typedef AnnotateTodoOutput = void;
 typedef AnnotateTodoHandlerOutput = void;
+class CountTodosHandlerInput implements _DartActionRecord {
+ const CountTodosHandlerInput();
+ Map<String,dynamic> toRecord() => {
+ };
+}
 class CountTodosInput implements _DartActionRecord {
  const CountTodosInput();
  Map<String,dynamic> toRecord() => {
@@ -647,6 +677,13 @@ class CountTodosHandlerOutput implements _DartActionRecord {
  'count': _dartActionEncode(count),
  };
 }
+class DeleteTodoHandlerInput implements _DartActionRecord {
+ final TodoDelete todo;
+ const DeleteTodoHandlerInput({required this.todo});
+ Map<String,dynamic> toRecord() => {
+ 'todo': _dartActionEncode(todo),
+ };
+}
 class DeleteTodoInput implements _DartActionRecord {
  final TodoDelete todo;
  const DeleteTodoInput({required this.todo});
@@ -663,6 +700,15 @@ class EditAndShowTodoUpdate implements _DartActionRecord {
  Map<String,dynamic> toRecord() => {
  'id': _dartActionEncode(id),
  if (title != null) 'title': _dartActionEncode(title!.value),
+ };
+}
+class EditAndShowHandlerInput implements _DartActionRecord {
+ final EditAndShowTodoUpdate todo;
+ final String shown;
+ const EditAndShowHandlerInput({required this.todo,required this.shown});
+ Map<String,dynamic> toRecord() => {
+ 'todo': _dartActionEncode(todo),
+ 'shown': _dartActionEncode(shown),
  };
 }
 class EditAndShowInput implements _DartActionRecord {
@@ -688,10 +734,21 @@ class EditAndShowHandlerOutput implements _DartActionRecord {
  'todo': _dartActionEncode(todo),
  };
 }
-class PublishEntryInput implements _DartActionRecord {
+class PublishEntryHandlerInput implements _DartActionRecord {
  final Entry entry;
  final List<Media> media;
  final Placement placement;
+ const PublishEntryHandlerInput({required this.entry,required this.media,required this.placement});
+ Map<String,dynamic> toRecord() => {
+ 'entry': _dartActionEncode(entry),
+ 'media': _dartActionEncode(media),
+ 'placement': _dartActionEncode(placement),
+ };
+}
+class PublishEntryInput implements _DartActionRecord {
+ final EntryCreateInput entry;
+ final List<MediaCreateInput> media;
+ final PlacementCreateInput placement;
  const PublishEntryInput({required this.entry,required this.media,required this.placement});
  Map<String,dynamic> toRecord() => {
  'entry': _dartActionEncode(entry),
@@ -708,6 +765,15 @@ class RestampNoteUpdate implements _DartActionRecord {
  Map<String,dynamic> toRecord() => {
  'id': _dartActionEncode(id),
  if (createdAt != null) 'createdAt': _dartActionEncode(createdAt!.value),
+ };
+}
+class RestampHandlerInput implements _DartActionRecord {
+ final RestampNoteUpdate? note;
+ final DateTime at;
+ const RestampHandlerInput({this.note,required this.at});
+ Map<String,dynamic> toRecord() => {
+ 'note': _dartActionEncode(note),
+ 'at': _dartActionEncode(at),
  };
 }
 class RestampInput implements _DartActionRecord {
@@ -731,6 +797,15 @@ class RestampHandlerOutput implements _DartActionRecord {
  const RestampHandlerOutput({required this.at});
  Map<String,dynamic> toRecord() => {
  'at': _dartActionEncode(at),
+ };
+}
+class RetitleTodosHandlerInput implements _DartActionRecord {
+ final String query;
+ final String title;
+ const RetitleTodosHandlerInput({required this.query,required this.title});
+ Map<String,dynamic> toRecord() => {
+ 'query': _dartActionEncode(query),
+ 'title': _dartActionEncode(title),
  };
 }
 class RetitleTodosInput implements _DartActionRecord {
@@ -782,6 +857,13 @@ class SearchTodosV1HandlerOutput implements _DartActionRecord {
  'hint': _dartActionEncode(hint),
  };
 }
+class SearchTodosHandlerInput implements _DartActionRecord {
+ final String? query;
+ const SearchTodosHandlerInput({required this.query});
+ Map<String,dynamic> toRecord() => {
+ 'query': _dartActionEncode(query),
+ };
+}
 class SearchTodosInput implements _DartActionRecord {
  final String? query;
  const SearchTodosInput({required this.query});
@@ -819,6 +901,17 @@ class SearchTodosHandlerOutput implements _DartActionRecord {
  'hint': _dartActionEncode(hint),
  };
 }
+class SendEmailHandlerInput implements _DartActionRecord {
+ final String to;
+ final String subject;
+ final String body;
+ const SendEmailHandlerInput({required this.to,required this.subject,required this.body});
+ Map<String,dynamic> toRecord() => {
+ 'to': _dartActionEncode(to),
+ 'subject': _dartActionEncode(subject),
+ 'body': _dartActionEncode(body),
+ };
+}
 class SendEmailInput implements _DartActionRecord {
  final String to;
  final String subject;
@@ -842,6 +935,13 @@ class SendEmailHandlerOutput implements _DartActionRecord {
  const SendEmailHandlerOutput({required this.messageId});
  Map<String,dynamic> toRecord() => {
  'messageId': _dartActionEncode(messageId),
+ };
+}
+class TodoPageHandlerInput implements _DartActionRecord {
+ final String? query;
+ const TodoPageHandlerInput({required this.query});
+ Map<String,dynamic> toRecord() => {
+ 'query': _dartActionEncode(query),
  };
 }
 class TodoPageInput implements _DartActionRecord {
@@ -886,6 +986,13 @@ class UpdateTodoTodoUpdate implements _DartActionRecord {
  if (title != null) 'title': _dartActionEncode(title!.value),
  };
 }
+class UpdateTodoHandlerInput implements _DartActionRecord {
+ final UpdateTodoTodoUpdate todo;
+ const UpdateTodoHandlerInput({required this.todo});
+ Map<String,dynamic> toRecord() => {
+ 'todo': _dartActionEncode(todo),
+ };
+}
 class UpdateTodoInput implements _DartActionRecord {
  final UpdateTodoTodoUpdate todo;
  const UpdateTodoInput({required this.todo});
@@ -910,37 +1017,37 @@ abstract interface class MutationHandlers<Ctx> {
  MutationUpdateTodoHandlers<Ctx> get updateTodo;
 }
 abstract interface class MutationAddNoteHandlers<Ctx> {
- Future<AddNoteHandlerOutput> v1(MutationHandlerCall<Ctx, AddNoteInput> call);
+ Future<AddNoteHandlerOutput> v1(MutationHandlerCall<Ctx, AddNoteHandlerInput> call);
 }
 abstract interface class MutationAddTodoHandlers<Ctx> {
- Future<AddTodoHandlerOutput> v1(MutationHandlerCall<Ctx, AddTodoInput> call);
+ Future<AddTodoHandlerOutput> v1(MutationHandlerCall<Ctx, AddTodoHandlerInput> call);
 }
 abstract interface class MutationAnnotateTodoHandlers<Ctx> {
- Future<AnnotateTodoHandlerOutput> v1(MutationHandlerCall<Ctx, AnnotateTodoInput> call);
+ Future<AnnotateTodoHandlerOutput> v1(MutationHandlerCall<Ctx, AnnotateTodoHandlerInput> call);
 }
 abstract interface class MutationDeleteTodoHandlers<Ctx> {
- Future<DeleteTodoHandlerOutput> v1(MutationHandlerCall<Ctx, DeleteTodoInput> call);
+ Future<DeleteTodoHandlerOutput> v1(MutationHandlerCall<Ctx, DeleteTodoHandlerInput> call);
 }
 abstract interface class MutationEditAndShowHandlers<Ctx> {
- Future<EditAndShowHandlerOutput> v1(MutationHandlerCall<Ctx, EditAndShowInput> call);
+ Future<EditAndShowHandlerOutput> v1(MutationHandlerCall<Ctx, EditAndShowHandlerInput> call);
 }
 abstract interface class MutationPublishEntryHandlers<Ctx> {
- Future<PublishEntryHandlerOutput> v1(MutationHandlerCall<Ctx, PublishEntryInput> call);
+ Future<PublishEntryHandlerOutput> v1(MutationHandlerCall<Ctx, PublishEntryHandlerInput> call);
 }
 abstract interface class MutationRestampHandlers<Ctx> {
- Future<RestampHandlerOutput> v1(MutationHandlerCall<Ctx, RestampInput> call);
+ Future<RestampHandlerOutput> v1(MutationHandlerCall<Ctx, RestampHandlerInput> call);
 }
 abstract interface class MutationRetitleTodosHandlers<Ctx> {
- Future<RetitleTodosHandlerOutput> v1(MutationHandlerCall<Ctx, RetitleTodosInput> call);
+ Future<RetitleTodosHandlerOutput> v1(MutationHandlerCall<Ctx, RetitleTodosHandlerInput> call);
 }
 abstract interface class MutationSearchTodosHandlers<Ctx> {
  Future<SearchTodosV1HandlerOutput> v1(MutationHandlerCall<Ctx, SearchTodosV1Input> call);
 }
 abstract interface class MutationSendEmailHandlers<Ctx> {
- Future<SendEmailHandlerOutput> v1(MutationHandlerCall<Ctx, SendEmailInput> call);
+ Future<SendEmailHandlerOutput> v1(MutationHandlerCall<Ctx, SendEmailHandlerInput> call);
 }
 abstract interface class MutationUpdateTodoHandlers<Ctx> {
- Future<UpdateTodoHandlerOutput> v1(MutationHandlerCall<Ctx, UpdateTodoInput> call);
+ Future<UpdateTodoHandlerOutput> v1(MutationHandlerCall<Ctx, UpdateTodoHandlerInput> call);
 }
 abstract interface class QueryHandlerCall<Ctx, Args> { Ctx get ctx; Args get args; }
 abstract interface class QueryHandlers<Ctx> {
@@ -949,13 +1056,13 @@ abstract interface class QueryHandlers<Ctx> {
  QueryTodoPageHandlers<Ctx> get todoPage;
 }
 abstract interface class QueryCountTodosHandlers<Ctx> {
- Future<CountTodosHandlerOutput> v1(QueryHandlerCall<Ctx, CountTodosInput> call);
+ Future<CountTodosHandlerOutput> v1(QueryHandlerCall<Ctx, CountTodosHandlerInput> call);
 }
 abstract interface class QuerySearchTodosHandlers<Ctx> {
- Future<SearchTodosHandlerOutput> v2(QueryHandlerCall<Ctx, SearchTodosInput> call);
+ Future<SearchTodosHandlerOutput> v2(QueryHandlerCall<Ctx, SearchTodosHandlerInput> call);
 }
 abstract interface class QueryTodoPageHandlers<Ctx> {
- Future<TodoPageHandlerOutput> v1(QueryHandlerCall<Ctx, TodoPageInput> call);
+ Future<TodoPageHandlerOutput> v1(QueryHandlerCall<Ctx, TodoPageHandlerInput> call);
 }
 dynamic _dartActionEncode(dynamic value) {
  if (value == null) return null;
@@ -983,204 +1090,22 @@ dynamic _dartActionEncode(dynamic value) {
  if (value is PlacementIdentity) return value.toRecord();
  return value;
 }
-/// Which explicit Model outputs of AddNote also update local Models.
-final class AddNoteStore extends CallStore {
- /// Store every eligible output (the default).
- const AddNoteStore.all() : _mode = 0, saved = null;
- /// Store no output; results are returned unchanged.
- const AddNoteStore.none() : _mode = 1, saved = null;
- /// Choose outputs by name; null leaves an output at the default (stored).
- const AddNoteStore.outputs({this.saved}) : _mode = 2;
- final int _mode;
- final bool? saved;
- @override
- Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (saved != null) 'saved': saved!} };
-}
-/// Which explicit Model outputs of AddTodo also update local Models.
-final class AddTodoStore extends CallStore {
- /// Store every eligible output (the default).
- const AddTodoStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const AddTodoStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of AnnotateTodo also update local Models.
-final class AnnotateTodoStore extends CallStore {
- /// Store every eligible output (the default).
- const AnnotateTodoStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const AnnotateTodoStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of CountTodos also update local Models.
-final class CountTodosStore extends CallStore {
- /// Store every eligible output (the default).
- const CountTodosStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const CountTodosStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of DeleteTodo also update local Models.
-final class DeleteTodoStore extends CallStore {
- /// Store every eligible output (the default).
- const DeleteTodoStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const DeleteTodoStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of EditAndShow also update local Models.
-final class EditAndShowStore extends CallStore {
- /// Store every eligible output (the default).
- const EditAndShowStore.all() : _mode = 0, todo = null;
- /// Store no output; results are returned unchanged.
- const EditAndShowStore.none() : _mode = 1, todo = null;
- /// Choose outputs by name; null leaves an output at the default (stored).
- const EditAndShowStore.outputs({this.todo}) : _mode = 2;
- final int _mode;
- final bool? todo;
- @override
- Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (todo != null) 'todo': todo!} };
-}
-/// Which explicit Model outputs of PublishEntry also update local Models.
-final class PublishEntryStore extends CallStore {
- /// Store every eligible output (the default).
- const PublishEntryStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const PublishEntryStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of Restamp also update local Models.
-final class RestampStore extends CallStore {
- /// Store every eligible output (the default).
- const RestampStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const RestampStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of RetitleTodos also update local Models.
-final class RetitleTodosStore extends CallStore {
- /// Store every eligible output (the default).
- const RetitleTodosStore.all() : _mode = 0, todos = null, first = null;
- /// Store no output; results are returned unchanged.
- const RetitleTodosStore.none() : _mode = 1, todos = null, first = null;
- /// Choose outputs by name; null leaves an output at the default (stored).
- const RetitleTodosStore.outputs({this.todos, this.first}) : _mode = 2;
- final int _mode;
- final bool? todos;
- final bool? first;
- @override
- Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (todos != null) 'todos': todos!, if (first != null) 'first': first!} };
-}
-/// Which explicit Model outputs of SearchTodos also update local Models.
-final class SearchTodosStore extends CallStore {
- /// Store every eligible output (the default).
- const SearchTodosStore.all() : _mode = 0, todos = null, first = null;
- /// Store no output; results are returned unchanged.
- const SearchTodosStore.none() : _mode = 1, todos = null, first = null;
- /// Choose outputs by name; null leaves an output at the default (stored).
- const SearchTodosStore.outputs({this.todos, this.first}) : _mode = 2;
- final int _mode;
- final bool? todos;
- final bool? first;
- @override
- Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (todos != null) 'todos': todos!, if (first != null) 'first': first!} };
-}
-/// Which explicit Model outputs of SendEmail also update local Models.
-final class SendEmailStore extends CallStore {
- /// Store every eligible output (the default).
- const SendEmailStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const SendEmailStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Which explicit Model outputs of TodoPage also update local Models.
-final class TodoPageStore extends CallStore {
- /// Store every eligible output (the default).
- const TodoPageStore.all() : _mode = 0, todos = null;
- /// Store no output; results are returned unchanged.
- const TodoPageStore.none() : _mode = 1, todos = null;
- /// Choose outputs by name; null leaves an output at the default (stored).
- const TodoPageStore.outputs({this.todos}) : _mode = 2;
- final int _mode;
- final bool? todos;
- @override
- Object? toWire() => switch (_mode) { 0 => null, 1 => false, _ => <String, bool>{if (todos != null) 'todos': todos!} };
-}
-/// Which explicit Model outputs of UpdateTodo also update local Models.
-final class UpdateTodoStore extends CallStore {
- /// Store every eligible output (the default).
- const UpdateTodoStore.all() : _mode = 0;
- /// Store no output; results are returned unchanged.
- const UpdateTodoStore.none() : _mode = 1;
- final int _mode;
- @override
- Object? toWire() => _mode == 0 ? null : false;
-}
-/// Mutations resolve after local acceptance (durable); [call] waits for the backend outcome.
-class Mutations {
- final Client client; Mutations(this.client);
- late final DirectMutations call = DirectMutations(client);
- Future<Call<AddNoteOutput>> addNote({required NoteCreateInput note, AddNoteStore? store}) => client.invokeAction<AddNoteOutput>('AddNote', 1, {'note': _dartActionEncode(note)}, (value) { final row = (value as Map).cast<String,dynamic>(); return AddNoteOutput(saved: Note.fromRecord((row['saved'] as Map).cast<String,dynamic>())); }, store: store);
- Future<Call<AddTodoOutput>> addTodo({required TodoCreateInput todo, AddTodoStore? store}) => client.invokeAction<AddTodoOutput>('AddTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
- Future<Call<AnnotateTodoOutput>> annotateTodo({required AnnotateTodoTodoUpdate todo, required String note, required String body, AnnotateTodoStore? store}) => client.invokeAction<AnnotateTodoOutput>('AnnotateTodo', 1, {'todo': _dartActionEncode(todo), 'note': _dartActionEncode(note), 'body': _dartActionEncode(body)}, (_) {}, store: store);
- Future<Call<DeleteTodoOutput>> deleteTodo({required TodoDelete todo, DeleteTodoStore? store}) => client.invokeAction<DeleteTodoOutput>('DeleteTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
- Future<Call<EditAndShowOutput>> editAndShow({required EditAndShowTodoUpdate todo, required String shown, EditAndShowStore? store}) => client.invokeAction<EditAndShowOutput>('EditAndShow', 1, {'todo': _dartActionEncode(todo), 'shown': _dartActionEncode(shown)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EditAndShowOutput(todo: Todo.fromRecord((row['todo'] as Map).cast<String,dynamic>())); }, store: store);
- Future<Call<PublishEntryOutput>> publishEntry({required EntryCreateInput entry, required List<MediaCreateInput> media, required PlacementCreateInput placement, PublishEntryStore? store}) => client.invokeAction<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'media': _dartActionEncode(media), 'placement': _dartActionEncode(placement)}, (_) {}, store: store);
- Future<Call<RestampOutput>> restamp({RestampNoteUpdate? note, required DateTime at, RestampStore? store}) => client.invokeAction<RestampOutput>('Restamp', 1, {if (note != null) 'note': _dartActionEncode(note), 'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RestampOutput(at: DateTime.parse(row['at'] as String)); }, store: store);
- Future<Call<RetitleTodosOutput>> retitleTodos({required String query, required String title, RetitleTodosStore? store}) => client.invokeAction<RetitleTodosOutput>('RetitleTodos', 1, {'query': _dartActionEncode(query), 'title': _dartActionEncode(title)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); }, store: store);
- Future<Call<SendEmailOutput>> sendEmail({required String to, required String subject, required String body, SendEmailStore? store}) => client.invokeAction<SendEmailOutput>('SendEmail', 1, {'to': _dartActionEncode(to), 'subject': _dartActionEncode(subject), 'body': _dartActionEncode(body)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); }, store: store);
- Future<Call<UpdateTodoOutput>> updateTodo({required UpdateTodoTodoUpdate todo, UpdateTodoStore? store}) => client.invokeAction<UpdateTodoOutput>('UpdateTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
-}
-/// Mutations that wait for the backend outcome and applied authority.
-class DirectMutations {
- final Client client; DirectMutations(this.client);
- Future<AddNoteOutput> addNote({required NoteCreateInput note, AddNoteStore? store}) => client.invokeDirectAction<AddNoteOutput>('AddNote', 1, {'note': _dartActionEncode(note)}, (value) { final row = (value as Map).cast<String,dynamic>(); return AddNoteOutput(saved: Note.fromRecord((row['saved'] as Map).cast<String,dynamic>())); }, store: store);
- Future<AddTodoOutput> addTodo({required TodoCreateInput todo, AddTodoStore? store}) => client.invokeDirectAction<AddTodoOutput>('AddTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
- Future<AnnotateTodoOutput> annotateTodo({required AnnotateTodoTodoUpdate todo, required String note, required String body, AnnotateTodoStore? store}) => client.invokeDirectAction<AnnotateTodoOutput>('AnnotateTodo', 1, {'todo': _dartActionEncode(todo), 'note': _dartActionEncode(note), 'body': _dartActionEncode(body)}, (_) {}, store: store);
- Future<DeleteTodoOutput> deleteTodo({required TodoDelete todo, DeleteTodoStore? store}) => client.invokeDirectAction<DeleteTodoOutput>('DeleteTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
- Future<EditAndShowOutput> editAndShow({required EditAndShowTodoUpdate todo, required String shown, EditAndShowStore? store}) => client.invokeDirectAction<EditAndShowOutput>('EditAndShow', 1, {'todo': _dartActionEncode(todo), 'shown': _dartActionEncode(shown)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EditAndShowOutput(todo: Todo.fromRecord((row['todo'] as Map).cast<String,dynamic>())); }, store: store);
- Future<PublishEntryOutput> publishEntry({required EntryCreateInput entry, required List<MediaCreateInput> media, required PlacementCreateInput placement, PublishEntryStore? store}) => client.invokeDirectAction<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'media': _dartActionEncode(media), 'placement': _dartActionEncode(placement)}, (_) {}, store: store);
- Future<RestampOutput> restamp({RestampNoteUpdate? note, required DateTime at, RestampStore? store}) => client.invokeDirectAction<RestampOutput>('Restamp', 1, {if (note != null) 'note': _dartActionEncode(note), 'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RestampOutput(at: DateTime.parse(row['at'] as String)); }, store: store);
- Future<RetitleTodosOutput> retitleTodos({required String query, required String title, RetitleTodosStore? store}) => client.invokeDirectAction<RetitleTodosOutput>('RetitleTodos', 1, {'query': _dartActionEncode(query), 'title': _dartActionEncode(title)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); }, store: store);
- Future<SendEmailOutput> sendEmail({required String to, required String subject, required String body, SendEmailStore? store}) => client.invokeDirectAction<SendEmailOutput>('SendEmail', 1, {'to': _dartActionEncode(to), 'subject': _dartActionEncode(subject), 'body': _dartActionEncode(body)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); }, store: store);
- Future<UpdateTodoOutput> updateTodo({required UpdateTodoTodoUpdate todo, UpdateTodoStore? store}) => client.invokeDirectAction<UpdateTodoOutput>('UpdateTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store);
-}
-/// Queries resolve with the backend result (direct); `once` reuses a saved complete result, [enqueue] accepts them durably and [invalidate] discards saved results.
+/// Named Mutations use the same owned local scope on client and transaction.
+class Mutations extends TransactionMutations { Mutations(super.port); }
+/// Query results are invocation snapshots.
 class Queries {
  final Client client; Queries(this.client);
- late final QueuedQueries enqueue = QueuedQueries(client);
  late final QueryInvalidations invalidate = QueryInvalidations(client);
- Future<CountTodosOutput> countTodos({CountTodosStore? store, bool once = false, bool refresh = false}) => client.invokeQuery<CountTodosOutput>('CountTodos', 1, {}, (value) { final row = (value as Map).cast<String,dynamic>(); return CountTodosOutput(count: row['count'] as int); }, store: store, once: once, refresh: refresh);
- Future<SearchTodosOutput> searchTodos({required String? query, SearchTodosStore? store, bool once = false, bool refresh = false}) => client.invokeQuery<SearchTodosOutput>('SearchTodos', 2, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SearchTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>()), count: row['count'] as int, labels: (row['labels'] as List).map((e) => e as String).toList(), hint: row['hint'] == null ? null : row['hint'] as String); }, store: store, once: once, refresh: refresh);
- Future<TodoPageOutput> todoPage({required String? query, TodoPageStore? store, bool once = false, bool refresh = false}) => client.invokeQuery<TodoPageOutput>('TodoPage', 1, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TodoPageOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), count: row['count'] as int, asOf: DateTime.parse(row['asOf'] as String), next: row['next'] == null ? null : row['next'] as String); }, store: store, once: once, refresh: refresh);
-}
-/// Queries accepted durably; each reads when it executes.
-class QueuedQueries {
- final Client client; QueuedQueries(this.client);
- Future<Call<CountTodosOutput>> countTodos({CountTodosStore? store}) => client.invokeAction<CountTodosOutput>('CountTodos', 1, {}, (value) { final row = (value as Map).cast<String,dynamic>(); return CountTodosOutput(count: row['count'] as int); }, store: store);
- Future<Call<SearchTodosOutput>> searchTodos({required String? query, SearchTodosStore? store}) => client.invokeAction<SearchTodosOutput>('SearchTodos', 2, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SearchTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>()), count: row['count'] as int, labels: (row['labels'] as List).map((e) => e as String).toList(), hint: row['hint'] == null ? null : row['hint'] as String); }, store: store);
- Future<Call<TodoPageOutput>> todoPage({required String? query, TodoPageStore? store}) => client.invokeAction<TodoPageOutput>('TodoPage', 1, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TodoPageOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), count: row['count'] as int, asOf: DateTime.parse(row['asOf'] as String), next: row['next'] == null ? null : row['next'] as String); }, store: store);
+ Future<CountTodosOutput> countTodos({bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<CountTodosOutput>('CountTodos', 1, {}, (value) { final row = (value as Map).cast<String,dynamic>(); return CountTodosOutput(count: row['count'] as int); }, store: store, once: once, refresh: refresh);
+ Future<SearchTodosOutput> searchTodos({required String? query, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<SearchTodosOutput>('SearchTodos', 2, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SearchTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>()), count: row['count'] as int, labels: (row['labels'] as List).map((e) => e as String).toList(), hint: row['hint'] == null ? null : row['hint'] as String); }, store: store, once: once, refresh: refresh);
+ Future<TodoPageOutput> todoPage({required String? query, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<TodoPageOutput>('TodoPage', 1, {'query': _dartActionEncode(query)}, (value) { final row = (value as Map).cast<String,dynamic>(); return TodoPageOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), count: row['count'] as int, asOf: DateTime.parse(row['asOf'] as String), next: row['next'] == null ? null : row['next'] as String); }, store: store, once: once, refresh: refresh);
 }
 /// Discards the saved `once` results of one Query argument set, for every store policy.
 class QueryInvalidations {
  final Client client; QueryInvalidations(this.client);
- Future<void> countTodos() => client.invalidateQuery('CountTodos', 1, {});
- Future<void> searchTodos({required String? query}) => client.invalidateQuery('SearchTodos', 2, {'query': _dartActionEncode(query)});
- Future<void> todoPage({required String? query}) => client.invalidateQuery('TodoPage', 1, {'query': _dartActionEncode(query)});
+ Future<void> countTodos() => this.client.invalidateQuery('CountTodos', 1, {});
+ Future<void> searchTodos({required String? query}) => this.client.invalidateQuery('SearchTodos', 2, {'query': _dartActionEncode(query)});
+ Future<void> todoPage({required String? query}) => this.client.invalidateQuery('TodoPage', 1, {'query': _dartActionEncode(query)});
 }
 class LiveModels { final Client port; LiveModels(this.port);
  late final TodoLiveModel todo = TodoLiveModel(port);
@@ -1198,11 +1123,7 @@ class TxModels { final WritePort port; TxModels(this.port);
  late final MediaTxModel media = MediaTxModel(port);
  late final PlacementTxModel placement = PlacementTxModel(port);
 }
-/// The Streams this client follows; `subscribe` answers with the runtime's handle for one persistent registration.
-class Streams { final Client client; Streams(this.client);
- Future<Subscription> subscribe(String stream) => client.subscribeStream(stream);
-}
-/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local storage and onStore.
+/// One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local cache writes.
 class FetchModels { final Client _client; FetchModels(this._client);
  Future<Todo?> todo(TodoIdentity identity, {bool store = true}) => _client.fetchModel('Todo', 1, identity.toRecord(), Todo.fromRecord, store: store);
  Future<Note?> note(NoteIdentity identity, {bool store = true}) => _client.fetchModel('Note', 1, identity.toRecord(), Note.fromRecord, store: store);
@@ -1211,70 +1132,92 @@ class FetchModels { final Client _client; FetchModels(this._client);
  Future<Media?> media(MediaIdentity identity, {bool store = true}) => _client.fetchModel('Media', 1, identity.toRecord(), Media.fromRecord, store: store);
  Future<Placement?> placement(PlacementIdentity identity, {bool store = true}) => _client.fetchModel('Placement', 1, identity.toRecord(), Placement.fromRecord, store: store);
 }
-sealed class StoreChange<I, M> { final I identity; const StoreChange(this.identity); }
-final class StoreUpsert<I, M> extends StoreChange<I, M> { final M row; const StoreUpsert(super.identity, this.row); }
-final class StoreDelete<I, M> extends StoreChange<I, M> { const StoreDelete(super.identity); }
-typedef StoreHandler<I, M> = FutureOr<void> Function(GeneratedTransaction tx, List<StoreChange<I, M>> changes);
-class StoreHooks {
- final StoreHandler<TodoIdentity,Todo>? todo;
- final StoreHandler<NoteIdentity,Note>? note;
- final StoreHandler<CompositionIdentity,Composition>? composition;
- final StoreHandler<EntryIdentity,Entry>? entry;
- final StoreHandler<MediaIdentity,Media>? media;
- final StoreHandler<PlacementIdentity,Placement>? placement;
- const StoreHooks({this.todo,this.note,this.composition,this.entry,this.media,this.placement});
-}
-class GeneratedTransaction { final Transaction transaction; late final TxModels models = TxModels(transaction); late final streams = transaction.streams; GeneratedTransaction(this.transaction); }
-/// A Mutation's `local` callback context: typed local Model reads and writes, recorded as that Mutation's companions. It queues no Mutation and has no Streams, watch or savepoints.
+class GeneratedTransaction { final Transaction transaction; late final TxModels models=TxModels(transaction); GeneratedTransaction(this.transaction); }
 class CompanionContext { final TxModels models; CompanionContext(WritePort port) : models = TxModels(port); }
-/// Mutations queued in an application transaction: each returns its [Call] after its optimism and `local` callback ran; the Call is sendable only after the local commit. There is no `call` route.
 class TransactionMutations {
- final SubmitMutationPort _port; TransactionMutations(this._port);
- Future<Call<AddNoteOutput>> addNote({required NoteCreateInput note, AddNoteStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<AddNoteOutput>('AddNote', 1, {'note': _dartActionEncode(note)}, (value) { final row = (value as Map).cast<String,dynamic>(); return AddNoteOutput(saved: Note.fromRecord((row['saved'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<AddTodoOutput>> addTodo({required TodoCreateInput todo, AddTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<AddTodoOutput>('AddTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<AnnotateTodoOutput>> annotateTodo({required AnnotateTodoTodoUpdate todo, required String note, required String body, AnnotateTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<AnnotateTodoOutput>('AnnotateTodo', 1, {'todo': _dartActionEncode(todo), 'note': _dartActionEncode(note), 'body': _dartActionEncode(body)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<DeleteTodoOutput>> deleteTodo({required TodoDelete todo, DeleteTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<DeleteTodoOutput>('DeleteTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<EditAndShowOutput>> editAndShow({required EditAndShowTodoUpdate todo, required String shown, EditAndShowStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<EditAndShowOutput>('EditAndShow', 1, {'todo': _dartActionEncode(todo), 'shown': _dartActionEncode(shown)}, (value) { final row = (value as Map).cast<String,dynamic>(); return EditAndShowOutput(todo: Todo.fromRecord((row['todo'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<PublishEntryOutput>> publishEntry({required EntryCreateInput entry, required List<MediaCreateInput> media, required PlacementCreateInput placement, PublishEntryStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<PublishEntryOutput>('PublishEntry', 1, {'entry': _dartActionEncode(entry), 'media': _dartActionEncode(media), 'placement': _dartActionEncode(placement)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<RestampOutput>> restamp({RestampNoteUpdate? note, required DateTime at, RestampStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RestampOutput>('Restamp', 1, {if (note != null) 'note': _dartActionEncode(note), 'at': _dartActionEncode(at)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RestampOutput(at: DateTime.parse(row['at'] as String)); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<RetitleTodosOutput>> retitleTodos({required String query, required String title, RetitleTodosStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<RetitleTodosOutput>('RetitleTodos', 1, {'query': _dartActionEncode(query), 'title': _dartActionEncode(title)}, (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<SendEmailOutput>> sendEmail({required String to, required String subject, required String body, SendEmailStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<SendEmailOutput>('SendEmail', 1, {'to': _dartActionEncode(to), 'subject': _dartActionEncode(subject), 'body': _dartActionEncode(body)}, (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); }, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
- Future<Call<UpdateTodoOutput>> updateTodo({required UpdateTodoTodoUpdate todo, UpdateTodoStore? store, Future<void> Function(CompanionContext local)? local}) => _port.submitMutation<UpdateTodoOutput>('UpdateTodo', 1, {'todo': _dartActionEncode(todo)}, (_) {}, store: store, local: local == null ? null : (port) => local(CompanionContext(port)));
+ final SubmitMutationPort port; TransactionMutations(this.port);
+ late final AddNoteMutation addNote = AddNoteMutation(port);
+ late final AddTodoMutation addTodo = AddTodoMutation(port);
+ late final AnnotateTodoMutation annotateTodo = AnnotateTodoMutation(port);
+ late final DeleteTodoMutation deleteTodo = DeleteTodoMutation(port);
+ late final EditAndShowMutation editAndShow = EditAndShowMutation(port);
+ late final PublishEntryMutation publishEntry = PublishEntryMutation(port);
+ late final RestampMutation restamp = RestampMutation(port);
+ late final RetitleTodosMutation retitleTodos = RetitleTodosMutation(port);
+ late final SendEmailMutation sendEmail = SendEmailMutation(port);
+ late final UpdateTodoMutation updateTodo = UpdateTodoMutation(port);
 }
-/// The application transaction: local Models and Streams, [mutations], which queue typed Mutations in the same local commit, and [rejections] / [failures], which resolve unsent work in it: each takes effect for the rest of the callback and commits or rolls back with it.
+class AddNoteMutation {
+ final SubmitMutationPort port; AddNoteMutation(this.port);
+ Map<String,dynamic> _encode(AddNoteInput input) => {'note': _dartActionEncode(input.note)};
+ Future<Call<AddNoteOutput>> call(AddNoteInput input) => port.submitMutation<AddNoteOutput>('AddNote', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return AddNoteOutput(saved: Note.fromRecord((row['saved'] as Map).cast<String,dynamic>())); });
+ Future<Call<AddNoteOutput>> withTransaction(FutureOr<AddNoteInput> Function(CompanionContext tx) body) => port.submitMutation<AddNoteOutput>('AddNote', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return AddNoteOutput(saved: Note.fromRecord((row['saved'] as Map).cast<String,dynamic>())); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class AddTodoMutation {
+ final SubmitMutationPort port; AddTodoMutation(this.port);
+ Map<String,dynamic> _encode(AddTodoInput input) => {'todo': _dartActionEncode(input.todo)};
+ Future<Call<AddTodoOutput>> call(AddTodoInput input) => port.submitMutation<AddTodoOutput>('AddTodo', 1, _encode(input), (_) {});
+ Future<Call<AddTodoOutput>> withTransaction(FutureOr<AddTodoInput> Function(CompanionContext tx) body) => port.submitMutation<AddTodoOutput>('AddTodo', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class AnnotateTodoMutation {
+ final SubmitMutationPort port; AnnotateTodoMutation(this.port);
+ Map<String,dynamic> _encode(AnnotateTodoInput input) => {'todo': _dartActionEncode(input.todo), 'note': _dartActionEncode(input.note), 'body': _dartActionEncode(input.body)};
+ Future<Call<AnnotateTodoOutput>> call(AnnotateTodoInput input) => port.submitMutation<AnnotateTodoOutput>('AnnotateTodo', 1, _encode(input), (_) {});
+ Future<Call<AnnotateTodoOutput>> withTransaction(FutureOr<AnnotateTodoInput> Function(CompanionContext tx) body) => port.submitMutation<AnnotateTodoOutput>('AnnotateTodo', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class DeleteTodoMutation {
+ final SubmitMutationPort port; DeleteTodoMutation(this.port);
+ Map<String,dynamic> _encode(DeleteTodoInput input) => {'todo': _dartActionEncode(input.todo)};
+ Future<Call<DeleteTodoOutput>> call(DeleteTodoInput input) => port.submitMutation<DeleteTodoOutput>('DeleteTodo', 1, _encode(input), (_) {});
+ Future<Call<DeleteTodoOutput>> withTransaction(FutureOr<DeleteTodoInput> Function(CompanionContext tx) body) => port.submitMutation<DeleteTodoOutput>('DeleteTodo', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class EditAndShowMutation {
+ final SubmitMutationPort port; EditAndShowMutation(this.port);
+ Map<String,dynamic> _encode(EditAndShowInput input) => {'todo': _dartActionEncode(input.todo), 'shown': _dartActionEncode(input.shown)};
+ Future<Call<EditAndShowOutput>> call(EditAndShowInput input) => port.submitMutation<EditAndShowOutput>('EditAndShow', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return EditAndShowOutput(todo: Todo.fromRecord((row['todo'] as Map).cast<String,dynamic>())); });
+ Future<Call<EditAndShowOutput>> withTransaction(FutureOr<EditAndShowInput> Function(CompanionContext tx) body) => port.submitMutation<EditAndShowOutput>('EditAndShow', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return EditAndShowOutput(todo: Todo.fromRecord((row['todo'] as Map).cast<String,dynamic>())); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class PublishEntryMutation {
+ final SubmitMutationPort port; PublishEntryMutation(this.port);
+ Map<String,dynamic> _encode(PublishEntryInput input) => {'entry': _dartActionEncode(input.entry), 'media': _dartActionEncode(input.media), 'placement': _dartActionEncode(input.placement)};
+ Future<Call<PublishEntryOutput>> call(PublishEntryInput input) => port.submitMutation<PublishEntryOutput>('PublishEntry', 1, _encode(input), (_) {});
+ Future<Call<PublishEntryOutput>> withTransaction(FutureOr<PublishEntryInput> Function(CompanionContext tx) body) => port.submitMutation<PublishEntryOutput>('PublishEntry', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class RestampMutation {
+ final SubmitMutationPort port; RestampMutation(this.port);
+ Map<String,dynamic> _encode(RestampInput input) => {'note': _dartActionEncode(input.note), 'at': _dartActionEncode(input.at)};
+ Future<Call<RestampOutput>> call(RestampInput input) => port.submitMutation<RestampOutput>('Restamp', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return RestampOutput(at: DateTime.parse(row['at'] as String)); });
+ Future<Call<RestampOutput>> withTransaction(FutureOr<RestampInput> Function(CompanionContext tx) body) => port.submitMutation<RestampOutput>('Restamp', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return RestampOutput(at: DateTime.parse(row['at'] as String)); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class RetitleTodosMutation {
+ final SubmitMutationPort port; RetitleTodosMutation(this.port);
+ Map<String,dynamic> _encode(RetitleTodosInput input) => {'query': _dartActionEncode(input.query), 'title': _dartActionEncode(input.title)};
+ Future<Call<RetitleTodosOutput>> call(RetitleTodosInput input) => port.submitMutation<RetitleTodosOutput>('RetitleTodos', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); });
+ Future<Call<RetitleTodosOutput>> withTransaction(FutureOr<RetitleTodosInput> Function(CompanionContext tx) body) => port.submitMutation<RetitleTodosOutput>('RetitleTodos', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return RetitleTodosOutput(todos: (row['todos'] as List).map((e) => Todo.fromRecord((e as Map).cast<String,dynamic>())).toList(), first: row['first'] == null ? null : Todo.fromRecord((row['first'] as Map).cast<String,dynamic>())); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class SendEmailMutation {
+ final SubmitMutationPort port; SendEmailMutation(this.port);
+ Map<String,dynamic> _encode(SendEmailInput input) => {'to': _dartActionEncode(input.to), 'subject': _dartActionEncode(input.subject), 'body': _dartActionEncode(input.body)};
+ Future<Call<SendEmailOutput>> call(SendEmailInput input) => port.submitMutation<SendEmailOutput>('SendEmail', 1, _encode(input), (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); });
+ Future<Call<SendEmailOutput>> withTransaction(FutureOr<SendEmailInput> Function(CompanionContext tx) body) => port.submitMutation<SendEmailOutput>('SendEmail', 1, null, (value) { final row = (value as Map).cast<String,dynamic>(); return SendEmailOutput(messageId: row['messageId'] as String); }, input: (port) async => _encode(await body(CompanionContext(port))));
+}
+class UpdateTodoMutation {
+ final SubmitMutationPort port; UpdateTodoMutation(this.port);
+ Map<String,dynamic> _encode(UpdateTodoInput input) => {'todo': _dartActionEncode(input.todo)};
+ Future<Call<UpdateTodoOutput>> call(UpdateTodoInput input) => port.submitMutation<UpdateTodoOutput>('UpdateTodo', 1, _encode(input), (_) {});
+ Future<Call<UpdateTodoOutput>> withTransaction(FutureOr<UpdateTodoInput> Function(CompanionContext tx) body) => port.submitMutation<UpdateTodoOutput>('UpdateTodo', 1, null, (_) {}, input: (port) async => _encode(await body(CompanionContext(port))));
+}
 class ApplicationTransaction extends GeneratedTransaction { late final TransactionMutations mutations = TransactionMutations(transaction); late final rejections = transaction.rejections; late final failures = transaction.failures; ApplicationTransaction(super.transaction); }
 class GeneratedClient {
- /// The runtime handle (internal); application code uses the members below.
- final Client client; RuntimeConnection? connection; late final LiveModels models = LiveModels(client);
- late final Streams streams = Streams(client);
- /// Durable by default; `mutations.call` waits for the backend outcome.
- late final Mutations mutations = Mutations(client);
- /// Direct by default; `queries.enqueue` accepts durably.
- late final Queries queries = Queries(client);
- /// One-shot remote reads of one Model by identity through its Loader; stored locally unless `store: false`.
- late final FetchModels fetch = FetchModels(client);
- GeneratedClient._(this.client, this.connection);
- /// Opens the local database at [path]. With a [server], the connection starts immediately and retries on its own.
- static Future<GeneratedClient> open({required String path, SyncServer? server, String? libraryPath, Map<String,dynamic>? migration, bool discardPending = false, StoreHooks? onStore, Map<String, PrerequisiteHandler>? prerequisites, void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async {
-  final rawHooks = <String, StoreHook>{};
-  final todoHook = onStore?.todo;
-  if (todoHook != null) rawHooks['Todo'] = (tx, changes) => todoHook(GeneratedTransaction(tx), changes.map<StoreChange<TodoIdentity,Todo>>((change) { final identity=TodoIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<TodoIdentity,Todo>(identity,Todo.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<TodoIdentity,Todo>(identity); }).toList());
-  final noteHook = onStore?.note;
-  if (noteHook != null) rawHooks['Note'] = (tx, changes) => noteHook(GeneratedTransaction(tx), changes.map<StoreChange<NoteIdentity,Note>>((change) { final identity=NoteIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<NoteIdentity,Note>(identity,Note.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<NoteIdentity,Note>(identity); }).toList());
-  final compositionHook = onStore?.composition;
-  if (compositionHook != null) rawHooks['Composition'] = (tx, changes) => compositionHook(GeneratedTransaction(tx), changes.map<StoreChange<CompositionIdentity,Composition>>((change) { final identity=CompositionIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<CompositionIdentity,Composition>(identity,Composition.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<CompositionIdentity,Composition>(identity); }).toList());
-  final entryHook = onStore?.entry;
-  if (entryHook != null) rawHooks['Entry'] = (tx, changes) => entryHook(GeneratedTransaction(tx), changes.map<StoreChange<EntryIdentity,Entry>>((change) { final identity=EntryIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<EntryIdentity,Entry>(identity,Entry.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<EntryIdentity,Entry>(identity); }).toList());
-  final mediaHook = onStore?.media;
-  if (mediaHook != null) rawHooks['Media'] = (tx, changes) => mediaHook(GeneratedTransaction(tx), changes.map<StoreChange<MediaIdentity,Media>>((change) { final identity=MediaIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<MediaIdentity,Media>(identity,Media.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<MediaIdentity,Media>(identity); }).toList());
-  final placementHook = onStore?.placement;
-  if (placementHook != null) rawHooks['Placement'] = (tx, changes) => placementHook(GeneratedTransaction(tx), changes.map<StoreChange<PlacementIdentity,Placement>>((change) { final identity=PlacementIdentity.fromRecord((change['identity'] as Map).cast<String,dynamic>()); return change['kind'] == 'upsert' ? StoreUpsert<PlacementIdentity,Placement>(identity,Placement.fromRecord((change['row'] as Map).cast<String,dynamic>())) : StoreDelete<PlacementIdentity,Placement>(identity); }).toList());
-  final client = await Client.open(path:path, schema:schema, libraryPath:libraryPath, migration:migration, discardPending:discardPending, onStore:rawHooks, prerequisites:prerequisites);
-  try {
-  final connection = server == null ? null : await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
-  return GeneratedClient._(client, connection);
-  } catch (_) { try { await client.close(); } catch (_) {} rethrow; }
- }
+ final Client client; RuntimeConnection? get connection => client.connection; late final LiveModels models=LiveModels(client);
+ late final Mutations mutations=Mutations(client);
+ late final Queries queries=Queries(client);
+ late final FetchModels fetch=FetchModels(client);
+ GeneratedClient._(this.client);
+ static Future<GeneratedClient> open({required String path, required String stream, required StoreConnection connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
+ Future<void> bootstrap() => client.bootstrap();
+ Future<RuntimeConnection> connect(SyncServer server,{void Function(Object)? onError,Future<void> Function()? refreshAuth,Duration directTimeout=const Duration(seconds:30)}) => client.connect(server,onError:onError,refreshAuth:refreshAuth,directTimeout:directTimeout);
+ Future<void> resetStore({bool discardPending=false}) => client.resetStore(discardPending:discardPending);
  Future<T> transaction<T>(Future<T> Function(ApplicationTransaction tx) body) => client.transaction((tx) => body(ApplicationTransaction(tx)));
  /// This device's durable client identity.
  String get clientId => client.clientId;
@@ -1295,8 +1238,6 @@ class GeneratedClient {
  late final failures = client.failures;
  /// The queue of unsettled acts: `watchPending`.
  late final outbound = client.outbound;
- /// Start the background connection when `open` was called without a server.
- Future<RuntimeConnection> connect(SyncServer server, {void Function(Object)? onError, Future<void> Function()? refreshAuth, Duration directTimeout = const Duration(seconds: 30)}) async => connection = await client.connect(server, onError:onError, refreshAuth:refreshAuth, directTimeout:directTimeout);
  /// Escape hatch: an untyped structured query.
  Future<List<Map<String,dynamic>>> querySpec(String model, Map<String,dynamic> query) => client.querySpec(model, query);
  /// Escape hatch: read-only SQL over the local database.

@@ -11,6 +11,8 @@ import { Bridge } from "../../../packages/client-js/bridge.mts";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import { Transaction } from "../../../packages/client-js/transaction.mts";
 
+const openBridge=(carrier,request,install)=>Bridge.open(carrier,{binding:{backend:"sdk-test",viewer:"viewer",stream:"User:viewer",contract:"v04"},...request},install);
+
 // The SDK Bridge over the Rust-owned client runtime (#134): request routing,
 // callback transactions, wake/drain dispatch and lifecycle, on the real
 // Node carrier.
@@ -75,7 +77,7 @@ async function pending(promise, ms = 50) {
 }
 async function withBridge(body, carrier = native) {
   const directory = await mkdtemp(join(tmpdir(), "axton-bridge-"));
-  const { bridge, opened } = await Bridge.open(carrier, {
+  const { bridge, opened } = await openBridge(carrier, {
     path: join(directory, "client.sqlite"),
     schema,
   });
@@ -339,7 +341,7 @@ test("a failed open rejects with the engine message and detaches its runtime", a
   try {
     const missing = join(directory, "missing", "deeper", "client.sqlite");
     await assert.rejects(
-      Bridge.open(carrier, { path: missing, schema }),
+      openBridge(carrier, { path: missing, schema }),
       (error) =>
         error instanceof Error &&
         error.message.length > 0 &&
@@ -351,7 +353,7 @@ test("a failed open rejects with the engine message and detaches its runtime", a
       () => native.runtimeSubmit(opened[0], JSON.stringify({ type: "close" })),
       /client_closed/,
     );
-    const { bridge } = await Bridge.open(carrier, {
+    const { bridge } = await openBridge(carrier, {
       path: join(directory, "client.sqlite"),
       schema,
     });
@@ -637,7 +639,7 @@ test("the bridge dispatches every fixture event and answers effects it has no ha
       detached.push(runtimeId);
     },
   };
-  const { bridge, opened } = await Bridge.open(carrier, {
+  const { bridge, opened } = await openBridge(carrier, {
     path: "unused",
     schema,
   });
@@ -751,7 +753,7 @@ async function scripted(respond = () => [], options = {}) {
     runtimeDrain: () => JSON.stringify(outbox.splice(0)),
     runtimeDetach() {},
   };
-  const { bridge } = await Bridge.open(carrier, { path: "unused", schema, ...options });
+  const { bridge } = await openBridge(carrier, { path: "unused", schema, ...options });
   return {
     bridge,
     submitted,
@@ -906,7 +908,7 @@ function script(source, flags = []) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      [...flags, "--input-type=module", "-e", source],
+      [...flags, "--input-type=module", "-e", "const openBridge=(carrier,request,install)=>Bridge.open(carrier,{binding:{backend:\"sdk-test\",viewer:\"viewer\",stream:\"User:viewer\",contract:\"v04\"},...request},install);\n" + source],
       { timeout: 20000 },
       (error, stdout, stderr) =>
         resolve({
@@ -936,7 +938,7 @@ const path = join(mkdtempSync(join(tmpdir(), "axton-bridge-exit-")), "client.sql
 
 test("an outstanding task keeps the process alive until it settles", async () => {
   const { code, stdout, stderr } = await script(`${prelude}
-const { bridge } = await Bridge.open(native, { path, schema });
+const { bridge } = await openBridge(native, { path, schema });
 await bridge.task(${JSON.stringify(create("x", "kept"))});
 const row = await bridge.task(${JSON.stringify(read("x"))});
 console.log("read " + row.text);
@@ -948,7 +950,7 @@ console.log("read " + row.text);
 test("an idle open client does not keep the process alive", async () => {
   const started = Date.now();
   const { code, stdout, stderr } = await script(`${prelude}
-await Bridge.open(native, { path, schema });
+await openBridge(native, { path, schema });
 console.log("opened");
 `);
   assert.equal(code, 0, stderr);
@@ -1045,10 +1047,10 @@ test("a store callback dispatches without a public task and snapshots its handle
   };
   const called = [];
   const handlers = { Entry: async (_tx, changes) => called.push(changes) };
-  const { bridge } = await Bridge.open(carrier,
+  const { bridge } = await openBridge(carrier,
     { path: "unused", schema, onStore: handlers });
   handlers.Entry = () => { throw Error("replacement must not run"); };
-  assert.deepEqual(opened.storeHooks, ["Entry"]);
+  assert.equal(opened.storeHooks, undefined);
   assert.equal("onStore" in opened, false);
   events.push({ type: "effect", effectId: "store1", operation: {
     kind: "storeCallback", transactionId: "tx1", model: "Entry",
@@ -1086,159 +1088,13 @@ test("store effect cancellation aborts an unresolved callback and fences its ans
   await bridge.close();
 });
 
-test("joined once callers and connection onError retain one store hook cause", async () => {
-  const thrown = Error("hook broke");
-  let wake;
-  const outbox = [];
-  const requests = [];
-  const carrier = {
-    runtimeOpen(request, notify) {
-      wake = notify;
-      outbox.push({ type: "taskCompleted", requestId: JSON.parse(request).requestId,
-        ok: true, value: { clientId: "c", schema: {} } });
-      setImmediate(() => wake("1"));
-      return "1";
-    },
-    runtimeSubmit(_id, message) {
-      const input = JSON.parse(message);
-      if (input.type === "task" && input.command.kind === "invoke") requests.push(input.requestId);
-      if (input.type === "task" && input.command.kind === "connect")
-        outbox.push({ type: "taskCompleted", requestId: input.requestId, ok: true, value: null });
-      if (input.type === "callbackResult") {
-        assert.equal(input.ok, false);
-        outbox.push({ type: "report", diagnostic: { kind: "storeHook",
-          code: "store_hook_failed", model: "Entry", path: "direct",
-          message: input.error, callbackEffectId: input.effectId } });
-        for (const requestId of requests)
-          outbox.push({ type: "taskCompleted", requestId, ok: false,
-            error: "hook broke", details: { code: "store_hook_failed",
-              model: "Entry", path: "direct", callbackEffectId: input.effectId } });
-      }
-      if (input.type === "close") outbox.push({ type: "runtimeClosed" });
-      setImmediate(() => wake("1"));
-    },
-    runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
-  };
-  const Client = createClient(carrier, Transaction, () => ({
-    push: async () => "", open() {},
-  }));
-  const reported = [];
-  const client = await Client.open({ path: "unused", schema,
-    onStore: { Entry: async () => { throw thrown; } } });
-  try {
-    await client.connect({ url: "http://unused", token: "token" },
-      { onError: (error) => reported.push(error) });
-    const a = client.invokeQuery("Lookup", 1, {}, (value) => value, { once: true });
-    const b = client.invokeQuery("Lookup", 1, {}, (value) => value, { once: true });
-    assert.equal(requests.length, 2);
-    outbox.push({ type: "effect", effectId: "store3", operation: {
-      kind: "storeCallback", transactionId: "tx3", model: "Entry", changes: [],
-    } });
-    wake("1");
-    const [first, second] = await Promise.all([a.catch(e => e), b.catch(e => e)]);
-    assert.equal(first.code, "store_hook_failed");
-    assert.equal(second.code, "store_hook_failed");
-    assert.equal(first.cause, thrown);
-    assert.equal(second.cause, thrown);
-    assert.equal(reported.length, 1);
-    assert.equal(reported[0].cause, thrown);
-    assert.equal(reported[0].model, "Entry");
-    assert.equal(reported[0].path, "direct");
-  } finally { await client.close(); }
-});
-
-test("store hooks use transaction guards, savepoints, and immediate cancellation", async () => {
-  let wake;
-  const outbox = [];
-  const submitted = [];
-  const carrier = {
-    runtimeOpen(request, notify) {
-      wake = notify;
-      outbox.push({ type: "taskCompleted", requestId: JSON.parse(request).requestId,
-        ok: true, value: { clientId: "c", schema: {} } });
-      setImmediate(() => wake("1"));
-      return "1";
-    },
-    runtimeSubmit(_id, message) {
-      const input = JSON.parse(message);
-      submitted.push(input);
-      if (input.type === "transactionCommand")
-        outbox.push({ type: "taskCompleted", requestId: input.requestId,
-          ok: true, value: input.command.kind === "savepoint" ? { scope: "sp1" } : null });
-      if (input.type === "close") outbox.push({ type: "runtimeClosed" });
-      setImmediate(() => wake("1"));
-    },
-    runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
-  };
-  const Client = createClient(carrier, Transaction, () => { throw Error("no network"); });
-  let escaped, held;
-  const entered = deferred();
-  const gate = deferred();
-  const client = await Client.open({ path: "unused", schema, onStore: {
-    Entry: async (tx, changes) => {
-      const id = changes[0]?.identity?.id;
-      if (id === "hold") { held = tx; entered.resolve(); await gate.promise; return; }
-      escaped = tx;
-      assert.match((await client.read("Entry", { id }).catch(e => e)).message, /transaction_active/);
-      if (id === "unawaited") { void tx.streams.subscribe("x"); return; }
-      if (id === "nested") {
-        await tx.savepoint(() => tx.savepoint(async () => { throw Error("nested failure"); }));
-        return;
-      }
-      await tx.streams.subscribe("x");
-      await tx.savepoint(async () => { await tx.streams.unsubscribe("x"); });
-    },
-  } });
-  const effect = (effectId, id) => {
-    outbox.push({ type: "effect", effectId, operation: { kind: "storeCallback",
-      transactionId: `tx-${effectId}`, model: "Entry",
-      changes: [{ kind: "delete", identity: { id } }] } });
-    wake("1");
-  };
-  const answer = async (effectId) => {
-    for (let i = 0; i < 20; i++) {
-      const result = submitted.find(x => x.type === "callbackResult" && x.effectId === effectId);
-      if (result) return result;
-      await new Promise(resolve => setImmediate(resolve));
-    }
-    assert.fail(`missing callbackResult for ${effectId}`);
-  };
-  try {
-    effect("ok", "normal");
-    assert.equal((await answer("ok")).ok, true);
-    assert.deepEqual(submitted.filter(x => x.type === "transactionCommand").map(x => x.command.kind),
-      ["stream", "savepoint", "stream", "release"]);
-    await assert.rejects(escaped.read("Entry", { id: "normal" }), /closed/);
-    effect("bad", "nested");
-    assert.match((await answer("bad")).error, /nested failure/);
-    effect("unawaited", "unawaited");
-    assert.match((await answer("unawaited")).error, /unawaited transaction operation/);
-    effect("held", "hold");
-    await entered.promise;
-    outbox.push({ type: "cancelEffect", effectId: "held" });
-    wake("1");
-    await assert.rejects(held.read("Entry", { id: "hold" }), /closed/);
-  } finally { gate.resolve(); await client.close(); }
-});
-
-test("transaction Stream helpers commit local intent without a Subscription handle", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "axton-tx-scope-"));
-  const Client = createClient(native, Transaction, () => { throw Error("no network"); });
-  const client = await Client.open({ path: join(directory, "db"), schema });
-  try {
-    await client.transaction(async (tx) => {
-      assert.equal(await tx.streams.subscribe("project:p1"), undefined);
-      assert.equal(await tx.streams.subscribe("project:p1"), undefined);
-    });
-    assert.deepEqual((await client.syncState()).streams, ["project:p1"]);
-    await client.transaction(async (tx) => {
-      assert.equal(await tx.streams.unsubscribe("project:p1"), undefined);
-    });
-    assert.deepEqual((await client.syncState()).streams, []);
-  } finally {
-    await client.close();
-    await rm(directory, { recursive: true, force: true });
-  }
+test("public transaction Stream mutation and custom store hook surfaces are absent",async()=>{
+ const directory=await mkdtemp(join(tmpdir(),"axton-bound-surface-"));
+ const Client=createClient(native,Transaction,()=>({open(){},async push(){throw Error("offline");}}));
+ const client=await Client.open({path:join(directory,"db"),schema,stream:"User:viewer",connection:{url:"http://127.0.0.1:1",token:"offline",identity:{backend:"sdk-test",viewer:"viewer",contract:"v04"}}});
+ try {assert.equal(client.streams,undefined);assert.equal(client.loads,undefined);
+  await client.transaction(async tx=>{assert.equal(tx.streams,undefined);assert.equal(tx.loads,undefined);});
+ }finally{await client.close();await rm(directory,{recursive:true,force:true});}
 });
 
 test("cancelled raw store callback releases decoded changes while user work is unresolved", async () => {
@@ -1263,7 +1119,7 @@ test("cancelled raw store callback releases decoded changes while user work is u
       },
       runtimeDrain: () => JSON.stringify(outbox.splice(0)), runtimeDetach() {},
     };
-    const { bridge } = await Bridge.open(carrier, {path:'unused',schema:{},
+    const { bridge } = await openBridge(carrier, {path:'unused',schema:{},
       onStore:{Entry:(_tx,changes)=>{reference=new WeakRef(changes);return gate;}}});
     outbox.push({type:'effect',effectId:'e',operation:{kind:'storeCallback',
       transactionId:'t',model:'Entry',changes:[{kind:'delete',identity:{id:'x'}}]}});

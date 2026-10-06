@@ -24,95 +24,118 @@ export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
- stream(names: string | readonly string[]): Stream;
+ readonly stream: Stream;
+ streams(names: readonly string[]): Stream;
  invalidate: RecordDeclaration;
 }
 export interface QueryContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
+ readonly stream: LoadStream;
+ streams(names: readonly string[]): LoadStream;
 }
 export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
- stream(names: string | readonly string[]): Stream;
+ streams(names: readonly string[]): Stream;
  invalidate: RecordDeclaration;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
- stream(names: string | readonly string[]): Stream;
+ streams(names: readonly string[]): Stream;
  invalidate: RecordDeclaration;
 }
-const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"deprecations":[],"inverses":[],"loaders":["Item","Tag","Seen"],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}],"mutations":[],"prerequisites":[],"requirements":[],"schema":{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"loads":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"version":1}],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]},"uniqueConstraints":[]} as const;
+const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2}],"deprecations":[],"inverses":[],"loaders":["Item","Tag","Seen"],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}],"mutations":[],"prerequisites":[],"requirements":[],"schema":{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"create"}],"kind":"mutation","name":"AddItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"shelf","nullable":true,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Catalog","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"note","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"project","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"ProjectItems","outputEnums":[],"outputs":[{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"items","source":"handlerIdentity"},{"cardinality":"list","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Tag"},"kind":"model","model":"Tag","modelReadVersion":1,"name":"tags","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item"}]},"inputs":[{"allowedPatchFields":["title"],"cardinality":"single","kind":"model","model":"Item","name":"item","operation":"update"}],"kind":"mutation","name":"RenameItem","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Item"},"kind":"model","model":"Item","modelReadVersion":1,"name":"item","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":2}],"clientPolicies":[],"enums":[],"models":[{"bootstrap":true,"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"project","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"hits","nullable":false,"type":{"kind":"scalar","name":"int"}}],"identity":["id"],"name":"Seen","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Tag","version":1}]},"uniqueConstraints":[]} as const;
 /** Trusted framework context and caller-supplied arguments of a Mutation. */
 export type MutationHandlerCall<Tx, Args> = { ctx: MutationContext<Tx>; args: Args };
 /** A Query's context has no `stream` or `invalidate`: it reads without business side effects. */
 export type QueryHandlerCall<Tx, Args> = { ctx: QueryContext<Tx>; args: Args };
+export interface AddItemV1ItemCreate {
+ id: string;
+ project: string;
+ title: string;
+}
+export interface AddItemV1ItemIdentity {
+ id: string;
+}
+export interface AddItemV1ItemPatch {
+ project?: string;
+ title?: string;
+}
+export type AddItemV1ItemUpdate<K extends keyof AddItemV1ItemPatch = keyof AddItemV1ItemPatch> = AddItemV1ItemIdentity & Partial<Pick<AddItemV1ItemPatch, K>>;
+export interface AddItemV1Input {
+ item: AddItemV1ItemCreate;
+}
+export type AddItemV1HandlerOutput = void;
 export interface AddItemInput {
  item: Item;
 }
-export type AddItemHandlerOutput = void;
-export interface PingInput {
- note: string;
+export interface AddItemHandlerOutput {
+ item: ItemIdentity;
 }
-export type PingHandlerOutput = void;
-export interface RenameItemInput {
- item: ItemUpdate<"title">;
-}
-export type RenameItemHandlerOutput = void;
-export interface Handlers<Tx> {
-}
-export interface Mutations<Tx> {
- addItem: { v1(call: MutationHandlerCall<Tx, AddItemInput>): Promise<AddItemHandlerOutput> } | ((call: MutationHandlerCall<Tx, AddItemInput>) => Promise<AddItemHandlerOutput>);
- ping: { v1(call: MutationHandlerCall<Tx, PingInput>): Promise<PingHandlerOutput> } | ((call: MutationHandlerCall<Tx, PingInput>) => Promise<PingHandlerOutput>);
- renameItem: { v1(call: MutationHandlerCall<Tx, RenameItemInput>): Promise<RenameItemHandlerOutput> } | ((call: MutationHandlerCall<Tx, RenameItemInput>) => Promise<RenameItemHandlerOutput>);
-}
-export interface Queries<Tx> {
-}
-/** Portable JSON: no undefined, functions, cycles, non-finite numbers, BigInt or class instances. Encode integers outside the safe range and dates as strings. */
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-/** A page's `continuation` is `null` on the first page, and answering `next: null` completes the Load; `{ state }` continues it, and `{ state: null }` is a legitimate state. At most 64 KiB encoded and 64 levels deep. */
-export type LoadNext = null | { state: JsonValue };
-/** A Load page's context: it has no `invalidate`, and its `stream` only tracks. `callId` is the page's durable call ID and `loadId` its job. */
-export interface LoadContext<Tx> {
- tx: Tx;
- userId: string;
- callId: string;
- loadId: string;
- stream(names: string | readonly string[]): LoadStream;
-}
-/** One page request: `continuation` is `null` first and the previous non-null `next` afterwards. */
-export type LoadHandlerCall<Tx, Args> = { ctx: LoadContext<Tx>; args: Args; continuation: LoadNext };
 export interface CatalogInput {
  shelf: string | null;
 }
 export interface CatalogHandlerOutput {
- data: {
-  items: ItemIdentity[];
- };
- next: LoadNext;
+ items: ItemIdentity[];
 }
+export interface PingInput {
+ note: string;
+}
+export type PingHandlerOutput = void;
 export interface ProjectItemsInput {
  project: string;
 }
 export interface ProjectItemsHandlerOutput {
- data: {
-  items: ItemIdentity[];
-  tags: TagIdentity[];
- };
- next: LoadNext;
+ items: ItemIdentity[];
+ tags: TagIdentity[];
 }
-export interface Loads<Tx> {
- catalog: { v1(call: LoadHandlerCall<Tx, CatalogInput>): Promise<CatalogHandlerOutput> } | ((call: LoadHandlerCall<Tx, CatalogInput>) => Promise<CatalogHandlerOutput>);
- projectItems: { v1(call: LoadHandlerCall<Tx, ProjectItemsInput>): Promise<ProjectItemsHandlerOutput> } | ((call: LoadHandlerCall<Tx, ProjectItemsInput>) => Promise<ProjectItemsHandlerOutput>);
+export interface RenameItemV1ItemCreate {
+ id: string;
+ title: string;
+}
+export interface RenameItemV1ItemIdentity {
+ id: string;
+}
+export interface RenameItemV1ItemPatch {
+ title?: string;
+}
+export type RenameItemV1ItemUpdate<K extends keyof RenameItemV1ItemPatch = keyof RenameItemV1ItemPatch> = RenameItemV1ItemIdentity & Partial<Pick<RenameItemV1ItemPatch, K>>;
+export interface RenameItemV1Input {
+ item: RenameItemV1ItemUpdate<"title">;
+}
+export type RenameItemV1HandlerOutput = void;
+export interface RenameItemInput {
+ item: ItemUpdate<"title">;
+}
+export interface RenameItemHandlerOutput {
+ item: ItemIdentity;
+}
+export interface Handlers<Tx> {
+}
+export interface Mutations<Tx> {
+ addItem: { v1(call: MutationHandlerCall<Tx, AddItemV1Input>): Promise<AddItemV1HandlerOutput>; v2(call: MutationHandlerCall<Tx, AddItemInput>): Promise<AddItemHandlerOutput> };
+ ping: { v1(call: MutationHandlerCall<Tx, PingInput>): Promise<PingHandlerOutput> } | ((call: MutationHandlerCall<Tx, PingInput>) => Promise<PingHandlerOutput>);
+ renameItem: { v1(call: MutationHandlerCall<Tx, RenameItemV1Input>): Promise<RenameItemV1HandlerOutput>; v2(call: MutationHandlerCall<Tx, RenameItemInput>): Promise<RenameItemHandlerOutput> };
+}
+export interface Queries<Tx> {
+ catalog: { v1(call: QueryHandlerCall<Tx, CatalogInput>): Promise<CatalogHandlerOutput> } | ((call: QueryHandlerCall<Tx, CatalogInput>) => Promise<CatalogHandlerOutput>);
+ projectItems: { v1(call: QueryHandlerCall<Tx, ProjectItemsInput>): Promise<ProjectItemsHandlerOutput> } | ((call: QueryHandlerCall<Tx, ProjectItemsInput>) => Promise<ProjectItemsHandlerOutput>);
 }
 export interface Loaders<Tx> {
  item?: { v1(call: LoaderCall<Tx, ItemIdentity>): Promise<readonly (Item | null)[]> } | ((call: LoaderCall<Tx, ItemIdentity>) => Promise<readonly (Item | null)[]>) | undefined;
  tag?: { v1(call: LoaderCall<Tx, TagIdentity>): Promise<readonly (Tag | null)[]> } | ((call: LoaderCall<Tx, TagIdentity>) => Promise<readonly (Tag | null)[]>) | undefined;
  seen?: { v1(call: LoaderCall<Tx, SeenIdentity>): Promise<readonly (Seen | null)[]> } | ((call: LoaderCall<Tx, SeenIdentity>) => Promise<readonly (Seen | null)[]>) | undefined;
 }
-export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx>; loads: Loads<Tx> };
-export function createBackend<Tx>(options: Options<Tx>) {
- return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options, config: schema, handlers: options.handlers as unknown as BackendOptions<Tx>["handlers"], mutations: options.mutations as unknown as BackendOptions<Tx>["mutations"], queries: options.queries as unknown as BackendOptions<Tx>["queries"], loaders: options.loaders as unknown as BackendOptions<Tx>["loaders"], loads: options.loads as unknown as BackendOptions<Tx>["loads"] });
+export interface PreparationContext<Tx> { tx:Tx; userId:string; streams(names:readonly string[]):Stream; invalidate:RecordDeclaration; }
+export interface LoaderHooks<Tx> {
+ item?: { prepareForViewer(call:LoaderCall<Tx,ItemIdentity> & PreparationContext<Tx>):Promise<void> };
+ tag?: { prepareForViewer(call:LoaderCall<Tx,TagIdentity> & PreparationContext<Tx>):Promise<void> };
+ seen?: { prepareForViewer(call:LoaderCall<Tx,SeenIdentity> & PreparationContext<Tx>):Promise<void> };
+}
+export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads" | "bootstrap" | "loaderHooks" | "protocol4"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx>; protocol4: NonNullable<BackendOptions<Tx>["protocol4"]>; bootstrap?: (call: {ctx: QueryContext<Tx>}) => void | Promise<void>; loaderHooks?:LoaderHooks<Tx> };
+export function createBackend<Tx>(options:Options<Tx>) { const {bootstrap,loaderHooks,...rest}=options;
+ return createRuntimeBackend<Tx,TransactionCall<Tx>>({...rest,config:schema, handlers:options.handlers as unknown as BackendOptions<Tx>['handlers'],mutations:options.mutations as unknown as BackendOptions<Tx>['mutations'],queries:options.queries as unknown as BackendOptions<Tx>['queries'],loaders:options.loaders as unknown as BackendOptions<Tx>['loaders'],...(bootstrap===undefined?{}:{bootstrap:bootstrap as unknown as NonNullable<BackendOptions<Tx>['bootstrap']>}),...(loaderHooks===undefined?{}:{loaderHooks:loaderHooks as unknown as NonNullable<BackendOptions<Tx>['loaderHooks']>})});
 }

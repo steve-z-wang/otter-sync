@@ -1,0 +1,4 @@
+model Draft { id String text String @@id(id) }
+model Entry { id String text String @@id(id) }
+mutation Publish(entry Entry.create, call String) { entry Entry }
+query Find(id String) { entry Entry? }

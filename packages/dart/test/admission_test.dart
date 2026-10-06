@@ -1,3 +1,5 @@
+import 'store_fixture.dart';
+import 'protocol4_transport.dart';
 // Client metadata and admission refusals (#181): the headers a SyncServer
 // declares ride every request and the live upgrade, and a response the server
 // marks `axton-admission: refused` stops the connection and reaches onError
@@ -22,7 +24,6 @@ class AdmissionServer {
   final seen = <(String, String?, String?)>[];
   final sockets = <WebSocket>[];
   final envelopes = <Map>[];
-  var stamps = 0;
   var acknowledged = 0;
   bool Function(HttpRequest) marked = (_) => true;
 
@@ -62,8 +63,9 @@ class AdmissionServer {
         acknowledged++;
         socket.add(
           jsonEncode({
-            'type': 'subscribed',
-            'cursors': {for (final c in sub['streams'] as List) c: 0},
+            'context': sub['context'],
+            'cursor': sub['cursor'],
+            'head': sub['cursor'],
           }),
         );
       });
@@ -73,36 +75,17 @@ class AdmissionServer {
     envelopes.add(body);
     request.response.write(
       jsonEncode(
-        request.uri.path == '/sync/mutations'
-            ? _receipt(body)
-            : {
-                'cursors': {
-                  for (final MapEntry(:key, :value)
-                      in ((body['cursors'] ?? {}) as Map).entries)
-                    key: {'from': value, 'to': value, 'head': value},
-                },
-                'changes': <Object>[],
-              },
+        body['context'] == null
+            ? <String, Object?>{}
+            : request.uri.path == '/sync/pull'
+            ? emptyPull(body)
+            : body.containsKey('models')
+            ? emptyMutation(body)
+            : emptyRead(body),
       ),
     );
     await request.response.close();
   }
-
-  Map<String, Object?> _receipt(Map body) => {
-    'clientId': body['clientId'],
-    'batchSequence': body['batchSequence'],
-    'rejections': <Object>[],
-    'records': [
-      for (final mutation in body['mutations'] as List)
-        for (final operation in (mutation as Map)['operations'] as List)
-          {
-            'model': operation['model'],
-            'identity': operation['identity'],
-            'stamp': ++stamps,
-            'state': {'text': operation['values']['text'], 'note': null},
-          },
-    ],
-  };
 
   Future<void> close() async {
     for (final socket in sockets) {
@@ -230,8 +213,19 @@ void main() {
     final dir = await Directory.systemTemp.createTemp('axton-dart-admission-');
     final path = '${dir.path}/db';
     final schema = await entrySchema();
+    schema['actions'] = [
+      {
+        'name': 'Ping',
+        'version': 1,
+        'kind': 'mutation',
+        'inputs': <Object>[],
+        'outputs': <Object>[],
+      },
+    ];
     final library = Platform.environment['AXTON_LIBRARY']!;
     var client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: path,
       schema: schema,
       libraryPath: library,
@@ -239,7 +233,7 @@ void main() {
     try {
       final errors = <Object>[];
       var refreshes = 0;
-      await client.subscribe('scope');
+      await client.connection?.close();
       await client.connect(
         config('6'),
         onError: errors.add,
@@ -257,43 +251,39 @@ void main() {
         reason: 'a refusal is not an authentication failure',
       );
       expect(server.seen, [
-        ('/sync/live', '6', 'Bearer secret'),
-      ], reason: 'the refused upgrade is not retried');
+        ('/sync/pull', '6', 'Bearer secret'),
+      ], reason: 'the refused request is not retried');
 
       // The refused connection ended its handle: the same client connects
       // again, and a write reaches the server.
-      await client.mutate({
-        'name': 'Edit',
-        'operations': [
-          {
-            'model': 'Entry',
-            'op': 'create',
-            'identity': {'id': 'e'},
-            'values': {'text': 'written'},
-          },
-        ],
-      });
+      final call = await client.submitMutation<void>('Ping', 1, {}, (_) {});
       server.seen.clear();
       final connection = await client.connect(config('7'), onError: errors.add);
       await until(
         () async => (await client.syncState())['pending'] == 0,
         'the push',
       );
+      expect(await call.wait(), isA<CallSuccess<void>>());
       await until(() => server.acknowledged == 1, 'the socket');
       await connection.close();
       await client.close();
 
       // A later client over the same database, with current headers.
       client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
         path: path,
         schema: schema,
         libraryPath: library,
       );
+      await client.connection?.close();
       await client.connect(config('8'), onError: errors.add);
       await until(() => server.acknowledged == 2, 'the later socket');
       expect(server.envelopes, isNotEmpty);
       for (final envelope in server.envelopes) {
-        expect(envelope['capabilities'], contains('stream-authority-v1'));
+        final context = envelope['context'] as Map;
+        expect(context['protocol'], 4);
+        expect((context['binding'] as Map)['stream'], 'User:viewer');
       }
       expect(errors, hasLength(1));
       expect(

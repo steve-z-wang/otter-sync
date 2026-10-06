@@ -45,18 +45,10 @@ export async function openTodoSession(options: {
 }): Promise<OpenedSession> {
   const client = await GeneratedClient.open({
     path: await databasePath(`todo-${options.user}.sqlite`),
-    server: { url: options.url, token: options.user },
-    connection: { onError: options.onConnectionError },
+    stream: scope,
+    connection: { url: options.url, token: options.user, identity: { backend: "todo-demo", viewer: options.user, contract: "todo-v04" }, options: { onError: options.onConnectionError } },
   });
-  // A subscription is durable and starts at the first head the server
-  // acknowledges: from then on the phone receives what is published on the Scope.
-  // What the list already held was published before that origin, so this
-  // installation asks for it explicitly. The call registers its work when it is
-  // made and runs in the background: the screen renders what is already local
-  // and fills in as pages commit, so nothing here waits for the whole Scope.
-  // Its rejection is a sync failure like any other and goes to the same scope.
-  const subscription = await client.streams.subscribe(scope);
-  subscription.bootstrap().catch(options.onConnectionError);
+  client.bootstrap().catch(options.onConnectionError);
   const session: TodoSession = {
     watch(listener, onError) {
       return client.models.todo.watch(

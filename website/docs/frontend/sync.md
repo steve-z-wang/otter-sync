@@ -1,160 +1,53 @@
 # Sync, offline work and recovery
 
-Local reads and writes go through the Rust engine and SQLite. A connection handles network work in the background. Your app can continue using its local data while the connection is paused or a response is delayed.
+## Follow one Stream
 
-## Subscribe and observe
+Open each Store with its stable backend, viewer, contract and one Stream. Opening binds the local database before connecting. Credentials belong to the connection; refreshing a token does not change the Store's identity.
 
-=== "TypeScript"
+`await client.bootstrap()` waits for every required manifest unit and for normal Stream delivery to reach the captured tail. It is useful for initial data and supported schema rematerialization. A Query or Fetch reads named records; it does not replace Bootstrap. Model watches report committed local state throughout delivery.
 
-    ```ts
-    const followed = await client.streams.subscribe('book:demo');
-    const stop = client.models.entry.watch({}, entries => render(entries), console.error);
-    ```
+## Submit and settle
 
-=== "Flutter"
+The first await of a named Mutation returns its durable `Call` after the local transaction commits. Its declared Model changes appear optimistically. A callback returns the typed input and may use `tx.models` for device-only companion writes before optimism is applied. A callback failure rolls back both contributions.
 
-    ```dart
-    final followed = await client.streams.subscribe('book:demo');
-    final subscription = client.models.entry.watch().listen(
-      render,
-      onError: (Object error) => print(error),
-    );
-    ```
+`await call.wait()` observes terminal settlement. Server acceptance can precede installation of the required Stream authority, so acceptance alone does not complete the Call. The runtime can recover a receipt's historical targets through a bounded manifest without rerunning the public Bootstrap handler or enrolling new records. The result is the invocation's saved snapshot; later local edits may make the current Model view different.
 
-Here `render` is your UI's update function. Subscribing records the desired stream durably - it works offline and survives a restart - and wakes the connection; it does not wait for the initial data. `watch` emits again when synchronization commits records.
-
-**A subscription delivers changes from the moment it is established, not the stream's existing records.** The first time a connection negotiates a session for it, the position the server acknowledges becomes that subscription's starting point, and records published to the stream before that point are not downloaded. On a new database the initial result is empty and stays empty until something is published. Ask for what the stream already held:
-
-=== "TypeScript"
-
-    ```ts
-    const followed = await client.streams.subscribe('book:demo');
-    followed.bootstrap().catch(console.error);
-    ```
-
-=== "Flutter"
-
-    ```dart
-    final followed = await client.streams.subscribe('book:demo');
-    followed.bootstrap().catchError((Object error) => print(error));
-    ```
-
-`bootstrap()` loads what was published to the stream before this subscription's starting point. It starts when you call it, awaited or not, so a first screen can render local data immediately and fill in as the load commits; `await` it instead when the screen has nothing to show without it. The call is durable: it survives a restart and resumes without being called again, it waits for connectivity rather than failing, and a call that finds the work already done resolves offline. Completing it means that history and the changes up to the position the load finished at have been processed - not that you hold a snapshot, that the data is fresh now, or that every record loaded (a failed loader read is reported and corrected on the next delivery). See [`bootstrap()`](client-api.md#streams) for the full contract.
-
-The handle `subscribe` returns tells you where that is: `followed.status` has `initialization` (`pending` until the starting point is committed, then `ready`), `connection` (`offline`, `connecting`, `catching-up`, `live` or `stopped`) and `bootstrap` (`{phase, error}`), and `followed.watch(status => …)` reports the current snapshot and every change. `live` means the stream is healthy, not that everything has arrived. `followed.unsubscribe()` removes this registration, and the load with it; later calls through that handle fail with `subscription.closed`.
-
-Use stream names your backend adds records to, and subscribe when the client needs to receive changes other clients make. The backend adds a record when a handler creates it or, progressively, when a [Load](loads.md#track-loaded-records-in-a-stream) handler adds records its page returns; adding records never subscribes a client. To follow the records a Load brings, wait for `initialization` to be `ready` before starting it: until the first handshake, `subscribe` has only stored your intent ([Keep loaded records current](loads.md#keep-loaded-records-current)). A stream is not a database query or an authorization token. Loaders decide which requested records the authenticated user may see.
-
-## Receive your own results
-
-**A subscription is not required to see your own result.** A durable Mutation's inferred local Model changes are optimistic. Its handle's `wait()` returns the final per-invocation result or an error. The receipt also carries batch-final authority for the records its Model inputs target, read through the Loader in the handler transaction, whatever outputs the operation declares. AXTON applies that authority and replays later pending edits over it. Thus the result snapshot and current local Model view can differ. A direct call, such as a default Query, has no automatic local optimism or durable queue; its response carries its result and applies authority through the same local state path.
-
-Subscribe with `client.streams.subscribe(stream)` as above when the client needs changes made elsewhere: by other users, by background jobs, or by handlers that touch records beyond the Model inputs. Subscription starts synchronization from the point it was established and does not wait for initial data; `bootstrap()` is what fetches what the stream already held. Use `watch` to observe the records, and wait for an existing record to be available locally before updating it.
-
-You can send Mutations and Queries without subscribing to any stream. The receipt still corrects the local row to the server's batch-final state; what you do not receive is later changes from elsewhere. If you subscribe to a stream the record belongs to, the page for your own change carries the same stamp as the receipt and rewrites nothing, whichever arrives first.
+A refusal removes that call's owned optimism and companions while retaining later independent work. Several named Mutations in one local transaction commit together and settle independently. Direct `tx.models` writes never enter the remote queue.
 
 ## Work offline
 
-=== "TypeScript"
+Pause the connection to keep local work available while delaying network delivery:
 
-    ```ts title="action-contract"
-    await client.connection!.pause();
-    const call = await client.mutations.addTodo({
-      todo: { id: 'todo-offline', title: 'Draft', state: 'open', note: null },
-      gone: [], status: null, tags: [],
-    });
-    console.log((await client.models.todo.get({ id: 'todo-offline' }))?.title);
-    await client.connection!.resume();
-    const outcome = await call.wait();
-    if (outcome.error) console.error(outcome.error.code);
-    ```
+```ts title="v04-sdk"
+await client.connection!.pause();
+const call = await client.mutations.publish(async tx => {
+  await tx.models.draft.delete({ id: 'draft-1' });
+  return { entry: { id: 'entry-1', text: 'Draft' }, call: 'publish' };
+});
+await client.connection!.resume();
+const outcome = await call.wait();
+```
 
-=== "Flutter"
+Dart uses the same typed invoker with `.withTransaction((tx) async => input)`. A plain typed input uses `.publish(input)`.
 
-    ```dart title="action-contract"
-    await client.connection!.pause();
-    final call = await client.mutations.addTodo(
-      todo: const Todo(id: 'todo-offline', title: 'Draft', state: Status.open, note: null),
-      gone: const [], status: null, tags: const [],
-    );
-    print((await client.models.todo.get(const TodoIdentity(id: 'todo-offline')))?.title);
-    await client.connection!.resume();
-    final outcome = await call.wait();
-    if (outcome is CallFailure<AddTodoOutput>) print(outcome.error.code);
-    ```
+The same database can reopen offline with the same binding and projection generation. Frozen Mutation requests survive reopen and supported schema evolution under retained contracts. Query and Fetch are finite requests; they do not queue for later delivery. `store: false` returns the read snapshot without changing the cache. `once` retains a Query snapshot under its stable invocation identity, and `refresh` requests a new snapshot.
 
-This assumes `GeneratedClient.open` was given `server`; otherwise call `client.connect` before resuming. The Mutation's create operand is visible locally while the connection is paused. Direct calls never queue; use `client.queries.enqueue` for a Query that should wait until the backend is reachable. Dart uses the same `pause`/`resume` methods.
+## Connection failures
 
-The returned handle confirms the local commit. It does not mean the server has accepted the Mutation; `wait()` observes the terminal outcome. Display pending and rejected state using the record's [syncState](runtime.md#pending-work-and-recovery) when that distinction matters to the UI.
+Set `onError` and optional `refreshAuth` on the connection. Retry uses the exact durable Mutation request; making another business call after a timeout can duplicate work. Use `wake()` to prompt scheduling, `resume()` after a pause, and `close()` to release the connection. Reconfiguration through `client.connect` changes transport, while the Store binding remains fixed.
 
-You can close and reopen the same local database without losing queued intent. A new client handle cannot retrieve a past result from client memory. Keep the same backend database as well: replacing its outcome/receipt/cursor history with an empty database is a reset, not a temporary network interruption. The tutorial's `offline` / `online` commands preserve both databases.
+Admission refusal stops the connection and reports `AdmissionRefused`; connect again after the application can satisfy the backend's admission policy. Query and Fetch timeouts report whether execution is known or unknown. Background errors retain owned pending work.
 
-## Understand acceptance and rejection
+The bound Stream reconnects from its committed delivery cursor. HTTP catch-up and live pages share atomic commit units. Successful independent prefixes can commit before a later unit fails; neither a failed unit nor a manifest tail capture advances progress. Request limits reduce after eligible page failures to permit a smaller independent prefix, but cannot split a required constraint group.
 
-After a durable call is accepted locally, the connection pushes its frozen request. A successful receipt completes the batch at once: the runtime applies server authority for changed records, removes completed queue entries and replays remaining local changes in one local transaction. One batch is in flight at a time. The handle's result stays the snapshot of its own invocation, even when later work in the batch changes the record.
+## Accounts and cache authority
 
-If a handler rejects a call, AXTON removes any optimistic contribution and retains the rejection code locally. Later valid pending work may still affect the displayed record, so rollback is not necessarily a return to the value the user saw before all edits.
+Use a separate database for each viewer and close the old Store before switching accounts. Changing credentials alone cannot authorize a different binding. A database has one physical owner; a competing open fails with `store_in_use`.
 
-=== "TypeScript"
+Tracking is delivery interest. Viewer Loaders decide readable content. Stream content and canonical absence carry authority; ordinary Query/Fetch cache writes have null authority and cannot replace current protected Stream state. Membership Remove retains the Model and its guards while releasing live-content protection; a true Stream deletion retains deletion protection. Explicit reset changes the Store incarnation and refuses pending work unless `discardPending` is chosen.
 
-    ```ts
-    const { rejections } = await client.models.entry.syncState({ id: 'entry-1' });
-    console.log(rejections);
-    // After handling the rejection in your UI:
-    await client.dismissRejection(rejectionOrdinal);
-    ```
+References support navigation and declared cascades; missing or unloaded parents are valid partial-cache states. For `onTargetDelete: delete`, an ordinary incoming child that names a currently Stream-deleted parent is suppressed. The backend must publish a changed or deleted child's own canonical state. Cache presence alone grants no product permission.
 
-=== "Flutter"
+## Pending work
 
-    ```dart
-    final state = await client.models.entry.syncState(
-      const EntryIdentity(id: 'entry-1'),
-    );
-    print(state.rejections);
-    // After handling the rejection in your UI:
-    await client.dismissRejection(rejectionOrdinal);
-    ```
-
-`rejectionOrdinal` is taken from the rejection you handled. Dismissing only clears the inbox entry. Retrying the business operation means making a new call after resolving its cause. `drop(ordinal)` is for eligible unsent work; it cannot cancel a request whose server outcome is unknown.
-
-For a screen of everything that has not been sent, watch `client.rejections`, `client.failures` and `client.outbound` instead of polling: each refusal keeps the call as it was submitted, so you can show the author's words again, and a failed prerequisite lists every call waiting on it. A repair can drop the failed call and queue its replacement in one transaction. See [unsent work](runtime.md#unsent-work).
-
-## Recover from connection failures
-
-Provide `onError` to record background failures, and `refreshAuth` if your credentials can expire. Records that could not be applied also reach `onError`, as an `AxtonReport` with a `kind`: `readFailed` when the server could not read the record, `skipped` when the local schema refused it, `conflict`, or `diverged` when a pending edit no longer applies to newer server state. A diverged edit is still sent, and `models.<name>.syncState(identity)` marks it `diverged` until the server answers it. Let the runtime retry frozen work; do not make a new call merely because the original request timed out. The backend may already have committed it and retained its outcome.
-
-If the backend refuses this client's admission, for example because the app build is too old, `onError` receives an `AdmissionRefused` once and the connection stops instead of retrying. Show the refusal (its `body` is what your backend's `admit` answered) and connect again once the app can send acceptable `headers` ([server connection](runtime.md#server-connection)).
-
-Use `wake()` after an application event that should prompt another scheduling check. Use `resume()` after explicitly pausing. A closed connection cannot resume; create a new one with `client.connect` or reopen the client. Direct requests use a finite timeout; an `unknown` execution status can mean the backend committed but the client did not observe the response.
-
-On connection or reconnection, AXTON establishes the WebSocket subscription and receives the current position of each stream. A stream with no saved position takes the acknowledged one as its starting point and downloads nothing older. For a stream that has one, reconnecting is not a new starting point: if the saved position is already current it streams at once; otherwise it sends one HTTP pull for all streams from their saved positions, holding changes that arrive meanwhile, then continues with WebSocket updates. A position never moves backwards, and a server position below saved progress is reported as an error instead of silently resetting the stream. Both sources use the same Rust page processing: each page applies as one transaction, covered pages are discarded, overlapping pages apply their unseen changes, and gaps trigger HTTP recovery from saved progress. Subscription changes replace the session; pages from replaced or canceled sessions cannot update local data.
-
-## Authentication and account changes
-
-Authenticate requests on the backend and check business permissions in handlers and loaders. `devAuth` is only for the local example. In production, your `authenticate` callback should verify your existing application's credentials and return its user ID.
-
-Use a separate local database per signed-in user. On an account change, stop and close the old client before opening the other user's database. Changing only the transport token leaves the old user's cached records and client identity in place.
-
-Tracking records durable interest, not permission. Loader `null` at a newer stamp is authoritative absence and follows Model hooks/cascades; Loader failure is a diagnostic that retains local data. Errors do not make incomplete pages evidence of absence. Unsubscribe removes registration/progress and retains Models, stamps, local work and server tracking. A saved call replays its exact outcome without running a Loader or declaring tracking again.
-
-Use the existing [onStore transaction example](client-api.md#react-to-incoming-records) for callback registration and typed changes. An application's own access-information Model can use explicit standing-record absence as a cache-reclamation signal. End the relationship and invalidate its identity in the backend transaction; its viewer Loader answers `null`. The standing Model's local `onStore` callback responds to explicit incoming delete changes through the supplied local transaction. Hooks see the pre-store view: when checking children, exclude the standing identities this callback is deleting rather than treating their still-cached rows as valid paths. Reclaim only replicated children no longer reachable through ownership or another currently valid relationship/delivery path, preserving pending and device-only work under the application's chosen cleanup policy. Direct `tx.models.delete` uses ordinary local-write/cascade semantics; preservation is the application's responsibility, not a special withdrawal guarantee. Other holders of a deleted relationship need global invalidation; a viewer-only projection change may use selected invalidation.
-
-Queries must gate presentation by current standing and independently valid paths, even if child rows exist. Direct `tx.models.delete` does not create a Stream-withdrawal request-epoch fence: delayed newer-stamp Load/Fetch authority or saved replay may materialize children again. Hook cleanup reclaims cache; standing and independent reachability decide eligibility. No automatic dependent traversal or retention policy is supplied. Children actually changed or deleted on the backend need their own invalidation; releasing their cache alone does not.
-
-Historical identity-only Stream Remove covers delivery positions without deleting Models or changing stamps, hooks, cascades or pending work. Fresh delivery needs no enrollment claims or client holding table. Newer viewer Loader null is canonical absence, and older positive content cannot resurrect it. One-shot cache has no automatic reclamation policy; cache presence grants no permission.
-
-Opening a supported original database commits `local_authority_version=1` atomically while preserving its Models/stamps, subscriptions/cursors, explicit bootstrap state, pending/frozen work and legacy recovery history. Retained `reconcile_*` fields are inert. Resubscribe starts at its acknowledged head and retains cache; only your explicit `bootstrap()` requests history. See [cutover](../backend/deployment.md#stream-membership-cutover) for the required stopped-writer server repair and coordinated negotiation.
-
-## Diagnose pending work
-
-| Observation | Check |
-| --- | --- |
-| Empty local query after opening | Desired stream, running connection, loader output and read permission |
-| `queued` with failed prerequisites | The handler failed terminally; reset its readiness to pending and the client runs it again |
-| `frozen` after a network failure | Connectivity/authentication; retain the frozen bytes for retry |
-| `frozen` long after the network recovered | Either the server refused the batch on identity or order grounds (401/403/409 `client.owner_mismatch`/`gap`/`overlap`) — the code reaches `onError` and the batch is resent as is because the server never ran it — or a received receipt was refused locally (it named another client or batch, or omitted an accepted record): check `onError` and the backend's loaders |
-| Server values do not update | Whether the record was added to the stream (`stream(name).track.todo`), and whether every changed identity was invalidated globally (`invalidate.todo`) or through appropriate selected authority invalidation |
-| Local client fails after another process wrote | One active client per SQLite file; close/reopen the stale instance |
-| Empty local data after an app update | `syncState().schema.rebuilt`: the schema was incompatible and a fresh database is synchronising from the beginning; `syncState().schema.pending` means the old file is still sending its last changes, call `rebuild()` when it reaches 0 ([local storage](storage.md#change-the-schema)) |
-
-See [runtime APIs](runtime.md) for controls and [compatibility and recovery](storage.md) for storage constraints.
+Observe `syncState`, `rejections`, `failures` and `outbound` for durable pending work. Dismissing a refusal clears its inbox entry. A new business attempt creates a new named Mutation. `drop` only removes eligible unsent work; it cannot cancel an operation with an unknown server outcome. Repairs can drop a failed call and submit its replacement in one transaction. See [unsent work](runtime.md#unsent-work) and [prerequisites](runtime.md#prerequisites).

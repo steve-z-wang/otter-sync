@@ -37,6 +37,9 @@ esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 (cd packages/dart && dart pub get && dart analyze && dart test)
 (cd integration/action-runtime-dart && dart pub get && dart analyze generated.dart generated_test.dart model_only/generated.dart model_free/generated.dart action_e2e_publish.dart action_e2e_datetime.dart && bash check-negative.sh && dart test generated_test.dart)
+bash integration/v04-sdk/check-types.sh
+(cd integration/v04-sdk && dart run application-data.dart && dart run native.dart)
+AXTON_DART="$(command -v dart)" bash integration/v04-sdk/run-host.sh
 bash integration/generated-api/verify.sh
 bash integration/e2e/run.sh
 bash integration/action-e2e/run.sh

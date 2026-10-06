@@ -841,14 +841,14 @@ const GENERATED_NAMES: &[&str] = &[
     "CallPort",
     "CallRejected",
     "CallStatus",
-    "CallStore",
     "CallSuccess",
-    "Streams",
     "Client",
     "ClientClosedException",
     "ClientSyncState",
     "Connection",
-    "DirectMutations",
+    "StoreConnection",
+    "StoreIdentity",
+    "QueryOptions",
     "FailedAct",
     "FailedTask",
     "GeneratedClient",
@@ -856,8 +856,6 @@ const GENERATED_NAMES: &[&str] = &[
     "FutureOr",
     "LiveModels",
     "LivePort",
-    "Mutate",
-    "MutatePort",
     "MutationHandlerCall",
     "MutationHandlers",
     "MutationName",
@@ -869,24 +867,11 @@ const GENERATED_NAMES: &[&str] = &[
     "Queries",
     "QueryHandlerCall",
     "QueryHandlers",
-    "QueuedQueries",
     "ReadPort",
     "RebuildReport",
     "RefusedAct",
     "Rejection",
     "RuntimeConnection",
-    "Streams",
-    "Subscription",
-    "SubscriptionClosedException",
-    "SubscriptionConnection",
-    "SubscriptionInitialization",
-    "SubscriptionStatus",
-    "StoreChange",
-    "StoreDelete",
-    "StoreHandler",
-    "StoreHook",
-    "StoreHooks",
-    "StoreUpsert",
     "SyncServer",
     "SubmittedAct",
     "SyncState",
@@ -907,6 +892,8 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
     "QueryContext",
     "RecordRef",
     "TransactionCall",
+    "LoaderHooks",
+    "PreparationContext",
 ];
 
 /// Top-level names the Model Fetch facade declares
@@ -1036,6 +1023,9 @@ fn expand_inheritance(d: &Declarations) -> Result<Declarations, String> {
 }
 
 pub fn validate(d: &Declarations) -> Result<Validated, String> {
+    if !d.loads.is_empty() {
+        return Err("Load declarations were removed in 0.4; use Bootstrap or a named Query".into());
+    }
     let expanded = expand_inheritance(d)?;
     // Keep abstract declarations available for generated field interfaces, but
     // remove them from every runtime namespace before validating references/actions.

@@ -5,4 +5,4 @@ model Todo {
  @@id(id)
 }
 mutation Edit(todo Todo.update<channel>)
-load Scan(channel String) { todos Todo[] }
+query Scan(channel String) { todos Todo[] }

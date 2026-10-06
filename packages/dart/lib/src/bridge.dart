@@ -26,6 +26,11 @@ import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
 
+typedef _ConfigureNative =
+    Int32 Function(Pointer<Utf8> path, Pointer<Pointer<Utf8>> errorOut);
+typedef _Configure =
+    int Function(Pointer<Utf8> path, Pointer<Pointer<Utf8>> errorOut);
+
 typedef _WakeNative = Void Function(Uint64 runtime, Pointer<Void> context);
 typedef _OpenNative =
     Uint64 Function(
@@ -81,6 +86,14 @@ abstract interface class Carrier {
 
 // The code asset `package:axton/axton_dart` that hook/build.dart bundles.
 const _asset = 'package:axton/axton_dart';
+@Native<_ConfigureNative>(
+  symbol: 'axton_runtime_configure_application_data',
+  assetId: _asset,
+)
+external int _bundledConfigure(
+  Pointer<Utf8> path,
+  Pointer<Pointer<Utf8>> errorOut,
+);
 @Native<_OpenNative>(symbol: 'axton_runtime_open', assetId: _asset)
 external int _bundledOpen(
   Pointer<Utf8> request,
@@ -112,7 +125,8 @@ class _Abi implements Carrier {
   /// The library the package's build hook bundled. Resolving the finalizer
   /// resolves the asset, so a missing library fails here.
   _Abi.bundled()
-    : _open = _bundledOpen,
+    : _configure = _bundledConfigure,
+      _open = _bundledOpen,
       _submit = _bundledSubmit,
       _drain = _bundledDrain,
       _detach = _bundledDetach,
@@ -122,7 +136,10 @@ class _Abi implements Carrier {
       );
 
   _Abi(DynamicLibrary library)
-    : _open = library.lookupFunction<_OpenNative, _Open>('axton_runtime_open'),
+    : _configure = library.lookupFunction<_ConfigureNative, _Configure>(
+        'axton_runtime_configure_application_data',
+      ),
+      _open = library.lookupFunction<_OpenNative, _Open>('axton_runtime_open'),
       _submit = library.lookupFunction<_SubmitNative, _Submit>(
         'axton_runtime_submit',
       ),
@@ -137,6 +154,7 @@ class _Abi implements Carrier {
         library.lookup<NativeFinalizerFunction>('axton_runtime_finalize'),
       );
 
+  final _Configure _configure;
   final _Open _open;
   final _Submit _submit;
   final _Drain _drain;
@@ -154,6 +172,30 @@ class _Abi implements Carrier {
     final id = bridge.runtimeId;
     if (sizeOf<IntPtr>() < 8 && id >= 1 << 32) return;
     finalizer.attach(bridge, Pointer<Void>.fromAddress(id), detach: bridge);
+  }
+
+  void configureApplicationData(String path) {
+    if (path.isEmpty || path.contains('\u0000'))
+      throw ArgumentError.value(
+        path,
+        'path',
+        'a stable application directory is required',
+      );
+    final text = path.toNativeUtf8();
+    final error = calloc<Pointer<Utf8>>();
+    try {
+      if (_configure(text, error) != 0) {
+        throw StateError(
+          error.value == nullptr
+              ? 'application data initialization failed'
+              : error.value.toDartString(),
+        );
+      }
+    } finally {
+      if (error.value != nullptr) _free(error.value);
+      calloc.free(error);
+      malloc.free(text);
+    }
   }
 
   static final _loaded = <String?, _Abi>{};
@@ -237,7 +279,7 @@ class _Abi implements Carrier {
 /// Runs a Mutation's `local` callback over its capability's commands; throws
 /// its failure.
 typedef LocalRun =
-    Future<void> Function(
+    Future<Map<String, dynamic>> Function(
       Future<dynamic> Function(Map<String, dynamic> command) send,
     );
 
@@ -456,6 +498,8 @@ abstract interface class ObserverHost {
 
 /// The SDK side of one Rust-owned client runtime.
 class Bridge implements RuntimeHost, ObserverHost, Finalizable {
+  static void configureApplicationData(String path, {String? libraryPath}) =>
+      _Abi.load(libraryPath).configureApplicationData(path);
   Bridge._(
     this._carrier,
     this.runtimeId,
@@ -560,6 +604,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   static Future<Bridge> open({
     required String path,
     required Map<String, dynamic> schema,
+    required Map<String, dynamic> binding,
+    String projectionGeneration = "1",
     String? libraryPath,
     Map<String, dynamic>? migration,
     bool discardPending = false,
@@ -576,8 +622,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'requestId': '1',
       'path': path,
       'schema': schema,
-      'discardPending': discardPending,
-      'storeHooks': handlers.keys.toList(),
+      'binding': binding,
+      'projectionGeneration': projectionGeneration,
       if (prerequisiteHandlers.isNotEmpty)
         'prerequisiteHandlers': prerequisiteHandlers,
     });
@@ -939,13 +985,18 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     final requestId = operation['requestId'];
     final route = _routes[requestId];
     final local = route?.local;
-    void answer({required bool ok, String? error}) => _submitQuietly(
+    void answer({
+      required bool ok,
+      String? error,
+      Map<String, dynamic>? input,
+    }) => _submitQuietly(
       callbackResultEnvelope(
         effectId,
         transactionId,
         ok: ok,
         error: error,
         companionId: companionId,
+        input: input,
       ),
     );
     if (route == null || local == null) {
@@ -966,8 +1017,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
           companionId: companionId,
         ),
       );
-      Future<void>.sync(() => local(send)).then(
-        (_) => answer(ok: true),
+      Future<Map<String, dynamic>>.sync(() => local(send)).then(
+        (input) => answer(ok: true, input: input),
         onError: (Object error, StackTrace stack) {
           route
             ..thrown = error
@@ -1089,6 +1140,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     String? scope,
     Map<String, dynamic> command, {
     String? companionId,
+    Map<String, dynamic>? input,
   }) => {
     'type': 'transactionCommand',
     'requestId': requestId,
@@ -1105,11 +1157,13 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
     required bool ok,
     String? error,
     String? companionId,
+    Map<String, dynamic>? input,
   }) => {
     'type': 'callbackResult',
     'effectId': effectId,
     'transactionId': transactionId,
     if (companionId != null) 'companionId': companionId,
+    if (input != null) 'input': input,
     'ok': ok,
     if (error != null) 'error': error,
   };

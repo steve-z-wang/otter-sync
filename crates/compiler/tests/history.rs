@@ -545,6 +545,53 @@ fn default_only_changes_keep_retained_versions_and_required_fields_still_break()
     assert!(error.contains("incompatible input change"), "{error}");
 }
 
+fn saved_load_descriptor(source: &str) -> Result<serde_json::Value, String> {
+    let names: Vec<_> = source
+        .split("load ")
+        .skip(1)
+        .filter_map(|part| part.split('(').next())
+        .map(str::trim)
+        .collect();
+    let mut descriptor = compile(&source.replace("load ", "query "))?;
+    let mut capture = descriptor.clone();
+    for action in capture["actions"].as_array_mut().unwrap() {
+        action["version"] = json!(1);
+    }
+    let history = reconcile_action_history(&capture, None)?;
+    let actions: Vec<_> = history["actions"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|versions| versions.as_object().unwrap().values().cloned())
+        .collect();
+    let mut loads = Vec::new();
+    let mut remaining = Vec::new();
+    for mut action in actions {
+        if names.contains(&action["name"].as_str().unwrap()) {
+            action["version"] = descriptor["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|current| current["name"] == action["name"])
+                .unwrap()["version"]
+                .clone();
+            action.as_object_mut().unwrap().remove("kind");
+            action.as_object_mut().unwrap().remove("sequence");
+            action.as_object_mut().unwrap().remove("prerequisites");
+            action.as_object_mut().unwrap().remove("requirements");
+
+            loads.push(action);
+        } else {
+            remaining.push(action);
+        }
+    }
+    descriptor["loads"] = json!(loads);
+    descriptor["schema"]["loads"] = descriptor["loads"].clone();
+    descriptor["actions"] = json!(remaining);
+    descriptor["schema"]["actions"] = descriptor["actions"].clone();
+    Ok(descriptor)
+}
+
 const LOAD_MODELS: &str = "enum Status { open done } model Todo { id UUID title String @@id(id) } model Note { id String @@id(id) }";
 
 /// Reconcile model and Load history the way the CLI does, returning the
@@ -554,7 +601,7 @@ fn retain_loads(
     models: Option<&serde_json::Value>,
     loads: Option<&serde_json::Value>,
 ) -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), String> {
-    let mut config = compile(source)?;
+    let mut config = saved_load_descriptor(source)?;
     let model_history = reconcile_models(&config, models)?;
     let retained: Vec<serde_json::Value> = model_history["models"]
         .as_object()
@@ -581,7 +628,7 @@ fn retain_loads(
 #[test]
 fn load_history_mirrors_the_operation_envelope() {
     let source = format!("{LOAD_MODELS} load ProjectTodos(projectId UUID) {{ todos Todo[] }}");
-    let config = compile(&source).unwrap();
+    let config = saved_load_descriptor(&source).unwrap();
     let history = reconcile_load_history(&config, None).unwrap();
     assert_eq!(history["formatVersion"], 1);
     assert_eq!(history["loads"]["ProjectTodos"]["1"], config["loads"][0]);
@@ -597,7 +644,7 @@ fn load_history_mirrors_the_operation_envelope() {
     let error = reconcile_load_history(&config, Some(&json!({"formatVersion":1,"actions":{}})))
         .unwrap_err();
     assert!(error.contains("unsupported load history format"), "{error}");
-    let first_at_v2 = compile(&format!(
+    let first_at_v2 = saved_load_descriptor(&format!(
         "{LOAD_MODELS} @version(2) load Late() {{ todos Todo[] }}"
     ))
     .unwrap();
@@ -612,7 +659,7 @@ fn load_history_mirrors_the_operation_envelope() {
 fn same_version_breaking_load_changes_need_a_new_version() {
     let base = "load ProjectTodos(projectId UUID, status Status?) { todos Todo[] notes Note[] }";
     let source = format!("{LOAD_MODELS} {base}");
-    let history = reconcile_load_history(&compile(&source).unwrap(), None).unwrap();
+    let history = reconcile_load_history(&saved_load_descriptor(&source).unwrap(), None).unwrap();
     for (changed, needle) in [
         (
             base.replace("projectId UUID", "projectId String"),
@@ -643,7 +690,7 @@ fn same_version_breaking_load_changes_need_a_new_version() {
             "incompatible output change",
         ),
     ] {
-        let config = compile(&format!("{LOAD_MODELS} {changed}")).unwrap();
+        let config = saved_load_descriptor(&format!("{LOAD_MODELS} {changed}")).unwrap();
         let error = reconcile_load_history(&config, Some(&history)).unwrap_err();
         assert!(
             error.contains(&format!("ProjectTodos v1: {needle}; increase @version")),
@@ -653,7 +700,7 @@ fn same_version_breaking_load_changes_need_a_new_version() {
     // A narrowed input enum is not: an old caller may still send the value.
     let narrowed = LOAD_MODELS.replace("open done", "open");
     let error = reconcile_load_history(
-        &compile(&format!("{narrowed} {base}")).unwrap(),
+        &saved_load_descriptor(&format!("{narrowed} {base}")).unwrap(),
         Some(&history),
     )
     .unwrap_err();
@@ -664,7 +711,7 @@ fn same_version_breaking_load_changes_need_a_new_version() {
     // A widened input enum is compatible: an old caller's values stay valid.
     let widened = LOAD_MODELS.replace("open done", "open done archived");
     let next = reconcile_load_history(
-        &compile(&format!("{widened} {base}")).unwrap(),
+        &saved_load_descriptor(&format!("{widened} {base}")).unwrap(),
         Some(&history),
     )
     .unwrap();
@@ -676,7 +723,7 @@ fn same_version_breaking_load_changes_need_a_new_version() {
     let added = LOAD_MODELS.replace("title String", "title String note String?");
     assert_eq!(
         reconcile_load_history(
-            &compile(&format!("{added} {base}")).unwrap(),
+            &saved_load_descriptor(&format!("{added} {base}")).unwrap(),
             Some(&history)
         )
         .unwrap(),
@@ -729,14 +776,17 @@ fn load_version_two_retains_version_one_and_its_model_reader() {
 #[test]
 fn retained_loads_cannot_be_removed_or_change_kind() {
     let load = format!("{LOAD_MODELS} load Find() {{ todos Todo[] }}");
-    let history = reconcile_load_history(&compile(&load).unwrap(), None).unwrap();
+    let history = reconcile_load_history(&saved_load_descriptor(&load).unwrap(), None).unwrap();
     for replacement in [
         LOAD_MODELS.to_string(),
         format!("{LOAD_MODELS} query Find() {{ todos Todo[] }}"),
         format!("{LOAD_MODELS} mutation Find() {{ todos Todo[] }}"),
     ] {
-        let error =
-            reconcile_load_history(&compile(&replacement).unwrap(), Some(&history)).unwrap_err();
+        let error = reconcile_load_history(
+            &saved_load_descriptor(&replacement).unwrap(),
+            Some(&history),
+        )
+        .unwrap_err();
         assert!(
             error.contains("retained load Find cannot be removed"),
             "{error}"
@@ -744,9 +794,12 @@ fn retained_loads_cannot_be_removed_or_change_kind() {
     }
     // A retained Query or Mutation cannot become a Load either.
     for kind in ["query", "mutation"] {
-        let operation = compile(&format!("{LOAD_MODELS} {kind} Find() {{ n Int }}")).unwrap();
+        let operation =
+            saved_load_descriptor(&format!("{LOAD_MODELS} {kind} Find() {{ n Int }}")).unwrap();
         let actions = reconcile_action_history(&operation, None).unwrap();
-        let error = reconcile_action_history(&compile(&load).unwrap(), Some(&actions)).unwrap_err();
+        let error =
+            reconcile_action_history(&saved_load_descriptor(&load).unwrap(), Some(&actions))
+                .unwrap_err();
         assert!(
             error.contains("retained operation Find cannot be removed"),
             "{error}"
@@ -759,10 +812,10 @@ fn adding_a_load_leaves_operation_and_mutation_history_unchanged() {
     let operations = format!(
         "{LOAD_MODELS} mutation Save {{ todo Todo.create }} mutation Rename(todo Todo.update) {{ n Int }} query Count(status Status?) {{ n Int }}"
     );
-    let before = compile(&operations).unwrap();
+    let before = saved_load_descriptor(&operations).unwrap();
     let actions = reconcile_action_history(&before, None).unwrap();
     let mutations = reconcile_history(&before, None).unwrap();
-    let with_load = compile(&format!(
+    let with_load = saved_load_descriptor(&format!(
         "{operations} load ProjectTodos(status Status?) {{ todos Todo[] }}"
     ))
     .unwrap();

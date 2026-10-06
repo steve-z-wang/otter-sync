@@ -63,8 +63,8 @@ test('late savepoint callback after transaction closes cannot issue stack comman
 test('outer commands are refused without reaching the runtime while a local submission is unfinished',async()=>{
  const sent=[];let answer;
  const tx=new Transaction(async command=>{sent.push(command);return null;},{submit:(command,scope,decode,local)=>{sent.push({...command,scope,run:typeof local});return new Promise(resolve=>{answer=resolve;});}});
- const submission=tx.submitMutation('Publish',1,{id:'p'},value=>value,{store:false,local:async()=>{}});
- for(const refused of [tx.read('Entry',{id:'e'}),tx.direct({}),tx.submitMutation('Ping',1,{},value=>value),tx.streams.subscribe('book'),tx.savepoint(async()=>{})])
+ const submission=tx.submitMutation('Publish',1,async()=>({id:'p'}),value=>value);
+ for(const refused of [tx.read('Entry',{id:'e'}),tx.direct({}),tx.submitMutation('Ping',1,{},value=>value),tx.savepoint(async()=>{})])
   await assert.rejects(refused,/invalid transaction capability/);
  answer('call');
  assert.equal(await submission,'call');
@@ -74,7 +74,7 @@ test('outer commands are refused without reaching the runtime while a local subm
  answer('plain');
  assert.equal(await plain,'plain');
  assert.deepEqual(sent,[
-  {kind:'submitMutation',name:'Publish',version:1,args:{id:'p'},store:false,local:true,scope:undefined,run:'function'},
+  {kind:'submitMutation',name:'Publish',version:1,local:true,scope:undefined,run:'function'},
   {kind:'submitMutation',name:'Ping',version:1,args:{},scope:undefined,run:'undefined'},
   {kind:'read',key:{model:'Entry',identity:{id:'e'}}},
  ]);

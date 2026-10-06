@@ -361,6 +361,7 @@
     "enums": [],
     "models": [
       {
+        "bootstrap": true,
         "fields": [
           {
             "name": "id",
@@ -388,6 +389,7 @@
         "version": 1
       },
       {
+        "bootstrap": true,
         "fields": [
           {
             "name": "id",

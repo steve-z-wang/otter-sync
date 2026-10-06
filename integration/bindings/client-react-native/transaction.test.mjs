@@ -46,8 +46,8 @@ test('outer commands are refused without reaching the runtime while a local subm
   const tx = new module.Transaction(async (command) => { sent.push(command.kind); return null; }, {
     submit: (command, scope, decode, local) => { sent.push(`${command.kind}:${typeof local}`); return new Promise((resolve) => { answer = resolve; }); },
   });
-  const submission = tx.submitMutation('Publish', 1, {id: 'p'}, (value) => value, {local: async () => {}});
-  for (const refused of [tx.read('Entry', {id: 'e'}), tx.direct({}), tx.submitMutation('Ping', 1, {}, (value) => value), tx.streams.subscribe('book')])
+  const submission = tx.submitMutation('Publish', 1, async () => ({id: 'p'}), (value) => value);
+  for (const refused of [tx.read('Entry', {id: 'e'}), tx.direct({}), tx.submitMutation('Ping', 1, {}, (value) => value)])
     await assert.rejects(refused, /invalid transaction capability/);
   answer('call');
   assert.equal(await submission, 'call');

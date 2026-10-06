@@ -1,3 +1,4 @@
+import {openStore} from "./store-fixture.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Worker } from "node:worker_threads";
@@ -31,7 +32,7 @@ test("a terminated worker's runtime releases its database to the main thread", a
     const [message] = await within(once(worker, "message"), 10_000, "the worker's transaction");
     assert.equal(message, "holding");
     await worker.terminate();
-    const client = await within(Client.open({ path, schema }), 5_000, "reopening the file");
+    const client = await within(openStore(Client,{ path, schema }), 5_000, "reopening the file");
     try {
       // A write needs the lock the worker's transaction held.
       await within(

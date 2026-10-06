@@ -11,10 +11,7 @@ import {
   type Mutations,
   type Queries,
   type Loaders,
-  type Loads,
-  type LoadContext,
-  type LoadHandlerCall,
-  type JsonValue,
+  type QueryHandlerCall,
   type PutV1Input,
   type RecordRef,
   type TodoPagesHandlerOutput,
@@ -43,8 +40,8 @@ const call: Promise<
 const direct: Promise<{ todo: Todo | null }> = client.queries.find({
   at: new Date(),
 });
-const queued: Promise<Call<{ todo: Todo | null }>> =
-  client.queries.enqueue.find({ at: new Date() });
+// @ts-expect-error Queries have no durable queue
+client.queries.enqueue.find({ at: new Date() });
 const outcome: Promise<
   CallOutcome<{ todo: Todo; echoed: Date; status: "open" | "closed" }>
 > = call.then((handle) => handle.wait());
@@ -59,12 +56,11 @@ const optional = client.mutations.change({ at: new Date() });
 const identity = client.mutations.mark({
   moment: { at: new Date(), title: "changed" },
 });
-const removed: Promise<{ at: Date }> = client.mutations.call.removeMoment({
+const removed: Promise<Call<{ at: Date }>> = client.mutations.removeMoment({
   moment: { at: new Date() },
 });
 void [
   direct,
-  queued,
   outcome,
   sharedCall,
   sharedOutcome,
@@ -74,36 +70,36 @@ void [
   removed,
 ];
 ctx.tx.rows.set(todo.id, todo);
-ctx.stream("project:1").track.todo({ id: "A" });
-ctx.stream("project:1").invalidate.todo({ id: "A" });
+ctx.stream.track.todo({ id: "A" });
+ctx.stream.invalidate.todo({ id: "A" });
 ctx.invalidate.todo({ id: "A" });
 // @ts-expect-error missing identity
-ctx.stream("project:1").track.todo({});
+ctx.stream.track.todo({});
 // @ts-expect-error old API is gone
 ctx.publish({ scope: "project:1" });
 // @ts-expect-error old API is gone
 ctx.changes.track(todo);
-// @ts-expect-error Query has no membership writer
-queryCtx.stream("project:1").track.todo({ id: "A" });
+queryCtx.stream.track.todo({ id: "A" });
 // @ts-expect-error Query has no change declaration
 queryCtx.invalidate.todo({ id: "A" });
 queryCtx.tx.rows.get(todo.id);
 void queryCtx.callId;
 // A structurally compatible record is accepted; only its identity is copied.
-ctx.stream("project:1").track.todo(todo);
+ctx.stream.track.todo(todo);
 const at = new Date();
 // A DateTime identity is a Date, and a composite identity names every component.
 ctx.invalidate.moment({ at });
-ctx.stream("project:1").track.pin({ todo: "A", at });
+ctx.stream.track.pin({ todo: "A", at });
 ctx.invalidate.pin({ todo: "A", at });
 // @ts-expect-error a DateTime identity is a Date, not its wire string
 ctx.invalidate.moment({ at: "2026-01-01T00:00:00.000Z" });
 // @ts-expect-error a composite identity needs every component
-ctx.stream("project:1").invalidate.pin({ todo: "A" });
+ctx.stream.invalidate.pin({ todo: "A" });
 // @ts-expect-error touch has one method per Model
 ctx.invalidate.nope({ id: "A" });
 // Mixed sets take the generated, explicitly typed references.
-const scope: Stream = ctx.stream("project:1");
+const scope: Stream = ctx.stream;
+ctx.streams(["project:1", "project:2"]).track.todo({ id: "A" });
 scope.track([TodoRef({ id: "A" }), Moment({ at }), Pin({ todo: "A", at })]);
 scope.invalidate([TodoRef({ id: "B" })]);
 scope.track([{ model: "Todo", identity: { id: "C" } }]);
@@ -122,6 +118,7 @@ void [narrowed, mismatched];
 
 type Tx = { rows: Map<string, Todo> };
 const queries: Queries<Tx> = {
+  todoPages: async ({ args }) => ({ todos: [], moments: [{ at: args.since }] }),
   find: {
     async v2({ ctx }) {
       ctx.tx.rows.get("one");
@@ -134,6 +131,7 @@ const queries: Queries<Tx> = {
 // @ts-expect-error Query Model outputs are typed identities, not bare keys
 const wholeModel: Queries<Tx> = { find: { v2: async () => ({ todo: "one" }) } };
 const queryV1: Queries<Tx> = {
+  todoPages: async () => ({ todos: [], moments: [] }),
   find: {
     v2: async () => ({ todo: null }),
     // @ts-expect-error v1 of Find is a Mutation; the Query map holds only v2
@@ -145,7 +143,7 @@ const handlers: Mutations<Tx> = {
   put: {
     async v1({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.stream("todos").track.todo(args.todo);
+      ctx.stream.track.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -154,7 +152,7 @@ const handlers: Mutations<Tx> = {
     },
     async v2({ ctx, args }) {
       ctx.tx.rows.set(args.todo.id, args.todo);
-      ctx.stream("todos").track.todo(args.todo);
+      ctx.stream.track.todo(args.todo);
       return {
         todo: { id: args.todo.id },
         echoed: new Date(args.when.getTime()),
@@ -187,59 +185,19 @@ const loaders: Loaders<Tx> = {
   },
 };
 void [handlers, loaders];
-// Loads (#173): typed args, a context whose Streams only add, and identity pages.
-declare const loadCtx: LoadContext<Tx>;
-void [loadCtx.tx.rows, loadCtx.userId, loadCtx.callId, loadCtx.loadId];
-// A Load context adds page records to Streams, and only adds.
-loadCtx.stream("project:1").track.todo({ id: "A" });
-loadCtx.stream("project:1").track([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
-// @ts-expect-error a Load Stream cannot remove
-loadCtx.stream("project:1").invalidate.todo({ id: "A" });
-// @ts-expect-error a Load context has no change declaration
-loadCtx.invalidate.todo({ id: "A" });
-const loads: Loads<Tx> = {
-  async todoPages({ ctx, args, continuation }) {
-    ctx.tx.rows.get("one");
-    const since: Date = args.since;
-    const statuses: ("open" | "closed")[] = args.statuses;
-    void statuses;
-    if (continuation === null)
-      return {
-        data: { todos: [{ id: "one" }], moments: [{ at: since }] },
-        next: { state: { after: "one", seen: [1, 2.5, true, null] } },
-      };
-    const state: JsonValue = continuation.state;
-    void state;
-    return { data: { todos: [], moments: [] }, next: null };
-  },
-};
-const standalone = async ({
-  args,
-}: LoadHandlerCall<Tx, TodoPagesInput>): Promise<TodoPagesHandlerOutput> => ({
-  data: { todos: [], moments: [{ at: args.since }] },
-  next: { state: null },
+// Bootstrap and Query preparation have track-only Stream handles.
+declare const bootstrapCtx: QueryContext<Tx>;
+bootstrapCtx.stream.track([TodoRef({ id: "A" }), Moment({ at: new Date(0) })]);
+// @ts-expect-error Bootstrap cannot invalidate
+bootstrapCtx.stream.invalidate.todo({ id: "A" });
+const standalone = async ({ args }: QueryHandlerCall<Tx, TodoPagesInput>): Promise<TodoPagesHandlerOutput> => ({
+  todos: [], moments: [{ at: args.since }],
 });
-const versionedLoads: Loads<Tx> = { todoPages: { v1: standalone } };
-void [loads, versionedLoads];
-const wrongArgs: Loads<Tx> = {
-  async todoPages({ ctx, args }) {
-    // @ts-expect-error a DateTime arg is a Date, not its wire string
-    const wire: string = args.since;
-    // @ts-expect-error a Load has only its declared args
-    void args.cursor;
-    // @ts-expect-error a Load handler cannot declare changes
-    ctx.invalidate.todo({ id: "one" });
-    void wire;
-    return { data: { todos: [], moments: [] }, next: null };
-  },
-};
-// @ts-expect-error a DateTime identity is a Date, not its wire string
-const wireIdentity: TodoPagesHandlerOutput = { data: { todos: [], moments: [{ at: "2026-01-01T00:00:00.000Z" }] }, next: null };
-// @ts-expect-error a Load page answers identities, not full Model records
-const fullRecords: TodoPagesHandlerOutput = { data: { todos: [{ id: "one", title: "T", at: new Date(), status: "open", note: null }], moments: [] }, next: null };
-// @ts-expect-error continuation state is portable JSON, not a Date
-const dateState: TodoPagesHandlerOutput = { data: { todos: [], moments: [] }, next: { state: new Date() } };
-void [wrongArgs, wireIdentity, fullRecords, dateState];
+// @ts-expect-error DateTime identities remain Dates
+const wireIdentity: TodoPagesHandlerOutput = { todos: [], moments: [{ at: "2026-01-01" }] };
+// @ts-expect-error Query outputs contain identities rather than Model payloads
+const fullRecords: TodoPagesHandlerOutput = { todos: [{ id: "A", title: "extra" }], moments: [] };
+void [standalone, wireIdentity, fullRecords];
 declare const database: Database<Tx>;
 if (false) {
   const backend = createBackend({
@@ -255,33 +213,29 @@ if (false) {
     },
     queries,
     loaders,
-    loads,
+    protocol4: { backendId: "types", contractId: "v04", authorizeStream: () => true },
   });
   void backend;
   // The external transaction hands its body the same generated handles and
   // answers the body's own value.
   const external: Promise<number> = backend.transaction(
-    async ({ tx, stream: scope, invalidate: touch }) => {
+    async ({ tx, streams: scope, invalidate: touch }) => {
       tx.rows.set(todo.id, todo);
       touch.todo({ id: todo.id });
-      scope("project:1").track.todo({ id: todo.id });
-      scope("project:1").track([Pin({ todo: todo.id, at })]);
+      scope(["project:1"]).track.todo({ id: todo.id });
+      scope(["project:1"]).track([Pin({ todo: todo.id, at })]);
       return tx.rows.size;
     },
   );
   void external;
   // @ts-expect-error the external body has no changes collector
   void backend.transaction(async ({ changes }) => changes);
-  void backend.transaction(async ({ stream: scope }) => {
+  void backend.transaction(async ({ streams: scope }) => {
     // @ts-expect-error missing identity
-    scope("project:1").track.todo({});
+    scope(["project:1"]).track.todo({});
   });
-  // @ts-expect-error a schema that retains Queries requires the queries map
-  createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, loads });
-  // @ts-expect-error a schema that retains Loads requires the loads map
-  createBackend({ database, authenticate: () => "alice", mutations: handlers, queries, loaders });
-  // @ts-expect-error a Load is registered under loads, not queries
-  createBackend({ database, authenticate: () => "alice", mutations: handlers, queries: { ...queries, todoPages: loads.todoPages }, loaders, loads });
+  // @ts-expect-error retained Queries require their handler map
+  createBackend({ database, authenticate: () => "alice", mutations: handlers, loaders, protocol4: { backendId: "types", contractId: "v04", authorizeStream: () => true } });
 }
 const retained = (call: MutationHandlerCall<Tx, PutV1Input>) =>
   call.args.todo.at.getUTCFullYear();
@@ -309,7 +263,8 @@ client.mutations.ping({}).then((handle) => handle.result);
 client.actions.ping({});
 // @ts-expect-error store keys name explicit Model outputs only
 client.queries.find({ at: new Date() }, { store: { missing: false } });
-client.queries.find({ at: new Date() }, { store: { todo: false } });
+client.queries.find({ at: new Date() }, { store: false });
+// @ts-expect-error Queries cannot enqueue
 client.queries.enqueue.find({ at: new Date() }, { store: false });
 // @ts-expect-error standalone local models have no named mutation method
 client.models.todo.mutate({});
@@ -331,16 +286,11 @@ const enqueued: Promise<{
   put: Call<PutOutput>;
   cleared: Call<void>;
 }> = client.transaction(async (tx) => {
-  const put = await tx.mutations.put(
-    { todo, when: new Date(), statuses: ["open"], note: null },
-    {
-      store: { todo: false },
-      local: async (local) => {
-        const at: Date | undefined = (await local.models.moment.get({ at: new Date(0) }))?.at;
-        await local.models.pin.delete({ todo: todo.id, at: at ?? new Date(0) });
-      },
-    },
-  );
+  const put = await tx.mutations.put(async (local) => {
+    const at: Date | undefined = (await local.models.moment.get({ at: new Date(0) }))?.at;
+    await local.models.pin.delete({ todo: todo.id, at: at ?? new Date(0) });
+    return { todo, when: new Date(), statuses: ["open"], note: null };
+  });
   const cleared = await tx.mutations.clear({ todo: [{ id: todo.id }] });
   return { put, cleared };
 });
@@ -353,7 +303,7 @@ client.transaction(async (tx) => {
   // @ts-expect-error a DateTime arg is a Date
   await tx.mutations.change({ todo: null, at: "2026-01-01T00:00:00.000Z" });
   // @ts-expect-error a DateTime identity component is a Date in the callback too
-  await tx.mutations.ping({}, { local: async (local) => local.models.moment.delete({ at: "2026" }) });
+  await tx.mutations.ping(async (local) => { await local.models.moment.delete({ at: "2026" }); return {}; });
   // @ts-expect-error the callback queues no Mutation
-  await tx.mutations.ping({}, { local: async (local) => local.mutations.ping({}) });
+  await tx.mutations.ping(async (local) => { await local.mutations.ping({}); return {}; });
 });

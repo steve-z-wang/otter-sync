@@ -249,3 +249,16 @@ test('an unrelated failed Loader does not prevent requesting an earlier independ
  const prefix=JSON.parse(await app.pull('progress',JSON.stringify({context:active,callId:id(),after:0,models:{Todo:1},limit:1})));assert.equal(prefix.to,1);assert.equal(prefix.units.length,1);assert.equal(prefix.units[0].changes[0].record.identity.id,'progress-good');
  await assert.rejects(app.pull('progress',JSON.stringify({context:active,callId:id(),after:prefix.to,models:{Todo:1},limit:1})),/loader.failed/);
 });
+
+
+test('legal loader.invalid content survives Delta and Manifest committed replay',async()=>{
+ const app=backend({find:async()=>({todo:{id:'loader.invalid'}})});
+ await q("INSERT INTO v04_todo VALUES('loader.invalid','loader.invalid')");
+ const prior=Number((await q("SELECT head FROM axton_stream WHERE stream='User:alice'"))[0]?.head??0);
+ await app.transaction(async({stream})=>stream('User:alice').track.todo({id:'loader.invalid'}));
+ const delta={context,callId:id(),after:prior,models:{Todo:1},limit:1};
+ const wire=await app.pull('alice',JSON.stringify(delta));assert.equal(JSON.parse(wire).units[0].changes[0].record.state.title,'loader.invalid');assert.equal(await app.pull('alice',JSON.stringify(delta)),wire);
+ const start=JSON.parse(await app.pull('alice',JSON.stringify({kind:'start',context,callId:id(),models:{Todo:1},budget:100,heldKeys:[{model:'Todo',identity:{id:'loader.invalid'}}]})));
+ const manifest={kind:'page',context,callId:id(),manifestId:start.manifestId,from:0,limit:1};
+ const page=await app.pull('alice',JSON.stringify(manifest));assert.equal(JSON.parse(page).items[0].change.record.state.title,'loader.invalid');assert.equal(await app.pull('alice',JSON.stringify(manifest)),page);
+});

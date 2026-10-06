@@ -23,7 +23,7 @@ const database = prisma(db, { retries: 3, timeout: 20_000 });
 
 ## Apply the migration
 
-Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs call, Stream and record metadata plus the persisted publication fence, publication groups and immutable Bootstrap manifest/identity/range storage. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Existing databases follow the [forward migration chain](#stream-forward-migration).
+Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs call, Stream and record metadata plus the persisted publication fence, publication groups and immutable Bootstrap manifest/identity/range storage. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Existing databases follow the [forward migration chain](https://github.com/zanminwang/axton/blob/v0.3.0/website/docs/backend/database.md#stream-forward-migration).
 
 ## The driver interface
 

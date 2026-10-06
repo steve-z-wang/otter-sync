@@ -33,7 +33,7 @@ Opening commits local storage before starting network work; connectivity is not 
 
 ## Native libraries
 
-Installed Node packages select their platform addon. Installed Dart packages bundle a native library through their build hook. For a source checkout, run `bash scripts/build.sh` and pass Dart's `libraryPath` pointing to `target/debug/libaxton_dart.dylib` on macOS or `libaxton_dart.so` on Linux. React Native requires the [native module](../../../packages/client-react-native/native-module/README.md) in a native build; Expo Go cannot supply it.
+Installed Node packages select their platform addon. Installed Dart packages bundle a native library through their build hook. For a source checkout, run `bash scripts/build.sh` and pass Dart's `libraryPath` pointing to `target/debug/libaxton_dart.dylib` on macOS or `libaxton_dart.so` on Linux. React Native requires the [native module](https://github.com/zanminwang/axton/blob/main/packages/client-react-native/native-module/README.md) in a native build; Expo Go cannot supply it.
 
 Before any Store opens on Android, initialize its stable application support/files directory once:
 

@@ -141,7 +141,7 @@ A column holds the field's local value: an `Int` or `Boolean` is an integer (`1`
     });
     ```
 
-Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. A Mutation queued with `tx.mutations` inside a savepoint belongs to it: rolling the savepoint back discards that Mutation and its companion changes, and its Call fails with `transaction_rolled_back`, while Mutations queued outside the savepoint are kept. A savepoint cannot start while a Mutation's input callback runs ([named Mutations](client-api.md#mutations)). Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
+Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. A Mutation queued with `tx.mutations` inside a savepoint belongs to it: rolling the savepoint back discards that Mutation and its companion changes, and its Call fails with `transaction_rolled_back`, while Mutations queued outside the savepoint are kept. A savepoint cannot start while a Mutation's input callback runs ([named Mutations](client-api.md#mutations-and-queries)). Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
 
 ## Server connection
 

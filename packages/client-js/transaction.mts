@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { CommandAccounting } from "./command-accounting.mts";
 import { type RecordValue, type QuerySpec } from "./values.mts";
 import type { Call } from "./actions.mts";
 import {
@@ -38,10 +39,7 @@ export class Transaction {
   #open = true;
   /** Submissions with a `local` callback that have not settled. */
   #locals = 0;
-  /** Settles once every command submitted so far has settled. */
-  #tail: Promise<unknown> = Promise.resolve();
-  #pending = 0;
-  #failure: unknown;
+  #commands = new CommandAccounting();
   #structural: unknown;
   #context = new AsyncLocalStorage<Frame>();
   #publicContext = new AsyncLocalStorage<symbol>();
@@ -99,24 +97,7 @@ export class Transaction {
     return this.#track((scope) => this.#send(command, scope));
   }
   #track(submit: (scope: string | undefined) => Promise<any>): Promise<any> {
-    this.#pending++;
-    let work: Promise<any>;
-    try {
-      work = submit(this.#active?.scope);
-    } catch (error) {
-      work = Promise.reject(error);
-    }
-    const settled = work.then(
-      () => {
-        this.#pending--;
-      },
-      (error) => {
-        this.#pending--;
-        this.#failure ??= error;
-      },
-    );
-    this.#tail = Promise.all([this.#tail, settled]);
-    return work;
+    return this.#commands.track(() => submit(this.#active?.scope));
   }
   #call(command: RecordValue): Promise<any> {
     return this.#admit() ?? this.#queue(command);
@@ -169,12 +150,12 @@ export class Transaction {
    * rejected with; the runtime refuses the commit for it as well.
    */
   async finish(): Promise<void> {
-    const outstanding = this.#pending > 0 || this.#scopes.size > 0;
+    const outstanding = this.#commands.outstanding || this.#scopes.size > 0;
     this.#open = false;
-    await this.#tail;
+    await this.#commands.drain();
     if (this.#structural) throw this.#structural;
     if (outstanding) throw Error("unawaited transaction operation");
-    if (this.#failure) throw this.#failure;
+    if (this.#commands.failure) throw this.#commands.failure;
   }
   read(model: string, identity: object): Promise<RecordValue | null> {
     return this.#call({ kind: "read", key: { model, identity } });
@@ -227,14 +208,14 @@ export class Transaction {
     // Opened in the parent's scope; the runtime answers the new one.
     const opened = this.#queue({ kind: "savepoint" });
     this.#active = token;
-    const failure = this.#failure;
+    const failure = this.#commands.failure;
     const run = this.#context.run(token, async () => {
       const scope = (await opened)?.scope;
       if (typeof scope === "string") token.scope = scope;
       try {
         if (!this.#open) throw Error("transaction_closed");
         const value = await body();
-        await this.#tail;
+        await this.#commands.drain();
         if (!this.#open) throw Error("transaction_closed");
         if (this.#active !== token) {
           this.#structural = Error("unawaited nested savepoint");
@@ -243,19 +224,19 @@ export class Transaction {
         // A command of this savepoint failed and the body swallowed it: the
         // savepoint rejects with that error object and rolls back, the same
         // outcome the runtime's accounting gives a failure in a savepoint.
-        if (this.#failure !== failure) throw this.#failure;
+        if (this.#commands.failure !== failure) throw this.#commands.failure;
         if (this.#structural) throw this.#structural;
         await this.#queue({ kind: "release", ...scopeOf(token) });
         return value;
       } catch (error) {
-        await this.#tail;
+        await this.#commands.drain();
         if (this.#open && !this.#structural) {
           if (this.#active !== token) {
             this.#structural = Error("unawaited nested savepoint");
             throw this.#structural;
           }
           await this.#queue({ kind: "rollbackSavepoint", ...scopeOf(token) });
-          this.#failure = failure;
+          this.#commands.restoreFailure(failure);
         }
         throw error;
       } finally {

@@ -1,4 +1,4 @@
-import {openStore} from './store-fixture.mjs';
+import { openStore } from "./store-fixture.mjs";
 // Query once through the real native runtime (#158, #134): Rust decides
 // Cached / Join / Fetch, runs the one request of a flight and completes every
 // joined caller; this host executes the request effect and decodes an
@@ -98,6 +98,27 @@ export async function harness(body, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axton-query-once-"));
   const path = join(directory, "db");
   const state = { requests: 0, gates: new Map(), fail: new Set() };
+  const entered = new Map();
+  const requestEntry = (n) => {
+    if (!entered.has(n)) entered.set(n, deferred());
+    return entered.get(n);
+  };
+  const waitForRequest = async (n) => {
+    let timer;
+    try {
+      await Promise.race([
+        requestEntry(n).promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(Error(`Query request ${n} did not enter within 5s`)),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const respond = (request, n) => {
     const title = `v${n}`;
     return JSON.stringify({
@@ -132,16 +153,17 @@ export async function harness(body, options = {}) {
     push: async (kind, text) => {
       assert.equal(kind, "action");
       const n = ++state.requests;
+      requestEntry(n).resolve();
       const gate = state.gates.get(n);
       if (gate) await gate.promise;
       if (state.fail.has(n)) throw Error(`network down ${n}`);
       return respond(JSON.parse(text), n);
     },
   }));
-  const open = () => openStore(DirectClient,{ path, schema });
+  const open = () => openStore(DirectClient, { path, schema });
   const client = await open();
   try {
-    await body({ client, state, open, deferred });
+    await body({ client, state, open, deferred, waitForRequest });
   } finally {
     await client.close();
     await rm(directory, { recursive: true, force: true });
@@ -173,19 +195,24 @@ test("concurrent once callers share one request and decode independent results",
           event.operation.kind === "http" &&
           event.operation.route === "action",
       );
-      if (fetched && !racing) racing = once(client);
+      if (fetched && !racing) {
+        racing = once(client);
+        racing.catch(() => {});
+      }
       return batch;
     },
     runtimeDetach: (runtimeId) => native.runtimeDetach(runtimeId),
   };
   await harness(
-    async ({ client: opened, state, deferred }) => {
+    async ({ client: opened, state, deferred, waitForRequest }) => {
       client = opened;
       const connection = await connect(client);
       const gate = deferred();
       state.gates.set(1, gate);
       const first = once(client);
+      first.catch(() => {});
       const second = once(client);
+      second.catch(() => {});
       const byKeyOrder = client.invokeQuery(
         "GetTodos",
         1,
@@ -193,7 +220,8 @@ test("concurrent once callers share one request and decode independent results",
         decode,
         { once: true, store: true },
       );
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      byKeyOrder.catch(() => {});
+      await waitForRequest(1);
       gate.resolve();
       const results = await Promise.all([first, second, byKeyOrder, racing]);
       assert.equal(state.requests, 1, "one network request");
@@ -345,18 +373,20 @@ test("a failed refresh settles every waiter, releases its flight and keeps the s
 });
 
 test("invalidation forces a miss and fences an older in-flight result", async () => {
-  await harness(async ({ client, state, deferred }) => {
+  await harness(async ({ client, state, deferred, waitForRequest }) => {
     const connection = await connect(client);
     const gate = deferred();
     state.gates.set(1, gate);
     const older = once(client);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    older.catch(() => {});
+    await waitForRequest(1);
     assert.equal(
       await client.invalidateQuery("GetTodos", 1, { project: "p" }),
       undefined,
     );
     const newer = once(client);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    newer.catch(() => {});
+    await waitForRequest(2);
     assert.equal(state.requests, 2, "the new generation never joins");
     gate.resolve();
     assert.deepEqual((await older).tags, ["v1", "x"], "old callers resolve");
@@ -391,12 +421,13 @@ test("once and invalidate refuse an active transaction callback, even through a 
 });
 
 test("closing settles a waiting once caller", async () => {
-  await harness(async ({ client, state, deferred }) => {
+  await harness(async ({ client, state, deferred, waitForRequest }) => {
     await connect(client);
     const gate = deferred();
     state.gates.set(1, gate);
     const waiting = once(client);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    waiting.catch(() => {});
+    await waitForRequest(1);
     const closing = client.close();
     await assert.rejects(
       waiting,

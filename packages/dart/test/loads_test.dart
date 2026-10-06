@@ -128,11 +128,32 @@ void main() {
   test(
     'Bootstrap rejects inside local transaction without registering work',
     () async {
-      await online(client);
+      // A live connection automatically starts Bootstrap before any public
+      // registration. Keep this refusal window offline so only this call
+      // could register work, rather than racing that background Start.
+      await client.connection?.close();
       await client.transaction((_) async {
-        await expectLater(client.bootstrap(), throwsA(isA<StateError>()));
+        await expectLater(
+          client.bootstrap().timeout(const Duration(seconds: 5)),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'transaction_active',
+            ),
+          ),
+        );
       });
       expect(requests.where((x) => x['kind'] == 'start'), isEmpty);
+      await online(client);
+      await client.bootstrap().timeout(const Duration(seconds: 5));
+      expect(
+        requests
+            .where((x) => x['kind'] == 'start')
+            .map((x) => x['callId'])
+            .toSet(),
+        hasLength(1),
+      );
     },
   );
 }

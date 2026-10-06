@@ -481,3 +481,35 @@ test('tracking combines all-holder and explicit-pair candidates, deduplicating c
  assert.deepEqual(await answer(driver,'tx',{op:'readTracking',records:[],pairs:[]}),[]);
  assert.equal(seen.length,count,'an empty read performs no SQL');
 });
+
+
+test('post-commit legacy diagnostics preserve payloads and tolerate throwing observers',async()=>{
+ const page={changes:[{model:'Task',identity:{id:'t-1'},error:'loader.invalid'}]};
+ const receipt={rejections:[{ordinal:0,code:'loader.invalid'}]};
+ const payloads=[['pull',page],['push',receipt],['pull',{units:[{changes:[{record:{state:{title:'loader.invalid'}}}]}]}],['pull',{items:[{change:{record:{state:{title:'loader.invalid'}}}}]}]];
+ for(const [method,payload] of payloads){
+  const errors=[];const wire=JSON.stringify(payload);
+  const app=createBackend({config,native:{validateConfig:c=>native.validateConfig(c),processPull:async()=>wire,processPush:async()=>wire},database:{transaction:body=>body({}),persistence:()=>fakePersistence([])},authenticate:()=> 'alice',mutations:{send:async()=>({message:'sent'})},handlers:{edit:async()=>{}},loads:{tasks:async()=>enrolledPage()},loaders:{task:async()=>[]},onError:error=>{errors.push(error);throw new Error('observer failed');}});
+  assert.equal(await app[method]('alice','{}'),wire);
+  assert.equal(errors.length,payload===page||payload===receipt?1:0);
+ }
+});
+
+
+test('bound Query tracking fails closed after caught collector refusals and accepts exactly 1000 pairs',async()=>{
+ const queryConfig=structuredClone(config);
+ queryConfig.schema.actions.push({name:'Ask',version:1,kind:'query',inputs:[],outputs:[{name:'message',kind:'value',type:{kind:'scalar',name:'string'},cardinality:'single',source:'handlerValue'}]});
+ const request={...entry('handleAction').request,name:'Ask',context:entry('admitContext').request.context};
+ for(const mode of ['overflow','invalid','limit']){
+  let escaped;const errors=[];
+  const {answers}=await replay([request],{onError:e=>errors.push(e),options:{config:queryConfig,queries:{async ask({ctx}){
+   escaped=ctx.stream('User:alice').track.task;
+   for(let n=0;n<1000;n++)escaped({id:`q${n}`});
+   try{if(mode==='overflow')escaped({id:'too-many'});else if(mode==='invalid')escaped({});}catch{}
+   return {message:'asked'};
+  }}}});
+  if(mode==='limit'){assert.equal(answers[0][1].declarations.length,1000);assert.equal(errors.length,0);}
+  else {assert.deepEqual(Object.keys(answers[0][1]),['error']);assert.match(answers[0][1].error,mode==='overflow'?/more than 1000/:/identity field id is missing/);assert.equal(errors.length,1);}
+  assert.throws(()=>escaped({id:'late'}),/closed/);
+ }
+});

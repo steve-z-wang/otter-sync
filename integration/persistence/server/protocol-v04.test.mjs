@@ -249,3 +249,37 @@ test('an unrelated failed Loader does not prevent requesting an earlier independ
  const prefix=JSON.parse(await app.pull('progress',JSON.stringify({context:active,callId:id(),after:0,models:{Todo:1},limit:1})));assert.equal(prefix.to,1);assert.equal(prefix.units.length,1);assert.equal(prefix.units[0].changes[0].record.identity.id,'progress-good');
  await assert.rejects(app.pull('progress',JSON.stringify({context:active,callId:id(),after:prefix.to,models:{Todo:1},limit:1})),/loader.failed/);
 });
+
+
+test('legal loader.invalid content survives Delta and Manifest committed replay',async()=>{
+ const app=backend({find:async()=>({todo:{id:'loader.invalid'}})});
+ await q("INSERT INTO v04_todo VALUES('loader.invalid','loader.invalid')");
+ const prior=Number((await q("SELECT head FROM axton_stream WHERE stream='User:alice'"))[0]?.head??0);
+ await app.transaction(async({stream})=>stream('User:alice').track.todo({id:'loader.invalid'}));
+ const delta={context,callId:id(),after:prior,models:{Todo:1},limit:1};
+ const wire=await app.pull('alice',JSON.stringify(delta));assert.equal(JSON.parse(wire).units[0].changes[0].record.state.title,'loader.invalid');assert.equal(await app.pull('alice',JSON.stringify(delta)),wire);
+ const start=JSON.parse(await app.pull('alice',JSON.stringify({kind:'start',context,callId:id(),models:{Todo:1},budget:100,heldKeys:[{model:'Todo',identity:{id:'loader.invalid'}}]})));
+ const manifest={kind:'page',context,callId:id(),manifestId:start.manifestId,from:0,limit:1};
+ const page=await app.pull('alice',JSON.stringify(manifest));assert.equal(JSON.parse(page).items[0].change.record.state.title,'loader.invalid');assert.equal(await app.pull('alice',JSON.stringify(manifest)),page);
+});
+
+
+test('caught Query tracking refusal rolls back all enrollment and saves stable failed replay; 1000 succeeds',async()=>{
+ await q("INSERT INTO v04_todo VALUES('query-result','Query result')");
+ for(const mode of ['overflow','invalid','limit']){
+  let attempts=0;const errors=[];
+  const app=createBackend({config,native,database,protocol4,authenticate:()=> 'alice',loaders:{todo:loader},onError:e=>errors.push(e),queries:{find:async({ctx})=>{
+   attempts++;const track=ctx.stream('User:alice').track.todo;
+   for(let n=0;n<1000;n++)track({id:`query-${mode}-${n}`});
+   try{if(mode==='overflow')track({id:'query-overflow-extra'});else if(mode==='invalid')track({});}catch{}
+   return {todo:{id:'query-result'}};
+  }}});
+  const state=async()=>({head:(await q("SELECT head FROM axton_stream WHERE stream='User:alice'"))[0]?.head??'0',members:(await q("SELECT count(*)::int n FROM axton_stream_member WHERE stream='User:alice'"))[0].n,records:(await q('SELECT count(*)::int n FROM axton_record'))[0].n});
+  const before=await state();const request={context,callId:id(),name:'Find',version:1,args:{}};
+  const wire=await app.action('alice',JSON.stringify(request));const reply=JSON.parse(wire);
+  if(mode==='limit'){assert.equal(reply.completion.outcome.status,'succeeded');assert.equal((await state()).members,before.members+1000);assert.equal(Number((await state()).head),Number(before.head)+1000);}
+  else {assert.deepEqual(reply.completion.outcome,{status:'failed',code:'handler.failed',execution:'rejected'});assert.deepEqual(await state(),before);assert.equal(errors.length,1);}
+  assert.equal(await app.action('alice',JSON.stringify(request)),wire);assert.equal(attempts,1,'saved replay does not rerun handler');
+  assert.equal((await q('SELECT response FROM axton_call WHERE call_id=$1',[request.callId]))[0].response,wire);
+ }
+});

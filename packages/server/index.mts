@@ -1190,8 +1190,8 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                 ? (value as unknown[]).map(shape)
                 : shape(value);
           }
-          // A Query context has no declaration handles at runtime either:
-          // its settlement never carries changes or memberships.
+          // Bound Queries may track explicitly, but cannot invalidate or write.
+          // Legacy Queries expose no declaration handles.
           const query = (action.kind ?? "mutation") === "query";
           const effects = query
             ? req.context
@@ -1219,6 +1219,14 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
                 : { tx, userId: req.owner, callId: req.callId },
               args,
             } as Parameters<MutationHandler<T>>[0]);
+            // A caught declaration refusal still fails the entire read. Never
+            // settle the prefix collected before an overflow or invalid input.
+            if (query && effects) {
+              const failure = (
+                effects as ReturnType<typeof createLoadEffects>
+              ).failure();
+              if (failure) throw failure.error;
+            }
             result = {
               outputs: outputs === undefined ? {} : outputs,
               ...(effects

@@ -20,6 +20,7 @@ async function scenario(run) {
     server = await app.listen(0);
     proxy = await createProxy(server.url);
     const open = async (name, viewer, bootstrap = true) => {
+      const diagnostics = [];
       const client = await GeneratedClient.open({
         path: join(dir, name),
         stream: SCOPE,
@@ -27,8 +28,22 @@ async function scenario(run) {
           url: proxy.url,
           token: viewer,
           identity: { backend: "todo-demo", viewer, contract: "todo-v04" },
+          options: {
+            onError: (error) =>
+              diagnostics.push({
+                name: error.name,
+                message: error.message,
+                code: error.code,
+                details: error.details,
+                status: error.status,
+                kind: error.kind,
+                identity: error.identity,
+                ordinal: error.ordinal,
+              }),
+          },
         },
       });
+      client.testDiagnostics = diagnostics;
       clients.add(client);
       if (bootstrap) await client.bootstrap();
       return client;
@@ -228,10 +243,58 @@ test("offline create then complete persists in order while another viewer keeps 
     );
     await ctx.close(alice);
     const reopened = await ctx.open("alice", "alice", false);
-    await wait(
-      async () => (await reopened.syncState()).pending === 0,
-      "dependent durable calls",
-    );
+    try {
+      await wait(
+        async () => (await reopened.syncState()).pending === 0,
+        "dependent durable calls",
+      );
+    } catch (error) {
+      const inspect = async (sql) =>
+        reopened.readSql(sql).catch((error) => ({ error: String(error) }));
+      const evidence = {
+        id,
+        diagnostics: reopened.testDiagnostics.slice(-8),
+        bobDiagnostics: bob.testDiagnostics.slice(-8),
+        state: await reopened.syncState(),
+        queue: await inspect("SELECT * FROM axton_mutation"),
+        dependencies: await inspect("SELECT * FROM axton_mutation_dependency"),
+        operations: await inspect("SELECT * FROM axton_mutation_operation"),
+        tasks: await reopened.pendingTasks(),
+        refusals: await inspect("SELECT * FROM axton_rejection"),
+        outstandingRequests: await inspect("SELECT * FROM axton_v04_request"),
+        receipts: await inspect(
+          "SELECT * FROM axton_v04_call ORDER BY ordinal DESC LIMIT 4",
+        ),
+        evidence: await inspect(
+          `SELECT * FROM axton_v04_record WHERE model='Todo' AND json_extract(identity,'$.id')='${id}'`,
+        ),
+        page: await inspect("SELECT * FROM axton_v04_page"),
+        materializations: await inspect("SELECT * FROM axton_v04_bootstrap"),
+        local: await reopened.models.todo.get({ id }),
+        prisma: await ctx.app.db.todo.findUnique({ where: { id } }),
+        savedCalls: await ctx.app.db
+          .$queryRawUnsafe(
+            "SELECT owner_id,call_id,request,response,claim_tx::text FROM axton_call WHERE request::text LIKE $1 LIMIT 4",
+            `%${id}%`,
+          )
+          .catch((error) => ({ error: String(error) })),
+        requests: ctx.proxy.requests("/sync/actions").slice(-6),
+        deliveryRequests: ctx.proxy.requests("/sync/pull").slice(-6),
+        frozenDelivery: await inspect(
+          "SELECT * FROM axton_v04_delivery_request",
+        ),
+        completions: await inspect(
+          "SELECT * FROM axton_v04_completion ORDER BY rowid DESC LIMIT 4",
+        ),
+      };
+      console.error(
+        "TODO_DEPENDENT_TIMEOUT",
+        JSON.stringify(evidence, (_, value) =>
+          typeof value === "bigint" ? String(value) : value,
+        ),
+      );
+      throw error;
+    }
     assert.equal(
       (await ctx.app.db.todo.findUnique({ where: { id } })).done,
       true,

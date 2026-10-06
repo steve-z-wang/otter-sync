@@ -41,6 +41,7 @@ bash integration/v04-sdk/check-types.sh
 (cd integration/v04-sdk && dart run application-data.dart && dart run native.dart)
 AXTON_DART="$(command -v dart)" bash integration/v04-sdk/run-host.sh
 bash integration/generated-api/verify.sh
+bash integration/0.4/run.sh
 bash integration/e2e/run.sh
 bash integration/action-e2e/run.sh
 bash integration/load-e2e/run.sh

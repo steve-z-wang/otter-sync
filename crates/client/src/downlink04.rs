@@ -2,7 +2,7 @@
 use crate::{ApplyReport, Client, ClientStore, ConnectionDriver, DownlinkAction, DownlinkEvent};
 use axton_core::{
     Result, invalid,
-    v04::{self},
+    v04::{self, Validate},
 };
 use std::collections::{BTreeMap, VecDeque};
 #[derive(Clone)]
@@ -21,6 +21,7 @@ pub(crate) struct Delivery04 {
     acknowledged: bool,
     events: VecDeque<DownlinkEvent>,
     pages: VecDeque<v04::DeltaPage>,
+    active_page: Option<v04::DeltaPage>,
     requests: BTreeMap<u64, Request>,
     receipt_runs: BTreeMap<String, String>,
     pending: Vec<DownlinkAction>,
@@ -33,6 +34,7 @@ pub(crate) struct Delivery04 {
 impl Delivery04 {
     pub(crate) fn queued_frames(&self) -> usize {
         self.pages.len()
+            + usize::from(self.active_page.is_some())
             + self
                 .events
                 .iter()
@@ -71,6 +73,27 @@ impl Delivery04 {
         self.close(None);
         self.retry_at = now.saturating_add(ConnectionDriver::backoff(self.failures, entropy));
         self.failures = self.failures.saturating_add(1);
+    }
+    fn admit_page<S: ClientStore>(
+        &mut self,
+        c: &mut Client<S>,
+        page: v04::DeltaPage,
+    ) -> Result<()> {
+        page.validate()?;
+        page.context.admit(c.request_context()?)?;
+        if let Some(progress) = c.delta_progress04()?
+            && progress.page_id == page.page_id
+            && progress.plan != v04::PageProgress::new(&page)?.plan
+        {
+            // A replay remains bound to its frozen payload even after a
+            // failed unit released carrier ownership or the plan completed.
+            return Err(invalid("page resume mismatch"));
+        }
+        self.catchup_head = self.catchup_head.max(page.head);
+        if page.to > c.stream_cursor04()? {
+            self.pages.push_back(page);
+        }
+        Ok(())
     }
     fn request<S: ClientStore>(
         &mut self,
@@ -171,6 +194,7 @@ impl Delivery04 {
         if self.context.as_ref() != Some(&active) {
             let prior = self.context.replace(active.clone());
             self.close(None);
+            self.active_page = None;
             self.requests.clear();
             self.receipt_runs.clear();
             self.catchup_head = 0;
@@ -183,7 +207,7 @@ impl Delivery04 {
                 && page.context == active
                 && !progress.complete(&page)
             {
-                self.pages.push_back(page);
+                self.active_page = Some(page);
             }
         }
         if let Some(event) = self.events.pop_front() {
@@ -235,9 +259,7 @@ impl Delivery04 {
                                 if page.from != intent.after {
                                     return Err(invalid("Delta response prefix mismatch"));
                                 }
-                                if page.to > c.stream_cursor04()? {
-                                    self.pages.push_front(page);
-                                }
+                                self.admit_page(c, page)?;
                             }
                             Request::Bootstrap(intent, _) => match intent {
                                 v04::BootstrapIntent::Start { context, .. } => {
@@ -329,8 +351,8 @@ impl Delivery04 {
                             page.context.admit(&active)?;
                             if self.pages.len() >= 32 {
                                 self.failed(now, entropy);
-                            } else if page.to > c.stream_cursor04()? {
-                                self.pages.push_back(page);
+                            } else {
+                                self.admit_page(c, page)?;
                             }
                         }
                     }
@@ -348,48 +370,56 @@ impl Delivery04 {
                 millis: self.retry_at - now,
             }]);
         }
-        if let Some(page) = self.pages.front().cloned() {
+        if self.active_page.is_none()
+            && let Some(page) = self.pages.front().cloned()
+        {
             let cursor = c.stream_cursor04()?;
-            if page.to <= cursor {
+            if page.from != cursor || page.to <= cursor {
+                // A different frozen range cannot resume at an interior prefix
+                // or skip a gap. Its admitted head retains fresh demand from C.
                 self.pages.pop_front();
                 return Ok(vec![DownlinkAction::Wait { millis: 0 }]);
             }
-            if page.from <= cursor {
-                let progress = match c.begin_delta04(&page) {
-                    Ok(progress) => progress,
-                    Err(error) => {
-                        self.failed(now, entropy);
-                        return Err(error);
-                    }
-                };
-                if progress.complete(&page) {
-                    self.pages.pop_front();
-                    return Ok(vec![DownlinkAction::Wait { millis: 0 }]);
+            self.pages.pop_front();
+            self.active_page = Some(page);
+        }
+        if let Some(page) = self.active_page.clone() {
+            let progress = match c.begin_delta04(&page) {
+                Ok(progress) => progress,
+                Err(error) => {
+                    self.active_page = None;
+                    self.failed(now, entropy);
+                    return Err(error);
                 }
-                let report = match c.apply_delta_unit04(&page) {
-                    Ok(report) => report,
-                    Err(error) => {
-                        self.failed(now, entropy);
-                        return Err(error);
-                    }
-                };
-                if c.delta_progress04()?
-                    .is_some_and(|progress| progress.complete(&page))
-                {
-                    self.pages.pop_front();
-                }
-                let mut actions = Self::report(report, &active.binding.stream);
-                actions.push(Self::public_status(c)?);
-                return Ok(actions);
+            };
+            if progress.complete(&page) {
+                self.active_page = None;
+                return Ok(vec![DownlinkAction::Wait { millis: 0 }]);
             }
-            if self.acknowledged
-                && !self
-                    .requests
-                    .values()
-                    .any(|r| matches!(r, Request::Delta(_)))
+            let report = match c.apply_delta_unit04(&page) {
+                Ok(report) => report,
+                Err(error) => {
+                    // A failed local unit keeps durable committed progress, but
+                    // must permit a fresh smaller independent prefix from C.
+                    self.active_page = None;
+                    self.delta_limit = (if self.delta_limit == 0 {
+                        128
+                    } else {
+                        self.delta_limit
+                    } / 2)
+                        .max(1);
+                    self.failed(now, entropy);
+                    return Err(error);
+                }
+            };
+            if c.delta_progress04()?
+                .is_some_and(|progress| progress.complete(&page))
             {
-                return Ok(vec![self.delta(c)?]);
+                self.active_page = None;
             }
+            let mut actions = Self::report(report, &active.binding.stream);
+            actions.push(Self::public_status(c)?);
+            return Ok(actions);
         }
         if self.acknowledged
             && c.stream_cursor04()? < self.catchup_head

@@ -18,6 +18,10 @@ Ordinary Query/Fetch records carry a null cursor. With `store=true` they may fil
 
 Each Delta unit commits its entire final projection, authority and proven prefix atomically. Ahead-of-prefix records may be necessary for a constrained group; their content position does not imply that `C` reached them. A durable immutable page plan resumes after its last committed unit. Constraint or commit failure rolls back the whole failing unit while preserving earlier progress. Declared cascades delete device content without inventing child authority; newer independent child authority and retained local work during equal-position rematerialization remain protected.
 
+The downlink carrier owns one active frozen plan across live and HTTP arrivals. It finishes that plan before considering a different page; an overlapping or ahead range retains its validated head as catch-up demand and is fetched afresh from the committed cursor, without trimming its proof or waiting for another publication. Same-page replay still validates the frozen digest. Transport close, pause and retry retain the active plan; local unit failure releases carrier ownership so a smaller independent prefix can be requested without crossing the failed group.
+
+Real SQLite carrier regressions cover overlaps, failure recovery and lifecycle in [protocol04_downlink.rs](../../../../crates/sqlite/tests/protocol04_downlink.rs).
+
 ## 5. Building block view
 
 [Bound Store and evidence](../../../../crates/client/src/protocol04.rs), [unit/manifest progress](../../../../crates/client/src/progress04.rs), [receipt settlement](../../../../crates/client/src/settlement04.rs) and [existing downlink worker](../../../../crates/client/src/downlink04.rs) own the native rules. [SQLite](../../../../crates/sqlite/src/lib.rs) owns SQL execution and physical-file locking.

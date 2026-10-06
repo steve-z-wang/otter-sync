@@ -349,7 +349,14 @@ test("duplicate units cannot undo authority; overlap repairs from committed pref
     n = await syncFixture({
       onPull: (b, r) =>
         r.end(
-          JSON.stringify(page(b.context, b.after, n.state.head, "repaired")),
+          JSON.stringify(
+            page(
+              b.context,
+              b.after,
+              n.state.head,
+              n.state.head === 2 ? "second" : "fourth",
+            ),
+          ),
         ),
     });
   try {
@@ -360,24 +367,28 @@ test("duplicate units cannot undo authority; overlap repairs from committed pref
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 1,
     );
-    send(page(ctx, 0, 1, "duplicate"));
+    send(page(ctx, 0, 1, "first"));
     n.state.head = 2;
-    send(page(ctx, 0, 2, "overlap"));
+    send(page(ctx, 0, 2, "second"));
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 2,
     );
-    assert.equal(
-      (await f.client.read("Entry", { id: "live" })).text,
-      "repaired",
-    );
+    assert.equal((await f.client.read("Entry", { id: "live" })).text, "second");
     assert.equal(deltas(n)[0].body.after, 1);
-    assert.ok(errors.some((e) => /prefix gap/.test(e.message)));
+    assert.deepEqual(errors, []);
     n.state.head = 4;
-    send(page(ctx, 3, 4, "gap"));
+    send(page(ctx, 3, 4, "fourth"));
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 4,
     );
     assert.equal(deltas(n).at(-1).body.after, 2);
+    assert.equal((await f.client.read("Entry", { id: "live" })).text, "fourth");
+    assert.deepEqual(errors, []);
+    assert.equal(
+      n.handshakes.length,
+      1,
+      "legal carrier handoff needs no reconnect",
+    );
   } finally {
     await f.close();
     await n.close();

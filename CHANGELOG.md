@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/zanminwang/axton/compare/v0.3.0...v0.4.0) (2026-10-06)
+
+
+### Features
+
+* introduce protocol 4 bound Stores (SYN-5) ([#235](https://github.com/zanminwang/axton/issues/235)) ([3935c8f](https://github.com/zanminwang/axton/commit/3935c8fe66df282362cd9958cefddcb58b029510))
+
+
+### Bug Fixes
+
+* preserve read outcomes and reject partial Query tracking ([#237](https://github.com/zanminwang/axton/issues/237)) ([2fcca1a](https://github.com/zanminwang/axton/commit/2fcca1a1139cbdd516df08ffbf31ee6e25533e2e))
+* release Query once flights when preparation fails ([#238](https://github.com/zanminwang/axton/issues/238)) ([7a03be3](https://github.com/zanminwang/axton/commit/7a03be31aa083f37bd6fa0f365c4bad423aec525))
+
+
+### Miscellaneous Chores
+
+* release 0.4.0 ([6d7d9ae](https://github.com/zanminwang/axton/commit/6d7d9aec6d6d2e2761e5a6a67581511e67587343))
+
 ## [0.3.0](https://github.com/zanminwang/axton/compare/v0.2.0...v0.3.0) (2026-10-02)
 
 

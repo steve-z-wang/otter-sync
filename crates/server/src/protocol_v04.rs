@@ -385,8 +385,8 @@ pub(crate) async fn delta(
     bytes: &[u8],
     host: &impl Host,
 ) -> Result<String> {
-    use crate::host::{Acknowledged, MemberKey, Positions, PublicationGroup};
-    use axton_core::v04::{CommitUnit, DeltaIntent, DeltaPage, StreamChange, StreamRecord};
+    use crate::host::{Acknowledged, MemberKey, PublicationGroup};
+    use axton_core::v04::{CommitUnit, DeltaIntent, DeltaPage};
     let intent: DeltaIntent = v04::decode(bytes).map_err(request_invalid)?;
     if models(config, &intent.context)? != intent.models {
         return Err(Error::code("context_mismatch"));
@@ -457,56 +457,18 @@ pub(crate) async fn delta(
             .into_iter()
             .filter(|k| !seen.contains(&(k.model.clone(), k.identity_key.clone())))
             .collect::<Vec<MemberKey>>();
-        let positions: Positions = host
-            .call_typed(HostRequest::ReadPositions {
-                stream: intent.context.binding.stream.clone(),
-                records: keys.clone(),
-            })
-            .await?;
-        if positions.len() != keys.len() {
-            return Err(crate::storage_invalid("position count mismatch"));
-        }
-        let mut changes = vec![];
-        for (key, position) in keys.into_iter().zip(positions) {
-            if position.stream != intent.context.binding.stream
-                || position.key != key.key()
-                || position.cursor <= through
-                || position.cursor > head
-            {
+        let positions = read_positions_checked(&intent.context, &keys, host).await?;
+        for position in &positions {
+            if position.cursor <= through || position.cursor > head {
                 return Err(crate::storage_invalid(
                     "publication group current position invalid",
                 ));
             }
-            seen.insert((key.model.clone(), key.identity_key.clone()));
-            let change = if position.kind == crate::stream_members::PositionKind::Remove {
-                StreamChange::Remove {
-                    key: position.key,
-                    cursor: position.cursor,
-                }
-            } else {
-                let version = *intent
-                    .models
-                    .get(&position.key.model)
-                    .ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?;
-                let state = crate::action_results::load_state(
-                    config,
-                    owner,
-                    &position.key,
-                    version,
-                    true,
-                    host,
-                )
-                .await?;
-                StreamChange::Upsert {
-                    record: StreamRecord {
-                        key: position.key,
-                        cursor: position.cursor,
-                        state,
-                    },
-                }
-            };
-            changes.push(change);
         }
+        for key in keys {
+            seen.insert((key.model, key.identity_key));
+        }
+        let changes = materialize_authority(config, owner, &intent.models, positions, host).await?;
         bounded_unit(config, &changes)?;
         through = group.through;
         units.push(CommitUnit { through, changes });
@@ -628,20 +590,44 @@ async fn current_changes(
         context,
         &keys.iter().map(|key| key.key()).collect::<Vec<_>>(),
     )?;
+    let positions = read_positions_checked(context, &keys, host).await?;
+    materialize_authority(config, owner, models, positions, host).await
+}
+
+/// Final authority must match every requested pair before canonical loading.
+async fn read_positions_checked(
+    context: &RequestContext,
+    keys: &[crate::host::MemberKey],
+    host: &impl Host,
+) -> Result<crate::host::Positions> {
     let positions: crate::host::Positions = host
         .call_typed(HostRequest::ReadPositions {
             stream: context.binding.stream.clone(),
-            records: keys.clone(),
+            records: keys.to_vec(),
         })
         .await?;
     if positions.len() != keys.len() {
         return Err(crate::storage_invalid("position count mismatch"));
     }
-    let mut changes = vec![];
-    for (key, position) in keys.into_iter().zip(positions) {
+    for (key, position) in keys.iter().zip(&positions) {
         if position.stream != context.binding.stream || position.key != key.key() {
             return Err(crate::storage_invalid("position identity mismatch"));
         }
+    }
+    Ok(positions)
+}
+
+/// Delta and Manifest carry the same final Stream authority. Coverage/range
+/// validation stays with their callers; Remove never invokes a Loader.
+async fn materialize_authority(
+    config: &Config,
+    owner: &str,
+    models: &std::collections::BTreeMap<String, u64>,
+    positions: crate::host::Positions,
+    host: &impl Host,
+) -> Result<Vec<v04::StreamChange>> {
+    let mut changes = vec![];
+    for position in positions {
         if position.kind == crate::stream_members::PositionKind::Remove {
             changes.push(v04::StreamChange::Remove {
                 key: position.key,

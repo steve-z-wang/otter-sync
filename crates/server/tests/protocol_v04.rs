@@ -307,3 +307,105 @@ fn active_compatible_authority_can_complete_retained_receipt_without_old_g() {
         v04::SettlementDisposition::InstalledStream
     );
 }
+
+struct AuthorityHost {
+    recorded: Recording,
+    remove: bool,
+    final_fault: Option<&'static str>,
+    position_reads: Mutex<usize>,
+}
+impl Host for AuthorityHost {
+    fn call(&self, r: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>> {
+        Box::pin(async move {
+            match r["op"].as_str().unwrap() {
+                "readManifest" => {
+                    self.recorded.0.lock().unwrap().push(r);
+                    Ok(
+                        json!({"start":3,"total":1,"models":{"Todo":1},"from":0,"to":1,"keys":[{"model":"Todo","identityKey":"{\"id\":\"t1\"}"}],"companions":[]}),
+                    )
+                }
+                "readPositions" => {
+                    self.recorded.0.lock().unwrap().push(r.clone());
+                    let mut reads = self.position_reads.lock().unwrap();
+                    *reads += 1;
+                    let mut positions = r["records"].as_array().unwrap().iter().map(|key| json!({"stream":"User:alice","model":key["model"],"identityKey":key["identityKey"],"cursor":3,"kind":if self.remove {"remove"} else {"upsert"}})).collect::<Vec<_>>();
+                    if *reads == 3 {
+                        match self.final_fault {
+                            Some("count") => positions.clear(),
+                            Some("stream") => positions[0]["stream"] = json!("User:other"),
+                            Some("identity") => {
+                                positions[0]["identityKey"] = json!("{\"id\":\"other\"}")
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(json!(positions))
+                }
+                _ => self.recorded.call(r).await,
+            }
+        })
+    }
+}
+fn authority_pull(manifest: bool, host: &AuthorityHost) -> axton_server::Result<String> {
+    let request = if manifest {
+        json!({"kind":"page","context":context(),"callId":"01890f47-1234-7123-8123-123456789ac1","manifestId":"01890f47-1234-7123-8123-123456789ac2","from":0,"limit":1})
+    } else {
+        json!({"context":context(),"callId":"01890f47-1234-7123-8123-123456789ac1","after":0,"models":{"Todo":1},"limit":1})
+    };
+    run(axton_server::process_stream_pull(
+        &config(),
+        "alice",
+        &serde_json::to_vec(&request).unwrap(),
+        host,
+    ))
+}
+#[test]
+fn delta_and_manifest_share_final_authority_projection_and_remove_needs_no_loader() {
+    for remove in [false, true] {
+        let mut projections = vec![];
+        for manifest in [false, true] {
+            let host = AuthorityHost {
+                recorded: Recording::default(),
+                remove,
+                final_fault: None,
+                position_reads: Mutex::new(0),
+            };
+            let raw = authority_pull(manifest, &host).unwrap();
+            let response: Value = serde_json::from_str(&raw).unwrap();
+            projections.push(if manifest {
+                response["items"][0]["change"].clone()
+            } else {
+                response["units"][0]["changes"][0].clone()
+            });
+            let ops = host.recorded.0.lock().unwrap();
+            assert_eq!(
+                ops.iter().filter(|r| r["op"] == "load").count(),
+                if remove { 0 } else { 2 }
+            );
+        }
+        assert_eq!(projections[0], projections[1]);
+    }
+}
+#[test]
+fn final_positions_refuse_wrong_count_stream_and_identity_before_canonical_load() {
+    for manifest in [false, true] {
+        for fault in ["count", "stream", "identity"] {
+            let host = AuthorityHost {
+                recorded: Recording::default(),
+                remove: false,
+                final_fault: Some(fault),
+                position_reads: Mutex::new(0),
+            };
+            assert!(
+                authority_pull(manifest, &host).is_err(),
+                "{manifest}/{fault}"
+            );
+            let ops = host.recorded.0.lock().unwrap();
+            assert!(
+                !ops.iter()
+                    .any(|r| r["op"] == "load" && r["mode"] != "prepare")
+            );
+            assert!(!ops.iter().any(|r| r["op"] == "saveCall"));
+        }
+    }
+}

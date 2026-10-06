@@ -104,7 +104,18 @@ impl<S: ClientStore> Client<S> {
     pub(crate) fn receipt_materialization04(
         &mut self,
     ) -> Result<Option<v04::BootstrapReceiptTargets>> {
-        let active = self.request_context()?.clone();
-        self.view(|e|{for row in e.rows("SELECT receipt FROM axton_v04_call WHERE status='acceptedAwaiting' ORDER BY ordinal",&[])?.rows{let receipt:v04::MutationReceipt=v04::decode(row[0].as_str().ok_or_else(||invalid("receipt"))?.as_bytes())?;let mut keys=Vec::new();for target in &receipt.targets{if target.disposition(&active.materialization,&e.evidence04(target.key())?)?==v04::SettlementDisposition::AwaitStream{keys.push(target.key().clone());}}if !keys.is_empty(){return Ok(Some(v04::BootstrapReceiptTargets{call_id:receipt.completion.call_id,keys}));}}Ok(None)})
+        self.view(|e| {
+            for call_id in e.accepted_receipt_ids04()? {
+                if let Some(assessment) = e.assess_receipt04(&call_id)?
+                    && !assessment.missing_stream_keys.is_empty()
+                {
+                    return Ok(Some(v04::BootstrapReceiptTargets {
+                        call_id: assessment.receipt.completion.call_id,
+                        keys: assessment.missing_stream_keys,
+                    }));
+                }
+            }
+            Ok(None)
+        })
     }
 }

@@ -23,7 +23,59 @@ fn decoded<T: serde::de::DeserializeOwned + Validate>(value: Value) -> Result<T>
             .as_bytes(),
     )
 }
+/// Evidence and ownership read together in the caller's current transaction.
+/// This assessment must not be retained across a view/write boundary.
+pub(crate) struct ReceiptAssessment {
+    ordinal: u64,
+    pub(crate) receipt: v04::MutationReceipt,
+    dispositions: Vec<v04::SettlementDisposition>,
+    pub(crate) missing_stream_keys: Vec<RecordKey>,
+}
 impl<S: ClientStore> Engine<'_, S> {
+    pub(crate) fn accepted_receipt_ids04(&mut self) -> Result<Vec<String>> {
+        self.rows(
+            "SELECT call_id FROM axton_v04_call WHERE status='acceptedAwaiting' ORDER BY ordinal",
+            &[],
+        )?
+        .rows
+        .into_iter()
+        .map(|row| {
+            row[0]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| invalid("invalid accepted call ID"))
+        })
+        .collect()
+    }
+    pub(crate) fn assess_receipt04(&mut self, call_id: &str) -> Result<Option<ReceiptAssessment>> {
+        let Some(row) = self.rows(
+            "SELECT ordinal,receipt FROM axton_v04_call WHERE call_id=? AND status='acceptedAwaiting'",
+            &[json!(call_id)],
+        )?.rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let ordinal = as_u64(&row[0])?;
+        let receipt: v04::MutationReceipt = decoded(row[1].clone())?;
+        let active = self
+            .context04()?
+            .ok_or_else(|| invalid("missing active context"))?;
+        let mut dispositions = Vec::with_capacity(receipt.targets.len());
+        let mut missing_stream_keys = Vec::new();
+        for target in &receipt.targets {
+            let disposition =
+                target.disposition(&active.materialization, &self.evidence04(target.key())?)?;
+            if disposition == v04::SettlementDisposition::AwaitStream {
+                missing_stream_keys.push(target.key().clone());
+            }
+            dispositions.push(disposition);
+        }
+        Ok(Some(ReceiptAssessment {
+            ordinal,
+            receipt,
+            dispositions,
+            missing_stream_keys,
+        }))
+    }
     pub(crate) fn complete_calls04(
         &mut self,
         completions: &[axton_core::CallCompletion],
@@ -112,11 +164,21 @@ impl<S: ClientStore> Engine<'_, S> {
             .unwrap_or(json!(0));
         Ok(original == current)
     }
-    fn settle_call04(
-        &mut self,
-        receipt: &v04::MutationReceipt,
-        ordinal: u64,
-    ) -> Result<ApplyReport> {
+    fn settle_call04(&mut self, call_id: &str) -> Result<ApplyReport> {
+        // Selection was only a hint. Reload ownership and reassess authority in
+        // this finalizing write transaction before applying any owned state.
+        let Some(assessment) = self.assess_receipt04(call_id)? else {
+            return Ok(ApplyReport::default());
+        };
+        if !assessment.missing_stream_keys.is_empty() {
+            return Ok(ApplyReport::default());
+        }
+        let ReceiptAssessment {
+            ordinal,
+            receipt,
+            dispositions,
+            ..
+        } = assessment;
         let descriptor=self.rows("SELECT descriptor,projection_generation FROM axton_v04_descriptor WHERE materialization=?",&[json!(receipt.context.materialization)])?.rows.into_iter().next().ok_or_else(||invalid("missing retained materialization descriptor"))?;
         let schema = crate::Schema::from_value(serde_json::from_str(
             descriptor[0]
@@ -174,20 +236,6 @@ impl<S: ClientStore> Engine<'_, S> {
                     .filter(|completion| completion.call_id != receipt.completion.call_id),
             );
         } else {
-            let mut dispositions = Vec::new();
-            for target in &receipt.targets {
-                let disposition = target.disposition(
-                    &self
-                        .context04()?
-                        .ok_or_else(|| invalid("missing active context"))?
-                        .materialization,
-                    &self.evidence04(target.key())?,
-                )?;
-                if disposition == v04::SettlementDisposition::AwaitStream {
-                    return Ok(ApplyReport::default());
-                }
-                dispositions.push(disposition);
-            }
             for (target, disposition) in receipt.targets.iter().zip(dispositions) {
                 if disposition != v04::SettlementDisposition::FinalizeOwnedNull {
                     continue;
@@ -352,24 +400,14 @@ impl<S: ClientStore> Client<S> {
         })
     }
     pub fn settle_receipts04(&mut self) -> Result<ApplyReport> {
-        let receipts=self.view(|e|{e.rows("SELECT ordinal,receipt FROM axton_v04_call WHERE status='acceptedAwaiting' ORDER BY ordinal",&[])?.rows.into_iter().map(|row|Ok((as_u64(&row[0])?,decoded::<v04::MutationReceipt>(row[1].clone())?))).collect::<Result<Vec<_>>>()})?;
-        for (ordinal, receipt) in receipts {
+        let calls = self.view(|e| e.accepted_receipt_ids04())?;
+        for call_id in calls {
             let ready = self.view(|e| {
-                for target in &receipt.targets {
-                    if target.disposition(
-                        &e.context04()?
-                            .ok_or_else(|| invalid("missing active context"))?
-                            .materialization,
-                        &e.evidence04(target.key())?,
-                    )? == v04::SettlementDisposition::AwaitStream
-                    {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
+                Ok(e.assess_receipt04(&call_id)?
+                    .is_some_and(|assessment| assessment.missing_stream_keys.is_empty()))
             })?;
             if ready {
-                let report = self.write(|e| e.settle_call04(&receipt, ordinal))?;
+                let report = self.write(|e| e.settle_call04(&call_id))?;
                 if !report.completions.is_empty() {
                     return Ok(report);
                 }

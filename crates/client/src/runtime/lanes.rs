@@ -425,7 +425,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             match self.client.settle_receipts04() {
                 Ok(report) => {
                     self.committed_since(generation);
+                    let completed = !report.completions.is_empty();
                     self.settled(&report);
+                    if completed {
+                        // One Call per lane unit; keep draining ready outcomes
+                        // without requiring another network event to wake us.
+                        if let Some(connection) = &mut self.connection {
+                            connection.push.dirty = true;
+                        }
+                        return;
+                    }
                 }
                 Err(error) => {
                     self.error(error.to_string());

@@ -41,6 +41,9 @@ class FakeCarrier implements Carrier {
     final events = answer?.call(envelope);
     if (events != null) {
       publish(events);
+    } else if ((envelope['command'] as Map?)?['kind'] == 'connect' ||
+        (envelope['command'] as Map?)?['kind'] == 'connection') {
+      publish([completed(envelope['requestId'] as String)]);
     } else if (envelope['type'] == 'close') {
       publish([
         {'type': 'runtimeClosed'},

@@ -1,3 +1,5 @@
+import 'store_fixture.dart';
+import 'protocol4_transport.dart';
 // Model Fetch through the real native runtime (#153): Rust validates, joins or
 // starts the request, stores the reply and completes every caller; this host
 // only posts the `fetch` HTTP effect to `/sync/fetch` and decodes each
@@ -63,20 +65,25 @@ void main() {
   final gates = <int, Completer<void>>{};
   late _Reply reply;
 
-  Future<Client> open({Map<String, StoreHook>? onStore}) => Client.open(
+  Future<Client> open() => Client.open(
+    stream: 'User:viewer',
+    connection: offlineStoreConnection(),
     path: '${directory.path}/db',
     schema: _schema,
     libraryPath: Platform.environment['AXTON_LIBRARY']!,
-    onStore: onStore,
   );
   var token = 'first';
   Future<RuntimeConnection> connect(
     Client client, {
     Future<void> Function()? refreshAuth,
-  }) => client.connect(
-    SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => token),
-    refreshAuth: refreshAuth,
-  );
+  }) async {
+    await client.connection?.close();
+    return client.connect(
+      SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => token),
+      refreshAuth: refreshAuth,
+    );
+  }
+
   Future<Map<String, dynamic>?> fetch(
     Client client,
     String id, {
@@ -95,11 +102,11 @@ void main() {
     directory = await Directory.systemTemp.createTemp('axton-fetch-');
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     served = server.listen((http) async {
+      if (await answerEmptyBackground(http)) return;
       seen.add('${http.uri.path} ${http.headers.value('authorization')}');
       final request =
           jsonDecode(await utf8.decoder.bind(http).join())
               as Map<String, dynamic>;
-      expect(request['capabilities'], contains('stream-authority-v1'));
       requests.add(request);
       final n = requests.length;
       await gates[n]?.future;
@@ -115,6 +122,7 @@ void main() {
       final result = a['result'] as Map<String, dynamic>?;
       http.response.write(
         jsonEncode({
+          'context': request['context'],
           'completion': {
             'callId': request['callId'],
             'outcome': failure == null
@@ -125,13 +133,13 @@ void main() {
                     'execution': 'rejected',
                   },
           },
-          'records': failure != null || request['store'] == false
+          'records': failure != null
               ? []
               : [
                   {
                     'model': request['model'],
                     'identity': request['identity'],
-                    'stamp': a['stamp'],
+                    'cursor': null,
                     'state': result == null
                         ? null
                         : ({...result}..remove('id')),
@@ -149,20 +157,9 @@ void main() {
   });
 
   test(
-    'default storage applies the snapshot and runs onStore before resolving',
+    'default storage applies the null-cursor snapshot before resolving',
     () async {
-      final changes = <String>[];
-      final client = await open(
-        onStore: {
-          'Entry': (tx, delivered) {
-            for (final change in delivered) {
-              changes.add(
-                '${change['kind']} ${(change['row'] as Map?)?['title']}',
-              );
-            }
-          },
-        },
-      );
+      final client = await open();
       try {
         await connect(client);
         expect(await fetch(client, 'a'), {'id': 'a', ..._state('v1')});
@@ -175,7 +172,6 @@ void main() {
           'id': 'a',
           ..._state('v1'),
         });
-        expect(changes, ['upsert v1']);
         // Every sequential call reads remotely again.
         await fetch(client, 'a');
         expect(requests, hasLength(2));
@@ -186,83 +182,50 @@ void main() {
     },
   );
 
-  test(
-    'store false returns the snapshot without local storage or onStore',
-    () async {
-      var hooks = 0;
-      final client = await open(onStore: {'Entry': (_, _) => hooks++});
-      try {
-        await connect(client);
-        expect(await fetch(client, 'a', store: false), {
-          'id': 'a',
-          ..._state('v1'),
-        });
-        expect(requests.single['store'], false);
-        expect(await client.read('Entry', {'id': 'a'}), isNull);
-        expect(hooks, 0);
-      } finally {
-        await client.close();
-      }
-    },
-  );
-
-  test('an absent record resolves null and removes the stored row', () async {
-    final changes = <String>[];
-    final client = await open(
-      onStore: {
-        'Entry': (tx, delivered) {
-          for (final change in delivered) {
-            changes.add(change['kind'] as String);
-          }
-        },
-      },
-    );
+  test('store false returns the snapshot without local storage', () async {
+    final client = await open();
     try {
       await connect(client);
-      await fetch(client, 'a');
-      reply = (_, n) => {'result': null, 'stamp': n};
-      expect(await fetch(client, 'a'), isNull);
+      expect(await fetch(client, 'a', store: false), {
+        'id': 'a',
+        ..._state('v1'),
+      });
+      expect(requests.single['store'], false);
       expect(await client.read('Entry', {'id': 'a'}), isNull);
-      expect(changes, ['upsert', 'delete']);
     } finally {
       await client.close();
     }
   });
 
   test(
-    'a refused onStore rejects with the hook cause and stores nothing',
+    'an absent null-cursor read returns null without deleting cached content',
     () async {
-      final thrown = StateError('hook refused');
-      final client = await open(
-        onStore: {
-          'Entry': (tx, _) async {
-            await tx.direct({
-              'model': 'Entry',
-              'op': 'create',
-              'identity': {'id': 'side'},
-              'values': _state('side'),
-            });
-            throw thrown;
-          },
-        },
-      );
+      final client = await open();
       try {
         await connect(client);
-        await expectLater(
-          fetch(client, 'a'),
-          throwsA(
-            isA<CallError>()
-                .having((e) => e.code, 'code', 'fetch.store_failed')
-                .having((e) => e.cause, 'cause', same(thrown)),
-          ),
-        );
-        expect(await client.read('Entry', {'id': 'a'}), isNull);
-        expect(await client.read('Entry', {'id': 'side'}), isNull);
+        await fetch(client, 'a');
+        reply = (_, n) => {'result': null, 'stamp': n};
+        expect(await fetch(client, 'a'), isNull);
+        expect((await client.read('Entry', {'id': 'a'}))!['title'], 'v1');
       } finally {
         await client.close();
       }
     },
   );
+
+  test('malformed cache state fails without storing partial state', () async {
+    final client = await open();
+    try {
+      await connect(client);
+      reply = (_, n) => {
+        'result': {'id': 'a', 'title': 'missing required fields'},
+      };
+      await expectLater(fetch(client, 'a'), throwsA(isA<CallError>()));
+      expect(await client.read('Entry', {'id': 'a'}), isNull);
+    } finally {
+      await client.close();
+    }
+  });
 
   test(
     'joined callers share one request and decode independent maps',
@@ -310,6 +273,7 @@ void main() {
   test('local failures keep their fetch codes and transport details', () async {
     final client = await open();
     try {
+      await client.connection?.close();
       await expectLater(
         fetch(client, 'a'),
         throwsA(
@@ -399,8 +363,7 @@ void main() {
   test(
     'close while a Fetch waits on the network rejects it unavailable',
     () async {
-      var hooks = 0;
-      final client = await open(onStore: {'Entry': (_, _) => hooks++});
+      final client = await open();
       final gate = Completer<void>();
       gates[1] = gate;
       try {
@@ -427,7 +390,6 @@ void main() {
         gate.complete();
         await Future<void>.delayed(const Duration(milliseconds: 20));
         expect(requests, hasLength(1));
-        expect(hooks, 0);
       } finally {
         // A failed step must not leave the fake server's request held.
         if (!gate.isCompleted) gate.complete();

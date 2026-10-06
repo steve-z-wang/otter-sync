@@ -1,0 +1,206 @@
+{
+  "actions": [
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "at",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "name": "Clock",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "name": "at",
+          "source": "handlerValue",
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "at",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "kind": "query",
+      "name": "Clock",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "name": "at",
+          "source": "handlerValue",
+          "type": {
+            "kind": "scalar",
+            "name": "dateTime"
+          }
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 2
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [],
+      "kind": "mutation",
+      "name": "Ping",
+      "outputEnums": [],
+      "outputs": [],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    }
+  ],
+  "deprecations": [],
+  "inverses": [],
+  "loaders": [],
+  "models": [],
+  "mutations": [],
+  "prerequisites": [],
+  "requirements": [],
+  "schema": {
+    "actions": [
+      {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "at",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          }
+        ],
+        "name": "Clock",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "name": "at",
+            "source": "handlerValue",
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      },
+      {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "at",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          }
+        ],
+        "kind": "query",
+        "name": "Clock",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "name": "at",
+            "source": "handlerValue",
+            "type": {
+              "kind": "scalar",
+              "name": "dateTime"
+            }
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 2
+      },
+      {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [],
+        "kind": "mutation",
+        "name": "Ping",
+        "outputEnums": [],
+        "outputs": [],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    ],
+    "clientPolicies": [],
+    "enums": [],
+    "models": [],
+    "prerequisites": [],
+    "requirements": [],
+    "resultModels": []
+  },
+  "uniqueConstraints": []
+}

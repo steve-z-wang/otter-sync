@@ -1,3 +1,5 @@
+import 'store_fixture.dart';
+import 'protocol4_transport.dart';
 // The connection as an effect executor (#134): the runtime owns the lanes,
 // direct calls, refresh coordination and timeouts; the SDK executes the
 // effects it asks for and aborts each one when it is cancelled. The executor
@@ -101,14 +103,21 @@ Map<String, dynamic> get _pingSchema => {
   'enums': [],
   'models': [],
   'actions': [
-    {'name': 'Ping', 'version': 1, 'inputs': [], 'outputs': []},
+    {
+      'name': 'Ping',
+      'version': 1,
+      'kind': 'query',
+      'inputs': [],
+      'outputs': [],
+    },
   ],
 };
 
 /// A direct call the runtime could not complete, with [code] and the cause
 /// the runtime's `details` named.
 Matcher _transport(String code, [Object? cause = anything]) => throwsA(
-  isA<ActionTransportException>()
+  isA<CallError>()
+      .having((e) => e.execution, 'execution', 'unknown')
       .having((e) => e.code, 'code', code)
       .having((e) => e.cause, 'cause', cause),
 );
@@ -688,10 +697,13 @@ void main() {
       directory = await Directory.systemTemp.createTemp('axton-direct-');
       server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
         path: '${directory.path}/db',
         schema: _pingSchema,
         libraryPath: Platform.environment['AXTON_LIBRARY']!,
       );
+      await client.connection?.close();
     });
     tearDown(() async {
       await client.close();
@@ -702,16 +714,12 @@ void main() {
     SyncServer config() =>
         SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => 'a');
 
-    String completion(String body) => jsonEncode({
-      'completion': {
-        'callId': ((jsonDecode(body) as Map)['call'] as Map)['callId'],
-        'outcome': {'status': 'succeeded', 'result': null},
-      },
-      'records': [],
-    });
+    String completion(String body) =>
+        jsonEncode(emptyRead(jsonDecode(body) as Map));
 
     test('direct attempt times out while the server never answers', () async {
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         await utf8.decoder.bind(request).join();
       });
       final connection = await client.connect(
@@ -719,7 +727,7 @@ void main() {
         directTimeout: const Duration(milliseconds: 15),
       );
       await expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport(
           'action.execution_unknown',
           _message('direct call timed out'),
@@ -731,6 +739,7 @@ void main() {
     test('direct authentication retry resends the same request once', () async {
       final bodies = <String>[];
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         final body = await utf8.decoder.bind(request).join();
         bodies.add(body);
         if (bodies.length == 1) {
@@ -745,8 +754,13 @@ void main() {
         config(),
         refreshAuth: () async => refreshes++,
       );
-      final invoked = await client.callAction('Ping', 1, {});
-      expect((invoked['outcome'] as Map)['status'], 'succeeded');
+      final invoked = await client.invokeQuery<Object?>(
+        'Ping',
+        1,
+        {},
+        (v) => v,
+      );
+      expect(invoked, isNull);
       expect(refreshes, 1);
       expect(bodies, hasLength(2));
       expect(bodies[1], bodies[0], reason: 'the same bytes are resent');
@@ -756,12 +770,13 @@ void main() {
     test('close ends a pending direct attempt as unavailable', () async {
       final entered = Completer<void>();
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         await utf8.decoder.bind(request).join();
         entered.complete();
       });
       final connection = await client.connect(config());
       final pending = expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport('action.unavailable', isNull),
       );
       await entered.future;
@@ -771,6 +786,7 @@ void main() {
 
     test('direct timeout includes a stalled authentication refresh', () async {
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         await utf8.decoder.bind(request).join();
         request.response.statusCode = 401;
         await request.response.close();
@@ -781,7 +797,7 @@ void main() {
         directTimeout: const Duration(milliseconds: 15),
       );
       await expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport(
           'action.execution_unknown',
           _message('direct call timed out'),
@@ -792,6 +808,7 @@ void main() {
 
     test('a transport failure keeps its message and status', () async {
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         await utf8.decoder.bind(request).join();
         request.response.statusCode = 503;
         request.response.write('down');
@@ -802,11 +819,11 @@ void main() {
           .having((e) => e.statusCode, 'statusCode', 503)
           .having((e) => e.message, 'message', 'action failed: 503 down');
       await expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport('action.execution_unknown', cause),
       );
       await expectLater(
-        client.invokeDirectAction<void>('Ping', 1, {}, (_) {}),
+        client.invokeQuery<void>('Ping', 1, {}, (_) {}),
         throwsA(
           isA<CallError>()
               .having((e) => e.code, 'code', 'action.execution_unknown')
@@ -819,6 +836,7 @@ void main() {
 
     test('a refused refresh keeps its reason', () async {
       server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         await utf8.decoder.bind(request).join();
         request.response.statusCode = 401;
         await request.response.close();
@@ -828,7 +846,7 @@ void main() {
         refreshAuth: () async => throw StateError('login required'),
       );
       await expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport(
           'action.execution_unknown',
           isA<Object>().having(
@@ -843,11 +861,11 @@ void main() {
 
     test('without a connection a direct call is unavailable', () async {
       await expectLater(
-        client.callAction('Ping', 1, {}),
+        client.invokeQuery<Object?>('Ping', 1, {}, (v) => v),
         _transport('action.unavailable'),
       );
       await expectLater(
-        client.invokeDirectAction<void>('Ping', 1, {}, (_) {}),
+        client.invokeQuery<void>('Ping', 1, {}, (_) {}),
         throwsA(
           isA<CallError>()
               .having((e) => e.code, 'code', 'action.unavailable')
@@ -880,10 +898,13 @@ void main() {
       );
     });
     final client = await Client.open(
+      stream: 'User:viewer',
+      connection: offlineStoreConnection(),
       path: '${directory.path}/db',
       schema: _pingSchema,
       libraryPath: Platform.environment['AXTON_LIBRARY']!,
     );
+    await client.connection?.close();
     RuntimeConnection? connection;
     try {
       connection = await client.connect(
@@ -893,11 +914,9 @@ void main() {
         ),
         directTimeout: Duration(milliseconds: closeConnection ? 1000 : 100),
       );
-      final pending = client.callAction('Ping', 1, {});
-      final observed = expectLater(
-        pending,
-        throwsA(isA<ActionTransportException>()),
-      );
+      await connection.pause();
+      final pending = client.invokeQuery<Object?>('Ping', 1, {}, (v) => v);
+      final observed = expectLater(pending, throwsA(isA<CallError>()));
       await entered.future.timeout(const Duration(seconds: 1));
       if (closeConnection) await connection.close();
       await observed;
@@ -927,6 +946,7 @@ void main() {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       final firstSeen = Completer<void>();
       final served = server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         final body = await utf8.decoder.bind(request).join();
         if (body == 'first') {
           firstSeen.complete();
@@ -969,6 +989,7 @@ void main() {
       final entered = Completer<Map<String, dynamic>>();
       final release = Completer<void>();
       final served = server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         if (request.uri.path != '/sync/actions') {
           request.response.statusCode = 404;
           await request.response.close();
@@ -981,8 +1002,9 @@ void main() {
         await release.future;
         request.response.write(
           jsonEncode({
+            'context': body['context'],
             'completion': {
-              'callId': (body['call'] as Map)['callId'],
+              'callId': body['callId'],
               'outcome': {'status': 'succeeded', 'result': null},
             },
             'records': [],
@@ -991,10 +1013,13 @@ void main() {
         await request.response.close();
       });
       final client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
         path: '${directory.path}/db',
         schema: _pingSchema,
         libraryPath: Platform.environment['AXTON_LIBRARY']!,
       );
+      await client.connection?.close();
       RuntimeConnection? connection;
       try {
         connection = await client.connect(
@@ -1003,11 +1028,8 @@ void main() {
             token: () => 'alice',
           ),
         );
-        final pending = client.callAction('Ping', 1, {});
-        final observed = expectLater(
-          pending,
-          throwsA(isA<ActionTransportException>()),
-        );
+        final pending = client.invokeQuery<Object?>('Ping', 1, {}, (v) => v);
+        final observed = expectLater(pending, throwsA(isA<CallError>()));
         await entered.future;
         expect((await client.syncState())['pending'], 0);
         expect(await client.transaction((_) async => 42), 42);
@@ -1042,6 +1064,7 @@ void main() {
       final releaseResponse = Completer<void>();
       final responseSent = Completer<void>();
       final served = server.listen((request) async {
+        if (await answerEmptyBackground(request)) return;
         final body =
             jsonDecode(await utf8.decoder.bind(request).join())
                 as Map<String, dynamic>;
@@ -1049,8 +1072,9 @@ void main() {
         await releaseResponse.future;
         request.response.write(
           jsonEncode({
+            'context': body['context'],
             'completion': {
-              'callId': (body['call'] as Map)['callId'],
+              'callId': body['callId'],
               'outcome': {'status': 'succeeded', 'result': null},
             },
             'records': [],
@@ -1060,10 +1084,13 @@ void main() {
         responseSent.complete();
       });
       final client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
         path: '${directory.path}/db',
         schema: _pingSchema,
         libraryPath: Platform.environment['AXTON_LIBRARY']!,
       );
+      await client.connection?.close();
       final completions = <Map<String, dynamic>>[];
       final observedCompletions = client.actionCompletions.listen(
         completions.add,
@@ -1077,7 +1104,7 @@ void main() {
             token: () => 'alice',
           ),
         );
-        final pending = client.callAction('Ping', 1, {});
+        final pending = client.invokeQuery<Object?>('Ping', 1, {}, (v) => v);
         final call = await entered.future;
         final txEntered = Completer<void>();
         final transaction = client.transaction((_) async {
@@ -1093,8 +1120,8 @@ void main() {
         hold.complete();
         await transaction;
         await closing;
-        expect(((await pending)['outcome'] as Map)['status'], 'succeeded');
-        expect(completions.single['callId'], (call['call'] as Map)['callId']);
+        expect(await pending, isNull);
+        expect(completions.single['callId'], call['callId']);
       } finally {
         if (!hold.isCompleted) hold.complete();
         if (!releaseResponse.isCompleted) releaseResponse.complete();
@@ -1108,63 +1135,99 @@ void main() {
     },
   );
   test(
-    'Dart Action discard and rebuild streams carry terminal call identities',
+    'reset refuses pending work unless explicitly discarded and settles exact Calls',
     () async {
       final directory = await Directory.systemTemp.createTemp(
-        'axton-dart-action-discard-',
+        'axton-dart-reset-',
       );
-      final schema =
-          jsonDecode(
-                await File('../../fixtures/schemas/entry.json').readAsString(),
-              )
-              as Map<String, dynamic>;
-      schema['actions'] = [
-        {'name': 'Ping', 'version': 1, 'inputs': [], 'outputs': []},
-      ];
-      final breaking = jsonDecode(jsonEncode(schema)) as Map<String, dynamic>;
-      ((breaking['models'] as List).first['fields'] as List).add({
-        'name': 'due',
-        'nullable': false,
-        'type': {'kind': 'scalar', 'name': 'string'},
-      });
+      final schema = {
+        'models': <Object>[],
+        'enums': <Object>[],
+        'actions': [
+          {
+            'name': 'Ping',
+            'version': 1,
+            'kind': 'mutation',
+            'inputs': <Object>[],
+            'outputs': <Object>[],
+          },
+        ],
+      };
       try {
-        for (final frozen in [false, true]) {
-          final path = '${directory.path}/${frozen ? 'frozen' : 'unsent'}';
-          final original = await Client.open(
-            path: path,
+        for (final sent in [false, true]) {
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          final entered = Completer<Map>();
+          final served = server.listen((request) async {
+            if (await answerEmptyBackground(request)) return;
+            final body =
+                jsonDecode(await utf8.decoder.bind(request).join()) as Map;
+            if (!entered.isCompleted) entered.complete(body);
+            // Deliberately leave the Mutation in flight until reset cancels it.
+          });
+          final client = await Client.open(
+            stream: 'User:viewer',
+            connection: offlineStoreConnection(),
+            path: '${directory.path}/${sent ? 'sent' : 'unsent'}',
             schema: schema,
             libraryPath: Platform.environment['AXTON_LIBRARY']!,
           );
-          final delivered = <Map<String, dynamic>>[];
-          final sub = original.actionCompletions.listen(delivered.add);
-          final dropped = await original.submitAction('Ping', 1, {});
-          await original.drop(dropped['ordinal'] as int);
-          expect(delivered.single['callId'], dropped['callId']);
-          expect((delivered.single['outcome'] as Map)['code'], 'dropped');
-          final pending = await original.submitAction('Ping', 1, {});
-          if (frozen) await original.freeze();
-          await sub.cancel();
-          await original.close();
-          final reopened = await Client.open(
-            path: path,
-            schema: breaking,
-            libraryPath: Platform.environment['AXTON_LIBRARY']!,
-          );
-          final abandoned = <Map<String, dynamic>>[];
-          final rebuildSub = reopened.actionCompletions.listen(abandoned.add);
+          await client.connection?.close();
+          final completions = <Map<String, dynamic>>[];
+          final observed = client.actionCompletions.listen(completions.add);
+          RuntimeConnection? connection;
           try {
-            final report = await reopened.rebuild(discardPending: true);
-            expect(report['abandonedCalls'], [
-              {'callId': pending['callId'], 'frozen': frozen},
-            ]);
-            expect(abandoned.single['callId'], pending['callId']);
-            expect(
-              (abandoned.single['outcome'] as Map)['execution'],
-              frozen ? 'unknown' : 'rejected',
+            final call = await client.submitMutation<void>(
+              'Ping',
+              1,
+              {},
+              (_) {},
             );
+            Map? intent;
+            if (sent) {
+              connection = await client.connect(
+                SyncServer(
+                  url: 'http://127.0.0.1:${server.port}',
+                  token: () => 'alice',
+                ),
+              );
+              intent = await entered.future.timeout(const Duration(seconds: 5));
+            }
+            await expectLater(
+              client.resetStore(),
+              throwsA(
+                isA<StateError>().having(
+                  (e) => e.toString(),
+                  'reason',
+                  contains('pending work prevents Store reset'),
+                ),
+              ),
+            );
+            expect(completions, isEmpty);
+            expect(call.status, CallStatus.pending);
+            expect((await client.syncState())['pending'], 1);
+            await client.resetStore(discardPending: true);
+            final outcome = await call.wait();
+            expect(outcome, isA<CallFailure<void>>());
+            final error = (outcome as CallFailure<void>).error;
+            expect(
+              (error.code, error.execution),
+              ('abandoned', sent ? 'unknown' : 'rejected'),
+            );
+            expect(completions, hasLength(1));
+            if (intent != null)
+              expect(completions.single['callId'], intent['callId']);
+            expect(
+              completions.single['callId'],
+              matches(RegExp(r'^[0-9a-f-]{36}$')),
+            );
+            expect((completions.single['outcome'] as Map)['code'], 'abandoned');
+            expect((await client.syncState())['pending'], 0);
           } finally {
-            await rebuildSub.cancel();
-            await reopened.close();
+            await connection?.close();
+            await observed.cancel();
+            await client.close();
+            await served.cancel();
+            await server.close(force: true);
           }
         }
       } finally {
@@ -1189,37 +1252,16 @@ void main() {
         if (request.uri.path == '/sync/pull') {
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-          if (body['mode'] == 'bootstrap') {
-            // Held: only the client's abort ends it.
+          if (body['kind'] == 'page') {
+            // Held: only the client's abort ends this manifest page.
             loads++;
             return;
           }
-          request.response.write(
-            jsonEncode({
-              'cursors': {
-                for (final entry in (body['cursors'] as Map).entries)
-                  entry.key: {
-                    'from': entry.value,
-                    'to': entry.value,
-                    'head': entry.value,
-                  },
-              },
-              'changes': <Object>[],
-            }),
-          );
+          request.response.write(jsonEncode(emptyPull(body, total: 1)));
           await request.response.close();
           return;
         }
-        final socket = await WebSocketTransformer.upgrade(request);
-        socket.listen((message) {
-          final sub = jsonDecode(message as String) as Map;
-          socket.add(
-            jsonEncode({
-              'type': 'subscribed',
-              'cursors': {for (final c in sub['streams'] as List) c: 0},
-            }),
-          );
-        }, onError: (Object _) {});
+        await answerEmptyBackground(request);
       });
       final schema =
           jsonDecode(
@@ -1227,18 +1269,20 @@ void main() {
               )
               as Map<String, dynamic>;
       final client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
         path: '${directory.path}/db',
         schema: schema,
         libraryPath: Platform.environment['AXTON_LIBRARY']!,
       );
+      await client.connection?.close();
       final reported = <Object>[];
       try {
         final connection = await client.connect(
           SyncServer(url: 'http://127.0.0.1:${server.port}', token: () => 'a'),
           onError: reported.add,
         );
-        final subscription = await client.subscribe('a');
-        unawaited(subscription.bootstrap().then((_) {}, onError: (_) {}));
+        unawaited(client.bootstrap().then((_) {}, onError: (_) {}));
         await until(() => loads == 1, 'the bootstrap page');
         await connection.pause();
         await Future<void>.delayed(const Duration(milliseconds: 30));

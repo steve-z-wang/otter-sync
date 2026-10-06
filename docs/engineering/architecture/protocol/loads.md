@@ -1,5 +1,7 @@
 # Loads
 
+This is the retained protocol-3 Load carrier. It is not a public 0.4 request path; see [protocol 4](0.4.md) for finite Bootstrap manifests and ordinary reads.
+
 ## 1. Introduction and Goals
 
 `POST /sync/loads` carries pages of native [Loads](../schema/loads.md) ([#173](https://github.com/zanminwang/axton/issues/173)). One request batches ready pages of independent Load jobs, and one response answers each page with its own outcome. The batch is transport grouping only: each item has its own identity, its own backend transaction and its own local application ([guarantees N2, N3, N5](../../guarantees.md#n-native-loads)).

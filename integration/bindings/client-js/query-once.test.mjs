@@ -1,3 +1,4 @@
+import {openStore} from './store-fixture.mjs';
 // Query once through the real native runtime (#158, #134): Rust decides
 // Cached / Join / Fetch, runs the one request of a flight and completes every
 // joined caller; this host executes the request effect and decodes an
@@ -100,8 +101,9 @@ export async function harness(body, options = {}) {
   const respond = (request, n) => {
     const title = `v${n}`;
     return JSON.stringify({
+      context: request.context,
       completion: {
-        callId: request.call.callId,
+        callId: request.callId,
         outcome: {
           status: "succeeded",
           result: {
@@ -112,13 +114,13 @@ export async function harness(body, options = {}) {
         },
       },
       records:
-        request.call.store === false
+        request.store === false
           ? []
           : [
               {
                 model: "Todo",
                 identity: { id: "a" },
-                stamp: n,
+                cursor: null,
                 state: { title },
               },
             ],
@@ -136,7 +138,7 @@ export async function harness(body, options = {}) {
       return respond(JSON.parse(text), n);
     },
   }));
-  const open = () => DirectClient.open({ path, schema });
+  const open = () => openStore(DirectClient,{ path, schema });
   const client = await open();
   try {
     await body({ client, state, open, deferred });
@@ -235,6 +237,7 @@ test("a hit needs no carrier, even after reopen; a miss or refresh without one f
         error instanceof CallError && error.code === "action.unavailable",
     );
     // A released offline miss leaves nothing behind: it fetches when online.
+    await client.close();
     const reopened = await open();
     try {
       assert.deepEqual((await once(reopened)).tags, ["v1", "x"]);
@@ -269,23 +272,9 @@ test("refresh requires once and bad options fail before any I/O", async () => {
       }),
       invalid,
     );
-    // Once controls are not accepted by the Mutation or enqueue routes.
-    await assert.rejects(
-      client.invokeDirectAction("Ping", 1, {}, () => undefined, {
-        once: true,
-      }),
-      invalid,
-    );
-    await assert.rejects(
-      client.invokeAction("GetTodos", 1, { project: "p" }, decode, {
-        once: true,
-      }),
-      invalid,
-    );
-    await assert.rejects(
-      client.invokeAction("Ping", 1, {}, () => undefined, { refresh: false }),
-      invalid,
-    );
+    // The retired direct-Mutation and queued-Query entry points are absent.
+    assert.equal(client.invokeDirectAction, undefined);
+    assert.equal(client.invokeAction, undefined);
     assert.equal(state.requests, 0);
     assert.equal((await client.syncState()).pending, 0);
     // A Mutation cannot be forged onto the once route.

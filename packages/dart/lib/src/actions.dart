@@ -27,17 +27,6 @@ final class CallFailure<T> extends CallOutcome<T> {
   const CallFailure(this.error);
 }
 
-/// Base of the generated per-Action `store` selectors. A selector chooses
-/// which explicit Model outputs also update local Models; results are the
-/// same either way.
-abstract class CallStore {
-  const CallStore();
-
-  /// The wire form beside business args: null for the default (store all),
-  /// false for none, or a map of output names to booleans.
-  Object? toWire();
-}
-
 abstract interface class Call<T> {
   CallStatus get status;
   Future<CallOutcome<T>> wait();
@@ -71,6 +60,7 @@ abstract class _PendingState {
 final class _CallState<T> implements _PendingState {
   final T Function(dynamic) decode;
   final void Function(_PendingState) retain;
+  final void Function()? admit;
   final Completer<CallOutcome<T>> _done = Completer<CallOutcome<T>>();
   CallStatus status = CallStatus.pending;
   _Lifecycle _lifecycle;
@@ -79,6 +69,7 @@ final class _CallState<T> implements _PendingState {
     this.decode,
     this.retain, [
     this._lifecycle = _Lifecycle.committed,
+    this.admit,
   ]);
 
   @override
@@ -96,7 +87,14 @@ final class _CallState<T> implements _PendingState {
       case _Lifecycle.provisional:
         return Future.error(const CallError('transaction_uncommitted'));
       case _Lifecycle.committed:
-        if (!_done.isCompleted) retain(this);
+        if (!_done.isCompleted) {
+          try {
+            admit?.call();
+          } catch (error, stack) {
+            return Future.error(error, stack);
+          }
+          retain(this);
+        }
         return _done.future;
     }
   }
@@ -162,8 +160,14 @@ final class ActionObservers {
   bool _closed = false;
   bool _ended = false;
 
-  ActionObservers({ActionWeakState Function(Object)? weak})
-    : _weak = weak ?? _WeakState.new;
+  final Future<Map<String, dynamic>?> Function(String)? lookup;
+  final Set<String> _looking = {};
+  final void Function()? admit;
+  ActionObservers({
+    ActionWeakState Function(Object)? weak,
+    this.lookup,
+    this.admit,
+  }) : _weak = weak ?? _WeakState.new;
 
   int get routingCount {
     _sweep();
@@ -195,9 +199,31 @@ final class ActionObservers {
       return _ActionHandle<T>(state);
     }
     _sweep();
-    final state = _CallState<T>(decode, (state) {
-      _active[callId] = state;
-    }, provisional ? _Lifecycle.provisional : _Lifecycle.committed);
+    final state = _CallState<T>(
+      decode,
+      (state) {
+        _active[callId] = state;
+        if (lookup != null && _looking.add(callId)) {
+          lookup!(callId)
+              .then(
+                (completion) {
+                  if (completion != null) complete(completion);
+                },
+                onError: (Object error, StackTrace stack) {
+                  if (!_active.containsKey(callId)) return;
+                  state.fail(
+                    CallError('action.observation_failed', cause: error),
+                  );
+                  _active.remove(callId);
+                  _routes.remove(callId);
+                },
+              )
+              .whenComplete(() => _looking.remove(callId));
+        }
+      },
+      provisional ? _Lifecycle.provisional : _Lifecycle.committed,
+      admit,
+    );
     _routes[callId] = _weak(state);
     return _ActionHandle<T>(state);
   }

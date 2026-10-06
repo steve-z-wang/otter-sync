@@ -1,5 +1,7 @@
 # Direct calls
 
+[Protocol 4](0.4.md) owns current bound Query/Fetch and named Mutation envelopes. Any stamp, direct-Mutation, queued-Query or per-output-storage format below belongs to the retained protocol-3 carrier.
+
 ## 1. Introduction and Goals
 
 A direct call uses request/response delivery for a typed final result: the default route of a Query and the `mutations.call` override of a Mutation ([Mutations and Queries](../schema/actions.md)). It shares the operation executor, per-call identity and Model result rules with [durable pushes](push.md), but has no durable client queue or inferred local optimism. Internal names keep the earlier Action spelling: the `/sync/actions` endpoint, `ActionStore` and the `action.*` codes.

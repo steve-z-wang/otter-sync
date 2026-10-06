@@ -1,3 +1,4 @@
+import 'store_fixture.dart';
 // Run by lost_isolate_test.dart as its own process: an isolate opens a client,
 // leaves a transaction open behind a callback that never finishes, and exits.
 // This process then reopens the same file and writes to it. It exits 0 only
@@ -24,11 +25,28 @@ Future<void> main(List<String> args) async {
   ), onExit: exited.sendPort);
   await exited.first;
   entered.close();
-  final client = await Client.open(
-    path: path,
-    schema: jsonDecode(schema) as Map<String, dynamic>,
-    libraryPath: library,
-  );
+  // The native finalizer does not wait for the actor to close. onExit is not
+  // a database-release barrier; wait for actual file ownership release.
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  late Client client;
+  while (true) {
+    try {
+      client = await Client.open(
+        stream: 'User:viewer',
+        connection: offlineStoreConnection(),
+        path: path,
+        schema: jsonDecode(schema) as Map<String, dynamic>,
+        libraryPath: library,
+      );
+      break;
+    } on StateError catch (error) {
+      if (!error.message.startsWith('store_in_use:') ||
+          DateTime.now().isAfter(deadline)) {
+        rethrow;
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
   try {
     await client.transaction(
       (tx) => tx.direct({
@@ -50,6 +68,8 @@ Future<void> main(List<String> args) async {
 Future<void> _holdAndExit((String, String, String, SendPort) args) async {
   final (path, library, schema, entered) = args;
   final client = await Client.open(
+    stream: 'User:viewer',
+    connection: offlineStoreConnection(),
     path: path,
     schema: jsonDecode(schema) as Map<String, dynamic>,
     libraryPath: library,

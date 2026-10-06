@@ -1,3 +1,4 @@
+import {openStore,emptyRead,emptyPull,emptyMutation} from './store-fixture.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -427,7 +428,7 @@ const native = createRequire(import.meta.url)(
 const pingSchema = {
   enums: [],
   models: [],
-  actions: [{ name: "Ping", version: 1, inputs: [], outputs: [] }],
+  actions: [{name:"Ping",kind:"query",version:1,inputs:[],outputs:[]},{name:"PingMutation",kind:"mutation",version:1,inputs:[],outputs:[]}],
 };
 const entrySchema = async () => {
   const schema = JSON.parse(
@@ -436,25 +437,18 @@ const entrySchema = async () => {
       "utf8",
     ),
   );
-  schema.actions = [{ name: "Ping", version: 1, inputs: [], outputs: [] }];
+  schema.actions=[{name:"Ping",kind:"query",version:1,inputs:[],outputs:[]},{name:"PingMutation",kind:"mutation",version:1,inputs:[],outputs:[]}];
   return schema;
 };
-const answer = (body) =>
-  JSON.stringify({
-    completion: {
-      callId: JSON.parse(body).call.callId,
-      outcome: { status: "succeeded", result: null },
-    },
-    records: [],
-  });
+const answer=emptyRead;
 /** A client over `network(kind, body, signal)` and no socket; `carrier` wraps the native one. */
 async function scripted(network, body, { schema = pingSchema, carrier = native } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axton-effects-"));
   const Client = createClient(carrier, Transaction, () => ({
-    push: network,
+    push: (kind, text, signal) => kind === "pull" ? Promise.resolve(emptyPull(text)) : network(kind, text, signal),
     open() {},
   }));
-  const client = await Client.open({ path: join(directory, "db"), schema });
+  const client = await openStore(Client,{ path: join(directory, "db"), schema });
   try {
     await body(client);
   } finally {
@@ -472,7 +466,7 @@ test("direct attempt is bounded even when transport ignores abort", async () => 
         { directTimeoutMs: 15 },
       );
       await assert.rejects(
-        client.callAction("Ping", 1, {}),
+        client.invokeQuery("Ping",1,{},value=>value),
         (error) =>
           error.code === "action.execution_unknown" &&
           error.execution === "unknown" &&
@@ -492,7 +486,7 @@ test("a direct call's transport failure and refused refresh become its cause", a
     },
     async (client) => {
       const connection = await client.connect({ url: "http://unused", token: "token" });
-      const error = await client.callAction("Ping", 1, {}).catch((error) => error);
+      const error = await client.invokeQuery("Ping",1,{},value=>value).catch((error) => error);
       assert.equal(error.code, "action.execution_unknown");
       assert.equal(error.execution, "unknown");
       assert.ok(error.cause instanceof Error);
@@ -500,7 +494,7 @@ test("a direct call's transport failure and refused refresh become its cause", a
       assert.equal(error.cause.status, 503);
       // The typed path keeps the same cause.
       const typed = await client
-        .invokeDirectAction("Ping", 1, {}, () => "unreachable")
+        .invokeQuery("Ping", 1, {}, () => "unreachable")
         .catch((error) => error);
       assert.equal(typed.code, "action.execution_unknown");
       assert.equal(typed.cause.message, "action failed: 503 busy");
@@ -521,12 +515,12 @@ test("a direct call's transport failure and refused refresh become its cause", a
           },
         },
       );
-      const error = await client.callAction("Ping", 1, {}).catch((error) => error);
+      const error = await client.invokeQuery("Ping",1,{},value=>value).catch((error) => error);
       assert.equal(error.code, "action.execution_unknown");
       assert.equal(error.cause.message, "refresh refused");
       await connection.close();
       // Stopped: unavailable, with no transport cause to report.
-      const stopped = await client.callAction("Ping", 1, {}).catch((error) => error);
+      const stopped = await client.invokeQuery("Ping",1,{},value=>value).catch((error) => error);
       assert.equal(stopped.code, "action.unavailable");
     },
   );
@@ -549,9 +543,7 @@ test("direct timeout rejects values outside the JavaScript timer range", async (
         { url: "http://unused", token: "token" },
         { directTimeoutMs: 2_147_483_647 },
       );
-      assert.deepEqual(await client.callAction("Ping", 1, {}), {
-        outcome: { status: "succeeded", result: null },
-      });
+      assert.equal(await client.invokeQuery("Ping",1,{},value=>value), null);
       await connection.close();
     },
   );
@@ -561,7 +553,7 @@ test("direct request completes while durable delivery is blocked", async () => {
   const pushed = deferred();
   await scripted(
     async (kind, body) => {
-      if (kind === "push") {
+      if (JSON.parse(body).models) {
         pushed.resolve();
         return new Promise(() => {});
       }
@@ -572,10 +564,10 @@ test("direct request completes while durable delivery is blocked", async () => {
         url: "http://unused",
         token: "token",
       });
-      await client.submitAction("Ping", 1, {});
+      await client.submitMutation("PingMutation",1,{},value=>value);
       await pushed.promise;
       assert.equal(
-        await client.invokeDirectAction("Ping", 1, {}, () => "direct"),
+        await client.invokeQuery("Ping", 1, {}, () => "direct"),
         "direct",
       );
       assert.equal((await client.syncState()).pending, 1, "the push is still out");
@@ -600,7 +592,7 @@ test("direct auth retry keeps the same body and close bounds a hanging refresh",
         { refreshAuth: async () => void refreshes++, directTimeoutMs: 500 },
       );
       assert.equal(
-        await client.invokeDirectAction("Ping", 1, {}, () => "ok"),
+        await client.invokeQuery("Ping", 1, {}, () => "ok"),
         "ok",
       );
       assert.equal(refreshes, 1);
@@ -609,7 +601,7 @@ test("direct auth retry keeps the same body and close bounds a hanging refresh",
       assert.deepEqual(seen[1], seen[0], "the same bytes are sent again");
       await connection.close();
       await assert.rejects(
-        client.callAction("Ping", 1, {}),
+        client.invokeQuery("Ping",1,{},value=>value),
         (error) => error.code === "action.unavailable",
       );
     },
@@ -624,7 +616,7 @@ test("direct auth retry keeps the same body and close bounds a hanging refresh",
         { refreshAuth: () => new Promise(() => {}), directTimeoutMs: 15 },
       );
       await assert.rejects(
-        client.callAction("Ping", 1, {}),
+        client.invokeQuery("Ping",1,{},value=>value),
         (error) =>
           error.code === "action.execution_unknown" &&
           error.cause?.message === "direct call timed out",
@@ -641,7 +633,7 @@ test("raw direct Action fails immediately without an active connection", async (
     },
     async (client) => {
       await assert.rejects(
-        client.callAction("Ping", 1, {}),
+        client.invokeQuery("Ping",1,{},value=>value),
         (error) =>
           error.code === "action.unavailable" && error.execution === "unknown",
       );
@@ -650,39 +642,14 @@ test("raw direct Action fails immediately without an active connection", async (
   );
 });
 
-test("raw Action discard and rebuild deliver terminal call identities", async () => {
-  const { Client } = await import("../../../packages/client-js/index.mts");
-  const directory = await mkdtemp(join(tmpdir(), "axton-action-discard-"));
-  const schema = await entrySchema();
-  const breaking = structuredClone(schema);
-  breaking.models[0].fields.push({ name: "due", nullable: false, type: { kind: "scalar", name: "string" } });
-  try {
-    for (const frozen of [false, true]) {
-      const path = join(directory, frozen ? "frozen" : "unsent");
-      const original = await Client.open({ path, schema });
-      const delivered = [];
-      original.onActionCompletion(value => delivered.push(value));
-      const dropped = await original.submitAction("Ping", 1, {});
-      await original.drop(dropped.ordinal);
-      assert.equal(delivered.length, 1, "a dropped call completes once");
-      assert.equal(delivered[0].callId, dropped.callId);
-      assert.equal(delivered[0].outcome.code, "dropped");
-      const pending = await original.submitAction("Ping", 1, {});
-      if (frozen) await original.freeze();
-      await original.close();
-      const reopened = await Client.open({ path, schema: breaking });
-      const abandoned = [];
-      reopened.onActionCompletion(value => abandoned.push(value));
-      try {
-        const report = await reopened.rebuild({ discardPending: true });
-        assert.deepEqual(report.abandonedCalls, [{ callId: pending.callId, frozen }]);
-        assert.equal(abandoned.length, 1, "each abandoned call completes once");
-        assert.equal(abandoned[0].callId, pending.callId);
-        assert.equal(abandoned[0].outcome.code, "abandoned");
-        assert.equal(abandoned[0].outcome.execution, frozen ? "unknown" : "rejected");
-      } finally { await reopened.close(); }
-    }
-  } finally { await rm(directory, { recursive: true, force: true }); }
+test('reset rejects pending work unless discarded and settles exact Call identity',async()=>{
+ await scripted(async()=>new Promise(()=>{}),async client=>{
+  const completions=[];client.onActionCompletion(x=>completions.push(x));
+  const call=await client.submitMutation('PingMutation',1,{},value=>value);
+  await assert.rejects(client.resetStore());await client.resetStore({discardPending:true});
+  assert.equal((await call.wait()).error.code,'abandoned');
+  assert.equal(completions.length,1);assert.match(completions[0].callId,/^[0-9a-f-]{36}$/);assert.equal((await client.syncState()).pending,0);
+ });
 });
 
 test("a waiting direct network response leaves local reads free and cannot apply after close", async () => {
@@ -698,13 +665,13 @@ test("a waiting direct network response leaves local reads free and cannot apply
       const observed = [];
       const connection = await client.connect({ url: "http://unused", token: "token" });
       client.onActionCompletion(value => observed.push(value));
-      const call = client.callAction("Ping", 1, {});
+      const call = client.invokeQuery("Ping",1,{},value=>value);
       const failure = assert.rejects(call, error => error.code === "action.unavailable" || error.code === "action.execution_unknown");
       const body = JSON.parse(await begun);
       assert.equal((await Promise.race([client.syncState(), new Promise((_, reject) => setTimeout(() => reject(Error("local queue blocked")), 100))])).pending, 0);
       await connection.close();
       await failure;
-      release(JSON.stringify({ completion: { callId: body.call.callId, outcome: { status: "succeeded", result: null } }, records: [] }));
+      release(emptyRead(body));
       await new Promise(resolve => setImmediate(resolve));
       assert.deepEqual(observed, []);
       assert.equal((await client.syncState()).pending, 0);
@@ -731,7 +698,7 @@ test("close aborts an uncooperative push and its late receipt never applies", as
     runtimeDrain(runtimeId) {
       const text = native.runtimeDrain(runtimeId);
       for (const event of JSON.parse(text))
-        if (event.type === "effect" && event.operation.route === "push")
+        if (event.type === "effect" && event.operation.route === "action")
           pushes.push(event.effectId);
       return text;
     },
@@ -739,30 +706,19 @@ test("close aborts an uncooperative push and its late receipt never applies", as
   };
   await scripted(
     (kind, body, abort) => {
-      assert.equal(kind, "push");
+      assert.equal(kind, "action");
       signal = abort;
       const batch = JSON.parse(body);
       pushed.resolve();
       // Ignores its abort signal: the receipt still arrives, when the test says.
-      receipt = late.promise.then(() =>
-        JSON.stringify({
-          clientId: batch.clientId,
-          batchSequence: batch.batchSequence,
-          rejections: [],
-          records: [],
-          completions: batch.mutations.map((mutation) => ({
-            callId: mutation.callId,
-            outcome: { status: "succeeded", result: null },
-          })),
-        }),
-      );
+      receipt=late.promise.then(()=>emptyMutation(batch));
       return receipt;
     },
     async (client) => {
       const completions = [];
       client.onActionCompletion((completion) => completions.push(completion));
       const connection = await client.connect({ url: "http://unused", token: "token" });
-      await client.submitAction("Ping", 1, {});
+      await client.submitMutation("PingMutation",1,{},value=>value);
       await pushed.promise;
       await connection.close();
       assert.equal(signal.aborted, true, "close aborted the request");
@@ -795,17 +751,17 @@ test("client close is priority control while a callback holds the transaction", 
   const sockets = [];
   const directory = await mkdtemp(join(tmpdir(), "axton-close-callback-"));
   const Client = createClient(native, Transaction, () => ({
-    push: () => new Promise(() => {}),
+    push:(kind,text)=>kind==='pull'?Promise.resolve(emptyPull(text)):new Promise(()=>{}),
     open: (subscribe, signal) => sockets.push(signal),
   }));
-  const client = await Client.open({
+  const client = await openStore(Client,{
     path: join(directory, "db"),
     schema: await entrySchema(),
   });
   const gate = deferred();
   try {
     const connection = await client.connect({ url: "http://unused", token: "token" });
-    await client.subscribe("scope");
+    await client.bootstrap();
     await eventually(() => sockets.length === 1, "the socket");
     const entered = deferred();
     const finished = deferred();
@@ -854,6 +810,7 @@ test("closed connection controls cannot affect a replacement connection", async 
   await scripted(
     () => new Promise(() => {}),
     async (client) => {
+      controls.length = 0;
       const first = await client.connect({ url: "http://unused", token: "token" });
       await first.pause();
       await first.resume();
@@ -876,7 +833,7 @@ test("closed connection controls cannot affect a replacement connection", async 
 test("closing an old client connection twice preserves ownership of the replacement", async () => {
   const { Client } = await import("../../../packages/client-js/index.mts");
   const directory = await mkdtemp(join(tmpdir(), "axton-connection-"));
-  const client = await Client.open({
+  const client = await openStore(Client,{
     path: join(directory, "client.sqlite"),
     schema: await entrySchema(),
   });
@@ -900,7 +857,7 @@ test("closing an old client connection twice preserves ownership of the replacem
 test("client close waits for in-flight connection setup and remains idempotent", async () => {
   const { Client } = await import("../../../packages/client-js/index.mts");
   const directory = await mkdtemp(join(tmpdir(), "axton-connection-close-"));
-  const client = await Client.open({
+  const client = await openStore(Client,{
     path: join(directory, "client.sqlite"),
     schema: await entrySchema(),
   });
@@ -925,81 +882,37 @@ test("client close waits for in-flight connection setup and remains idempotent",
   }
 });
 
-/**
- * A rebuild keeps the connected lane running: the runtime abandons the old
- * socket and subscribes the carried Scope again on a session of its own, with
- * no second `connect`. The Dart twin is `a rebuild wakes the sleeping
- * downlink lane without another start` in `packages/dart/test/client_test.dart`
- * ([#162](https://github.com/zanminwang/axton/issues/162)).
- */
-test("a rebuild wakes the sleeping downlink lane without another start", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "axton-rebuild-wake-"));
-  const path = join(directory, "client.sqlite");
-  const schema = await entrySchema();
-  const breaking = structuredClone(schema);
-  breaking.models[0].fields.push({ name: "due", nullable: false, type: { kind: "scalar", name: "string" } });
-  // Sockets open and are never acknowledged, and HTTP never answers: once it
-  // opened its socket, the lane has nothing to do until it is woken.
+test("reset wakes the existing connection under a new Store incarnation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "axton-reset-wake-"));
   const sockets = [];
   let connects = 0;
-  // The effects the runtime asked for and has not cancelled: none of them
-  // answers here, so without a timer among them the runtime cannot act again
-  // until an input wakes it.
-  const outstanding = new Map();
-  const carrier = {
-    runtimeOpen: (request, wake) => native.runtimeOpen(request, wake),
-    runtimeSubmit: (runtimeId, message) => native.runtimeSubmit(runtimeId, message),
-    runtimeDrain(runtimeId) {
-      const text = native.runtimeDrain(runtimeId);
-      for (const event of JSON.parse(text))
-        if (event.type === "effect") outstanding.set(event.effectId, event.operation.kind);
-        else if (event.type === "cancelEffect") outstanding.delete(event.effectId);
-      return text;
-    },
-    runtimeDetach: (runtimeId) => native.runtimeDetach(runtimeId),
-  };
-  const asleep = () => [...outstanding.values()].every((kind) => kind === "socket" || kind === "http");
-  const Client = createClient(carrier, Transaction, () => {
+  const Client = createClient(native, Transaction, () => {
     connects++;
     return {
-      push: (kind, body, signal) =>
-        new Promise((resolve, reject) =>
-          signal?.addEventListener("abort", () => reject(Error("aborted")), { once: true }),
-        ),
+      push: async (kind, text) => emptyPull(text),
       open: (subscribe, signal) => sockets.push({ subscribe: JSON.parse(subscribe), signal }),
     };
   });
   let client;
-  let connection;
   try {
-    client = await Client.open({ path, schema });
-    await client.subscribe("scope");
-    // Unsent work keeps the incompatible file open, so the rebuild happens with
-    // this client - and its lane - already connected.
-    await client.mutate({ name: "Create", operations: [{ model: "Entry", op: "create", identity: { id: "e" }, values: { text: "A", note: null } }] });
-    await client.close();
-    client = await Client.open({ path, schema: breaking });
-    const reported = [];
-    connection = await client.connect({ url: "http://127.0.0.1:1", token: "t" }, { onError: (error) => reported.push(error) });
-    await eventually(() => sockets.length === 1, "the first handshake");
-    // A task admitted after the handshake: every effect the runtime asked for
-    // before it has been dispatched when it completes.
-    await client.syncState();
-    assert.equal(sockets.length, 1);
-    assert.ok(asleep(), `the lane sleeps until woken: ${[...outstanding.values()]}`);
-    await client.rebuild({ discardPending: true });
-    await eventually(() => sockets.length === 2, "the carried Scope subscribed again after the rebuild");
-    assert.deepEqual(sockets[1].subscribe.streams, ["scope"]);
-    assert.equal(sockets[0].signal.aborted, true, "the old socket was abandoned");
-    assert.equal(sockets[1].signal.aborted, false, "the new socket stays");
-    await client.syncState();
-    assert.equal(sockets.length, 2, "one session per wake");
-    assert.ok(asleep(), `the new session sleeps too: ${[...outstanding.values()]}`);
-    assert.equal(connects, 1, "no second connect");
-    assert.deepEqual(reported, []);
+    client = await openStore(Client, {path: join(directory, "client.sqlite"), schema: await entrySchema()});
+    connects = 0;
+    const errors=[];
+    await client.connect({url:"http://unused",token:"token"},{onError:error=>errors.push(error)});
+    await client.bootstrap();
+    await eventually(()=>sockets.length===1,"initial single Stream handshake");
+    const before=sockets[0].subscribe.context;
+    await client.resetStore();
+    await client.bootstrap();
+    await eventually(()=>sockets.length===2,"reset Stream handshake");
+    assert.deepEqual(sockets[1].subscribe.context.binding,before.binding);
+    assert.notEqual(sockets[1].subscribe.context.incarnation,before.incarnation);
+    assert.equal(sockets[0].signal.aborted,true);
+    assert.equal(sockets[1].signal.aborted,false);
+    assert.equal(connects,1,"reset retains the chosen connection");
+    assert.deepEqual(errors,[]);
   } finally {
-    await connection?.close();
     await client?.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory,{recursive:true,force:true});
   }
 });

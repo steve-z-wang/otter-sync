@@ -16,63 +16,37 @@ async function until(predicate) {
   }
 }
 
-test('runtime negotiates on live and pull; Remove retains authority until newer Loader null', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'axton-sdk-scope-'));
-  const schema = JSON.parse(await readFile(new URL('../../fixtures/schemas/entry.json', import.meta.url), 'utf8'));
-  let stored = 0;
-  const client = await Client.open({ path: join(dir, 'db'), schema, onStore: { Entry: () => { stored++; } } });
-  const envelopes = [];
-  const errors = [];
-  const server = createServer(async (request, response) => {
-    let text = '';
-    for await (const chunk of request) text += chunk;
-    const body = JSON.parse(text);
-    envelopes.push(body);
-    response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ cursors: Object.fromEntries(Object.entries(body.cursors).map(([c, v]) => [c, { from: v, to: 1, head: 1 }])), changes: [{ kind: 'upsert', stream: 'scope', cursor: 1, model: 'Entry', identity: { id: 'e' }, stamp: 1, state: { text: 'held', note: null } }] }));
-  });
-  const ws = new WebSocketServer({ server });
-  let socket;
-  ws.on('connection', current => {
-    socket = current;
-    current.on('message', text => {
-      const body = JSON.parse(text.toString());
-      envelopes.push(body);
-      current.send(JSON.stringify({ type: 'subscribed', cursors: { scope: envelopes.filter(e => e.type === 'subscribe').length === 1 ? 0 : 1 } }));
-    });
-  });
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  try {
-    await client.subscribe('scope');
-    const connection = await client.connect({ url: `http://127.0.0.1:${server.address().port}`, token: 'secret' }, { onError: error => errors.push(error) });
-    await until(() => envelopes.some(e => e.type === 'subscribe'));
-    await until(async () => (await client.syncState()).cursors.scope === 0);
-    await connection.pause();
-    await connection.resume();
-    const send = (from, change) => socket.send(JSON.stringify({ cursors: { scope: { from, to: from + 1, head: from + 1 } }, changes: [change] }));
-    await until(async () => (await client.read('Entry', { id: 'e' }))?.text === 'held');
-    const row = await client.read('Entry', { id: 'e' });
-    const metadata = await client.readSql('SELECT * FROM axton_record');
-    send(1, { kind: 'remove', stream: 'scope', cursor: 2, model: 'Entry', identity: { id: 'e' } });
-    await until(async () => (await client.syncState()).cursors.scope === 2);
-    assert.deepEqual(await client.read('Entry', { id: 'e' }), row);
-    assert.deepEqual(await client.readSql('SELECT * FROM axton_record'), metadata);
-    assert.equal(stored, 1, 'Remove invokes no authority onStore hook');
-    assert.deepEqual(await client.readSql("SELECT name FROM sqlite_master WHERE name IN ('axton_stream_member','axton_stream_member_record')"), []);
-    send(2, { kind: 'upsert', stream: 'scope', cursor: 3, model: 'Entry', identity: { id: 'e' }, stamp: 2, state: null });
-    await until(async () => (await client.syncState()).cursors.scope === 3);
-    assert.equal(await client.read('Entry', { id: 'e' }), null);
-    assert.equal(stored, 2, 'newer Loader null applies canonical absence');
-    assert.ok(envelopes.some(e => e.cursors?.scope === 0), 'runtime HTTP catch-up was observed');
-    for (const envelope of envelopes) assert.ok(envelope.capabilities.includes('stream-authority-v1'));
-    assert.deepEqual(errors, []);
-    await connection.close();
-  } finally {
-    await client.close();
-    for (const current of ws.clients) current.terminate();
-    await new Promise(resolve => ws.close(resolve));
-    await new Promise(resolve => server.close(resolve));
-    await rm(dir, { recursive: true, force: true });
-  }
+test('bound Stream Remove retains guards and newer canonical null protects deletion', async () => {
+ const dir=await mkdtemp(join(tmpdir(),'axton-sdk-scope-'));
+ const schema=JSON.parse(await readFile(new URL('../../fixtures/schemas/entry.json',import.meta.url),'utf8'));
+ const envelopes=[],errors=[];
+ const page=(context,from,to,changes)=>({context,pageId:`page-${from}-${to}`,from,to,head:to,units:from===to?[]:[{through:to,changes}]});
+ const upsert=(cursor,state)=>({kind:'upsert',record:{cursor,model:'Entry',identity:{id:'e'},state}});
+ let context,socket;
+ const server=createServer(async(request,response)=>{
+  let text='';for await(const chunk of request)text+=chunk;
+  const body=JSON.parse(text);envelopes.push(body);context=body.context;
+  if(request.url==='/sync/fetch') response.end(JSON.stringify({context,completion:{callId:body.callId,outcome:{status:'succeeded',result:{id:'e',text:'read',note:null}}},records:[{model:'Entry',identity:{id:'e'},cursor:null,state:{text:'read',note:null}}]}));
+  else if(body.kind==='start')response.end(JSON.stringify({context,manifestId:'fixed',start:0,total:0}));
+  else if(body.kind==='tail')response.end(JSON.stringify({context,manifestId:'fixed',head:1}));
+  else response.end(JSON.stringify(body.after===0?page(context,0,1,[upsert(1,{text:'held',note:null})]):page(context,body.after,body.after,[])));
+ });
+ const ws=new WebSocketServer({server});ws.on('connection',current=>{socket=current;current.on('message',text=>{const body=JSON.parse(text.toString());envelopes.push(body);context=body.context;current.send(JSON.stringify({context,cursor:body.cursor,head:1}));});});
+ server.listen(0,'127.0.0.1');await once(server,'listening');
+ const client=await Client.open({path:join(dir,'db'),schema,stream:'User:viewer',connection:{url:`http://127.0.0.1:${server.address().port}`,token:'secret',identity:{backend:'scope',viewer:'viewer',contract:'v04'},options:{onError:error=>errors.push(error)}}});
+ try {
+  await Promise.race([client.bootstrap(),new Promise((_,reject)=>setTimeout(()=>reject(Error('Bootstrap timeout')),5000).unref())]);await until(()=>socket&&context);
+  assert.equal((await client.read('Entry',{id:'e'})).text,'held');
+  socket.send(JSON.stringify(page(context,1,2,[{kind:'remove',cursor:2,key:{model:'Entry',identity:{id:'e'}}}])));
+  await until(async()=> (await client.syncState()).cursors['User:viewer']===2);
+  assert.equal((await client.read('Entry',{id:'e'})).text,'held');
+  await client.fetchModel('Entry',1,{id:'e'},value=>value);
+  assert.equal((await client.read('Entry',{id:'e'})).text,'read','Remove releases live-content protection');
+  socket.send(JSON.stringify(page(context,2,3,[upsert(3,null)])));
+  await until(async()=> (await client.syncState()).cursors['User:viewer']===3);
+  assert.equal(await client.read('Entry',{id:'e'}),null);
+  assert.equal((await client.fetchModel('Entry',1,{id:'e'},value=>value)).text,'read');
+  assert.equal(await client.read('Entry',{id:'e'}),null,'ordinary snapshot cannot resurrect protected absence');
+  assert.ok(envelopes.every(x=>x.context?.binding.stream==='User:viewer'));assert.deepEqual(errors,[]);
+ } finally {await client.close();for(const current of ws.clients)current.terminate();await new Promise(resolve=>ws.close(resolve));await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}
 });

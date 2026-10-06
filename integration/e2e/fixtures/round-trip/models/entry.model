@@ -3,5 +3,8 @@ model Entry {
  text String
  note String?
  @@id(id)
+ @@bootstrap
 }
 mutation Edit { entry Entry.update<text,note> }
+mutation EditEntry(entry Entry.update<text,note>) { entry Entry }
+query FindEntry(id String) { entry Entry? }

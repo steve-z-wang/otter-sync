@@ -1,4 +1,4 @@
-import 'actions.dart' show Call, CallStore;
+import 'actions.dart' show Call;
 
 /// Reads available on both a [Client] and a [Transaction].
 abstract interface class ReadPort {
@@ -23,11 +23,6 @@ abstract interface class ReadPort {
   );
 }
 
-/// Enqueues a mutation through a [Client] as its own transaction.
-abstract interface class MutatePort {
-  Future<int> mutate(Map<String, dynamic> mutation);
-}
-
 /// Writes available inside a [Transaction].
 abstract interface class WritePort implements ReadPort {
   Future<void> direct(Map<String, dynamic> operation);
@@ -43,9 +38,8 @@ abstract interface class SubmitMutationPort {
   Future<Call<T>> submitMutation<T>(
     String name,
     int version,
-    Map<String, dynamic> args,
+    Map<String, dynamic>? args,
     T Function(dynamic) decode, {
-    CallStore? store,
-    Future<void> Function(WritePort local)? local,
+    Future<Map<String, dynamic>> Function(WritePort tx)? input,
   });
 }

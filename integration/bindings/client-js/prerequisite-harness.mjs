@@ -1,3 +1,4 @@
+import {openStore} from './store-fixture.mjs';
 // Prerequisite handlers registered at open (#185), run by the native runtime
 // whenever a task becomes pending. Shared by the Node and React Native
 // suites: each passes its own transaction adapter and server connection. Not
@@ -30,6 +31,8 @@ schema.requirements = [
     arguments: { key: "self" },
   },
 ];
+
+schema.actions=[{name:'Edit',version:1,kind:'mutation',inputs:[{kind:'model',name:'entry',model:'Entry',operation:'update',cardinality:'single',allowedFields:['text','note']}],outputs:[],requirements:schema.requirements}];
 
 /**
  * The native carrier, except that every `timer` effect's delay is recorded in
@@ -83,7 +86,7 @@ export function prerequisiteSuite(
       createServerConnection,
     );
     const open = (prerequisites) =>
-      Client.open({ path: join(directory, "db"), schema, prerequisites });
+      openStore(Client,{ path: join(directory, "db"), schema, prerequisites });
     const attach = async (client, key) => {
       await client.transaction((tx) =>
         tx.direct({
@@ -93,17 +96,7 @@ export function prerequisiteSuite(
           values: { text: "A" },
         }),
       );
-      await client.mutate({
-        name: "Edit",
-        operations: [
-          {
-            model: "Entry",
-            op: "update",
-            identity: { id: key },
-            values: { note: key },
-          },
-        ],
-      });
+      await client.submitMutation('Edit',1,{entry:{id:key,note:key}},value=>value);
     };
     try {
       await body({ open, attach, delays });
@@ -200,7 +193,7 @@ export function prerequisiteSuite(
         await new Promise((resolve) => setTimeout(resolve, 50));
         assert.equal(calls, 1, "not retried");
         assert.deepEqual(delays, [], "no backoff");
-        assert.equal(await client.freeze(), null, "still blocks the push");
+        assert.equal((await client.pendingTasks()).filter(task=>task.state==='failed').length,1,"failed prerequisite still blocks delivery");
         await client.setReadiness(task.key, "pending");
         await until(async () => (await client.pendingTasks()).length === 0);
         assert.equal(calls, 2);

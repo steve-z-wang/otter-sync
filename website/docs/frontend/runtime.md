@@ -4,49 +4,13 @@ The generated client is the whole client: besides the [typed Model, Mutation and
 
 ## Opening and schema changes
 
-=== "TypeScript"
+Open with `path`, the single `stream`, and a `StoreConnection` containing stable backend/viewer/contract identity. The generated facade supplies its compiled schema. Binding happens before network startup, so an offline reopen can validate the same database without a handshake. Credentials are separate from this identity.
 
-    ```ts
-    const client = await GeneratedClient.open({ path: 'local.sqlite' });
-    ```
+Normal reopen retains the database's incarnation and durable calls. A supported schema or projection-generation change creates a new materialization context; retained Mutation contracts remain available for frozen retries. Bootstrap rematerializes held authority under the active context without inventing delivery progress. Keep the configured projection generation the same on backend and client, and change it when projection behavior changes.
 
-=== "Flutter"
+A database has one physical owner. Opening it again while its current owner lives fails with `store_in_use`; close the existing Store first. `resetStore({ discardPending: true })` explicitly abandons pending work and changes incarnation; omitting the option refuses a reset with pending work. Old detached handles cannot authorize requests in the new lifecycle.
 
-    ```dart
-    final client = await GeneratedClient.open(
-      path: 'local.sqlite',
-      libraryPath: '/absolute/path/to/libaxton_dart.dylib',
-    );
-    ```
-
-The compiled schema is embedded in the generated client. `client.clientId` is a read-only, persistent identity for that database, used for retry deduplication. Use one active client per database and a separate file per signed-in user. Do not duplicate a database and then let both copies independently send calls under the same client identity.
-
-When the schema compiled into the client differs from the one the database was built for, the runtime decides at open ([local storage](storage.md)): an added Model or nullable field is applied in place; anything else leaves the file untouched and opens a fresh database file beside it, `local.sqlite.1`, which resynchronises from the backend. If the old file still holds unsent calls, it stays open for them instead; `syncState().schema.pending` tells you, and once they are sent you call `rebuild()`:
-
-=== "TypeScript"
-
-    ```ts
-    const { schema: state } = await client.syncState();
-    if (state.pending) {
-      console.log(`sending ${state.pending.pending} changes before upgrading`);
-      // … connect, wait for pending to reach 0, then:
-      const report = await client.rebuild();
-      console.log(report.newFile, report.leftPending);
-    }
-    ```
-
-=== "Flutter"
-
-    ```dart
-    final state = (await client.syncState())['schema'] as Map<String, dynamic>;
-    if (state['pending'] != null) {
-      // … connect, wait for pending to reach 0, then:
-      final report = await client.rebuild();
-      print(report['newFile']);
-    }
-    ```
-
-`rebuild()` switches the same client to the new file and rejects while unsent calls remain. `rebuild({ discardPending: true })`, or `discardPending: true` at open, rebuilds at once; the report names `leftPending` calls and `leftDirect` local-only records that stay in `oldFile`. Nothing is moved between schemas and the old file is never deleted by the runtime. `migration` is still accepted for compatibility and ignored.
+On Android, Dart hosts must call `Client.configureApplicationData(stableApplicationDirectory)` once before opening a Store. The directory is process-wide application configuration, including for the bundled ABI; it is not a per-client lock option. See [setup](setup.md).
 
 ## Escape-hatch reads
 
@@ -91,7 +55,7 @@ TypeScript's `readSql` takes an optional positional second argument; Dart uses n
 
 ### Watch SQL over several Models
 
-`watchSql` keeps a read-only SQL answer current, such as a page that joins several Models. It delivers the current rows first, then each result that differs from the last one. The runtime asks SQLite which tables the statement reads; you never list them. It runs the statement again only after a commit that writes one of those tables: your own writes and transactions, optimistic Mutations and their settlement or rejection, Stream delivery, Loads and Fetches. A commit to any other Model does not run it.
+`watchSql` keeps a read-only SQL answer current, such as a page that joins several Models. It delivers the current rows first, then each result that differs from the last one. The runtime asks SQLite which tables the statement reads; you never list them. It runs the statement again only after a commit that writes one of those tables: your own writes and transactions, optimistic Mutations and their settlement or rejection, Stream delivery, Bootstrap and cached Query/Fetch reads. A commit to any other Model does not run it.
 
 === "TypeScript"
 
@@ -177,11 +141,11 @@ A column holds the field's local value: an `Int` or `Boolean` is an integer (`1`
     });
     ```
 
-Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. A Mutation queued with `tx.mutations` inside a savepoint belongs to it: rolling the savepoint back discards that Mutation and its `local` changes, and its Call fails with `transaction_rolled_back`, while Mutations queued outside the savepoint are kept. A savepoint cannot start while a Mutation's `local` callback runs ([queue Mutations in a transaction](client-api.md#queue-mutations-in-a-transaction)). Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
+Await every call and nested callback. Savepoints must be properly nested, not run concurrently. An escaped transaction, unfinished operation or overlapping savepoint fails. A Mutation queued with `tx.mutations` inside a savepoint belongs to it: rolling the savepoint back discards that Mutation and its companion changes, and its Call fails with `transaction_rolled_back`, while Mutations queued outside the savepoint are kept. A savepoint cannot start while a Mutation's input callback runs ([named Mutations](client-api.md#mutations-and-queries)). Inside the transaction use `tx` reads; a call on the outer `client` from inside its own callback fails promptly with `transaction_active` on Node and Dart (on React Native, Mutation and Query calls fail and other outer calls wait behind the transaction).
 
 ## Server connection
 
-Pass `server` when opening the generated client, or call `client.connect` after opening local storage. TypeScript accepts `ServerOptions`; Dart uses `SyncServer`. Only one connection may be active per client. Network I/O happens outside the local transaction queue.
+Pass `connection` when opening the bound generated client. `client.connect` can reconfigure its transport later: TypeScript accepts `ServerOptions`; Dart uses `SyncServer`. Only one connection may be active per client. Network I/O happens outside the local transaction queue.
 
 === "TypeScript"
 
@@ -233,19 +197,13 @@ Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your applicati
 
 ### Catch-up and live updates
 
-AXTON manages these phases automatically:
+The native runtime owns one Stream subscription and its durable cursor. A fresh Store establishes its Bootstrap boundary before subscribing; reconnect uses existing committed progress. The server's acknowledgement can trigger HTTP catch-up even if no subsequent live frame arrives.
 
-1. Connect to `/sync/live` and subscribe to the current stream set. The server installs listeners, then acknowledges the subscription with each stream's current position. A stream with no saved cursor adopts the acknowledged position as its starting point in one local transaction and fetches nothing older; that happens once per subscription, and a later session never repeats it.
-2. If a saved cursor is behind, fetch missing records through one `POST /sync/pull` for all streams, repeated while a stream has more. Queue WebSocket pages arriving while catch-up runs. If every cursor is current, skip this step. Only streams with a saved cursor are requested; one still waiting for its starting point is subscribed on the socket and asked for nothing.
-3. Continue receiving WebSocket updates. HTTP and WebSocket pages enter the same serialized Rust processing path, using each stream's saved cursor.
+HTTP Delta and live delivery apply through the same native commit-unit path. A unit commits its records, authority evidence and delivery prefix atomically. An independent successful prefix may commit before a later unit fails. A unit that violates a required constraint cannot be split merely by lowering a transport limit. Adaptive smaller requests permit independent earlier units to progress, without skipping the failed group.
 
-For either source, a page applies as one transaction and names a range for each stream it covers. A stream already covered by its cursor is left alone. A range spanning the current cursor applies: for example, at cursor `100`, a range `90 → 120` advances the stream to `120`, and each record's stamp decides whether its content is newer. A range starting beyond the current cursor is a gap. Then nothing from the page applies, and HTTP recovery fetches the missing range. Pages update SQLite and watches through the same engine logic.
+Named Mutation requests use the durable single-intent Action route. Query and Fetch use finite request routes, while Bootstrap and receipt-target recovery use bounded immutable manifests. A Bootstrap tail capture does not advance the Stream cursor; completion waits for actual Delta coverage. These jobs share the connection and resume durable progress after interruption.
 
-Durable submission of Mutations and queued Queries runs independently through `POST /sync/mutations`; direct calls use `POST /sync/actions` and a [Model Fetch](client-api.md#fetch-a-record-from-the-backend) uses `POST /sync/fetch`, both with the configured finite timeout. A connection with no subscribed streams can still submit calls without opening a socket.
-
-A `bootstrap()` load is a third, independent work class on the same connection: one bounded `POST /sync/pull` at a time across all streams, asked for while the connection is running and not paused, retried with the same backoff after a transport failure, and taking turns between streams that have one registered. It does not hold up the socket, the catch-up request or Action submission, and pausing the connection defers its next page instead of failing it. Progress is committed page by page, so closing the client or losing the network resumes where it stopped.
-
-Reconnection and subscription changes repeat catch-up from saved progress; a new session is not a new starting point, and an acknowledged position below saved progress is reported through `onError` rather than rewinding the stream. The client checks that every HTTP response and queued WebSocket page belongs to the current session before applying it. Pause and close cancel requests and sockets; resume creates a new session. The runtime does not poll for remote changes.
+Pause and close cancel requests and sockets. A replaced session's late response cannot write into the active Store. Normal reconnect retains context/incarnation; explicit reset creates a new lifecycle.
 
 ## Connection controls
 
@@ -263,7 +221,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
 
 ## Pending work and recovery
 
-`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections, schema }`. `pending` counts queued work; `schema` is `{ rebuilt, pending, lastRebuild }` from the open-time schema check ([opening and schema changes](#opening-and-schema-changes)); `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` lists desired subscriptions; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation or Query name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
+`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections, schema }`. `pending` counts queued work; `schema` is `{ rebuilt, pending, lastRebuild }` from the open-time schema check ([opening and schema changes](#opening-and-schema-changes)); `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` lists desired subscriptions; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
 
 === "TypeScript"
 
@@ -300,7 +258,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
 | `dismissRejection(ordinal)` | Remove a handled rejection from the durable local inbox; does not retry it |
 | `drop(ordinal)` | Remove eligible unsent work and recompute local state; frozen/sent work cannot be cancelled this way |
 
-Phases are `queued` (not frozen) and `frozen` (request retained for sending or retry); a receipt completes a frozen call and removes it, so there is no phase after `frozen`. An ordinal is local bookkeeping. To retry a rejected business operation, make a new call after resolving the cause. See [sync and recovery](sync.md).
+Diagnostic phases are `queued` (not frozen) and `frozen` (request retained for sending or retry). An accepted receipt can leave the Call pending while required local authority is installed; the durable queue remains until native settlement completes. Receipt acceptance alone does not remove it. An ordinal is local bookkeeping. To retry a rejected business operation, make a new call after resolving the cause. See [sync and recovery](sync.md).
 
 ### Unsent work
 
@@ -362,7 +320,7 @@ The earlier `dismissRejection(ordinal)` and `drop(ordinal)` stay; `drop` keeps a
 
 #### Repair inside a transaction
 
-`rejections.dismiss`, `failures.retry` and `failures.drop` are also on the transaction a `client.transaction` callback receives. There, a resolution applies at once for the rest of the callback and commits or rolls back with it. So a repair can drop a failed call and queue its replacement in one step: the replacement is planned without the dropped call's local changes and does not wait for it, and if the callback throws, both are undone and the original call stays as it was. A dropped call's `Call` completes, and a retried task's handler runs, only after the commit. An `onStore` hook and a Mutation's `local` callback cannot resolve unsent work.
+`rejections.dismiss`, `failures.retry` and `failures.drop` are also on the transaction a `client.transaction` callback receives. There, a resolution applies at once for the rest of the callback and commits or rolls back with it. So a repair can drop a failed call and queue its replacement in one step: the replacement is planned without the dropped call's local changes and does not wait for it, and if the callback throws, both are undone and the original call stays as it was. A dropped call's `Call` completes, and a retried task's handler runs, only after the commit. A Mutation's input callback cannot resolve unsent work.
 
 === "TypeScript"
 
@@ -379,7 +337,7 @@ The earlier `dismissRejection(ordinal)` and `drop(ordinal)` stay; `drop` keeps a
     ```dart title="action-contract"
     final call = await client.transaction((tx) async {
       await tx.failures.drop(1);
-      return tx.mutations.edit(todo: const EditTodoUpdate(id: 'todo-1', title: Present('Fixed')));
+      return tx.mutations.edit(const EditInput(todo: EditTodoUpdate(id: 'todo-1', title: Present('Fixed'))));
     });
     print(call.status);
     ```
@@ -392,7 +350,7 @@ A schema can require host I/O, such as an upload, before a durable call can be s
 
     ```ts
     const client = await GeneratedClient.open({
-      path: "app.sqlite",
+      path: "app.sqlite", stream: `User:${viewer}`, connection,
       prerequisites: {
         Uploaded: async (args, signal) => {
           const response = await fetch(`${backendUrl}/uploads/${String(args.key)}`, { method: "PUT", signal });
@@ -407,7 +365,7 @@ A schema can require host I/O, such as an upload, before a durable call can be s
 
     ```dart
     final client = await GeneratedClient.open(
-      path: 'app.sqlite',
+      path: 'app.sqlite', stream: 'User:$viewer', connection: connection,
       prerequisites: {
         'Uploaded': (args, cancelled) async {
           final request = await http.putUrl(Uri.parse('$backendUrl/uploads/${args['key']}'));
@@ -439,4 +397,4 @@ A task that failed stays failed while any call waits on it. A call queued later 
 
 ## Protocol primitives
 
-The engine's protocol methods (`freeze`, `acknowledge`, `applyPull`, the last two returning reports for records they could not apply) are not part of the application surface; they exist on the runtime handle the framework's own tests use. Application synchronization is managed by `connect`. Wire fields are defined in the [protocol source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol.rs) and exercised by [shared wire fixtures](https://github.com/zanminwang/axton/blob/main/fixtures). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.
+The engine's protocol methods (`freeze`, `acknowledge`, `applyPull`, the last two returning reports for records they could not apply) are not part of the application surface; they exist on the runtime handle the framework's own tests use. Application synchronization is managed by `connect`. Wire fields are defined in the [protocol source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol_v04.rs) and exercised by [shared wire fixtures](https://github.com/zanminwang/axton/blob/main/fixtures). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.

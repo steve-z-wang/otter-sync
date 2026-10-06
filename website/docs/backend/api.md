@@ -24,7 +24,6 @@ import { createBackend, devAuth } from './generated/backend.ts';
 import { database } from './database.ts';
 import { mutations, queries } from './handlers.ts';
 import { loaders } from './loaders.ts';
-import { loads } from './loads.ts';
 
 const backend = createBackend<Tx>({
   database,
@@ -32,14 +31,14 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
-  loads,
+  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
   onError: error => console.error(error),
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);
 ```
 
-`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts`, `loaders.ts` and `loads.ts` contain the implementations below.
+`database.ts` exports a PostgreSQL shim such as `prisma(db)`, and `Tx` is its transaction type; see [Database](database.md) for the shims and AXTON's metadata migration, which must be applied first. `handlers.ts` and `loaders.ts` contain the implementations below.
 
 The generated `Options<Tx>` requires:
 
@@ -50,9 +49,10 @@ The generated `Options<Tx>` requires:
 | `mutations: Mutations<Tx>` | Implement each retained Mutation version |
 | `queries: Queries<Tx>` | Implement each retained Query version |
 | `loaders: Loaders<Tx>` | Implement the read function for each supported model version; leave out a [device-only Model](#device-only-models) |
-| `loads: Loads<Tx>` | Implement the page handler of each retained Load version ([Load handlers](#load-handlers)) |
+| `protocol4` | Stable binding, projection generation, retained materializations and Stream authorization |
+| `bootstrap({ctx})` | Optional initial-data preparation with typed track-only handles |
 
-`mutations`, `queries` or `loads` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
+`mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
 
 ## What your backend owns
 
@@ -60,10 +60,10 @@ The Rust runtime processes the sync protocol and nothing else. The rules below a
 
 | Rule | Who owns it | What the runtime does |
 | --- | --- | --- |
-| Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever stream asked. | Authenticates the request and passes `userId` through. There is no stream-level policy. |
+| Authorization | Handlers decide what `userId` may write; loaders decide what `userId` may see and return `null` for the rest, whatever stream asked. | Authenticates the request and passes `userId` through. There is a trusted `authorizeStream` policy. |
 | Unique constraints and identities | Your database schema. `@@unique` and `@@id` are enforced on the client only; the client's local database refuses a violating write, but nothing checks the server. | Decodes identities and patches by shape. A duplicate that your database allows is stored. |
 | Child deletion | Your handler. `onTargetDelete: delete` is a client-side cascade: the client deletes the children locally, and those deletes never reach the server. A handler that deletes a parent must delete its children itself and touch them (`ctx.invalidate.todo(identity)`), leaving them in the Streams that delivered them so those Streams receive the deletion. | Reads the parent back as deleted and delivers it; a child the handler did not touch stays on other clients until a Stream delivers it. |
-| Client identity | Each signed-in user gets their own local client database. A client id is bound to the first user that pushed with it; a push from another user with the same client id answers `403 client.owner_mismatch`, and there is no reassignment. | Stores the owner with the client row. |
+| Client identity | Each signed-in user gets their own local client database. The Store is bound to stable backend, viewer, Stream and contract identity; a mismatch is refused, including on saved replay. | Stores the owner with the client row. |
 | Backend language | TypeScript on Node, through the generated `createBackend`. The Dart package is a client SDK; there is no Dart or Rust-hosted backend. | Runs the same Rust engine inside the Node addon. |
 | Prerequisite expressions | `@requires(Name(field: self))` is the only supported form: every argument is `self`, the value of the annotated field. The runner that satisfies prerequisites is client code. | Never sees prerequisites; they gate when the client sends a durable call, not what the backend receives. |
 
@@ -71,7 +71,7 @@ These are accepted limits of the current runtime, not planned features. See [dep
 
 ## Handlers
 
-A handler receives `{ ctx, args }`: `ctx` holds trusted framework context and `args` holds decoded caller inputs. An optional Model operand the caller left out arrives as `null`, exactly as if it passed `null`; a `DateTime` arrives as a `Date`, at the millisecond precision every client sends. A create operand is always a complete record: fields the caller omitted were filled from their [creation defaults](../schema/reference.md#creation-defaults) by the client, and the server never fills a missing value. In the snippets, `Tx` stands for the transaction type supplied by your database adapter. A Mutation handler writes to your database and returns explicit output values; a Query handler reads and returns them. AXTON resolves Model outputs through the corresponding versioned Loader in the same transaction. For a durable Mutation, it also reads the batch-final state of each Model input into the receipt, independently of each invocation's result snapshot. Database work and framework metadata share the transaction, which runs at Serializable isolation: a handler needs no row locks to stay correct, because PostgreSQL aborts a transaction whose outcome no serial order would produce and the [database shim](database.md) runs it again. A handler and its Loaders can therefore run more than once for one call, and nothing inside them may have an external effect such as sending email, a push notification or an HTTP call. Record the effect in the transaction, an application outbox, and perform it after commit.
+A handler receives `{ ctx, args }`: `ctx` holds trusted framework context and `args` holds decoded caller inputs. An optional Model operand the caller left out arrives as `null`, exactly as if it passed `null`; a `DateTime` arrives as a `Date`, at the millisecond precision every client sends. A create operand is always a complete record: fields the caller omitted were filled from their [creation defaults](../schema/reference.md#creation-defaults) by the client, and the server never fills a missing value. In the snippets, `Tx` stands for the transaction type supplied by your database adapter. A Mutation handler writes to your database and returns explicit output values; a Query handler reads and returns them. AXTON resolves Model outputs through the corresponding versioned Loader in the same transaction. For a durable Mutation, it also freezes the same-transaction private snapshot and required Stream target for each server-visible Model input, independently of each invocation's result snapshot. Database work and framework metadata share the transaction, which runs at Serializable isolation: a handler needs no row locks to stay correct, because PostgreSQL aborts a transaction whose outcome no serial order would produce and the [database shim](database.md) runs it again. A handler and its Loaders can therefore run more than once for one call, and nothing inside them may have an external effect such as sending email, a push notification or an HTTP call. Record the effect in the transaction, an application outbox, and perform it after commit.
 
 ```ts title="action-contract"
 import { CallRejected, type Mutations } from './generated/backend.ts';
@@ -81,13 +81,14 @@ const handleAddTodoV2: Mutations<Tx>['addTodo']['v2'] =
   async ({ ctx, args }) => {
     if (!args.todo.title.trim()) throw new CallRejected('todo.title_empty');
     await saveTodo(ctx.tx, args.todo);
+    ctx.invalidate.todo(args.todo);
     // The new Todo joins the Stream once; its later changes reach it with no enrollment.
-    ctx.stream('todos').track.todo(args.todo);
+    ctx.streams(['todos']).track.todo(args.todo);
     return { relatedTodo: null, matches: [], count: 1, state: null };
   };
 ```
 
-The `todo` input is already a change: AXTON stamps it and returns its authority to the caller, which completes without a subscription, whatever the outputs or the call's `store` option. It is not part of the result. The result holds only the declared outputs: `relatedTodo` and `matches` are identity-selected Model outputs that the Loader resolves at this invocation, and `count` and `state` are ordinary outputs. Other clients learn of the change through the `todos` Stream.
+The `todo` input describes local optimism. The handler explicitly invalidates every canonical identity it changes. Its durable receipt identifies the authority required for settlement, separately from the invocation result. The result holds only the declared outputs: `relatedTodo` and `matches` are identity-selected Model outputs that the Loader resolves at this invocation, and `count` and `state` are ordinary outputs. Other clients learn of the change through the `todos` Stream.
 
 An output is independent of the inputs even when the names match. The fixture's `EditAndRead(todo Todo.update) { todo Todo }` may edit one Todo and return another:
 
@@ -97,6 +98,7 @@ import { type Mutations } from './generated/backend.ts';
 const handleEditAndRead: Mutations<Tx>['editAndRead'] =
   async ({ ctx, args }) => {
     await saveTodo(ctx.tx, args.todo);
+    ctx.invalidate.todo(args.todo);
     // The result names the Todo to show; it need not be the one edited.
     return { todo: { id: 'todo-summary' } };
   };
@@ -122,14 +124,14 @@ Returning identity objects lets the Loader resolve the visible records in order,
 | `tx` | Yes | Yes | Your database transaction object |
 | `userId` | Yes | Yes | Authenticated caller; use it for business authorization |
 | `callId` | Yes | Yes | Stable identity of this invocation, including retries |
-| `invalidate` | Yes | No | `invalidate.todo(identity)` declares a record this Mutation changed beyond its Model inputs; see [Streams](#streams) |
-| `stream(name)` | Yes | No | A handle for tracking records and selected invalidation; see [Streams](#streams) |
+| `invalidate` | Yes | No | `invalidate.todo(identity)` declares a canonical identity this Mutation changed; see [Streams](#streams) |
+| `stream`, `streams(names)` | Yes | Yes | A handle for tracking records and selected invalidation; see [Streams](#streams) |
 
-A handler returns the generated explicit output shape, or no value when the operation has no explicit outputs. AXTON allocates a **stamp** for each changed record, the Model inputs plus the records the handler touched, and on durable delivery reads the inputs' batch-final content through the Loader into the receipt. Touch every other business record the handler changed: a touched record is delivered to its Streams, but it is not returned to the caller, so the caller need not know its Model.
+A handler returns the generated explicit output shape, or no value when it has no outputs. Explicit invalidation publishes changed canonical records to existing holders; tracking enrolls selected identities. Model inputs do not imply publication. A durable Mutation freezes private input snapshots and required Stream targets in its receipt, independently of its result snapshot.
 
-A Query's context has no `invalidate` or `stream`, in its type and at runtime. The engine also refuses any Query settlement that reports changes or memberships: that call fails with `query.effects_forbidden`, its savepoint rolls back before any stamp, readback or publication, and adjacent calls in the batch are unaffected. This is not a SQL sandbox. `ctx.tx` is still your application's transaction, and the framework cannot inspect the SQL a handler runs or other clients it has captured, so keeping a Query free of business side effects is your application's responsibility. Framework metadata is still written: each Query outcome is saved by call ID like a Mutation's, so retrying the same call ID replays the saved result and a new invocation reads again.
+A Query has track-only `ctx.stream` and `ctx.streams([...])`, with no invalidation. It may establish Stream membership while reading. Business side effects remain forbidden: `ctx.tx` is your application transaction, not a SQL sandbox. Request retries retain the exact invocation identity; a new invocation reads again.
 
-A loader is stream-independent: the row it returns for a record is the row every client receives for it, in the receipt, in a catch-up page and on the live stream, at the same stamp. What a loader may vary by is `userId`.
+Loaders vary by authenticated viewer and declared Model version, never by which Stream asked. Cache snapshots use the active materialization's Model contracts; retained invocation output contracts may differ. Ordinary Query/Fetch records have null cursors, while Stream and manifest records carry authoritative positions.
 
 One Mutation can have several operands and perform several business writes in one savepoint. The schema's Model operands describe local optimism; the backend can normalize values or use different tables.
 
@@ -146,11 +148,13 @@ queries.getTodos = { v2: handleGetTodosV2 }; // GetTodos v2 is a Query
 
 A bare function means v1 only. A missing retained version, unknown version key, non-function value, or a registration under the wrong kind is refused at startup. Dispatch uses the requested version and never falls back to another. An unsupported version is a per-call rejection.
 
-An error that is neither `CallRejected` nor translated to a business code rejects that call with `handler.failed` and reaches `onError`. Independent valid calls in the batch can still commit. A retryable database transaction error instead retries the transaction; it is not saved as a permanent business rejection.
+An error that is neither `CallRejected` nor translated to a business code rejects that call with `handler.failed` and reaches `onError`. Other named calls retain their independent outcomes. A retryable database transaction error instead retries the transaction; it is not saved as a permanent business rejection.
 
-## Load handlers
+## Bootstrap preparation
 
-A schema with `load` declarations generates `Loads<Tx>`: one handler per retained Load version, registered in the required `loads` option of `createBackend`, as a bare function for a v1-only Load or `{ v1, v2 }`. It receives `{ ctx, args, continuation }` and returns `{ data, next }`: one identity list per declared output and the next continuation, `null` when done. Its `LoadContext<Tx>` has `tx`, `userId`, `callId`, `loadId` and `stream(name)`, and no `invalidate`. That `stream(name)` is a `LoadStream`: it tracks only records this page returns, which commit with the page ([Track loaded records in a Stream](../frontend/loads.md#track-loaded-records-in-a-stream)). Each page runs in its own transaction, and a repeated page request returns the saved page without running the handler again or adding anything. Your handler owns ordering, consistency, authorization and termination. Return identities, not records: a full record returned from an unannotated handler compiles but fails the page with `handler.invalid`. See [Implement the backend handler](../frontend/loads.md#implement-the-backend-handler).
+`bootstrap?: ({ctx}) => Promise<void>` is optional application preparation. Its typed context contains the current `tx`, `userId`, `callId`, initiating `ctx.stream`, and explicit `ctx.streams([...])`. Both Stream handles only track; neither provides invalidation. AXTON acquires its publication fence before preparation and freezes the bounded historical manifest in the same transaction.
+
+The schema's `@@bootstrap` marks historical Model types selected for initial materialization. Queries cover named history outside that baseline. Manifest paging, coverage, replay and tail capture belong to the native runtime; applications do not return a Load continuation or manage a Load job. Receipt-target recovery does not call this preparation callback.
 
 ## Loaders
 
@@ -189,15 +193,15 @@ What each item may be:
 
 | Item | Meaning | Result |
 | --- | --- | --- |
-| A row object | The record's current state for this user | Delivered with the record's current stamp |
-| `null` | The record does not exist, or this user must not see it | Delivered as a deletion. A newer stamp clears the authoritative row, whichever stream delivered it; the client keeps the stamp so older content cannot bring the record back; pending local operations are replayed on that state. |
-| a thrown `CallRejected` (or an error `translateRejection` maps to a code) | A refused read | During a call, that call is rejected with the code and rolled back. In a pull, that record is delivered as an error with that code: the client keeps its local copy and reports it, and the rest of the page applies |
-| any other thrown error | A failure | Reported to `onError` (default `console.error`). During a call, the call is rejected with `loader.failed`; in a pull, that record is delivered as a `loader.failed` error and the rest of the page applies |
-| `undefined`, a missing entry, a non-array result, a nonfinite number | A defect | Reported to `onError` and treated like a thrown error: only the records it affects fail. It is never read as `null` |
+| A row object | The record's current state for this user | Stream/manifest delivery carries its authoritative position. Query/Fetch delivery is an ordinary null-cursor snapshot. |
+| `null` | The record does not exist, or this user must not see it | Stream/manifest null installs canonical absence and retains deletion protection, preserving pending overlays. Ordinary Query/Fetch null returns absence without deleting an authoritative cached row. |
+| a thrown `CallRejected` (or a translated rejection) | A refused read | A call fails with the rejection. Delivery cannot commit the required authority unit or its progress. |
+| any other thrown error | A failure | Reported to `onError`; it cannot become absence or skip required progress. Independent earlier units can commit when the server proves their prefix; bounded adaptive requests may recover that prefix. |
+| `undefined`, a missing entry, a non-array result, a nonfinite number | A defect | The affected read fails. It is never interpreted as `null`. |
 
 A row object must match the generated model type exactly. Include every non-identity field: a nullable field that is absent reads as `null`, but an absent non-nullable field is a defect. The identity fields may be present. Any other property, such as an extra database column or a relation object, is a defect. Map your rows to the model type rather than returning a wider database row.
 
-Loaders run during synchronization and calls, not when the app calls local `get`, `query` or `watch`. A malformed result is never skipped silently: the affected record arrives as an error change, or the call being read back is rejected with `loader.invalid`, and `onError` hears about it.
+Loaders run during synchronization and calls, not when the app calls local `get`, `query` or `watch`. A malformed result never discharges delivery progress. The call or required delivery unit fails and `onError` receives the diagnostic.
 
 Every member of `Loaders<Tx>` is optional, so a standalone Loader typed from it uses `NonNullable<…>`, as above. A Model that registers a Loader registers every retained version; a key that names no Model is refused at startup.
 
@@ -206,8 +210,8 @@ Every member of `Loaders<Tx>` is optional, so a standalone Loader typed from it 
 A Model whose Loader you leave out is device-only: a composer's working copy or a cache of signed URLs, written and read only on the client. Whether a Model syncs follows from where it is written; the schema declares nothing extra.
 
 - **On the client** the Model works like any other for local `create`, `update`, `delete`, `get`, `query` and `watch`, and inside transactions and local companions. Those writes stay in local SQLite and are never sent.
-- **At startup** `createBackend` throws when a retained Mutation would carry the Model on the wire, or a Mutation, Query or Load would return it, because each needs its Loader: `Mutation SaveDraft v1 slot draft names Model Draft, which has no Loader; a Model without a Loader is device-only and never on the wire`.
-- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `invalidate.draft(…)`, `stream(name).track.draft(…)` and mixed `stream(name).track([...])` naming it throw at the call: `invalidate.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
+- **At startup** `createBackend` throws when a retained Mutation would carry the Model on the wire, or a Mutation or Query would return it, because each needs its Loader: `Mutation SaveDraft v1 slot draft names Model Draft, which has no Loader; a Model without a Loader is device-only and never on the wire`.
+- **In a handler, `backend.transaction` or `backend.publish`** the Model is never published. `invalidate.draft(…)`, `streams(names).track.draft(…)` and mixed `streams(names).track([...])` naming it throw at the call: `invalidate.draft: Model Draft has no Loader, so it is device-only and cannot be published`. In a handler that is the call's `handler.failed`.
 - **`client.fetch.draft(…)`** fails with `loader.unregistered`.
 
 A backend that registers a Loader for every Model, including one that always answers `null` for a device-only Model, keeps working unchanged.
@@ -220,49 +224,51 @@ A Stream is a resumable ordered notification sequence. `track` establishes durab
 import { Todo, createBackend, devAuth } from './generated/backend.ts';
 
 const backend = createBackend<Tx>({
-  database, authenticate: devAuth(), mutations, queries, loads, loaders,
+  database, authenticate: devAuth(), mutations, queries, loaders,
+  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
 });
 await backend.transaction(async ctx => {
   const records = [Todo({ id: 'A' }), Todo({ id: 'B' })];
-  ctx.stream(['User:alice', 'User:bob']).track(records);
+  ctx.streams(['User:alice', 'User:bob']).track(records);
   ctx.invalidate.todo(['A', 'B']);
-  ctx.stream('User:alice').invalidate.todo('C');
+  ctx.streams(['User:alice']).invalidate.todo('C');
 });
 ```
 
 | Interface | Return and behavior |
 | --- | --- |
-| `ctx.stream(nameOrNames)` | Callback-bound `Stream`; accepts a nonblank string or readonly list of nonblank names. Creates no row, subscription or request by itself. Names are opaque and case-sensitive. |
-| `stream.track.todo(identityOrList)`, `stream.track(referenceOrList)` | `void`; establishes durable unique Stream/Model/Identity pairs. A first pair gets one upsert at current authority, initializing a missing stamp. Repeating a pair moves neither stamp nor cursor. |
-| `ctx.invalidate.todo(identityOrList)`, `ctx.invalidate(referenceOrList)` | `void`; advances each distinct identity's stamp once and notifies every finally tracking Stream. An identity without holders still advances. |
-| `stream.invalidate.todo(identityOrList)`, `stream.invalidate(referenceOrList)` | `void`; advances each identity's stamp once, notifying only the selected names that already track it. Never enrolls. |
+| `ctx.stream` | Callback-bound initiating Stream on Mutation, Query and Bootstrap contexts. |
+| `ctx.streams(names)` | Explicit readonly list of Streams. Background contexts only expose this form. Names are nonblank and case-sensitive. |
+| `stream.track.todo(identityOrList)`, `stream.track(referenceOrList)` | `void`; establishes durable unique Stream/Model/Identity pairs. A first pair gets one upsert at current authority, initializing a missing canonical position. Repeating a pair moves neither canonical position nor Stream cursor. |
+| `ctx.invalidate.todo(identityOrList)`, `ctx.invalidate(referenceOrList)` | `void`; advances each distinct identity's canonical publication position once and notifies every finally tracking Stream. An identity without holders still advances. |
+| `stream.invalidate.todo(identityOrList)`, `stream.invalidate(referenceOrList)` | `void`; advances each identity's canonical publication position once, notifying only the selected names that already track it. Never enrolls. |
 
 Generated Model methods accept scalar or complete object identities for a single-field identity, complete objects for composite identities, and one identity or a readonly list. Mixed calls require generated `RecordRef` constructors that identify the Model. Models without a viewer Loader cannot be declared.
 
-Declarations are synchronous, copy and canonicalize operands before appending, and expire with the callback. Multiple names and records declare their Cartesian product; use separate declarations for different associations. Empty name or record lists do nothing. Ordinary invalid declarations throw before appending any effects; Load collectors retain a sticky failure even if caught.
+Declarations are synchronous, copy and canonicalize operands before appending, and expire with the callback. Multiple names and records declare their Cartesian product; use separate declarations for different associations. Empty name or record lists do nothing. Ordinary invalid declarations throw before appending any effects; preparation collectors retain a sticky failure even if caught.
 
-The enclosing settlement combines declarations regardless of order. Each identity advances at most once and each final pair receives at most one position. Targeted sets union; global invalidation dominates. A Mutation's inferred changed Model inputs are always global and cannot be narrowed. Tracking another Stream or reading an output does not change authority. There is no extra batch or execute call and no request per declaration. Separate `backend.publish` invocations remain separate settlements.
+The enclosing settlement combines declarations regardless of order. Each identity advances at most once and each final pair receives at most one position. Targeted sets union; global invalidation dominates. Model inputs do not replace publication declarations: explicitly invalidate all changed identities. Tracking another Stream or reading an output does not change authority. There is no extra batch or execute call and no request per declaration. Separate `backend.publish` invocations remain separate settlements.
 
 ### Content and authority
 
-Shared content changes must invalidate all holders. Selected invalidation serves viewer-specific projection or permission changes when other viewers' answers remain valid. A changed row-to-null answer requires a newer stamp even if only selected streams are notified. Loader errors retain local content and are never absence; grouped Loader reads preserve per-identity fallback after batch failures.
+Shared content changes must invalidate all holders. Selected invalidation serves viewer-specific projection or permission changes when other viewers' answers remain valid. A changed row-to-null answer requires a newer canonical position even if only selected streams are notified. Loader errors retain local content and are never absence; a failed required Loader read cannot discharge delivery progress.
 
-Business deletion and access revocation are authority changes: invalidate affected identities and let their viewer Loader return `null`. Tracking survives absence, allowing offline deletion delivery and later reinstatement. The public API has no withdrawal, tags or selectors and no automatic tracking retention policy. Retained historical identity-only Remove is cursor evidence and changes no client Model, hook or stamp; newer stamped Loader null supplies canonical absence. Clients have no Stream holding ledger. Unsubscribe stops delivery and retains both cache and server tracking.
+Business deletion and access revocation are authority changes: invalidate affected identities and let their viewer Loader return `null`. Tracking survives absence, allowing offline deletion delivery and later reinstatement. The public API has no withdrawal, tags or selectors and no automatic tracking retention policy. Membership Remove is delivery evidence: it retains the client Model and guards while releasing live-content protection. True Stream null supplies canonical absence and keeps deletion protection. The current client follows exactly one bound Stream.
 
 | Context | Available declarations |
 | --- | --- |
 | Mutation or legacy slot handler; `backend.transaction` or `backend.publish` | Multi-stream tracking, global and selected invalidation. |
-| Native Load handler | `ctx.stream(...).track` only, restricted to this page's returned records; commits with the page. |
-| Query handler or viewer Loader | Neither declaration. |
-| Client transaction or `onStore` | Local subscription intent through `tx.streams`, without server tracking edits. |
+| Query or Bootstrap | Initiating and explicitly selected Stream tracking only. |
+| Viewer Loader | No declarations; preparation hooks receive explicit typed `streams` and `invalidate`. |
+| Client transaction or Mutation input callback | Device-only Model CRUD; no server declarations or Stream subscription management. |
 
-See [Load tracking](../frontend/loads.md#track-loaded-records-in-a-stream), [cache and standing](../frontend/sync.md#authentication-and-account-changes), and [settlement](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/engine/publish.md).
+See [Bootstrap](../frontend/loads.md), [cache authority](../frontend/sync.md#accounts-and-cache-authority), and [settlement](https://github.com/zanminwang/axton/blob/main/docs/engineering/architecture/server/engine/publish.md).
 
 ## Authentication
 
 `Authenticate` receives Node's `IncomingMessage` and returns a user ID string, null, undefined, or a promise of those values. Null/undefined or a blank user ID rejects authentication. The SDK calls it for HTTP requests and WebSocket connections. Verify your application's session/token here; enforce read permissions in loaders and write permissions in handlers.
 
-`devAuth(): Authenticate` treats `Authorization: Bearer <userId>` as the identity without verification. It is provided for local development, not production authentication. See [authentication and account changes](../frontend/sync.md#authentication-and-account-changes).
+`devAuth(): Authenticate` treats `Authorization: Bearer <userId>` as the identity without verification. It is provided for local development, not production authentication. See [authentication and account changes](../frontend/sync.md#accounts-and-cache-authority).
 
 ## Admission
 
@@ -287,9 +293,9 @@ It runs on every listener route and the WebSocket upgrade, after `authenticate` 
 | `onError(error)` | Log server failures that are returned to the client as a generic server error. A handler or Loader failure is reported inside the transaction, so a transaction retried after a serialization failure can report the same failure once per attempt |
 | `EngineError` | A failure from the native engine: `code` (stable), `message` (readable, may change), `details` (fields the code promises) |
 
-Codes must match `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`, such as `todo.title_empty`. A recognized business rejection rolls back that call's business writes, stamps, memberships and deliveries. For a queued call, `wait()` returns a `CallError` outcome and any optimistic Model change rolls back; the durable rejection remains inspectable until dismissed. For a direct call, the promise rejects with `CallError`. An unknown transport outcome can be retried with the same call identity; it is not evidence that the handler did nothing.
+Codes must match `^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$`, such as `todo.title_empty`. A recognized business rejection rolls back that call's business writes, canonical publications, memberships and deliveries. For a queued call, `wait()` returns a `CallError` outcome and any optimistic Model change rolls back; the durable rejection remains inspectable until dismissed. For a direct call, the promise rejects with `CallError`. An unknown transport outcome can be retried with the same call identity; it is not evidence that the handler did nothing.
 
-Business codes come from `CallRejected` or `translateRejection`; `action_version_unsupported`, `handler.failed`, `loader.failed`, `model_version_unsupported` and `query.effects_forbidden` identify framework failures attributable to one call. A durable receipt records each call's outcome. Independent valid calls in the batch can commit. A direct response carries the same final outcome for that call.
+Business codes come from `CallRejected` or `translateRejection`; `action_version_unsupported`, `handler.failed`, `loader.failed`, `model_version_unsupported` and `query.effects_forbidden` identify framework failures attributable to one call. A durable receipt records each call's outcome. Distinct durable Calls retain independent outcomes. A direct response carries the same final outcome for that call.
 
 Infrastructure errors that make the transaction unusable abort delivery for retry. A serialization conflict that outlasts the shim's `retries` is one of them: the call is not rejected, and a queued call stays queued and is sent again. `onError` receives diagnostic failures, including handler and Loader exceptions. Diagnostic callback exceptions after a committed outcome cannot replace its result, repeat its handler or become a transport error; SDKs report those callback exceptions through their runtime uncaught-error channel.
 
@@ -312,26 +318,26 @@ Protocol refusals use a status and JSON body chosen by the engine error's `code`
 
 | Route | Purpose |
 | --- | --- |
-| `POST /sync/mutations` | Receive durable batches of Mutations and queued Queries |
-| `POST /sync/actions` | Execute one direct Mutation or Query and return its result |
+| `POST /sync/mutations` | Retained legacy batch route; current generated clients do not use it |
+| `POST /sync/actions` | Execute one frozen named Mutation or direct Query carrier |
 | `POST /sync/fetch` | Read one record through its Model's Loader for `client.fetch` |
-| `POST /sync/loads` | Serve batched pages of native Loads for `client.loads` |
-| `POST /sync/pull` | Materialize changed records through loaders for catch-up and gap recovery |
-| `/sync/live` (WebSocket) | Subscribe to streams and stream ongoing record changes |
+| `POST /sync/loads` | Retained legacy route; current generated clients do not use it |
+| `POST /sync/pull` | Serve strict Delta, Bootstrap and receipt-target materialization carriers |
+| `/sync/live` (WebSocket) | Acknowledge the one bound Stream and deliver proved authoritative units |
 
 The listener has no TLS, CORS or proxy-header handling and binds to loopback by default; run it behind a reverse proxy as described in [Deploy the backend](deployment.md).
 
-Generated clients use all of these routes automatically from one `server` configuration. The WebSocket subscription acknowledgement confirms that stream listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must separately close its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
+Generated clients use all of these routes automatically from one bound `connection` configuration. The WebSocket subscription acknowledgement confirms that stream listeners are installed before HTTP catch-up starts, so changes during catch-up can be queued and reconciled. Listener errors reject. `await server.close()` releases the listener and its live connections; your application must drain admitted database transaction promises before separately closing its database pool. The supported listener owns its server; mounting into an application-owned HTTP server is not currently exposed.
 
 ## Background writes
 
-Writes outside handlers have no readback and no receipt; they reach clients only through Streams. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `invalidate` and `stream` a Mutation handler receives. When the body returns, the framework allocates one new stamp per touched record and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Streams are woken.
+Writes outside handlers have no readback and no receipt; they reach clients only through Streams. Run them through `backend.transaction`: the framework opens the application transaction and hands the body the same `invalidate` and `stream` a Mutation handler receives. When the body returns, the framework allocates publication positions for explicitly invalidated records and applies the membership changes and deliveries inside that same transaction; once it commits, the live subscribers of the affected Streams are woken.
 
 ```ts
-await backend.transaction(async ({ tx, stream, invalidate }) => {
+await backend.transaction(async ({ tx, streams, invalidate }) => {
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From a job' } });
   invalidate.entry({ id: 'entry-1' });
-  stream('book:demo').track.entry({ id: 'entry-1' });
+  streams(['book:demo']).track.entry({ id: 'entry-1' });
 });
 ```
 
@@ -340,10 +346,10 @@ await backend.transaction(async ({ tx, stream, invalidate }) => {
 | `TransactionCall<Tx>` member | Contract |
 | --- | --- |
 | `tx` | The application transaction; write business data through it |
-| `invalidate` | `invalidate.entry(identity)` declares a changed record; each gets one new stamp when the body returns |
-| `stream(name)` | The same Stream handle as in a handler, for tracking records and selected invalidation |
+| `invalidate` | `invalidate.entry(identity)` declares a changed record; publishes its current canonical state when the body returns |
+| `streams(names)` | The same Stream handle as in a handler, for tracking records and selected invalidation |
 
-Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. A touched record advances its stamp even without a Stream; adding an unchanged record does not. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
+Same rules as a Mutation handler's, with two differences: there are no Model inputs, because nothing was uploaded, and nothing is read back, because no client is waiting for a receipt. Tracking an unchanged record is idempotent; invalidation advances the canonical publication position. Wakeups are process-local; distributed wake delivery needs additional application infrastructure.
 
 ### In a transaction you own
 
@@ -351,10 +357,11 @@ When your code has already opened the transaction, for example another framework
 
 ```ts
 const wake = await db.$transaction(async (tx) => {
+  await backend.acquirePublicationFence(tx);
   await tx.entry.update({ where: { id: 'entry-1' }, data: { text: 'From my host' } });
-  return backend.publish(tx, ({ stream, invalidate }) => {
+  return backend.publish(tx, ({ streams, invalidate }) => {
     invalidate.entry({ id: 'entry-1' });
-    stream('book:demo').track.entry({ id: 'entry-1' });
+    streams(['book:demo']).track.entry({ id: 'entry-1' });
   });
 });
 wake();
@@ -362,15 +369,15 @@ wake();
 
 | Behavior | Contract |
 | --- | --- |
-| Settlement | Runs before `publish` resolves: stamps, memberships and Stream positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two stamps |
+| Settlement | Runs before `publish` resolves: canonical positions, memberships and Stream positions are written through `tx`, so they commit or roll back with it, a savepoint included. Each call is its own settlement, so a record touched in two calls gets two publication positions |
 | Wake | `publish` resolves to a function. Call it after `tx` commits; after a rollback, drop it. Until it is called, no live subscriber is told; they catch up on their next wake or reconnect |
 | Errors | A refused declaration or a database error rejects `publish` with the original error, so your retry loop can recognize a serialization failure and run the whole transaction again. Wakes from failed attempts are simply never called |
-| Isolation | AXTON does not choose the level of your transaction. The settlement works at Read Committed, Repeatable Read or Serializable; run at Serializable, as every AXTON transaction does, if your own reads and writes rely on it, and retry serialization failures as `backend.transaction` does |
+| Isolation | AXTON does not choose the level of your transaction. Use Serializable isolation and acquire the persisted publication fence before relevant application work. Retry the entire transaction on a serialization conflict; a later publication call cannot repair an earlier stale snapshot |
 | Refusal | A transaction AXTON is already serving, a handler's or `backend.transaction`'s, is refused: declare through its own `invalidate` and `stream` |
 
 ## Extension points
 
-`loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the load. Use it only if viewer-specific preparation is needed; a loader already receives the user.
+`loaderHooks` maps model names to `{ prepareForViewer(call): Promise<void> }`. The hook runs before that model's loader in the same request context. Its failure fails the affected read. The typed call provides `call.streams([...])` and `call.invalidate` for preparation publications; acquisition happens before preparation. Use it only if viewer-specific preparation is needed; a loader already receives the user.
 
 `native?: Native` injects the native bridge when packaging it elsewhere. It implements `validateConfig`, `processPush`, `processPull`, `settleExternal`, `negotiateLive` and `pullLive` with the string/JSON callback contracts in the [SDK source](https://github.com/zanminwang/axton/blob/main/packages/server/index.mts). The default binding comes from this repository's Node addon. This is a packaging seam; the generated Mutations, Queries and Loaders remain the application contract.
 

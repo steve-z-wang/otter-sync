@@ -4,6 +4,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$root/scripts/env.sh"
+case "$(uname -s)" in
+ Darwin) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.dylib";;
+ Linux) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.so";;
+ *) echo 'Unsupported native test host' >&2; exit 1;;
+esac
+export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 cd "$root"
 cargo run -p axton-compiler --locked -- compile integration/action-e2e/source integration/action-e2e \
   --backend-runtime ../../packages/server/index.mts \
@@ -13,6 +19,7 @@ cargo run -p axton-compiler --locked -- compile integration/action-e2e/evolved/s
   --client-runtime ../../../packages/client-js/index.mts
 "$root/node_modules/.bin/tsc" -p integration/action-e2e
 dart pub get --directory integration/action-runtime-dart
+dart analyze integration/action-runtime-dart/action_e2e_publish.dart integration/action-runtime-dart/action_e2e_datetime.dart integration/action-runtime-dart/action_e2e_hook.dart
 cluster="$(mktemp -d "${TMPDIR:-/tmp}/axton-action-e2e-pg.XXXXXX")"
 cleanup(){ pg_ctl -D "$cluster/data" -m immediate stop >/dev/null 2>&1 || true; rm -rf -- "$cluster"; }
 trap cleanup EXIT

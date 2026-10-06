@@ -6,50 +6,38 @@ export type Entry = EntryRecord;
 export type { EntryIdentity, EntryPatch };
 export function Entry(identity: EntryIdentity): Extract<RecordRef, { model: "Entry" }> { return { model: "Entry", identity }; }
 export type RecordRef = { readonly model: "Entry"; readonly identity: EntryIdentity };
-export interface AddDeclaration { tag(labels: string | readonly string[]): AddDeclaration }
-export type ScopePredicate = { readonly tags?: { readonly all?: readonly string[]; readonly any?: readonly string[]; readonly none?: readonly string[]; readonly only?: readonly string[] }; readonly and?: readonly ScopePredicate[]; readonly or?: readonly ScopePredicate[]; readonly not?: ScopePredicate };
-export interface ScopeSelection { remove(): void; tag(labels: string | readonly string[]): { add(): void; remove(): void } }
-export interface ScopeAdd {
- (records: RecordRef | readonly RecordRef[]): AddDeclaration;
- entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): AddDeclaration;
-}
-export interface ScopeRecords {
+export interface RecordDeclaration {
  (records: RecordRef | readonly RecordRef[]): void;
  entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
 }
-export interface Touch {
- (records: RecordRef | readonly RecordRef[]): void;
- entry(ids: EntryIdentity | EntryIdentity["id"] | readonly (EntryIdentity | EntryIdentity["id"])[]): void;
-}
-export interface ScopeTagRemoval extends ScopeRecords { (): void }
-export interface ScopeWhere { (predicate: ScopePredicate): ScopeSelection;
- entry(predicate: ScopePredicate): ScopeSelection;
-}
-export interface Scope { readonly add: ScopeAdd; readonly remove: ScopeRecords; tag(labels: string | readonly string[]): { readonly add: ScopeRecords; readonly remove: ScopeTagRemoval }; readonly where: ScopeWhere }
-export interface LoadScope { readonly add: ScopeAdd; tag(labels: string | readonly string[]): { readonly add: ScopeRecords } }
+export interface Stream { readonly track: RecordDeclaration; readonly invalidate: RecordDeclaration }
+export interface LoadStream { readonly track: RecordDeclaration }
 export interface MutationContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
- scope(name: string): Scope;
- touch: Touch;
+ readonly stream: Stream;
+ streams(names: readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface QueryContext<Tx> {
  tx: Tx;
  userId: string;
  callId: string;
+ readonly stream: LoadStream;
+ streams(names: readonly string[]): LoadStream;
 }
 export interface HandlerCall<Tx, Input> {
  input: Input;
  tx: Tx;
  userId: string;
- scope(name: string): Scope;
- touch: Touch;
+ streams(names: readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 export interface TransactionCall<Tx> {
  tx: Tx;
- scope(name: string): Scope;
- touch: Touch;
+ streams(names: readonly string[]): Stream;
+ invalidate: RecordDeclaration;
 }
 const schema = {"actions":[],"deprecations":[],"inverses":[],"loaders":["Entry"],"models":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}],"mutations":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"AddEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"prerequisites":[],"requirements":[],"schema":{"actions":[],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"AddEntry","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"cardinality":"single","model":"Entry","name":"entry","operation":"create"}],"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]},"uniqueConstraints":[]} as const;
 export interface AddEntryInput {
@@ -69,7 +57,11 @@ export interface Queries<Tx> {
 export interface Loaders<Tx> {
  entry?: { v1(call: LoaderCall<Tx, EntryIdentity>): Promise<readonly (Entry | null)[]> } | ((call: LoaderCall<Tx, EntryIdentity>) => Promise<readonly (Entry | null)[]>) | undefined;
 }
-export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders"> & { handlers: Handlers<Tx>; mutations?: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx> };
-export function createBackend<Tx>(options: Options<Tx>) {
- return createRuntimeBackend<Tx, TransactionCall<Tx>>({ ...options, config: schema, handlers: options.handlers as unknown as BackendOptions<Tx>["handlers"], mutations: options.mutations as unknown as BackendOptions<Tx>["mutations"], queries: options.queries as unknown as BackendOptions<Tx>["queries"], loaders: options.loaders as unknown as BackendOptions<Tx>["loaders"] });
+export interface PreparationContext<Tx> { tx:Tx; userId:string; streams(names:readonly string[]):Stream; invalidate:RecordDeclaration; }
+export interface LoaderHooks<Tx> {
+ entry?: { prepareForViewer(call:LoaderCall<Tx,EntryIdentity> & PreparationContext<Tx>):Promise<void> };
+}
+export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads" | "bootstrap" | "loaderHooks" | "protocol4"> & { handlers: Handlers<Tx>; mutations?: Mutations<Tx>; queries?: Queries<Tx>; loaders: Loaders<Tx>; protocol4: NonNullable<BackendOptions<Tx>["protocol4"]>; bootstrap?: (call: {ctx: QueryContext<Tx>}) => void | Promise<void>; loaderHooks?:LoaderHooks<Tx> };
+export function createBackend<Tx>(options:Options<Tx>) { const {bootstrap,loaderHooks,...rest}=options;
+ return createRuntimeBackend<Tx,TransactionCall<Tx>>({...rest,config:schema, handlers:options.handlers as unknown as BackendOptions<Tx>['handlers'],mutations:options.mutations as unknown as BackendOptions<Tx>['mutations'],queries:options.queries as unknown as BackendOptions<Tx>['queries'],loaders:options.loaders as unknown as BackendOptions<Tx>['loaders'],...(bootstrap===undefined?{}:{bootstrap:bootstrap as unknown as NonNullable<BackendOptions<Tx>['bootstrap']>}),...(loaderHooks===undefined?{}:{loaderHooks:loaderHooks as unknown as NonNullable<BackendOptions<Tx>['loaderHooks']>})});
 }

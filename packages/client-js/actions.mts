@@ -26,7 +26,7 @@ export type CallOutcome<T> =
  * true). Results are the same either way.
  */
 export type CallOptions<K extends string = string> = {
-  store?: boolean | Partial<Record<K, boolean>>;
+  store?: boolean;
 };
 /**
  * Direct Query controls, kept apart from business args and never sent to the
@@ -70,6 +70,9 @@ export function onceControls(options: unknown): {
   refresh: boolean;
 } {
   assertNoLocal(options);
+  const store = (options as { store?: unknown } | undefined)?.store;
+  if (store !== undefined && typeof store !== "boolean")
+    throw invalidOptions("store must be a boolean");
   const value = options as { once?: unknown; refresh?: unknown } | undefined;
   const once = value?.once ?? false;
   const refresh = value?.refresh ?? false;
@@ -83,7 +86,7 @@ export interface Call<T> {
   wait(): Promise<CallOutcome<T>>;
 }
 
-type Completion = {
+export type Completion = {
   callId: string;
   outcome:
     | { status: "succeeded"; result: unknown }
@@ -105,7 +108,9 @@ class CallState<T> implements Call<T> {
   #promise: Promise<CallOutcome<T>>;
   #resolve!: (value: CallOutcome<T>) => void;
   #activate: () => void;
-  constructor(activate: () => void, lifecycle: Lifecycle) {
+  readonly #admit: (() => void) | undefined;
+  constructor(activate: () => void, lifecycle: Lifecycle, admit?: () => void) {
+    this.#admit = admit;
     this.#activate = activate;
     this.#lifecycle = lifecycle;
     this.#promise = new Promise((resolve) => {
@@ -127,7 +132,14 @@ class CallState<T> implements Call<T> {
       );
     if (this.#lifecycle === "provisional")
       return Promise.reject(new CallError("transaction_uncommitted"));
-    if (!this.#outcome) this.#activate();
+    if (!this.#outcome) {
+      try {
+        this.#admit?.();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      this.#activate();
+    }
     return this.#promise;
   }
   commit(): void {
@@ -161,7 +173,16 @@ export class ActionRegistry {
   #usesRuntimeWeak: boolean;
   #closed = false;
   #ended = false;
-  constructor(weak?: WeakFactory | null) {
+  #lookup: ((callId: string) => Promise<Completion | null>) | undefined;
+  #looking = new Set<string>();
+  readonly #admit: (() => void) | undefined;
+  constructor(
+    weak?: WeakFactory | null,
+    lookup?: (callId: string) => Promise<Completion | null>,
+    admit?: () => void,
+  ) {
+    this.#lookup = lookup;
+    this.#admit = admit;
     this.#usesRuntimeWeak = weak === undefined;
     this.#weak = weak === undefined ? (state) => new WeakRef(state) : weak;
   }
@@ -199,8 +220,32 @@ export class ActionRegistry {
     const state = new CallState<T>(
       () => {
         this.#active.set(callId, state as CallState<unknown>);
+        if (this.#lookup && !this.#looking.has(callId)) {
+          this.#looking.add(callId);
+          void this.#lookup(callId)
+            .then(
+              (completion) => {
+                if (completion) this.complete(completion);
+              },
+              (cause) => {
+                if (!this.#active.has(callId)) return;
+                state.settle({
+                  result: undefined,
+                  error: new CallError(
+                    "action.observation_failed",
+                    "unknown",
+                    cause,
+                  ),
+                });
+                this.#active.delete(callId);
+                this.#routes.delete(callId);
+              },
+            )
+            .finally(() => this.#looking.delete(callId));
+        }
       },
       provisional ? "provisional" : "committed",
+      this.#admit,
     );
     // Closed, a committed call can no longer be observed; a provisional one
     // still hears its transaction's fate, until the runtime ended.

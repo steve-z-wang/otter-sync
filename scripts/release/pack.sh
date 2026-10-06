@@ -23,6 +23,7 @@ artifacts="$(cd "$2" && pwd)"
 shift 2
 targets_file="$root/scripts/release/targets.json"
 targets=("$@")
+dart_targets="$targets_file"
 if [[ ${#targets[@]} -eq 0 ]]; then
   read -r -a targets <<<"$(node -p 'require(process.argv[1]).host.map((t) => t.name).join(" ")' "$targets_file")"
 fi
@@ -34,6 +35,18 @@ version="$(node -p 'require("./package.json").version')"
 stage="$out/stage"
 rm -rf "$stage"
 mkdir -p "$stage"
+if [[ $# -gt 0 ]]; then
+  # A host verification pack has only the selected host's artifacts. Full
+  # release packing keeps the inventory, including every mobile library.
+  dart_targets="$stage/dart-targets.json"
+  node -e '
+    const [, inventory, out, ...names] = process.argv;
+    const fs = require("node:fs");
+    const table = JSON.parse(fs.readFileSync(inventory));
+    fs.writeFileSync(out, JSON.stringify({ ...table,
+      host: table.host.filter((target) => names.includes(target.name)), mobile: [] }));
+  ' "$targets_file" "$dart_targets" "${targets[@]}"
+fi
 cp -R packages/native packages/cli "$stage/"
 rm -f "$stage"/native/*.node "$stage"/native/npm/*/*.node "$stage"/cli/npm/*/bin/axton
 
@@ -72,7 +85,7 @@ rm "$dart_package/pubspec.lock" # pub never uploads it
 cp LICENSE "$dart_package/LICENSE"
 cp CHANGELOG.md "$dart_package/CHANGELOG.md"
 if compgen -G "$artifacts/libaxton_dart-*" >/dev/null; then
-  (cd packages/dart && dart run tool/write_native_manifest.dart --artifacts "$artifacts" --package "$dart_package")
+  (cd packages/dart && dart run tool/write_native_manifest.dart --artifacts "$artifacts" --package "$dart_package" --targets "$dart_targets")
 else
   echo "no libaxton_dart artifacts in $artifacts: the staged Dart package lists no native libraries" >&2
 fi

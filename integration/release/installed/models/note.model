@@ -2,6 +2,7 @@ model Note {
   id String
   text String
   @@id(id)
+  @@bootstrap
 }
 
 mutation AddNote(note Note.create)

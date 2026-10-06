@@ -6,7 +6,7 @@ export {
   Transaction,
   LocalTransaction,
   type LocalCallback,
-  type MutationOptions,
+  type MutationInput,
   type QuerySpec,
 } from "./transaction.mts";
 export {
@@ -19,7 +19,7 @@ export {
   type CallStatus,
 } from "./actions.mts";
 export type { RecordValue } from "./values.mts";
-export type { FetchOptions, RawStoreChange, StoreHook } from "./runtime.mts";
+export type { FetchOptions, StoreConnection } from "./runtime.mts";
 export type {
   Connection,
   ConnectionOptions,
@@ -35,20 +35,8 @@ export {
   type ReportKind,
 } from "./connection.mts";
 export type { ServerOptions } from "./live.mts";
-export {
-  LoadError,
-  type Load,
-  type LoadOptions,
-  type LoadPhase,
-  type LoadStatus,
-} from "./loads.mts";
-export type {
-  BootstrapPhase,
-  BootstrapStatus,
-  Subscription,
-  SubscriptionState,
-  SubscriptionStatus,
-} from "./runtime.mts";
+
+export type { BootstrapPhase, BootstrapStatus } from "./runtime.mts";
 export type {
   ClientSyncState,
   ModelSyncState,

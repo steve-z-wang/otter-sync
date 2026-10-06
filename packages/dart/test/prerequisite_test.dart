@@ -1,3 +1,4 @@
+import 'store_fixture.dart';
 // Prerequisite handlers registered at open (#185): the native runtime runs
 // them whenever a task becomes pending and retries a PrerequisiteRetry with
 // its own backoff. The real runtime and SQLite underneath.
@@ -36,10 +37,13 @@ void main() {
         'arguments': {'key': 'self'},
       },
     ];
+    declareEntryEdit(schema);
   });
   tearDown(() => dir.delete(recursive: true));
 
   Future<Client> open(_Handlers prerequisites) => Client.open(
+    stream: 'User:viewer',
+    connection: offlineStoreConnection(),
     path: '${dir.path}/db',
     schema: schema,
     libraryPath: Platform.environment['AXTON_LIBRARY']!,
@@ -55,17 +59,9 @@ void main() {
         'values': {'text': 'A'},
       }),
     );
-    await client.mutate({
-      'name': 'Edit',
-      'operations': [
-        {
-          'model': 'Entry',
-          'op': 'update',
-          'identity': {'id': key},
-          'values': {'note': key},
-        },
-      ],
-    });
+    await client.submitMutation<void>('Edit', 1, {
+      'entry': {'id': key, 'note': key},
+    }, (_) {});
   }
 
   /// Poll [probe] until it holds; fail after five seconds.
@@ -186,7 +182,12 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(calls, 1, reason: 'not retried');
-      expect(await client.freeze(), isNull, reason: 'still blocks the push');
+      expect(
+        (await client.pendingTasks()).single['state'],
+        'failed',
+        reason: 'failed prerequisite remains the native submission gate',
+      );
+      expect((await client.syncState())['pending'], 1);
       await client.setReadiness(task['key'] as String, 'pending');
       await until(() => settled(client));
       expect(calls, 2);

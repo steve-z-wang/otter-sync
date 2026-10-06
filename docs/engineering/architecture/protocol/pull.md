@@ -1,5 +1,7 @@
 # Pull
 
+[Protocol 4](0.4.md) owns current immutable pages, complete atomic units and finite manifests. The stamp and Load-bootstrap formats below describe retained protocol-3 carriers.
+
 Engine behavior: [Client Pull](../client/engine/pull.md), [Server Pull](../server/engine/pull.md).
 
 ## 3. Context and Scope

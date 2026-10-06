@@ -1,5 +1,7 @@
 # Push
 
+Current bound clients send one named [protocol-4 Mutation](0.4.md), without row stamps or a public batch sequence. The batch/receipt format below is the retained protocol-3 carrier.
+
 Durable calls - a Mutation's default route and a Query's `queries.enqueue` override ([Mutations and Queries](../schema/actions.md)) - use the same ordered batch lane as the retained mutation protocol below. Each call entry carries `ordinal`, `callId`, `name`, `version`, canonical `args` and, when not the default, its [`store` policy](actions.md#store-policy); the frozen request keeps these bytes across retry and restart. The entry carries no kind; the server takes it from the retained descriptor, and a queued Query is an ordinary entry that derived no local Model operations. Its receipt carries a correlated completion for every call (`succeeded` with typed output or `failed` with a stable code and execution state), plus batch-final `records` for Model authority. Per-invocation Model output snapshots belong to completions; they cannot be reconstructed from the batch-final records. The server saves each call outcome atomically with business writes and the batch receipt. See [direct calls](actions.md) for the separate request/response route and [server execution](../server/engine/README.md) for shared handling.
 
 Engine behavior: [Client Push](../client/engine/push/README.md), [Client Settlement](../client/engine/settlement.md), [Server Push](../server/engine/push.md).

@@ -1,20 +1,38 @@
-use axton_client::{Client, ClientStore, RecordKey, Schema, SqlRows, v04};
+use axton_client::{
+    Client, ClientStore, RecordKey, Schema, SqlRows,
+    runtime::{ClientRuntime, Input},
+    v04,
+};
 use axton_core::{Result, invalid};
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, OnceLock,
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
+const REQUEST_INSERT_FAULT: u8 = 1;
+const REQUEST_COMMIT_FAULT: u8 = 2;
+
 struct FaultStore {
     inner: SqliteStore,
     fail: Arc<AtomicBool>,
+    request_fault: Arc<AtomicU8>,
+    inserted_request: bool,
 }
 impl ClientStore for FaultStore {
     fn begin(&mut self) -> Result<()> {
+        self.inserted_request = false;
         self.inner.begin()
     }
     fn commit(&mut self) -> Result<()> {
+        if self.inserted_request
+            && self
+                .request_fault
+                .compare_exchange(REQUEST_COMMIT_FAULT, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return Err(invalid("injected read-intent commit failure"));
+        }
         if self.fail.swap(false, Ordering::SeqCst) {
             Err(invalid("injected SQLite commit refusal"))
         } else {
@@ -34,6 +52,16 @@ impl ClientStore for FaultStore {
         self.inner.rollback_to(n)
     }
     fn execute(&mut self, s: &str, p: &[Value]) -> Result<usize> {
+        if s.starts_with("INSERT INTO axton_v04_request") {
+            if self
+                .request_fault
+                .compare_exchange(REQUEST_INSERT_FAULT, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return Err(invalid("injected read-intent insert failure"));
+            }
+            self.inserted_request = true;
+        }
         self.inner.execute(s, p)
     }
     fn execute_batch(&mut self, s: &str) -> Result<()> {
@@ -52,11 +80,22 @@ fn schema() -> Schema {
     raw["actions"] = json!([{"name":"Rename","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],"outputs":[]}]);
     Schema::from_value(raw).unwrap()
 }
+fn fault_store_registry() {
+    static REGISTRY: OnceLock<tempfile::TempDir> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        SqliteStore::set_application_data_directory(dir.path()).unwrap();
+        dir
+    });
+}
 fn open(p: &std::path::Path, fail: Arc<AtomicBool>) -> Client<FaultStore> {
+    fault_store_registry();
     Client::open_bound(
         FaultStore {
             inner: SqliteStore::open_exclusive(p).unwrap(),
             fail,
+            request_fault: Arc::new(AtomicU8::new(0)),
+            inserted_request: false,
         },
         schema(),
         v04::StoreBinding {
@@ -247,4 +286,166 @@ fn locally_failed_settlement_keeps_accepted_receipt_pending_work_and_completion_
         c.record_evidence04(&key("a")).unwrap(),
         v04::RecordEvidence::default()
     );
+}
+
+fn runtime_run(runtime: &mut ClientRuntime<FaultStore>) -> Vec<Value> {
+    while runtime.step(1, 7) {}
+    runtime
+        .take_events()
+        .into_iter()
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect()
+}
+fn runtime_task(runtime: &mut ClientRuntime<FaultStore>, id: &str, command: Value) {
+    runtime
+        .receive(
+            serde_json::from_value::<Input>(
+                json!({"type":"task","requestId":id,"command":command}),
+            )
+            .unwrap(),
+            1,
+            7,
+        )
+        .unwrap();
+}
+fn answer_query(runtime: &mut ClientRuntime<FaultStore>, effect: &Value) -> Vec<Value> {
+    let request: v04::ReadIntent =
+        v04::decode(effect["operation"]["body"].as_str().unwrap().as_bytes()).unwrap();
+    let response = json!({"context":request.context,"completion":{"callId":request.call_id,"outcome":{"status":"succeeded","result":null}},"records":[]});
+    runtime.receive(serde_json::from_value(json!({"type":"effectResult","effectId":effect["effectId"],"outcome":{"ok":true,"value":{"status":200,"body":response.to_string()}}})).unwrap(), 1, 7).unwrap();
+    runtime_run(runtime)
+}
+fn query_once_prepare_fault(fault: u8, refresh: bool) {
+    fault_store_registry();
+    let dir = tempfile::tempdir().unwrap();
+    let request_fault = Arc::new(AtomicU8::new(0));
+    let mut raw = serde_json::to_value(schema()).unwrap();
+    raw["actions"] = json!([{"name":"Ping","kind":"query","version":1,"inputs":[],"outputs":[]}]);
+    let mut client = Client::open_bound(
+        FaultStore {
+            inner: SqliteStore::open_exclusive(dir.path().join("db")).unwrap(),
+            fail: Arc::new(AtomicBool::new(false)),
+            request_fault: request_fault.clone(),
+            inserted_request: false,
+        },
+        Schema::from_value(raw).unwrap(),
+        v04::StoreBinding {
+            backend: "b".into(),
+            viewer: "a".into(),
+            stream: "User:a".into(),
+            contract: "app".into(),
+        },
+    )
+    .unwrap();
+    client
+        .apply_delta04(&v04::DeltaPage {
+            context: client.request_context().unwrap().clone(),
+            page_id: "seed".into(),
+            from: 0,
+            to: 1,
+            head: 1,
+            units: vec![v04::CommitUnit {
+                through: 1,
+                changes: vec![change("a", 1)],
+            }],
+        })
+        .unwrap();
+    let mut runtime = ClientRuntime::new(client);
+    runtime_task(&mut runtime, "connect", json!({"kind":"connect"}));
+    runtime_run(&mut runtime);
+    let query = |refresh| json!({"kind":"invoke","name":"Ping","version":1,"args":{},"store":true,"once":true,"refresh":refresh});
+    if refresh {
+        runtime_task(&mut runtime, "initial", query(false));
+        let events = runtime_run(&mut runtime);
+        let effect = events
+            .iter()
+            .find(|e| e["operation"]["route"] == "action")
+            .unwrap();
+        let events = answer_query(&mut runtime, effect);
+        assert!(
+            events
+                .iter()
+                .any(|e| e["requestId"] == "initial" && e["ok"] == true),
+            "{events:?}"
+        );
+    }
+    let before_row = runtime.client().read(&key("a")).unwrap();
+    let before_evidence = runtime.client().record_evidence04(&key("a")).unwrap();
+    let before_generation = runtime.client().generation();
+    request_fault.store(fault, Ordering::SeqCst);
+    runtime_task(&mut runtime, "failed", query(refresh));
+    let events = runtime_run(&mut runtime);
+    let failed = events.iter().find(|e| e["requestId"] == "failed").unwrap();
+    assert_eq!(failed["ok"], false, "{events:?}");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("injected read-intent"),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| e["operation"]["route"] == "action"),
+        "prepare must not dispatch: {events:?}"
+    );
+    assert_eq!(
+        request_fault.load(Ordering::SeqCst),
+        0,
+        "the fault reached request persistence"
+    );
+    assert_eq!(runtime.client().generation(), before_generation);
+    assert_eq!(runtime.client().read(&key("a")).unwrap(), before_row);
+    assert_eq!(
+        runtime.client().record_evidence04(&key("a")).unwrap(),
+        before_evidence
+    );
+    assert_eq!(runtime.client().stream_cursor04().unwrap(), 1);
+    if refresh {
+        runtime_task(&mut runtime, "cached", query(false));
+        let events = runtime_run(&mut runtime);
+        assert!(
+            events
+                .iter()
+                .any(|e| e["requestId"] == "cached" && e["ok"] == true),
+            "prior cache survives: {events:?}"
+        );
+        assert!(!events.iter().any(|e| e["operation"]["route"] == "action"));
+    }
+    runtime_task(&mut runtime, "retry", query(refresh));
+    runtime_task(&mut runtime, "joined", query(refresh));
+    let events = runtime_run(&mut runtime);
+    let effects: Vec<_> = events
+        .iter()
+        .filter(|e| e["operation"]["route"] == "action")
+        .collect();
+    assert_eq!(
+        effects.len(),
+        1,
+        "retry must dispatch one new request and concurrent caller joins: {events:?}"
+    );
+    let events = answer_query(&mut runtime, effects[0]);
+    for id in ["retry", "joined"] {
+        assert!(
+            events
+                .iter()
+                .any(|e| e["requestId"] == id && e["ok"] == true),
+            "{events:?}"
+        );
+    }
+}
+#[test]
+fn query_once_insert_failure_releases_flight_for_identical_retry() {
+    query_once_prepare_fault(REQUEST_INSERT_FAULT, false);
+}
+#[test]
+fn query_once_commit_failure_releases_flight_for_identical_retry() {
+    query_once_prepare_fault(REQUEST_COMMIT_FAULT, false);
+}
+#[test]
+fn query_once_refresh_insert_failure_preserves_cache_and_releases_flight() {
+    query_once_prepare_fault(REQUEST_INSERT_FAULT, true);
+}
+#[test]
+fn query_once_refresh_commit_failure_preserves_cache_and_releases_flight() {
+    query_once_prepare_fault(REQUEST_COMMIT_FAULT, true);
 }

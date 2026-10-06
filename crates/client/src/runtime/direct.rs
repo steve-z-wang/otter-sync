@@ -284,27 +284,31 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 Ok(None)
             }
             QueryOnce::Fetch { flight_id, request } => {
-                if self.connection.is_none() {
-                    self.client.fail_query_once(&flight_id);
-                    return Err(UNAVAILABLE.into());
-                }
-                let body = if self.client.request_context().is_ok() {
-                    let read = self
-                        .client
-                        .freeze_query04(&request, &store)
-                        .map_err(|e| e.to_string())?;
-                    axton_core::v04::encode(&read).map_err(|e| e.to_string())?
-                } else {
-                    request.encode().map_err(|e| e.to_string())?
-                };
-                let body = String::from_utf8(body).map_err(|_| "utf8".to_string())?;
-                if let Err(error) = self.send_direct(
-                    request_id,
-                    request.call.call_id,
-                    body,
-                    Some(flight_id.clone()),
-                    None,
-                ) {
+                // Until dispatch succeeds, this scope owns the flight and its
+                // transient request token, including fallible durable freezing.
+                let dispatched = (|| {
+                    if self.connection.is_none() {
+                        return Err(UNAVAILABLE.into());
+                    }
+                    let body = if self.client.request_context().is_ok() {
+                        let read = self
+                            .client
+                            .freeze_query04(&request, &store)
+                            .map_err(|e| e.to_string())?;
+                        axton_core::v04::encode(&read).map_err(|e| e.to_string())?
+                    } else {
+                        request.encode().map_err(|e| e.to_string())?
+                    };
+                    let body = String::from_utf8(body).map_err(|_| "utf8".to_string())?;
+                    self.send_direct(
+                        request_id,
+                        request.call.call_id,
+                        body,
+                        Some(flight_id.clone()),
+                        None,
+                    )
+                })();
+                if let Err(error) = dispatched {
                     self.client.fail_query_once(&flight_id);
                     return Err(error);
                 }

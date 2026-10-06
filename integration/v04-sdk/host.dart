@@ -3,7 +3,8 @@ import 'generated.dart';
 void check(bool condition,String message) { if(!condition) throw StateError(message); }
 Future<void> main(List<String> args) async {
  final directory=await Directory.systemTemp.createTemp('axton-sdk-host-dart-');
- final client=await GeneratedClient.open(path:'${directory.path}/db',stream:'User:alice',connection:StoreConnection(url:args[0],token:()=>'alice',identity:const StoreIdentity(backend:'sdk',viewer:'alice',contract:'sdk-v04')),libraryPath:File('../../target/debug/libaxton_dart.dylib').absolute.path);
+ final library=Platform.environment['AXTON_LIBRARY']!;
+ final client=await GeneratedClient.open(path:'${directory.path}/db',stream:'User:alice',connection:StoreConnection(url:args[0],token:()=>'alice',identity:const StoreIdentity(backend:'sdk',viewer:'alice',contract:'sdk-v04')),libraryPath:library);
  try {
   await client.bootstrap();
   final call=await client.mutations.publish.withTransaction((tx) async {

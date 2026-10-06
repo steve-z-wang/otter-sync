@@ -1,5 +1,7 @@
 # Common
 
+[Protocol 4](0.4.md) defines current bound contexts and carriers. Stamp and client batch-sequence descriptions below are retained protocol-3 fields.
+
 ## 1. Introduction and Goals
 
 Three runtimes exchange the same messages: Rust, TypeScript and Dart. The protocol therefore fixes one byte-exact JSON encoding, one numeric range and one identity encoding, so that a request frozen on a client can be re-sent byte for byte, a receipt can be cached against it, and a record has the same key everywhere.

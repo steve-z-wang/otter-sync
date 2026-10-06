@@ -1,5 +1,7 @@
 # Mutations and Queries
 
+For the current generated Mutation/Query interface, use [the typed API](../sdks/typed-api/README.md) and [the schema reference](../../../../website/docs/schema/reference.md). Any queued-Query, direct-Mutation or per-output storage examples below describe the retained 0.3 interface.
+
 ## 1. Introduction and Goals
 
 An operation is a versioned named backend call with typed inputs and outputs. Its kind states the backend business contract: a **Mutation** may change business state or perform external effects; a **Query** reads without business side effects. Delivery is a separate axis chosen per call by the generated method: each kind has a default route and one override. The declaration determines input normalization, inferred local Model optimism (durable Mutations only) and result validation; it does not implement business logic.

@@ -1,5 +1,7 @@
 # Runtime
 
+Bound 0.4 admission and completion are described in [protocol 4](protocol4.md) and [the current typed API](../sdks/typed-api/client.md). The Load, store-hook, batch/stamp and multi-Stream details below describe retained protocol-3 internals; they are not public bound-client facilities.
+
 ## 1. Introduction and Goals
 
 The runtime is the part of the client that owns a task from the moment an SDK submits it to the moment its outcome is delivered: it schedules local work on the one SQLite connection, holds the active application transaction, drives the connection lanes and direct calls, and decides when a result, a status or a change may be observed. Adding a language to AXTON means writing a carrier for JSON strings and adapters for the platform's network, timers and credentials, not a second copy of scheduling, retry, Query completion or Bootstrap rules ([#134](https://github.com/zanminwang/axton/issues/134)).

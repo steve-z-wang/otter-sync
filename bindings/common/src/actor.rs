@@ -135,6 +135,18 @@ pub fn wait_closed(runtime: u64, timeout: Duration) -> bool {
     !ids.contains(&runtime)
 }
 
+/// Wait until a detached actor has released its Store. Carrier teardown may
+/// use this after clearing all wake sinks; never call it from a wake sink.
+pub fn join_closed(runtime: u64) {
+    let mut ids = lock(&RUNNING.ids);
+    while ids.contains(&runtime) {
+        ids = RUNNING
+            .ended
+            .wait(ids)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+}
+
 /// The runtimes each carrier instance opened and has not detached, keyed by
 /// an address that identifies the instance while it lives (a Node env). The
 /// instance's teardown hook calls [`Owners::lost`], which detaches whatever

@@ -2,79 +2,37 @@
 
 ## 1. Introduction and Goals
 
-A backend author writes retained Mutation and Query handlers and versioned Model Loaders against their own database transaction. The server typed API gives handlers `{ctx, args}` with trusted transaction context and decoded caller input, plus typed explicit outputs. The Rust engine decides execution, resolves Model outputs through Loaders, and distributes changed records.
+Generated backend types connect application handlers and versioned Model Loaders to the Rust server. The application decides business state and viewer visibility. The engine validates inputs, manages durable outcomes, materializes authority and publishes explicitly declared identities.
 
 ## 3. Context and Scope
 
-`createBackend({database, authenticate, mutations?, queries?, loads?, handlers?, loaders, loaderHooks?, translateRejection?, onError?})` returns `{listen, transaction, …}`. Generated `backend.ts` supplies `Mutations<Tx>`, `Queries<Tx>`, `Loaders<Tx>`, `MutationContext<Tx>`, `QueryContext<Tx>`, `TransactionCall<Tx>`, and, only in a schema that declares a Load, `Loads<Tx>`, `LoadContext<Tx>`, `LoadStream`, `LoadHandlerCall<Tx, Args>`, `LoadNext` and `JsonValue`, the schema's `Stream`, `LoadStream`, `RecordDeclaration` and discriminated `RecordRef`, and `CallRejected`, plus `Handlers<Tx>` for legacy [slot mutations](../../schema/mutations.md); missing or misnamed handlers are type errors. Its `Options<Tx>` requires each of `mutations`, `queries` and `handlers` only when that group retains a contract, and `loads` whenever the schema declares a Load. It binds the compiled config to `createBackend` ([Compiler / Generate](../../compiler/generate.md)).
+`createBackend` binds the generated descriptor to a database adapter, authentication, `protocol4` identity/authorization, retained Mutation/Query handlers, Loaders and optional Bootstrap preparation. [Backend setup](../../../../../website/docs/backend/setup.md) and [API guide](../../../../../website/docs/backend/api.md) own complete examples.
 
-| Piece | Shape |
+| Handler/context | Capability |
 | --- | --- |
-| Mutation handler | `({ctx, args}: MutationHandlerCall<Tx, Args>) => Promise<Outputs>`; `MutationContext` has `tx`, `userId`, `callId`, `stream(name)`, `invalidate` |
-| Query handler | `({ctx, args}: QueryHandlerCall<Tx, Args>) => Promise<Outputs>`; `QueryContext` has only `tx`, `userId`, `callId`, in the types and at runtime ([enforcement and its limit](../../schema/actions.md#8-crosscutting-concepts)) |
-| Load handler | `({ctx, args, continuation}: LoadHandlerCall<Tx, Args>) => Promise<{data, next}>`; `ctx` has `tx`, `userId`, `callId`, `loadId` and `stream(nameOrNames): LoadStream` with `track` only. Targets must occur in returned identity lists; continuation is `null` or `{state: JsonValue}`. |
-| Changed records | the engine infers the operation's input targets; `invalidate.todo(identity)` declares a record the handler changed beyond them, which is stamped and distributed but is not caller authority |
-| Outputs | only explicitly declared outputs: a value for a scalar or enum output, an identity for a Model output (`null` for an optional one, an array for a list), even when an input has the same name; a missing field fails the call and is never filled from an input. An operation without outputs returns `void` |
-| Loader | `({ids, tx, userId}: LoaderCall) => Promise<(Row \| null)[]>`, aligned with `ids`; one per retained model version, `Row` being that version's record type; no stream |
-| Rejecting one call or refusing a read | throw `CallRejected(code)` (the same class as the legacy `MutationRejected`), or throw anything `translateRejection` maps to a code; during a call this rejects the call, in a pull it reports the affected record |
-| Stream tracking/invalidation | `ctx.stream(nameOrNames).track`, `ctx.invalidate` and `ctx.stream(nameOrNames).invalidate` accept typed single/list identities or mixed references. External `backend.transaction` provides the same verbs and wakes after commit; `backend.publish` settles in the caller transaction and returns its after-commit wake. [Publish](../../server/engine/publish.md) owns combination and authority rules. |
-| Serving | `backend.listen({port, host?})` → `{url, close}` |
-| Development auth | `devAuth()` treats the bearer token as the user id; documented as development only |
+| Mutation `{args, ctx}` | Typed input; authenticated `userId`; application `tx`; call identity; initiating `ctx.stream`; explicit `ctx.streams(names)`; invalidation/publication within the business transaction. |
+| Query `{args, ctx}` | Typed input and returned identities/scalars; authenticated viewer and transaction; explicit tracking on the initiating or named Streams. No framework business-write/invalidation lane. |
+| Bootstrap `{ctx}` | Optional fenced application enrollment before freezing historical identities; Stream handles track only. The application returns no pages or continuations. |
+| Loader `{ids, tx, userId}` | Current viewer projection for aligned typed identities under the request's application transaction. Exactly one Model row or null per requested identity. |
+
+For each retained operation version, registration uses its own kind under `mutations` or `queries`. A historical name can retain a Mutation version and expose a newer Query version. Version-only v1 registrations may use the bare function; otherwise generated maps have explicit `v<n>` members. Loader omission makes a Model device-only; remote operands/outputs/publication cannot name it.
+
+The initiating Stream comes from the authenticated bound request; it is not caller authority to access arbitrary Streams. `authorizeStream` admits the request. Explicit multi-Stream publication uses the application's concrete recipient choices, sharing the backend transaction but not a cross-device local commit.
 
 ## 5. Building Block View
 
-The runtime package holds `createBackend`, the HTTP and WebSocket servers and the SQL-free `Database<T>` contract; `@axtonjs/postgres` builds that object from a two-method driver and ships the `pg`, `prisma` and `drizzle` shims ([Persistence](../../server/persistence.md)). `invalidate`, `stream(name)` and its writers are synchronous, callback-scoped declarations collected by `createEffects` in [server/effects.mts](../../../../../packages/server/effects.mts): each call validates and copies the Model's identity fields (so `stream(name).track.todo(args.todo)` keeps only `id`), a mixed call resolves every reference before declaring any, a raw identity names no Model and fails, and every handle refuses use after its callback settles. The dictionaries have no prototype, so any lower-first Model accessor is an ordinary key; the compiler refuses two Models sharing an accessor. `Stream`, `LoadStream`, `RecordDeclaration`, `RecordRef`, `HandlerCall` and `TransactionCall` are reserved generated backend names, so no Model or enum may use them (a Model cannot be named `Stream`). A handler that returns has not committed anything yet: settlement, the input readback and the output reads can still refuse the call and roll its declarations back.
-
-Code: [server/index.mts](../../../../../packages/server/index.mts); generated signatures from `backend_typescript` in [compiler/emit.rs](../../../../../crates/compiler/src/emit.rs).
+[Generated backend emission](../../../../../crates/compiler/src/emit.rs) supplies contracts. [server/index.mts](../../../../../packages/server/index.mts) validates registration, decodes typed inputs, executes application callbacks and collects declarations. [Server protocol 4](../../server/protocol4.md) owns fenced materialization/receipt rules; [host interface](../../server/backend-interface.md) owns the adapter boundary.
 
 ## 9. Architecture Decisions
 
-**Handler and Loader registration by version ([#91](https://github.com/zanminwang/axton/issues/91)).** Group versions under the operation or Model name. For a v1-only contract, a function is shorthand for `{v1: implementation}`. Once multiple versions are retained, register each explicitly:
+Tracking is an explicit capability separate from returning data. It enrolls missing identity/Stream pairs; repeating a live pair moves no cursor. Invalidation updates existing holders without enrollment. All affected Loader dependencies, including visibility and canonical children, must be declared. Local cascades do not publish backend changes.
 
-```ts
-mutations: {
-  addTodo: {
-    v1: handleOriginalAddTodo,
-    v2: handleNewAddTodo,
-  },
-},
-queries: {
-  searchTodos: handleSearchTodos,
-},
-loaders: {
-  todo: {
-    v1: loadOriginalTodo,
-    v2: loadNewTodo,
-  },
-}
-```
+Ordinary Query/Fetch responses contain cursor-null Model snapshots. Only Stream materialization gives authoritative positions. Mutation receipts reconcile required input targets through real Stream evidence or retained call-owned private settlement. Declared Model/scalar outputs remain the immutable invocation result; returning them does not install separate Store authority.
 
-Handlers receive generated input types for their version and return typed explicit outputs. Loaders return record types for an independent [Model read version](../../schema/models.md#9-architecture-decisions). Registration keys use `v1`, `v2`; wire versions remain numbers. Shorthand always means v1, never the latest version. Client calls use the operation version embedded in their generated method.
-
-**Registration by kind ([#157](https://github.com/zanminwang/axton/issues/157)).** Generated `Mutations<Tx>` and `Queries<Tx>` hold one key per operation, `lowerFirst(name)`, with a `v<n>` member for every retained version of that kind; v1-only operations also accept a bare function. Grouping follows each retained version's own kind, so a name that retains Mutation v1 and Query v2 registers v1 under `mutations` and v2 under `queries`, while the client exposes it only under its current kind. Legacy slot mutations stay on `handlers`. The runtime refuses missing, unknown, wrong-kind (including an operation registered under `handlers`) or non-function registrations at startup. Dispatch is keyed by name and version, so a request never falls back to another version.
-
-Generated `Loaders<Tx>` holds one optional key per Model (`todo?: … | undefined`) and a `v<n>` member per retained read version, each returning that version's record type. The current shape uses `Todo`; an older retained shape uses `TodoV1`. A Model retaining only v1 also accepts a bare function. A Model left out is device-only ([#187](https://github.com/zanminwang/axton/issues/187), [Backend interface](../../server/backend-interface.md#5-building-block-view)); `| undefined` keeps `Loaders<Tx>['todo']` assignable back to its key under `exactOptionalPropertyTypes`, and a standalone version is typed `NonNullable<Loaders<Tx>['todo']>['v2']`. The engine names the Loader version for each operation output separately from the client's current authority version; a pull uses the client's declared version ([Server / Engine / Pull](../../server/engine/pull.md#6-runtime-view)).
-
-**Declarations replace publication helpers ([#140](https://github.com/zanminwang/axton/issues/140)).** The generated Stream API uses operation namespaces followed by Model accessors: `ctx.stream(name).track.todo(identity)`, `ctx.invalidate.todo(identity)`. `stream(name)` is a handle, not a request; it creates nothing and checks no subscriber. There is no `publish`, `changes.add` or `changes.records` alias: this was a coordinated prelaunch change. A mixed list takes generated `Todo(identity)` references only, because an untagged identity cannot name its Model.
+Application-owned transactions acquire the persisted publication fence before relevant business work. A Query that declares track may need a complete Serializable retry; earlier output is discarded. Returning/storing a Model alone never upgrades membership. Save external effects transactionally and execute them after commit; handler retries are observable application behavior.
 
 ## 10. Quality Requirements
 
-- **Startup fails on an invalid config or a missing handler or loader.** Evidence: [runtime.test.mjs](../../../../../integration/persistence/server/runtime.test.mjs) `backend validates config and complete registrations at startup`.
-- **Registration names every retained version; a bare function registers v1 only.** Evidence: `handler registration names every retained version and a function means v1 only`.
-- **A version reaches only its own handler, whichever way v1 was registered.** Evidence: `a version dispatches only to its own handler and a function registers v1`.
-- **Declarations snapshot identity fields at the call, and the handles close when the handler or `backend.transaction` body settles, even when it throws.** Evidence: [generated backend test](../../../../../integration/action-runtime-ts/backend.test.mts) `generated backend decodes Date values and declares canonical identities through its handles`, `declaration handles close when the handler or external body settles, even when it throws`; [effects.test.mjs](../../../../../integration/persistence/server/effects.test.mjs).
-- **Handlers of both kinds return explicit outputs and Model identity objects while the framework resolves Model snapshots through a Loader; an output named like an input is independent of it and is never filled from it.** Evidence: [server Action tests](../../../../../crates/server/tests/actions.rs) `an_input_and_a_same_name_output_are_independent_and_a_missing_output_never_falls_back`, `no_declared_outputs_answer_null_and_keep_input_authority`; [action.test.mts](../../../../../integration/action-e2e/action.test.mts) `an edit of A that explicitly returns B: A is reconciled, the result is B, and only A is stamped`; the handler-output type negatives in [negative.ts](../../../../../integration/action-contract/negative.ts); [generated backend test](../../../../../integration/action-runtime-ts/backend.test.mts).
-- **Generated maps group retained versions by kind and share one `Tx` with Loaders.** Evidence: [operation contract fixture](../../../../../integration/action-contract/backend.ts), [compiler tests](../../../../../crates/compiler/tests/compiler.rs) `a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind` and [generated backend test](../../../../../integration/action-runtime-ts/backend.test.mts).
-- **Registration is checked per kind at startup, and a Query handler receives no effect capabilities and settles without effects.** Evidence: [backend.test.mts](../../../../../integration/action-runtime-ts/backend.test.mts) `registration is checked per kind at startup: missing, extra and wrong-kind`, `Query handlers receive no effect capabilities and settle without effects`.
-- **Load handlers are typed per retained version, get decoded args and a context with a Stream restricted to tracking and no `invalidate`, and answer identity lists with a portable continuation; the bridge refuses a type-legal non-portable `next` and the engine refuses a full record that type-checks structurally as an identity.** Evidence: [compiler/tests/loads.rs](../../../../../crates/compiler/tests/loads.rs) `the_backend_declares_typed_load_handlers_beside_loaders`, `retained_load_versions_register_together_with_their_own_contracts`; the Load type negatives in [negative.ts](../../../../../integration/action-contract/negative.ts) and [types.ts](../../../../../integration/action-runtime-ts/types.ts); [backend.test.mts](../../../../../integration/action-runtime-ts/backend.test.mts) `Load handlers take decoded args and a context with a stream and no touch, and answer identity pages`, `the native engine refuses a full Model value that type-checks as an identity`, and the Load cases of `registration is checked per kind at startup: missing, extra and wrong-kind`.
-- **Loader registration names every retained model version, a bare function registers v1 only, and a pull reaches only the served version's loader.** Evidence: [runtime.test.mjs](../../../../../integration/persistence/server/runtime.test.mjs) `loader registration names every retained model version and a function means v1 only`, `a pull reaches the loader of the declared model version and normalizes rows with that contract`; [compiler/tests/compiler.rs](../../../../../crates/compiler/tests/compiler.rs) `backend_emitter_groups_loader_versions_under_the_model_name`; the `@ts-expect-error` loader negatives (bare function, missing and unknown versions, a value outside the v1 contract) in [test.ts](../../../../../integration/generated-api/test.ts).
+Registration rejects missing/extra/wrong-kind versions; a Loader returns aligned exact contract shapes and malformed values are never absence. Evidence: [backend contract suite](../../../../../integration/action-runtime-ts/backend.test.mts), [real persistence tests](../../../../../integration/persistence/server) and [Action E2E](../../../../../integration/action-e2e).
 
-The earlier legacy mutation evidence in the runtime tests remains useful for unchanged lower-level savepoint and Loader rules; the operation API is verified by the fixtures above.
-
-## 11. Risks and Technical Debt
-
-**Accepted limitation.** The backend runtime exists for TypeScript only. Generated Dart carries `Mutation{Name}Handlers` and `Query{Name}Handlers` contract interfaces, but no Dart backend runs them.
-
-**Accepted limitation: a full record from an unannotated Load handler compiles.** TypeScript does not check excess properties on an object literal returned from a contextually typed async handler, so `loads: { projectTodos: async () => ({data: {todos: rows}, next: null}) }` type-checks even when `rows` are full `Todo` records, and a wrapper with an extra `next` member does too. The engine refuses the page at runtime: a full record is the page's `handler.invalid` ("identity must contain exactly identity fields"), a malformed wrapper its `load.invalid_continuation`. Annotating the handler, or its return type as the generated `{Name}HandlerOutput`, moves both errors to compile time. Evidence: [backend.test.mts](../../../../../integration/action-runtime-ts/backend.test.mts) `the native engine refuses a full Model value that type-checks as an identity`; the annotated negatives in [negative.ts](../../../../../integration/action-contract/negative.ts).
-
-Tracking is durable interest, not permission or a retention guarantee. See the [Stream API](../../../../../website/docs/backend/api.md#streams) for current signatures and declaration boundaries.
+Frozen retry preserves the outcome without rerunning business work, preparation or publication. Versioned materialization uses a fenced view, and Query tracking retries preserve that correspondence. Evidence: [protocol-4 server tests](../../../../../integration/persistence/server/protocol-v04.test.mjs) and [production transport cases](../../../../../integration/0.4/production.test.mjs). Consult [verification](../../../testing/0.4.md) for exact scope; a contract fixture is not PostgreSQL isolation evidence.

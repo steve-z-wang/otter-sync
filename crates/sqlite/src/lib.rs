@@ -13,7 +13,20 @@ pub struct SqliteStore {
     writer: Connection,
     reader: Connection,
     // The actual database inode remains exclusively owned for the Store lifetime.
-    _file_lock: Option<(std::fs::File, std::fs::File)>,
+    _file_lock: Option<StoreOwnership>,
+}
+
+struct StoreOwnership {
+    _identity: std::fs::File,
+    lock: std::fs::File,
+}
+
+impl Drop for StoreOwnership {
+    fn drop(&mut self) {
+        // This final Store field drops after both SQLite connections. Closing
+        // alone may retain the lock in a pre-exec child's inherited descriptor.
+        let _ = self.lock.unlock();
+    }
 }
 
 fn db(e: rusqlite::Error) -> axton_core::Error {
@@ -241,9 +254,13 @@ impl SqliteStore {
             .map_err(|error| invalid(format!("store lock file: {error}")))?;
         lock.try_lock()
             .map_err(|error| invalid(format!("store_in_use: {error}")))?;
+        let ownership = StoreOwnership {
+            _identity: file,
+            lock,
+        };
         let mut store = Self::open(path)?;
         // Keep database identity open too, preventing inode reuse while owned.
-        store._file_lock = Some((file, lock));
+        store._file_lock = Some(ownership);
         Ok(store)
     }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {

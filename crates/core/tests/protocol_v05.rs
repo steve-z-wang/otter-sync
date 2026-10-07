@@ -700,3 +700,110 @@ fn receipt_stream_target_cannot_exceed_its_fenced_sync_head() {
     };
     assert!(validate_acknowledgement(&r, &a).is_err());
 }
+
+fn owned_continuation_fixture() -> (MaterializationRequest, MaterializationResponse) {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../fixtures/protocol/0.5.json")).unwrap();
+    let mut request: MaterializationRequest =
+        serde_json::from_value(fixture["materializationRequest"].clone()).unwrap();
+    let response: MaterializationResponse =
+        serde_json::from_value(fixture["materializationResponse"].clone()).unwrap();
+    request.continuation = Some(Continuation {
+        plan_id: response.delivery.header.plan_id.clone(),
+        digest: response.delivery.header.digest.clone(),
+        unit: 0,
+        part: 0,
+    });
+    response.admit(&request, &ctx()).unwrap();
+    (request, response)
+}
+
+#[test]
+fn owned_continuation_rejects_replacement_plan_id_under_same_owner_context() {
+    let (request, response) = owned_continuation_fixture();
+    let header = &response.delivery.header;
+    let replacement = freeze_materialization(
+        ctx(),
+        "replacement-owned".into(),
+        request.owner.clone(),
+        header.observed_head,
+        header.expires_at,
+        vec![DeliveryUnit {
+            index: 0,
+            through: None,
+            changes: response.delivery.parts[0].changes.clone(),
+        }],
+        1,
+    )
+    .unwrap();
+    let replacement = MaterializationResponse {
+        request_id: request.request_id.clone(),
+        delivery: DeliveryResponse {
+            header: replacement.header,
+            parts: replacement.parts,
+        },
+    };
+    assert_eq!(
+        replacement.delivery.header.context,
+        response.delivery.header.context
+    );
+    assert_eq!(
+        replacement.delivery.header.owner,
+        response.delivery.header.owner
+    );
+    assert_ne!(
+        replacement.delivery.header.plan_id,
+        request.continuation.as_ref().unwrap().plan_id
+    );
+    assert!(
+        replacement.admit(&request, &ctx()).is_err(),
+        "owned continuation admitted a replacement plan"
+    );
+}
+
+#[test]
+fn owned_continuation_rejects_changed_digest_under_same_plan_owner_context() {
+    let (request, response) = owned_continuation_fixture();
+    let header = &response.delivery.header;
+    let replacement = freeze_materialization(
+        ctx(),
+        header.plan_id.clone(),
+        request.owner.clone(),
+        header.observed_head,
+        header.expires_at + 1,
+        vec![DeliveryUnit {
+            index: 0,
+            through: None,
+            changes: response.delivery.parts[0].changes.clone(),
+        }],
+        1,
+    )
+    .unwrap();
+    let replacement = MaterializationResponse {
+        request_id: request.request_id.clone(),
+        delivery: DeliveryResponse {
+            header: replacement.header,
+            parts: replacement.parts,
+        },
+    };
+    assert_eq!(
+        replacement.delivery.header.context,
+        response.delivery.header.context
+    );
+    assert_eq!(
+        replacement.delivery.header.owner,
+        response.delivery.header.owner
+    );
+    assert_eq!(
+        replacement.delivery.header.plan_id,
+        request.continuation.as_ref().unwrap().plan_id
+    );
+    assert_ne!(
+        replacement.delivery.header.digest,
+        request.continuation.as_ref().unwrap().digest
+    );
+    assert!(
+        replacement.admit(&request, &ctx()).is_err(),
+        "owned continuation admitted a changed plan digest"
+    );
+}

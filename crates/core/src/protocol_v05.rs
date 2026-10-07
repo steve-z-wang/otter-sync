@@ -642,6 +642,11 @@ impl MaterializationResponse {
         {
             return Err(invalid("materialization correlation mismatch"));
         }
+        if let Some(continuation) = &request.continuation
+            && (continuation.plan_id != header.plan_id || continuation.digest != header.digest)
+        {
+            return Err(invalid("materialization continuation plan mismatch"));
+        }
         let requested: BTreeSet<_> = request
             .keys
             .iter()

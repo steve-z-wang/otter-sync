@@ -375,10 +375,10 @@ pub fn publication_positions(
         .collect()
 }
 
-fn unit_digest(unit: &DeliveryUnit) -> Result<String> {
+pub fn unit_digest(unit: &DeliveryUnit) -> Result<String> {
     hash("axton:delivery-unit:5", &serde_json::to_value(unit)?)
 }
-pub(super) fn part_digest(part: &DeliveryPart) -> Result<String> {
+pub fn part_digest(part: &DeliveryPart) -> Result<String> {
     hash(
         "axton:delivery-part:5",
         &serde_json::json!({"unit":part.unit,"part":part.part,"changes":part.changes}),

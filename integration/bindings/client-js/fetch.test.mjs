@@ -1,4 +1,4 @@
-import {openStore} from './store-fixture.mjs';
+import { openStore, emptyPull, read05 } from "./store-fixture.mjs";
 // Model Fetch through the real native runtime (#153): Rust validates, joins
 // or starts the request, stores the reply and completes every caller; this
 // host only executes the `fetch` HTTP effect and decodes each caller's own
@@ -71,13 +71,14 @@ async function harness(body) {
     requests: [],
     gates: new Map(),
     reply: (request, n) => ({
-      result: { id: request.identity.id, ...state(`v${n}`) },
+      result: { id: request.invocation.key.identity.id, ...state(`v${n}`) },
       stamp: n,
     }),
   };
   const FetchClient = createClient(native, Transaction, () => ({
     open() {},
     push: async (kind, text) => {
+      if (kind === "handshake" || kind === "pull") return emptyPull(text);
       assert.equal(kind, "fetch");
       const request = JSON.parse(text);
       net.requests.push(request);
@@ -88,32 +89,38 @@ async function harness(body) {
       const outcome = answer.failure
         ? { status: "failed", code: answer.failure, execution: "rejected" }
         : { status: "succeeded", result: answer.result };
-      const records =
-        answer.failure
-          ? []
-          : [
-              {
-                model: request.model,
-                identity: request.identity,
-                cursor: null,
-                state:
-                  answer.result === null
-                    ? null
-                    : Object.fromEntries(
-                        Object.entries(answer.result).filter(
-                          ([key]) => key !== "id",
-                        ),
+      const records = answer.failure
+        ? []
+        : [
+            {
+              key: request.invocation.key,
+              cursor: null,
+              state:
+                answer.result === null
+                  ? null
+                  : Object.fromEntries(
+                      Object.entries(answer.result).filter(
+                        ([key]) => key !== "id",
                       ),
-              },
-            ];
-      return JSON.stringify({
-        context: request.context,
-        completion: { callId: request.callId, outcome },
-        records,
-      });
+                    ),
+            },
+          ];
+      return JSON.stringify(
+        answer.failure
+          ? {
+              protocol: request.protocol,
+              storeId: request.storeId,
+              stream: request.stream,
+              materialization: request.materialization,
+              requestId: request.requestId,
+              outcome: { kind: "failed", code: answer.failure, message: null },
+              records: [],
+            }
+          : read05(request, answer.result, records),
+      );
     },
   }));
-  const client = await openStore(FetchClient,{
+  const client = await openStore(FetchClient, {
     path: join(directory, "db"),
     schema,
   });
@@ -129,27 +136,53 @@ const connect = (client) =>
 const fetchEntry = (client, id, options) =>
   client.fetchModel("Entry", 2, { id }, raw, options);
 
-test("default storage commits permitted null-cursor cache before resolving", async()=> {
- await harness(async({client,net})=>{
-  await connect(client);assert.deepEqual(await fetchEntry(client,'a'),{id:'a',...state('v1')});
-  assert.deepEqual(net.requests[0].identity,{id:'a'});assert.equal(net.requests[0].version,2);
-  assert.equal('store' in net.requests[0],false);
-  assert.equal((await client.read('Entry',{id:'a'})).title,'v1');
-  await fetchEntry(client,'a',{store:true});assert.equal(net.requests.length,2);
-  assert.equal((await client.read('Entry',{id:'a'})).title,'v2');
- });
+test("default storage commits permitted null-cursor cache before resolving", async () => {
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    assert.deepEqual(await fetchEntry(client, "a"), {
+      id: "a",
+      ...state("v1"),
+    });
+    assert.deepEqual(net.requests[0].invocation.key.identity, { id: "a" });
+    assert.equal(net.requests[0].invocation.version, 2);
+    assert.equal(net.requests[0].store, true);
+    assert.equal((await client.read("Entry", { id: "a" })).title, "v1");
+    await fetchEntry(client, "a", { store: true });
+    assert.equal(net.requests.length, 2);
+    assert.equal((await client.read("Entry", { id: "a" })).title, "v2");
+  });
 });
-test("store false returns snapshot without cache writes",async()=>{
- await harness(async({client,net})=>{await connect(client);assert.deepEqual(await fetchEntry(client,'a',{store:false}),{id:'a',...state('v1')});assert.equal(net.requests[0].store,false);assert.equal(await client.read('Entry',{id:'a'}),null);});
+test("store false returns snapshot without cache writes", async () => {
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    assert.deepEqual(await fetchEntry(client, "a", { store: false }), {
+      id: "a",
+      ...state("v1"),
+    });
+    assert.equal(net.requests[0].store, false);
+    assert.equal(await client.read("Entry", { id: "a" }), null);
+  });
 });
-test("ordinary null returns absence without deleting cached content",async()=>{
- await harness(async({client,net})=>{await connect(client);await fetchEntry(client,'a');net.reply=()=>({result:null});assert.equal(await fetchEntry(client,'a'),null);assert.equal((await client.read('Entry',{id:'a'})).title,'v1');assert.equal(await fetchEntry(client,'b',{store:false}),null);});
+test("ordinary null returns absence without deleting cached content", async () => {
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    await fetchEntry(client, "a");
+    net.reply = () => ({ result: null });
+    assert.equal(await fetchEntry(client, "a"), null);
+    assert.equal((await client.read("Entry", { id: "a" })).title, "v1");
+    assert.equal(await fetchEntry(client, "b", { store: false }), null);
+  });
 });
-test("malformed cache state rejects without a partial write",async()=>{
- await harness(async({client,net})=>{await connect(client);net.reply=()=>({result:{id:'a',title:'missing fields'}});await assert.rejects(fetchEntry(client,'a'),CallError);assert.equal(await client.read('Entry',{id:'a'}),null);});
+test("malformed cache state rejects without a partial write", async () => {
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    net.reply = () => ({ result: { id: "a", title: "missing fields" } });
+    await assert.rejects(fetchEntry(client, "a"), CallError);
+    assert.equal(await client.read("Entry", { id: "a" }), null);
+  });
 });
 
-test("joined callers share one request and decode independent objects", async () => {
+test("each invocation has its own request and independent snapshot objects", async () => {
   await harness(async ({ client, net }) => {
     await connect(client);
     const gate = deferred();
@@ -160,8 +193,17 @@ test("joined callers share one request and decode independent objects", async ()
     await new Promise((resolve) => setTimeout(resolve, 20));
     gate.resolve();
     const [a, b, c] = await Promise.all([first, second, preview]);
-    assert.equal(net.requests.length, 2, "storage policies do not join");
-    assert.deepEqual(a, b);
+    assert.equal(
+      net.requests.length,
+      3,
+      "each invocation requests a fresh snapshot",
+    );
+    assert.equal(
+      new Set(net.requests.map((request) => request.requestId)).size,
+      3,
+    );
+    assert.deepEqual(a, { id: "a", ...state("v1") });
+    assert.deepEqual(b, { id: "a", ...state("v2") });
     assert.notEqual(a, b, "each caller decodes its own object");
     assert.notEqual(a.tags, b.tags);
     a.tags.push("mutated");
@@ -207,7 +249,9 @@ test("local failures keep their fetch codes and transport details", async () => 
     await assert.rejects(
       fetchEntry(client, "a"),
       (error) =>
-        error instanceof CallError && error.code === "fetch.store_failed" && /differs from snapshot/.test(error.cause?.message),
+        error instanceof CallError &&
+        error.code === "fetch.store_failed" &&
+        /differs from snapshot/.test(error.cause?.message),
     );
   });
 });
@@ -258,7 +302,10 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
-    if(request.url==='/sync/pull'){ response.end(JSON.stringify({context:body.context,pageId:'empty',from:body.after,to:body.after,head:body.after,units:[]}));return; }
+    if (request.url === "/sync/pull" || request.url === "/sync/handshake") {
+      response.end(emptyPull(body));
+      return;
+    }
     seen.push({
       url: request.url,
       authorization: request.headers.authorization,
@@ -268,23 +315,20 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
       return response.end("expired");
     }
     response.end(
-      JSON.stringify({
-        context: body.context,
-        completion: {
-          callId: body.callId,
-          outcome: {
-            status: "succeeded",
-            result: { id: "a", ...state("http") },
-          },
-        },
-        records: [{model:body.model,identity:body.identity,cursor:null,state:state("http")}],
-      }),
+      JSON.stringify(
+        read05(body, { id: "a", ...state("http") }, [
+          { key: body.invocation.key, cursor: null, state: state("http") },
+        ]),
+      ),
     );
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const directory = await mkdtemp(join(tmpdir(), "axton-fetch-http-"));
   const HttpClient = createClient(native, Transaction, createServerConnection);
-  const client = await openStore(HttpClient,{ path: join(directory, "db"), schema });
+  const client = await openStore(HttpClient, {
+    path: join(directory, "db"),
+    schema,
+  });
   let token = "first";
   try {
     await client.connect(
@@ -320,28 +364,26 @@ test("a Fetch on a closed client rethrows the admission error", async () => {
 });
 
 test("close while a Fetch waits on the network rejects it unavailable and stores nothing late", async () => {
-  await harness(
-    async ({ client, net }) => {
-      await connect(client);
-      const gate = deferred();
-      net.gates.set(1, gate);
-      const pending = fetchEntry(client, "a");
-      const joined = fetchEntry(client, "a");
-      while (net.requests.length === 0)
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      const outcomes = Promise.allSettled([pending, joined]);
-      await client.close();
-      // The HTTP effect is still outstanding when the runtime closes.
-      gate.resolve();
-      for (const outcome of await outcomes) {
-        assert.equal(outcome.status, "rejected");
-        assert.ok(outcome.reason instanceof CallError, String(outcome.reason));
-        assert.equal(outcome.reason.code, "fetch.unavailable");
-        assert.equal(outcome.reason.execution, "unknown");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.equal(net.requests.length, 1);
-
-    },
-  );
+  await harness(async ({ client, net }) => {
+    await connect(client);
+    const gate = deferred();
+    net.gates.set(1, gate);
+    net.gates.set(2, gate);
+    const pending = fetchEntry(client, "a");
+    const joined = fetchEntry(client, "a");
+    while (net.requests.length === 0)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    const outcomes = Promise.allSettled([pending, joined]);
+    await client.close();
+    // The HTTP effect is still outstanding when the runtime closes.
+    gate.resolve();
+    for (const outcome of await outcomes) {
+      assert.equal(outcome.status, "rejected");
+      assert.ok(outcome.reason instanceof CallError, String(outcome.reason));
+      assert.equal(outcome.reason.code, "fetch.unavailable");
+      assert.equal(outcome.reason.execution, "unknown");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(net.requests.length, 2);
+  });
 });

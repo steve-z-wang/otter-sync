@@ -29,6 +29,7 @@ node --test integration/bindings/client-js/*.test.mjs packages/client-js/*.test.
 node --test integration/bindings/client-react-native/*.test.mjs
 bash integration/persistence/transaction-probe/run.sh
 bash integration/persistence/server/run.sh
+bash integration/v05-sdk/run-host.sh
 case "$(uname -s)" in
  Darwin) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.dylib";;
  Linux) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.so";;

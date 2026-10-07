@@ -8,5 +8,5 @@ Future<void> typedForms(GeneratedClient client) async {
     return input;
   });
   await client.transaction((tx) async { await tx.mutations.publish(input); });
-  await client.queries.find(id:'e',store:false,once:true,refresh:true);
+  await client.queries.find(id:'e',store:false);
 }

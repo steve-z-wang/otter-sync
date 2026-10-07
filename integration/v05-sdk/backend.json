@@ -1,0 +1,631 @@
+{
+  "actions": [
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "id",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "query",
+      "name": "Find",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "optional",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Entry"
+          },
+          "kind": "model",
+          "model": "Entry",
+          "modelReadVersion": 1,
+          "name": "entry",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "id",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "query",
+      "name": "Peek",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "optional",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Snapshot"
+          },
+          "kind": "model",
+          "model": "Snapshot",
+          "modelReadVersion": 1,
+          "name": "entry",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": [
+          {
+            "fields": [
+              {
+                "name": "id",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              },
+              {
+                "name": "text",
+                "nullable": false,
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "identity": [
+              "id"
+            ],
+            "name": "Entry"
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "model",
+          "model": "Entry",
+          "name": "entry",
+          "operation": "create"
+        },
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "call",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "kind": "mutation",
+      "name": "Publish",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "single",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "string"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Entry"
+          },
+          "kind": "model",
+          "model": "Entry",
+          "modelReadVersion": 1,
+          "name": "entry",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    }
+  ],
+  "deprecations": [],
+  "inverses": [],
+  "loaders": [
+    "Draft",
+    "Entry",
+    "Snapshot"
+  ],
+  "models": [
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Draft",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Entry",
+      "version": 1
+    },
+    {
+      "enums": [],
+      "fields": [
+        {
+          "name": "id",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        },
+        {
+          "name": "text",
+          "nullable": false,
+          "type": {
+            "kind": "scalar",
+            "name": "string"
+          }
+        }
+      ],
+      "identity": [
+        "id"
+      ],
+      "name": "Snapshot",
+      "version": 1
+    }
+  ],
+  "mutations": [],
+  "prerequisites": [],
+  "requirements": [],
+  "schema": {
+    "actions": [
+      {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "id",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "kind": "query",
+        "name": "Find",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "optional",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Entry"
+            },
+            "kind": "model",
+            "model": "Entry",
+            "modelReadVersion": 1,
+            "name": "entry",
+            "source": "handlerIdentity"
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      },
+      {
+        "input": {
+          "enums": [],
+          "models": []
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "id",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "kind": "query",
+        "name": "Peek",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "optional",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Snapshot"
+            },
+            "kind": "model",
+            "model": "Snapshot",
+            "modelReadVersion": 1,
+            "name": "entry",
+            "source": "handlerIdentity"
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      },
+      {
+        "input": {
+          "enums": [],
+          "models": [
+            {
+              "fields": [
+                {
+                  "name": "id",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                },
+                {
+                  "name": "text",
+                  "nullable": false,
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "identity": [
+                "id"
+              ],
+              "name": "Entry"
+            }
+          ]
+        },
+        "inputs": [
+          {
+            "cardinality": "single",
+            "kind": "model",
+            "model": "Entry",
+            "name": "entry",
+            "operation": "create"
+          },
+          {
+            "cardinality": "single",
+            "kind": "value",
+            "list": false,
+            "name": "call",
+            "nullable": false,
+            "required": true,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "kind": "mutation",
+        "name": "Publish",
+        "outputEnums": [],
+        "outputs": [
+          {
+            "cardinality": "single",
+            "handlerType": {
+              "fields": [
+                {
+                  "name": "id",
+                  "type": {
+                    "kind": "scalar",
+                    "name": "string"
+                  }
+                }
+              ],
+              "kind": "identity",
+              "model": "Entry"
+            },
+            "kind": "model",
+            "model": "Entry",
+            "modelReadVersion": 1,
+            "name": "entry",
+            "source": "handlerIdentity"
+          }
+        ],
+        "prerequisites": [],
+        "requirements": [],
+        "sequence": null,
+        "version": 1
+      }
+    ],
+    "clientPolicies": [],
+    "enums": [],
+    "models": [
+      {
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Draft",
+        "relations": [],
+        "unique": [],
+        "version": 1
+      },
+      {
+        "bootstrap": true,
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Entry",
+        "relations": [],
+        "unique": [],
+        "version": 1
+      },
+      {
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Snapshot",
+        "relations": [],
+        "unique": [],
+        "version": 1
+      }
+    ],
+    "prerequisites": [],
+    "requirements": [],
+    "resultModels": [
+      {
+        "enums": [],
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Draft",
+        "version": 1
+      },
+      {
+        "enums": [],
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Entry",
+        "version": 1
+      },
+      {
+        "enums": [],
+        "fields": [
+          {
+            "name": "id",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          },
+          {
+            "name": "text",
+            "nullable": false,
+            "type": {
+              "kind": "scalar",
+              "name": "string"
+            }
+          }
+        ],
+        "identity": [
+          "id"
+        ],
+        "name": "Snapshot",
+        "version": 1
+      }
+    ]
+  },
+  "uniqueConstraints": []
+}

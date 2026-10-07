@@ -445,7 +445,7 @@ const answer=emptyRead;
 async function scripted(network, body, { schema = pingSchema, carrier = native } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axton-effects-"));
   const Client = createClient(carrier, Transaction, () => ({
-    push: (kind, text, signal) => kind === "pull" ? Promise.resolve(emptyPull(text)) : network(kind, text, signal),
+    push: (kind, text, signal) => (kind === "pull" || kind === "handshake") ? Promise.resolve(emptyPull(text)) : network(kind, text, signal),
     open() {},
   }));
   const client = await openStore(Client,{ path: join(directory, "db"), schema });
@@ -698,7 +698,7 @@ test("close aborts an uncooperative push and its late receipt never applies", as
     runtimeDrain(runtimeId) {
       const text = native.runtimeDrain(runtimeId);
       for (const event of JSON.parse(text))
-        if (event.type === "effect" && event.operation.route === "action")
+        if (event.type === "effect" && event.operation.route === "push")
           pushes.push(event.effectId);
       return text;
     },
@@ -706,7 +706,7 @@ test("close aborts an uncooperative push and its late receipt never applies", as
   };
   await scripted(
     (kind, body, abort) => {
-      assert.equal(kind, "action");
+      assert.equal(kind, "push");
       signal = abort;
       const batch = JSON.parse(body);
       pushed.resolve();
@@ -751,7 +751,7 @@ test("client close is priority control while a callback holds the transaction", 
   const sockets = [];
   const directory = await mkdtemp(join(tmpdir(), "axton-close-callback-"));
   const Client = createClient(native, Transaction, () => ({
-    push:(kind,text)=>kind==='pull'?Promise.resolve(emptyPull(text)):new Promise(()=>{}),
+    push:(kind,text)=>(kind==='pull'||kind==='handshake')?Promise.resolve(emptyPull(text)):new Promise(()=>{}),
     open: (subscribe, signal) => sockets.push(signal),
   }));
   const client = await openStore(Client,{

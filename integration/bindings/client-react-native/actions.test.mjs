@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import { Transaction } from "../../../packages/client-react-native/transaction.mts";
 import { createServerConnection } from "../../../packages/client-react-native/live.mts";
-import { openStore, offlineNetwork } from "../client-js/store-fixture.mjs";
+import {
+  openStore,
+  offlineNetwork,
+  emptyPull as encodeEmptyPull,
+  read05,
+} from "../client-js/store-fixture.mjs";
 import {
   fetchModels,
   makeMutations,
@@ -21,24 +26,8 @@ import {
 const native = createRequire(import.meta.url)(
   "../../../bindings/node/axton-node.node",
 );
-const emptyPull = (body) =>
-  body.kind === "start"
-    ? { context: body.context, manifestId: "empty", start: 0, total: 0 }
-    : body.kind === "tail"
-      ? { context: body.context, manifestId: "empty", head: 0 }
-      : {
-          context: body.context,
-          pageId: "empty",
-          from: body.after,
-          to: body.after,
-          head: body.after,
-          units: [],
-        };
-const readReply = (body, result, records = []) => ({
-  context: body.context,
-  completion: { callId: body.callId, outcome: { status: "succeeded", result } },
-  records,
-});
+const emptyPull = (body) => JSON.parse(encodeEmptyPull(body));
+const readReply = read05;
 
 test("throwing mobile diagnostic listener does not stop later native Query completions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-rn-reports-"));
@@ -48,7 +37,7 @@ test("throwing mobile diagnostic listener does not stop later native Query compl
     open() {},
     async push(kind, text) {
       const body = JSON.parse(text);
-      if (kind === "pull") {
+      if (kind === "pull" || kind === "handshake") {
         if (!failed) {
           failed = true;
           throw Error("temporary transport failure");
@@ -81,7 +70,6 @@ test("throwing mobile diagnostic listener does not stop later native Query compl
       connection: {
         url: "http://fixture",
         token: "mobile",
-        identity: { backend: "sdk-test", viewer: "viewer", contract: "v04" },
         options: {
           onError: (report) => {
             reports.push(report);
@@ -162,16 +150,16 @@ test("generated Fetch and Query use RN HTTP, decode Model identities and choose 
       authorization: request.headers.authorization,
       body,
     });
-    if (request.url === "/sync/pull") {
+    if (request.url === "/sync/pull" || request.url === "/sync/handshake") {
       response.end(JSON.stringify(emptyPull(body)));
       return;
     }
-    const identity = body.identity ?? { id: "queried" },
-      model = body.model ?? "Todo",
+    const identity = body.invocation.key?.identity ?? { id: "queried" },
+      model = body.invocation.key?.model ?? "Todo",
       state =
         model === "Todo"
           ? {
-              title: body.name ? "queried" : "remote",
+              title: body.invocation.kind === "query" ? "queried" : "remote",
               at: "2026-02-03T04:05:06.000Z",
               status: "closed",
               note: null,
@@ -181,10 +169,10 @@ test("generated Fetch and Query use RN HTTP, decode Model identities and choose 
       JSON.stringify(
         readReply(
           body,
-          body.name
+          body.invocation.kind === "query"
             ? { todo: { ...identity, ...state } }
             : { ...identity, ...state },
-          [{ model, identity, cursor: null, state }],
+          [{ key: { model, identity }, cursor: null, state }],
         ),
       ),
     );
@@ -206,7 +194,6 @@ test("generated Fetch and Query use RN HTTP, decode Model identities and choose 
       connection: {
         url: `http://127.0.0.1:${server.address().port}`,
         token: "mobile",
-        identity: { backend: "rn-http", viewer: "viewer", contract: "v04" },
       },
     });
     const fetch = fetchModels(client),
@@ -225,27 +212,26 @@ test("generated Fetch and Query use RN HTTP, decode Model identities and choose 
     assert.equal(await models.todo.get({ id: "queried" }), null);
     await queries.find({ at });
     assert.equal((await models.todo.get({ id: "queried" })).title, "queried");
-    const reads = seen.filter((request) => request.url !== "/sync/pull");
+    const reads = seen.filter(
+      (request) =>
+        request.url === "/sync/fetch" || request.url === "/sync/actions",
+    );
     assert.deepEqual(
       reads.map(({ url, authorization, body }) => [
         url,
         authorization,
-        body.model ?? body.name,
-        body.version,
+        body.invocation.key?.model ?? body.invocation.name,
+        body.invocation.version,
         body.store,
       ]),
       [
-        ["/sync/fetch", "Bearer mobile", "Todo", 1, undefined],
+        ["/sync/fetch", "Bearer mobile", "Todo", 1, true],
         ["/sync/fetch", "Bearer mobile", "Pin", 1, false],
         ["/sync/actions", "Bearer mobile", "Find", 2, false],
-        ["/sync/actions", "Bearer mobile", "Find", 2, undefined],
+        ["/sync/actions", "Bearer mobile", "Find", 2, true],
       ],
     );
-    assert.ok(
-      reads.every(
-        (request) => request.body.context.binding.stream === "User:viewer",
-      ),
-    );
+    assert.ok(reads.every((request) => request.body.stream === "User:viewer"));
     assert.equal((await client.syncState()).pending, 0);
   } finally {
     await client?.close();

@@ -4,7 +4,7 @@ void check(bool condition,String message) { if(!condition) throw StateError(mess
 Future<void> main(List<String> args) async {
  final directory=await Directory.systemTemp.createTemp('axton-sdk-host-dart-');
  final library=Platform.environment['AXTON_LIBRARY']!;
- final client=await GeneratedClient.open(path:'${directory.path}/db',stream:'User:alice',connection:StoreConnection(url:args[0],token:()=>'alice',identity:const StoreIdentity(backend:'sdk',viewer:'alice',contract:'sdk-v04')),libraryPath:library);
+ final client=await GeneratedClient.open(path:'${directory.path}/db',stream:'User:alice',connection:StoreConnection(url:args[0],token:()=>'alice'),libraryPath:library);
  try {
   await client.bootstrap();
   final call=await client.mutations.publish.withTransaction((tx) async {
@@ -22,10 +22,10 @@ Future<void> main(List<String> args) async {
   check(refusal is CallFailure<PublishOutput> && refusal.error.code=='publish.refused','business refusal missing');
   check(await client.models.draft.get(const DraftIdentity(id:'dart-refused-draft'))==null,'refused companion survived');
   check(await client.models.entry.get(const EntryIdentity(id:'dart-refused-entry'))==null,'refused optimism survived');
-  final first=await client.queries.find(id:'read',store:false,once:true);
+  final first=await client.queries.find(id:'read',store:false);
   check(first.entry?.text=='changed','Query snapshot wrong');
   check(await client.models.entry.get(const EntryIdentity(id:'read'))==null,'store false cached Query');
-  check((await client.queries.find(id:'read',store:false,once:true)).entry?.text=='changed','once result wrong');
+  check((await client.queries.find(id:'read',store:false)).entry?.text=='changed','once result wrong');
   check((await client.fetch.entry(const EntryIdentity(id:'read'),store:false))?.text=='changed','Fetch snapshot wrong');
   check(await client.models.entry.get(const EntryIdentity(id:'read'))==null,'store false cached Fetch');
   await client.fetch.entry(const EntryIdentity(id:'read'));

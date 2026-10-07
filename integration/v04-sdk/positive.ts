@@ -4,7 +4,11 @@ async function typed(client:GeneratedClient,input:PublishInput) {
   await call.wait();
   await client.mutations.publish(async tx => { await tx.models.draft.delete({id:'d'}); return input; });
   await client.transaction(async tx => { await tx.mutations.publish(input); });
-  await client.queries.find({id:'e'},{store:false,once:true,refresh:true});
+  await client.queries.find({id:'e'},{store:false});
+  // @ts-expect-error once controls were retired
+  await client.queries.find({id:'e'},{once:true});
+  // @ts-expect-error refresh controls were retired
+  await client.queries.find({id:'e'},{refresh:true});
   // @ts-expect-error Mutation options were retired
   await client.mutations.publish(input,{local:async()=>{}});
   // @ts-expect-error no direct Mutation lane

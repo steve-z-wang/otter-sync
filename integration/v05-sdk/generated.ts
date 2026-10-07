@@ -4,7 +4,7 @@ export interface ReadPort { read(model:string,identity:object):Promise<Record<st
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
 export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; }
-export const schema = {"actions":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Find","outputEnums":[],"outputs":[{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"single","kind":"value","list":false,"name":"call","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Publish","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]} as const;
+export const schema = {"actions":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Find","outputEnums":[],"outputs":[{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"Peek","outputEnums":[],"outputs":[{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Snapshot"},"kind":"model","model":"Snapshot","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"create"},{"cardinality":"single","kind":"value","list":false,"name":"call","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"mutation","name":"Publish","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","relations":[],"unique":[],"version":1},{"bootstrap":true,"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1},{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Snapshot","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Draft","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1},{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Snapshot","version":1}]} as const;
 export type MutationName = string;
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
 export interface Rejection { ordinal:number; code:string; [key:string]:unknown; }
@@ -79,6 +79,41 @@ export function encodeEntryWhere(value:Partial<Entry>):Record<string,unknown> { 
  ...(value.id !== undefined ? { id: value.id } : {}),
  ...(value.text !== undefined ? { text: value.text } : {}),
 }; }
+export interface Snapshot {
+ id: string;
+ text: string;
+}
+export interface SnapshotIdentity {
+ id: string;
+}
+export interface SnapshotPatch {
+ text?: string;
+}
+export interface SnapshotCreate {
+ id: string;
+ text: string;
+}
+export function decodeSnapshot(row:Record<string,unknown>):Snapshot { return {
+ id: row.id as string,
+ text: row.text as string,
+}; }
+export function decodeSnapshotIdentity(row:Record<string,unknown>):SnapshotIdentity { return {
+ id: row.id as string,
+}; }
+export function encodeSnapshot(value:Snapshot):Record<string,unknown> { return {
+ id: value.id,
+ text: value.text,
+}; }
+export function encodeSnapshotIdentity(value:SnapshotIdentity):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeSnapshotPatch(value:SnapshotPatch):Record<string,unknown> { return {
+ ...(value.text !== undefined ? { text: value.text } : {}),
+}; }
+export function encodeSnapshotWhere(value:Partial<Snapshot>):Record<string,unknown> { return {
+ ...(value.id !== undefined ? { id: value.id } : {}),
+ ...(value.text !== undefined ? { text: value.text } : {}),
+}; }
 export function encodeDraftCreate(value:DraftCreate):Record<string,unknown> { return {
  id: value.id,
  text: value.text,
@@ -91,6 +126,13 @@ export function encodeEntryCreate(value:EntryCreate):Record<string,unknown> { re
  text: value.text,
 }; }
 export function encodeEntryCreateIdentity(value:EntryCreate):Record<string,unknown> { return {
+ id: value.id,
+}; }
+export function encodeSnapshotCreate(value:SnapshotCreate):Record<string,unknown> { return {
+ id: value.id,
+ text: value.text,
+}; }
+export function encodeSnapshotCreateIdentity(value:SnapshotCreate):Record<string,unknown> { return {
  id: value.id,
 }; }
 export class DraftModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
@@ -121,15 +163,37 @@ export class EntryLiveModel extends EntryTxModel<LivePort> {
  /** This record's sync state: its pending mutations and retained rejections. Local only. */
  async syncState(identity:EntryIdentity):Promise<SyncState> { return (await this.port.syncState('Entry',encodeEntryIdentity(identity))) as SyncState; }
 }
+export class SnapshotModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
+ async get(identity:SnapshotIdentity):Promise<Snapshot|null> { const row=await this.port.read('Snapshot',encodeSnapshotIdentity(identity)); return row===null ? null : decodeSnapshot(row); }
+ async query(options:{where?:Partial<Snapshot>;orderBy?:{field:'id' | 'text';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Snapshot[]> { return (await this.port.querySpec('Snapshot',{filter:encodeSnapshotWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeSnapshot); }
+}
+export class SnapshotTxModel<P extends WritePort=WritePort> extends SnapshotModel<P> {
+ create(value:SnapshotCreate):Promise<void> { return this.port.direct({model:'Snapshot',op:'create',identity:encodeSnapshotCreateIdentity(value),values:encodeSnapshotPatch(value)}); }
+ update(identity:SnapshotIdentity, patch:SnapshotPatch):Promise<void> { return this.port.direct({model:'Snapshot',op:'update',identity:encodeSnapshotIdentity(identity),values:encodeSnapshotPatch(patch)}); }
+ delete(identity:SnapshotIdentity):Promise<void> { return this.port.direct({model:'Snapshot',op:'delete',identity:encodeSnapshotIdentity(identity)}); }
+}
+export class SnapshotLiveModel extends SnapshotTxModel<LivePort> {
+ watch(options:{where?:Partial<Snapshot>}, listener:(rows:Snapshot[])=>void, onError?:(error:unknown)=>void):()=>void { return this.port.watch('Snapshot',encodeSnapshotWhere(options.where??{}),(rows)=>listener(rows.map(decodeSnapshot)),onError); }
+ /** This record's sync state: its pending mutations and retained rejections. Local only. */
+ async syncState(identity:SnapshotIdentity):Promise<SyncState> { return (await this.port.syncState('Snapshot',encodeSnapshotIdentity(identity))) as SyncState; }
+}
 export type DraftUpdate<K extends keyof DraftPatch = keyof DraftPatch> = DraftIdentity & Partial<Pick<DraftPatch, K>>;
 export type DraftDelete = DraftIdentity;
 export type EntryUpdate<K extends keyof EntryPatch = keyof EntryPatch> = EntryIdentity & Partial<Pick<EntryPatch, K>>;
 export type EntryDelete = EntryIdentity;
+export type SnapshotUpdate<K extends keyof SnapshotPatch = keyof SnapshotPatch> = SnapshotIdentity & Partial<Pick<SnapshotPatch, K>>;
+export type SnapshotDelete = SnapshotIdentity;
 export interface FindInput {
  id: string;
 }
 export interface FindOutput {
  entry: Entry | null;
+}
+export interface PeekInput {
+ id: string;
+}
+export interface PeekOutput {
+ entry: Snapshot | null;
 }
 export interface PublishInput {
  entry: EntryCreate;
@@ -144,6 +208,12 @@ function encodeFindInput(args:FindInput):Record<string,unknown> { return {
 function decodeFindOutput(value:unknown):FindOutput { const row=value as Record<string,unknown>; return {
  entry: row.entry == null ? null : decodeEntry(row.entry as Record<string,unknown>),
 }; }
+function encodePeekInput(args:PeekInput):Record<string,unknown> { return {
+ id: args.id,
+}; }
+function decodePeekOutput(value:unknown):PeekOutput { const row=value as Record<string,unknown>; return {
+ entry: row.entry == null ? null : decodeSnapshot(row.entry as Record<string,unknown>),
+}; }
 function encodePublishInput(args:PublishInput):Record<string,unknown> { return {
  entry: encodeEntryCreate(args.entry),
  call: args.call,
@@ -154,23 +224,27 @@ function decodePublishOutput(value:unknown):PublishOutput { const row=value as R
 /** Named Mutations commit their local scope before returning a Call. Call.wait observes backend settlement. */
 export function makeMutations(port:SubmitMutationPort) { return makeTransactionMutations(port); }
 export type FindOptions = QueryOptions;
+export type PeekOptions = QueryOptions;
 /** Queries return invocation snapshots after permitted cache writes commit. */
 export function makeQueries(port:CallPort) { return {
  find: (args:FindInput, options?:FindOptions):Promise<FindOutput> => port.invokeQuery('Find',1,encodeFindInput(args),decodeFindOutput,options),
+ peek: (args:PeekInput, options?:PeekOptions):Promise<PeekOutput> => port.invokeQuery('Peek',1,encodePeekInput(args),decodePeekOutput,options),
 }; }
-export interface LiveModels { draft:DraftLiveModel; entry:EntryLiveModel; }
-export function liveModels(port:LivePort):LiveModels { return { draft:new DraftLiveModel(port), entry:new EntryLiveModel(port) }; }
-export interface TxModels { draft:DraftTxModel; entry:EntryTxModel; }
-export function txModels(port:WritePort):TxModels { return { draft:new DraftTxModel(port), entry:new EntryTxModel(port) }; }
+export interface LiveModels { draft:DraftLiveModel; entry:EntryLiveModel; snapshot:SnapshotLiveModel; }
+export function liveModels(port:LivePort):LiveModels { return { draft:new DraftLiveModel(port), entry:new EntryLiveModel(port), snapshot:new SnapshotLiveModel(port) }; }
+export interface TxModels { draft:DraftTxModel; entry:EntryTxModel; snapshot:SnapshotTxModel; }
+export function txModels(port:WritePort):TxModels { return { draft:new DraftTxModel(port), entry:new EntryTxModel(port), snapshot:new SnapshotTxModel(port) }; }
 export interface FetchPort { fetchModel<T>(model:string,version:number,identity:object,decode:(row:Record<string,unknown>)=>T,options?:{store?:boolean}):Promise<T|null>; }
 /** One-shot remote reads: the complete snapshot through the Model's Loader, or null. `store: false` skips local cache writes. */
 export interface FetchModels {
  draft(identity:DraftIdentity, options?:{store?:boolean}):Promise<Draft|null>;
  entry(identity:EntryIdentity, options?:{store?:boolean}):Promise<Entry|null>;
+ snapshot(identity:SnapshotIdentity, options?:{store?:boolean}):Promise<Snapshot|null>;
 }
 export function fetchModels(port:FetchPort):FetchModels { return {
  draft:(identity,options)=>port.fetchModel('Draft',1,encodeDraftIdentity(identity),decodeDraft,options),
  entry:(identity,options)=>port.fetchModel('Entry',1,encodeEntryIdentity(identity),decodeEntry,options),
+ snapshot:(identity,options)=>port.fetchModel('Snapshot',1,encodeSnapshotIdentity(identity),decodeSnapshot,options),
 }; }
 export class GeneratedTransaction { readonly transaction:WritePort; readonly models:TxModels; constructor(transaction:WritePort) { this.transaction=transaction; this.models=txModels(transaction); } }
 export interface SubmitMutationPort { submitMutation<T>(name:string,version:number,input:object | ((port:WritePort) => Promise<object>),decode:(value:unknown)=>T):Promise<Call<T>>; }

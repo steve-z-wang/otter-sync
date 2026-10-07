@@ -886,3 +886,55 @@ fn zero_start_handshake_does_not_complete_bootstrap() {
     assert_eq!(c.store_status05().unwrap().start_cursor, Some(0));
     assert_eq!(c.store_status05().unwrap().bootstrap_cursor, None);
 }
+
+#[test]
+fn discarded_mutation_and_lifecycle_dependent_keep_public_codes_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db");
+    let mut descriptor: Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    descriptor["actions"] = json!([
+        {"name":"Write","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"create","cardinality":"single"}],"outputs":[]},
+        {"name":"Edit","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","fields":["text"],"cardinality":"single"}],"outputs":[]}
+    ]);
+    let schema = Schema::from_value(descriptor).unwrap();
+    let mut client =
+        Client::open05(SqliteStore::open(&path).unwrap(), schema.clone(), "User:u").unwrap();
+    let created = client
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"created","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let dependent = client
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Edit",
+                1,
+                json!({"entry":{"id":"e","text":"dependent"}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let report = client
+        .transaction(|tx| tx.discard_mutation05(created.ordinal))
+        .unwrap();
+    assert_eq!(report.completions.len(), 2);
+    drop(client);
+    let mut client = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
+    for (call, expected) in [(created, "dropped"), (dependent, "dependency.rejected")] {
+        let completion = client.call_completion05(&call.call_id).unwrap().unwrap();
+        assert!(
+            matches!(completion.outcome, axton_client::ActionOutcome::Failed { code, .. } if code == expected)
+        );
+        assert!(
+            matches!(client.mutation_result05(call.ordinal).unwrap().unwrap().outcome, v05::MutationOutcome::Rejected { code, .. } if code == expected)
+        );
+    }
+    assert!(client.freeze_batch05().unwrap().is_none());
+    assert_eq!(client.read(&key()).unwrap(), None);
+}

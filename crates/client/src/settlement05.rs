@@ -169,7 +169,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 let id = as_u64(&r[0])?;
                 let dep = as_u64(&r[1])?;
                 if rejected.contains_key(&dep) && !rejected.contains_key(&id) {
-                    rejected.insert(id, ("mutation.dependency_rejected".into(), None));
+                    rejected.insert(id, ("dependency.rejected".into(), None));
                     added = true;
                 }
             }
@@ -683,7 +683,7 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
                 return Ok(ApplyReport::default());
             }
             tx.engine
-                .reject_owned05(BTreeMap::from([(id, ("mutation.discarded".into(), None))]))
+                .reject_owned05(BTreeMap::from([(id, ("dropped".into(), None))]))
         })
     }
     pub fn dismiss_rejection05(&mut self, id: u64) -> Result<()> {

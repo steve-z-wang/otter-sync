@@ -25,13 +25,18 @@ fn schema() -> Schema {
         {"model":"Entry","field":"note","name":"RemoteBlob","arguments":{"key":"self"}},
         {"model":"Entry","field":"text","name":"Scan","arguments":{"key":"self"}}
     ]);
+    schema["actions"] = json!([
+      {"name":"Edit","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single","fields":["note"]}],"outputs":[]},
+      {"name":"ScanEntry","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single","fields":["text"]}],"outputs":[]}
+    ]);
     Schema::from_value(schema).unwrap()
 }
 fn runtime(path: &Path, handlers: &[&str]) -> ClientRuntime<SqliteStore> {
-    ClientRuntime::open_at(path, schema(), Box::new(|p| SqliteStore::open(p)), false)
-        .unwrap()
-        .register_prerequisite_handlers(handlers.iter().map(|h| h.to_string()).collect())
-        .unwrap()
+    ClientRuntime::new(
+        Client::open05(SqliteStore::open(path).unwrap(), schema(), "User:u").unwrap(),
+    )
+    .register_prerequisite_handlers(handlers.iter().map(|h| h.to_string()).collect())
+    .unwrap()
 }
 fn blob(key: &str) -> String {
     json!({"arguments":{"key":key},"name":"RemoteBlob"}).to_string()
@@ -143,7 +148,7 @@ impl Host {
     fn edit(&mut self, id: &str, key: &str) {
         self.task(
             id,
-            json!({"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"note":key}}]}}),
+            json!({"kind":"submitAction","name":"Edit","version":1,"args":{"entry":{"id":"e","note":key}}}),
         );
     }
     fn tasks(&mut self) -> Vec<Value> {
@@ -343,7 +348,7 @@ fn a_prerequisite_without_a_handler_is_left_for_the_app() {
     );
     h.task(
         "scan",
-        json!({"kind":"enqueue","mutation":{"name":"Edit","operations":[{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"text":"scanned"}}]}}),
+        json!({"kind":"submitAction","name":"ScanEntry","version":1,"args":{"entry":{"id":"e","text":"scanned"}}}),
     );
     h.run();
     assert!(h.outstanding("prerequisite").is_empty());
@@ -364,13 +369,14 @@ fn a_prerequisite_without_a_handler_is_left_for_the_app() {
 fn only_declared_prerequisites_can_be_registered_once_at_open() {
     let dir = tempfile::tempdir().unwrap();
     let open = || {
-        ClientRuntime::open_at(
-            dir.path().join("db"),
-            schema(),
-            Box::new(|p| SqliteStore::open(p)),
-            false,
+        ClientRuntime::new(
+            Client::open05(
+                SqliteStore::open(dir.path().join("db")).unwrap(),
+                schema(),
+                "User:u",
+            )
+            .unwrap(),
         )
-        .unwrap()
     };
     let refused = open()
         .register_prerequisite_handlers(vec!["Upload".into()])
@@ -395,28 +401,18 @@ fn only_declared_prerequisites_can_be_registered_once_at_open() {
 }
 
 #[test]
-fn a_rebuild_cancels_the_run_and_rescans_the_new_replica() {
+fn explicit_reset_cancels_the_run_and_rescans_the_store() {
     let mut h = Host::new(&[]);
     h.attach("old");
     h.run();
-    let Host { runtime, dir, .. } = h;
-    drop(runtime);
+    let Host {
+        runtime: old_runtime,
+        dir,
+        ..
+    } = h;
+    drop(old_runtime);
     let path = dir.path().join("db");
-    // A breaking schema leaves the old replica draining; its task still runs.
-    let mut breaking = serde_json::to_value(schema()).unwrap();
-    breaking["models"][0]["fields"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!({"name":"due","nullable":false,"type":{"kind":"scalar","name":"string"}}));
-    let runtime = ClientRuntime::open_at(
-        &path,
-        Schema::from_value(breaking).unwrap(),
-        Box::new(|p| SqliteStore::open(p)),
-        false,
-    )
-    .unwrap()
-    .register_prerequisite_handlers(vec!["RemoteBlob".into()])
-    .unwrap();
+    let runtime = runtime(&path, &["RemoteBlob"]);
     let mut h = Host {
         runtime,
         now: 1_000,
@@ -426,7 +422,10 @@ fn a_rebuild_cancels_the_run_and_rescans_the_new_replica() {
     h.run();
     let (effect, op) = h.one("prerequisite");
     assert_eq!(op["key"], blob("old"));
-    h.task("rebuild", json!({"kind":"rebuild","discardPending":true}));
+    h.task(
+        "rebuild",
+        json!({"kind":"resetStore","discardPending":true}),
+    );
     let events = h.run();
     assert!(
         events.contains(&json!({"type":"cancelEffect","effectId":effect})),
@@ -436,7 +435,7 @@ fn a_rebuild_cancels_the_run_and_rescans_the_new_replica() {
     assert!(h.outstanding("prerequisite").is_empty());
     h.task(
         "seed",
-        json!({"kind":"direct","operation":{"model":"Entry","op":"create","identity":{"id":"e"},"values":{"text":"A","due":"today"}}}),
+        json!({"kind":"direct","operation":{"model":"Entry","op":"create","identity":{"id":"e"},"values":{"text":"A"}}}),
     );
     h.edit("attach", "fresh");
     h.run();
@@ -444,7 +443,7 @@ fn a_rebuild_cancels_the_run_and_rescans_the_new_replica() {
 }
 
 #[test]
-fn every_outcome_wakes_the_push_lane() {
+fn readiness_outcomes_release_only_ready_canonical_batches() {
     let mut h = Host::new(&["RemoteBlob"]);
     h.task(
         "connect",
@@ -452,17 +451,17 @@ fn every_outcome_wakes_the_push_lane() {
     );
     h.attach("asset");
     h.run();
-    let pushes = |h: &Host| {
-        h.open
-            .values()
-            .filter(|op| op["kind"] == "http" && op["route"] == "push")
-            .count()
-    };
-    assert_eq!(pushes(&h), 0, "blocked by the pending task");
+    assert!(
+        h.runtime.client().freeze_batch05().unwrap().is_none(),
+        "blocked by pending task"
+    );
     let (effect, _) = h.one("prerequisite");
     h.fail(&effect, "disk full", false);
     h.run();
-    assert_eq!(pushes(&h), 0, "the push lane looked and found it failed");
+    assert!(
+        h.runtime.client().freeze_batch05().unwrap().is_none(),
+        "terminal failure remains blocked"
+    );
     h.task(
         "retry",
         json!({"kind":"readiness","key":blob("asset"),"state":"pending"}),
@@ -471,7 +470,10 @@ fn every_outcome_wakes_the_push_lane() {
     let (effect, _) = h.one("prerequisite");
     h.succeed(&effect);
     h.run();
-    assert_eq!(pushes(&h), 1, "the success released the mutation");
+    assert!(
+        h.runtime.client().freeze_batch05().unwrap().is_some(),
+        "success released the canonical batch"
+    );
 }
 
 #[test]

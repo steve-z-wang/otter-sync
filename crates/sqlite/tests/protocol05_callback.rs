@@ -1,7 +1,7 @@
 use axton_client::{
     Client, Schema,
     runtime::{ClientRuntime, Input},
-    v04,
+    v05,
 };
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};
@@ -21,27 +21,29 @@ fn open(p: &std::path::Path) -> ClientRuntime<SqliteStore> {
     let mut s: Value =
         serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
     s["actions"] = json!([{"name":"Rename","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],"outputs":[]}]);
-    let mut c = Client::open_bound(
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        SqliteStore::set_application_data_directory("/private/tmp/axton-task8-callback-locks")
+            .unwrap()
+    });
+    let mut c = Client::open05(
         SqliteStore::open_exclusive(p).unwrap(),
         Schema::from_value(s).unwrap(),
-        v04::StoreBinding {
-            backend: "b".into(),
-            viewer: "a".into(),
-            stream: "User:a".into(),
-            contract: "app".into(),
-        },
+        "User:a",
     )
     .unwrap();
-    c.install_stream04(
-        &c.request_context().unwrap().clone(),
-        &v04::StreamRecord {
-            key: axton_client::RecordKey {
+    let context = c.request_context05().unwrap();
+    c.install_authority05(
+        &context,
+        &[v05::AuthorityChange::Record {
+            key: v05::RecordKey {
                 model: "Entry".into(),
                 identity: json!({"id":"e"}),
             },
             cursor: 57,
             state: json!({"text":"old","note":null}),
-        },
+        }],
+        None,
     )
     .unwrap();
     ClientRuntime::new(c)
@@ -136,7 +138,7 @@ fn mutation_callback_reads_before_input_and_queues_companions_before_optimism() 
     );
     assert_eq!(
         r.client()
-            .record_evidence04(&key)
+            .record_evidence05(&key)
             .unwrap()
             .current
             .unwrap()

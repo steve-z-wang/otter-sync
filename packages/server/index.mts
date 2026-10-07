@@ -34,6 +34,9 @@ export type {
   TrackingPair,
   MemberKey,
   MemberPosition,
+  Protocol05Context,
+  Protocol05Operation,
+  Protocol05Request,
   Stamped,
   Stamps,
 } from "./host-contract.mts";
@@ -46,6 +49,24 @@ export type LoadFault =
 /** One Load item as its transaction ended: its committed page or its fault. */
 export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
+  serverMaterializationId05?(
+    config: string,
+    projectionGeneration: string,
+  ): string;
+  validateMutationBatch?(config: string, request: string): string;
+  processBatchMember?(
+    config: string,
+    owner: string,
+    request: string,
+    ordinal: number,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  encodeBatchAcknowledgement?(request: string, results: string[]): string;
+  settleExternal05?(
+    config: string,
+    settlement: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
   validateConfig(config: string): void;
   serverMaterializationId?(
     config: string,
@@ -267,8 +288,56 @@ function typedNative(native: Native): Native {
       }
     };
   return {
+    ...(native.serverMaterializationId05
+      ? {
+          serverMaterializationId05:
+            native.serverMaterializationId05.bind(native),
+        }
+      : {}),
     ...(native.serverMaterializationId
       ? { serverMaterializationId: native.serverMaterializationId.bind(native) }
+      : {}),
+    ...(native.validateMutationBatch
+      ? {
+          validateMutationBatch: (config: string, request: string) => {
+            try {
+              return native.validateMutationBatch!(config, request);
+            } catch (error) {
+              throw engineError(error);
+            }
+          },
+        }
+      : {}),
+    ...(native.processBatchMember
+      ? {
+          processBatchMember: (
+            ...args: Parameters<NonNullable<Native["processBatchMember"]>>
+          ) =>
+            native.processBatchMember!(...args).catch((error) => {
+              throw engineError(error);
+            }),
+        }
+      : {}),
+    ...(native.encodeBatchAcknowledgement
+      ? {
+          encodeBatchAcknowledgement: (request: string, results: string[]) => {
+            try {
+              return native.encodeBatchAcknowledgement!(request, results);
+            } catch (error) {
+              throw engineError(error);
+            }
+          },
+        }
+      : {}),
+    ...(native.settleExternal05
+      ? {
+          settleExternal05: (
+            ...args: Parameters<NonNullable<Native["settleExternal05"]>>
+          ) =>
+            native.settleExternal05!(...args).catch((error) => {
+              throw engineError(error);
+            }),
+        }
       : {}),
     validateConfig: wrapSync("validateConfig"),
     processPush: wrap("processPush"),
@@ -293,6 +362,11 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
   "request.invalid": 400,
   context_mismatch: 409,
   "stream.forbidden": 403,
+  "store.binding": 403,
+  "principal.invalid": 400,
+  "batch.conflict": 409,
+  "batch.sequence": 409,
+  "batch.progress": 409,
   "manifest.capacity": 413,
   "page.capacity": 413,
   constraint_group_capacity: 413,
@@ -515,6 +589,18 @@ function scopedStreams<S extends RuntimeLoadStream>(
   };
 }
 export interface BackendOptions<T> {
+  protocol5?: {
+    projectionGeneration?: string;
+    materializations?: Record<
+      string,
+      { schema: object; projectionGeneration?: string }
+    >;
+    authorizeStream(
+      principal: string,
+      stream: string,
+      tx: T,
+    ): boolean | Promise<boolean>;
+  };
   protocol4?: {
     backendId: string;
     contractId: string;
@@ -707,6 +793,7 @@ class WakeHub {
   }
 }
 class Session {
+  protocol05 = false;
   failed: unknown;
   closed = false;
   pending = new Set<Promise<unknown>>();
@@ -846,6 +933,14 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   const config = JSON.stringify({
     ...options.config,
     loaders: loadedModels,
+    ...(options.protocol5
+      ? {
+          protocol5: {
+            projectionGeneration: options.protocol5.projectionGeneration ?? "1",
+            materializations: options.protocol5.materializations ?? {},
+          },
+        }
+      : {}),
     ...(options.protocol4
       ? {
           protocol4: {
@@ -862,14 +957,19 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       : {}),
   });
   native.validateConfig(config);
-  const materializationId = options.protocol4
-    ? native.serverMaterializationId?.(
-        config,
-        options.protocol4.projectionGeneration ?? "1",
-      )
-    : undefined;
-  if (options.protocol4 && !materializationId)
-    throw new Error("protocol4 native materialization derivation unavailable");
+  const materializationId =
+    options.protocol4 || options.protocol5
+      ? (options.protocol5
+          ? native.serverMaterializationId05
+          : native.serverMaterializationId)?.(
+          config,
+          (options.protocol5 ?? options.protocol4)!.projectionGeneration ?? "1",
+        )
+      : undefined;
+  if ((options.protocol4 || options.protocol5) && !materializationId)
+    throw new Error(
+      `protocol${options.protocol5 ? 5 : 4} native materialization derivation unavailable`,
+    );
   // Refuses Models whose generated accessors collide,
   // and declarations naming a device-only Model.
   const createEffects = effectsFor(
@@ -1095,7 +1195,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         if (req.op === "savepoint") session.savepoint(req.ordinal);
         if (req.op === "rollback") session.rollback(req.ordinal);
         if (req.op === "release") session.release(req.ordinal);
-        if (req.op === "admitContext") {
+        if (req.op === "protocol05" && req.request.op === "admit") {
+          session.protocol05 = true;
+          const context = req.request.context as { stream: string };
+          result =
+            !!options.protocol5 &&
+            (await options.protocol5.authorizeStream(
+              String(req.request.owner),
+              context.stream,
+              tx,
+            ));
+        } else if (req.op === "admitContext") {
           result =
             !!options.protocol4 &&
             (await options.protocol4.authorizeStream(
@@ -1153,7 +1263,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             result = effects.settlement();
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
-            result = refusal(error);
+            const answer = refusal(error);
+            if (session.protocol05 && "error" in answer) throw error;
+            result = answer;
           } finally {
             effects.close();
           }
@@ -1242,7 +1354,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             };
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
-            result = refusal(error);
+            const answer = refusal(error);
+            if (session.protocol05 && "error" in answer) throw error;
+            result = answer;
           } finally {
             effects?.close();
           }
@@ -1380,7 +1494,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           try {
             const hook = options.loaderHooks?.[lowerFirst(req.model)];
             if (req.mode !== "canonical" && hook) {
-              if (options.protocol4)
+              if (options.protocol4 || session.protocol05)
                 await storage.call({ op: "publicationFence" });
               const effects = createEffects();
               try {
@@ -1392,8 +1506,12 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               } finally {
                 effects.close();
               }
-              if (options.protocol4)
-                await native.settleExternal(
+              if (options.protocol4 || session.protocol05)
+                await (
+                  session.protocol05
+                    ? native.settleExternal05!
+                    : native.settleExternal
+                )(
                   config,
                   JSON.stringify(effects.settlement()),
                   host(tx, session),
@@ -1402,7 +1520,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             rows = req.mode === "prepare" ? [] : await loader(call);
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
-            refused = refusal(error);
+            const answer = refusal(error);
+            if (session.protocol05 && "error" in answer) throw error;
+            refused = answer;
           }
           if (refused) return callbackJson(refused);
           // An answer JSON cannot carry faithfully is a failed read, never a
@@ -1430,6 +1550,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           // know: an operation added to the contract without an arm here is a
           // compile error, not a silent forward.
           switch (req.op) {
+            case "protocol05":
             case "readCall":
             case "createManifest":
             case "readManifest":
@@ -1464,8 +1585,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           result = await storage.call(req);
           // Every position that survives its savepoint wakes the stream's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "applyStreamMembers")
-            for (const delta of req.deltas)
+          const publication =
+            req.op === "protocol05" && req.request.op === "applyStreamMembers"
+              ? req.request
+              : req.op === "applyStreamMembers"
+                ? req
+                : undefined;
+          if (publication)
+            for (const delta of publication.deltas as {
+              publish: boolean;
+              stream: string;
+            }[])
               if (delta.publish) session.touched.add(delta.stream);
         }
         return callbackJson(result);
@@ -1527,7 +1657,8 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     session: Session,
     body: (call: External) => R | Promise<R>,
   ): Promise<R> => {
-    if (options.protocol4)
+    session.protocol05 = !!options.protocol5;
+    if (options.protocol4 || options.protocol5)
       await session.track(() =>
         options.database.persistence(tx).call({ op: "publicationFence" }),
       );
@@ -1545,7 +1676,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       effects.close();
     }
     await session.track(() =>
-      native.settleExternal(
+      (session.protocol05 ? native.settleExternal05! : native.settleExternal)(
         config,
         JSON.stringify(effects.settlement()),
         host(tx, session),
@@ -1693,10 +1824,36 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   /** @internal Raw protocol seams used by the framework's own tests; not part of the supported surface. */
   const api = {
     materializationId,
-    push: (owner: string, request: Uint8Array | string) =>
-      run((tx, session) =>
-        native.processPush(config, owner, text(request), host(tx, session)),
-      ).then(reportInvalidReceipt),
+    push: async (owner: string, request: Uint8Array | string) => {
+      const wire = text(request);
+      if (JSON.parse(wire)?.protocol === 5) {
+        if (
+          !native.validateMutationBatch ||
+          !native.processBatchMember ||
+          !native.encodeBatchAcknowledgement
+        )
+          throw new Error("protocol05 native Batch support unavailable");
+        const frozen = native.validateMutationBatch(config, wire);
+        const count = (JSON.parse(frozen).mutations as unknown[]).length;
+        const results: string[] = [];
+        for (let ordinal = 0; ordinal < count; ordinal++)
+          results.push(
+            await run((tx, session) =>
+              native.processBatchMember!(
+                config,
+                owner,
+                frozen,
+                ordinal,
+                host(tx, session),
+              ),
+            ),
+          );
+        return native.encodeBatchAcknowledgement(frozen, results);
+      }
+      return run((tx, session) =>
+        native.processPush(config, owner, wire, host(tx, session)),
+      ).then(reportInvalidReceipt);
+    },
     action: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
         native.processAction(config, owner, text(request), host(tx, session)),

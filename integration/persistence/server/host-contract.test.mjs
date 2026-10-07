@@ -36,6 +36,7 @@ const fakePersistence=seen=>({
  async call(request){
   seen.push(request);
   switch(request.op){
+   case 'protocol05':return null;
    case 'publicationFence':case 'savePublicationGroups':return null;
    case 'readPublicationGroups':return response('readPublicationGroups');
    case 'readCall':return null;
@@ -119,7 +120,7 @@ test('every fixture request replays through the TypeScript host to the fixture a
  const sent=[];
  const {answers,seen,handled,loaded,paged}=await replay(requests,{sent});
  assert.deepEqual(answers.map(([op])=>op),HOST_OPERATIONS);
- const expected={
+ const expected={protocol05:null,
   handleBootstrap:{declarations:[]},readCall:null,createManifest:response('createManifest'),readManifest:response('readManifest'),captureTail:response('captureTail'),
   admitContext:true,publicationFence:null,savePublicationGroups:null,readPublicationGroups:response('readPublicationGroups'),readPositions:response('readPositions'),
   claim:response('claim','claimed'),saveReceipt:null,claimCall:response('claimCall','fresh'),saveCall:null,head:response('head','cursor'),

@@ -106,3 +106,52 @@ CREATE TABLE IF NOT EXISTS axton_bootstrap_range (
  PRIMARY KEY(owner_id,manifest_id,from_ordinal,to_ordinal),
  FOREIGN KEY(owner_id,manifest_id) REFERENCES axton_bootstrap_manifest(owner_id,manifest_id)
 );
+
+-- Protocol 5 is additive while protocol 4 remains operational.
+CREATE TABLE IF NOT EXISTS axton_store (
+ id text PRIMARY KEY,
+ principal text NOT NULL,
+ stream text NOT NULL,
+ last_processed_batch_id bigint NOT NULL DEFAULT 0 CHECK(last_processed_batch_id BETWEEN 0 AND 9007199254740991),
+ progress bigint NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 9007199254740991),
+ current_digest text,
+ current_count bigint,
+ last_digest text,
+ last_count bigint,
+ bootstrap_prepared boolean NOT NULL DEFAULT false,
+ start_cursor bigint CHECK(start_cursor BETWEEN 0 AND 9007199254740991),
+ CHECK((current_digest IS NULL AND current_count IS NULL AND progress=0) OR
+       (current_digest IS NOT NULL AND current_count IS NOT NULL AND current_count BETWEEN 1 AND 9007199254740991 AND progress<current_count)),
+ CHECK((last_processed_batch_id=0 AND last_digest IS NULL AND last_count IS NULL) OR
+       (last_processed_batch_id>0 AND last_digest IS NOT NULL AND last_count IS NOT NULL AND last_count BETWEEN 1 AND 9007199254740991))
+);
+CREATE TABLE IF NOT EXISTS axton_mutation_result (
+ store_id text NOT NULL REFERENCES axton_store(id),
+ batch_id bigint NOT NULL CHECK(batch_id BETWEEN 1 AND 9007199254740991),
+ mutation_id bigint NOT NULL CHECK(mutation_id BETWEEN 1 AND 9007199254740991),
+ ordinal bigint NOT NULL CHECK(ordinal BETWEEN 0 AND 9007199254740991),
+ result jsonb NOT NULL,
+ PRIMARY KEY(store_id,batch_id,mutation_id),
+ UNIQUE(store_id,batch_id,ordinal)
+);
+CREATE TABLE IF NOT EXISTS axton_stream_record (
+ stream text NOT NULL REFERENCES axton_stream(stream),
+ record_id bigint NOT NULL REFERENCES axton_record(id),
+ cursor bigint NOT NULL CHECK(cursor BETWEEN 1 AND 9007199254740991),
+ kind text NOT NULL CHECK(kind IN ('upsert','remove')),
+ PRIMARY KEY(stream,record_id)
+);
+CREATE INDEX IF NOT EXISTS axton_stream_record_cursor ON axton_stream_record(stream,cursor,record_id);
+CREATE INDEX IF NOT EXISTS axton_stream_record_holders ON axton_stream_record(record_id,stream);
+CREATE OR REPLACE FUNCTION axton_store_binding_fixed() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.id IS DISTINCT FROM OLD.id OR NEW.principal IS DISTINCT FROM OLD.principal OR NEW.stream IS DISTINCT FROM OLD.stream THEN
+  RAISE EXCEPTION 'Store binding is immutable';
+ END IF;
+ RETURN NEW;
+END $$;
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='axton_store'::regclass AND tgname='axton_store_binding_fixed') THEN
+  CREATE TRIGGER axton_store_binding_fixed BEFORE UPDATE ON axton_store FOR EACH ROW EXECUTE FUNCTION axton_store_binding_fixed();
+ END IF;
+END $$;

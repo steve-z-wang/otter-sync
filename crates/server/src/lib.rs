@@ -9,6 +9,11 @@ pub mod live;
 mod loading;
 mod loads;
 mod protocol_v04;
+mod protocol_v05;
+pub use protocol_v05::{
+    encode_batch_acknowledgement, process_batch_member, settle_external05, validate_mutation_batch,
+};
+mod mutation_batch;
 mod readback;
 mod settlement;
 pub mod stream_members;
@@ -34,6 +39,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// The host reports its own failures as text; the engine files them under the `host` code.
 pub type HostResult<T> = std::result::Result<T, String>;
 pub trait Host: Send + Sync {
+    fn publication05(&self) -> bool {
+        false
+    }
     fn call(&self, request: Value) -> Pin<Box<dyn Future<Output = HostResult<Value>> + Send + '_>>;
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -41,6 +49,8 @@ pub struct Config {
     pub schema: Schema,
     #[serde(default)]
     pub protocol4: Option<protocol_v04::ProtocolConfig>,
+    #[serde(default)]
+    pub protocol5: Option<protocol_v05::ProtocolConfig>,
     pub mutations: Vec<Mutation>,
     pub loaders: Vec<String>,
     /// Every retained model read contract, one per `(name, version)`. Absent
@@ -835,5 +845,11 @@ pub async fn process_stream_pull(
 
 pub fn materialization_id(config: &Config, projection_generation: &str) -> Result<String> {
     axton_core::v04::materialization_id(&config.schema, projection_generation)
+        .map_err(config_invalid)
+}
+
+/// Canonical protocol-5 read context, independent of authenticated Store binding.
+pub fn materialization_id05(config: &Config, projection_generation: &str) -> Result<String> {
+    axton_core::v05::materialization_id(&config.schema, projection_generation)
         .map_err(config_invalid)
 }

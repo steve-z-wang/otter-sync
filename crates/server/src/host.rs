@@ -347,7 +347,8 @@ pub enum LoaderMode {
     Canonical,
 }
 
-pub const OPERATIONS: [&str; 31] = [
+pub const OPERATIONS: [&str; 32] = [
+    "protocol05",
     "admitContext",
     "publicationFence",
     "handleBootstrap",
@@ -382,6 +383,75 @@ pub const OPERATIONS: [&str; 31] = [
 ];
 
 /// Every request the engine issues to a host, tagged by `op` on the wire.
+/// Additive protocol-5 storage operations, all inside the caller's transaction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "op",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Protocol05Operation {
+    Admit {
+        owner: String,
+        context: axton_core::v05::RequestContext,
+    },
+    ClaimStore {
+        store_id: String,
+        principal: String,
+        stream: String,
+    },
+    BeginBatch {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        digest: String,
+        #[serde(with = "cursor")]
+        count: u64,
+    },
+    ReadResult {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        #[serde(with = "counter")]
+        ordinal: u64,
+    },
+    ReadResults {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+    },
+    SaveResult {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        #[serde(with = "counter")]
+        ordinal: u64,
+        #[serde(with = "cursor")]
+        count: u64,
+        result: axton_core::v05::MutationResult,
+    },
+    ReadTracking {
+        records: Vec<MemberKey>,
+        pairs: Vec<TrackingPair>,
+    },
+    GuardRecords {
+        #[serde(deserialize_with = "guard_order")]
+        records: Vec<GuardRecord>,
+    },
+    ReadPositions {
+        stream: String,
+        records: Vec<MemberKey>,
+    },
+    TargetPositions {
+        stream: String,
+        records: Vec<MemberKey>,
+    },
+    ApplyStreamMembers {
+        deltas: Vec<MemberDelta>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "op",
@@ -390,6 +460,10 @@ pub const OPERATIONS: [&str; 31] = [
     deny_unknown_fields
 )]
 pub enum HostRequest {
+    /// Protocol 5 persistence/application seam; its inner operation is validated by the v05 executor.
+    Protocol05 {
+        request: Protocol05Operation,
+    },
     /// Current authorization, including saved response replay.
     AdmitContext {
         owner: String,
@@ -632,6 +706,7 @@ impl HostRequest {
     /// The operation, and the ordinal when the operation carries one.
     pub fn label(&self) -> String {
         match self {
+            Self::Protocol05 { .. } => "protocol05".into(),
             Self::HandleBootstrap { .. } => "handleBootstrap".into(),
             Self::CreateManifest { .. } => "createManifest".into(),
             Self::ReadCall { .. } => "readCall".into(),
@@ -678,7 +753,8 @@ impl HostRequest {
             | Self::HandleLoad { .. }
             | Self::HandleBootstrap { .. } => code::HANDLER_INVALID,
             Self::Load { .. } => code::LOADER_INVALID,
-            Self::AdmitContext { .. }
+            Self::Protocol05 { .. }
+            | Self::AdmitContext { .. }
             | Self::CreateManifest { .. }
             | Self::ReadCall { .. }
             | Self::ReadManifest { .. }

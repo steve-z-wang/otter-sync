@@ -33,3 +33,7 @@ protocol4_database_url="${DATABASE_URL%/postgres}/axton_protocol4"
 DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04.test.mjs"
 DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04-drivers.test.mjs"
 DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/publication-closure.test.mjs"
+
+# Protocol 5 keeps an independent fresh database and its legacy gates above.
+createdb -h 127.0.0.1 -p "$port" axton_protocol5
+DATABASE_URL="${DATABASE_URL%/postgres}/axton_protocol5" "${test[@]}" "$root/integration/persistence/server/protocol-v05-batch.test.mjs"

@@ -313,3 +313,27 @@ pub fn server_materialization_id(config_json:String,projection_generation:String
 fn axton_core_materialization(config:&axton_server::Config,generation:&str)->Result<String>{
     axton_server::materialization_id(config,generation).map_err(reason)
 }
+
+#[napi]
+pub fn validate_mutation_batch(config_json:String,request_json:String)->Result<String> {
+ axton_server::validate_mutation_batch(&config(&config_json)?,request_json.as_bytes()).map_err(reason)
+}
+#[napi]
+pub async fn process_batch_member(config_json:String,owner:String,request_json:String,ordinal:u32,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ axton_server::process_batch_member(&config(&config_json)?,&owner,request_json.as_bytes(),ordinal as u64,&CallbackHost(callback)).await.map_err(reason)
+}
+#[napi]
+pub fn encode_batch_acknowledgement(request_json:String,results:Vec<String>)->Result<String> {
+ axton_server::encode_batch_acknowledgement(request_json.as_bytes(),&results).map_err(reason)
+}
+#[napi]
+pub async fn settle_external05(config_json:String,settlement_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ let value=serde_json::from_str(&settlement_json).map_err(internal)?;
+ let result=axton_server::settle_external05(&config(&config_json)?,&value,&CallbackHost(callback)).await.map_err(reason)?;
+ Ok(result.to_string())
+}
+
+#[napi]
+pub fn server_materialization_id05(config_json:String,projection_generation:String)->Result<String> {
+ axton_server::materialization_id05(&config(&config_json)?,&projection_generation).map_err(reason)
+}

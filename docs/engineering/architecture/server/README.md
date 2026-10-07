@@ -2,6 +2,7 @@
 
 The server runtime executes the sync protocol on top of the application's own database and business logic.
 
+- [Protocol 5 Mutation Batches](protocol5.md) — Additive per-Mutation transactions, fixed Batch replay and coalesced publication.
 - [Protocol 4 runtime](protocol4.md) — Bound Store contexts, null reads, identity manifests, receipts and constraint-safe delivery.
 - [Backend interface](backend-interface.md) — Invoke application handlers and loaders.
 - [Engine](engine/README.md) — Process mutations, read their results back, serve pulls and produce receipts.
@@ -10,4 +11,4 @@ The server runtime executes the sync protocol on top of the application's own da
 
 ## How the parts work together
 
-Every request runs inside one application database transaction. The [connection](connection/README.md) authenticates it and calls the Rust [engine](engine/README.md); the engine drives the work through a small set of host operations that the [backend interface](backend-interface.md) routes either to application code (handlers, loaders) or to [persistence](persistence.md) (the framework tables). The engine applies explicit Stream declarations and resolves canonical state through viewer Loaders. Business writes, memberships, publications, framework rows and the saved outcome share the transaction and commit or roll back together. Protocol 4 uses real per-Stream positions; ordinary reads and call-private snapshots carry null cursors. Live subscribers are woken only after the commit.
+Each protocol-5 Batch member runs in its own application database transaction; retained single-call paths run one request per transaction. The [connection](connection/README.md) authenticates it and calls the Rust [engine](engine/README.md); the engine drives the work through a small set of host operations that the [backend interface](backend-interface.md) routes either to application code (handlers, loaders) or to [persistence](persistence.md) (the framework tables). The engine applies explicit Stream declarations and resolves canonical state through viewer Loaders. Business writes, memberships, publications, framework rows and the saved outcome share the transaction and commit or roll back together. Protocol 4 uses real per-Stream positions; ordinary reads and call-private snapshots carry null cursors. Live subscribers are woken only after the commit.

@@ -25,6 +25,7 @@ fn round_trip_response(op: &str, value: &Value) -> Result<Value, String> {
         };
     }
     match op {
+        "protocol05" => round!(Value),
         "handleBootstrap" => round!(axton_server::host::BootstrapEffects),
         "createManifest" | "readManifest" => round!(axton_server::host::ManifestSlice),
         "readCall" => round!(Option<String>),

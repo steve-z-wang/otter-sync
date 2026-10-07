@@ -228,8 +228,12 @@ pub(crate) async fn settle_locked(
     if !deltas.is_empty() {
         let request = HostRequest::ApplyStreamMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
-        check_positions(&request, &positions)?;
-        if config.protocol4.is_some() {
+        if host.publication05() {
+            check_positions05(&request, &positions)?;
+        } else {
+            check_positions(&request, &positions)?;
+        }
+        if config.protocol4.is_some() && !host.publication05() {
             let HostRequest::ApplyStreamMembers { deltas } = &request else {
                 unreachable!()
             };
@@ -329,4 +333,29 @@ pub(crate) fn current_claims(
             Ok(claim)
         })
         .collect()
+}
+
+fn check_positions05(request: &HostRequest, positions: &[MemberPosition]) -> Result<()> {
+    let HostRequest::ApplyStreamMembers { deltas } = request else {
+        return Err(internal("publication deltas missing"));
+    };
+    if positions.len() != deltas.len() {
+        return Err(request.invalid_response("wrong position count"));
+    }
+    let mut published = BTreeMap::new();
+    for (d, p) in deltas.iter().zip(positions) {
+        axton_core::counter(p.cursor).map_err(crate::storage_invalid)?;
+        if p.cursor == 0 || d.stream != p.stream || d.key != p.key || p.kind != PositionKind::Upsert
+        {
+            return Err(request.invalid_response("wrong publication position"));
+        }
+        if d.publish
+            && published
+                .insert(&d.stream, p.cursor)
+                .is_some_and(|old| old != p.cursor)
+        {
+            return Err(request.invalid_response("one Mutation has multiple Stream cursors"));
+        }
+    }
+    Ok(())
 }

@@ -157,3 +157,35 @@ export const savepointName = (ordinal: number): string =>
 /** UPDATE creates the Serializable snapshot conflict fence; advisory locks do not. */
 export const PUBLICATION_FENCE =
   "UPDATE axton_publication_fence SET held=held WHERE id=1 RETURNING id";
+
+/** Additive protocol-5 Store, immutable outcome and coalesced publication persistence. */
+export const V05_STORE_INSERT =
+  "INSERT INTO axton_store(id,principal,stream) VALUES($1,$2,$3) ON CONFLICT(id) DO NOTHING";
+export const V05_STORE_LOCK =
+  "SELECT principal,stream,last_processed_batch_id,progress,current_digest,current_count,last_digest,last_count FROM axton_store WHERE id=$1 FOR UPDATE";
+export const V05_BATCH_BEGIN =
+  "UPDATE axton_store SET current_digest=$3,current_count=$4 WHERE id=$1 AND last_processed_batch_id=$2-1 AND current_digest IS NULL AND progress=0 RETURNING id";
+export const V05_BATCH_PRUNE =
+  "DELETE FROM axton_mutation_result WHERE store_id=$1 AND batch_id<$2";
+export const V05_RESULT_READ =
+  "SELECT result FROM axton_mutation_result WHERE store_id=$1 AND batch_id=$2 AND ordinal=$3";
+export const V05_RESULTS_READ =
+  "SELECT result FROM axton_mutation_result WHERE store_id=$1 AND batch_id=$2 ORDER BY ordinal";
+export const V05_RESULT_SAVE =
+  "INSERT INTO axton_mutation_result(store_id,batch_id,mutation_id,ordinal,result) VALUES($1,$2,$3,$4,$5::jsonb)";
+export const V05_PROGRESS_SAVE =
+  "UPDATE axton_store SET progress=CASE WHEN $3+1=$4 THEN 0 ELSE $3+1 END,last_processed_batch_id=CASE WHEN $3+1=$4 THEN $2 ELSE last_processed_batch_id END,last_digest=CASE WHEN $3+1=$4 THEN current_digest ELSE last_digest END,last_count=CASE WHEN $3+1=$4 THEN current_count ELSE last_count END,current_digest=CASE WHEN $3+1=$4 THEN NULL ELSE current_digest END,current_count=CASE WHEN $3+1=$4 THEN NULL ELSE current_count END WHERE id=$1 AND last_processed_batch_id=$2-1 AND progress=$3 AND current_count=$4 RETURNING id";
+export const V05_POSITIONS_READ =
+  "SELECT s.cursor,s.kind FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE s.stream=$1 AND r.model=$2 AND r.identity_key=$3";
+export const V05_TRANSACTION_ID =
+  "SELECT pg_current_xact_id()::text AS transaction_id";
+export const V05_RECORD_ID =
+  "SELECT id FROM axton_record WHERE model=$1 AND identity_key=$2";
+export const V05_POSITION_WRITE =
+  "INSERT INTO axton_stream_record(stream,record_id,cursor,kind) VALUES($1,$2,$3,'upsert') ON CONFLICT(stream,record_id) DO UPDATE SET cursor=EXCLUDED.cursor,kind='upsert' RETURNING cursor,kind";
+export const V05_POSITION_READ =
+  "SELECT cursor,kind FROM axton_stream_record WHERE stream=$1 AND record_id=$2";
+export const V05_READ_TRACKING = READ_TRACKING.replaceAll(
+  "axton_stream_member",
+  "axton_stream_record",
+).replaceAll("ON m.record_id=r.id", "ON m.record_id=r.id AND m.kind='upsert'");

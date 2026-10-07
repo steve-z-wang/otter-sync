@@ -2,6 +2,24 @@
   "comment": "One canonical request and one response per variant for every host operation. Shared by crates/server/tests/host_contract.rs (Rust types) and integration/persistence/server/host-contract.test.mjs (TypeScript host). The examples describe a backend with one model Task {id, title} and one mutation edit v1 with an update slot named task.",
   "operations": [
     {
+      "op": "protocol05",
+      "request": {
+        "op": "protocol05",
+        "request": {
+          "op": "readResult",
+          "storeId": "store1",
+          "batchId": 1,
+          "ordinal": 0
+        }
+      },
+      "responses": [
+        {
+          "variant": "absent",
+          "value": null
+        }
+      ]
+    },
+    {
       "op": "admitContext",
       "request": {
         "op": "admitContext",

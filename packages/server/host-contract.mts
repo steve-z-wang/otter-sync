@@ -166,7 +166,44 @@ export type ApplyStreamMembersRequest = {
   deltas: TrackingDelta[];
 };
 
+/** Protocol-5 persistence/application seam. Every call uses the retained transaction. */
+export type Protocol05Context = {
+  protocol: 5;
+  storeId: string;
+  stream: string;
+  materialization: string;
+};
+export type Protocol05Operation =
+  | { op: "admit"; owner: string; context: Protocol05Context }
+  | { op: "claimStore"; storeId: string; principal: string; stream: string }
+  | {
+      op: "beginBatch";
+      storeId: string;
+      batchId: number;
+      digest: string;
+      count: number;
+    }
+  | { op: "readResult"; storeId: string; batchId: number; ordinal: number }
+  | { op: "readResults"; storeId: string; batchId: number }
+  | {
+      op: "saveResult";
+      storeId: string;
+      batchId: number;
+      ordinal: number;
+      count: number;
+      result: JsonValue;
+    }
+  | ReadTrackingRequest
+  | GuardRecordsRequest
+  | ReadPositionsRequest
+  | { op: "targetPositions"; stream: string; records: MemberKey[] }
+  | ApplyStreamMembersRequest;
+export type Protocol05Request = {
+  op: "protocol05";
+  request: Protocol05Operation;
+};
 export type HostRequest =
+  | Protocol05Request
   | AdmitContextRequest
   | PublicationFenceRequest
   | SavePublicationGroupsRequest
@@ -317,6 +354,7 @@ export type Loaded =
 /** The answer each operation owes, keyed by `op`. */
 export type HostResponse = {
   admitContext: boolean;
+  protocol05: unknown;
   publicationFence: Acknowledged;
   savePublicationGroups: Acknowledged;
   readPublicationGroups: PublicationGroup[];
@@ -354,6 +392,7 @@ export type HostResponse = {
  * and an extra one are both compile errors here.
  */
 const OPERATIONS: Record<HostOperation, true> = {
+  protocol05: true,
   admitContext: true,
   publicationFence: true,
   handleBootstrap: true,

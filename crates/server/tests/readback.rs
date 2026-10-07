@@ -251,6 +251,9 @@ impl Scripted {
         let mut s = self.state.lock().unwrap();
         s.log.push(request.clone());
         Ok(match request {
+            HostRequest::Protocol05 { .. } => {
+                return Err("v05 operation in legacy test host".into());
+            }
             HostRequest::ReadCall { .. } => Value::Null,
             HostRequest::HandleBootstrap { .. } => json!({"declarations":[]}),
             HostRequest::CreateManifest { .. } | HostRequest::ReadManifest { .. } => {

@@ -354,6 +354,9 @@ impl Backend {
         s.log.push(request.clone());
         let action = matches!(request, HostRequest::HandleAction { .. });
         Ok(match request {
+            HostRequest::Protocol05 { .. } => {
+                return Err("v05 operation in legacy test host".into());
+            }
             HostRequest::ReadCall { .. } => Value::Null,
             HostRequest::HandleBootstrap { .. } => json!({"declarations":[]}),
             HostRequest::CreateManifest { .. } | HostRequest::ReadManifest { .. } => {

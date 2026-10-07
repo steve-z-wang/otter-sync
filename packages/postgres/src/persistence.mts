@@ -285,6 +285,200 @@ async function applyStreamMembers(
   return positions;
 }
 
+/** One reservation context per outer transaction; discarded after rollback/retry. */
+type Publication05 = Map<string, number> & { transactionId?: string };
+async function answer05(
+  q: Query,
+  r: Record<string, unknown>,
+  cursors: Publication05,
+): Promise<unknown> {
+  switch (r.op) {
+    case "claimStore": {
+      await q(SQL.V05_STORE_INSERT, r.storeId, r.principal, r.stream);
+      const [row] = await q(SQL.V05_STORE_LOCK, r.storeId);
+      if (!row) throw new Error("Store missing");
+      return {
+        principal: row.principal,
+        stream: row.stream,
+        lastProcessedBatchId: safe(row.last_processed_batch_id),
+        progress: safe(row.progress),
+        currentDigest: row.current_digest,
+        currentCount:
+          row.current_count === null ? null : safe(row.current_count),
+        lastDigest: row.last_digest,
+        lastCount: row.last_count === null ? null : safe(row.last_count),
+      };
+    }
+    case "beginBatch": {
+      const rows = await q(
+        SQL.V05_BATCH_BEGIN,
+        r.storeId,
+        r.batchId,
+        r.digest,
+        r.count,
+      );
+      if (rows.length !== 1) throw new Error("Batch admission state changed");
+      await q(SQL.V05_BATCH_PRUNE, r.storeId, r.batchId);
+      return null;
+    }
+    case "readResult": {
+      const [row] = await q(
+        SQL.V05_RESULT_READ,
+        r.storeId,
+        r.batchId,
+        r.ordinal,
+      );
+      return row ? json(row.result) : null;
+    }
+    case "readResults":
+      return (await q(SQL.V05_RESULTS_READ, r.storeId, r.batchId)).map((row) =>
+        json(row.result),
+      );
+    case "saveResult": {
+      const result = r.result as { mutationId: number };
+      await q(
+        SQL.V05_RESULT_SAVE,
+        r.storeId,
+        r.batchId,
+        result.mutationId,
+        r.ordinal,
+        JSON.stringify(result),
+      );
+      const rows = await q(
+        SQL.V05_PROGRESS_SAVE,
+        r.storeId,
+        r.batchId,
+        r.ordinal,
+        r.count,
+      );
+      if (rows.length !== 1) throw new Error("Batch progress state changed");
+      return null;
+    }
+    case "readTracking": {
+      const rows = await q(
+        SQL.READ_TRACKING.replaceAll(
+          "axton_stream_member",
+          "axton_stream_record",
+        ).replaceAll(
+          "ON m.record_id=r.id",
+          "ON m.record_id=r.id AND m.kind='upsert'",
+        ),
+        JSON.stringify(r.records),
+        JSON.stringify(r.pairs),
+      );
+      return rows.map((row) => ({
+        stream: row.stream,
+        model: row.model,
+        identityKey: row.identity_key,
+      }));
+    }
+    case "guardRecords": {
+      const records = arrayOf(r.records, "guards").map((value) =>
+        keyOf(value, ["mode"]),
+      );
+      const result = [];
+      for (const record of records) {
+        const rows = await q(
+          record.mode === "lock" ? SQL.LOCK_RECORD : SQL.ENSURE_STAMP,
+          record.model,
+          record.identityKey,
+        );
+        result.push(rows.length ? safe(rows[0]!.stamp) : null);
+      }
+      return result;
+    }
+    case "targetPositions":
+    case "readPositions": {
+      const records = arrayOf(r.records, "positions").map((value) =>
+        keyOf(value),
+      );
+      const positions = [];
+      for (const record of records) {
+        const [row] = await q(
+          SQL.V05_POSITIONS_READ,
+          r.stream,
+          record.model,
+          record.identityKey,
+        );
+        if (!row) {
+          if (r.op === "readPositions")
+            throw new Error("missing Stream position");
+          positions.push(null);
+        } else
+          positions.push({
+            stream: r.stream,
+            model: record.model,
+            identityKey: record.identityKey,
+            cursor: storedStamp(row.cursor),
+            kind: row.kind,
+          });
+      }
+      return positions;
+    }
+    case "applyStreamMembers": {
+      // Object handles (PoolClient/ORM wrappers) may survive COMMIT and be reused.
+      // Reservations are owned by the actual transaction, never by that object.
+      const [transaction] = await q(SQL.V05_TRANSACTION_ID);
+      if (!transaction) throw new Error("publication transaction missing");
+      const transactionId = String(transaction.transaction_id);
+      if (cursors.transactionId !== transactionId) {
+        cursors.clear();
+        cursors.transactionId = transactionId;
+      }
+      const deltas = arrayOf(r.deltas, "deltas").map((value) =>
+        keyOf(value, ["identity", "stream", "publish"]),
+      );
+      unique(
+        deltas as { model: string; identityKey: string; stream?: string }[],
+        "deltas",
+      );
+      const streams = [
+        ...new Set(
+          deltas.filter((d) => d.publish).map((d) => streamName(d.stream)),
+        ),
+      ].sort(byteOrder);
+      for (const stream of streams) {
+        if (cursors.has(stream)) continue;
+        const [row] = await q(
+          SQL.RESERVE_HEADS,
+          JSON.stringify([{ stream, count: 1 }]),
+        );
+        if (!row) throw new Error(`Stream ${stream} head counter overflow`);
+        cursors.set(stream, storedStamp(row.head));
+      }
+      const positions = [];
+      for (const d of deltas) {
+        const stream = streamName(d.stream);
+        const [record] = await q(SQL.V05_RECORD_ID, d.model, d.identityKey);
+        if (!record) throw new Error("missing canonical record metadata");
+        const rows = d.publish
+          ? await q(
+              SQL.V05_POSITION_WRITE,
+              stream,
+              record.id,
+              cursors.get(stream),
+            )
+          : await q(SQL.V05_POSITION_READ, stream, record.id);
+        const row = rows[0];
+        if (!row || row.kind !== "upsert")
+          throw new Error("unpublished pair has no live position");
+        positions.push({
+          stream,
+          model: d.model,
+          identityKey: d.identityKey,
+          cursor: storedStamp(row.cursor),
+          kind: "upsert",
+        });
+      }
+      return positions;
+    }
+    default:
+      throw new Error(
+        `unsupported protocol05 persistence operation ${String(r.op)}`,
+      );
+  }
+}
+
 /**
  * Answer the persistence half of the host contract through a driver, inside
  * the transaction the driver's runner opened. `handle` and `load` never reach
@@ -294,10 +488,13 @@ export async function answer<Tx>(
   driver: PostgresDriver<Tx>,
   tx: Tx,
   r: HostRequest,
+  publication05: Publication05 = new Map(),
 ): Promise<unknown> {
   const q = (sql: string, ...params: unknown[]) =>
     driver.query(tx, sql, params);
   switch (r.op) {
+    case "protocol05":
+      return answer05(q, r.request, publication05);
     case "claim": {
       await q(SQL.CLAIM_INSERT, r.clientId, r.owner);
       const rows = await q(SQL.CLAIM_LOCK, r.clientId);
@@ -869,11 +1066,43 @@ export async function answer<Tx>(
 export function persistence<Tx>(
   driver: PostgresDriver<Tx>,
 ): Database<Tx> & { driver: PostgresDriver<Tx> } {
+  const contexts = new WeakMap<object, Publication05>();
+  const context = (tx: Tx): Publication05 => {
+    if ((typeof tx !== "object" && typeof tx !== "function") || tx === null)
+      throw new Error("protocol05 requires an object transaction handle");
+    let value = contexts.get(tx as object);
+    if (!value) {
+      value = new Map();
+      contexts.set(tx as object, value);
+    }
+    return value;
+  };
   return {
     driver,
-    transaction: (body) => driver.transaction(body),
+    transaction: (body) =>
+      driver.transaction(async (tx) => {
+        try {
+          return await body(tx);
+        } finally {
+          if (
+            (typeof tx === "object" || typeof tx === "function") &&
+            tx !== null
+          )
+            contexts.delete(tx as object);
+        }
+      }),
     persistence: (tx: Tx): Persistence => ({
-      call: (request) => answer(driver, tx, request as HostRequest),
+      call: (request) => {
+        const state =
+          request.op === "protocol05"
+            ? context(tx)
+            : (((typeof tx === "object" || typeof tx === "function") &&
+              tx !== null
+                ? contexts.get(tx as object)
+                : undefined) ?? new Map<string, number>());
+        if (request.op === "rollback") state.clear();
+        return answer(driver, tx, request as HostRequest, state);
+      },
     }),
   };
 }

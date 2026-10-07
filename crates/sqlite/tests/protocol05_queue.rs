@@ -576,3 +576,118 @@ fn late_cascade_discovery_extends_owned_effects_without_changing_frozen_input() 
         v05::encode(&batch).unwrap()
     );
 }
+
+#[test]
+fn rejected_predecessor_releases_sequence_survivor_and_rolls_back_lifecycle_dependent() {
+    use axton_client::{Operation, OperationKind, RecordKey};
+    for reopen in [false, true] {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("db");
+        let mut value = serde_json::to_value(schema()).unwrap();
+        value["actions"].as_array_mut().unwrap().push(json!({
+            "name":"Edit","version":1,
+            "inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],
+            "outputs":[],
+            "sequence":{"after":[{"name":"Write","arguments":{"maybe":"entry"}}]}
+        }));
+        let s = Schema::from_value(value).unwrap();
+        let mut c = Client::open05(SqliteStore::open(&p).unwrap(), s.clone(), "User:u").unwrap();
+        let existing = RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"e"}),
+        };
+        let created = RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"n"}),
+        };
+        c.transaction(|tx| {
+            tx.direct(Operation {
+                model: "Entry".into(),
+                op: OperationKind::Create,
+                identity: existing.identity.clone(),
+                values: Some(json!({"text":"base","note":null})),
+            })
+        })
+        .unwrap();
+        let first = c.transaction(|tx| tx.submit_mutation05("Write",1,json!({"entries":[{"id":"n","text":"created","note":null}],"maybe":{"id":"e","text":"first"}}),vec![])).unwrap();
+        let survivor = c
+            .transaction(|tx| {
+                tx.submit_mutation05(
+                    "Edit",
+                    1,
+                    json!({"entry":{"id":"e","text":"survivor"}}),
+                    vec![],
+                )
+            })
+            .unwrap();
+        let lifecycle = c
+            .transaction(|tx| {
+                tx.submit_mutation05(
+                    "Edit",
+                    1,
+                    json!({"entry":{"id":"n","text":"dependent"}}),
+                    vec![],
+                )
+            })
+            .unwrap();
+        let dependencies = c.read_sql("SELECT ordinal,depends_on,kind FROM axton_mutation_dependency ORDER BY ordinal,kind",&[]).unwrap();
+        assert_eq!(
+            dependencies,
+            vec![
+                json!({"ordinal":survivor.ordinal,"depends_on":first.ordinal,"kind":"sequence"}),
+                json!({"ordinal":lifecycle.ordinal,"depends_on":first.ordinal,"kind":"lifecycle"})
+            ]
+        );
+        let b1 = c.freeze_batch05().unwrap().unwrap();
+        assert_eq!(
+            b1.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![first.ordinal]
+        );
+        let rejection = v05::MutationOutcome::Rejected {
+            code: "write.denied".into(),
+            message: Some("retained refusal".into()),
+        };
+        let report = c
+            .acknowledge_batch05(&v05::BatchAcknowledgement {
+                context: b1.context.clone(),
+                batch_id: b1.batch_id,
+                digest: b1.digest.clone(),
+                results: vec![v05::MutationResult {
+                    mutation_id: first.ordinal,
+                    outcome: rejection.clone(),
+                }],
+            })
+            .unwrap();
+        assert_eq!(report.completions.len(), 2);
+        assert!(c.call_completion05(&first.call_id).unwrap().is_some());
+        assert!(c.call_completion05(&lifecycle.call_id).unwrap().is_some());
+        assert!(c.call_completion05(&survivor.call_id).unwrap().is_none());
+        assert_eq!(c.read(&existing).unwrap().unwrap()["text"], "survivor");
+        assert!(c.read(&created).unwrap().is_none());
+        if reopen {
+            drop(c);
+            c = Client::open05(SqliteStore::open(&p).unwrap(), s, "User:u").unwrap();
+        }
+        assert_eq!(
+            c.mutation_result05(first.ordinal).unwrap().unwrap().outcome,
+            rejection
+        );
+        assert!(c.call_completion05(&lifecycle.call_id).unwrap().is_some());
+        assert!(c.call_completion05(&survivor.call_id).unwrap().is_none());
+        assert_eq!(c.read(&existing).unwrap().unwrap()["text"], "survivor");
+        assert!(c.read(&created).unwrap().is_none());
+        let b2 = c
+            .freeze_batch05()
+            .unwrap()
+            .expect("terminal refusal releases sequence ordering without dismissal");
+        assert_eq!(b2.batch_id, 2);
+        assert_eq!(
+            b2.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![survivor.ordinal]
+        );
+        assert_eq!(
+            c.mutation_result05(first.ordinal).unwrap().unwrap().outcome,
+            rejection
+        );
+    }
+}

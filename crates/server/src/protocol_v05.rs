@@ -8,6 +8,26 @@ use axton_core::{ActionInputDescriptor, CallKind, v05};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
 
+/// Existing trusted host carrier; only scopedStreams consumes binding.stream.
+/// Called after protocol-5 principal/Store/Stream admission. These internal fields
+/// never select protocol-4 authority or enter public protocol-5 identities.
+pub(crate) fn handler_context(
+    owner: &str,
+    context: &v05::RequestContext,
+) -> axton_core::v04::RequestContext {
+    axton_core::v04::RequestContext {
+        protocol: 4,
+        binding: axton_core::v04::StoreBinding {
+            backend: "protocol5".into(),
+            viewer: owner.into(),
+            stream: context.stream.clone(),
+            contract: context.materialization.clone(),
+        },
+        materialization: context.materialization.clone(),
+        incarnation: context.store_id.clone(),
+    }
+}
+
 pub fn validate_mutation_batch(config: &Config, bytes: &[u8]) -> Result<String> {
     let request: v05::MutationRequest = v05::decode(bytes).map_err(request_invalid)?;
     for mutation in &request.mutations {

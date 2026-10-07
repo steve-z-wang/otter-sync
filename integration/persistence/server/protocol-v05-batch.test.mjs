@@ -151,7 +151,7 @@ function app(cfg = config, materializations = {}) {
           args.todo.title,
         ]);
         if (args.mode !== "private" && args.mode !== "other")
-          ctx.stream("User:alice").track.todo({ id: args.todo.id });
+          ctx.stream.track.todo({ id: args.todo.id });
         if (args.mode !== "private")
           ctx.stream("User:other").track.todo({ id: args.todo.id });
         if (args.mode === "multi") {
@@ -160,8 +160,7 @@ function app(cfg = config, materializations = {}) {
             extra,
             "multi",
           ]);
-          ctx.stream("User:alice").track.todo({ id: extra });
-          ctx.stream("User:other").track.todo({ id: extra });
+          ctx.streams(["User:alice", "User:other"]).track.todo({ id: extra });
         }
         if (args.mode === "refuse") throw new MutationRejected("write.no");
         if (args.mode === "transient" && fault === "handler") {
@@ -384,6 +383,36 @@ test("one cursor per Mutation per Stream includes repeated preparation publicati
   for (const result of ack.results) {
     assert.equal(result.outcome.targets[0].cursor, result.outcome.syncCursor);
   }
+});
+test("typed default Mutation Stream and explicit multi-Stream handles publish positive positions", async () => {
+  const s = store(),
+    r = batch(s, ["multi"]);
+  const prior = new Map(
+    (await q("SELECT stream,head FROM axton_stream")).map((x) => [
+      x.stream,
+      Number(x.head),
+    ]),
+  );
+  const ack = JSON.parse(await app().push("alice", JSON.stringify(r)));
+  assert.equal(ack.results[0].outcome.kind, "accepted");
+  const pairs = await q(
+    "SELECT s.stream,s.cursor FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE r.identity->>'id' LIKE $1",
+    [s + "-%"],
+  );
+  for (const stream of ["User:alice", "User:other"]) {
+    const cursors = pairs
+      .filter((p) => p.stream === stream)
+      .map((p) => Number(p.cursor));
+    assert.deepEqual(cursors, [
+      (prior.get(stream) ?? 0) + 1,
+      (prior.get(stream) ?? 0) + 1,
+    ]);
+    assert.ok(cursors.every((c) => c > 0));
+  }
+  assert.equal(
+    ack.results[0].outcome.syncCursor,
+    (prior.get("User:alice") ?? 0) + 1,
+  );
 });
 test("multiple records share one Mutation cursor in each affected Stream", async () => {
   const s = store(),

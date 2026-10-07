@@ -106,7 +106,7 @@ pub(crate) async fn execute(
                 request.context.store_id, request.batch_id, member.id
             ),
             ordinal: ordinal + 1,
-            context: None,
+            context: Some(protocol_v05::handler_context(owner, &request.context)),
         })
         .await?;
     let outcome = match handled {

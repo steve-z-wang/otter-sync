@@ -660,19 +660,7 @@ pub async fn process_read05(
                         owner: owner.into(),
                         call_id: r.request_id.clone(),
                         ordinal: 1,
-                        // Existing host carrier: only scopedStreams reads binding.stream.
-                        // These internal fields never select protocol-4 authority or reach the wire.
-                        context: Some(axton_core::v04::RequestContext {
-                            protocol: 4,
-                            binding: axton_core::v04::StoreBinding {
-                                backend: "protocol5".into(),
-                                viewer: owner.into(),
-                                stream: r.context.stream.clone(),
-                                contract: r.context.materialization.clone(),
-                            },
-                            materialization: r.context.materialization.clone(),
-                            incarnation: r.context.store_id.clone(),
-                        }),
+                        context: Some(crate::protocol_v05::handler_context(owner, &r.context)),
                     })
                     .await?;
                 let outputs = match handled {

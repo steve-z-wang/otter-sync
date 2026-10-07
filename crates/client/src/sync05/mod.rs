@@ -7,3 +7,6 @@ mod uplink;
 pub use downlink::Control;
 pub use uplink::{StoreCommand, StoreReport};
 mod status;
+
+mod reset;
+pub use reset::ResetStoreReport05;

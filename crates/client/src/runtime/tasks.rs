@@ -446,10 +446,25 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         now: u64,
         entropy: u64,
     ) -> std::result::Result<Value, String> {
-        let report = self
-            .client
-            .reset_store04(discard_pending)
-            .map_err(|error| error.to_string())?;
+        let (value, abandoned_calls) = if self.protocol05 {
+            let report = self
+                .client
+                .reset_store05(discard_pending)
+                .map_err(|error| error.to_string())?;
+            (
+                serde_json::to_value(&report).map_err(|error| error.to_string())?,
+                report.abandoned_calls,
+            )
+        } else {
+            let report = self
+                .client
+                .reset_store04(discard_pending)
+                .map_err(|error| error.to_string())?;
+            (
+                serde_json::to_value(&report).map_err(|error| error.to_string())?,
+                report.abandoned_calls,
+            )
+        };
         self.lanes.cycle = crate::SyncCycle::default();
         self.lanes.downlink.reset_for_rebuild();
         self.fence_directs();
@@ -458,10 +473,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.rebuilt_lanes(now, entropy);
         self.observers.stale = true;
         self.rebuilt_observers();
-        for abandoned in &report.abandoned_calls {
+        self.release_initial_reads05(false);
+        self.sync05_live = false;
+        self.sync05_catching_up = false;
+        for abandoned in &abandoned_calls {
             self.events.push(Event::CallCompleted { call_id:abandoned.call_id.clone(), outcome:json!({"status":"failed","code":"abandoned","execution":if abandoned.frozen {"unknown"}else{"rejected"}}) });
         }
-        serde_json::to_value(report).map_err(|error| error.to_string())
+        Ok(value)
     }
     fn rebuild(
         &mut self,

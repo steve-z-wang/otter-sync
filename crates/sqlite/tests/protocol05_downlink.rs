@@ -760,3 +760,76 @@ fn terminal_admission_refusal_cancels_control_without_auth_or_backoff() {
         serde_json::to_value(status).unwrap()
     );
 }
+
+#[test]
+fn explicit_reset_retires_frozen_batch_and_reused_ids_have_new_store_owner() {
+    use serde_json::json;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut s: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    s["actions"] = json!([{"name":"Write","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"create","cardinality":"single"}],"outputs":[]}]);
+    let schema = Schema::from_value(s).unwrap();
+    let mut c =
+        Client::open05(SqliteStore::open(&path).unwrap(), schema.clone(), "User:u").unwrap();
+    let old = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"old","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    assert!(c.reset_store05(false).is_err());
+    assert_eq!(c.freeze_batch05().unwrap().unwrap(), batch);
+    let report = c.reset_store05(true).unwrap();
+    assert_ne!(report.context.store_id, batch.context.store_id);
+    assert_eq!(
+        report.abandoned_calls,
+        vec![axton_client::AbandonedCall {
+            call_id: old.call_id,
+            frozen: true
+        }]
+    );
+    assert!(
+        c.read(&axton_client::RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"e"})
+        })
+        .unwrap()
+        .is_none()
+    );
+    let late = v05::BatchAcknowledgement {
+        context: batch.context.clone(),
+        batch_id: batch.batch_id,
+        digest: batch.digest,
+        results: vec![v05::MutationResult {
+            mutation_id: old.ordinal,
+            outcome: v05::MutationOutcome::Rejected {
+                code: "write.denied".into(),
+                message: None,
+            },
+        }],
+    };
+    assert!(c.acknowledge_batch05(&late).is_err());
+    let call = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"new","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let fresh = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(fresh.batch_id, batch.batch_id);
+    assert_eq!(call.ordinal, old.ordinal);
+    assert_ne!(fresh.context.store_id, batch.context.store_id);
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
+    assert_eq!(c.freeze_batch05().unwrap().unwrap(), fresh);
+}

@@ -382,6 +382,18 @@ impl Control {
     pub fn report(&mut self, report: StoreReport, now: u64) -> Result<()> {
         match report {
             StoreReport::Snapshot(status) => {
+                if status.context.store_id != self.context.store_id {
+                    let reconnect = self.connected;
+                    self.stop();
+                    self.queue = DeliveryQueue::new(16 * 1024 * 1024, 32);
+                    self.applying = false;
+                    self.applying_plan = None;
+                    self.head = status.cursor.unwrap_or(0);
+                    self.context = status.context.clone();
+                    if reconnect {
+                        self.connect()?;
+                    }
+                }
                 self.context = status.context.clone();
                 self.status = status;
                 self.wake();
@@ -428,6 +440,24 @@ impl Control {
                 }
             }
             StoreReport::Committed { status, plan, .. } => {
+                if status.context != self.context {
+                    self.queue
+                        .plans
+                        .retain(|_, p| p.header.context == status.context);
+                    let stale = self
+                        .flights
+                        .iter()
+                        .filter_map(|(id, f)| match f {
+                            Flight::Delta(r) if r.context != status.context => Some(id.clone()),
+                            Flight::Owned(r) if r.context != status.context => Some(id.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    for id in stale {
+                        self.flights.remove(&id);
+                        self.events.push(Event::CancelEffect { effect_id: id });
+                    }
+                }
                 self.context = status.context.clone();
                 self.status = status;
                 self.wake();

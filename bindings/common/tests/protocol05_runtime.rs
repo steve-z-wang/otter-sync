@@ -625,3 +625,88 @@ fn runtime_closed_event_releases_exclusive_store_before_immediate_reopen() {
         assert!(actor::wait_closed(id, Duration::from_secs(5)));
     }
 }
+
+#[test]
+fn reset05_refuses_pending_then_abandons_it_and_rotates_cloud_identity() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let id = open(&path);
+    let opened = wait(id);
+    let old = opened[0]["value"]["context"].clone();
+    actor::submit(id,json!({"type":"task","requestId":"mutation","command":{"kind":"submitAction","name":"Write","version":1,"args":{"entry":{"id":"a","text":"local","note":null}}}})).unwrap();
+    let submitted = wait(id);
+    let call = submitted
+        .iter()
+        .find(|e| e["requestId"] == "mutation")
+        .unwrap()["value"]["callId"]
+        .clone();
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"refuse","command":{"kind":"resetStore"}}),
+    )
+    .unwrap();
+    assert!(
+        wait(id)
+            .iter()
+            .any(|e| e["requestId"] == "refuse" && e["ok"] == false)
+    );
+    actor::submit(id,json!({"type":"task","requestId":"reset","command":{"kind":"resetStore","discardPending":true}})).unwrap();
+    let events = wait(id);
+    assert!(
+        events
+            .iter()
+            .any(|e| e["requestId"] == "reset" && e["ok"] == true),
+        "{events:?}"
+    );
+    assert!(
+        events.iter().any(|e| e["type"] == "callCompleted"
+            && e["callId"] == call
+            && e["outcome"]["code"] == "abandoned"),
+        "{events:?}"
+    );
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"status","command":{"kind":"status"}}),
+    )
+    .unwrap();
+    let events = wait(id);
+    let status = &events.iter().find(|e| e["requestId"] == "status").unwrap()["value"];
+    assert_ne!(status["context"]["storeId"], old["storeId"]);
+    assert_eq!(status["pending"], 0);
+    assert!(status["cursors"]["User:u"].is_null());
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+    let id = open(&path);
+    assert_eq!(wait(id)[0]["ok"], true);
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+}
+
+#[test]
+fn refused_query_uses_existing_bridge_status_outcome() {
+    let d = tempfile::tempdir().unwrap();
+    let id = open(&d.path().join("db"));
+    wait(id);
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"connect","command":{"kind":"connect"}}),
+    )
+    .unwrap();
+    wait(id);
+    actor::submit(id,json!({"type":"task","requestId":"query","command":{"kind":"invoke","name":"Lookup","version":1,"args":{},"store":false}})).unwrap();
+    let events = wait(id);
+    let effect = events
+        .iter()
+        .find(|e| e["operation"]["route"] == "action")
+        .unwrap();
+    let body: Value = serde_json::from_str(effect["operation"]["body"].as_str().unwrap()).unwrap();
+    let response = json!({"protocol":5,"storeId":body["storeId"],"stream":body["stream"],"materialization":body["materialization"],"requestId":body["requestId"],"outcome":{"kind":"failed","code":"lookup.denied","message":"denied"},"records":[]});
+    actor::submit(id,json!({"type":"effectResult","effectId":effect["effectId"],"outcome":{"ok":true,"value":serde_json::to_string(&response).unwrap()}})).unwrap();
+    let events = wait(id);
+    let completed = events.iter().find(|e| e["requestId"] == "query").unwrap();
+    assert_eq!(completed["value"]["outcome"]["status"], "failed");
+    assert_eq!(completed["value"]["outcome"]["execution"], "rejected");
+    assert_eq!(completed["value"]["outcome"]["code"], "lookup.denied");
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+}

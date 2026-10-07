@@ -855,10 +855,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
             Ok::<_, crate::Error>(match response.outcome {
                 crate::v05::ReadOutcome::Succeeded { result } => {
-                    json!({"outcome":{"kind":"succeeded","result":result}})
+                    json!({"outcome":{"status":"succeeded","result":result}})
                 }
                 crate::v05::ReadOutcome::Failed { code, message } => {
-                    json!({"outcome":{"kind":"failed","code":code,"message":message}})
+                    json!({"outcome":{"status":"failed","code":code,"message":message,"execution":"rejected"}})
                 }
             })
         })();

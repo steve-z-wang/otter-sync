@@ -110,6 +110,7 @@ dependencies = [
  "chrono",
  "rusqlite",
  "serde_json",
+ "sha2",
  "tempfile",
  "uuid",
 ]

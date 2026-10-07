@@ -544,7 +544,7 @@ impl<S: ClientStore> Engine<'_, S> {
     /// cascade to its descendants comes before the delete (as `cascade`),
     /// then the operation itself (as `own`). Queued calls and appended
     /// companions share it, so a cascade is stored at its trigger either way.
-    fn apply_in_order(
+    pub(crate) fn apply_in_order(
         &mut self,
         op: &Operation,
         own: OpKind,
@@ -630,6 +630,9 @@ impl<S: ClientStore> Engine<'_, S> {
             let after = self.last_ordinal()?;
             self.insert_local_write(after, None, LocalWriteKind::Independent, &operation)?;
         } else {
+            if self.is05()? {
+                self.allocate05("next_local_sequence")?;
+            }
             self.retain_local_operation(&key, &operation)?;
         }
         Ok(())

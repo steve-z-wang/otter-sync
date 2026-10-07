@@ -277,6 +277,9 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(())
     }
     pub(crate) fn direct_evidence04(&mut self, key: &axton_core::RecordKey) -> Result<()> {
+        if self.is05()? {
+            return self.direct_evidence05(key);
+        }
         if self.context04()?.is_none() {
             return Ok(());
         }
@@ -308,7 +311,7 @@ impl<S: ClientStore> Engine<'_, S> {
         self.exec("axton_v04_record","UPDATE axton_v04_record SET base=?,generation=generation+? WHERE model=? AND identity=?",&[json!(serde_json::to_string(&state)?),json!(u8::from(new_generation)),json!(key.model),json!(key.encoded_identity()?)])?;
         Ok(())
     }
-    fn stage_preserving_local04(
+    pub(crate) fn stage_preserving_local04(
         &mut self,
         key: &axton_core::RecordKey,
         incoming: Option<&Value>,

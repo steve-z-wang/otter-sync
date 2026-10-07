@@ -22,6 +22,7 @@ mod policies;
 mod progress04;
 mod protocol04;
 pub use protocol04::ResetStoreReport;
+pub mod mutation_queue;
 mod push;
 pub mod query;
 pub mod query_cache;
@@ -31,7 +32,9 @@ pub mod rows;
 pub mod runtime;
 pub mod schema_store;
 mod settlement04;
+pub mod settlement05;
 pub mod store;
+pub mod store05;
 mod store_delivery;
 mod store_epoch;
 pub mod stream_members;
@@ -248,6 +251,7 @@ struct SessionSavepoint {
 pub struct Client<S: ClientStore> {
     store: S,
     context04: Option<v04::RequestContext>,
+    context05: Option<v05::RequestContext>,
     store_epoch: StoreToken,
     request_tokens: std::cell::RefCell<BTreeMap<String, StoreToken>>,
     schema: Schema,
@@ -496,6 +500,7 @@ impl<S: ClientStore> Client<S> {
         Ok(Self {
             store,
             context04,
+            context05: None,
             store_epoch,
             request_tokens: Default::default(),
             schema,
@@ -778,7 +783,11 @@ impl<S: ClientStore> Client<S> {
     /// Bump the generation inside the open transaction; a stale writer fails here.
     fn fence(&mut self) -> Result<()> {
         let affected = self.store.execute(
-            "UPDATE axton_client SET generation = generation + 1 WHERE generation = ?",
+            if self.context05.is_some() {
+                "UPDATE axton_store SET generation=generation+1 WHERE generation=?"
+            } else {
+                "UPDATE axton_client SET generation = generation + 1 WHERE generation = ?"
+            },
             &[Value::from(self.generation)],
         )?;
         if affected != 1 {
@@ -1417,6 +1426,12 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         args: Value,
         options: ActionCallOptions,
     ) -> Result<SubmittedCall> {
+        if self.engine.is05()? {
+            if !options.store.is_all() {
+                return Err(invalid("protocol05 Mutation has no store policy"));
+            }
+            return self.submit_mutation05(name, version, args, vec![]);
+        }
         if self.local_only {
             return Err(invalid(STORE_HOOK_SUBMIT));
         }
@@ -1443,6 +1458,9 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         args: Value,
         companions: Vec<Operation>,
     ) -> Result<SubmittedCall> {
+        if self.engine.is05()? {
+            return self.submit_mutation05(name, version, args, companions);
+        }
         self.savepoint(|tx| {
             if tx.local_only {
                 return Err(invalid(STORE_HOOK_SUBMIT));

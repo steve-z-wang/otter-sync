@@ -212,6 +212,10 @@ fn ownership_lock_path(_file: &std::fs::File) -> Result<std::path::PathBuf> {
 }
 
 impl SqliteStore {
+    pub fn open_exclusive05(path: impl AsRef<Path>, stream: &str) -> Result<Self> {
+        axton_core::check_stream(stream)?;
+        Self::open_exclusive_admitted(path, Some(stream))
+    }
     /// Mobile/native host initialization, once for the application's lifetime.
     /// This is not a per-client option. Hosts must consistently resolve their
     /// durable sandbox application-data directory before opening any Store.
@@ -234,6 +238,9 @@ impl SqliteStore {
     /// Protocol-4 file ownership. Acquire before SQLite can change journal or
     /// schema state. OS locking follows the inode through aliases/hard links.
     pub fn open_exclusive(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_exclusive_admitted(path, None)
+    }
+    fn open_exclusive_admitted(path: impl AsRef<Path>, stream: Option<&str>) -> Result<Self> {
         let path = path.as_ref();
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -258,6 +265,38 @@ impl SqliteStore {
             _identity: file,
             lock,
         };
+        if let Some(stream) = stream
+            && ownership
+                ._identity
+                .metadata()
+                .map_err(|e| invalid(e.to_string()))?
+                .len()
+                > 0
+        {
+            // SQLite's immutable mode ignores uncheckpointed WAL. Inspect
+            // a private snapshot instead: read-only open may rebuild its
+            // SHM, but never modifies the refused file's bytes or journals.
+            let snapshot = tempfile::tempdir().map_err(|e| invalid(e.to_string()))?;
+            let copied = snapshot.path().join("store.sqlite");
+            std::fs::copy(path, &copied).map_err(|e| invalid(e.to_string()))?;
+            let wal = std::path::PathBuf::from(format!("{}-wal", path.display()));
+            if wal.exists() {
+                std::fs::copy(wal, snapshot.path().join("store.sqlite-wal"))
+                    .map_err(|e| invalid(e.to_string()))?;
+            }
+            let writer =
+                Connection::open_with_flags(&copied, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(db)?;
+            let reader =
+                Connection::open_with_flags(&copied, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    .map_err(db)?;
+            let mut admitted = Self {
+                writer,
+                reader,
+                _file_lock: None,
+            };
+            axton_client::store05::admit05(&mut admitted, stream)?;
+        }
         let mut store = Self::open(path)?;
         // Keep database identity open too, preventing inode reuse while owned.
         store._file_lock = Some(ownership);

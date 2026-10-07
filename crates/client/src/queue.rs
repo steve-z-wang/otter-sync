@@ -150,6 +150,9 @@ impl<S: ClientStore> Engine<'_, S> {
         Ok(value)
     }
     pub fn allocate_ordinal(&mut self) -> Result<u64> {
+        if self.is05()? {
+            return self.allocate05("next_mutation_id");
+        }
         self.bump("next_ordinal")
     }
     pub fn allocate_push(&mut self) -> Result<u64> {
@@ -162,6 +165,9 @@ impl<S: ClientStore> Engine<'_, S> {
         kind: OpKind,
         op: &Operation,
     ) -> Result<()> {
+        if self.is05()? {
+            return self.insert_owned05(ordinal, position, kind, None, op);
+        }
         let key = self.schema.record_key(&op.model, &op.identity)?;
         self.capture_operation04(ordinal, position, &key)?;
         self.exec(
@@ -299,19 +305,22 @@ impl<S: ClientStore> Engine<'_, S> {
             LocalWriteKind::Independent => "independent",
             LocalWriteKind::Accepted => "accepted",
         };
-        self.exec(
-            "axton_local_write",
-            "INSERT INTO axton_local_write (ordinal, position, disposition, model, identity, op, \"values\") VALUES (?,?,?,?,?,?,?)",
-            &[
-                json!(ordinal),
-                position.map_or(Value::Null, |p| json!(p)),
-                json!(disposition),
-                json!(op.model),
-                json!(key.encoded_identity()?),
-                json!(op_text(op.op)),
-                values_text(op)?,
-            ],
-        )?;
+        let mut parameters = vec![
+            json!(ordinal),
+            position.map_or(Value::Null, |p| json!(p)),
+            json!(disposition),
+            json!(op.model),
+            json!(key.encoded_identity()?),
+            json!(op_text(op.op)),
+            values_text(op)?,
+        ];
+        let sql = if self.is05()? {
+            parameters.insert(0, json!(self.allocate05("next_local_sequence")?));
+            "INSERT INTO axton_local_write(sequence,ordinal,position,disposition,model,identity,op,\"values\") VALUES(?,?,?,?,?,?,?,?)"
+        } else {
+            "INSERT INTO axton_local_write(ordinal,position,disposition,model,identity,op,\"values\") VALUES(?,?,?,?,?,?,?)"
+        };
+        self.exec("axton_local_write", sql, &parameters)?;
         Ok(())
     }
     /// The settled local writes retained for one record, in allocation order.
@@ -383,6 +392,9 @@ impl<S: ClientStore> Engine<'_, S> {
             mutation.version = as_u64(&row[2])?;
             mutation.call_id = row[5].as_str().map(str::to_owned);
             mutation.args = row[6].as_str().map(serde_json::from_str).transpose()?;
+            if self.is05()? {
+                mutation.args = Some(self.input05(ordinal)?);
+            }
             mutation.store = match row[7].as_str() {
                 Some(text) => ActionStore::from_wire(&serde_json::from_str(text)?)?,
                 None => ActionStore::All,

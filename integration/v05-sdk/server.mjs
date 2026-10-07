@@ -8,8 +8,14 @@ import {
   devAuth,
   CallRejected as MutationRejected,
 } from "./backend.ts";
+import { createBackend as createRolloverBackend } from "./rollover/backend.ts";
+import { createBackend as createVersionedBackend } from "./versioned/backend.ts";
 
-export async function host() {
+export async function host({
+  rollover = false,
+  versioned = false,
+  materializations = {},
+} = {}) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query(
     await readFile(
@@ -36,13 +42,18 @@ export async function host() {
     );
     return ids.map((x) => byId.get(x.id) ?? null);
   };
-  const backend = createBackend({
+  const options = {
     database: pg(pool),
     authenticate: devAuth(),
     protocol5: {
+      materializations,
       authorizeStream: (owner, stream) => stream === `User:${owner}`,
     },
-    onError: (error) => errors.push(String(error)),
+    onError: (error) => {
+      errors.push(String(error));
+      if (process.env.AXTON_GATE_TRACE)
+        console.error("host error", String(error));
+    },
     mutations: {
       publish: async ({ ctx, args }) => {
         executions.push(args.entry.id);
@@ -62,10 +73,14 @@ export async function host() {
     queries: {
       find: async ({ ctx, args }) => {
         queries.push(args.id);
+        if (args.id === "refused-query")
+          throw new MutationRejected("find.denied");
         const { rows } = await ctx.tx.query(
           "SELECT id FROM sdk05_entry WHERE id=$1 AND owner=$2",
           [args.id, ctx.userId],
         );
+        if (args.id.startsWith("explicit-track-") && rows[0])
+          ctx.stream.track.entry(rows[0].id);
         return { entry: rows[0] ?? null };
       },
       peek: async ({ ctx, args }) => {
@@ -82,7 +97,31 @@ export async function host() {
       snapshot: loader,
     },
     bootstrap: async () => {},
-  });
+  };
+  if (versioned) {
+    options.mutations.publish = {
+      v1: options.mutations.publish,
+      v2: options.mutations.publish,
+    };
+    options.queries.find = {
+      v1: options.queries.find,
+      v2: options.queries.find,
+    };
+    options.loaders.entry = {
+      v1: loader,
+      v2: async (call) =>
+        (await loader(call)).map((row) =>
+          row ? { ...row, note: "new schema" } : null,
+        ),
+    };
+  }
+  const backend = (
+    versioned
+      ? createVersionedBackend
+      : rollover
+        ? createRolloverBackend
+        : createBackend
+  )(options);
   const real = await backend.listen({ port: 0 });
   let lose = 0,
     hold = false,
@@ -90,12 +129,16 @@ export async function host() {
     holdReads = false,
     heldReads = [],
     holdHandshake = false,
-    heldHandshake = [];
+    heldHandshake = [],
+    holdSchema = false,
+    heldSchema = [];
   const proxy = createServer(async (incoming, outgoing) => {
     const chunks = [];
     for await (const chunk of incoming) chunks.push(chunk);
     const body = Buffer.concat(chunks);
     requests.push({ route: incoming.url, body: body.toString() });
+    if (process.env.AXTON_GATE_TRACE)
+      console.error("host request", incoming.url, body.toString());
     const mutation = incoming.url === "/sync/mutations";
     if (mutation) batches.push(body.toString());
     const forward = () => {
@@ -103,10 +146,33 @@ export async function host() {
         new URL(incoming.url, real.url),
         { method: incoming.method, headers: incoming.headers },
         (response) => {
+          if (process.env.AXTON_GATE_TRACE) {
+            const trace = [];
+            response.on("data", (chunk) => trace.push(chunk));
+            response.on("end", () =>
+              console.error(
+                "host response",
+                incoming.url,
+                response.statusCode,
+                Buffer.concat(trace).toString().slice(0, 2500),
+              ),
+            );
+          }
           if (mutation && lose > 0) {
             lose--;
             response.resume();
             response.on("end", () => outgoing.destroy());
+            return;
+          }
+          if (holdSchema && incoming.url === "/sync/materialize") {
+            const bytes = [];
+            response.on("data", (chunk) => bytes.push(chunk));
+            response.on("end", () =>
+              heldSchema.push(() => {
+                outgoing.writeHead(response.statusCode, response.headers);
+                outgoing.end(Buffer.concat(bytes));
+              }),
+            );
             return;
           }
           if (
@@ -183,6 +249,18 @@ export async function host() {
     requests,
     errors,
     url: `http://127.0.0.1:${proxy.address().port}`,
+    holdSchema() {
+      holdSchema = true;
+    },
+    get heldSchemaCount() {
+      return heldSchema.length;
+    },
+    releaseSchema() {
+      holdSchema = false;
+      const pending = heldSchema;
+      heldSchema = [];
+      for (const respond of pending) respond();
+    },
     holdHandshake() {
       holdHandshake = true;
     },

@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { Bridge } from "../../packages/client-js/bridge.mts";
 import { GeneratedClient, schema } from "./client.ts";
+import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
+import { GeneratedClient as VersionedClient } from "./versioned/client.ts";
 import { host } from "./server.mjs";
 const until = async (probe, label) => {
   const deadline = Date.now() + 30000;
@@ -84,10 +86,10 @@ if (process.argv[2] === "enqueue-child") {
         (await a.models.entry.get({ id: "joined-accepted" })).text,
         " canonical ",
       );
-      await a.models.entry.update({
-        id: "joined-private",
-        text: "later direct",
-      });
+      await a.models.entry.update(
+        { id: "joined-private" },
+        { text: "later direct" },
+      );
       h.loseNext();
       await a.connect({ url: h.url, token: "alice" });
       await b.connect({ url: h.url, token: "alice" });
@@ -299,10 +301,10 @@ if (process.argv[2] === "enqueue-child") {
         " canonical settle ",
         "private",
       );
-      await client.models.entry.update({
-        id: "settle-fault-entry",
-        text: "later local",
-      });
+      await client.models.entry.update(
+        { id: "settle-fault-entry" },
+        { text: "later local" },
+      );
       await sqliteFault(
         path,
         "CREATE TRIGGER task7_settlement_failure BEFORE UPDATE OF reconciled ON axton_mutation_queue WHEN NEW.reconciled=1 BEGIN SELECT RAISE(ABORT,'task7 settlement commit failure');END;",
@@ -436,6 +438,11 @@ if (process.argv[2] === "enqueue-child") {
       ).rows;
       assert.deepEqual(memberships, [], "Query/Fetch never enroll implicitly");
       assert.equal((await client.queries.find({ id: "missing" })).entry, null);
+      await assert.rejects(
+        client.queries.find({ id: "refused-query" }),
+        (error) =>
+          error.code === "find.denied" && error.execution === "rejected",
+      );
       assert.equal(await client.fetch.entry({ id: "missing" }), null);
       await assert.rejects(
         client.queries.find({ id: "snapshot-read" }, { once: true }),
@@ -648,6 +655,271 @@ if (process.argv[2] === "enqueue-child") {
       );
     } finally {
       h.releaseReads();
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("A9/A12: generated Query handler explicitly tracks through its authenticated Stream", async () => {
+    const h = await host();
+    const dir = await mkdtemp(join(tmpdir(), "axton-sdk05-query-track-"));
+    let client;
+    try {
+      await h.backend.transaction(async ({ tx }) => {
+        await tx.query(
+          "INSERT INTO sdk05_entry VALUES('explicit-track-query','tracked deliberately','query-track')",
+        );
+      });
+      client = await open(join(dir, "db"), h.url, "query-track");
+      await client.bootstrap();
+      const result = await client.queries.find({ id: "explicit-track-query" });
+      assert.equal(result.entry.text, "tracked deliberately");
+      const rows = (
+        await h.pool.query(
+          "SELECT s.stream FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE r.identity->>'id'='explicit-track-query'",
+        )
+      ).rows;
+      assert.deepEqual(rows, [{ stream: "User:query-track" }]);
+      await h.backend.transaction(async ({ tx, invalidate }) => {
+        await tx.query(
+          "UPDATE sdk05_entry SET text='later authority' WHERE id='explicit-track-query'",
+        );
+        invalidate.entry("explicit-track-query");
+      });
+      await until(
+        async () =>
+          (await client.models.entry.get({ id: "explicit-track-query" }))
+            ?.text === "later authority",
+        "explicit Query holding receives later authority",
+      );
+    } finally {
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("A14: desired schema activates only after owned complete materialization and includes newly selected held keys", async () => {
+    let h = await host();
+    const dir = await mkdtemp(join(tmpdir(), "axton-sdk05-schema-"));
+    let client;
+    try {
+      await h.backend.transaction(async ({ tx, streams }) => {
+        await tx.query(
+          "INSERT INTO sdk05_entry VALUES('schema-entry','old entry','schema'),('schema-snapshot','old snapshot','schema')",
+        );
+        streams(["User:schema"]).track.entry("schema-entry");
+        streams(["User:schema"]).track.snapshot("schema-snapshot");
+      });
+      const path = join(dir, "db");
+      client = await open(path, h.url, "schema");
+      await client.bootstrap();
+      assert.equal(
+        (await client.queries.peek({ id: "schema-snapshot" })).entry.text,
+        "old snapshot",
+      );
+      const before = (
+        await client.readSql(
+          "SELECT materialization,start_cursor,bootstrap_cursor,cursor FROM axton_store",
+        )
+      )[0];
+      await client.close();
+      client = undefined;
+      await h.backend.transaction(async ({ tx, invalidate }) => {
+        await tx.query(
+          "UPDATE sdk05_entry SET text='new content' WHERE owner='schema'",
+        );
+        invalidate.entry("schema-entry");
+        invalidate.snapshot("schema-snapshot");
+      });
+      await h.close();
+      const config = JSON.parse(
+        await readFile(new URL("./backend.json", import.meta.url), "utf8"),
+      );
+      h = await host({
+        rollover: true,
+        materializations: {
+          [before.materialization]: {
+            schema: config.schema,
+            projectionGeneration: "1",
+          },
+        },
+      });
+      h.holdSchema();
+      client = await RolloverClient.open({
+        path,
+        stream: "User:schema",
+        connection: { url: h.url, token: "schema" },
+      });
+      await until(
+        () => h.heldSchemaCount > 0,
+        "owned schema materialization response",
+      );
+      const pending = (
+        await client.readSql(
+          "SELECT materialization,desired_materialization,bootstrap_cursor FROM axton_store",
+        )
+      )[0];
+      assert.equal(pending.materialization, before.materialization);
+      assert.notEqual(pending.desired_materialization, before.materialization);
+      assert.equal(pending.bootstrap_cursor, before.bootstrap_cursor);
+      const owned = h.requests
+        .filter((request) => request.route === "/sync/materialize")
+        .map((request) => JSON.parse(request.body));
+      assert.ok(
+        owned.some(
+          (request) =>
+            request.owner.kind === "schema" &&
+            request.owner.previousMaterialization === before.materialization &&
+            request.models.Snapshot === 1,
+        ),
+        "new Bootstrap Model missing owned schema request",
+      );
+      h.releaseSchema();
+      await until(async () => {
+        const row = (
+          await client.readSql(
+            "SELECT materialization,desired_materialization FROM axton_store",
+          )
+        )[0];
+        return row.materialization === row.desired_materialization;
+      }, "desired schema enabled");
+      assert.equal(
+        (await client.models.entry.get({ id: "schema-entry" })).text,
+        "new content",
+      );
+      assert.equal(
+        (await client.models.snapshot.get({ id: "schema-snapshot" })).text,
+        "new content",
+      );
+      assert.equal(
+        (await client.readSql("SELECT bootstrap_cursor FROM axton_store"))[0]
+          .bootstrap_cursor,
+        before.bootstrap_cursor,
+        "owned schema data fabricated range coverage",
+      );
+    } finally {
+      h.releaseSchema();
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("A14: retained version 1 and desired version 2 re-materialize a new field at the same cursor", async () => {
+    let h = await host();
+    const dir = await mkdtemp(join(tmpdir(), "axton-sdk05-versioned-"));
+    let client;
+    try {
+      await h.backend.transaction(async ({ tx, streams }) => {
+        await tx.query(
+          "INSERT INTO sdk05_entry VALUES('versioned-entry','same row','versioned')",
+        );
+        streams(["User:versioned"]).track.entry("versioned-entry");
+      });
+      const path = join(dir, "db");
+      client = await open(path, h.url, "versioned");
+      await client.bootstrap();
+      const before = (
+        await client.readSql(
+          "SELECT materialization,bootstrap_cursor,cursor FROM axton_store",
+        )
+      )[0];
+      const evidence = JSON.parse(
+        (
+          await client.readSql(
+            "SELECT evidence FROM axton_authority WHERE model='Entry'",
+          )
+        )[0].evidence,
+      );
+      assert.equal(
+        (await client.models.entry.get({ id: "versioned-entry" })).text,
+        "same row",
+      );
+      await client.close();
+      client = undefined;
+      await h.close();
+      const config = JSON.parse(
+        await readFile(new URL("./backend.json", import.meta.url), "utf8"),
+      );
+      h = await host({
+        versioned: true,
+        materializations: {
+          [before.materialization]: {
+            schema: config.schema,
+            projectionGeneration: "1",
+          },
+        },
+      });
+      h.holdSchema();
+      client = await VersionedClient.open({
+        path,
+        stream: "User:versioned",
+        connection: { url: h.url, token: "versioned" },
+      });
+      await until(
+        () => h.heldSchemaCount > 0,
+        "versioned owned materialization held",
+      );
+      const pending = (
+        await client.readSql(
+          "SELECT materialization,desired_materialization FROM axton_store",
+        )
+      )[0];
+      assert.equal(pending.materialization, before.materialization);
+      assert.notEqual(pending.desired_materialization, before.materialization);
+      const owned = h.requests
+        .filter((request) => request.route === "/sync/materialize")
+        .map((request) => JSON.parse(request.body));
+      assert.ok(
+        owned.some(
+          (request) =>
+            request.owner.kind === "schema" &&
+            request.owner.previousMaterialization === before.materialization &&
+            request.keys.some(
+              (key) =>
+                key.model === "Entry" && key.identity.id === "versioned-entry",
+            ),
+        ),
+      );
+      h.releaseSchema();
+      await until(async () => {
+        const row = (
+          await client.readSql(
+            "SELECT materialization,desired_materialization FROM axton_store",
+          )
+        )[0];
+        return row.materialization === row.desired_materialization;
+      }, "versioned schema activated");
+      const row = await client.models.entry.get({ id: "versioned-entry" });
+      assert.equal(row.text, "same row");
+      assert.equal(row.note, "new schema");
+      const after = JSON.parse(
+        (
+          await client.readSql(
+            "SELECT evidence FROM axton_authority WHERE model='Entry'",
+          )
+        )[0].evidence,
+      );
+      assert.equal(
+        after.membership.cursor,
+        evidence.membership.cursor,
+        "field rematerialization restamped unchanged record",
+      );
+      assert.equal(
+        (await client.readSql("SELECT bootstrap_cursor FROM axton_store"))[0]
+          .bootstrap_cursor,
+        before.bootstrap_cursor,
+        "owned versioned rematerialization fabricated Bootstrap coverage",
+      );
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT head FROM axton_stream WHERE stream='User:versioned'",
+          )
+        ).rows[0].head,
+        String(before.cursor),
+      );
+    } finally {
+      h.releaseSchema();
       await client?.close();
       await h.close();
       await rm(dir, { recursive: true, force: true });

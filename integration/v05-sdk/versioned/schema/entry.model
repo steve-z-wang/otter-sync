@@ -1,0 +1,8 @@
+model Draft { id String text String @@id(id) }
+model Entry { id String text String note String? @@id(id) @@version(2) @@bootstrap }
+model Snapshot { id String text String @@id(id) }
+@version(2)
+mutation Publish(entry Entry.create, call String) { entry Entry }
+@version(2)
+query Find(id String) { entry Entry? }
+query Peek(id String) { entry Snapshot? }

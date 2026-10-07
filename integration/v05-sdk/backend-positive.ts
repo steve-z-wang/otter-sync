@@ -11,7 +11,10 @@ const options: Options<object> = {
     publish: async ({ args }) => ({ entry: { id: args.entry.id } }),
   },
   queries: {
-    find: async () => ({ entry: null }),
+    find: async ({ ctx, args }) => {
+      ctx.stream.track.entry(args.id);
+      return { entry: null };
+    },
     peek: async () => ({ entry: null }),
   },
   loaders: { entry: async ({ ids }) => ids.map(() => null) },

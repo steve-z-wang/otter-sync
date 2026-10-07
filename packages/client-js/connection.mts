@@ -47,7 +47,6 @@ export type ReportDetails = {
   kind: ReportKind;
   model: string;
   identity: Record<string, unknown>;
-  stamp: number;
   /** `readFailed`: the server's code (`loader.failed`, or the refusal code). */
   code?: string;
   /** `diverged`: the queued mutation whose replay failed; it is still sent. */
@@ -56,21 +55,19 @@ export type ReportDetails = {
 };
 /**
  * A delivery the client could not apply, handed to `onError`. The client stays
- * consistent: a `readFailed` or `skipped` record keeps its local content and
- * stamp, a `conflict` keeps the local content, a `diverged` mutation shows the
+ * consistent: a `readFailed` or `skipped` record keeps its local content, a `conflict` keeps the local content, a `diverged` mutation shows the
  * server's row and is still sent.
  */
 export class AxtonReport extends Error {
   readonly kind: ReportKind;
   readonly model: string;
   readonly identity: Record<string, unknown>;
-  readonly stamp: number;
   readonly code: string | undefined;
   readonly ordinal: number | undefined;
   readonly detail: unknown;
   constructor(report: ReportDetails) {
     super(
-      `${report.kind}: ${report.model} ${JSON.stringify(report.identity)} at stamp ${report.stamp}` +
+      `${report.kind}: ${report.model} ${JSON.stringify(report.identity)}` +
         (report.code ? ` (${report.code})` : "") +
         (report.ordinal !== undefined ? ` (mutation ${report.ordinal})` : ""),
     );
@@ -78,7 +75,6 @@ export class AxtonReport extends Error {
     this.kind = report.kind;
     this.model = report.model;
     this.identity = report.identity;
-    this.stamp = report.stamp;
     this.code = report.code;
     this.ordinal = report.ordinal;
     this.detail = report.detail;

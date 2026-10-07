@@ -380,14 +380,13 @@ class RuntimeConnection {
 
 /// A delivery the client could not apply, handed to `onError`. The client
 /// stays consistent: a `readFailed` or `skipped` record keeps its local
-/// content and stamp, a `conflict` keeps the local content, a `diverged`
+/// content, a `conflict` keeps the local content, a `diverged`
 /// mutation shows the server's row and is still sent.
 class AxtonReport implements Exception {
   AxtonReport({
     required this.kind,
     required this.model,
     required this.identity,
-    required this.stamp,
     this.code,
     this.ordinal,
     this.detail,
@@ -396,7 +395,6 @@ class AxtonReport implements Exception {
     kind: json['kind'] as String,
     model: json['model'] as String,
     identity: Map<String, dynamic>.from(json['identity'] as Map),
-    stamp: json['stamp'] as int,
     code: json['code'] as String?,
     ordinal: json['ordinal'] as int?,
     detail: json['detail'],
@@ -406,7 +404,6 @@ class AxtonReport implements Exception {
   final String kind;
   final String model;
   final Map<String, dynamic> identity;
-  final int stamp;
 
   /// `readFailed`: the server's code (`loader.failed`, or the refusal code).
   final String? code;
@@ -417,7 +414,7 @@ class AxtonReport implements Exception {
 
   @override
   String toString() =>
-      'AxtonReport($kind: $model ${jsonEncode(identity)} at stamp $stamp'
+      'AxtonReport($kind: $model ${jsonEncode(identity)}'
       '${code == null ? '' : ' ($code)'}'
       '${ordinal == null ? '' : ' (mutation $ordinal)'})';
 }

@@ -601,7 +601,6 @@ void main() {
       'kind': 'conflict',
       'model': 'Entry',
       'identity': {'id': 'e'},
-      'stamp': 3,
     };
 
     test('records become AxtonReports; errors become StateErrors', () {
@@ -618,7 +617,7 @@ void main() {
         everyElement(
           isA<AxtonReport>()
               .having((r) => r.kind, 'kind', 'conflict')
-              .having((r) => r.stamp, 'stamp', 3),
+              .having((r) => r.identity, 'identity', {'id': 'e'}),
         ),
       );
       expect(reported.skip(2).map((e) => (e as StateError).message), [

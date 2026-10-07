@@ -220,7 +220,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         } else {
             let tasks = std::mem::take(&mut self.tasks.initial_reads);
             for task in tasks {
-                self.complete(task.request_id, Err(direct::UNAVAILABLE.into()));
+                if matches!(task.command, Command::Fetch { .. }) {
+                    self.fail(
+                        task.request_id,
+                        direct::FETCH_UNAVAILABLE,
+                        direct::code(direct::FETCH_UNAVAILABLE),
+                    );
+                } else {
+                    self.complete(task.request_id, Err(direct::UNAVAILABLE.into()));
+                }
             }
         }
     }

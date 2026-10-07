@@ -51,7 +51,7 @@ pub(super) const INVALID_OPTIONS: &str = "action.invalid_options";
 const TIMED_OUT: &str = "direct call timed out";
 
 const FETCH_INVALID_OPTIONS: &str = "fetch.invalid_options";
-const FETCH_UNAVAILABLE: &str = "fetch.unavailable";
+pub(super) const FETCH_UNAVAILABLE: &str = "fetch.unavailable";
 const FETCH_TIMEOUT: &str = "fetch.timeout";
 const FETCH_TRANSPORT_FAILED: &str = "fetch.transport_failed";
 const FETCH_INVALID_RESPONSE: &str = "fetch.invalid_response";
@@ -868,10 +868,34 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             return;
         };
         let fetch = call.fetch.is_some();
+        let mut snapshot_mismatch = false;
         let decoded = (|| {
             let request = crate::v05::decode::<crate::v05::ReadRequest>(call.body.as_bytes())?;
             let response = crate::v05::decode::<crate::v05::ReadResponse>(response.as_bytes())?;
-            response.admit(&request, &self.client.request_context05()?)?;
+            let active = self.client.request_context05()?;
+            if response.context == request.context
+                && request.context == active
+                && response.request_id == request.request_id
+                && let crate::v05::ReadInvocation::Fetch { key, .. } = &request.invocation
+                && let crate::v05::ReadOutcome::Succeeded { result } = &response.outcome
+                && let [record] = response.records.as_slice()
+                && record.key == *key
+                && !record.state.as_object().is_some_and(|state| {
+                    key.identity
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .any(|field| state.contains_key(field))
+                })
+            {
+                let expected = if record.state.is_null() {
+                    Value::Null
+                } else {
+                    crate::rows::merge_identity(&key.identity, &record.state)
+                };
+                snapshot_mismatch = *result != expected;
+            }
+            response.admit(&request, &active)?;
             if let crate::v05::ReadInvocation::Fetch { key, .. } = &request.invocation
                 && let crate::v05::ReadOutcome::Succeeded { result } = &response.outcome
                 && !result.is_null()
@@ -915,11 +939,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let (request, response) = match decoded {
             Ok(value) => value,
             Err(error) => {
-                let kind = if fetch
-                    && error
-                        .to_string()
-                        .contains("Fetch result differs from snapshot")
-                {
+                let kind = if fetch && snapshot_mismatch {
                     FETCH_STORE_FAILED
                 } else if fetch {
                     FETCH_INVALID_RESPONSE

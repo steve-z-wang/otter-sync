@@ -972,3 +972,63 @@ fn fetch_wrong_version_and_invalid_store_refuse_before_network() {
     actor::detach(id);
     assert!(actor::wait_closed(id, Duration::from_secs(5)));
 }
+
+#[test]
+fn parked_first_s_fetch_stop_has_structured_unavailable() {
+    let d = tempfile::tempdir().unwrap();
+    let id = open(&d.path().join("db"));
+    wait(id);
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"connect","command":{"kind":"connect"}}),
+    )
+    .unwrap();
+    wait(id);
+    actor::submit(id,json!({"type":"task","requestId":"fetch","command":{"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"}}})).unwrap();
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"stop","command":{"kind":"connection","event":"stop"}}),
+    )
+    .unwrap();
+    let mut completed = None;
+    while completed.is_none() {
+        completed = wait(id).into_iter().find(|e| e["requestId"] == "fetch");
+    }
+    let e = completed.unwrap();
+    assert_eq!(e["details"]["code"], "fetch.unavailable", "{e}");
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+}
+
+#[test]
+fn fetch_snapshot_disagreement_keeps_store_failure_without_message_classification() {
+    let d = tempfile::tempdir().unwrap();
+    let id = open(&d.path().join("db"));
+    wait(id);
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"connect","command":{"kind":"connect"}}),
+    )
+    .unwrap();
+    wait(id);
+    actor::submit(id,json!({"type":"task","requestId":"mismatch","command":{"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"},"store":false}})).unwrap();
+    let effect = wait(id)
+        .into_iter()
+        .find(|e| e["operation"]["route"] == "fetch")
+        .unwrap();
+    let b: Value = serde_json::from_str(effect["operation"]["body"].as_str().unwrap()).unwrap();
+    actor::submit(id,json!({"type":"effectResult","effectId":effect["effectId"],"outcome":{"ok":true,"value":serde_json::to_string(&json!({"protocol":5,"storeId":b["storeId"],"stream":b["stream"],"materialization":b["materialization"],"requestId":b["requestId"],"outcome":{"kind":"succeeded","result":{"id":"e","text":"different","note":null}},"records":[{"key":{"model":"Entry","identity":{"id":"e"}},"cursor":null,"state":{"text":"canonical","note":null}}]})).unwrap()}})).unwrap();
+    let event = wait(id)
+        .into_iter()
+        .find(|e| e["requestId"] == "mismatch")
+        .unwrap();
+    assert_eq!(event["details"]["code"], "fetch.store_failed", "{event}");
+    assert!(
+        event["details"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("differs from snapshot")
+    );
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+}

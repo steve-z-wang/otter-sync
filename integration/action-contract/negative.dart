@@ -30,3 +30,5 @@ const wrongComposite=ProjectIdentity(id:'p'); // error: missing_required_argumen
 const wrongEnum=AddTodoV1Input(todo:AddTodoV1TodoCreate(id:'t',title:'t',state:Status.archived),gone:[],status:null,tags:[]); // error: argument_type_not_assignable
 const wrongList=StateListHandlerOutput(states:Status.open); // error: argument_type_not_assignable
 const wrongIdentity=AddTodoHandlerOutput(relatedTodo:'t',matches:[],count:1,state:null); // error: argument_type_not_assignable
+
+const excludedNamedSlot=EditManyTodosUpdate(id:'t',state:Present(Status.closed)); // error: undefined_named_parameter

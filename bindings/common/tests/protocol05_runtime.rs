@@ -1032,3 +1032,105 @@ fn fetch_snapshot_disagreement_keeps_store_failure_without_message_classificatio
     actor::detach(id);
     assert!(actor::wait_closed(id, Duration::from_secs(5)));
 }
+
+#[test]
+fn failed_initial_status_closes_runtime_and_releases_store() {
+    use axton_client::ClientStore;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let first = open(&path);
+    assert_eq!(wait(first)[0]["ok"], true);
+    actor::detach(first);
+    assert!(actor::wait_closed(first, Duration::from_secs(5)));
+    let mut store = axton_sqlite::SqliteStore::open(&path).unwrap();
+    // Counters must pass admission first. The expired-progress cleanup then
+    // corrupts the counter, reaching the worker's later initial status read.
+    store.execute("INSERT INTO axton_delivery_progress(plan_id,digest,header,next_unit) VALUES('fault','fault','{\"expiresAt\":0}',0)", &[]).unwrap();
+    store.execute_batch("CREATE TRIGGER startup_status_fault AFTER DELETE ON axton_delivery_progress BEGIN UPDATE axton_store SET next_mutation_id=-1; END").unwrap();
+    drop(store);
+    let id = open(&path);
+    let mut events = wait(id);
+    let failed = events
+        .iter()
+        .find(|event| event["requestId"] == "o")
+        .unwrap();
+    assert_eq!(failed["ok"], false, "{events:?}");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected an unsigned integer"),
+        "{events:?}"
+    );
+    let naturally_closed = actor::wait_closed(id, Duration::from_secs(1));
+    events.extend(actor::drain(id));
+    // Test the physical lease independently of rejecting the corrupt counter.
+    let lease_result = axton_sqlite::SqliteStore::open_exclusive(&path)
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    let lease_released = lease_result.is_ok();
+    actor::detach(id);
+    let detached_closed = actor::wait_closed(id, Duration::from_secs(1));
+    assert!(
+        naturally_closed,
+        "failed startup stranded control: lease_released={lease_released}, lease_result={lease_result:?}, detached_closed={detached_closed}, events={events:?}"
+    );
+    assert!(detached_closed, "detach stranded failed startup");
+    assert!(lease_released, "failed startup retained the Store lease");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "runtimeClosed")
+            .count(),
+        1,
+        "{events:?}"
+    );
+}
+
+#[test]
+fn earlier_startup_failures_close_runtime_and_release_store() {
+    use axton_client::ClientStore;
+    for fault in [
+        "UPDATE axton_store SET next_mutation_id=-1",
+        "INSERT INTO axton_delivery_progress(plan_id,digest,header,next_unit) VALUES('fault','fault','{',0)",
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        let first = open(&path);
+        assert_eq!(wait(first)[0]["ok"], true);
+        actor::detach(first);
+        assert!(actor::wait_closed(first, Duration::from_secs(5)));
+        let mut store = axton_sqlite::SqliteStore::open(&path).unwrap();
+        store.execute_batch(fault).unwrap();
+        drop(store);
+        let id = open(&path);
+        let mut events = wait(id);
+        assert!(
+            actor::wait_closed(id, Duration::from_secs(5)),
+            "{fault}: {events:?}"
+        );
+        events.extend(actor::drain(id));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["requestId"] == "o" && event["ok"] == false)
+                .count(),
+            1,
+            "{fault}: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["type"] == "runtimeClosed")
+                .count(),
+            1,
+            "{fault}: {events:?}"
+        );
+        assert!(
+            axton_sqlite::SqliteStore::open_exclusive(&path).is_ok(),
+            "{fault}: retained lease"
+        );
+        actor::detach(id);
+        assert!(actor::wait_closed(id, Duration::from_secs(1)));
+    }
+}

@@ -778,7 +778,15 @@ fn publish_control05(
     }
     outbox.publish(broker.filter(events));
 }
+struct WorkerExit05(Sender<Mail>);
+impl Drop for WorkerExit05 {
+    fn drop(&mut self) {
+        let _ = self.0.send(Mail::Worker(Box::new(WorkerMessage::Closed)));
+    }
+}
 fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
+    // Declared before the runtime so every exit drops the Store lease first.
+    let _exit = WorkerExit05(reports.clone());
     let send = |message| {
         let _ = reports.send(Mail::Worker(Box::new(message)));
     };
@@ -788,7 +796,6 @@ fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
         Ok(runtime) => runtime,
         Err(error) => {
             send(WorkerMessage::Opened(Err(error.to_string())));
-            send(WorkerMessage::Closed);
             return;
         }
     };
@@ -796,7 +803,6 @@ fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
     // partial transfer whose process died before its expiry timer fired.
     if let Err(error) = runtime.client().cleanup_delivery05(facts().0) {
         send(WorkerMessage::Opened(Err(error.to_string())));
-        send(WorkerMessage::Closed);
         return;
     }
     let opened = runtime.opened();
@@ -888,7 +894,6 @@ fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
         }]));
     }
     drop(runtime);
-    send(WorkerMessage::Closed);
 }
 
 #[derive(Default)]

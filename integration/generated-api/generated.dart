@@ -423,56 +423,6 @@ class CompositionCreate implements CompositionCreateInput {
  'body': body,
  };
 }
-Map<String,dynamic> addDraft({required DraftCreateInput draft}) { final operations=<Map<String,dynamic>>[];
- for (final value in [draft]) {
- final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['id']) if (state.containsKey(key)) key: state.remove(key)};
- operations.add({'model':'Draft','op':'create','identity':identity,'values':state}); }
- return {'name':'AddDraft','version':1,'operations':operations}; }
-Map<String,dynamic> createEntry({required EntryCreateInput entry}) { final operations=<Map<String,dynamic>>[];
- for (final value in [entry]) {
- final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['id']) if (state.containsKey(key)) key: state.remove(key)};
- operations.add({'model':'Entry','op':'create','identity':identity,'values':state}); }
- return {'name':'CreateEntry','version':1,'operations':operations}; }
-class EditEntryEntryUpdate {
- final EntryIdentity identity;
- final Present<String>? title;
- final Present<String?>? note;
- final Present<DateTime>? at;
- const EditEntryEntryUpdate({required this.identity,this.title,this.note,this.at});
- Map<String,dynamic> toRecord() => {
- if (title != null) 'title': title!.value,
- if (note != null) 'note': note!.value == null ? null : note!.value!,
- if (at != null) 'at': at!.value.toAxtonPrecision().toIso8601String(),
- };
-}
-Map<String,dynamic> editEntry({required EditEntryEntryUpdate entry}) { final operations=<Map<String,dynamic>>[];
- for (final value in [entry]) {
- operations.add({'model':'Entry','op':'update','identity':value.identity.toRecord(),'values':value.toRecord()}); }
- return {'name':'EditEntry','version':2,'operations':operations}; }
-class RemoveEntriesMaybeUpdate {
- final EntryIdentity identity;
- final Present<String?>? note;
- const RemoveEntriesMaybeUpdate({required this.identity,this.note});
- Map<String,dynamic> toRecord() => {
- if (note != null) 'note': note!.value == null ? null : note!.value!,
- };
-}
-Map<String,dynamic> removeEntries({required List<EntryIdentity> entries,@Deprecated('use entries') RemoveEntriesMaybeUpdate? maybe}) { final operations=<Map<String,dynamic>>[];
- for (final value in entries) {
- operations.add({'model':'Entry','op':'delete','identity':value.toRecord()}); }
- for (final value in [maybe].nonNulls) {
- operations.add({'model':'Entry','op':'update','identity':value.identity.toRecord(),'values':value.toRecord()}); }
- return {'name':'RemoveEntries','version':2,'operations':operations}; }
-Map<String,dynamic> addBook({required BookCreateInput book}) { final operations=<Map<String,dynamic>>[];
- for (final value in [book]) {
- final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['id']) if (state.containsKey(key)) key: state.remove(key)};
- operations.add({'model':'Book','op':'create','identity':identity,'values':state}); }
- return {'name':'AddBook','version':1,'operations':operations}; }
-Map<String,dynamic> addComment({required CommentCreateInput comment}) { final operations=<Map<String,dynamic>>[];
- for (final value in [comment]) {
- final state=value.toCreateRecord(); final identity=<String,dynamic>{for (final key in const <String>['id']) if (state.containsKey(key)) key: state.remove(key)};
- operations.add({'model':'Comment','op':'create','identity':identity,'values':state}); }
- return {'name':'AddComment','version':1,'operations':operations}; }
 class DraftFilter {
  final Present<String>? id;
  final Present<String>? body;
@@ -968,8 +918,6 @@ class GeneratedClient {
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.
  Future<Map<String,dynamic>> syncState() => client.syncState();
- /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].
- Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);
  /// Remove a handled rejection from the local inbox; it is not retried.
  Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);
  /// Remove unsent work and recompute local state; frozen work cannot be dropped.

@@ -1,22 +1,5 @@
-import { Book, Entry, createBackend, devAuth, type Handlers, type Loaders, type Mutations } from "./backend.ts";
+import { Book, Entry, createBackend, devAuth, type Loaders, type Mutations } from "./backend.ts";
 type Tx = { rows: Map<string, object> };
-export const handlers: Handlers<Tx> = {
-  // An ordinary write: the target record is stamped and read back without any Scope membership.
-  async createEntry({ input, tx }) { tx.rows.set(input.entry.id, input.entry); },
-  editEntry: {
-    async v1({ input, streams: scope }) { scope(["c"]).track.entry(input.target.identity); },
-    // A touch declares a changed record; membership is added or removed per Scope.
-    async v2({ input, streams: scope, invalidate: touch }) { touch.entry(input.entry.identity); scope(["c"]).track.entry(input.entry.identity); scope(["audit"]).invalidate.entry(input.entry.identity); },
-  },
-  removeEntries: {
-    async v1({ input, streams: scope }) { scope(["c"]).track(input.entries.map(({ identity }) => Entry(identity))); },
-    async v2({ input, streams: scope }) { scope(["c"]).invalidate(input.entries.map(({ identity }) => Entry(identity))); },
-  },
-  async addBook({ input, streams: scope, invalidate: touch }) { touch.book({ id: input.book.id }); scope(["c"]).track([]); scope(["c"]).track([Book(input.book)]); },
-  async addComment({ input, streams: scope }) { scope(["c"]).track.comment(input.comment); },
-  // Handlers receive the client-expanded create: defaulted fields are present and required (#27).
-  async addDraft({ input, tx }) { const { id, created, body }: { id: string; created: Date; body: string } = input.draft; tx.rows.set(id, { created, body }); },
-};
 // Transactional Mutation enqueue: the handler receives only the declared
 // business args; a local companion never reaches the backend.
 export const mutations: Mutations<Tx> = {
@@ -40,11 +23,10 @@ export const backend = createBackend<Tx>({
   database: { transaction: async (body) => body({ rows: new Map() }), persistence: () => ({ call: async () => null }) },
   authenticate: devAuth(),
   protocol5:{authorizeStream:()=>true},
-  handlers,
   mutations,
   queries: {readEntry: async () => ({entry:null})},
   loaders,
-  native: { validateConfig() {}, processPush: async () => "", processAction: async () => "", processFetch: async () => "", processPull: async () => "", validateLoadBatch: () => [], encodeLoadBatch: () => "", processLoad: async () => "", settleExternal: async () => "", negotiateLive: async () => "", pullLive: async () => "", liveEvent: () => "[]", liveClose() {} },
+  native: { validateConfig() {}, serverMaterializationId05: () => 'test-materialization' },
 });
 // An external write declares through the same handles and answers its own value.
 export const external: Promise<number> = backend.transaction(async ({ tx, streams: scope, invalidate: touch }) => { tx.rows.set("b", {}); touch.book({ id: "b" }); scope(["c"]).track.book({ id: "b" }); return tx.rows.size; });

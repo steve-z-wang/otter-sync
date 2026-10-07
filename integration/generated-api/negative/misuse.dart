@@ -19,7 +19,7 @@ Future<void> misuse(GeneratedClient client, ApplicationTransaction tx, Companion
  tx.transaction.mutate; // reject: UNDEFINED_GETTER
  tx.transaction.actions; // reject: UNDEFINED_GETTER
  EntryPatch(id:'bad'); // reject: UNDEFINED_NAMED_PARAMETER
- EditEntryEntryUpdate(identity:EntryIdentity(id:row.id),tags:const Present(['x'])); // reject: UNDEFINED_NAMED_PARAMETER
+ const EntryPatch(id:'bad'); // reject: UNDEFINED_NAMED_PARAMETER
  const EntryPatch(title:Present(null)); // reject: ARGUMENT_TYPE_NOT_ASSIGNABLE
  Entry(id:row.id,title:row.title,note:row.note,at:row.at,tags:row.tags,status:Status.typo); // reject: UNDEFINED_ENUM_CONSTANT
  const DraftCreate(); // reject: MISSING_REQUIRED_ARGUMENT

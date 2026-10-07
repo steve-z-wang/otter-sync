@@ -7,7 +7,7 @@ cargo test -p axton-compiler
 cargo run -p axton-compiler -- compile fixtures/compiler integration/generated-api --backend-runtime ../../packages/server/index.mts --client-runtime ../../packages/client-js/index.mts
 "$root/node_modules/.bin/tsc" -p integration/generated-api
 if "$root/node_modules/.bin/tsc" --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck --allowImportingTsExtensions integration/generated-api/backend-missing.ts >/dev/null 2>&1; then
-  echo 'A handlers object missing a mutation unexpectedly typechecked.' >&2
+  echo 'A named Mutations map missing a mutation unexpectedly typechecked.' >&2
   exit 1
 fi
 node integration/generated-api/test.ts

@@ -1,4 +1,4 @@
-import {Book,Comment,Entry as EntryRef,type Handlers,type Loaders,type EntryV1,type MutationContext,type QueryContext,type HandlerCall,type TransactionCall,type AddBookInput} from './backend.ts';
+import {Book,Comment,Entry as EntryRef,type Mutations,type Loaders,type EntryV1,type MutationContext,type QueryContext,type MutationHandlerCall,type TransactionCall,type PublishEntryInput} from './backend.ts';
 import {strict as assert} from 'node:assert';
 import {createServer} from 'node:http';
 import {createRequire} from 'node:module';
@@ -10,7 +10,7 @@ import type {EntryIdentity, Placement, Status, Composition, PublishEntryOutput, 
 import {ApplicationTransaction,CompanionContext,makeTransactionMutations} from './generated.ts';
 import type {Transaction as RawTransaction} from '../../packages/client-js/index.mts';
 import {Client as RawClient} from '../../packages/client-js/index.mts';
-import {CreateEntry,EditEntry,RemoveEntries,decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
+import {decodeEntry,encodeEntry,EntryModel,EntryLiveModel,GeneratedTransaction,type Entry,type ReadPort,type LivePort,type WritePort,type MutationName,type SyncState} from './generated.ts';
 const row:Entry={id:'123e4567-e89b-42d3-a456-426614174000',title:'hello',note:null,at:new Date('2026-01-01T00:00:00Z'),tags:['x'],status:'active'};
 const shared: import('./generated.ts').EntryFields = row;
 const identified: import('./generated.ts').IdentifiedFields = shared;
@@ -21,12 +21,7 @@ async function until(predicate:()=>boolean,what:string){
  while(Date.now()<deadline){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,5));}
  throw Error(`${what} timed out`);
 }
-const create=CreateEntry({entry:row});
-check(!('id' in (create.operations[0] as {values:object}).values),'identity leaked into state');
 check(JSON.stringify(decodeEntry(encodeEntry(row)))===JSON.stringify(row),'source conversion');
-const patch=EditEntry({entry:{identity:{id:row.id},values:{note:null}}});
-check(JSON.stringify((patch.operations[0] as {values:object}).values)==='{"note":null}','presence semantics');
-check(RemoveEntries({entries:[]}).operations.length===0,'optional/list');
 const reads:ReadPort={async read(){return encodeEntry(row)},async querySpec(){return [encodeEntry(row)]},async related(){return null},async referencing(){return []}};
 if(false){
  const entries=new EntryModel(reads);
@@ -62,37 +57,17 @@ if(false){
  // @ts-expect-error raw transactions have no action namespace
  rawTx.actions;
 
- // @ts-expect-error identity is immutable in patch
- EditEntry({entry:{identity:{id:row.id},values:{id:'bad'}}});
- // @ts-expect-error mutation forbids tags
- EditEntry({entry:{identity:{id:row.id},values:{tags:[]}}});
- // @ts-expect-error nonnullable title
- EditEntry({entry:{identity:{id:row.id},values:{title:null}}});
  // @ts-expect-error enum typo
  const bad:Entry={...row,status:'typo'};
 
  type Tx={rows:Map<string,object>};
- const shorthand:Handlers<Tx>['addBook']=async({input,tx,streams: scope,invalidate:touch})=>{tx.rows.set(input.book.id,input.book);touch.book(input.book);scope(['c']).track.book(input.book)};
- const grouped:Handlers<Tx>['editEntry']={
-  async v1({input,streams: scope}){scope(['c']).track.entry(input.target.identity)},
-  // Legacy slot handlers declare through the same handles; mixed lists take explicit references and may be empty.
-  async v2({input,streams: scope,invalidate:touch}){touch.entry(input.entry.identity);scope(['c']).track([EntryRef(input.entry.identity),Book({id:'b'})]);scope(['audit']).invalidate([])},
-  // @ts-expect-error v3 is not a retained version of EditEntry
-  async v3(){},
- };
- // @ts-expect-error a mutation with two retained versions cannot register a bare function
- const bare:Handlers<Tx>['editEntry']=async()=>{};
- // @ts-expect-error every retained version must be registered
- const partial:Handlers<Tx>['editEntry']={v2:async({input,streams: scope})=>{scope(['c']).track.entry(input.entry.identity)}};
- // @ts-expect-error handlers declare through `scope` and `touch`; there is no notify and no return value
- const legacy:Handlers<Tx>['addBook']=async({notify})=>{notify({scope:'c',records:[]})};
- // @ts-expect-error the old publish API is gone
- const published:Handlers<Tx>['addBook']=async({publish})=>{publish({scope:'c'})};
- // @ts-expect-error the old changes collector is gone
- const changed:Handlers<Tx>['addBook']=async({changes})=>{changes.add({model:'Book',identity:{id:'b'}})};
-
+ const shorthand:Mutations<Tx>['publishEntry']=async({args,ctx})=>{ctx.tx.rows.set(args.entry.id,args.entry);ctx.invalidate.entry(args.entry);ctx.streams(['c']).track.entry(args.entry);return {published:{id:args.entry.id}};};
+ // @ts-expect-error every named Mutation must be registered
+ const partial:Mutations<Tx>={publishEntry:shorthand};
+ // @ts-expect-error a retired generic handler map is absent
+ type NoHandlers=import('./backend.ts').Handlers<Tx>;
  // The generated declaration API, per schema: operation before Model.
- const declare=(ctx:MutationContext<Tx>,queryCtx:QueryContext<Tx>,call:HandlerCall<Tx,AddBookInput>,external:TransactionCall<Tx>)=>{
+ const declare=(ctx:MutationContext<Tx>,queryCtx:QueryContext<Tx>,call:MutationHandlerCall<Tx,PublishEntryInput>,external:TransactionCall<Tx>)=>{
   ctx.streams(['project:1']).track.book({id:'A'});
   ctx.streams(['project:1']).invalidate.book({id:'A'});
   ctx.invalidate.book({id:'A'});
@@ -110,8 +85,8 @@ if(false){
   const project=ctx.streams(['project:1']);
   project.track([Book({id:'A'}),Comment({id:'c'}),EntryRef({id:row.id})]);
   project.invalidate.comment({id:'c'});
-  call.streams(['project:1']).track.entry({id:row.id});
-  call.invalidate.counter({id:'n'});
+  call.ctx.streams(['project:1']).track.entry({id:row.id});
+  call.ctx.invalidate.counter({id:'n'});
   external.streams(['project:1']).invalidate([Book({id:'A'})]);
   external.invalidate.draft({id:row.id});
   // @ts-expect-error a raw identity names no Model
@@ -132,8 +107,6 @@ if(false){
   // @ts-expect-error tracking has no public withdrawal
   project.remove(Book({id:'A'}));
  };
- // @ts-expect-error a handler has no return value to select a scope with
- const returned:Handlers<Tx>['addBook']=async()=>({scope:'c'});
  // @ts-expect-error loaders receive no scope
  const scopeled:Loaders<Tx>['book']=async({ids,streams: scope})=>ids.map(id=>({...id,title:String(scope)}));
  // A schema without Loads declares no Load context or its add-only Scope.

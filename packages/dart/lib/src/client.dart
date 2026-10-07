@@ -612,7 +612,6 @@ class Client implements WritePort, SubmitMutationPort {
     _actionObservers.close();
     // The runtime stops every handle and watch with a terminal snapshot before
     // it announces its end.
-    _subscriptions.closing();
     final closing = _bridge.close();
     try {
       _abandonConnection();

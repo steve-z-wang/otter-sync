@@ -2,7 +2,7 @@
 // integration/generated-api` type-checks this file, and every
 // `@ts-expect-error` below has to be the error it names; the Dart twin is
 // misuse.dart ([#150](https://github.com/zanminwang/axton/issues/150)).
-import {GeneratedClient, type GeneratedTransaction, Draft, DraftCreate, AddDraftArgs, Entry, ApplicationTransaction, CompanionContext, PublishEntryOutput} from '../client.ts';
+import {GeneratedClient, type GeneratedTransaction, Draft, DraftCreate, Entry, ApplicationTransaction, CompanionContext, PublishEntryOutput} from '../client.ts';
 
 export function boundSurfaceMisuse(client:GeneratedClient,tx:GeneratedTransaction){
  // @ts-expect-error exactly one Stream is selected at bound open
@@ -27,7 +27,7 @@ export function createMisuse(){
  const incomplete:Draft={body:'x',mood:'calm',created:new Date(),note:null,memo:null};
  // @ts-expect-error an omitted field is left out, not set to undefined
  const undef:DraftCreate={memo:null,body:undefined};
- const ok:AddDraftArgs={draft:{memo:null}};
+ const ok:DraftCreate={memo:null};
  return [missing,incomplete,undef,ok];
 }
 // A schema without Loads generates no `loads` facade (#173).

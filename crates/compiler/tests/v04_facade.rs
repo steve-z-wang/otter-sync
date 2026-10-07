@@ -95,3 +95,16 @@ fn dart_retained_slot_helpers_do_not_emit_unused_private_aliases() {
         "retired private facade alias remains"
     );
 }
+
+#[test]
+fn generated_backend_requires_protocol5_without_protocol4_identity() {
+    let output = axton_compiler::backend_typescript(&compile(SCHEMA).unwrap(), "@axtonjs/server");
+    assert!(
+        output.contains("protocol5: NonNullable<BackendOptions<Tx>[\"protocol5\"]>"),
+        "new backend lacks required protocol5 authority configuration"
+    );
+    assert!(
+        !output.contains("protocol4: NonNullable<BackendOptions<Tx>[\"protocol4\"]>"),
+        "new generated backend requires retired public identity/config"
+    );
+}

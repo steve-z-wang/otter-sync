@@ -198,6 +198,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         request_id: &str,
         invocation: Invocation<'_>,
     ) -> Option<std::result::Result<Value, String>> {
+        if self.protocol05 {
+            let outcome = self.begin_read05(
+                request_id,
+                crate::v05::ReadInvocation::Query {
+                    name: invocation.name.into(),
+                    version: invocation.version,
+                    args: invocation.args.clone(),
+                },
+                invocation.store,
+            );
+            return outcome.err().map(Err);
+        }
         match self.begin_invoke(request_id, invocation) {
             Ok(Some(value)) => Some(Ok(value)),
             Ok(None) => None,
@@ -524,6 +536,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         now: u64,
         entropy: u64,
     ) {
+        if self.protocol05 {
+            return self.apply_read05(request_id, response);
+        }
         if self
             .directs
             .calls
@@ -681,6 +696,22 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         identity: &Value,
         store: &Option<Value>,
     ) {
+        if self.protocol05 {
+            if let Err(error) = self.begin_read05(
+                request_id,
+                crate::v05::ReadInvocation::Fetch {
+                    key: crate::v05::RecordKey {
+                        model: model.into(),
+                        identity: identity.clone(),
+                    },
+                    version,
+                },
+                store,
+            ) {
+                self.complete(request_id.into(), Err(error));
+            }
+            return;
+        }
         let refuse = |error: &str, cause: &dyn Display| (error.to_string(), caused(error, cause));
         let started = (|| {
             let store = match store {
@@ -747,6 +778,92 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if let Err((error, details)) = started {
             self.fail(request_id.to_string(), error, details);
         }
+    }
+    fn begin_read05(
+        &mut self,
+        request_id: &str,
+        invocation: crate::v05::ReadInvocation,
+        store: &Option<Value>,
+    ) -> std::result::Result<(), String> {
+        if self.connection.is_none() {
+            return Err(UNAVAILABLE.into());
+        }
+        if self
+            .client
+            .pending_schema05()
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            return Err("read.schema_pending".into());
+        }
+        let store = match store {
+            None => true,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err(INVALID_OPTIONS.into()),
+        };
+        match &invocation {
+            crate::v05::ReadInvocation::Query { name, version, .. } => {
+                if self
+                    .client
+                    .schema
+                    .action(name, *version)
+                    .map_err(|e| e.to_string())?
+                    .kind
+                    != crate::CallKind::Query
+                {
+                    return Err("invoke requires Query".into());
+                }
+            }
+            crate::v05::ReadInvocation::Fetch { key, .. } => {
+                self.client
+                    .schema
+                    .record_key(&key.model, &key.identity)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let request = crate::v05::ReadRequest {
+            context: self.client.request_context05().map_err(|e| e.to_string())?,
+            request_id: self.capability_token("read", self.issued + 1),
+            store,
+            invocation,
+        };
+        let body = String::from_utf8(crate::v05::encode(&request).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let fetch = match &request.invocation {
+            crate::v05::ReadInvocation::Fetch { key, version } => Some(FetchKey {
+                replica: self.directs.replica,
+                model: key.model.clone(),
+                version: *version,
+                identity: crate::canonical_json(&key.identity).map_err(|e| e.to_string())?,
+                store,
+            }),
+            _ => None,
+        };
+        self.send_direct(request_id, request.request_id, body, None, fetch)
+    }
+    fn apply_read05(&mut self, request_id: String, response: String) {
+        let Some(call) = self.directs.calls.remove(&request_id) else {
+            return;
+        };
+        let generation = self.client.generation();
+        let outcome = (|| {
+            let request = crate::v05::decode::<crate::v05::ReadRequest>(call.body.as_bytes())?;
+            let response = crate::v05::decode::<crate::v05::ReadResponse>(response.as_bytes())?;
+            response.admit(&request, &self.client.request_context05()?)?;
+            if request.store {
+                self.client.install_cache05(&response.records, true)?;
+            }
+            Ok::<_, crate::Error>(match response.outcome {
+                crate::v05::ReadOutcome::Succeeded { result } => {
+                    json!({"outcome":{"kind":"succeeded","result":result}})
+                }
+                crate::v05::ReadOutcome::Failed { code, message } => {
+                    json!({"outcome":{"kind":"failed","code":code,"message":message}})
+                }
+            })
+        })();
+        self.committed_since(generation);
+        self.complete(request_id, outcome.map_err(|e| e.to_string()));
     }
     /// Forget one Fetch flight and answer the callers joined to it.
     fn release_fetch(&mut self, key: &FetchKey, owner: &str) -> Vec<String> {

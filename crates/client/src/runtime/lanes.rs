@@ -143,6 +143,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             refreshing: None,
             waiters: vec![],
         });
+        if self.protocol05 {
+            let connection = self.connection.as_mut().unwrap();
+            connection.push.dirty = false;
+            connection.downlink.dirty = false;
+            return Ok(Value::Null);
+        }
         self.lanes.connection.start(now);
         self.enqueue_downlink(DownlinkEvent::Start, now, entropy);
         self.loads.worker.wake();
@@ -159,6 +165,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     ) -> std::result::Result<Value, String> {
         if self.connection.is_none() {
             return Ok(Value::Null);
+        }
+        if self.protocol05 && matches!(event, ConnectionEvent::Stop) {
+            self.release_initial_reads05(false);
         }
         match event {
             ConnectionEvent::Pause => self.pause_lanes(now, entropy),
@@ -328,8 +337,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// Something committed or asked for work: both lanes look again, and a
     /// lane sleeping on a timer drops it.
     pub(super) fn wake_lanes(&mut self, now: u64, entropy: u64) {
-        // A commit may have queued a prerequisite task, connected or not.
+        // Prerequisites remain Store work in both protocols.
         self.prerequisites.wake();
+        if self.protocol05 {
+            return;
+        }
         if self.connection.is_none() {
             return;
         }

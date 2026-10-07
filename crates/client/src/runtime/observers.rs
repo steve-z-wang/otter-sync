@@ -154,10 +154,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// identity the commit answered with. Repeated calls for one identity
     /// answer the same observer.
     pub(super) fn subscribe_stream(&mut self, stream: &str) -> std::result::Result<Value, String> {
-        let state = self
-            .client
-            .ensure_subscription(stream)
-            .map_err(|e| e.to_string())?;
+        let state = if self.protocol05 {
+            self.client
+                .subscription_state05(stream)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "foreign Stream".to_string())?
+        } else {
+            self.client
+                .ensure_subscription(stream)
+                .map_err(|e| e.to_string())?
+        };
         let id = state.subscription_id;
         let known = self.observers.registrations.contains_key(&id);
         let observer = match self
@@ -179,7 +185,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if !known {
             // A load of this identity may already be running or finished from
             // before this runtime: its status needs no new transition.
-            match self.client.bootstrap_state(&state.stream, id) {
+            match if self.protocol05 {
+                self.client.bootstrap_state05(&state.stream, id)
+            } else {
+                self.client.bootstrap_state(&state.stream, id)
+            } {
                 Ok(run) => self.observe_run(run),
                 Err(e) => self.error(e.to_string()),
             }
@@ -196,8 +206,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         command: &Command,
     ) -> Option<std::result::Result<Value, String>> {
         let generation = self.client.generation();
-        let answered = commands::execute(&mut self.client, command)
-            .and_then(|value| Ok(serde_json::from_value::<BootstrapState>(value)?));
+        let answered = if self.protocol05 {
+            match command {
+                Command::StreamBootstrap {
+                    stream,
+                    subscription_id,
+                } => self.client.bootstrap_state05(stream, *subscription_id),
+                _ => Err(crate::invalid("invalid Bootstrap command")),
+            }
+        } else {
+            commands::execute(&mut self.client, command)
+                .and_then(|value| Ok(serde_json::from_value::<BootstrapState>(value)?))
+        };
         self.committed_since(generation);
         let state = match answered {
             Ok(state) => state,
@@ -221,7 +241,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.observe_run(state);
         // Whatever committed for this identity since the registration's own
         // answer settles the waiter now rather than never.
-        match self.client.bootstrap_state(&stream, id) {
+        match if self.protocol05 {
+            self.client.bootstrap_state05(&stream, id)
+        } else {
+            self.client.bootstrap_state(&stream, id)
+        } {
             Ok(stored) => self.observe_run(stored),
             Err(e) => self.error(e.to_string()),
         }
@@ -382,8 +406,21 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .map(|(id, registration)| (*id, registration.stream.clone()))
             .collect();
         for (id, stream) in registrations {
-            match self.client.subscription_state(&stream) {
-                Ok(Some(state)) if state.subscription_id == id => {}
+            match if self.protocol05 {
+                self.client.subscription_state05(&stream)
+            } else {
+                self.client.subscription_state(&stream)
+            } {
+                Ok(Some(state)) if state.subscription_id == id => {
+                    if self.protocol05 {
+                        if let Some(registration) = self.observers.registrations.get_mut(&id) {
+                            registration.ready = state.starting_cursor.is_some();
+                        }
+                        if let Ok(run) = self.client.bootstrap_state05(&stream, id) {
+                            self.observe_run(run);
+                        }
+                    }
+                }
                 Ok(_) => {
                     self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
                     self.forget(&stream);
@@ -430,6 +467,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         };
         if connection.paused {
             return "offline";
+        }
+        if self.protocol05 {
+            return if !self.sync05_live {
+                "connecting"
+            } else if self.sync05_catching_up {
+                "catching-up"
+            } else {
+                "live"
+            };
         }
         let Some(epoch) = connection.session() else {
             return "connecting";

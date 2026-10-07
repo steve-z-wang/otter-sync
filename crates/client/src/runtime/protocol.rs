@@ -850,6 +850,8 @@ pub enum Operation {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum HttpRoute {
+    Handshake,
+    Materialize,
     /// `/sync/mutations`: a frozen push batch.
     Push,
     /// `/sync/pull`: an ordinary catch-up or a Bootstrap page.

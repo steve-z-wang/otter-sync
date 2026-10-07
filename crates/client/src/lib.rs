@@ -39,6 +39,7 @@ mod store_delivery;
 mod store_epoch;
 pub mod stream_members;
 pub mod subscriptions;
+pub mod sync05;
 pub mod transport;
 pub mod unsent;
 

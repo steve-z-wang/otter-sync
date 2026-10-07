@@ -159,7 +159,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         // Negotiation belongs to the final transport envelope, never to a
         // durable call's identity or frozen local admission token.
         if let Operation::Http { body, .. } = &mut operation {
-            match if self.client.request_context().is_ok() {
+            match if self.protocol05 || self.client.request_context().is_ok() {
                 Ok(body.as_bytes().to_vec())
             } else {
                 crate::with_capabilities(body.as_bytes(), &[crate::STREAM_AUTHORITY_CAPABILITY])

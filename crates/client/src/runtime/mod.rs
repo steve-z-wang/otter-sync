@@ -140,6 +140,9 @@ use std::path::Path;
 /// module documentation for the contract of the three driving calls.
 pub struct ClientRuntime<S: ClientStore> {
     client: Client<S>,
+    protocol05: bool,
+    sync05_live: bool,
+    sync05_catching_up: bool,
     lanes: lanes::Lanes,
     /// The runtime-owned connection: its intent, lane effects and credential
     /// refresh. `None` until `connect` and after `stop`.
@@ -203,13 +206,23 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         )?))
     }
     /// Wrap an already opened client.
-    pub fn new(client: Client<S>) -> Self {
+    pub fn new(mut client: Client<S>) -> Self {
         let capability_namespace = client
             .request_context()
             .is_ok()
             .then(|| uuid::Uuid::new_v4().to_string());
+        let capability_namespace = capability_namespace.or_else(|| {
+            client
+                .request_context05()
+                .is_ok()
+                .then(|| uuid::Uuid::new_v4().to_string())
+        });
+        let protocol05 = client.request_context05().is_ok();
         Self {
             client,
+            protocol05,
+            sync05_live: false,
+            sync05_catching_up: false,
             lanes: lanes::Lanes::default(),
             connection: None,
             tasks: tasks::Tasks::default(),
@@ -257,12 +270,15 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// What a successful open answers: the client id and the schema check's
     /// outcome, as the SDKs report it in `status()`.
-    pub fn opened(&self) -> Value {
+    pub fn opened(&mut self) -> Value {
         let mut opened = json!({
             "clientId": self.client.client_id(),
             "schema": commands::schema_json(self.client.schema_state()),
         });
         if let Ok(context) = self.client.request_context() {
+            opened["context"] = json!(context);
+        }
+        if let Ok(context) = self.client.request_context05() {
             opened["context"] = json!(context);
         }
         opened
@@ -372,3 +388,76 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
 /// The prefix every engine refusal of a closed registration carries
 /// ([`crate::SUBSCRIPTION_CLOSED`]).
 const CLOSED_REGISTRATION: &str = "subscription.closed:";
+
+impl<S: ClientStore + 'static> ClientRuntime<S> {
+    pub fn store_worker_busy05(&self) -> bool {
+        self.transaction.is_some()
+    }
+    pub fn store_worker05(
+        &mut self,
+        command: crate::sync05::StoreCommand,
+    ) -> Result<crate::sync05::StoreReport> {
+        use crate::sync05::{StoreCommand, StoreReport};
+        if self.transaction.is_some() {
+            return Err(crate::invalid("Store worker transaction active"));
+        }
+        let generation = self.client.generation();
+        let result = match command {
+            StoreCommand::NetworkState { live, catching_up } => {
+                self.sync05_live = live;
+                self.sync05_catching_up = catching_up;
+                self.publish_statuses();
+                return Ok(StoreReport::Snapshot(self.client.store_status05()?));
+            }
+            StoreCommand::Initialize(head) => {
+                self.client.initialize_stream05(head)?;
+                self.release_initial_reads05(true);
+                StoreReport::Snapshot(self.client.store_status05()?)
+            }
+            StoreCommand::Needs => {
+                // Receipt acceptance is durable first. A failing settlement
+                // remains accepted and is retried independently of the wire.
+                let report = self.client.settle_ready05()?;
+                self.settled(&report);
+                StoreReport::Needs {
+                    schema: self.client.pending_schema05()?,
+                    settlements: self.client.pending_settlement05()?,
+                }
+            }
+            StoreCommand::Snapshot => StoreReport::Snapshot(self.client.store_status05()?),
+            StoreCommand::Freeze => StoreReport::Frozen(self.client.freeze_batch05()?),
+            StoreCommand::Acknowledge(receipt) => {
+                let report = self.client.acknowledge_batch05(&receipt)?;
+                self.settled(&report);
+                StoreReport::Committed {
+                    status: self.client.store_status05()?,
+                    report,
+                    plan: None,
+                }
+            }
+            StoreCommand::Apply {
+                plan_id,
+                mut queue,
+                now,
+            } => {
+                let report = self
+                    .client
+                    .apply_next_delivery05(&mut queue, now)?
+                    .unwrap_or_default();
+                let next = queue.plans.get(&plan_id).map_or(u64::MAX, |p| p.next);
+                self.settled(&report);
+                if self.client.pending_schema05()?.is_none() {
+                    self.release_initial_reads05(true);
+                }
+                StoreReport::Committed {
+                    status: self.client.store_status05()?,
+                    report,
+                    plan: Some((plan_id, next)),
+                }
+            }
+        };
+        self.committed_since(generation);
+        self.publish();
+        Ok(result)
+    }
+}

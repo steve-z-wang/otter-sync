@@ -13,6 +13,7 @@ use std::collections::{BTreeSet, VecDeque};
 pub(super) struct Tasks {
     routed: BTreeSet<String>,
     queue: VecDeque<Queued>,
+    initial_reads: VecDeque<Queued>,
 }
 pub(super) struct Queued {
     pub(super) request_id: String,
@@ -211,6 +212,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.push_turn(now, entropy);
         }
     }
+    pub(super) fn release_initial_reads05(&mut self, initialized: bool) {
+        if initialized {
+            while let Some(task) = self.tasks.initial_reads.pop_back() {
+                self.tasks.queue.push_front(task)
+            }
+        } else {
+            let tasks = std::mem::take(&mut self.tasks.initial_reads);
+            for task in tasks {
+                self.complete(task.request_id, Err(direct::UNAVAILABLE.into()));
+            }
+        }
+    }
     /// One ordinary task. The runtime-owned lifecycles - the transaction, the
     /// connection, direct calls, readiness, rebuild and the observers -
     /// are decided here; everything else is a command against the client. A
@@ -224,6 +237,26 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         else {
             return;
         };
+        if self.protocol05
+            && self.connection.is_some()
+            && matches!(&command, Command::Invoke { .. } | Command::Fetch { .. })
+        {
+            let schema_pending = self.client.pending_schema05().is_ok_and(|s| s.is_some());
+            let storing = matches!(&command, Command::Invoke {store,..} | Command::Fetch {store,..} if store.as_ref().is_none_or(|v|v==&Value::Bool(true)));
+            let initial_pending = storing
+                && self
+                    .client
+                    .store_status05()
+                    .is_ok_and(|s| s.start_cursor.is_none());
+            if schema_pending || initial_pending {
+                self.tasks.initial_reads.push_back(Queued {
+                    request_id,
+                    command,
+                    seq: self.admitted,
+                });
+                return;
+            }
+        }
         let generation = self.client.generation();
         let outcome = match &command {
             Command::Transaction => return self.open_transaction(request_id),
@@ -300,6 +333,16 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 store,
                 once,
                 refresh,
+            } if self.protocol05 && (once.is_some() || refresh.is_some()) => {
+                Some(Err("Query accepts only store".into()))
+            }
+            Command::Invoke {
+                name,
+                version,
+                args,
+                store,
+                once,
+                refresh,
             } => self.invoke(
                 &request_id,
                 direct::Invocation {
@@ -360,7 +403,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             | Command::LoadForget { .. }
             | Command::LoadInvalidate { .. }
             | Command::LoadDispose { .. } => {
-                if self.client.request_context().is_ok() {
+                if self.protocol05 || self.client.request_context().is_ok() {
                     Some(Err("Load is retired in protocol 4".into()))
                 } else {
                     self.load_task(&request_id, &command)
@@ -522,6 +565,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 self.complete(command.request_id, Err("client_closed".into()));
             }
         }
+        self.tasks.queue.append(&mut self.tasks.initial_reads);
         for task in std::mem::take(&mut self.tasks.queue) {
             self.complete(task.request_id, Err("client_closed".into()));
         }

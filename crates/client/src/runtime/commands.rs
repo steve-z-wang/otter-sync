@@ -18,10 +18,14 @@ pub(super) fn execute<S: ClientStore + 'static>(
     client: &mut Client<S>,
     command: &Command,
 ) -> Result<Value> {
-    if client.request_context().is_ok()
+    if (client.request_context05().is_ok() || client.request_context().is_ok())
         && matches!(
             command,
-            Command::Freeze | Command::Ack { .. } | Command::Pull { .. } | Command::Enqueue { .. }
+            Command::Freeze
+                | Command::Ack { .. }
+                | Command::Pull { .. }
+                | Command::Enqueue { .. }
+                | Command::InvalidateQueryOnce { .. }
         )
     {
         return Err(invalid("legacy protocol seam is retired in protocol 4"));
@@ -66,14 +70,25 @@ pub(super) fn execute<S: ClientStore + 'static>(
             if client.request_context().is_ok() && store.is_some() {
                 return Err(invalid("Mutation does not accept store"));
             }
-            let submitted =
-                client.submit_action_with_options(name, *version, args.clone(), options(store)?)?;
+            let submitted = if client.request_context05().is_ok() {
+                if store.is_some() {
+                    return Err(invalid("Mutation does not accept store"));
+                }
+                client
+                    .transaction(|tx| tx.submit_mutation05(name, *version, args.clone(), vec![]))?
+            } else {
+                client.submit_action_with_options(name, *version, args.clone(), options(store)?)?
+            };
             json!({"callId":submitted.call_id,"ordinal":submitted.ordinal})
         }
         // The Stream commands behind the SDK subscription handles: each owns its
         // own local transaction. An uninitialized boundary answers as `null`,
         // never as zero ([#150](https://github.com/zanminwang/axton/issues/150)).
-        Command::StreamState { stream } => match client.subscription_state(stream)? {
+        Command::StreamState { stream } => match if client.request_context05().is_ok() {
+            client.subscription_state05(stream)?
+        } else {
+            client.subscription_state(stream)?
+        } {
             Some(state) => serde_json::to_value(state)?,
             None => Value::Null,
         },
@@ -86,7 +101,11 @@ pub(super) fn execute<S: ClientStore + 'static>(
         Command::StreamBootstrapState {
             stream,
             subscription_id,
-        } => serde_json::to_value(client.bootstrap_state(stream, *subscription_id)?)?,
+        } => serde_json::to_value(if client.request_context05().is_ok() {
+            client.bootstrap_state05(stream, *subscription_id)?
+        } else {
+            client.bootstrap_state(stream, *subscription_id)?
+        })?,
         Command::StreamUnsubscribe {
             stream,
             subscription_id,
@@ -120,20 +139,51 @@ pub(super) fn execute<S: ClientStore + 'static>(
             client.set_readiness(key, *state)?;
             Value::Null
         }
-        Command::Drop { ordinal } => json!({"completions":client.drop_action(*ordinal)?}),
+        Command::Drop { ordinal } => {
+            if client.request_context05().is_ok() {
+                json!(client.transaction(|tx| tx.discard_mutation05(*ordinal))?)
+            } else {
+                json!({"completions":client.drop_action(*ordinal)?})
+            }
+        }
         Command::Dismiss { ordinal } => {
-            client.dismiss_rejection(*ordinal)?;
+            if client.request_context05().is_ok() {
+                client.transaction(|tx| tx.dismiss_rejection05(*ordinal))?;
+            } else {
+                client.dismiss_rejection(*ordinal)?;
+            }
             Value::Null
         }
-        Command::RejectionGet { id } => serde_json::to_value(client.refused_act(*id)?)?,
+        Command::RejectionGet { id } => {
+            if client.request_context05().is_ok() {
+                json!(
+                    client
+                        .refused_acts05()?
+                        .into_iter()
+                        .find(|act| act.id == *id)
+                )
+            } else {
+                serde_json::to_value(client.refused_act(*id)?)?
+            }
+        }
         Command::RetryTasks { keys } => {
             client.retry_tasks(keys)?;
             Value::Null
         }
+        Command::Discard { ordinal } if client.request_context05().is_ok() => {
+            json!(client.transaction(|tx| tx.discard_mutation05(*ordinal))?)
+        }
         Command::Discard { ordinal } => json!({"completions":client.discard(*ordinal)?}),
         Command::RecordStatus { key } => client.record_status(key)?,
-        Command::CallCompletion { call_id } => json!(client.call_completion04(call_id)?),
+        Command::CallCompletion { call_id } => {
+            if client.request_context05().is_ok() {
+                json!(client.call_completion05(call_id)?)
+            } else {
+                json!(client.call_completion04(call_id)?)
+            }
+        }
         Command::Tasks => json!(client.pending_tasks()?),
+        Command::Status if client.request_context05().is_ok() => client.status_snapshot05()?,
         Command::Status => {
             json!({"clientId":client.client_id(),"pending":client.pending_count()?,"beforeImages":client.before_image_count()?,"cursors":client.subscriptions()?.into_iter().collect::<BTreeMap<_,_>>(),"streams":client.desired_streams()?,"rejections":client.rejections()?,"schema":schema_json(client.schema_state())})
         }

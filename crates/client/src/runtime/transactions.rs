@@ -646,7 +646,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 ));
             }
         };
-        let bound = self.client.request_context().is_ok();
+        let bound = self.protocol05 || self.client.request_context().is_ok();
         if bound && store.is_some() {
             return Err(crate::invalid("Mutation does not accept store"));
         }
@@ -670,8 +670,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
         } else {
             let options = commands::options(store)?;
-            self.client
-                .session(|tx| tx.submit_mutation(name, version, args.clone(), options))?
+            self.client.session(|tx| {
+                if self.protocol05 {
+                    tx.submit_mutation05(name, version, args.clone(), vec![])
+                } else {
+                    tx.submit_mutation(name, version, args.clone(), options)
+                }
+            })?
         };
         if !local {
             let answer = submission(&call);
@@ -742,12 +747,21 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     .ok_or_else(|| crate::invalid("Mutation callback must return input"))
                     .and_then(|input| {
                         self.client.session(|tx| {
-                            tx.submit_mutation_companions_first04(
-                                &deferred.name,
-                                deferred.version,
-                                input,
-                                deferred.operations,
-                            )
+                            if self.protocol05 {
+                                tx.submit_mutation05(
+                                    &deferred.name,
+                                    deferred.version,
+                                    input,
+                                    deferred.operations,
+                                )
+                            } else {
+                                tx.submit_mutation_companions_first04(
+                                    &deferred.name,
+                                    deferred.version,
+                                    input,
+                                    deferred.operations,
+                                )
+                            }
                         })
                     });
                 match submitted {

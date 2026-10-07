@@ -50,6 +50,7 @@ enum Mail {
     /// Boxed: a command carries a whole mutation or query.
     Input(Box<Input>),
     Malformed(String),
+    Worker(Box<WorkerMessage>),
 }
 
 struct Pending {
@@ -245,7 +246,7 @@ pub fn open(request: Value, wake: WakeSink) -> std::result::Result<u64, String> 
         registry.runtimes.insert(
             id,
             Handle {
-                sender,
+                sender: sender.clone(),
                 outbox: outbox.clone(),
             },
         );
@@ -258,7 +259,11 @@ pub fn open(request: Value, wake: WakeSink) -> std::result::Result<u64, String> 
         .name(format!("axton-runtime-{id}"))
         .spawn(move || {
             let _alive = alive;
-            run(request_id, request, receiver, outbox)
+            if request["protocol"] == 5 {
+                run05(request_id, request, receiver, sender, outbox)
+            } else {
+                run(request_id, request, receiver, outbox)
+            }
         });
     if let Err(e) = spawned {
         // The closure, and `alive` with it, was dropped: the id is not running.
@@ -352,6 +357,31 @@ fn open_runtime(request: &Value) -> axton_client::Result<ClientRuntime<SqliteSto
     let path = request["path"]
         .as_str()
         .ok_or_else(|| axton_client::invalid("path must be string"))?;
+    if request["protocol"] == 5 {
+        if request.get("storeHooks").is_some() {
+            return Err(axton_client::invalid(
+                "storeHooks are not supported in protocol5",
+            ));
+        }
+        let stream = request["stream"]
+            .as_str()
+            .ok_or_else(|| axton_client::invalid("stream must be string"))?;
+        let generation = request.get("projectionGeneration").map_or(Ok("1"), |v| {
+            v.as_str()
+                .ok_or_else(|| axton_client::invalid("projectionGeneration must be string"))
+        })?;
+        let client = axton_client::Client::open05_with_projection(
+            SqliteStore::open_exclusive05(path, stream)?,
+            Schema::from_value(request["schema"].clone())?,
+            stream,
+            generation,
+        )?;
+        return ClientRuntime::new(client).register_prerequisite_handlers(names(
+            request,
+            "prerequisiteHandlers",
+            "prerequisite names",
+        )?);
+    }
     let binding: axton_client::v04::StoreBinding =
         serde_json::from_value(request["binding"].clone())
             .map_err(|_| axton_client::invalid("binding is required"))?;
@@ -505,6 +535,7 @@ fn serve(runtime: &mut ClientRuntime<SqliteStore>, mailbox: &Receiver<Mail>, out
 
 fn admit(runtime: &mut ClientRuntime<SqliteStore>, mail: Mail, outbox: &Outbox) {
     match mail {
+        Mail::Worker(_) => {}
         Mail::Input(input) => {
             let (now, entropy) = facts();
             // After close nothing is admitted; `runtimeClosed` tells the SDK
@@ -528,4 +559,347 @@ fn flush(runtime: &mut ClientRuntime<SqliteStore>, outbox: &Outbox) {
         events.retain(|event| !matches!(event, Event::RuntimeClosed));
     }
     outbox.publish(events);
+}
+
+enum WorkerMessage {
+    Opened(std::result::Result<(Value, axton_client::store05::StoreStatus05), String>),
+    Events(Vec<Event>),
+    Report(std::result::Result<axton_client::sync05::StoreReport, String>),
+    Closed,
+}
+enum Work05 {
+    Input(Mail),
+    Store(axton_client::sync05::StoreCommand),
+}
+
+/// Control owns reception, correlation, bounded staging and network decisions;
+/// the worker is the only owner of SQLite and the application transaction.
+fn run05(
+    request_id: String,
+    request: Value,
+    mailbox: Receiver<Mail>,
+    sender: Sender<Mail>,
+    outbox: Arc<Outbox>,
+) {
+    let (work_sender, work_receiver) = mpsc::channel();
+    let report_sender = sender.clone();
+    let worker = std::thread::Builder::new()
+        .name(format!("axton-store-{}", outbox.id))
+        .spawn(move || worker05(request, work_receiver, report_sender));
+    let Ok(worker) = worker else {
+        outbox.closed.store(true, Ordering::SeqCst);
+        outbox.publish(vec![
+            Event::TaskCompleted {
+                request_id,
+                ok: false,
+                value: Value::Null,
+                error: Some("Store worker spawn failed".into()),
+                details: None,
+            },
+            Event::RuntimeClosed,
+        ]);
+        return;
+    };
+    let mut control = None;
+    let mut connects = BTreeMap::new();
+    let mut refresh_broker = RefreshBroker::default();
+    while let Ok(mail) = mailbox.recv() {
+        let (now, _) = facts();
+        match mail {
+            Mail::Worker(message) => match *message {
+                WorkerMessage::Opened(result) => match result {
+                    Ok((opened, status)) => {
+                        control = Some(axton_client::sync05::Control::new(status));
+                        outbox.publish(vec![Event::TaskCompleted {
+                            request_id: request_id.clone(),
+                            ok: true,
+                            value: opened,
+                            error: None,
+                            details: None,
+                        }]);
+                    }
+                    Err(error) => {
+                        outbox.closed.store(true, Ordering::SeqCst);
+                        outbox.publish(vec![Event::TaskCompleted {
+                            request_id: request_id.clone(),
+                            ok: false,
+                            value: Value::Null,
+                            error: Some(error),
+                            details: None,
+                        }]);
+                    }
+                },
+                WorkerMessage::Events(events) => {
+                    if let Some(c) = &mut control {
+                        for event in &events {
+                            if let Event::TaskCompleted { request_id, ok, .. } = event
+                                && let Some(refresh) = connects.remove(request_id)
+                                && *ok
+                            {
+                                c.set_refresh_auth(refresh);
+                                if let Err(error) = c.connect() {
+                                    c.failed(error.to_string());
+                                }
+                            }
+                        }
+                    }
+                    outbox.publish(refresh_broker.filter(events));
+                }
+                WorkerMessage::Report(report) => {
+                    if let Some(c) = &mut control {
+                        match report {
+                            Ok(report) => {
+                                if let Err(error) = c.report(report, now) {
+                                    c.failed(error.to_string());
+                                }
+                            }
+                            Err(error) => c.failed(error),
+                        }
+                    }
+                }
+                WorkerMessage::Closed => {
+                    outbox.closed.store(true, Ordering::SeqCst);
+                    if let Some(c) = &mut control {
+                        c.stop();
+                        outbox.publish(refresh_broker.filter(c.events()));
+                    }
+                    break;
+                }
+            },
+            Mail::Input(input) => {
+                if let Input::EffectResult { effect_id, outcome } = &*input
+                    && let Some(waiters) = refresh_broker.answer(effect_id)
+                {
+                    for id in waiters {
+                        if let Some(c) = &mut control
+                            && c.accepts(&id)
+                        {
+                            if let Err(error) = c.receive(&id, outcome.clone(), now) {
+                                c.network_error(error.to_string());
+                            }
+                        } else {
+                            let _ = work_sender.send(Work05::Input(Mail::Input(Box::new(
+                                Input::EffectResult {
+                                    effect_id: id,
+                                    outcome: outcome.clone(),
+                                },
+                            ))));
+                        }
+                    }
+                    if let Some(c) = &mut control {
+                        outbox.publish(refresh_broker.filter(c.events()));
+                        for job in c.jobs() {
+                            let _ = work_sender.send(Work05::Store(job));
+                        }
+                    }
+                    continue;
+                }
+                if let Some(c) = &mut control {
+                    if let Input::EffectResult { effect_id, outcome } = &*input
+                        && c.accepts(effect_id)
+                    {
+                        if let Err(error) = c.receive(effect_id, outcome.clone(), now) {
+                            c.network_error(error.to_string());
+                        }
+                        outbox.publish(refresh_broker.filter(c.events()));
+                        for job in c.jobs() {
+                            let _ = work_sender.send(Work05::Store(job));
+                        }
+                        continue;
+                    }
+                    match &*input {
+                        Input::Task {
+                            request_id,
+                            command: axton_client::runtime::Command::Connect { refresh_auth, .. },
+                        } => {
+                            connects.insert(request_id.clone(), refresh_auth.unwrap_or(false));
+                        }
+                        Input::Task {
+                            command: axton_client::runtime::Command::Connection { event },
+                            ..
+                        } => match event {
+                            axton_client::runtime::ConnectionEvent::Stop => c.stop(),
+                            axton_client::runtime::ConnectionEvent::Pause => c.pause(),
+                            axton_client::runtime::ConnectionEvent::Resume => {
+                                let _ = c.connect();
+                            }
+                            axton_client::runtime::ConnectionEvent::Wake => c.wake(),
+                        },
+                        Input::Close => {
+                            c.stop();
+                            outbox.closed.store(true, Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                }
+                let _ = work_sender.send(Work05::Input(Mail::Input(input)));
+            }
+            mail => {
+                let _ = work_sender.send(Work05::Input(mail));
+            }
+        }
+        if let Some(c) = &mut control {
+            outbox.publish(refresh_broker.filter(c.events()));
+            for job in c.jobs() {
+                let _ = work_sender.send(Work05::Store(job));
+            }
+        }
+    }
+    drop(work_sender);
+    let _ = worker.join();
+    outbox.publish(vec![Event::RuntimeClosed]);
+}
+fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
+    let send = |message| {
+        let _ = reports.send(Mail::Worker(Box::new(message)));
+    };
+    let opened = catch_unwind(|| open_runtime(&request))
+        .unwrap_or_else(|_| Err(axton_client::invalid("Store worker panic")));
+    let mut runtime = match opened {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            send(WorkerMessage::Opened(Err(error.to_string())));
+            send(WorkerMessage::Closed);
+            return;
+        }
+    };
+    let opened = runtime.opened();
+    match runtime.client().store_status05() {
+        Ok(status) => send(WorkerMessage::Opened(Ok((opened, status)))),
+        Err(error) => {
+            send(WorkerMessage::Opened(Err(error.to_string())));
+            return;
+        }
+    }
+    let served = catch_unwind(AssertUnwindSafe(|| {
+        let mut jobs = VecDeque::new();
+        let mut incoming = VecDeque::new();
+        loop {
+            while let Ok(work) = mailbox.try_recv() {
+                incoming.push_back(work);
+            }
+            let mut changed = false;
+            for work in incoming.drain(..) {
+                match work {
+                    Work05::Store(command) => jobs.push_back(command),
+                    Work05::Input(Mail::Input(input)) => {
+                        let (now, entropy) = facts();
+                        let generation = runtime.client().generation();
+                        let _ = runtime.receive(*input, now, entropy);
+                        while runtime.step(now, entropy) {}
+                        changed |= runtime.client().generation() != generation;
+                    }
+                    Work05::Input(Mail::Malformed(message)) => {
+                        send(WorkerMessage::Events(vec![Event::Report {
+                            diagnostic: Diagnostic::Protocol { message },
+                        }]))
+                    }
+                    _ => {}
+                }
+                let events = runtime.take_events();
+                if !events.is_empty() {
+                    send(WorkerMessage::Events(events));
+                }
+                if runtime.closed() {
+                    return;
+                }
+            }
+            if changed && !runtime.store_worker_busy05() {
+                send(WorkerMessage::Report(
+                    runtime
+                        .store_worker05(axton_client::sync05::StoreCommand::Snapshot)
+                        .map_err(|e| e.to_string()),
+                ));
+            }
+            if !runtime.store_worker_busy05()
+                && let Some(mut job) = jobs.pop_front()
+            {
+                if let axton_client::sync05::StoreCommand::Apply { now, .. } = &mut job {
+                    *now = facts().0;
+                }
+                send(WorkerMessage::Report(
+                    runtime.store_worker05(job).map_err(|e| e.to_string()),
+                ));
+                let (now, entropy) = facts();
+                while runtime.step(now, entropy) {}
+                let events = runtime.take_events();
+                if !events.is_empty() {
+                    send(WorkerMessage::Events(events));
+                }
+                continue;
+            }
+            match mailbox.recv() {
+                Ok(work) => incoming.push_back(work),
+                Err(_) => {
+                    let (now, entropy) = facts();
+                    let _ = runtime.receive(Input::Close, now, entropy);
+                    while runtime.step(now, entropy) {}
+                    return;
+                }
+            }
+        }
+    }));
+    if served.is_err() {
+        send(WorkerMessage::Events(vec![Event::Report {
+            diagnostic: Diagnostic::Error {
+                message: "Store worker panic".into(),
+                status: None,
+            },
+        }]));
+    }
+    drop(runtime);
+    send(WorkerMessage::Closed);
+}
+
+#[derive(Default)]
+struct RefreshBroker {
+    active: Option<(String, BTreeSet<String>)>,
+}
+impl RefreshBroker {
+    fn filter(&mut self, events: Vec<Event>) -> Vec<Event> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Effect {
+                    effect_id,
+                    operation: axton_client::runtime::Operation::RefreshAuth,
+                } => {
+                    if let Some((_, waiters)) = &mut self.active {
+                        waiters.insert(effect_id);
+                        None
+                    } else {
+                        self.active =
+                            Some((effect_id.clone(), BTreeSet::from([effect_id.clone()])));
+                        Some(Event::Effect {
+                            effect_id,
+                            operation: axton_client::runtime::Operation::RefreshAuth,
+                        })
+                    }
+                }
+                Event::CancelEffect { effect_id } => {
+                    if let Some((host, waiters)) = &mut self.active
+                        && waiters.remove(&effect_id)
+                    {
+                        if waiters.is_empty() {
+                            let host = host.clone();
+                            self.active = None;
+                            Some(Event::CancelEffect { effect_id: host })
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(Event::CancelEffect { effect_id })
+                    }
+                }
+                event => Some(event),
+            })
+            .collect()
+    }
+    fn answer(&mut self, id: &str) -> Option<BTreeSet<String>> {
+        if self.active.as_ref().is_some_and(|(host, _)| host == id) {
+            self.active.take().map(|(_, waiters)| waiters)
+        } else {
+            None
+        }
+    }
 }

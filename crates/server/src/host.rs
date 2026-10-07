@@ -623,7 +623,7 @@ pub enum HostRequest {
         call_id: String,
         ordinal: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<axton_core::v04::RequestContext>,
+        context: Option<crate::protocol_v05::HandlerContext>,
     },
     /// Execute one generated Load handler for one page: the normalized flat
     /// arguments and the page's continuation (`null` on the first page). Its

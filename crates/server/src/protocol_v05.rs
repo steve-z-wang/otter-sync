@@ -8,23 +8,21 @@ use axton_core::{ActionInputDescriptor, CallKind, v05};
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
 
-/// Existing trusted host carrier; only scopedStreams consumes binding.stream.
-/// Called after protocol-5 principal/Store/Stream admission. These internal fields
-/// never select protocol-4 authority or enter public protocol-5 identities.
-pub(crate) fn handler_context(
-    owner: &str,
-    context: &v05::RequestContext,
-) -> axton_core::v04::RequestContext {
-    axton_core::v04::RequestContext {
-        protocol: 4,
-        binding: axton_core::v04::StoreBinding {
-            backend: "protocol5".into(),
-            viewer: owner.into(),
-            stream: context.stream.clone(),
-            contract: context.materialization.clone(),
-        },
+/// Trusted carrier constructed only after protocol-5 principal/Store/Stream admission.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HandlerContext {
+    pub owner: String,
+    pub stream: String,
+    pub store_id: String,
+    pub materialization: String,
+}
+pub(crate) fn handler_context(owner: &str, context: &v05::RequestContext) -> HandlerContext {
+    HandlerContext {
+        owner: owner.into(),
+        stream: context.stream.clone(),
+        store_id: context.store_id.clone(),
         materialization: context.materialization.clone(),
-        incarnation: context.store_id.clone(),
     }
 }
 
@@ -170,7 +168,7 @@ pub struct ProtocolConfig {
     pub projection_generation: String,
     #[serde(default)]
     pub materializations:
-        std::collections::BTreeMap<String, crate::protocol_v04::RetainedMaterialization>,
+        std::collections::BTreeMap<String, crate::materialization::RetainedMaterialization>,
 }
 fn generation() -> String {
     "1".into()

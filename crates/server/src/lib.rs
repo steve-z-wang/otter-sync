@@ -12,6 +12,7 @@ pub mod host;
 pub mod live;
 mod loading;
 mod loads;
+mod materialization;
 mod protocol_v04;
 mod protocol_v05;
 pub use protocol_v05::{

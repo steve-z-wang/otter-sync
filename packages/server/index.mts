@@ -623,12 +623,12 @@ function decodeActionRecord(
 /** Current binding is trusted by the engine; selectors remain explicit. */
 function scopedStreams<S extends RuntimeLoadStream>(
   effects: { stream: (names: string | readonly string[]) => S },
-  context: { binding: { stream: string } },
+  context: { stream: string },
 ): {
   stream: S & ((names: string | readonly string[]) => S);
   streams: (names: readonly string[]) => S;
 } {
-  const current = effects.stream(context.binding.stream);
+  const current = effects.stream(context.stream);
   const stream = Object.assign(
     (names: string | readonly string[]) => effects.stream(names),
     current,

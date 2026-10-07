@@ -72,7 +72,7 @@ export type HandleActionRequest = {
   owner: string;
   callId: string;
   ordinal: number;
-  context?: RequestContext;
+  context?: HandlerContext;
 };
 /** Portable JSON: what a Load continuation state may hold. */
 export type JsonValue =
@@ -546,3 +546,6 @@ export type ManifestSlice = {
 };
 
 export type ReadCallRequest = { op: "readCall"; owner: string; callId: string };
+
+/** Authenticated internal handler context; never supplied by a public caller. */
+export type HandlerContext = { owner: string; stream: string; storeId: string; materialization: string };

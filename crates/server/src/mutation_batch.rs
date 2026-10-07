@@ -258,7 +258,7 @@ pub(crate) fn models(
         .map(|p| p.projection_generation.as_str())
         .unwrap_or("1");
     let active = v05::materialization_id(&config.schema, generation).map_err(internal)?;
-    crate::protocol_v04::model_versions(
+    crate::materialization::model_versions(
         config,
         &context.materialization,
         &active,

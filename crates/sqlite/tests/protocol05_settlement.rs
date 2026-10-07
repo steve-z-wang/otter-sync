@@ -1029,32 +1029,11 @@ fn existing_format5_adds_rejection_acknowledgement_only_after_valid_admission() 
         .unwrap()
         .rows
         .remove(0);
-    let descriptor = fresh
-        .query("SELECT * FROM axton_descriptor", &[])
-        .unwrap()
-        .rows
-        .remove(0);
     let path = directory.path().join("prior-format5.db");
+    std::fs::copy(&fresh_path, &path).unwrap();
     let mut prior = SqliteStore::open(&path).unwrap();
-    let source = include_str!("../../client/src/store05.rs");
-    let ddl = source
-        .split("pub(crate) const DDL: &str = r#\"")
-        .nth(1)
-        .unwrap()
-        .split("\"#;")
-        .next()
-        .unwrap()
-        .replace("rejection_acknowledged INTEGER NOT NULL DEFAULT 0, ", "");
-    prior.execute_batch(&ddl).unwrap();
-    let placeholders = vec!["?"; metadata.len()].join(",");
     prior
-        .execute(
-            &format!("INSERT INTO axton_store VALUES({placeholders})"),
-            &metadata,
-        )
-        .unwrap();
-    prior
-        .execute("INSERT INTO axton_descriptor VALUES(?,?,?,?)", &descriptor)
+        .execute_batch("ALTER TABLE axton_mutation_queue DROP COLUMN rejection_acknowledged")
         .unwrap();
     drop(prior);
     assert!(Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:other").is_err());

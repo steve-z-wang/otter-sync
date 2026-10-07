@@ -12,3 +12,5 @@ pub mod step;
 pub use rng::Rng;
 pub use sim::{Action, MutationSpec, Sim, Slot};
 pub use step::Failure;
+
+pub mod scenario05;

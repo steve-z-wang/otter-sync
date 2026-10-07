@@ -231,6 +231,37 @@ after(() => pool.end());
 async function state(s) {
   return (await q("SELECT * FROM axton_store WHERE id=$1", [s]))[0];
 }
+async function streamHeads() {
+  return new Map(
+    (await q("SELECT stream,head FROM axton_stream")).map((row) => [
+      row.stream,
+      Number(row.head),
+    ]),
+  );
+}
+async function assertPrefixPositions(s, prior, count, streams) {
+  const heads = await streamHeads();
+  const positions = await q(
+    "SELECT s.stream,s.cursor,r.identity FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE r.identity->>'id' LIKE $1 ORDER BY s.stream,s.cursor",
+    [s + "-%"],
+  );
+  for (const stream of streams) {
+    assert.equal(
+      heads.get(stream),
+      (prior.get(stream) ?? 0) + count,
+      `${stream}: only committed prefix consumes head`,
+    );
+    assert.deepEqual(
+      positions
+        .filter((row) => row.stream === stream)
+        .map((row) => [Number(row.cursor), row.identity.id]),
+      Array.from({ length: count }, (_, i) => [
+        (prior.get(stream) ?? 0) + i + 1,
+        `${s}-1-${i}`,
+      ]),
+    );
+  }
+}
 async function results(s) {
   return q(
     "SELECT * FROM axton_mutation_result WHERE store_id=$1 ORDER BY ordinal",
@@ -240,6 +271,7 @@ async function results(s) {
 test("Batch commits each Mutation separately and crash after k resumes durable progress", async () => {
   const s = store(),
     r = batch(s, ["ok", "transient", "ok"]);
+  const prior = await streamHeads();
   fault = "handler";
   let a = app();
   await assert.rejects(
@@ -248,6 +280,7 @@ test("Batch commits each Mutation separately and crash after k resumes durable p
   );
   assert.equal((await state(s)).progress, "1");
   assert.equal((await state(s)).last_processed_batch_id, "0");
+  await assertPrefixPositions(s, prior, 1, ["User:alice", "User:other"]);
   assert.equal((await results(s)).length, 1);
   const changed = structuredClone(r);
   changed.mutations.pop();
@@ -575,6 +608,7 @@ test("no-op with no Model targets accepts at head zero and replays without busin
 test("process exit after committed member leaves durable prefix and rolls back disconnected member", async () => {
   const s = store(),
     r = batch(s, ["ok", "exit", "ok"]);
+  const prior = await streamHeads();
   const script = `import {createRequire} from 'node:module';import {Pool} from 'pg';import {createBackend} from ${JSON.stringify(new URL("../../../packages/server/index.mts", import.meta.url).href)};import {pg} from ${JSON.stringify(new URL("../../../packages/postgres/index.mts", import.meta.url).href)};const cfg=JSON.parse(process.env.TASK3_CONFIG),r=JSON.parse(process.env.TASK3_REQUEST);const pool=new Pool({connectionString:process.env.DATABASE_URL});const native=createRequire(${JSON.stringify(import.meta.url)})('../../../bindings/node/axton-node.node');const a=createBackend({config:cfg,native,database:pg(pool),protocol5:{authorizeStream:()=>true},authenticate:()=> 'alice',loaders:{todo:async({tx,ids})=>Promise.all(ids.map(async({id})=>(await tx.query('SELECT id,title FROM v05_business WHERE id=$1',[id])).rows[0]??null))},mutations:{write:async({ctx,args})=>{await ctx.tx.query('INSERT INTO v05_business VALUES($1,$2)',[args.todo.id,args.todo.title]);if(args.mode==='exit')process.exit(77);ctx.stream('User:alice').track.todo({id:args.todo.id});return {};}}});await a.push('alice',JSON.stringify(r));`;
   const child = spawnSync(
     process.execPath,
@@ -591,6 +625,12 @@ test("process exit after committed member leaves durable prefix and rolls back d
     },
   );
   assert.equal(child.status, 77, child.stderr);
+  await assertPrefixPositions(s, prior, 1, ["User:alice"]);
+  assert.equal(
+    (await streamHeads()).get("User:other"),
+    prior.get("User:other"),
+    "disconnected member consumes no other Stream position",
+  );
   assert.equal((await state(s)).progress, "1");
   assert.equal((await results(s)).length, 1);
   const rows = await q("SELECT id FROM v05_business WHERE id LIKE $1", [

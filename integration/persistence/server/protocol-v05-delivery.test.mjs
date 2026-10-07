@@ -1,6 +1,9 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { Pool } from "pg";
@@ -276,12 +279,14 @@ test("real selected and unique-model capacity measurements", async () => {
       await fixture(n);
       let chosen = app,
         r = delta(`capacity-${kind}-${n}`, 0, n);
+      let clientSchema = config.schema;
       if (kind === "selected") {
         const cfg = {
           ...config,
           schema: { ...config.schema, models: [{ ...model, unique: [] }] },
         };
         chosen = appFor(cfg);
+        clientSchema = cfg.schema;
         r.materialization = native.serverMaterializationId05(
           JSON.stringify(cfg),
           "1",
@@ -291,8 +296,55 @@ test("real selected and unique-model capacity measurements", async () => {
       } else {
         await q("UPDATE axton_stream SET head=$1", [n]);
       }
+      const evidenceRoot = process.env.AXTON_CAPACITY_EVIDENCE_DIR;
+      const evidence = evidenceRoot && join(evidenceRoot, `${kind}-${n}`);
+      const replay = (phase) =>
+        execFileSync(
+          "cargo",
+          [
+            "test",
+            "-p",
+            "axton-sqlite",
+            ...(process.env.AXTON_CAPACITY_PROFILE === "release"
+              ? ["--release"]
+              : []),
+            "--test",
+            "protocol05_capacity",
+            "--",
+            "--ignored",
+            "--exact",
+            "real_postgres_delivery_capacity",
+            "--nocapture",
+          ],
+          {
+            cwd: fileURLToPath(new URL("../../../", import.meta.url)),
+            env: {
+              ...process.env,
+              CARGO_INCREMENTAL: "0",
+              AXTON_CAPACITY_PHASE: phase,
+              AXTON_CAPACITY_DIRECTORY: evidence,
+              AXTON_CAPACITY_HEAD: String(n),
+            },
+            encoding: "utf8",
+            maxBuffer: 16 * 1024 * 1024,
+          },
+        );
+      if (evidence) {
+        await mkdir(evidence, { recursive: true });
+        await writeFile(
+          join(evidence, "schema.json"),
+          JSON.stringify(clientSchema),
+        );
+        replay("prepare");
+        const actualContext = JSON.parse(
+          await readFile(join(evidence, "context.json"), "utf8"),
+        );
+        assert.equal(actualContext.materialization, r.materialization);
+        r = { ...r, ...actualContext };
+      }
       const start = performance.now();
-      const first = JSON.parse(await chosen.pull("alice", JSON.stringify(r)));
+      const firstText = await chosen.pull("alice", JSON.stringify(r));
+      const first = JSON.parse(firstText);
       const frozenMs = performance.now() - start;
       const fenceHeldMs = lastFenceHeldMs;
       const [row] = await q(
@@ -325,6 +377,39 @@ test("real selected and unique-model capacity measurements", async () => {
           ),
         0,
       );
+      let nativeClient;
+      if (evidence) {
+        const responses = [firstText];
+        const ordered = allParts.sort(
+          (a, b) => a.unit - b.unit || a.part - b.part,
+        );
+        for (const part of ordered.slice(1)) {
+          responses.push(
+            await chosen.pull(
+              "alice",
+              JSON.stringify({
+                ...r,
+                continuation: {
+                  planId: first.header.planId,
+                  digest: first.header.digest,
+                  unit: part.unit,
+                  part: part.part,
+                },
+              }),
+            ),
+          );
+        }
+        for (let index = 0; index < responses.length; index++)
+          await writeFile(
+            join(evidence, `response-${String(index).padStart(5, "0")}.json`),
+            responses[index],
+          );
+        await writeFile(join(evidence, "request.json"), JSON.stringify(r));
+        replay("replay");
+        nativeClient = JSON.parse(
+          await readFile(join(evidence, "client-measurement.json"), "utf8"),
+        );
+      }
       const cleanupStart = performance.now();
       await q("DELETE FROM axton_delivery_plan");
       const cleanupMs = performance.now() - cleanupStart;
@@ -344,6 +429,9 @@ test("real selected and unique-model capacity measurements", async () => {
           headerBytes,
           responseCount: allParts.length,
           totalTransportBytes: transportedBytes,
+          evidence,
+          nativeClient,
+          profile: process.env.AXTON_CAPACITY_PROFILE ?? "debug",
         }),
       );
     }

@@ -251,7 +251,7 @@ remove committed queue item
 **Files**
 
 - Modify: `crates/compiler/src/emit.rs`, `packages/client-js/runtime.mts`, `actions.mts`, `bridge.mts`, `connection.mts`, `index.mts` in that package.
-- Modify: `packages/dart/lib/src/client.dart`, `live.dart`, `bridge.dart` in that directory.
+- Modify: `packages/dart/lib/src/client.dart`, `live.dart`, `bridge.dart` in that directory; `packages/dart/lib/axton.dart` and `packages/client-react-native/index.ts` barrel exports.
 - Modify generated fixtures through `integration/generated-api/verify.sh`; inspect its diff.
 - Replace Query-once tests with invocation/cache-mode tests in `packages/client-js/` and `packages/dart/test/query_once_test.dart`; retain auth-refresh tests.
 - Extend: `integration/bindings/client-js/`, `integration/bindings/client-react-native/`, `packages/dart/test/runtime_bridge_test.dart`.

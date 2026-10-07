@@ -1,5 +1,5 @@
 import {execFileSync} from 'node:child_process';
-import {copyFileSync} from 'node:fs';
+import {copyFileSync,renameSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const release=process.argv.includes('--release');
@@ -8,4 +8,7 @@ const release=process.argv.includes('--release');
 const probe=process.argv.includes('--probe');
 execFileSync('cargo', ['build', ...(release?['--release']:[]), ...(probe?['--features','probe']:[]), '--locked', '--manifest-path', `${directory}Cargo.toml`], {stdio:'inherit'});
 const filename = process.platform === 'darwin' ? 'libaxton_node.dylib' : process.platform === 'win32' ? 'axton_node.dll' : 'libaxton_node.so';
-copyFileSync(`${directory}target/${release?'release':'debug'}/${filename}`, `${directory}${probe?'axton-node-probe.node':'axton-node.node'}`);
+// A fresh inode prevents macOS from reusing a stale native-code signature cache.
+const output=`${directory}${probe?'axton-node-probe.node':'axton-node.node'}`;
+copyFileSync(`${directory}target/${release?'release':'debug'}/${filename}`, `${output}.tmp`);
+renameSync(`${output}.tmp`,output);

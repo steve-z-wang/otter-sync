@@ -247,11 +247,6 @@ void main() {
         connection: StoreConnection(
           url: 'http://127.0.0.1:${server.port}',
           token: () => 'token',
-          identity: const StoreIdentity(
-            backend: 'live',
-            viewer: 'viewer',
-            contract: 'v04',
-          ),
           onError: (_) {},
         ),
         libraryPath: Platform.environment['AXTON_LIBRARY']!,

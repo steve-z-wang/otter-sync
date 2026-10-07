@@ -8,9 +8,8 @@ import {
   type PrerequisiteHandler,
 } from "./connection.mts";
 export type { Connection, ConnectionOptions } from "./connection.mts";
-/** Offline-readable Store identity is independent of credentials and transport URLs. */
+/** Optional network connection for a Store. */
 export type StoreConnection = ServerOptions & {
-  identity: { backend: string; viewer: string; contract: string };
   projectionGeneration?: string;
   options?: ConnectionOptions;
 };
@@ -113,7 +112,7 @@ import {
   CallError,
   actionError,
   assertCallOptions,
-  onceControls,
+  assertQueryOptions,
   type Call,
   type CallOptions,
   type QueryOptions,
@@ -317,8 +316,6 @@ export function createClient<
       (callId) => this.#bridge.task({ kind: "callCompletion", callId }),
       () => this.#guard(true),
     );
-    /** Once callers still waiting: closing the client settles them at once. */
-    #waitingOnce = new Set<(error: CallError) => void>();
     #connecting = false;
     #started: Promise<void> | undefined;
     #closing: Promise<void> | undefined;
@@ -399,12 +396,12 @@ export function createClient<
       path: string;
       schema: object;
       stream: string;
-      connection: StoreConnection;
+      connection?: StoreConnection;
+      projectionGeneration?: string;
       prerequisites?: Record<string, PrerequisiteHandler>;
     }) {
-      if (!options.connection?.identity)
-        throw Error("connection identity is required");
-      const { backend, viewer, contract } = options.connection.identity;
+      if (options.connection && "identity" in options.connection)
+        throw Error("connection identity is no longer supported");
       const required = { ...options.prerequisites };
       let effects!: Effects;
       const { bridge, opened } = await Bridge.open(
@@ -412,8 +409,11 @@ export function createClient<
         {
           path: options.path,
           schema: options.schema,
-          binding: { backend, viewer, contract, stream: options.stream },
-          projectionGeneration: options.connection.projectionGeneration ?? "1",
+          stream: options.stream,
+          projectionGeneration:
+            options.projectionGeneration ??
+            options.connection?.projectionGeneration ??
+            "1",
           prerequisiteHandlers: Object.keys(required),
         },
         (bridge) => {
@@ -424,10 +424,11 @@ export function createClient<
       const client = new Client(bridge, opened.clientId, effects);
       client.#stream = options.stream;
       try {
-        await client.connect(
-          options.connection,
-          options.connection.options ?? {},
-        );
+        if (options.connection)
+          await client.connect(
+            options.connection,
+            options.connection.options ?? {},
+          );
       } catch (error) {
         await client.close().catch(() => {});
         throw error;
@@ -601,14 +602,7 @@ export function createClient<
       }
       return decodeOutcome(outcome, decode);
     }
-    /**
-     * Execute a direct Query. Without `once` it is exactly
-     * [`invokeQueryAttempt`]: a fresh request that reads and writes no
-     * snapshot. With `once`, Rust decides: a saved result is decoded without
-     * any request or Model write, an active request is joined, or a new one
-     * is executed and its successful result saved with its authority. Every
-     * caller decodes its own copy of the outcome.
-     */
+    /** Execute a fresh direct Query and decode its committed invocation snapshot. */
     async invokeQuery<T>(
       name: string,
       version: number,
@@ -616,29 +610,8 @@ export function createClient<
       decode: (value: unknown) => T,
       options?: QueryOptions,
     ): Promise<T> {
-      const { once, refresh } = onceControls(options);
-      const call: CallOptions =
-        options?.store === undefined ? {} : { store: options.store };
-      if (!once)
-        return this.#invokeQueryAttempt(name, version, args, decode, call);
-      let outcome: DirectOutcome | undefined;
-      try {
-        this.#guard(true);
-        ({ outcome } = await this.#untilClosed(
-          this.#bridge.task({
-            kind: "invoke",
-            name,
-            version,
-            args,
-            once,
-            refresh,
-            ...storeOption(call),
-          }),
-        ));
-      } catch (error) {
-        throw actionError(invokeError(error));
-      }
-      return decodeOutcome(outcome, decode);
+      assertQueryOptions(options);
+      return this.#invokeQueryAttempt(name, version, args, decode, options);
     }
     /**
      * Fetch one Model by identity through its existing Loader
@@ -671,40 +644,6 @@ export function createClient<
       return decodeOutcome(outcome, (result) =>
         result === null ? null : decode(result as RecordValue),
       );
-    }
-    /**
-     * Discard the saved once results of one Query argument set, every store
-     * variant, in a local transaction. Needs no network; an older request
-     * still in flight cannot save its result afterwards.
-     */
-    async invalidateQuery(
-      name: string,
-      version: number,
-      args: object,
-    ): Promise<void> {
-      try {
-        this.#guard(true);
-        await this.#bridge.task({
-          kind: "invalidateQueryOnce",
-          name,
-          version,
-          args,
-        });
-      } catch (error) {
-        throw actionError(error);
-      }
-    }
-    /**
-     * Promise lifetime: a once caller settles with `client.closed` as soon as
-     * the public `close()` is called, before the runtime's own `client_closed`.
-     */
-    #untilClosed<T>(task: Promise<T>): Promise<T> {
-      return new Promise<T>((resolve, reject) => {
-        this.#waitingOnce.add(reject);
-        task
-          .then(resolve, reject)
-          .finally(() => this.#waitingOnce.delete(reject));
-      });
     }
     onActionCompletion(listener: (completion: any) => void): () => void {
       this.#completionListeners.add(listener);
@@ -997,9 +936,6 @@ export function createClient<
     }
     close(): Promise<void> {
       this.#actions.close();
-      for (const settle of [...this.#waitingOnce])
-        settle(new CallError("client.closed"));
-      this.#waitingOnce.clear();
       // The runtime's close ends every handle; they stop with this client.
       this.#subscriptions.close();
       return (this.#closing ??= this.#finishClose());

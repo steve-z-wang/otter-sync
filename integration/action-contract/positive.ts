@@ -21,9 +21,8 @@ async function clientContract(client:GeneratedClient) {
   const before=await tx.models.todo.get(identity);
   await tx.mutations.addTodo(async owned=>{await owned.models.todo.delete(identity);return {...input,status:before?.state??null};});
  });
- const found:FindTodosOutput=await client.queries.findTodos({text:'design',cursor:null},{store:false,once:true});
- await client.queries.findTodos({text:'design',cursor:found.nextCursor},{store:true,once:true,refresh:true});
- await client.queries.invalidate.findTodos({text:'design',cursor:null});
+ const found:FindTodosOutput=await client.queries.findTodos({text:'design',cursor:null},{store:false});
+ await client.queries.findTodos({text:'design',cursor:found.nextCursor},{store:true});
  await client.fetch.todo(identity,{store:false});
  await client.models.note.create(defaulted);
  await client.mutations.addNotes({note:defaulted,many:[]});

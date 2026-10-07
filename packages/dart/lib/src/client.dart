@@ -127,7 +127,8 @@ class Client implements WritePort, SubmitMutationPort {
     required String path,
     required Map<String, dynamic> schema,
     required String stream,
-    required StoreConnection connection,
+    StoreConnection? connection,
+    String? projectionGeneration,
     String? libraryPath,
     Carrier? carrier,
     Map<String, PrerequisiteHandler>? prerequisites,
@@ -138,8 +139,9 @@ class Client implements WritePort, SubmitMutationPort {
     final bridge = await Bridge.open(
       path: path,
       schema: schema,
-      binding: connection.identity.binding(stream),
-      projectionGeneration: connection.projectionGeneration,
+      stream: stream,
+      projectionGeneration:
+          projectionGeneration ?? connection?.projectionGeneration ?? '1',
       libraryPath: libraryPath,
       carrier: carrier,
       prerequisiteHandlers: required.keys.toList(),
@@ -151,12 +153,13 @@ class Client implements WritePort, SubmitMutationPort {
     final client = Client._(bridge, bridge.opened['clientId'] as String)
       .._stream = stream;
     try {
-      await client.connect(
-        connection,
-        onError: connection.onError,
-        refreshAuth: connection.refreshAuth,
-        directTimeout: connection.directTimeout,
-      );
+      if (connection != null)
+        await client.connect(
+          connection,
+          onError: connection.onError,
+          refreshAuth: connection.refreshAuth,
+          directTimeout: connection.directTimeout,
+        );
     } catch (_) {
       await client.close();
       rethrow;
@@ -280,36 +283,18 @@ class Client implements WritePort, SubmitMutationPort {
   Future<void> direct(Map<String, dynamic> operation) =>
       transaction((tx) => tx.direct(operation));
 
-  /// Execute a direct Query. Without [once] it is exactly
-  /// a fresh request that reads and writes no
-  /// snapshot. With [once], Rust decides: a saved result is decoded without
-  /// any request or Model write, an active request is joined, or a new one
-  /// is executed and its successful result saved with its authority.
-  /// [refresh] (only with [once]) always requests and replaces on success.
+  /// Execute a fresh Query and decode its committed invocation snapshot.
   Future<T> invokeQuery<T>(
     String name,
     int version,
     Map<String, dynamic> args,
     T Function(dynamic) decode, {
     bool? store,
-    bool once = false,
-    bool refresh = false,
   }) async {
-    final closedBefore = _closing != null;
     late final Map<String, dynamic> invoked;
     try {
-      invoked = await _invoke(name, version, args, store, once, refresh);
+      invoked = await _invoke(name, version, args, store);
     } catch (error) {
-      // A once caller the closing client left waiting hears that it closed,
-      // as every call close can no longer observe does. Platform-specific: the
-      // public error depends on this object's close, not on the runtime.
-      if (once &&
-          !closedBefore &&
-          _closing != null &&
-          error is ActionTransportException &&
-          error.code == 'action.unavailable') {
-        throw CallError('client.closed', cause: error);
-      }
       throw _publicActionError(error);
     }
     return _decodeOutcome(invoked['outcome'] as Map, decode);
@@ -378,26 +363,6 @@ class Client implements WritePort, SubmitMutationPort {
     return error;
   }
 
-  /// Discard the saved once results of one Query argument set, every store
-  /// variant, in a local transaction. Needs no network; an older request
-  /// still in flight cannot save its result afterwards.
-  Future<void> invalidateQuery(
-    String name,
-    int version,
-    Map<String, dynamic> args,
-  ) async {
-    try {
-      await _task({
-        'kind': 'invalidateQueryOnce',
-        'name': name,
-        'version': version,
-        'args': args,
-      });
-    } catch (error) {
-      throw _publicActionError(error);
-    }
-  }
-
   T _decodeOutcome<T>(Map outcome, T Function(dynamic) decode) {
     if (outcome['status'] != 'succeeded') {
       throw CallError(
@@ -420,8 +385,6 @@ class Client implements WritePort, SubmitMutationPort {
     int version,
     Map<String, dynamic> args,
     bool? store,
-    bool once,
-    bool refresh,
   ) async {
     final wire = store;
     try {
@@ -431,8 +394,6 @@ class Client implements WritePort, SubmitMutationPort {
             'version': version,
             'args': args,
             if (wire != null) 'store': wire,
-            if (once) 'once': true,
-            if (refresh) 'refresh': true,
           }))
           as Map<String, dynamic>;
     } on StateError catch (error) {

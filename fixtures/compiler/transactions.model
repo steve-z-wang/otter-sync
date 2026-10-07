@@ -9,3 +9,6 @@ model Composition {
 }
 mutation PublishEntry(entry Entry.create, composition UUID) { published Entry }
 mutation Rename(id UUID, title String)
+
+// Fresh direct read; store mode is a call option, never a business argument.
+query ReadEntry(id UUID) { entry Entry? }

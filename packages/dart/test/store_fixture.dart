@@ -1,15 +1,9 @@
 import 'package:axton/axton.dart';
 
-/// Stable offline binding for tests of local Store capabilities. Transport
-/// fixtures supply their own live connection; this URL never accepts writes.
+/// Explicit disconnected transport fixture. Offline open needs no connection.
 StoreConnection offlineStoreConnection() => StoreConnection(
   url: 'http://127.0.0.1:1',
   token: () => 'offline',
-  identity: const StoreIdentity(
-    backend: 'dart-test',
-    viewer: 'viewer',
-    contract: 'v04',
-  ),
   onError: (_) {},
 );
 

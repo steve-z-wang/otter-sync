@@ -3,7 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {GeneratedClient} from './client.ts';
 const directory=await mkdtemp(join(tmpdir(),'generated-native-'));
-const connection={url:'http://127.0.0.1:1',token:'offline',identity:{backend:'generated',viewer:'viewer',contract:'generated-v04'}};
+const connection={url:'http://127.0.0.1:1',token:'offline'};
 const client=await GeneratedClient.open({path:join(directory,'state.sqlite'),stream:'User:viewer',connection});
 await client.client.connection?.close();
 try {

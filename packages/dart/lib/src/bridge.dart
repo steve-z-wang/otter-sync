@@ -604,7 +604,7 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
   static Future<Bridge> open({
     required String path,
     required Map<String, dynamic> schema,
-    required Map<String, dynamic> binding,
+    required String stream,
     String projectionGeneration = "1",
     String? libraryPath,
     Map<String, dynamic>? migration,
@@ -622,7 +622,8 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
       'requestId': '1',
       'path': path,
       'schema': schema,
-      'binding': binding,
+      'stream': stream,
+      'protocol': 5,
       'projectionGeneration': projectionGeneration,
       if (prerequisiteHandlers.isNotEmpty)
         'prerequisiteHandlers': prerequisiteHandlers,

@@ -790,11 +790,6 @@ final class _Network {
   StoreConnection get connection => StoreConnection(
     url: 'http://127.0.0.1:${server.port}',
     token: () => 'secret',
-    identity: const StoreIdentity(
-      backend: 'generated',
-      viewer: 'viewer',
-      contract: 'v04',
-    ),
     onError: (error) {
       stderr.writeln('generated fixture runtime: $error');
     },
@@ -851,4 +846,13 @@ final class _Network {
     await server.close(force: true);
     expect(errors, isEmpty);
   }
+}
+
+// Compile-only public shape fixture; native lifecycle is verified after the join.
+Future<void> offlineReadShape(String path, String id) async {
+ final client = await GeneratedClient.open(path:path, stream:'User:viewer');
+ final Entry? stored = await client.fetch.entry(EntryIdentity(id:id));
+ final Entry? transient = await client.fetch.entry(EntryIdentity(id:id), store:false);
+ final ReadEntryOutput result = await client.queries.readEntry(id:id, store:false);
+ if (stored == transient && result.entry == null) await client.close();
 }

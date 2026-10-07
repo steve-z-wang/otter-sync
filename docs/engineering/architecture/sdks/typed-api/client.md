@@ -8,7 +8,7 @@ The generated API names application Models, Mutations and Queries. The generic S
 
 | Surface | Boundary |
 | --- | --- |
-| `GeneratedClient.open({path, stream, connection})` | Open one physical SQLite file bound to backend/viewer/Stream/contract, then start transport. Identity is supplied offline and is independent of credentials. |
+| `GeneratedClient.open({path, stream, connection?})` | Open one physical SQLite file for one Stream. Rust creates the Store identity; transport starts only when a connection is supplied. |
 | `client.models.<model>.get / query / watch / <relation>` | Read committed local projections. Observers report distinct committed results. |
 | `client.models.<model>.create / update / delete` | Device-only writes, each in its own local transaction. They send no backend request. |
 | `client.transaction(body)` | One local atomic boundary for reads, direct writes and several named Mutations. Return the callback value after commit. |
@@ -38,7 +38,7 @@ A Mutation invocation resolves after local commit; a Call obtained inside an out
 
 Query/Fetch use request-level boolean `store`, default true. Results always describe the invocation snapshot. Ordinary returned Model content has `cursor:null`; true writes only where no current Stream content/deletion guard prevents it. A protected no-op succeeds and may return content different from the Store. False installs no Model/authority. Returning a Model does not track it, and missing results do not mean canonical deletion.
 
-Query `once` distinguishes storage modes and saves successful complete results. A hit returns a decoded copy without reapplying Models or tracking. Refresh makes a new request; refusal preserves prior saved success. Invalidation fences an older active request. Fetch shares matching active requests but has no durable Load job.
+The protocol-5 facades submit a fresh task for every Query invocation. Public `once`, `refresh` and Query invalidation controls are removed; authentication refresh remains. Open takes a path, schema and Stream with an optional connection, allowing offline operation. Native protocol-5 lifecycle evidence is tracked separately from facade checks until the runtime join.
 
 Language scopes refuse captured/expired capabilities and unawaited operations before commit. Node uses async-context ownership. RN's guard conservatively refuses remote/write operations while its callback runs; ordinary reads can queue behind the active transaction. Cross-Store overlapping RN callbacks require async-context support and are refused. Bootstrap and named Mutation entry checks prevent waiting behind their own callback. Priority close settles outstanding tasks and cancels runtime effects without waiting for unresolved user code.
 

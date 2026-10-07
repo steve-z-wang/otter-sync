@@ -77,10 +77,7 @@ fn dart_query_business_client_does_not_shadow_runtime_owner() {
         dart.contains("this.client.invokeQuery<FindOutput>"),
         "{dart}"
     );
-    assert!(
-        dart.contains("this.client.invalidateQuery('Find'"),
-        "{dart}"
-    );
+    assert!(!dart.contains("invalidateQuery"), "{dart}");
     assert!(dart.contains("required String client"), "{dart}");
 }
 

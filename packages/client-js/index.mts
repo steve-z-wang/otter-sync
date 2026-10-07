@@ -13,7 +13,6 @@ export {
   CallError,
   type Call,
   type CallOptions,
-  type OnceOptions,
   type QueryOptions,
   type CallOutcome,
   type CallStatus,

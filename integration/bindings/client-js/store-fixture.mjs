@@ -1,13 +1,8 @@
 import {createHash} from 'node:crypto';
-// Real bound native Stores for SDK fixtures. The connection is closed after
-// open so transport tests explicitly choose their active network session.
+// Open offline unless the test explicitly supplies a network connection.
 export const offlineNetwork = () => ({ open() {}, async push() { throw Error('offline'); } });
 export async function openStore(Client, options) {
-  const client=await Client.open({ ...options, stream: options.stream ?? 'User:viewer',
-    connection: options.connection ?? {url:'http://127.0.0.1:1',token:'offline',
-      identity:{backend:'sdk-test',viewer:'viewer',contract:'v04'}} });
-  if(!options.connection) await client.connection?.close();
-  return client;
+  return Client.open({...options,stream:options.stream ?? 'User:viewer'});
 }
 
 const canonical=value=>Array.isArray(value)?`[${value.map(canonical).join(',')}]`:value&&typeof value==='object'?`{${Object.keys(value).sort().map(key=>`${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`:JSON.stringify(value);

@@ -215,12 +215,7 @@ export class Bridge {
     request: {
       path: string;
       schema: object;
-      binding: {
-        backend: string;
-        viewer: string;
-        stream: string;
-        contract: string;
-      };
+      stream: string;
       projectionGeneration?: string;
       discardPending?: boolean;
       migration?: unknown;
@@ -241,6 +236,7 @@ export class Bridge {
         strictJson({
           ...wire,
           type: "open",
+          protocol: 5,
           requestId,
         }),
         () => bridge.#drain(),

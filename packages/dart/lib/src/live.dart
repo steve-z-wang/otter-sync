@@ -48,24 +48,7 @@ class SyncServer {
   });
 }
 
-/// Stable identity available offline; credentials never select a Store.
-class StoreIdentity {
-  final String backend, viewer, contract;
-  const StoreIdentity({
-    required this.backend,
-    required this.viewer,
-    required this.contract,
-  });
-  Map<String, dynamic> binding(String stream) => {
-    'backend': backend,
-    'viewer': viewer,
-    'contract': contract,
-    'stream': stream,
-  };
-}
-
 class StoreConnection extends SyncServer {
-  final StoreIdentity identity;
   final String projectionGeneration;
   final void Function(Object)? onError;
   final Future<void> Function()? refreshAuth;
@@ -74,7 +57,6 @@ class StoreConnection extends SyncServer {
     required super.url,
     required super.token,
     super.headers,
-    required this.identity,
     this.projectionGeneration = '1',
     this.onError,
     this.refreshAuth,

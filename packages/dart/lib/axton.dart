@@ -41,5 +41,4 @@ export 'src/connection.dart'
         PrerequisiteRetry,
         PrerequisiteHandler;
 
-export 'src/live.dart'
-    show SyncServer, StoreConnection, StoreIdentity, HttpFailure;
+export 'src/live.dart' show SyncServer, StoreConnection, HttpFailure;

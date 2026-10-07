@@ -183,10 +183,23 @@ assert.equal(submissions.length,2);assert.deepEqual(submissions[0],submissions[1
 assert.equal((submissions[0]!.args as {entry:{at:string}}).entry.at,'2026-01-01T00:00:00.000Z');
 if(false){
  const client={} as GeneratedClient;
- // @ts-expect-error bound open requires stable stream and connection identity
+ void GeneratedClient.open({path:'s',stream:'User:viewer'});
+ // @ts-expect-error removed Store identity
+ void GeneratedClient.open({path:'s',stream:'User:u',connection:{url:'http://unused',token:'x',identity:{backend:'b',viewer:'u',contract:'c'}}});
+ // @ts-expect-error no Query invalidation facade
+ void client.queries.invalidate;
+ void client.fetch.entry({id:row.id});
+ void client.fetch.entry({id:row.id},{store:false});
+ void client.queries.readEntry({id:row.id});
+ void client.queries.readEntry({id:row.id},{store:false});
+ // @ts-expect-error removed Query once option
+ void client.queries.readEntry({id:row.id},{once:false});
+ // @ts-expect-error removed Query refresh option
+ void client.queries.readEntry({id:row.id},{refresh:false});
+ // @ts-expect-error open requires a stream
  void GeneratedClient.open({path:'only.sqlite'});
  // @ts-expect-error retired public hook configuration
- void GeneratedClient.open({path:'s',stream:'User:viewer',connection:{url:'http://unused',token:'x',identity:{backend:'b',viewer:'v',contract:'c'}},onStore:{}});
+ void GeneratedClient.open({path:'s',stream:'User:viewer',connection:{url:'http://unused',token:'x'},onStore:{}});
  // @ts-expect-error no per-client multiple Stream facade
  void client.streams;
  // @ts-expect-error no Load jobs

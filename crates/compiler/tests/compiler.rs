@@ -605,12 +605,12 @@ fn generated_clients_expose_one_server_connection() {
     let ts = axton_compiler::client_typescript(&schema, "@example/runtime");
     let dart = axton_compiler::dart(&schema);
     assert!(
-        ts.contains("stream:string; connection:StoreConnection"),
+        ts.contains("stream:string; connection?:StoreConnection"),
         "{ts}"
     );
     assert!(ts.contains("Client.open({...options,schema})"), "{ts}");
     assert!(
-        dart.contains("required String stream, required StoreConnection connection"),
+        dart.contains("required String stream, StoreConnection? connection"),
         "{dart}"
     );
     assert!(dart.contains("connection:connection"), "{dart}");
@@ -1386,7 +1386,7 @@ fn model_only_dart_keeps_local_crud_without_action_symbols() {
 fn action_dart_binds_shared_runtime_and_retained_codecs() {
     let dart=axton_compiler::dart(&compile("enum Mood { calm loud } model Note { id String at DateTime mood Mood @@id(id) } mutation Save(note Note.create, changed Note.update<at>?, stamps DateTime[], when DateTime?) { saved Note? at DateTime moods Mood[] }").unwrap());
     for expected in [
-        "StoreConnection, StoreIdentity",
+        "StoreConnection",
         "DateTime.parse(",
         ".toAxtonPrecision().toIso8601String()",
         "class NoteLiveModel extends NoteTxModel",
@@ -1623,7 +1623,7 @@ fn action_store_options_name_only_explicit_model_outputs_in_both_languages() {
         dart.contains("required String store, bool outputStore = true"),
         "{dart}"
     );
-    assert!(dart.contains("store: outputStore, once:"), "{dart}");
+    assert!(dart.contains("store: outputStore);"), "{dart}");
     for output in v["actions"][0]["outputs"].as_array().unwrap() {
         assert!(output.get("store").is_none());
     }
@@ -1808,7 +1808,7 @@ fn a_kind_change_at_a_new_version_registers_each_version_under_its_own_kind() {
 }
 
 #[test]
-fn direct_queries_generate_once_options_and_typed_invalidators() {
+fn direct_queries_generate_store_only_options() {
     let v=compile("model Todo { id String @@id(id) } query GetTodos(projectId String) { todos Todo[] } query Ping() mutation Rename(todo Todo.update)").unwrap();
     let ts = axton_compiler::typescript(&v);
     let dart = axton_compiler::dart(&v);
@@ -1816,39 +1816,34 @@ fn direct_queries_generate_once_options_and_typed_invalidators() {
         "options?:QueryOptions",
         "getTodos: (args:GetTodosInput, options?:GetTodosOptions)",
         "port.invokeQuery('GetTodos',1",
-        "port.invalidateQuery('GetTodos',1",
     ] {
         assert!(ts.contains(expected), "{expected}: {ts}");
     }
     for expected in [
-        "required String projectId, bool store = true, bool once = false, bool refresh = false",
-        "store: store, once: once, refresh: refresh",
-        "client.invalidateQuery('GetTodos', 1",
+        "required String projectId, bool store = true",
+        "store: store",
     ] {
         assert!(dart.contains(expected), "{expected}: {dart}");
     }
+    assert!(!ts.contains("invalidateQuery"));
+    assert!(!dart.contains("QueryInvalidations"));
+    assert!(!ts.contains("OnceOptions"));
     assert!(!ts.contains("enqueue:"));
     assert!(!dart.contains("QueuedQueries"));
 }
 
 #[test]
-fn once_controls_take_collision_safe_dart_names_beside_business_inputs() {
+fn removed_query_controls_preserve_business_inputs() {
     let v =
         compile("query Find(once Boolean, refresh Boolean, store String, callOnce Int) { n Int }")
             .unwrap();
     let dart = axton_compiler::dart(&v);
     assert!(
-        dart.contains("Future<FindOutput> find({required bool once, required bool refresh, required String store, required int callOnce, bool outputStore = true, bool callOnce$ = false, bool callRefresh = false}) => this.client.invokeQuery<FindOutput>('Find', 1, "),
+        dart.contains("Future<FindOutput> find({required bool once, required bool refresh, required String store, required int callOnce, bool outputStore = true}) => this.client.invokeQuery<FindOutput>('Find', 1, "),
         "{dart}"
     );
-    assert!(
-        dart.contains("store: outputStore, once: callOnce$, refresh: callRefresh);"),
-        "{dart}"
-    );
-    assert!(
-        dart.contains("Future<void> find({required bool once, required bool refresh, required String store, required int callOnce}) => this.client.invalidateQuery('Find', 1, "),
-        "{dart}"
-    );
+    assert!(dart.contains("store: outputStore);"), "{dart}");
+    assert!(!dart.contains("invalidateQuery"), "{dart}");
 }
 
 #[test]

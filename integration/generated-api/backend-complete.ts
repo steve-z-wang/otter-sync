@@ -42,6 +42,7 @@ export const backend = createBackend<Tx>({
   protocol4:{backendId:"generated",contractId:"v04",authorizeStream:()=>true},
   handlers,
   mutations,
+  queries: {readEntry: async () => ({entry:null})},
   loaders,
   native: { validateConfig() {}, processPush: async () => "", processAction: async () => "", processFetch: async () => "", processPull: async () => "", validateLoadBatch: () => [], encodeLoadBatch: () => "", processLoad: async () => "", settleExternal: async () => "", negotiateLive: async () => "", pullLive: async () => "", liveEvent: () => "[]", liveClose() {} },
 });

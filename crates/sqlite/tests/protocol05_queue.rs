@@ -223,7 +223,7 @@ fn descriptor_snapshot_reorder_retains_original_hash_in_identical_read_context()
     assert_eq!(c.freeze_batch05().unwrap().unwrap(), b);
 }
 #[test]
-fn discard_refuses_assigned_owner_and_dismiss_removes_only_completed_refusal() {
+fn discard_refuses_assigned_owner_and_dismiss_retains_completed_outcome() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("db");
     let mut c = Client::open05(SqliteStore::open(&p).unwrap(), schema(), "User:u").unwrap();
@@ -234,10 +234,11 @@ fn discard_refuses_assigned_owner_and_dismiss_removes_only_completed_refusal() {
         .transaction(|tx| tx.discard_mutation05(call.ordinal))
         .unwrap();
     assert_eq!(report.completions.len(), 1);
-    assert!(c.call_completion05(&call.call_id).unwrap().is_some());
+    let completed = c.call_completion05(&call.call_id).unwrap();
+    assert!(completed.is_some());
     c.transaction(|tx| tx.dismiss_rejection05(call.ordinal))
         .unwrap();
-    assert!(c.call_completion05(&call.call_id).unwrap().is_none());
+    assert_eq!(c.call_completion05(&call.call_id).unwrap(), completed);
     let assigned = c
         .transaction(|tx| tx.submit_mutation05("Write", 1, json!({"entries":[]}), vec![]))
         .unwrap();

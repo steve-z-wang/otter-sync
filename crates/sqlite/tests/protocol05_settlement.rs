@@ -925,8 +925,26 @@ fn discarded_mutation_and_lifecycle_dependent_keep_public_codes_after_reopen() {
         .unwrap();
     assert_eq!(report.completions.len(), 2);
     drop(client);
+    {
+        use axton_client::ClientStore;
+        let mut store = SqliteStore::open(&path).unwrap();
+        assert_eq!(
+            store
+                .query(
+                    "SELECT id,rejection_acknowledged FROM axton_mutation_queue ORDER BY id",
+                    &[]
+                )
+                .unwrap()
+                .rows,
+            vec![
+                vec![json!(created.ordinal), json!(1)],
+                vec![json!(dependent.ordinal), json!(0)]
+            ]
+        );
+    }
+
     let mut client = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
-    for (call, expected) in [(created, "dropped"), (dependent, "dependency.rejected")] {
+    for (call, expected) in [(&created, "dropped"), (&dependent, "dependency.rejected")] {
         let completion = client.call_completion05(&call.call_id).unwrap().unwrap();
         assert!(
             matches!(completion.outcome, axton_client::ActionOutcome::Failed { code, .. } if code == expected)
@@ -937,4 +955,131 @@ fn discarded_mutation_and_lifecycle_dependent_keep_public_codes_after_reopen() {
     }
     assert!(client.freeze_batch05().unwrap().is_none());
     assert_eq!(client.read(&key()).unwrap(), None);
+}
+
+#[test]
+fn dismissed_rejection_keeps_durable_completion_but_retires_input_after_reopen() {
+    use axton_client::ClientStore;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db");
+    let mut client = open(&path);
+    let call = client
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"denied","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let batch = client.freeze_batch05().unwrap().unwrap();
+    client
+        .acknowledge_batch05(&ack(
+            &batch,
+            v05::MutationOutcome::Rejected {
+                code: "write.denied".into(),
+                message: Some("retained outcome".into()),
+            },
+        ))
+        .unwrap();
+    client
+        .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+        .unwrap();
+    drop(client);
+    let mut store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.query("SELECT rejection_acknowledged,rejection_code,rejection_message FROM axton_mutation_queue WHERE id=?", &[json!(call.ordinal)]).unwrap().rows,
+        vec![vec![json!(1),json!("write.denied"),json!("retained outcome")]]);
+    for table in [
+        "axton_mutation_queue_operation",
+        "axton_mutation_prerequisite",
+        "axton_mutation_dependency",
+    ] {
+        assert!(
+            store
+                .query(&format!("SELECT * FROM {table}"), &[])
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+    }
+    drop(store);
+    let mut client = open(&path);
+    let completion = client.call_completion05(&call.call_id).unwrap().unwrap();
+    assert!(
+        matches!(completion.outcome, axton_client::ActionOutcome::Failed {code, ..}
+        if code == "write.denied")
+    );
+    assert!(client.mutation_result05(call.ordinal).unwrap().is_some());
+    client
+        .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+        .unwrap();
+    assert!(client.freeze_batch05().unwrap().is_none());
+}
+
+#[test]
+fn existing_format5_adds_rejection_acknowledgement_only_after_valid_admission() {
+    use axton_client::ClientStore;
+    let directory = tempfile::tempdir().unwrap();
+    let fresh_path = directory.path().join("fresh.db");
+    drop(open(&fresh_path));
+    let mut fresh = SqliteStore::open(&fresh_path).unwrap();
+    let metadata = fresh
+        .query("SELECT * FROM axton_store", &[])
+        .unwrap()
+        .rows
+        .remove(0);
+    let descriptor = fresh
+        .query("SELECT * FROM axton_descriptor", &[])
+        .unwrap()
+        .rows
+        .remove(0);
+    let path = directory.path().join("prior-format5.db");
+    let mut prior = SqliteStore::open(&path).unwrap();
+    let source = include_str!("../../client/src/store05.rs");
+    let ddl = source
+        .split("pub(crate) const DDL: &str = r#\"")
+        .nth(1)
+        .unwrap()
+        .split("\"#;")
+        .next()
+        .unwrap()
+        .replace("rejection_acknowledged INTEGER NOT NULL DEFAULT 0, ", "");
+    prior.execute_batch(&ddl).unwrap();
+    let placeholders = vec!["?"; metadata.len()].join(",");
+    prior
+        .execute(
+            &format!("INSERT INTO axton_store VALUES({placeholders})"),
+            &metadata,
+        )
+        .unwrap();
+    prior
+        .execute("INSERT INTO axton_descriptor VALUES(?,?,?,?)", &descriptor)
+        .unwrap();
+    drop(prior);
+    assert!(Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:other").is_err());
+    let mut prior = SqliteStore::open(&path).unwrap();
+    assert!(
+        !prior
+            .query("PRAGMA table_info(axton_mutation_queue)", &[])
+            .unwrap()
+            .rows
+            .iter()
+            .any(|r| r[1] == "rejection_acknowledged")
+    );
+    drop(prior);
+    drop(open(&path));
+    let mut prior = SqliteStore::open(&path).unwrap();
+    assert!(
+        prior
+            .query("PRAGMA table_info(axton_mutation_queue)", &[])
+            .unwrap()
+            .rows
+            .iter()
+            .any(|r| r[1] == "rejection_acknowledged")
+    );
+    assert_eq!(
+        prior.query("SELECT * FROM axton_store", &[]).unwrap().rows[0],
+        metadata
+    );
 }

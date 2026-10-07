@@ -682,17 +682,20 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             if row[1] == 1 {
                 return Ok(ApplyReport::default());
             }
-            tx.engine
-                .reject_owned05(BTreeMap::from([(id, ("dropped".into(), None))]))
+            let report = tx
+                .engine
+                .reject_owned05(BTreeMap::from([(id, ("dropped".into(), None))]))?;
+            tx.engine.acknowledge_rejection05(id)?;
+            Ok(report)
         })
     }
     pub fn dismiss_rejection05(&mut self, id: u64) -> Result<()> {
-        self.savepoint(|tx|{
- if tx.local_only{return Err(invalid("cannot dismiss in authority callback"))}
- if tx.engine.scalar("SELECT 1 FROM axton_mutation_queue WHERE id=? AND rejection_code IS NOT NULL AND reconciled=1",&[json!(id)])?.is_none(){return Err(invalid("completed rejection required"))}
- tx.engine.exec("axton_mutation_dependency","DELETE FROM axton_mutation_dependency WHERE depends_on=?",&[json!(id)])?;
- tx.engine.exec("axton_mutation_queue","DELETE FROM axton_mutation_queue WHERE id=?",&[json!(id)])?;Ok(())
- })
+        self.savepoint(|tx| {
+            if tx.local_only {
+                return Err(invalid("cannot dismiss in authority callback"));
+            }
+            tx.engine.acknowledge_rejection05(id)
+        })
     }
 }
 impl<S: ClientStore> Client<S> {
@@ -712,5 +715,34 @@ impl<S: ClientStore> Client<S> {
                 Ok(None)
             }
         })
+    }
+}
+
+impl<S: ClientStore> Engine<'_, S> {
+    fn acknowledge_rejection05(&mut self, id: u64) -> Result<()> {
+        if self.scalar("SELECT 1 FROM axton_mutation_queue WHERE id=? AND rejection_code IS NOT NULL AND reconciled=1", &[json!(id)])?.is_none() {
+            return Err(invalid("completed rejection required"));
+        }
+        self.exec(
+            "axton_mutation_queue",
+            "UPDATE axton_mutation_queue SET rejection_acknowledged=1 WHERE id=?",
+            &[json!(id)],
+        )?;
+        self.exec(
+            "axton_mutation_queue_operation",
+            "DELETE FROM axton_mutation_queue_operation WHERE mutation_id=?",
+            &[json!(id)],
+        )?;
+        self.exec(
+            "axton_mutation_prerequisite",
+            "DELETE FROM axton_mutation_prerequisite WHERE ordinal=?",
+            &[json!(id)],
+        )?;
+        self.exec(
+            "axton_mutation_dependency",
+            "DELETE FROM axton_mutation_dependency WHERE ordinal=? OR depends_on=?",
+            &[json!(id), json!(id)],
+        )?;
+        Ok(())
     }
 }

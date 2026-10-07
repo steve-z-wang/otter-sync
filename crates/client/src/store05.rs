@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 pub(crate) const DDL: &str = r#"
 CREATE TABLE axton_store(singleton INTEGER PRIMARY KEY CHECK(singleton=1), format INTEGER NOT NULL CHECK(format=5), id TEXT NOT NULL, stream TEXT NOT NULL, materialization TEXT NOT NULL, desired_materialization TEXT NOT NULL, schema_descriptor TEXT NOT NULL, enabled_descriptor TEXT NOT NULL, next_mutation_id INTEGER NOT NULL DEFAULT 1, next_local_sequence INTEGER NOT NULL DEFAULT 1, last_acknowledged_batch_id INTEGER NOT NULL DEFAULT 0, start_cursor INTEGER, bootstrap_cursor INTEGER, cursor INTEGER, generation INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE axton_descriptor(context TEXT PRIMARY KEY, materialization TEXT NOT NULL, descriptor TEXT NOT NULL, projection_generation TEXT NOT NULL);
-CREATE TABLE axton_mutation_queue(id INTEGER PRIMARY KEY, name TEXT NOT NULL, descriptor_version INTEGER NOT NULL, descriptor TEXT NOT NULL REFERENCES axton_descriptor(context), batch_id INTEGER, batch_materialization TEXT, batch_digest TEXT, sync_cursor INTEGER, result TEXT, targets TEXT, rejection_code TEXT, rejection_message TEXT, reconciled INTEGER NOT NULL DEFAULT 0, diverged INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE axton_mutation_queue(id INTEGER PRIMARY KEY, name TEXT NOT NULL, descriptor_version INTEGER NOT NULL, descriptor TEXT NOT NULL REFERENCES axton_descriptor(context), batch_id INTEGER, batch_materialization TEXT, batch_digest TEXT, sync_cursor INTEGER, result TEXT, targets TEXT, rejection_code TEXT, rejection_message TEXT, rejection_acknowledged INTEGER NOT NULL DEFAULT 0, reconciled INTEGER NOT NULL DEFAULT 0, diverged INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE axton_mutation_queue_operation(mutation_id INTEGER NOT NULL REFERENCES axton_mutation_queue(id) ON DELETE CASCADE, step INTEGER NOT NULL, local_sequence INTEGER NOT NULL UNIQUE, input_path TEXT, kind TEXT NOT NULL, model TEXT, identity TEXT, operation TEXT NOT NULL, value TEXT, owner_history TEXT NOT NULL, PRIMARY KEY(mutation_id,step));
 CREATE TABLE axton_mutation_dependency(ordinal INTEGER NOT NULL REFERENCES axton_mutation_queue(id) ON DELETE CASCADE, depends_on INTEGER NOT NULL REFERENCES axton_mutation_queue(id), kind TEXT NOT NULL, PRIMARY KEY(ordinal,depends_on), CHECK(depends_on<ordinal));
 CREATE TABLE axton_mutation_prerequisite(ordinal INTEGER NOT NULL REFERENCES axton_mutation_queue(id) ON DELETE CASCADE,key TEXT NOT NULL,error TEXT,PRIMARY KEY(ordinal,key));
@@ -161,6 +161,14 @@ impl<S: ClientStore> Client<S> {
             if !existing {
                 store.execute_batch(DDL)?;
                 store.execute("INSERT INTO axton_store(singleton,format,id,stream,materialization,desired_materialization,schema_descriptor,enabled_descriptor) VALUES(1,5,?,?,?,?,?,?)",&[json!(uuid::Uuid::new_v4().to_string()),json!(stream),json!(materialization),json!(materialization),json!(descriptor_context),json!(descriptor_context)])?;
+            }
+            if existing {
+                let columns = store
+                    .query("PRAGMA table_info(axton_mutation_queue)", &[])?
+                    .rows;
+                if !columns.iter().any(|row| row[1] == "rejection_acknowledged") {
+                    store.execute_batch("ALTER TABLE axton_mutation_queue ADD COLUMN rejection_acknowledged INTEGER NOT NULL DEFAULT 0")?;
+                }
             }
             ddl::reconcile(&mut store, &schema)?;
             store.execute("INSERT OR IGNORE INTO axton_descriptor(context,materialization,descriptor,projection_generation) VALUES(?,?,?,?)",&[json!(descriptor_context),json!(materialization),json!(descriptor_text),json!(projection)])?;

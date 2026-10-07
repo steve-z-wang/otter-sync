@@ -2,7 +2,7 @@ import type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
 export type { RuntimeStream, RuntimeLoadStream } from "./stream.mts";
 import { createRequire } from "node:module";
 import { createServer, STATUS_CODES } from "node:http";
-import type { IncomingMessage, RequestListener, Server } from "node:http";
+import type { IncomingMessage, ServerResponse, Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -1777,13 +1777,22 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     port: number;
     host?: string;
   }) => {
-    const server = createServer(
-      createHttpHandler({
-        backend: api,
-        admit,
-        onError,
-      }),
-    );
+    let stopping = false;
+    const requests = new Set<Promise<void>>();
+    const handler = createHttpHandler({ backend: api, admit, onError });
+    const server = createServer((request, response) => {
+      if (stopping) {
+        response.writeHead(503, { connection: "close" });
+        response.end();
+        return;
+      }
+      const work = handler(request, response);
+      requests.add(work);
+      void work.then(
+        () => requests.delete(work),
+        () => requests.delete(work),
+      );
+    });
     const live = attachLive(server, {
       backend: api,
       admit,
@@ -1810,14 +1819,16 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     let closing: Promise<void> | undefined;
     return {
       url: `http://${urlHost}:${actual}`,
-      close: () =>
-        (closing ??= (async () => {
-          await live.close();
+      close: () => {
+        stopping = true;
+        return (closing ??= (async () => {
+          await Promise.all([live.close(), ...requests]);
           server.closeIdleConnections();
           await new Promise<void>((resolve, reject) =>
             server.close((error) => (error ? reject(error) : resolve())),
           );
-        })()),
+        })());
+      },
     };
   };
   return { ...api, listen };
@@ -1861,9 +1872,10 @@ function createHttpHandler(options: {
   admit: Admission;
   maxBodyBytes?: number;
   onError?: (error: unknown) => void;
-}): RequestListener {
+}): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
   return async (request, response) => {
     const send = (status: number, value: unknown) => {
+      if (response.destroyed || response.writableEnded) return;
       response.writeHead(status, {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",
@@ -1889,6 +1901,7 @@ function createHttpHandler(options: {
     try {
       const { owner, refusal: refused } = await options.admit(request);
       if (refused) {
+        if (response.destroyed || response.writableEnded) return;
         response.writeHead(refused.status, {
           "content-type": "application/json; charset=utf-8",
           "cache-control": "no-store",

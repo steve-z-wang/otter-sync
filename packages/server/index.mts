@@ -1822,11 +1822,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       close: () => {
         stopping = true;
         return (closing ??= (async () => {
-          await Promise.all([live.close(), ...requests]);
+          const drained = await Promise.allSettled([live.close(), ...requests]);
           server.closeIdleConnections();
-          await new Promise<void>((resolve, reject) =>
-            server.close((error) => (error ? reject(error) : resolve())),
+          const closed = await Promise.allSettled([
+            new Promise<void>((resolve, reject) =>
+              server.close((error) => (error ? reject(error) : resolve())),
+            ),
+          ]);
+          const failure = [...drained, ...closed].find(
+            (result) => result.status === "rejected",
           );
+          if (failure?.status === "rejected") throw failure.reason;
         })());
       },
     };

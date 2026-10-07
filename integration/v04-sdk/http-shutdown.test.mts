@@ -151,107 +151,132 @@ test("listener close drains an admitted HTTP Fetch after the native requester cl
   }
 });
 
-test("close owns both aborted HTTP admissions, refuses new work, and preserves admission failures", async () => {
-  const { request } = await import("node:http");
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const held = [0, 1].map(() => ({
-    entered: gate(),
-    release: gate(),
-    finished: gate(),
-    gone: gate(),
-  }));
-  const expected = new Error("held admission failed");
-  const diagnostics: unknown[] = [];
-  let admissions = 0,
-    closed = false;
-  const backend = createBackend<PgClient>({
-    database: pg(pool),
-    authenticate: async (req) => {
-      const index = admissions++;
-      const item = held[index];
-      req.socket.once("close", item.gone.resolve);
-      const tx = await pool.connect();
-      try {
-        await tx.query("SELECT 1 AS connected");
-        item.entered.resolve();
-        await item.release.promise;
-        assert.deepEqual((await tx.query("SELECT 1 AS admitted")).rows, [
-          { admitted: 1 },
-        ]);
-        if (index === 1) throw expected;
-        return "alice";
-      } finally {
-        tx.release();
-        item.finished.resolve();
-      }
-    },
-    protocol4: {
-      backendId: "sdk",
-      contractId: "sdk-v04",
-      authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
-    },
-    onError: (error) => diagnostics.push(error),
-    mutations: { publish: async () => ({ entry: { id: "unused" } }) },
-    queries: { find: async () => ({ entry: null }) },
-    loaders: {
-      entry: async ({ ids }) => ids.map(() => null),
-      draft: undefined,
-    },
-    bootstrap: async () => {},
-  });
-  const server = await backend.listen({ port: 0 });
-  const callers = held.map(() => {
-    const req = request(server.url + "/sync/fetch", { method: "POST" });
-    req.on("error", () => {}); // Socket destruction is deliberate; server Reporter remains asserted.
-    req.end("{}");
-    return req;
-  });
-  let closing: Promise<void> | undefined;
-  try {
-    await Promise.all(held.map((item) => item.entered.promise));
-    callers.forEach((req) => req.destroy());
-    await Promise.all(held.map((item) => item.gone.promise));
-    closing = server.close().then(() => {
-      closed = true;
+for (const reporterThrows of [false, true]) {
+  test(`close owns aborted HTTP admissions with ${reporterThrows ? "throwing" : "normal"} Reporter`, async () => {
+    const { request } = await import("node:http");
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const held = [0, 1].map(() => ({
+      entered: gate(),
+      release: gate(),
+      finished: gate(),
+      gone: gate(),
+    }));
+    const expected = new Error("held admission failed");
+    const reporterFailure = new Error("Reporter failed");
+    const diagnostics: unknown[] = [];
+    let admissions = 0,
+      closed = false;
+    const backend = createBackend<PgClient>({
+      database: pg(pool),
+      authenticate: async (req) => {
+        const index = admissions++;
+        const item = held[index];
+        req.socket.once("close", item.gone.resolve);
+        const tx = await pool.connect();
+        try {
+          await tx.query("SELECT 1 AS connected");
+          item.entered.resolve();
+          await item.release.promise;
+          assert.deepEqual((await tx.query("SELECT 1 AS admitted")).rows, [
+            { admitted: 1 },
+          ]);
+          if (index === (reporterThrows ? 0 : 1)) throw expected;
+          return "alice";
+        } finally {
+          tx.release();
+          item.finished.resolve();
+        }
+      },
+      protocol4: {
+        backendId: "sdk",
+        contractId: "sdk-v04",
+        authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
+      },
+      onError: (error) => {
+        diagnostics.push(error);
+        if (reporterThrows && error === expected) throw reporterFailure;
+      },
+      mutations: { publish: async () => ({ entry: { id: "unused" } }) },
+      queries: { find: async () => ({ entry: null }) },
+      loaders: {
+        entry: async ({ ids }) => ids.map(() => null),
+        draft: undefined,
+      },
+      bootstrap: async () => {},
     });
-    const status = await new Promise<number | undefined>((resolve, reject) => {
-      const req = request(
-        server.url + "/sync/fetch",
-        { method: "POST" },
-        (res) => {
-          res.resume();
-          res.once("end", () => resolve(res.statusCode));
+    const server = await backend.listen({ port: 0 });
+    const callers = held.map(() => {
+      const req = request(server.url + "/sync/fetch", { method: "POST" });
+      req.on("error", () => {}); // Socket destruction is deliberate; server Reporter remains asserted.
+      req.end("{}");
+      return req;
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      await Promise.all(held.map((item) => item.entered.promise));
+      callers.forEach((req) => req.destroy());
+      await Promise.all(held.map((item) => item.gone.promise));
+      closing = server.close().then(
+        () => {
+          closed = true;
+        },
+        (error) => {
+          closed = true;
+          throw error;
         },
       );
-      req.on("error", reject);
-      req.end("{}");
-    });
-    assert.equal(status, 503);
-    assert.equal(
-      admissions,
-      2,
-      "close refuses requests before authentication can own new database work",
-    );
-    assert.equal(closed, false);
-    held[0].release.resolve();
-    await held[0].finished.promise;
-    await turn();
-    assert.equal(
-      closed,
-      false,
-      "draining one request must not release the other admission",
-    );
-    held[1].release.resolve();
-    await held[1].finished.promise;
-    await closing;
-    assert.ok(
-      diagnostics.includes(expected),
-      "original admission failure reaches Reporter after socket close",
-    );
-  } finally {
-    held.forEach((item) => item.release.resolve());
-    callers.forEach((req) => req.destroy());
-    await (closing ?? server.close());
-    await pool.end();
-  }
-});
+      void closing.catch(() => {});
+      const status = await new Promise<number | undefined>(
+        (resolve, reject) => {
+          const req = request(
+            server.url + "/sync/fetch",
+            { method: "POST" },
+            (res) => {
+              res.resume();
+              res.once("end", () => resolve(res.statusCode));
+            },
+          );
+          req.on("error", reject);
+          req.end("{}");
+        },
+      );
+      assert.equal(status, 503);
+      assert.equal(
+        admissions,
+        2,
+        "close refuses requests before authentication can own new database work",
+      );
+      assert.equal(closed, false);
+      held[0].release.resolve();
+      await held[0].finished.promise;
+      await turn();
+      assert.equal(
+        closed,
+        false,
+        "draining one request must not release the other admission",
+      );
+      held[1].release.resolve();
+      await held[1].finished.promise;
+      if (reporterThrows) {
+        await assert.rejects(closing, (error) => error === reporterFailure);
+        await assert.rejects(
+          server.close(),
+          (error) => error === reporterFailure,
+        );
+        // Shutdown must actually close the listener before returning its error.
+        await assert.rejects(
+          fetch(server.url + "/sync/fetch", { method: "POST", body: "{}" }),
+        );
+      } else await closing;
+      assert.ok(
+        diagnostics.includes(expected),
+        "original admission failure reaches Reporter after socket close",
+      );
+    } finally {
+      held.forEach((item) => item.release.resolve());
+      callers.forEach((req) => req.destroy());
+      await Promise.allSettled([closing ?? server.close()]);
+      await pool.end();
+    }
+  });
+}

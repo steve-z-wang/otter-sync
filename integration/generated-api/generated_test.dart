@@ -1,4 +1,4 @@
-// Generated facade acceptance. Transport fixtures author protocol-4 envelopes;
+// Generated facade acceptance. Transport fixtures author finite protocol-5 carriers;
 // real-host canonical Loader/settlement semantics are checked by action-e2e.
 import 'dart:async';
 import 'dart:io';
@@ -443,7 +443,7 @@ void main() {
       final entered = Completer<void>(), gate = Completer<void>();
       final network = await _Network.start(
         onRequest: (request, body) async {
-          if (body['kind'] == 'tail') {
+          if (body['bootstrap'] == true) {
             if (!entered.isCompleted) entered.complete();
             await gate.future;
           }
@@ -460,7 +460,9 @@ void main() {
         await entered.future.timeout(const Duration(seconds: 5));
         expect(done, false);
         expect(
-          network.requests.where((b) => b['kind'] == 'start'),
+          network.requests.where(
+            (b) => b['protocol'] == 5 && !b.containsKey('materialization'),
+          ),
           hasLength(1),
         );
         gate.complete();
@@ -468,7 +470,7 @@ void main() {
         expect(done, true);
         await client.bootstrap();
         expect(
-          network.requests.where((b) => b['kind'] == 'tail'),
+          network.requests.where((b) => b['bootstrap'] == true),
           hasLength(1),
         );
       } finally {
@@ -568,12 +570,14 @@ void main() {
       final network = await _Network.start(
         onRequest: (request, body) async {
           if (request.uri.path != '/sync/fetch') return emptyPull(body);
-          final identity = (body['identity'] as Map).cast<String, dynamic>();
-          if (body['model'] == 'Book') {
+          final invocation = body['invocation'] as Map;
+          final key = invocation['key'] as Map;
+          final identity = (key['identity'] as Map).cast<String, dynamic>();
+          if (key['model'] == 'Book') {
             if (!entered.isCompleted) entered.complete();
             await gate.future;
           }
-          final Map<String, dynamic>? state = switch (body['model']) {
+          final Map<String, dynamic>? state = switch (key['model']) {
             'Placement' => {'label': 'placed'},
             'Book' => {'title': 'remote book'},
             'Entry'
@@ -587,33 +591,21 @@ void main() {
               },
             _ => null,
           };
-          final failed = body['model'] == 'Counter';
-          return {
-            'context': body['context'],
-            'completion': {
-              'callId': body['callId'],
-              'outcome': failed
-                  ? {
-                      'status': 'failed',
-                      'code': 'loader.failed',
-                      'execution': 'rejected',
-                    }
-                  : {
-                      'status': 'succeeded',
-                      'result': state == null ? null : {...identity, ...state},
-                    },
-            },
-            'records': failed
-                ? <Object>[]
-                : [
-                    {
-                      'model': body['model'],
-                      'identity': identity,
-                      'cursor': null,
-                      'state': state,
-                    },
-                  ],
-          };
+          final failed = key['model'] == 'Counter';
+          return failed
+              ? {
+                  ...context05(body),
+                  'requestId': body['requestId'],
+                  'outcome': {
+                    'kind': 'failed',
+                    'code': 'loader.failed',
+                    'message': null,
+                  },
+                  'records': <Object>[],
+                }
+              : read05(body, state == null ? null : {...identity, ...state}, [
+                  {'key': key, 'cursor': null, 'state': state},
+                ]);
         },
       );
       final client = await _open(temp, connection: network.connection);
@@ -673,16 +665,18 @@ void main() {
         gate.complete();
         final books = await Future.wait(joined);
         expect(
-          network.requests.where((b) => b['model'] == 'Book'),
-          hasLength(1),
+          network.requests.where(
+            (b) => (b['invocation'] as Map?)?['key']?['model'] == 'Book',
+          ),
+          hasLength(2),
         );
         expect(books[0]!.title, books[1]!.title);
         expect(identical(books[0], books[1]), false);
         final requests = network.requests
-            .where((b) => b['model'] != null)
+            .where((b) => b.containsKey('invocation'))
             .toList();
-        expect(requests.first['version'], 2);
-        expect(requests.first.containsKey('store'), false);
+        expect((requests.first['invocation'] as Map)['version'], 2);
+        expect(requests.first['store'], true);
         expect(requests[1]['store'], false);
         expect(network.authorization.every((v) => v == 'Bearer secret'), true);
       } finally {
@@ -802,19 +796,13 @@ final class _Network {
         sockets.add(socket);
         socket.listen((message) {
           final body = jsonDecode(message as String) as Map;
-          context = body['context'] as Map;
-          socket.add(
-            jsonEncode({
-              'context': context,
-              'cursor': body['cursor'],
-              'head': body['cursor'],
-            }),
-          );
+          socket.add(jsonEncode(emptyHandshake(body)));
         }, onError: (Object _) {});
         return;
       }
       final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
       requests.add(body);
+      if (body.containsKey('materialization')) context = context05(body);
       request.response.write(
         jsonEncode(await onRequest?.call(request, body) ?? emptyPull(body)),
       );
@@ -828,16 +816,23 @@ final class _Network {
 
   void send(int from, int to, List<Map<String, Object?>> changes) =>
       sockets.last.add(
-        jsonEncode({
-          'context': context,
-          'pageId': 'generated-$from-$to',
-          'from': from,
-          'to': to,
-          'head': to,
-          'units': [
-            {'through': to, 'changes': changes},
-          ],
-        }),
+        jsonEncode(
+          delivery05(
+            {...context!, 'bootstrap': false, 'after': from, 'through': to},
+            changes.map((change) {
+              final record = change['record'] as Map;
+              return <String, Object?>{
+                'kind': 'record',
+                'cursor': record['cursor'],
+                'key': {
+                  'model': record['model'],
+                  'identity': record['identity'],
+                },
+                'state': record['state'],
+              };
+            }).toList(),
+          ),
+        ),
       );
   Future<void> close() async {
     for (final socket in sockets) {
@@ -850,9 +845,15 @@ final class _Network {
 
 // Compile-only public shape fixture; native lifecycle is verified after the join.
 Future<void> offlineReadShape(String path, String id) async {
- final client = await GeneratedClient.open(path:path, stream:'User:viewer');
- final Entry? stored = await client.fetch.entry(EntryIdentity(id:id));
- final Entry? transient = await client.fetch.entry(EntryIdentity(id:id), store:false);
- final ReadEntryOutput result = await client.queries.readEntry(id:id, store:false);
- if (stored == transient && result.entry == null) await client.close();
+  final client = await GeneratedClient.open(path: path, stream: 'User:viewer');
+  final Entry? stored = await client.fetch.entry(EntryIdentity(id: id));
+  final Entry? transient = await client.fetch.entry(
+    EntryIdentity(id: id),
+    store: false,
+  );
+  final ReadEntryOutput result = await client.queries.readEntry(
+    id: id,
+    store: false,
+  );
+  if (stored == transient && result.entry == null) await client.close();
 }

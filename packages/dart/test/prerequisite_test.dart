@@ -43,7 +43,6 @@ void main() {
 
   Future<Client> open(_Handlers prerequisites) => Client.open(
     stream: 'User:viewer',
-    connection: offlineStoreConnection(),
     path: '${dir.path}/db',
     schema: schema,
     libraryPath: Platform.environment['AXTON_LIBRARY']!,

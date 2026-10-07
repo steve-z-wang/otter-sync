@@ -10,11 +10,6 @@ Future<void> main(List<String> args) async {
   final connection = StoreConnection(
     url: 'http://127.0.0.1:1',
     token: () => 'offline',
-    identity: const StoreIdentity(
-      backend: 'persistence',
-      viewer: 'viewer',
-      contract: 'persistence-v04',
-    ),
   );
   final library = Platform.environment['AXTON_DART_LIBRARY']!;
   for (var run = 0; run < 2; run++) {
@@ -29,7 +24,7 @@ Future<void> main(List<String> args) async {
       throw StateError('legacy adoption unexpectedly succeeded');
     } catch (error) {
       check(
-        error.toString().contains('protocol_mismatch'),
+        error.toString().contains('unsupported Store format'),
         'legacy protocol refusal: $error',
       );
     }
@@ -73,7 +68,9 @@ Future<void> main(List<String> args) async {
         'local and pending data',
       );
       check((await c.syncState())['pending'] == 1, 'durable pending');
-      final saved = await c.client.readSql('SELECT intent FROM axton_v04_call');
+      final saved = await c.client.readSql(
+        'SELECT q.*, d.descriptor AS retained_descriptor, o.* FROM axton_mutation_queue q JOIN axton_descriptor d ON d.context=q.descriptor JOIN axton_mutation_queue_operation o ON o.mutation_id=q.id ORDER BY q.id,o.step',
+      );
       check(saved.length == 1, 'one saved intent');
       final bytes = jsonEncode(saved);
       if (run == 0) {

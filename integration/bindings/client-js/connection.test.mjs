@@ -553,7 +553,7 @@ test("direct request completes while durable delivery is blocked", async () => {
   const pushed = deferred();
   await scripted(
     async (kind, body) => {
-      if (JSON.parse(body).models) {
+      if (kind === "push") {
         pushed.resolve();
         return new Promise(() => {});
       }
@@ -648,7 +648,7 @@ test('reset rejects pending work unless discarded and settles exact Call identit
   const call=await client.submitMutation('PingMutation',1,{},value=>value);
   await assert.rejects(client.resetStore());await client.resetStore({discardPending:true});
   assert.equal((await call.wait()).error.code,'abandoned');
-  assert.equal(completions.length,1);assert.match(completions[0].callId,/^[0-9a-f-]{36}$/);assert.equal((await client.syncState()).pending,0);
+  assert.equal(completions.length,1);assert.match(completions[0].callId,/^[0-9a-f-]{36}:[1-9][0-9]*$/);assert.equal((await client.syncState()).pending,0);
  });
 });
 
@@ -901,12 +901,13 @@ test("reset wakes the existing connection under a new Store incarnation", async 
     await client.connect({url:"http://unused",token:"token"},{onError:error=>errors.push(error)});
     await client.bootstrap();
     await eventually(()=>sockets.length===1,"initial single Stream handshake");
-    const before=sockets[0].subscribe.context;
+    const before=sockets[0].subscribe;
     await client.resetStore();
     await client.bootstrap();
     await eventually(()=>sockets.length===2,"reset Stream handshake");
-    assert.deepEqual(sockets[1].subscribe.context.binding,before.binding);
-    assert.notEqual(sockets[1].subscribe.context.incarnation,before.incarnation);
+    assert.equal(sockets[1].subscribe.stream,before.stream);
+    assert.equal(sockets[1].subscribe.protocol,before.protocol);
+    assert.notEqual(sockets[1].subscribe.storeId,before.storeId);
     assert.equal(sockets[0].signal.aborted,true);
     assert.equal(sockets[1].signal.aborted,false);
     assert.equal(connects,1,"reset retains the chosen connection");

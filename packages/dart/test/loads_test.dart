@@ -1,5 +1,4 @@
-// Load is retired. Bootstrap uses the native durable manifest state machine;
-// once/refresh result reuse is exercised separately in query_once_test.dart.
+// Retained Bootstrap lifecycle tests use finite protocol 5 ranges.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -50,13 +49,14 @@ void main() {
     directory = await Directory.systemTemp.createTemp('axton-bootstrap-');
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     served = server.listen((request) async {
-      if (request.uri.path != '/sync/pull') {
+      if (request.uri.path != '/sync/pull' &&
+          request.uri.path != '/sync/handshake') {
         await answerEmptyBackground(request);
         return;
       }
       final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-      requests.add(body);
-      if (body['kind'] == 'tail') {
+      requests.add({...body, 'route': request.uri.path});
+      if (body['bootstrap'] == true) {
         if (!tailEntered.isCompleted) tailEntered.complete();
         await tailGate?.future;
       }
@@ -74,19 +74,25 @@ void main() {
     await server.close(force: true);
     await directory.delete(recursive: true);
   });
-  test('Bootstrap await includes tail capture and local completion', () async {
-    tailGate = Completer<void>();
-    await online(client);
-    var complete = false;
-    final pending = client.bootstrap().then((_) => complete = true);
-    await tailEntered.future.timeout(const Duration(seconds: 5));
-    expect(complete, isFalse);
-    expect(requests.where((x) => x['kind'] == 'start'), hasLength(1));
-    tailGate!.complete();
-    await pending.timeout(const Duration(seconds: 5));
-    expect(complete, isTrue);
-    expect(requests.where((x) => x['kind'] == 'tail'), hasLength(1));
-  });
+  test(
+    'Bootstrap await includes durable start and complete local range',
+    () async {
+      tailGate = Completer<void>();
+      await online(client);
+      var complete = false;
+      final pending = client.bootstrap().then((_) => complete = true);
+      await tailEntered.future.timeout(const Duration(seconds: 5));
+      expect(complete, isFalse);
+      expect(
+        requests.where((x) => x['route'] == '/sync/handshake'),
+        hasLength(1),
+      );
+      tailGate!.complete();
+      await pending.timeout(const Duration(seconds: 5));
+      expect(complete, isTrue);
+      expect(requests.where((x) => x['bootstrap'] == true), hasLength(1));
+    },
+  );
   test(
     'offline Bootstrap persists registration and resumes after connection',
     () async {
@@ -98,10 +104,13 @@ void main() {
       expect(requests, isEmpty);
       await online(client);
       await pending.timeout(const Duration(seconds: 5));
-      expect(requests.where((x) => x['kind'] == 'start'), hasLength(1));
+      expect(
+        requests.where((x) => x['route'] == '/sync/handshake'),
+        hasLength(1),
+      );
     },
   );
-  test('close ends waiter but reopen resumes exact saved manifest', () async {
+  test('close ends waiter but reopen resumes exact saved range', () async {
     tailGate = Completer<void>();
     await online(client);
     final outcome = client.bootstrap().then<Object?>(
@@ -109,8 +118,8 @@ void main() {
       onError: (Object e) => e,
     );
     await tailEntered.future.timeout(const Duration(seconds: 5));
-    final start = requests.singleWhere((x) => x['kind'] == 'start');
-    final tail = requests.singleWhere((x) => x['kind'] == 'tail');
+    final start = requests.singleWhere((x) => x['route'] == '/sync/handshake');
+    final tail = requests.singleWhere((x) => x['bootstrap'] == true);
     await client.close();
     expect(await outcome, isA<ClientClosedException>());
     tailGate!.complete();
@@ -118,12 +127,14 @@ void main() {
     client = await open();
     await online(client);
     await client.bootstrap().timeout(const Duration(seconds: 5));
-    expect(requests.where((x) => x['kind'] == 'start'), hasLength(1));
     expect(
-      requests.where((x) => x['kind'] == 'tail').last['manifestId'],
-      tail['manifestId'],
+      requests.where((x) => x['route'] == '/sync/handshake'),
+      hasLength(2),
     );
-    expect(requests.last['context'], start['context']);
+    final resumed = requests.where((x) => x['bootstrap'] == true).last;
+    expect(resumed, tail);
+    expect(resumed['storeId'], start['storeId']);
+    expect((resumed['after'], resumed['through']), (0, 0));
   });
   test(
     'Bootstrap rejects inside local transaction without registering work',
@@ -144,12 +155,12 @@ void main() {
           ),
         );
       });
-      expect(requests.where((x) => x['kind'] == 'start'), isEmpty);
+      expect(requests.where((x) => x['route'] == '/sync/handshake'), isEmpty);
       await online(client);
       await client.bootstrap().timeout(const Duration(seconds: 5));
       expect(
         requests
-            .where((x) => x['kind'] == 'start')
+            .where((x) => x['route'] == '/sync/handshake')
             .map((x) => x['callId'])
             .toSet(),
         hasLength(1),

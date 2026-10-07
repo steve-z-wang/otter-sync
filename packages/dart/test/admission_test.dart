@@ -62,11 +62,15 @@ class AdmissionServer {
         envelopes.add(sub);
         acknowledged++;
         socket.add(
-          jsonEncode({
-            'context': sub['context'],
-            'cursor': sub['cursor'],
-            'head': sub['cursor'],
-          }),
+          jsonEncode(
+            sub['protocol'] == 5
+                ? emptyHandshake(sub)
+                : {
+                    'context': sub['context'],
+                    'cursor': sub['cursor'],
+                    'head': sub['cursor'],
+                  },
+          ),
         );
       });
       return;
@@ -75,7 +79,14 @@ class AdmissionServer {
     envelopes.add(body);
     request.response.write(
       jsonEncode(
-        body['context'] == null
+        body['protocol'] == 5
+            ? switch (request.uri.path) {
+                '/sync/handshake' => emptyHandshake(body),
+                '/sync/pull' => delivery05(body),
+                '/sync/mutations' => emptyMutation(body),
+                _ => emptyRead(body),
+              }
+            : body['context'] == null
             ? <String, Object?>{}
             : request.uri.path == '/sync/pull'
             ? emptyPull(body)
@@ -251,7 +262,7 @@ void main() {
         reason: 'a refusal is not an authentication failure',
       );
       expect(server.seen, [
-        ('/sync/pull', '6', 'Bearer secret'),
+        ('/sync/handshake', '6', 'Bearer secret'),
       ], reason: 'the refused request is not retried');
 
       // The refused connection ended its handle: the same client connects
@@ -281,9 +292,9 @@ void main() {
       await until(() => server.acknowledged == 2, 'the later socket');
       expect(server.envelopes, isNotEmpty);
       for (final envelope in server.envelopes) {
-        final context = envelope['context'] as Map;
-        expect(context['protocol'], 4);
-        expect((context['binding'] as Map)['stream'], 'User:viewer');
+        expect(envelope['protocol'], 5);
+        expect(envelope['stream'], 'User:viewer');
+        expect(envelope['storeId'], matches(RegExp(r'^[0-9a-f-]{36}$')));
       }
       expect(errors, hasLength(1));
       expect(

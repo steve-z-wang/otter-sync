@@ -19,17 +19,21 @@ Map<String, Object?> emptyHandshake(Map body) => {
   'stream': body['stream'],
   'head': 0,
 };
-Map<String, Object?> delivery05(Map body) {
-  final unit = {'index': 0, 'through': body['through'], 'changes': <Object>[]};
+Map<String, Object?> delivery05(Map body, [List<Object?> changes = const []]) {
+  final unit = {'index': 0, 'through': body['through'], 'changes': changes};
   final manifest = {
     'through': body['through'],
-    'minimumCursor': null,
+    'minimumCursor': changes.isEmpty
+        ? null
+        : changes
+              .map((c) => (c as Map)['cursor'] as int)
+              .reduce((a, b) => a < b ? a : b),
     'digest': _hash05('axton:delivery-unit:5', unit),
     'parts': [
       _hash05('axton:delivery-part:5', {
         'unit': 0,
         'part': 0,
-        'changes': <Object>[],
+        'changes': changes,
       }),
     ],
   };
@@ -53,7 +57,7 @@ Map<String, Object?> delivery05(Map body) {
         'planDigest': header['digest'],
         'unit': 0,
         'part': 0,
-        'changes': <Object>[],
+        'changes': changes,
       },
     ],
   };

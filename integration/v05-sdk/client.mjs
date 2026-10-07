@@ -563,6 +563,29 @@ if (process.argv[2] === "enqueue-child") {
       await rm(dir, { recursive: true, force: true });
     }
   });
+  test("A10/A11/A12: parked storing Fetch before initial Stream start closes with its retained failure code", async () => {
+    const h = await host(), dir = await mkdtemp(join(tmpdir(),"axton-sdk05-parked-fetch-"));
+    let client, connection;
+    try {
+      h.holdHandshake();
+      client = await open(join(dir,"db"),undefined,"parked-fetch");
+      connection = await client.connect({url:h.url,token:"parked-fetch"});
+      await until(()=>h.requests.some(request=>request.route === "/sync/handshake"),"initial handshake held");
+      const failure = assert.rejects(client.fetch.entry({id:"not-held"}),error=>error.code === "fetch.unavailable" && error.execution === "unknown");
+      assert.equal(await client.fetch.entry({id:"not-held"},{store:false}),null);
+      await client.models.draft.create({id:"local",text:"independent"});
+      assert.equal((await client.models.draft.get({id:"local"})).text,"independent");
+      assert.equal(h.requests.filter(request=>request.route === "/sync/fetch" && JSON.parse(request.body).store).length,0);
+      await connection.close();
+      await failure;
+    } finally {
+      h.releaseHandshake();
+      await connection?.close();
+      await client?.close();
+      await h.close();
+      await rm(dir,{recursive:true,force:true});
+    }
+  });
   test("A5/A9: first storing read waits for durable Stream start while store false remains independent", async () => {
     const h = await host(),
       dir = await mkdtemp(join(tmpdir(), "axton-sdk05-first-read-"));

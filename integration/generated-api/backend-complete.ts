@@ -39,7 +39,7 @@ export const loaders: Loaders<Tx> = {
 export const backend = createBackend<Tx>({
   database: { transaction: async (body) => body({ rows: new Map() }), persistence: () => ({ call: async () => null }) },
   authenticate: devAuth(),
-  protocol4:{backendId:"generated",contractId:"v04",authorizeStream:()=>true},
+  protocol5:{authorizeStream:()=>true},
   handlers,
   mutations,
   queries: {readEntry: async () => ({entry:null})},

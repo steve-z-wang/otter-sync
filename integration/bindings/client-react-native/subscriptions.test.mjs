@@ -33,7 +33,7 @@ test("mobile Stream binding survives close/reopen and rejects a different bindin
     await client.close();
     await assert.rejects(
       openStore(Client, { path, schema, stream: "User:other" }),
-      /binding/i,
+      /Stream mismatch/,
     );
     client = await openStore(Client, { path, schema });
     assert.equal(client.clientId, id);

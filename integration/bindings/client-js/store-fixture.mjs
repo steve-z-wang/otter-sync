@@ -34,17 +34,19 @@ const hash05 = (domain, value) =>
 export function emptyHandshake(body) {
   return { protocol: 5, storeId: body.storeId, stream: body.stream, head: 0 };
 }
-export function delivery05(body, changes = [], head = body.through) {
-  const unit = { index: 0, through: body.through, changes };
+const fixtureExpiry = Date.now() + 300000;
+export function delivery05(body, changes = [], head = body.through ?? 0) {
+  const through = body.through ?? null;
+  const unit = { index: 0, through, changes };
   const part = {
-    planId: "transport-" + body.storeId,
+    planId: `transport-${body.storeId}-${body.bootstrap ? "bootstrap" : "sync"}-${body.after}-${body.through}`,
     planDigest: "",
     unit: 0,
     part: 0,
     changes,
   };
   const manifest = {
-    through: body.through,
+    through,
     minimumCursor: changes.length
       ? Math.min(...changes.map((change) => change.cursor))
       : null,
@@ -55,12 +57,12 @@ export function delivery05(body, changes = [], head = body.through) {
     ...context05(body),
     planId: part.planId,
     digest: "",
-    bootstrap: body.bootstrap,
-    owner: null,
-    after: body.after,
-    through: body.through,
+    bootstrap: body.bootstrap ?? false,
+    owner: body.owner ?? null,
+    after: body.after ?? null,
+    through,
     observedHead: head,
-    expiresAt: Date.now() + 300000,
+    expiresAt: fixtureExpiry,
     units: [manifest],
   };
   const { digest, ...unsigned } = header;

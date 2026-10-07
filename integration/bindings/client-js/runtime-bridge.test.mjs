@@ -11,7 +11,7 @@ import { Bridge } from "../../../packages/client-js/bridge.mts";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 import { Transaction } from "../../../packages/client-js/transaction.mts";
 
-const openBridge=(carrier,request,install)=>Bridge.open(carrier,{binding:{backend:"sdk-test",viewer:"viewer",stream:"User:viewer",contract:"v04"},...request},install);
+const openBridge=(carrier,request,install)=>Bridge.open(carrier,{stream:"User:viewer",...request},install);
 
 // The SDK Bridge over the Rust-owned client runtime (#134): request routing,
 // callback transactions, wake/drain dispatch and lifecycle, on the real
@@ -908,7 +908,7 @@ function script(source, flags = []) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      [...flags, "--input-type=module", "-e", "const openBridge=(carrier,request,install)=>Bridge.open(carrier,{binding:{backend:\"sdk-test\",viewer:\"viewer\",stream:\"User:viewer\",contract:\"v04\"},...request},install);\n" + source],
+      [...flags, "--input-type=module", "-e", "const openBridge=(carrier,request,install)=>Bridge.open(carrier,{stream:\"User:viewer\",...request},install);\n" + source],
       { timeout: 20000 },
       (error, stdout, stderr) =>
         resolve({
@@ -1091,7 +1091,7 @@ test("store effect cancellation aborts an unresolved callback and fences its ans
 test("public transaction Stream mutation and custom store hook surfaces are absent",async()=>{
  const directory=await mkdtemp(join(tmpdir(),"axton-bound-surface-"));
  const Client=createClient(native,Transaction,()=>({open(){},async push(){throw Error("offline");}}));
- const client=await Client.open({path:join(directory,"db"),schema,stream:"User:viewer",connection:{url:"http://127.0.0.1:1",token:"offline",identity:{backend:"sdk-test",viewer:"viewer",contract:"v04"}}});
+ const client=await Client.open({path:join(directory,"db"),schema,stream:"User:viewer",connection:{url:"http://127.0.0.1:1",token:"offline"}});
  try {assert.equal(client.streams,undefined);assert.equal(client.loads,undefined);
   await client.transaction(async tx=>{assert.equal(tx.streams,undefined);assert.equal(tx.loads,undefined);});
  }finally{await client.close();await rm(directory,{recursive:true,force:true});}

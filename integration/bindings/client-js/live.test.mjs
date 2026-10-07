@@ -29,7 +29,7 @@ const subscribe = JSON.stringify({
   cursor: 0,
 });
 const ack = (sub, head = 0) =>
-  JSON.stringify({ context: sub.context, cursor: sub.cursor, head });
+  JSON.stringify({ context: sub, cursor: sub.cursor, head });
 const handlers = (over = {}) => ({
   message: async () => {},
   overflow: async () => {},
@@ -137,7 +137,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setImmediate as tick } from "node:timers/promises";
-import { openStore, emptyPull, emptyMutation } from "./store-fixture.mjs";
+import { openStore, emptyPull, emptyMutation, emptyHandshake, delivery05 } from "./store-fixture.mjs";
 async function openClient() {
   const dir = await mkdtemp(join(tmpdir(), "axton-live04-"));
   const schema = JSON.parse(
@@ -172,50 +172,17 @@ async function until(predicate) {
   }
   throw Error("condition timed out");
 }
-const page = (context, from, to, text, head = to) => ({
-  context,
-  pageId: `p-${from}-${to}-${text}`,
-  from,
-  to,
-  head,
-  units:
-    from === to
-      ? []
-      : [
-          {
-            through: to,
-            changes:
-              text === undefined
-                ? []
-                : [
-                    {
-                      kind: "upsert",
-                      record: {
-                        model: "Entry",
-                        identity: { id: "live" },
-                        cursor: to,
-                        state: text === null ? null : { text },
-                      },
-                    },
-                  ],
-          },
-        ],
-});
+const page = (context, from, to, text, head = to) => delivery05(
+  {...context, bootstrap:false, after:from, through:to},
+  text === undefined ? [] : [{kind:"record",cursor:to,key:{model:"Entry",identity:{id:"live"}},state:text === null ? null : {text}}],head);
 function receiptFor(body) {
   const receipt = JSON.parse(emptyMutation(body));
-  const row = { id: body.args.entry.id, text: body.args.entry.text.trim() };
-  receipt.completion.outcome.result = { entry: row };
-  receipt.targets = [
-    {
-      kind: "private",
-      record: {
-        model: "Entry",
-        identity: { id: row.id },
-        cursor: null,
-        state: { text: row.text },
-      },
-    },
-  ];
+  const mutation = body.mutations[0];
+  const operation = mutation.operations.find(op=>op.inputPath === "entry");
+  const input = {...operation.identity,...operation.value};
+  const row = { id: input.id, text: input.text.trim() };
+  receipt.results[0].outcome.result = {entry:row};
+  receipt.results[0].outcome.targets = [{kind:"private",record:{key:{model:"Entry",identity:{id:row.id}},cursor:null,state:{text:row.text}}}];
   return receipt;
 }
 async function syncFixture({ onPull, onAction, upgrade } = {}) {
@@ -224,26 +191,33 @@ async function syncFixture({ onPull, onAction, upgrade } = {}) {
     handshakes = [],
     errors = [];
   const state = { head: 0 };
+  const contexts = new Map();
   const server = createServer(async (req, res) => {
     let text = "";
     for await (const c of req) text += c;
     const body = JSON.parse(text);
     requests.push({ url: req.url, body, headers: req.headers });
     try {
-      if (body.kind === "start" || body.kind === "tail")
-        res.end(emptyPull(body));
-      else if (["Publish", "Edit"].includes(body.name)) {
+      if (req.url === "/sync/handshake") res.end(JSON.stringify({...emptyHandshake(body),head:state.head}));
+      else if (req.url === "/sync/materialize") res.end(JSON.stringify({requestId:body.requestId,delivery:delivery05(body,[],state.head)}));
+      else if (body.bootstrap) {
+        const context = {protocol:body.protocol,storeId:body.storeId,stream:body.stream,materialization:body.materialization};
+        contexts.set(body.storeId,context);
+        for (const handshake of handshakes) if(handshake.storeId===body.storeId) handshake.context=context;
+        res.end(JSON.stringify(delivery05(body,[],state.head)));
+      }
+      else if (body.mutations) {
         if (onAction) await onAction(body, res);
         else res.end(JSON.stringify(receiptFor(body)));
       } else if (onPull)
         await onPull(
           body,
           res,
-          requests.filter((x) => x.body.after !== undefined).length,
+          deltas({requests}).length,
         );
       else
         res.end(
-          JSON.stringify(page(body.context, body.after, state.head, undefined)),
+          JSON.stringify(page(body, body.after, body.through, undefined, state.head)),
         );
     } catch (e) {
       errors.push(e);
@@ -258,9 +232,10 @@ async function syncFixture({ onPull, onAction, upgrade } = {}) {
       sockets.push(s);
       s.on("message", (m) => {
         const body = JSON.parse(m);
-        s.subscription = body;
-        handshakes.push(body);
-        s.send(ack(body, state.head));
+        const context = contexts.get(body.storeId);
+        s.subscription = {...body,context,cursor:body.cursor};
+        handshakes.push(s.subscription);
+        s.send(JSON.stringify({...emptyHandshake(body),head:state.head}));
       });
     });
   });
@@ -283,7 +258,7 @@ async function syncFixture({ onPull, onAction, upgrade } = {}) {
     },
   };
 }
-const deltas = (n) => n.requests.filter((x) => x.body.after !== undefined);
+const deltas = (n) => n.requests.filter((x) => x.body.after !== undefined && !x.body.bootstrap && !x.body.owner);
 const publish = (c) =>
   c.submitMutation(
     "Publish",
@@ -293,7 +268,8 @@ const publish = (c) =>
   );
 async function connected(f, n, options = {}) {
   const c = await f.client.connect(n.config, options);
-  await until(() => n.handshakes.length > 0);
+  await f.client.bootstrap();
+  await until(() => n.handshakes.length > 0 && n.handshakes.every(h=>h.context));
   return c;
 }
 
@@ -302,7 +278,7 @@ test("bound reconnect uses durable prefix; ACK cannot replace it; gaps recover t
     n = await syncFixture({
       onPull: (b, r) =>
         r.end(
-          JSON.stringify(page(b.context, b.after, n.state.head, "recovered")),
+          JSON.stringify(page(b, b.after, n.state.head, "recovered")),
         ),
     });
   try {
@@ -334,7 +310,7 @@ test("bound reconnect uses durable prefix; ACK cannot replace it; gaps recover t
     assert.equal(deltas(n).at(-1).body.after, 3);
     assert.ok(
       n.handshakes.every(
-        (x) => x.context.binding.stream === "User:viewer" && !("streams" in x),
+        (x) => x.stream === "User:viewer" && !("streams" in x),
       ),
     );
   } finally {
@@ -343,7 +319,7 @@ test("bound reconnect uses durable prefix; ACK cannot replace it; gaps recover t
   }
 });
 
-test("duplicate units cannot undo authority; overlap repairs from committed prefix without trimming atomic units", async () => {
+test("duplicate units cannot undo authority; a complete overlapping unit applies atomically and a real gap repairs", async () => {
   const f = await openClient(),
     errors = [],
     n = await syncFixture({
@@ -351,7 +327,7 @@ test("duplicate units cannot undo authority; overlap repairs from committed pref
         r.end(
           JSON.stringify(
             page(
-              b.context,
+              b,
               b.after,
               n.state.head,
               n.state.head === 2 ? "second" : "fourth",
@@ -367,14 +343,24 @@ test("duplicate units cannot undo authority; overlap repairs from committed pref
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 1,
     );
+    const snapshots = [];
+    const stop = f.client.watchSql("SELECT id,text FROM Entry ORDER BY id",[],rows=>snapshots.push(rows));
+    await until(()=>snapshots.length===1);
     send(page(ctx, 0, 1, "first"));
     n.state.head = 2;
-    send(page(ctx, 0, 2, "second"));
+    send(delivery05({...ctx,bootstrap:false,after:0,through:2},[
+      {kind:"record",cursor:1,key:{model:"Entry",identity:{id:"live"}},state:{text:"stale replay"}},
+      {kind:"record",cursor:2,key:{model:"Entry",identity:{id:"next"}},state:{text:"second"}},
+    ]));
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 2,
     );
-    assert.equal((await f.client.read("Entry", { id: "live" })).text, "second");
-    assert.equal(deltas(n)[0].body.after, 1);
+    await until(()=>snapshots.length===2);
+    assert.deepEqual(snapshots,[[{id:"live",text:"first"}],[{id:"live",text:"first"},{id:"next",text:"second"}]],"one whole-unit commit retains admitted history and applies the unseen key");
+    stop();
+    assert.equal((await f.client.read("Entry", { id: "live" })).text, "first");
+    assert.equal((await f.client.read("Entry", { id: "next" })).text, "second");
+    assert.equal(deltas(n).length,0,"complete overlapping unit needs no range repair");
     assert.deepEqual(errors, []);
     n.state.head = 4;
     send(page(ctx, 3, 4, "fourth"));
@@ -403,7 +389,7 @@ test("HTTP recovery failure reports and retries from committed prefix without as
       if (count === 1) {
         r.statusCode = 503;
         r.end("unavailable");
-      } else r.end(JSON.stringify(page(b.context, b.after, 1, "retried")));
+      } else r.end(JSON.stringify(page(b, b.after, 1, "retried")));
     },
   });
   try {
@@ -439,7 +425,7 @@ test("pause cancels held catch-up; its late answer cannot overwrite newer resume
       r.end(
         JSON.stringify(
           page(
-            b.context,
+            b,
             b.after,
             count === 1 ? 1 : 2,
             count === 1 ? "obsolete" : "fresh",
@@ -642,7 +628,9 @@ test("same Stream in independent files isolates connection cancellation and prog
     const ca = await a.client.connect(n.config);
     await until(() => n.handshakes.length === 1);
     const cb = await b.client.connect(n.config);
-    await until(() => n.handshakes.length === 2);
+    await a.client.bootstrap();
+    await b.client.bootstrap();
+    await until(() => n.handshakes.length === 2 && n.handshakes.every(h=>h.context));
     await ca.close();
     await until(() => n.sockets[0].readyState === n.sockets[0].CLOSED);
     const socket = n.sockets.find((s) => s.readyState === s.OPEN);
@@ -758,7 +746,7 @@ test("server socket close reconnects with retained context/cursor after backoff"
     await until(() => n.handshakes.length === 2);
     assert.ok(Date.now() - when >= 180);
     assert.deepEqual(n.handshakes[1].context, first.context);
-    assert.equal(n.handshakes[1].cursor, 1);
+    assert.equal((await f.client.syncState()).cursors["User:viewer"],1);
     assert.ok(errors.some((e) => /1001/.test(e.message)));
     n.sockets[1].send(JSON.stringify(page(first.context, 1, 2, "resumed")));
     await until(
@@ -788,11 +776,11 @@ test("owner refusal preserves exact frozen intent for retry", async () => {
     await f.client.connect(n.config, { onError: (e) => errors.push(e) });
     await until(
       () =>
-        n.requests.filter((x) => ["Publish", "Edit"].includes(x.body.name))
+        n.requests.filter((x) => x.body.mutations?.some(m=>["Publish","Edit"].includes(m.name)))
           .length >= 2,
     );
     const sent = n.requests.filter((x) =>
-      ["Publish", "Edit"].includes(x.body.name),
+      x.body.mutations?.some(m=>["Publish","Edit"].includes(m.name)),
     );
     assert.deepEqual(sent[0].body, sent[1].body);
     assert.equal((await f.client.syncState()).pending, 1);
@@ -817,7 +805,7 @@ test("malformed authority is observable and never skips failed coverage; valid r
       async () => (await f.client.syncState()).cursors["User:viewer"] === 1,
     );
     const bad = page(ctx, 1, 2, "bad");
-    bad.units[0].changes[0].record.state = { text: 5 };
+    bad.parts[0].changes[0].state = { text: 5 };
     n.sockets[0].send(JSON.stringify(bad));
     await until(() => errors.length > 0);
     assert.equal((await f.client.syncState()).cursors["User:viewer"], 1);
@@ -841,7 +829,7 @@ test("malformed accepted private settlement remains observable without retiring 
   const n = await syncFixture({
     onAction: (b, r) => {
       const receipt = receiptFor(b);
-      if (!valid) receipt.targets[0].record.state.text = 5;
+      if (!valid) receipt.results[0].outcome.targets[0].record.state.text = 5;
       r.end(JSON.stringify(receipt));
     },
   });
@@ -879,8 +867,7 @@ test("later true Stream absence prevents an older accepted private target from r
     await connected(f, n);
     const call = await publish(f.client);
     await timeout(entered.promise);
-    const nullPage = page(n.handshakes[0].context, 0, 1, null);
-    nullPage.units[0].changes[0].record.identity = { id: "local" };
+    const nullPage = delivery05({...n.handshakes[0].context,bootstrap:false,after:0,through:1},[{kind:"record",cursor:1,key:{model:"Entry",identity:{id:"local"}},state:null}]);
     n.sockets[0].send(JSON.stringify(nullPage));
     await until(
       async () => (await f.client.syncState()).cursors["User:viewer"] === 1,
@@ -953,7 +940,7 @@ test("bounded live receive recovery preserves held HTTP progress and catches the
   const n = await syncFixture({
     onPull: async (b, r, count) => {
       const response = page(
-        b.context,
+        b,
         b.after,
         n.state.head,
         `head ${n.state.head}`,
@@ -971,6 +958,7 @@ test("bounded live receive recovery preserves held HTTP progress and catches the
     n.state.head = 1;
     await c.resume();
     await timeout(entered.promise);
+    await until(()=>n.handshakes.length===2 && n.sockets.at(-1).subscription);
     const socket = n.sockets.at(-1),
       ctx = socket.subscription.context,
       opened = n.sockets.length;
@@ -992,7 +980,7 @@ test("bounded live receive recovery preserves held HTTP progress and catches the
     assert.ok(deltas(n).length <= 5);
     assert.equal(deltas(n)[0].body.after, 0);
     assert.ok(
-      deltas(n).every((x) => x.body.context.binding.stream === "User:viewer"),
+      deltas(n).every((x) => x.body.stream === "User:viewer"),
     );
   } finally {
     gate.resolve();
@@ -1059,8 +1047,8 @@ test("retired registration/raw authority boundaries refuse rather than fabricate
   assert.equal(runtime.Client.prototype.mutate, undefined);
   const f = await openClient();
   try {
-    await assert.rejects(f.client.freeze(), /retired/);
-    await assert.rejects(f.client.applyPull({}), /retired/);
+    await assert.rejects(f.client.freeze(), /protocol 5 requires named Mutations and its owned transport/);
+    await assert.rejects(f.client.applyPull({}), /protocol 5 requires named Mutations and its owned transport/);
     await assert.rejects(
       f.client.connect(async () => ""),
       /requires server/,
@@ -1123,8 +1111,8 @@ async function admissionServer() {
     const body = JSON.parse(Buffer.concat(chunks));
     res.end(
       JSON.stringify(
-        ["Publish", "Edit"].includes(body.name)
-          ? receiptFor(body)
+        body.protocol !== 5 ? JSON.parse(emptyPull(body)) : body.mutations ? receiptFor(body)
+          : req.url === "/sync/materialize" ? {requestId:body.requestId,delivery:delivery05(body)}
           : JSON.parse(emptyPull(body)),
       ),
     );
@@ -1139,7 +1127,7 @@ async function admissionServer() {
       return;
     }
     ws.handleUpgrade(req, socket, head, (s) =>
-      s.on("message", (m) => s.send(ack(JSON.parse(m)))),
+      s.on("message", (m) => { const body=JSON.parse(m); s.send(body.protocol===5?JSON.stringify(emptyHandshake(body)):ack(body)); }),
     );
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));

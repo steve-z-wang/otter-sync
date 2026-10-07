@@ -215,13 +215,7 @@ void main() {
           socket.listen((message) {
             final body = jsonDecode(message as String) as Map;
             frames.add(body);
-            socket.add(
-              jsonEncode({
-                'context': body['context'],
-                'cursor': body['cursor'],
-                'head': body['cursor'],
-              }),
-            );
+            socket.add(jsonEncode({...emptyHandshake(body)}));
             arrivals[frames.length - 1].complete();
           }, onError: (Object _) {});
         } else {
@@ -259,13 +253,10 @@ void main() {
         await client.close();
         client = await open();
         await arrivals[1].future.timeout(const Duration(seconds: 5));
-        expect(frames[0]['context'], frames[1]['context']);
-        expect((frames[0]['context'] as Map)['binding'], {
-          'backend': 'live',
-          'viewer': 'viewer',
-          'stream': 'User:viewer',
-          'contract': 'v04',
-        });
+        expect(frames[0], frames[1]);
+        expect(frames[0]['protocol'], 5);
+        expect(frames[0]['stream'], 'User:viewer');
+        expect(frames[0]['storeId'], matches(RegExp(r'^[0-9a-f-]{36}$')));
         expect(frames[0].containsKey('streams'), isFalse);
       } finally {
         await client?.close();

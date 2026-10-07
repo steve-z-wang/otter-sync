@@ -1,4 +1,4 @@
-import { openStore, emptyPull, read05 } from "./store-fixture.mjs";
+import { openStore, emptyPull, emptyHandshake, read05 } from "./store-fixture.mjs";
 // Model Fetch through the real native runtime (#153): Rust validates, joins
 // or starts the request, stores the reply and completes every caller; this
 // host only executes the `fetch` HTTP effect and decodes each caller's own
@@ -6,6 +6,7 @@ import { openStore, emptyPull, read05 } from "./store-fixture.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { WebSocketServer } from "ws";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -185,6 +186,7 @@ test("malformed cache state rejects without a partial write", async () => {
 test("each invocation has its own request and independent snapshot objects", async () => {
   await harness(async ({ client, net }) => {
     await connect(client);
+    await client.bootstrap();
     const gate = deferred();
     net.gates.set(1, gate);
     const first = fetchEntry(client, "a");
@@ -299,6 +301,7 @@ test("invalid options and identities are refused before any request", async () =
 test("the default connection posts Fetch to /sync/fetch with its credentials", async () => {
   const seen = [];
   const server = createServer(async (request, response) => {
+    if (request.url === "/sync/live") { response.statusCode = 404; response.end(); return; }
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
@@ -322,6 +325,8 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
       ),
     );
   });
+  const sockets = new WebSocketServer({server});
+  sockets.on("connection", socket => socket.on("message", text => socket.send(JSON.stringify(emptyHandshake(JSON.parse(text.toString()))))));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const directory = await mkdtemp(join(tmpdir(), "axton-fetch-http-"));
   const HttpClient = createClient(native, Transaction, createServerConnection);
@@ -343,6 +348,8 @@ test("the default connection posts Fetch to /sync/fetch with its credentials", a
     ]);
   } finally {
     await client.close();
+    for (const socket of sockets.clients) socket.terminate();
+    await new Promise(resolve => sockets.close(resolve));
     await new Promise((resolve) => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
   }

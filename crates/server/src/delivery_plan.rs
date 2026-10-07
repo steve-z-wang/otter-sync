@@ -106,18 +106,21 @@ struct Position {
     cursor: u64,
     kind: String,
 }
+fn context_schema<'a>(config: &'a Config, context: &v05::RequestContext) -> &'a axton_core::Schema {
+    config
+        .protocol5
+        .as_ref()
+        .and_then(|p| p.materializations.get(&context.materialization))
+        .map(|m| &m.schema)
+        .unwrap_or(&config.schema)
+}
 fn bootstrap_model(
     config: &Config,
     context: &v05::RequestContext,
     name: &str,
     version: u64,
 ) -> bool {
-    let schema = config
-        .protocol5
-        .as_ref()
-        .and_then(|p| p.materializations.get(&context.materialization))
-        .map(|m| &m.schema)
-        .unwrap_or(&config.schema);
+    let schema = context_schema(config, context);
     schema
         .models
         .iter()
@@ -293,14 +296,13 @@ fn coalesce(units: Vec<v05::DeliveryUnit>, target: usize) -> Vec<v05::DeliveryUn
     packed
 }
 fn units(
-    config: &Config,
+    schema: &axton_core::Schema,
     changes: &[v05::AuthorityChange],
     after: u64,
     through: u64,
     head: u64,
 ) -> Result<Vec<v05::DeliveryUnit>> {
-    let unique = config
-        .schema
+    let unique = schema
         .models
         .iter()
         .filter(|m| !m.unique.is_empty())
@@ -314,21 +316,21 @@ fn units(
             .entry(c.key().model.clone())
             .or_insert_with(|| c.key().clone());
     }
-    for model in &config.schema.models {
+    for model in &schema.models {
         for relation in &model.relations {
-            if relation.on_delete == "delete" {
-                if let (Some(a), Some(b)) = (
+            if relation.on_delete == "delete"
+                && let (Some(a), Some(b)) = (
                     representatives.get(&model.name),
                     representatives.get(&relation.target),
-                ) {
-                    for c in changes
-                        .iter()
-                        .filter(|c| c.key().model == model.name || c.key().model == relation.target)
-                    {
-                        dependencies.push((a.clone(), c.key().clone()));
-                    }
-                    dependencies.push((a.clone(), b.clone()));
+                )
+            {
+                for c in changes
+                    .iter()
+                    .filter(|c| c.key().model == model.name || c.key().model == relation.target)
+                {
+                    dependencies.push((a.clone(), c.key().clone()));
                 }
+                dependencies.push((a.clone(), b.clone()));
             }
         }
     }
@@ -443,7 +445,13 @@ pub async fn process_delivery05(
         return Err(request_invalid("through ahead of head"));
     }
     let changes = materialize(config, owner, &r.context, positions, &host).await?;
-    let units = units(config, &changes, r.after, r.through, head)?;
+    let units = units(
+        context_schema(config, &r.context),
+        &changes,
+        r.after,
+        r.through,
+        head,
+    )?;
     let now: u64 = call(&host, json!({"op":"deliveryNow"})).await?;
     let frozen = v05::freeze_delivery(
         r.context.clone(),
@@ -560,7 +568,7 @@ pub async fn process_materialization05(
     )
     .await?;
     let changes = materialize(config, owner, &r.context, positions, &host).await?;
-    let mut units = units(config, &changes, 0, head, head)?;
+    let mut units = units(context_schema(config, &r.context), &changes, 0, head, head)?;
     for u in &mut units {
         u.through = None;
     }
@@ -581,7 +589,7 @@ pub async fn process_materialization05(
     })
 }
 /// Query/Fetch reuse retained normalization and snapshot assembly; snapshots
-/// deliberately carry null cursors and Query tracking is forbidden.
+/// carry null cursors; only explicit authenticated Query tracking enrolls.
 pub async fn process_read05(
     config: &Config,
     owner: &str,
@@ -652,7 +660,19 @@ pub async fn process_read05(
                         owner: owner.into(),
                         call_id: r.request_id.clone(),
                         ordinal: 1,
-                        context: None,
+                        // Existing host carrier: only scopedStreams reads binding.stream.
+                        // These internal fields never select protocol-4 authority or reach the wire.
+                        context: Some(axton_core::v04::RequestContext {
+                            protocol: 4,
+                            binding: axton_core::v04::StoreBinding {
+                                backend: "protocol5".into(),
+                                viewer: owner.into(),
+                                stream: r.context.stream.clone(),
+                                contract: r.context.materialization.clone(),
+                            },
+                            materialization: r.context.materialization.clone(),
+                            incarnation: r.context.store_id.clone(),
+                        }),
                     })
                     .await?;
                 let outputs = match handled {
@@ -660,7 +680,20 @@ pub async fn process_read05(
                         outputs,
                         changes,
                         declarations,
-                    } if changes.is_empty() && declarations.is_empty() => outputs,
+                    } if changes.is_empty()
+                        && !declarations
+                            .iter()
+                            .any(|d| matches!(d, crate::host::StreamIntent::Invalidate { .. })) =>
+                    {
+                        crate::settlement::settle_changes(
+                            config,
+                            &Default::default(),
+                            &declarations,
+                            &host,
+                        )
+                        .await?;
+                        outputs
+                    }
                     crate::host::HandledAction::Settled { .. } => {
                         return Err(Error::code("query.effects_forbidden"));
                     }
@@ -721,6 +754,8 @@ pub async fn process_read05(
                     | "internal"
                     | "loader.failed"
                     | "handler.failed"
+                    | "loader.invalid"
+                    | "handler.invalid"
             ) =>
         {
             (

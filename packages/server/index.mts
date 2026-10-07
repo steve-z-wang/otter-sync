@@ -497,9 +497,9 @@ export interface MutationContext<Tx> {
   invalidate: RuntimeInvalidate;
 }
 /**
- * Trusted framework context of a Query. It carries no `stream` or `invalidate`:
- * a Query reads without business side effects. `tx` is still the
- * application's own transaction; the framework cannot inspect arbitrary SQL,
+ * Trusted framework context of a Query. It may track explicitly in its authenticated
+ * Stream, and carries no `invalidate`. A Query reads without business side effects.
+ * `tx` is still the application's own transaction; the framework cannot inspect arbitrary SQL,
  * so honoring the read-only contract is the handler's responsibility.
  */
 export interface QueryContext<Tx> {

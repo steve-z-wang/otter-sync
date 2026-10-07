@@ -69,12 +69,7 @@ fn bootstrap_freezes_moved_ahead_authority_without_claiming_its_position() {
     });
 }
 fn run(f: impl Future<Output = ()>) {
-    struct W;
-    impl std::task::Wake for W {
-        fn wake(self: std::sync::Arc<Self>) {}
-    }
-    let w = std::task::Waker::from(std::sync::Arc::new(W));
-    let mut cx = std::task::Context::from_waker(&w);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     let mut f = std::pin::pin!(f);
     assert!(f.as_mut().poll(&mut cx).is_ready());
 }

@@ -582,21 +582,30 @@ test("Query carrier normalizes result snapshots without enrollment; refusal roll
     },
   };
   let mode = "ok";
+  const queryErrors = [];
   const chosen = createBackend({
     config: cfg,
     native,
     database,
     protocol5: { authorizeStream: (p, s) => s === `User:${p}` },
     authenticate: () => "alice",
-    onError: () => {},
+    onError: (e) => queryErrors.push(e),
     queries: {
       find: async ({ ctx }) => {
+        assert.equal(ctx.invalidate, undefined);
+        assert.equal(ctx.stream.changed, undefined);
         if (mode === "track") {
           await ctx.tx.query(
             "UPDATE delivery_business SET text='forbidden' WHERE id='e1'",
           );
-          assert.equal(ctx.stream, undefined);
+          assert.ok(ctx.stream);
           throw new MutationRejected("find.denied");
+        }
+        if (mode === "explicit") ctx.stream.track.entry({ id: "e1" });
+        if (mode === "invalid") {
+          ctx.stream.track.entry({ id: "e1" });
+          await ctx.tx.query("UPDATE delivery_business SET text='invalid'");
+          return { entry: { id: 7 } };
         }
         return { entry: { id: "e1" } };
       },
@@ -628,6 +637,54 @@ test("Query carrier normalizes result snapshots without enrollment; refusal roll
   assert.equal(answer.outcome.result.entry.text, "value1");
   assert.equal(answer.records[0].cursor, null);
   assert.equal((await q("SELECT head FROM axton_stream"))[0].head, "45");
+  await q("DELETE FROM axton_stream_record");
+  const untracked = JSON.parse(
+    await chosen.action(
+      "alice",
+      JSON.stringify({ ...r, requestId: "untracked" }),
+    ),
+  );
+  assert.equal(untracked.records[0].cursor, null);
+  assert.equal(
+    (await q("SELECT count(*) n FROM axton_stream_record"))[0].n,
+    "0",
+  );
+  mode = "invalid";
+  await assert.rejects(
+    chosen.action(
+      "alice",
+      JSON.stringify({ ...r, storeId: "invalid-query", requestId: "invalid" }),
+    ),
+    (e) => e.code === "handler.invalid",
+  );
+  assert.equal(
+    (await q("SELECT count(*) n FROM axton_store WHERE id='invalid-query'"))[0]
+      .n,
+    "0",
+  );
+  assert.equal(
+    (await q("SELECT text FROM delivery_business"))[0].text,
+    "value1",
+  );
+  await assertHttpFailure(chosen, "/sync/actions", {
+    ...r,
+    storeId: "invalid-query",
+    requestId: "invalid-http",
+  });
+  assert.equal(queryErrors.length, 1);
+  assert.equal((await q("SELECT head FROM axton_stream"))[0].head, "45");
+  assert.equal(
+    (await q("SELECT count(*) n FROM axton_stream_record"))[0].n,
+    "0",
+  );
+  mode = "explicit";
+  await chosen.action("alice", JSON.stringify({ ...r, requestId: "explicit" }));
+  assert.equal(
+    (await q("SELECT cursor FROM axton_stream_record"))[0].cursor,
+    "46",
+  );
+  await chosen.action("alice", JSON.stringify({ ...r, requestId: "repeat" }));
+  assert.equal((await q("SELECT head FROM axton_stream"))[0].head, "46");
   mode = "track";
   const refused = JSON.parse(
     await chosen.action("alice", JSON.stringify({ ...r, requestId: "bad" })),
@@ -640,9 +697,255 @@ test("Query carrier normalizes result snapshots without enrollment; refusal roll
     "value1",
   );
 });
-test('retained read context repairs only its known Models while covering unrelated publications',async()=>{
- await fixture(1);await q("INSERT INTO axton_record(model,identity_key,stamp) VALUES('Extra','{\"id\":\"extra\"}',1)");await q("INSERT INTO axton_stream_record SELECT 'User:alice',id,45,'upsert' FROM axton_record WHERE model='Extra'");
- const cfg={...config,schema:{...config.schema,models:[model,{...model,name:'Extra'}]},loaders:['Entry','Extra']};
- const chosen=createBackend({config:cfg,native,database,protocol5:{materializations:{[materialization]:{schema:config.schema,projectionGeneration:'1'}},authorizeStream:(p,s)=>s===`User:${p}`},authenticate:()=> 'alice',onError:()=>{},loaders:{entry:async()=>[{id:'e1',text:'value1'}],extra:async()=>{throw new Error('excluded Model Loader ran');}}});
- const answer=JSON.parse(await chosen.pull('alice',JSON.stringify(delta('retained',0,45,false))));assert.equal(answer.header.through,45);assert.equal(answer.parts[0].changes.length,1);assert.equal(answer.parts[0].changes[0].key.model,'Entry');
+test("retained read context repairs only its known Models while covering unrelated publications", async () => {
+  await fixture(1);
+  await q(
+    "INSERT INTO axton_record(model,identity_key,stamp) VALUES('Extra','{\"id\":\"extra\"}',1)",
+  );
+  await q(
+    "INSERT INTO axton_stream_record SELECT 'User:alice',id,45,'upsert' FROM axton_record WHERE model='Extra'",
+  );
+  const cfg = {
+    ...config,
+    schema: { ...config.schema, models: [model, { ...model, name: "Extra" }] },
+    loaders: ["Entry", "Extra"],
+  };
+  const chosen = createBackend({
+    config: cfg,
+    native,
+    database,
+    protocol5: {
+      materializations: {
+        [materialization]: { schema: config.schema, projectionGeneration: "1" },
+      },
+      authorizeStream: (p, s) => s === `User:${p}`,
+    },
+    authenticate: () => "alice",
+    onError: () => {},
+    loaders: {
+      entry: async () => [{ id: "e1", text: "value1" }],
+      extra: async () => {
+        throw new Error("excluded Model Loader ran");
+      },
+    },
+  });
+  const answer = JSON.parse(
+    await chosen.pull("alice", JSON.stringify(delta("retained", 0, 45, false))),
+  );
+  assert.equal(answer.header.through, 45);
+  assert.equal(answer.parts[0].changes.length, 1);
+  assert.equal(answer.parts[0].changes[0].key.model, "Entry");
+});
+
+test("retained unique metadata keeps 501 distinct positions in one component", async () => {
+  await fixture(501);
+  await q("UPDATE axton_stream_record SET cursor=record_id");
+  await q("UPDATE axton_stream SET head=501");
+  const cfg = {
+    ...config,
+    schema: {
+      ...config.schema,
+      models: [{ ...model, version: 2, unique: [] }],
+    },
+    models: [model, { ...model, version: 2 }],
+  };
+  const chosen = createBackend({
+    config: cfg,
+    native,
+    database,
+    protocol5: {
+      materializations: {
+        [materialization]: { schema: config.schema, projectionGeneration: "1" },
+      },
+      authorizeStream: (p, s) => s === `User:${p}`,
+    },
+    authenticate: () => "alice",
+    onError: () => {},
+    loaders: {
+      entry: {
+        v1: async ({ tx, ids }) =>
+          (
+            await tx.query(
+              "SELECT id,text FROM delivery_business WHERE id=ANY($1)",
+              [ids.map((i) => i.id)],
+            )
+          ).rows,
+        v2: async () => [],
+      },
+    },
+  });
+  const answer = JSON.parse(
+    await chosen.pull(
+      "alice",
+      JSON.stringify(delta("retained-unique", 0, 501, false)),
+    ),
+  );
+  assert.equal(answer.header.units.length, 1);
+  const owned = JSON.parse(
+    await chosen.materialize(
+      "alice",
+      JSON.stringify({
+        ...context("retained-owned"),
+        requestId: "owned",
+        owner: {
+          kind: "schema",
+          previousMaterialization: native.serverMaterializationId05(
+            JSON.stringify(cfg),
+            "1",
+          ),
+        },
+        keys: [],
+        models: { Entry: 1 },
+      }),
+    ),
+  );
+  assert.equal(owned.delivery.header.units.length, 1);
+});
+test("malformed Fetch Loader aborts the outer transaction and reports infrastructure failure", async () => {
+  await fixture(1);
+  const errors = [];
+  const chosen = createBackend({
+    config,
+    native,
+    database,
+    protocol5: { authorizeStream: (p, s) => s === `User:${p}` },
+    authenticate: () => "alice",
+    onError: (e) => errors.push(e),
+    loaders: {
+      entry: async ({ tx }) => {
+        await tx.query("UPDATE delivery_business SET text='invalid'");
+        return [{ id: "e1", text: 7 }];
+      },
+    },
+  });
+  const r = {
+    ...context("invalid-fetch"),
+    requestId: "invalid",
+    store: false,
+    invocation: {
+      kind: "fetch",
+      key: { model: "Entry", identity: { id: "e1" } },
+      version: 1,
+    },
+  };
+  await assert.rejects(
+    chosen.fetch("alice", JSON.stringify(r)),
+    (e) => e.code === "loader.invalid",
+  );
+  assert.equal((await q("SELECT count(*) n FROM axton_store"))[0].n, "0");
+  assert.equal(
+    (await q("SELECT text FROM delivery_business"))[0].text,
+    "value1",
+  );
+  await assertHttpFailure(chosen, "/sync/fetch", r);
+  assert.equal(errors.length, 1);
+});
+
+async function assertHttpFailure(backend, path, request) {
+  const listening = await backend.listen({ port: 0 });
+  try {
+    const answer = await fetch(listening.url + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    assert.equal(answer.status, 500);
+  } finally {
+    await listening.close();
+  }
+}
+
+test("retained cascade metadata keeps related distinct positions in one component", async () => {
+  await fixture(501);
+  await q("UPDATE axton_stream_record SET cursor=record_id");
+  await q(
+    "INSERT INTO axton_record(model,identity_key,stamp) VALUES('Extra','{\"id\":\"e1\"}',1)",
+  );
+  await q(
+    "INSERT INTO axton_stream_record SELECT 'User:alice',id,502,'upsert' FROM axton_record WHERE model='Extra'",
+  );
+  await q("UPDATE axton_stream SET head=502");
+  const entry = { ...model, unique: [] };
+  const extra = {
+    ...model,
+    name: "Extra",
+    unique: [],
+    relations: [
+      {
+        name: "parent",
+        target: "Entry",
+        fields: ["id"],
+        targetFields: ["id"],
+        onDelete: "delete",
+      },
+    ],
+  };
+  const oldSchema = { ...config.schema, models: [entry, extra] };
+  const retained = native.serverMaterializationId05(
+    JSON.stringify({ ...config, schema: oldSchema }),
+    "1",
+  );
+  const active = [
+    { ...entry, version: 2, relations: [] },
+    { ...extra, version: 2, relations: [] },
+  ];
+  const cfg = {
+    ...config,
+    schema: { ...config.schema, models: active },
+    models: [entry, extra, ...active],
+    loaders: ["Entry", "Extra"],
+  };
+  const entryLoader = async ({ tx, ids }) =>
+    (
+      await tx.query("SELECT id,text FROM delivery_business WHERE id=ANY($1)", [
+        ids.map((i) => i.id),
+      ])
+    ).rows;
+  const chosen = createBackend({
+    config: cfg,
+    native,
+    database,
+    protocol5: {
+      materializations: {
+        [retained]: { schema: oldSchema, projectionGeneration: "1" },
+      },
+      authorizeStream: (p, s) => s === `User:${p}`,
+    },
+    authenticate: () => "alice",
+    onError: () => {},
+    loaders: {
+      entry: { v1: entryLoader, v2: entryLoader },
+      extra: {
+        v1: async () => [{ id: "e1", text: "extra" }],
+        v2: async () => [],
+      },
+    },
+  });
+  const ctx = { ...context("cascade"), materialization: retained };
+  const d = JSON.parse(
+    await chosen.pull(
+      "alice",
+      JSON.stringify({ ...ctx, after: 0, through: 502, bootstrap: false }),
+    ),
+  );
+  assert.equal(d.header.units.length, 1);
+  const m = JSON.parse(
+    await chosen.materialize(
+      "alice",
+      JSON.stringify({
+        ...ctx,
+        requestId: "cascade-owned",
+        owner: {
+          kind: "schema",
+          previousMaterialization: native.serverMaterializationId05(
+            JSON.stringify(cfg),
+            "1",
+          ),
+        },
+        keys: [],
+        models: { Entry: 1, Extra: 1 },
+      }),
+    ),
+  );
+  assert.equal(m.delivery.header.units.length, 1);
 });

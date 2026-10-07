@@ -285,7 +285,7 @@ fn cli_retains_history_and_does_not_overwrite_on_break() {
     assert!(compile().status.success());
     let backend: serde_json::Value =
         serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
-    assert_eq!(backend["mutations"].as_array().unwrap().len(), 2);
+    assert!(backend.get("mutations").is_none());
     assert_eq!(
         backend["schema"]["clientPolicies"]
             .as_array()
@@ -1222,4 +1222,41 @@ fn cli_generated_typescript_imports_the_public_packages_by_default() {
     let client = fs::read_to_string(out.join("client.ts")).unwrap();
     assert!(backend.contains("from \"@axtonjs/server\""), "{backend}");
     assert!(client.contains("from \"@axtonjs/client\""), "{client}");
+}
+
+#[test]
+fn backend_executes_named_actions_while_retained_slot_history_stays_in_client_schema() {
+    let (root, input) = workspace("retained-slot-carrier");
+    let out = root.join("out");
+    fs::write(input.join("test.model"), "model Entry { id String text String @@id(id) } mutation LegacyEdit { entry Entry.update<text> } mutation EditEntry(entry Entry.update<text>)").unwrap();
+    let result = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let history = fs::read(input.join("history/mutations.json")).unwrap();
+    let backend: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
+    assert!(backend.get("mutations").is_none());
+    assert_eq!(backend["schema"]["clientPolicies"][0]["name"], "LegacyEdit");
+    assert!(
+        backend["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "EditEntry")
+    );
+    let generated = fs::read_to_string(out.join("backend.ts")).unwrap();
+    assert!(generated.contains("EditEntry"));
+    assert!(!generated.contains("RecordHandler"));
+    assert!(
+        axton(&[input.as_os_str(), out.as_os_str()])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(input.join("history/mutations.json")).unwrap(),
+        history
+    );
 }

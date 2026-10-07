@@ -403,9 +403,10 @@ pub fn typescript(v: &Value) -> String {
 /// The typed shape of a record's sync state. Mutation names are the schema's,
 /// so a pending entry's `name` is checked against them.
 fn ts_sync_state(v: &Value, o: &mut String) {
-    let mut names: Vec<String> = arr(v, "mutations")
-        .iter()
-        .map(|m| format!("'{}'", s(m, "name")))
+    let current = crate::current_operations::CurrentOperations::new(v);
+    let mut names: Vec<String> = current
+        .of_kind(axton_core::CallKind::Mutation)
+        .map(|(name, _, _)| format!("'{}'", name))
         .collect();
     names.sort();
     names.dedup();
@@ -836,10 +837,8 @@ pub fn backend_typescript(v: &Value, runtime: &str) -> String {
     }
     ts_declarations(models, &mut o);
     let mut backend = v.clone();
-    if let Some(history) = v.get("backendMutations") {
-        backend["mutations"] = history.clone();
-        backend.as_object_mut().unwrap().remove("backendMutations");
-    }
+    backend.as_object_mut().unwrap().remove("mutations");
+    backend.as_object_mut().unwrap().remove("backendMutations");
     if let Some(history) = v.get("backendModels") {
         backend["models"] = history.clone();
         backend.as_object_mut().unwrap().remove("backendModels");

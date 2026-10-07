@@ -1250,6 +1250,22 @@ fn backend_executes_named_actions_while_retained_slot_history_stays_in_client_sc
     let generated = fs::read_to_string(out.join("backend.ts")).unwrap();
     assert!(generated.contains("EditEntry"));
     assert!(!generated.contains("RecordHandler"));
+    let inline = generated
+        .lines()
+        .find(|line| line.starts_with("const schema = "))
+        .unwrap();
+    let inline: serde_json::Value = serde_json::from_str(
+        inline
+            .strip_prefix("const schema = ")
+            .unwrap()
+            .strip_suffix(" as const;")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(inline, backend, "both server execution carriers must agree");
+    assert!(inline.get("mutations").is_none());
+    let client = fs::read_to_string(out.join("generated.ts")).unwrap();
+    assert!(client.contains("export type MutationName = 'EditEntry';"));
     assert!(
         axton(&[input.as_os_str(), out.as_os_str()])
             .status

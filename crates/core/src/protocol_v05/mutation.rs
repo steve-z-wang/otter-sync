@@ -148,3 +148,10 @@ pub fn reconstruct_input(operations: &[MutationOperation]) -> Result<Value> {
     }
     Ok(Value::Object(slots.into_iter().collect()))
 }
+/// Identity of the complete retained Mutation descriptor, including snapshots.
+pub fn mutation_descriptor_digest(descriptor: &crate::ActionDescriptor) -> Result<String> {
+    hash(
+        "axton:mutation-descriptor:5",
+        &serde_json::to_value(descriptor)?,
+    )
+}

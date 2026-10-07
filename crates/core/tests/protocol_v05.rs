@@ -834,3 +834,20 @@ fn owned_continuation_rejects_changed_digest_under_same_plan_owner_context() {
         );
     }
 }
+
+#[test]
+fn retained_mutation_descriptor_independent_digest_vector() {
+    let mut d: axton_core::ActionDescriptor = serde_json::from_value(
+        serde_json::json!({"name":"Void","version":1,"inputs":[],"outputs":[]}),
+    )
+    .unwrap();
+    assert_eq!(
+        axton_core::v05::mutation_descriptor_digest(&d).unwrap(),
+        "aeb5c299c83ce9990ca03ab9f3928c7cc0d821949b510ade6d7144d936c8ff3b"
+    );
+    d.version = 2;
+    assert_ne!(
+        axton_core::v05::mutation_descriptor_digest(&d).unwrap(),
+        "aeb5c299c83ce9990ca03ab9f3928c7cc0d821949b510ade6d7144d936c8ff3b"
+    );
+}

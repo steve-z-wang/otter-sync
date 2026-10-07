@@ -201,7 +201,7 @@ The native runtime owns one Stream subscription and its durable cursor. A fresh 
 
 HTTP Delta and live delivery apply through the same native commit-unit path. A unit commits its records, authority evidence and delivery prefix atomically. An independent successful prefix may commit before a later unit fails. A unit that violates a required constraint cannot be split merely by lowering a transport limit. Adaptive smaller requests permit independent earlier units to progress, without skipping the failed group.
 
-Named Mutation requests use the durable single-intent Action route. Query and Fetch use finite request routes, while Bootstrap and receipt-target recovery use bounded immutable manifests. A Bootstrap tail capture does not advance the Stream cursor; completion waits for actual Delta coverage. These jobs share the connection and resume durable progress after interruption.
+Named Mutations use immutable Batches with independently committed member outcomes. Query and Fetch use fresh finite read requests. Bootstrap, Sync and settlement-target recovery use immutable plans whose required units commit whole. Head capture advances no progress; handshake commits S and C=S, while B appears only after the final Bootstrap unit. Reopen retains committed coverage and frozen work.
 
 Pause and close cancel requests and sockets. A replaced session's late response cannot write into the active Store. Normal reconnect retains context/incarnation; explicit reset creates a new lifecycle.
 

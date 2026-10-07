@@ -1,6 +1,8 @@
 # Storage
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The storage adapter executes SQL and transactions; Rust owns reconciliation policy. Format-5 admission and physical ownership precede schema coordination. Store metadata retains context, S/B/C, frozen Batch, operation input and acknowledgment. Model tables expose the replayed projection; shared legacy SQL views are adapters over current durable truth, not a second queue.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../crates/client/src/store05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 Storage gives the engine a SQL executor whose tables are the schema record. It contains no sync logic.
 

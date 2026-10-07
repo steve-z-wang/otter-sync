@@ -1,6 +1,8 @@
 # Engine
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The engine retains original Model operations and projects them over authoritative base state. Direct work is device-only; named Mutations queue durable intent and optional companions. Acknowledgment and accepted settlement are separate commits. Authoritative apply, rejection and settlement replay surviving work in original local order before notifying observers.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../crates/client/src/settlement05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 [Protocol 4](../protocol4.md) owns current bound-client authority, finite manifests and named Mutation settlement. The stamp, batch and Load sections linked below describe retained protocol-3 machinery; the shared local transaction and pending-replay implementation remains internal.
 

@@ -1,6 +1,8 @@
 # Push
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Push means durable protocol-5 Batch execution. Ready named Mutations retain exact input and descriptor; freezing fixes sequence and membership. Local acknowledgment reconciles refusals atomically, while accepted members remain until authority obligations commit. Dependencies block only the work that actually depends on them.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/sync05/uplink.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 Prepare durable mutations for delivery. Network scheduling belongs to [Connection](../../connection/README.md); receipts and rollback belong to [Settlement](../settlement.md).
 

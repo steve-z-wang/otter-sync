@@ -90,7 +90,7 @@ Convergence assumes correct publication, valid contracts and resumed delivery. D
 | D6 | Membership Remove changes holding evidence, releasing current live protection while retaining content, historical authority and genuine deletion evidence. It is not canonical absence. |
 | D7 | Loader/constraint/commit failure cannot advance progress across its unresolved unit. Earlier committed units remain; fresh smaller requests can recover independent prefixes. Persistent required-group failure remains observable. |
 | D8 | Invalid envelopes, context mismatch, unsupported schema, divergence and capacity/constraint failures report diagnostics without inventing absence, completion or progress. |
-| D9 | Binding/incarnation persist offline and across reopen/reconnect. The initial boundary commits once; ACK alone proves neither delivery nor Bootstrap coverage. Reconnection never replaces committed progress. |
+| D9 | Store identity and Stream persist offline and across reopen/reconnect. The initial boundary commits once; ACK alone proves neither delivery nor Bootstrap coverage. Reconnection never replaces committed progress. |
 | D10 | Handshake commits initial head S and C=S. B remains absent until the last complete Bootstrap unit commits. Bootstrap and Sync capture finite authority heads; completion is neither perpetual freshness nor every historical transition. |
 
 Bootstrap selects initial Models through concrete `@@bootstrap` declarations after explicit application enrollment. Companions share an atomic unit but earn no ordinal coverage. Later Stream delivery includes unmarked Models normally. Compatible rematerialization also includes Store-held authoritative identities and preserves local work. Rows, evidence and unit coverage commit together.
@@ -107,7 +107,7 @@ Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract]
 | --- | --- |
 | R1 | Local reads/writes continue offline. Bound open requires no handshake; pending work resumes when connectivity recovers. |
 | R2 | Lost, duplicate, delayed and reordered messages preserve admission/commit rules. Progress requires resumed delivery. |
-| R3 | Reopen retains committed rows, context, evidence, manifest coverage, frozen work and completions. A crash cannot expose half a required local unit; close/reopen alone proves no arbitrary crash boundary. |
+| R3 | Reopen retains committed rows, context, evidence, complete-unit coverage, frozen work and completions. A crash cannot expose half a required local unit; close/reopen alone proves no arbitrary crash boundary. |
 | R4 | A physical SQLite file has one runtime owner across aliases, hardlinks and processes. Duplicate open fails before schema coordination. Different files may follow the same Stream. |
 
 Explicit reset retains binding/file ownership, changes incarnation and atomically retires replica state. It refuses pending work unless explicitly discarded, reports abandoned Calls and fences old effects. Supported schema reconciliation retains complete old descriptors; incompatible storage changes fail explicitly.

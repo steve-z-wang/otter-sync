@@ -1,6 +1,8 @@
 # Backend interface
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Handlers receive authenticated context, typed arguments and the retained transaction. Mutation contexts declare tracking/invalidation; Query and Bootstrap contexts are track-only. Loaders answer current viewer-specific records or null and cannot infer permission from Stream names. Returning Model outputs or read snapshots never tracks them; publication must name recipients explicitly.
+
+[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../crates/server/src/host.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

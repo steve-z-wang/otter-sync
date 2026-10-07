@@ -1,6 +1,8 @@
 # Push lane
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Uplink selects ready work, freezes one immutable Batch and retries those exact bytes until execution acknowledgment commits. Server members have independent outcomes. Acknowledged acceptance is retained while authority obligations settle; sending another request cannot replace saved intent or manufacture completion.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/sync05/uplink.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

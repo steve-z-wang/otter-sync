@@ -1,6 +1,8 @@
 # Frontend interface
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Open supplies a path, schema and one Stream; an optional connection starts networking after local admission. Rust creates the durable Store identity. Transactions commit direct writes and named Mutations locally together, while their backend fates remain independent. Query/Fetch are finite fresh reads with boolean storage policy; Bootstrap awaits complete finite coverage.
+
+[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../crates/client/src/store05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

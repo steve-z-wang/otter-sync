@@ -1,6 +1,8 @@
 # Controller
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The controller drives independent Uplink, direct read and finite delivery work while Storeworker serializes commits. It bounds admission and reserves repair capacity rather than accumulating unbounded live payload. Network and application callback waits hold no Store writer. Durable state determines which retry or transfer remains necessary after reconnect.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/runtime/lanes.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 The controller decides when the client talks to the server. Rust owns the decisions, the session and the cursor rules, and the client [runtime](../../runtime.md) drives them; the host language owns timers, sockets, HTTP and credential storage, and executes the effects the runtime asks for.
 

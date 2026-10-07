@@ -1,6 +1,8 @@
 # Persistence
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Persistence implements the strict Rust host operation contract inside the application transaction. Store binds principal/Stream and Batch progress; MutationResult retains member outcomes; StreamRecord retains explicit interest and positions; DeliveryPlan/DeliveryUnit retain finite immutable payloads. Publication locks and reserved cursors are transaction-owned. Shared legacy SQL names do not create independent protocol-5 lifecycle truth.
+
+[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../packages/postgres/migration.sql) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

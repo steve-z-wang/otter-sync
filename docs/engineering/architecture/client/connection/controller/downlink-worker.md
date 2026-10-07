@@ -1,6 +1,8 @@
 # Downlink worker
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+DeltaApplier validates context, header and part digests, then admits bounded fragments into DeliveryQueue. It applies a complete constraint-safe unit in one SQLite transaction with per-key guards and durable coverage. Incomplete fragments never become a prefix. Expiry, gaps and blocked apply leave progress unclaimed and permit explicit repair.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/sync05/delta_applier.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

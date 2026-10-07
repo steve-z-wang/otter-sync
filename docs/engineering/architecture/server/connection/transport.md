@@ -1,6 +1,8 @@
 # Transport
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The Node HTTP/WebSocket host authenticates requests, applies application admission and submits bytes to Rust. Rust validates discriminator 5 and context before business work. Handshake, Batch, ordinary reads and finite materialization have separate carriers; WebSocket offers complete immutable units and hints. Authentication, infrastructure and typed business refusal remain distinct failure classes.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../packages/server/index.mts) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

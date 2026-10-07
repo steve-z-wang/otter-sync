@@ -1,6 +1,8 @@
 # Controller
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The socket controller drains immutable fragments and advances its offered cursor only at complete units. A reconnect authenticates again and obtains the current handshake head; HTTP repairs missing committed coverage. Live headers use the active backend materialization, so a retained client may request repair under its own context instead of applying foreign payload.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../crates/server/src/live.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

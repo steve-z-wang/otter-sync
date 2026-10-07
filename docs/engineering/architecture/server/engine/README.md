@@ -1,6 +1,8 @@
 # Engine
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The engine admits Store/Stream/context and exact immutable intent before application work. It saves each Mutation result with business effects, publishes under a fence and freezes finite delivery after preparation closure. Ordinary reads return null-cursor snapshots; settlement-owned materialization changes no enrollment or range prefix. Replay does not rerun saved preparation.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../crates/server/src/protocol_v05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 [Protocol 4](../protocol4.md) owns current bound-request execution, fenced Stream publication and materialization. The stamp, legacy batch and Load descriptions below document retained protocol-3 machinery, not alternative 0.4 authority paths.
 

@@ -1,6 +1,8 @@
 # Transport
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Protocol-5 carriers retain Store/Stream/materialization context and exact request identity across retries. Handshake authenticates the Store; Batch submits durable Mutations; read routes return null-cursor invocation snapshots; delivery routes return immutable plan fragments. Transport cancellation fences late effects. Neither HTTP success nor receipt arrival proves a committed authority unit.
+
+[Protocol 5](../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../crates/core/src/protocol_v05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

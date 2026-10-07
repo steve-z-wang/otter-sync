@@ -1,6 +1,8 @@
 # Client
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+The client projects settled authority with ordered device work and pending optimism. One Storeworker serializes local changes; Uplink freezes and acknowledges durable Batches, while DeltaApplier commits complete finite authority units. Remote effects run outside the SQLite writer. Observers and terminal outcomes follow their deciding commit.
+
+[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../crates/client/src/sync05/mod.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 The client runtime keeps local state in SQLite and synchronizes it with a server.
 

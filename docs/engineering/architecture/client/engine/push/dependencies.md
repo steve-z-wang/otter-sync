@@ -1,6 +1,8 @@
 # Dependencies
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Prerequisite readiness and declared lifecycle/sequence dependencies determine eligible work. A failed prerequisite remains visible until explicitly retried or dropped; unrelated ready work can proceed. Derived local cascades may extend rollback/replay effects without mutating assigned wire input. Rejection undoes only its owned work and actual dependents.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/runtime/prerequisites.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

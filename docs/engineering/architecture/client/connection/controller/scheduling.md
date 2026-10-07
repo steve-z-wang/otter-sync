@@ -1,6 +1,8 @@
 # Scheduling
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+Rust owns coalescing of active delivery lanes, bounded staging and repair scheduling. Store commits and control operations use the Storeworker; network transfers may progress independently. Reconnect/close fence stale effects. A required large unit may spill to disk but remains one atomic apply, so finite capacity is not a latency promise.
+
+[Protocol 5](../../../protocol/0.5.md) owns the shared contract; [implementation](../../../../../../crates/client/src/sync05/delivery_queue.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

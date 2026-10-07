@@ -1,6 +1,8 @@
 # Bindings
 
-Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+One actor owns each Client and physical SQLite file. The shared ABI submits tasks, drains effect/outcome messages and detaches the actor; platform Bridges execute native networking, timers and callbacks. Rust validates protocol-5 delivery and queue state and emits observer/terminal events only after their deciding commit. Pending network or callback effects do not hold another Client’s writer. Close/detach cancel effects and fence late replies.
+
+[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../bindings/common/src/actor.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
 
 ## 1. Introduction and Goals
 

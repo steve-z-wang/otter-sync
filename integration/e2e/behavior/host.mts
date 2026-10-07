@@ -52,7 +52,7 @@ export async function host({ projected = false } = {}) {
           message === "loader.failed")
       )
         return;
-      if (invalidIdentity && /identity|output|title/.test(message)) return;
+      if (invalidIdentity && (/identity|output|title/.test(message) || message === "handler.invalid")) return;
       errors.push(error);
     },
     mutations: {

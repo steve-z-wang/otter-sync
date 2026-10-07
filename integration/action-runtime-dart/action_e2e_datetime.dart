@@ -49,7 +49,7 @@ Future<void> main(List<String> args) async {
       ),
     );
     final queued = await client.readSql(
-      'SELECT name,args FROM axton_mutation ORDER BY ordinal',
+      "SELECT q.name,(SELECT value FROM axton_mutation_queue_operation WHERE mutation_id=q.id AND input_path='note' AND kind='argument') AS note,(SELECT value FROM axton_mutation_queue_operation WHERE mutation_id=q.id AND input_path='at' AND kind='argument') AS at FROM axton_mutation_queue q ORDER BY q.id",
     );
     check(
       queued.map((row) => row['name']).join(',') ==
@@ -57,11 +57,12 @@ Future<void> main(List<String> args) async {
       'frozen action order',
     );
     check(
-      queued[1]['args'] == queued[2]['args'],
+      queued[1]['note'] == queued[2]['note'] &&
+          queued[1]['at'] == queued[2]['at'],
       'omitted and null canonicalize identically',
     );
     check(
-      (jsonDecode(queued[1]['args'] as String) as Map)['note'] == null,
+      jsonDecode(queued[1]['note'] as String) == null,
       'optional operand recorded null',
     );
     await client.close();

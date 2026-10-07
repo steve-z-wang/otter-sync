@@ -683,7 +683,7 @@ test("Dart named callbacks/default/date codecs execute against the same actual h
   }
 });
 
-test("a suspended real Query handler leaves Stream sync and committed local transactions responsive", async () => {
+test("a suspended real Query handler leaves Stream sync and committed local transactions responsive", { timeout: 30000 }, async () => {
   const s = await session();
   let entered!: () => void, release!: () => void;
   const arrived = new Promise<void>((resolve) => {

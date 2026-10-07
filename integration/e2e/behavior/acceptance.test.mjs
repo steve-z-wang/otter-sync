@@ -46,8 +46,7 @@ if (process.argv[2] === "commit-fault-child") {
   await client.connect({
     url,
     token: "alice",
-    options: { onError: (error) => diagnostics.push(String(error)) },
-  });
+  }, { onError: (error) => diagnostics.push(String(error)) });
   await wait(async () => {
     const [row] = await client.readSql(
       "SELECT result,reconciled FROM axton_mutation_queue WHERE id=1",

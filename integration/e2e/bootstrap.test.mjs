@@ -103,6 +103,14 @@ test(
       await f.app.tombstone("moving-2");
       gate.release();
       await bootstrap;
+      // Bootstrap covers its fixed historical start; the later authority
+      // arrives through live delivery and must then replace that snapshot.
+      await wait(
+        async () =>
+          (await f.client.models.entry.get({ id: "moving-1" }))?.text === "newer" &&
+          (await f.client.models.entry.get({ id: "moving-2" })) === null,
+        "newer live state and tombstone after captured Bootstrap",
+      );
       assert.equal(
         (await f.client.models.entry.get({ id: "moving-1" })).text,
         "newer",
@@ -218,7 +226,7 @@ test(
       hold.release();
       await running;
       const saved = await f.client.readSql(
-        "SELECT start_cursor,bootstrap_cursor FROM axton_store AND active=1",
+        "SELECT start_cursor,bootstrap_cursor FROM axton_store",
       );
       assert.equal(saved[0].start_cursor, H);
       assert.equal(saved[0].bootstrap_cursor, H);

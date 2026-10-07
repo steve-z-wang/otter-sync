@@ -1,6 +1,6 @@
 # Protocol 5 durable storage
 
-The protocol 5 storage APIs coexist with the older runtime during the staged refactor. A caller uses `Client::open05` and protocol 5 queue, acknowledgement and settlement methods together. Native transfer orchestration owns delivery validation, completeness and post-commit notifications.
+Protocol 5 storage owns one physical file, Client and Stream. Rust transfer orchestration owns delivery validation, completeness and post-commit notifications; the SDKs execute its effects. See the [protocol owner](../../protocol/0.5.md) and [fresh-file adoption limits](../../../protocol5-adoption.md).
 
 `axton_store` owns the file identity, one Stream, enabled and desired read contexts, the next Mutation and local-operation sequences, the last acknowledged Batch, and S/B/C. A handshake initializes S and C=S; B remains absent until the final Bootstrap unit commits. Format and Stream admission precede schema changes. `SqliteStore::open_exclusive05` locks the physical file before admission and WAL initialization. For a nonempty file, admission reads a temporary copy of the database and any matching WAL while holding that lock. Refusal leaves the original database, WAL and SHM bytes untouched. Copy and open have a file-size-dependent cost; temporary files are removed on success and failure.
 

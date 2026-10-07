@@ -1,5 +1,7 @@
 # Connection
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 The connection is how the client reaches a server: the network calls themselves, and the logic that decides when to make them. The Rust state machines decide; the client [runtime](../runtime.md) drives them as its own work and asks the SDK to execute each network call, timer and credential refresh as an effect.
 
 - [Transport](transport.md) — Send and receive HTTP/WebSocket messages.

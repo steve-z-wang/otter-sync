@@ -1,5 +1,7 @@
 # Backend interface
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The server engine asks an application host to execute handlers, materialize viewer state and persist sync metadata in the same application transaction. The host does not independently decide authority, progress, retry outcomes or settlement.

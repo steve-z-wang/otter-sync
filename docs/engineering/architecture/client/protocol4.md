@@ -1,5 +1,7 @@
 # Protocol 4 client
 
+Historical carrier reference. Current behavior is owned by [protocol 5](../protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
+
 ## 1. Introduction and goals
 
 The bound native runtime uses the [protocol 4 contract](../protocol/0.4.md) through the existing task, effect, connection and SQLite paths. This page describes the implemented engine; generated SDK facades have their own integration checks.

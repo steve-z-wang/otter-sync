@@ -1,5 +1,7 @@
 # Engine
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 [Protocol 4](../protocol4.md) owns current bound-client authority, finite manifests and named Mutation settlement. The stamp, batch and Load sections linked below describe retained protocol-3 machinery; the shared local transaction and pending-replay implementation remains internal.
 
 The engine is the client's sync logic. It has no memory between calls: every operation runs in a store transaction and leaves its state in tables.

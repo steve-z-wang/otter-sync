@@ -1,5 +1,7 @@
 # Frontend interface
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The frontend interface connects application tasks to the client Engine, storage and its owned transaction scopes. The public [typed client](../sdks/typed-api/client.md) translates those tasks; [protocol-4 client](protocol4.md) owns authority, admission, coverage and settlement.

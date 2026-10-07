@@ -17,7 +17,7 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
-  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
+  protocol5: { authorizeStream: (principal, stream, tx) => stream === `User:${principal}` },
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);

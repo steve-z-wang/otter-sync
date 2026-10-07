@@ -6,7 +6,7 @@ Use this index to find the interface you call or implement. Local Model examples
 
 | Interface | Use it to | Reference |
 | --- | --- | --- |
-| `GeneratedClient.open` | Bind a local database to one Stream and stable connection identity | [Generated client](frontend/client-api.md#open-a-client) |
+| `GeneratedClient.open` | Bind a local database to one Stream and a durable Store identity | [Generated client](frontend/client-api.md#open-a-client) |
 | `client.models.<model>` | Read, query, watch and follow relations in local data | [Model APIs](frontend/client-api.md#model-apis) |
 | `client.readSql`, `client.watchSql` | Read local data with SQL once, or keep a SQL answer over several Models current | [Escape-hatch reads](frontend/runtime.md#escape-hatch-reads), [Watch SQL](frontend/runtime.md#watch-sql-over-several-models), [Local table layout](frontend/runtime.md#local-table-layout) |
 | `client.fetch.<model>` | Read one record from the backend through its Loader, stored locally by default | [Fetch a record](frontend/client-api.md#fetch-a-record-from-the-backend) |
@@ -15,9 +15,8 @@ Use this index to find the interface you call or implement. Local Model examples
 | `client.mutations.<name>`, `Call<Output>` | Accept a Mutation durably with its optimism; inspect `status` or await `wait()` for the final outcome | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
 | `tx.mutations.<name>(inputOrCallback)` | Queue a Mutation in a local transaction, with local-only changes that follow its backend outcome | [Queue Mutations in a transaction](frontend/client-api.md#queue-mutations-in-a-transaction) |
 | `client.queries.<name>` | Read an invocation snapshot with request-level boolean storage policy | [Mutations and Queries](frontend/client-api.md#mutations-and-queries) |
-| `client.queries.<name>(args, { once, refresh })`, `client.queries.invalidate.<name>` | Reuse, refresh or discard the saved complete result of a direct Query | [Reuse a Query result](frontend/client-api.md#reuse-a-query-result-with-once) |
 | `CallOutcome`, `CallError`, `CallOptions`, Dart `CallSuccess` / `CallFailure` | Read a durable outcome, handle failures and handle failures; Query/Fetch choose a boolean storage policy | [Storing Model results](frontend/client-api.md#storing-model-results) |
-| `client.bootstrap()` | Await the marked initial manifest and actual Stream catch-up | [Bootstrap](frontend/loads.md) |
+| `client.bootstrap()` | Await finite marked-Model Bootstrap coverage | [Bootstrap](frontend/loads.md) |
 | `client.connection` | Pause, resume or wake background sync | [Connections](frontend/runtime.md#connection-controls) |
 | `client.syncState`, `client.close` | Inspect pending work and release resources | [Status and lifecycle](frontend/client-api.md#status-and-lifecycle) |
 | Model, Identity, Patch, Filter and Order types | Pass typed data to generated methods | [Generated data types](frontend/client-api.md#generated-data-types) |

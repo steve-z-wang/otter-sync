@@ -1,4 +1,4 @@
-# Concepts
+Every Query invocation has a fresh request and snapshot; `store: false` returns it without installing Models.
 
 AXTON stores local Models, queues named Mutations and follows one Stream. Generated TypeScript and Dart clients share the native engine's durable state.
 
@@ -18,15 +18,15 @@ Only named Mutations produce durable remote writes. A first await commits the in
 
 Queries and Fetch return invocation snapshots. Their request-level `store` boolean defaults to true. Permitted cache writes finish before the response resolves, but returned snapshots may differ from the current Store. Ordinary reads carry `cursor: null`; they cannot establish Stream progress or replace current Stream content or tombstones. An ordinary null returns absence without deleting a cached row.
 
-Query `once` saves a complete result in the native database; `refresh` replaces it after a successful request. Hits return independent decoded values without replaying the old snapshot into Models. Name, version, normalized arguments and store policy identify a saved result.
+Every Query invocation has a fresh request and snapshot; `store: false` returns it without installing Models.
 
 ## Streams and Bootstrap
 
-A Store binds one backend, viewer, Stream and contract. Its persisted incarnation survives normal reopen and changes on explicit reset. Credentials can refresh independently. The backend explicitly tracks identities; global invalidation publishes changed content to existing holders, and selected invalidation refreshes selected existing holders without enrollment.
+One physical file has one Client, Store identity and Stream. The server binds the Store to its authenticated principal. Its persisted incarnation survives normal reopen and changes on explicit reset. Credentials can refresh independently. The backend explicitly tracks identities; global invalidation publishes changed content to existing holders, and selected invalidation refreshes selected existing holders without enrollment.
 
 A Stream cursor orders authoritative content and membership changes within that Stream. The local record guard retains installed positions for each materialization contract. Membership Remove stops live-content protection but preserves the record, its guard and true deletion protection. Canonical Stream absence establishes a tombstone.
 
-`client.bootstrap()` walks an immutable bounded manifest of marked initial identities or explicitly held identities during schema rematerialization. Pages install authority atomically with their manifest coverage. Tail capture freezes a head; completion waits for actual Delta progress through that head. Manifest materialization does not fabricate ordinary delivery progress. Normal reconnect resumes persisted work.
+`client.bootstrap()` awaits a finite frozen authority plan. Handshake commits initial S and C=S; B remains absent until the final complete Bootstrap unit commits. Sync advances only proven complete coverage. Rematerialization also covers held authority; reconnect retains committed progress.
 
 Delivery units contain identities that must commit together for actual constraints. Independent units may commit separately; a failed group cannot be skipped. Publication evidence and bounded targeted materialization let accepted Calls recover historical authority without automatic tracking or cursor restamping.
 

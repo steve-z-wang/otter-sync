@@ -1,5 +1,7 @@
 # Server
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 The server runtime executes the sync protocol on top of the application's own database and business logic.
 
 - [Protocol 5 Mutation Batches](protocol5.md) — Additive per-Mutation transactions, fixed Batch replay and coalesced publication.

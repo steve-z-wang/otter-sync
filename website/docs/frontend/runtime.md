@@ -4,7 +4,7 @@ The generated client is the whole client: besides the [typed Model, Mutation and
 
 ## Opening and schema changes
 
-Open with `path`, the single `stream`, and a `StoreConnection` containing stable backend/viewer/contract identity. The generated facade supplies its compiled schema. Binding happens before network startup, so an offline reopen can validate the same database without a handshake. Credentials are separate from this identity.
+Open with `path`, the single `stream`, and an optional `StoreConnection`. Protocol 5 requires a fresh format-5 file; an unsupported existing file is refused intact. The generated facade supplies its compiled schema. Binding happens before network startup, so an offline reopen can validate the same database without a handshake. The backend binds the Store to its authenticated principal; credentials do not create a new file lifecycle.
 
 Normal reopen retains the database's incarnation and durable calls. A supported schema or projection-generation change creates a new materialization context; retained Mutation contracts remain available for frozen retries. Bootstrap rematerializes held authority under the active context without inventing delivery progress. Keep the configured projection generation the same on backend and client, and change it when projection behavior changes.
 

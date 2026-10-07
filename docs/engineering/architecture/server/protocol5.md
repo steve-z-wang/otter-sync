@@ -2,7 +2,7 @@
 
 ## 1. Introduction and Goals
 
-The additive Batch path commits each named Mutation independently and resumes a fixed request after a crash. Protocol 4 remains operational alongside finite protocol-5 delivery and ordinary reads. Client adoption remains a separate release gate.
+The Batch path commits each named Mutation independently and resumes a fixed request after a crash. Protocol 5 separates execution acknowledgment from locally committed settlement and uses finite authoritative delivery. [Adoption](../../protocol5-adoption.md) remains a separate release gate.
 
 ## 3. Context and Scope
 
@@ -44,4 +44,4 @@ Query/Fetch use the shared `ReadRequest`/`ReadResponse` carrier and existing ret
 
 ## 10. Quality Requirements
 
-[protocol-v05-batch.test.mjs](../../../../integration/persistence/server/protocol-v05-batch.test.mjs) inspects actual PostgreSQL rows after partial execution, process exit, refusal, infrastructure failure, duplicate replay, publication races and overflow. [protocol-v05-delivery.test.mjs](../../../../integration/persistence/server/protocol-v05-delivery.test.mjs) covers frozen interleavings, expiry cleanup, atomic unique transfers, capacity rollback, ordinary reads, socket/reconnect and 10k/100k capacity measurements. The server runner retains every protocol-4 gate. Measured costs do not establish a production latency promise; end-to-end native client installation and settlement remain adoption gates.
+[protocol-v05-batch.test.mjs](../../../../integration/persistence/server/protocol-v05-batch.test.mjs) inspects actual PostgreSQL rows after partial execution, process exit, refusal, infrastructure failure, duplicate replay, publication races and overflow. [protocol-v05-delivery.test.mjs](../../../../integration/persistence/server/protocol-v05-delivery.test.mjs) covers frozen interleavings, expiry cleanup, atomic unique transfers, capacity rollback, ordinary reads, socket/reconnect and 10k/100k capacity measurements. Measured costs do not establish a production latency promise; end-to-end native client installation and settlement remain adoption gates.

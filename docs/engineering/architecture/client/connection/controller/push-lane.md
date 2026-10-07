@@ -1,5 +1,7 @@
 # Push lane
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The push lane moves frozen batches to the server and their receipts back into the engine. It never pulls: authoritative content arrives through the [Downlink worker](downlink-worker.md).

@@ -1,5 +1,7 @@
 # Store
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The store is the only thing in the client that talks to a database. The engine owns every SQL statement; the store owns connections, transactions and value conversion. Keeping the contract this small lets the same engine run over any SQL store, and keeps every rule about sync out of the database layer.

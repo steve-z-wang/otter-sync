@@ -1,5 +1,7 @@
 # Transport
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The transport moves bytes. It knows the HTTP routes and the WebSocket route, adds the bearer token and the application's headers, honors cancellation, and buffers streamed frames within a bound. It never looks inside a request body or a frame, not even to tell the acknowledgement from a page; those come from and go to Rust. The one response header it reads is the admission marker, which it passes on without deciding anything.

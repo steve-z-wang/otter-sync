@@ -1,5 +1,7 @@
 # Engine
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 [Protocol 4](../protocol4.md) owns current bound-request execution, fenced Stream publication and materialization. The stamp, legacy batch and Load descriptions below document retained protocol-3 machinery, not alternative 0.4 authority paths.
 
 The server engine is pure protocol logic in Rust: it never opens a connection or a transaction itself, but drives the host through a fixed set of operations.

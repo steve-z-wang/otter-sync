@@ -1,6 +1,6 @@
 # Bootstrap and history
 
-Protocol 4 has no Load declarations, handlers or job manager. Choose `@@bootstrap` on Models needed at initial open; use named Queries for business reads and Fetch for one Model identity.
+Protocol 5 has no Load declarations, handlers or job manager. Choose `@@bootstrap` on Models needed at initial open; use named Queries for business reads and Fetch for one Model identity.
 
 ```model
 model Entry {
@@ -11,7 +11,7 @@ model Entry {
 }
 ```
 
-Open the client with its single Stream and stable connection identity, then await the full initial load:
+Open the client with its single Stream and fresh SQLite file, then await the full initial load:
 
 ```ts
 await client.bootstrap();
@@ -23,10 +23,10 @@ await client.bootstrap();
 
 The backend's typed `bootstrap({ctx})` callback may track visible identities through `ctx.stream.track` or explicit `ctx.streams([...]).track`. It cannot invalidate or perform business writes. Loaders remain the viewer authorization authority for materialized content and canonical absence.
 
-Bootstrap persists an immutable bounded identity manifest and captured starting boundary. Each returned unit includes its required constraint closure and commits atomically with ordinal coverage. Tail capture does not advance delivery progress; completion also requires real Stream delta catch-up through the captured tail. Empty manifests have the same completion predicate. Closing/reopening resumes the saved work under the same Store incarnation.
+Handshake commits initial head S and committed prefix C=S. Bootstrap completion B remains absent until the final complete unit commits. Bootstrap selects marked Models and freezes a finite authority plan; an empty plan still completes. Reopen retains committed progress and resumes the remaining work.
 
-Initial selection preserves `@@bootstrap`: an unmarked Model does not become historical initial data merely because it shared a publication transaction with a marked Model. Rematerialization additionally covers explicitly held authoritative identities and absences at their existing positions. Internal Mutation receipt recovery uses a receipt-proved target manifest, without rerunning the application's Bootstrap callback or implicitly enrolling records.
+Initial selection preserves `@@bootstrap`; rematerialization also covers held authoritative identities and absence. Internal Mutation recovery materializes exact saved settlement targets without rerunning application Bootstrap preparation or implicitly tracking records.
 
-A transport page can contain several independent units. A failed atomic unit advances no content or progress from that unit. The engine may reduce subsequent page requests so earlier independent units can proceed; it cannot split required uniqueness/dependency closure. An explicitly oversized required group fails within configured bounds instead of silently skipping it.
+Every required uniqueness/cascade component commits whole, even when transported in several fragments. Earlier independent units can remain committed after a later unit fails, but progress never crosses its missing coverage. Expiry or capacity refusal claims no completion. Bootstrap completion describes the captured head, not perpetual freshness.
 
-Query `once` is a separate saved invocation result. It does not materialize a Stream or replace Bootstrap. See [request storage and once](client-api.md#storing-model-results).
+Query and Fetch are fresh invocation snapshots. They do not materialize a Stream or replace Bootstrap. See [request storage](client-api.md#storing-model-results).

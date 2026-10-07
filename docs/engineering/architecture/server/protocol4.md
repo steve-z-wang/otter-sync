@@ -1,5 +1,7 @@
 # Protocol 4 server runtime
 
+Historical carrier reference. Current behavior is owned by [protocol 5](../protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
+
 ## 1. Introduction and Goals
 
 Protocol 4 serves one Stream bound to a persistent Store. Ordinary Query and Fetch snapshots carry `cursor: null`; only Stream and manifest records carry that Stream's real per-identity cursor. Mutation receipts acknowledge an immutable accepted or refused call and identify its server-visible optimistic targets. Device-only companions are settled locally and never appear in a receipt.

@@ -1,5 +1,7 @@
 # Storage
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 Storage gives the engine a SQL executor whose tables are the schema record. It contains no sync logic.
 
 - [Protocol 5 durable storage](protocol5.md) — Store admission, retained queue artifacts, atomic acknowledgement and settlement during the staged refactor.

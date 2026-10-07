@@ -1,21 +1,14 @@
 # Backend interfaces
 
-## Protocol 4 configuration
+## Protocol 5 configuration
 
-Set `protocol4` on the runtime backend options with stable `backendId`, `contractId`, and `authorizeStream(viewer, stream)`. Authorization runs again for saved response replay. `projectionGeneration` defaults to `"1"`; configure the same stable generation on the client, independently of credentials. The backend exposes its derived `materializationId`. Normal reopen retains the Store context and incarnation without a network handshake; changing projection generation requires rematerialization.
+Set `protocol5` on backend options with `authorizeStream(principal, stream, tx)`. Authorization runs inside the retained transaction and publication fence, including replay. `projectionGeneration` defaults to `"1"`; configure the same generation on client and backend. A materialization identifies normalized Model read contracts, independently of credentials.
 
-`materializations` maps supported prior materialization IDs to `{schema, projectionGeneration}` using the complete original descriptor, including its original Model set and Bootstrap selection. Keep it while serving frozen queued Mutation retries. `maxUnitBytes` bounds one authoritative commit unit and defaults to 1 MiB; an oversized dependency group fails explicitly.
+`materializations` maps supported prior materialization IDs to `{schema, projectionGeneration}` using the retained descriptor and Bootstrap selection. Preserve retained operation schemas while serving frozen Mutation retries.
 
-A protocol 4 Query and the optional `bootstrap({ctx})` callback can track with `ctx.stream.track.todo(ids)` for the initiating Stream or `ctx.streams([name, ...]).track.todo(ids)` for explicitly selected Streams. Mutation contexts additionally provide `ctx.stream.invalidate.todo(ids)` and global `ctx.invalidate.todo(ids)`. Tracking is idempotent; invalidation does not enroll. Fetch snapshots are ordinary null-cursor reads and do not track.
+The optional `bootstrap({ctx})` preparation and Query contexts expose explicit tracking. Returning Model identities does not track them. The initiating `ctx.stream` is supplied by authenticated engine context; the caller cannot choose it as a business argument. Track additional recipients explicitly using the generated multi-Stream declaration API.
 
-Framework-owned `transaction(callback)` acquires the publication fence before the callback. In a caller-owned transaction, await `acquirePublicationFence(tx)` before relevant business work, or do that work within `publish(tx, callback)`. Calling publish after earlier unfenced writes cannot make their snapshot safe. Every change to a Loader's viewer projection must publish all affected identities in the same transaction.
-
-Bootstrap includes only marked historical Model types and explicitly held authority needed for rematerialization. Its manifest pages can contain constraint companions at real Stream positions; these share an atomic local unit and cover no additional manifest ordinal. Receipt-target materialization recovers accepted no-op targets older than the device's delivery boundary without running the Bootstrap callback, tracking again, or inventing a cursor. The native client owns this bounded recovery mechanism.
-
-
-Your backend implements Mutations and Queries through handlers and the read/sync path through loaders. The compiler generates their TypeScript interfaces from your schema. AXTON supplies protocol processing; your application supplies business logic, authorization and a database transaction.
-
-Handler signatures below follow the [generated operation fixture](https://github.com/zanminwang/axton/blob/main/integration/action-contract/schema.model). The background-write example uses an independent `Entry` Model fixture. The working To-do backend is [examples/todo/server.mts](https://github.com/zanminwang/axton/blob/main/examples/todo/server.mts).
+Bootstrap and Sync freeze finite plans. Each required unit commits whole; transport fragments cannot advance partial coverage. Mutation execution acknowledgment and committed local settlement are separate boundaries. Protocol 5 requires fresh local files; it does not migrate old pending work automatically.
 
 ## createBackend
 
@@ -31,7 +24,7 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
-  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
+  protocol5: { authorizeStream: (principal, stream, tx) => stream === `User:${principal}` },
   onError: error => console.error(error),
 });
 const server = await backend.listen({ port: 4242 });
@@ -49,7 +42,7 @@ The generated `Options<Tx>` requires:
 | `mutations: Mutations<Tx>` | Implement each retained Mutation version |
 | `queries: Queries<Tx>` | Implement each retained Query version |
 | `loaders: Loaders<Tx>` | Implement the read function for each supported model version; leave out a [device-only Model](#device-only-models) |
-| `protocol4` | Stable binding, projection generation, retained materializations and Stream authorization |
+| `protocol5` | Projection generation, retained materializations and transaction-bound Stream authorization |
 | `bootstrap({ctx})` | Optional initial-data preparation with typed track-only handles |
 
 `mutations` or `queries` is required when the schema retains a contract of that kind, and can be omitted otherwise; the To-do example has no Queries and passes only `mutations`. Optional options are `admit`, `translateRejection`, `onError`, `loaderHooks` and `native`, described below. The generated function binds the schema and returns the backend synchronously. The generic function in `packages/server/index.mts` additionally requires `config`; normal generated integrations do not pass it.
@@ -131,7 +124,7 @@ A handler returns the generated explicit output shape, or no value when it has n
 
 A Query has track-only `ctx.stream` and `ctx.streams([...])`, with no invalidation. It may establish Stream membership while reading. Business side effects remain forbidden: `ctx.tx` is your application transaction, not a SQL sandbox. Request retries retain the exact invocation identity; a new invocation reads again.
 
-Loaders vary by authenticated viewer and declared Model version, never by which Stream asked. Cache snapshots use the active materialization's Model contracts; retained invocation output contracts may differ. Ordinary Query/Fetch records have null cursors, while Stream and manifest records carry authoritative positions.
+Loaders vary by authenticated viewer and declared Model version, never by which Stream asked. Cache snapshots use the active materialization's Model contracts; retained invocation output contracts may differ. Ordinary Query/Fetch records have null cursors, while Stream delivery records carry authoritative positions.
 
 One Mutation can have several operands and perform several business writes in one savepoint. The schema's Model operands describe local optimism; the backend can normalize values or use different tables.
 
@@ -152,7 +145,7 @@ An error that is neither `CallRejected` nor translated to a business code reject
 
 ## Bootstrap preparation
 
-`bootstrap?: ({ctx}) => Promise<void>` is optional application preparation. Its typed context contains the current `tx`, `userId`, `callId`, initiating `ctx.stream`, and explicit `ctx.streams([...])`. Both Stream handles only track; neither provides invalidation. AXTON acquires its publication fence before preparation and freezes the bounded historical manifest in the same transaction.
+`bootstrap?: ({ctx}) => Promise<void>` is optional application preparation. Its typed context contains the current `tx`, `userId`, `callId`, initiating `ctx.stream`, and explicit `ctx.streams([...])`. Both Stream handles only track; neither provides invalidation. AXTON acquires its publication fence before preparation and freezes the finite Bootstrap plan in the same transaction.
 
 The schema's `@@bootstrap` marks historical Model types selected for initial materialization. Queries cover named history outside that baseline. Manifest paging, coverage, replay and tail capture belong to the native runtime; applications do not return a Load continuation or manage a Load job. Receipt-target recovery does not call this preparation callback.
 
@@ -225,7 +218,7 @@ import { Todo, createBackend, devAuth } from './generated/backend.ts';
 
 const backend = createBackend<Tx>({
   database, authenticate: devAuth(), mutations, queries, loaders,
-  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
+  protocol5: { authorizeStream: (principal, stream, tx) => stream === `User:${principal}` },
 });
 await backend.transaction(async ctx => {
   const records = [Todo({ id: 'A' }), Todo({ id: 'B' })];

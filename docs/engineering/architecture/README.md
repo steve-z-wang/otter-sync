@@ -1,7 +1,8 @@
 # Architecture
 
-- [Bound protocol 4](protocol/0.4.md) — Current admission, delivery coverage and settlement contract.
-- [Bound client](client/protocol4.md) / [bound server](server/protocol4.md) — Runtime implementation and persistence responsibilities.
+- [Protocol 5](protocol/0.5.md) — Store admission, finite delivery and separate execution/settlement boundaries.
+- [Protocol 4](protocol/0.4.md) — Historical bound contract.
+- [Client storage](client/storage/protocol5.md) / [server](server/protocol5.md) — Runtime implementation and persistence responsibilities.
 - [Current guarantees](../guarantees.md) — Required behavior; the separate [0.3 reference](../guarantees-0.3.md) covers internal compatibility paths.
 - [Overview](../architecture.md) — Component responsibilities, graph and code map.
 - [Schema](schema/README.md) — User-written, language-independent definitions of models, fields, types, identities and mutations.

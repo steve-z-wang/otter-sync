@@ -1,5 +1,7 @@
 # Bindings
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The bindings carry messages across the language boundary. In the client direction a binding is a carrier for the [client runtime](../client/runtime.md): it opens one runtime per client on a thread of its own, admits JSON envelopes, hands back the events the runtime published and wakes the SDK when there are some. It decides nothing and waits for no task, so a new language needs a carrier for strings and adapters for its network, timers and credentials, not a port of any logic ([#134](https://github.com/zanminwang/axton/issues/134)). In the other direction, the Node addon lets the Rust server call back into the application's transaction.

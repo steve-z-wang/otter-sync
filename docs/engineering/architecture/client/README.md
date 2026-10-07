@@ -1,5 +1,7 @@
 # Client
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 The client runtime keeps local state in SQLite and synchronizes it with a server.
 
 - [Protocol 4](protocol4.md) — Bound Store identity, null-cache/Stream authority, finite materialization and durable settlement.

@@ -1,8 +1,7 @@
 # Protocol
 
-- [Common](common.md) — Shared fields, counters and encoding conventions.
-- [Push](push.md) — Durable Mutation and queued Query batches, per-call outcomes, record authority and legacy mutation wire compatibility.
-- [Direct calls](actions.md) — Direct request/response envelope for Queries, direct Mutations and Model Fetch, and shared call result semantics.
-- [Pull](pull.md) — One request for every stream, pages of record changes with per-stream cursors, and records the server could not read.
-- [Subscriptions](subscriptions.md) — WebSocket subscription requests and acknowledgments.
-- [Loads](loads.md) — Batched native Load pages: request and response envelopes, per-item outcomes, correlation and bounds.
+- [Protocol 5](0.5.md) — Durable Batches, finite authority plans, cursor-null reads and separate execution/settlement boundaries.
+- [Protocol 4](0.4.md) — Historical bound contract; no format-5 migration guarantee.
+- [Common](common.md) — Shared encoding conventions.
+
+The Push, Pull, direct-call, subscription and Load pages in this directory describe older carriers. They are historical implementation references, not alternate protocol-5 public APIs.

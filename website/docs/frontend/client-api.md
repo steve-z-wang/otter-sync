@@ -8,7 +8,7 @@ Local Model examples below use an `Entry` model with `id`, `text` and nullable `
 
 ## Open a client
 
-A Store belongs to one backend, viewer, Stream and application contract. Supply that identity offline; changing credentials does not change it. Reopening the same file preserves its incarnation, delivery progress, queued calls and materialization evidence.
+One physical SQLite file belongs to one Client, Store identity and Stream. The backend binds that Store to the authenticated principal. Reopening preserves delivery progress, queued Mutations and materialization evidence; credentials do not create a new Store.
 
 === "TypeScript"
 
@@ -18,7 +18,6 @@ A Store belongs to one backend, viewer, Stream and application contract. Supply 
       stream: 'User:alice',
       connection: {
         url: 'http://127.0.0.1:4242', token: 'alice',
-        identity: { backend: 'my-api', viewer: 'alice', contract: 'my-app' },
         projectionGeneration: '1',
         options: { onError: console.error },
       },
@@ -32,17 +31,15 @@ A Store belongs to one backend, viewer, Stream and application contract. Supply 
       path: 'local.sqlite', stream: 'User:alice',
       connection: StoreConnection(
         url: 'http://127.0.0.1:4242', token: () => 'alice',
-        identity: const StoreIdentity(
-          backend: 'my-api', viewer: 'alice', contract: 'my-app'),
       ),
     );
     ```
 
-`path`, `stream` and `connection` are required. Opening commits local storage before starting its connection and works offline. `projectionGeneration` defaults to `'1'`; configure the same generation on backend and client. Changes to it or the normalized Model contracts require rematerialization. Retain supported old contracts so durable queued Mutations remain retryable.
+`path` and `stream` are required; `connection` is optional. Opening commits local storage before starting its connection and works offline. `projectionGeneration` defaults to `'1'`; configure the same generation on backend and client. Changes to it or the normalized Model contracts require rematerialization. Retain supported old contracts so durable queued Mutations remain retryable.
 
 `prerequisites` registers named prerequisite handlers. Dart `libraryPath` selects an explicit development library; installed packages use their bundled library. Android applications initialize the process's stable support/files directory once with `Client.configureApplicationData(path)` before opening any Store. This directory is application configuration, not a per-client lock option.
 
-Use one active owner per SQLite file. `resetStore({discardPending: true})` (Dart: `resetStore(discardPending: true)`) creates a new incarnation and abandons pending calls; a normal close/reopen does neither. Failed native loading, incompatible binding, invalid schema, physical ownership conflicts and unwritable storage fail opening.
+Use one active owner per physical SQLite file. Protocol 5 requires a fresh format-5 file; an unsupported file is refused intact. Existing pending work needs a coordinated drain/export/migration using the old release before its server is retired. `resetStore({discardPending: true})` (Dart: `resetStore(discardPending: true)`) creates a new incarnation and abandons pending calls; a normal close/reopen does neither. Failed native loading, incompatible binding, invalid schema, physical ownership conflicts and unwritable storage fail opening.
 
 Watch `client.models` for ongoing state. There are no custom incoming-store callbacks or per-client multiple Stream registrations.
 
@@ -132,7 +129,7 @@ For a `Comment.book` relationship, `client.models.comment.book(commentIdentity)`
 | --- | --- | --- |
 | `client.models.entry.get(identity)` | The local database | Never |
 | `client.fetch.entry(identity, options?)` | One record, through the backend's Loader for `Entry` | One request per call (overlapping identical calls share one) |
-| `client.queries.<name>(args, options?)` | A named business read that your Query handler implements ([Mutations and Queries](#mutations-and-queries)) | One direct request, unless [`once`](#reuse-a-query-result-with-once) reuses a saved result |
+| `client.queries.<name>(args, options?)` | A named business read that your Query handler implements ([Mutations and Queries](#mutations-and-queries)) | One fresh direct request |
 
 === "TypeScript"
 
@@ -255,7 +252,7 @@ The callback executes before its returned input is applied optimistically. Its `
 
 ### Storing Model results
 
-Query and Fetch accept one request-level boolean `store`, default `true`. Explicit `false` returns the invocation snapshot without writing Model content, current cursor, or materialization evidence. It does not disable backend tracking or future Stream delivery. Default and explicit true share the same once identity; false uses a separate identity.
+Query and Fetch accept one request-level boolean `store`, default `true`. Explicit `false` returns the invocation snapshot without writing Model content, current cursor, or materialization evidence. It does not disable backend tracking or future Stream delivery. Default and explicit true have the same storage policy; each invocation is a fresh request.
 
 A returned snapshot can differ from current Store state: Stream authority, tombstones or pending work may prevent the ordinary cache write. Read or watch `client.models` for continuous state. An omitted list item is not a deletion; an explicit Loader null is an ordinary cache absence and cannot override current Stream authority. Cache reads do not establish Stream progress.
 
@@ -273,60 +270,9 @@ A returned snapshot can differ from current Store state: Stream authority, tombs
     final entry = await client.fetch.entry(const EntryIdentity(id: 'entry-1'), store: false);
     ```
 
-### Reuse a Query result with `once`
+### Fresh Query results
 
-A direct Query can opt in, at the call site, to reusing the complete result of an earlier successful call. Pass `once: true`: the first call runs as an ordinary direct call and, when it succeeds, saves its complete result in the local database; a later `once` call with equal arguments and store policy returns that saved result without a request. `refresh: true` (only together with `once`) always requests and replaces the saved result when the request succeeds. `client.queries.invalidate.<name>(args)` discards the saved results of one argument set. A call without `once` is unchanged: a fresh request that neither reads nor writes saved results.
-
-=== "TypeScript"
-
-    ```typescript title="action-contract"
-    const first = await client.queries.findTodos({ text: 'design', cursor: null }, { once: true });
-    const reused = await client.queries.findTodos({ text: 'design', cursor: null }, { once: true });
-    const refreshed = await client.queries.findTodos(
-      { text: 'design', cursor: null },
-      { once: true, refresh: true },
-    );
-    const everything = await client.queries.getTodos({}, { once: true, store: false });
-    await client.queries.invalidate.findTodos({ text: 'design', cursor: null });
-    console.log(first.nextCursor, reused.todos, refreshed.todos, everything.todos);
-    ```
-
-=== "Flutter"
-
-    ```dart title="action-contract"
-    final first = await client.queries.findTodos(text: 'design', cursor: null, once: true);
-    final reused = await client.queries.findTodos(text: 'design', cursor: null, once: true);
-    final refreshed = await client.queries.findTodos(
-      text: 'design',
-      cursor: null,
-      once: true,
-      refresh: true,
-    );
-    final everything = await client.queries.getTodos(
-      once: true,
-      store: false,
-    );
-    await client.queries.invalidate.findTodos(text: 'design', cursor: null);
-    print([first.nextCursor, reused.todos, refreshed.todos, everything.todos]);
-    ```
-
-| Situation | What a `once` call does |
-| --- | --- |
-| A saved result exists (and no `refresh`) | Returns it with no request, no connection needed and no local write: it does not update Models, wake `watch` listeners or change subscriptions |
-| No saved result, or `refresh` | Runs a direct call with a fresh call ID. On success, the returned Model authority (per `store`) and the saved result commit in one local transaction before the call resolves |
-| The same Query and arguments are already in flight | Waits for that request instead of sending another; every caller gets its own decoded result |
-| The request fails | Rejects with the `CallError` and saves nothing; a failed `refresh` keeps the previous result |
-| No connection and nothing saved (or `refresh`) | Rejects with `action.unavailable`; it is never queued |
-
-The saved value is the complete typed result: scalars, Model results, list order and membership, and pagination values such as `nextCursor`. A successful empty result is saved too. Each call decodes a new result object, so changing a returned list, `Date` or object affects neither the saved result nor another caller. A saved paginated result is only the page that was requested.
-
-A saved result is the answer of an earlier request, not the current local view. Stream deliveries and local writes change Models, never saved results, and a hit never reapplies an old Model result. Read `client.models` for current local data, and use `refresh` or `invalidate` when your application decides a saved result is outdated. Saved results never expire on their own: no time limit or automatic freshness applies. They stay until invalidated, replaced by a successful refresh, or discarded by a schema change or local database rebuild.
-
-The saved result belongs to the Query name and version, the normalized arguments (key order, UUID case and date offsets do not matter; list order and explicit `null` do) and the `store` policy. `store` still controls only which Model results update local Models, so `once` with `store: false` returns a saved result that did not store Models, and a later call that asks for Models (the default) does not reuse it. `store: false` does not make the call ephemeral: its result is still saved in the local database. `invalidate` takes only the Query's business arguments, needs no connection, resolves after its local commit and discards the saved results for every `store` policy. A request that was already in flight still resolves its callers, but cannot save its result after an invalidation.
-
-Saved results belong to the local database file, not to the signed-in user. The runtime does not derive identity from the access token, and refreshing a token for the same identity keeps them. Open a separate database per backend, account or tenant, or delete the database when the identity changes; changing credentials on a shared file isolates neither Models nor saved results. See [local storage](storage.md#choose-a-database-path).
-
-`once` and `refresh` exist only on direct Query methods. Mutations, Mutation callbacks do not accept them: the generated TypeScript types and Dart signatures reject them, and in TypeScript the runtime also rejects them from untyped callers with `CallError` code `action.invalid_options` before any request, as it does for `refresh` without `once` in both languages. Like every Query, a `once` call or `invalidate` from an application transaction callback fails with `transaction_active`. In Dart, the parameters are `once` and `refresh` unless the Query has business inputs with those names; they are then `callOnce` and `callRefresh`, following the `outputStore` rule. A Query may not be named `invalidate`.
+Each Query invocation has a fresh request and snapshot. There are no `once`, `refresh` or Query-result invalidation controls. Use local Model watches for continuous state. Query and Fetch snapshots carry null cursors: they cannot replace currently protected Stream content or deletion evidence, and missing results are not authoritative deletion. `store: false` returns the invocation result without installing Models.
 
 ### Queue Mutations in a transaction
 
@@ -377,9 +323,9 @@ Stream authority retires preceding direct changes and preserves later pending op
 
 ## Bootstrap and Stream delivery
 
-The Stream supplied at open is the client's only Stream. `await client.bootstrap()` waits for its entire Bootstrap: a bounded immutable manifest, atomically applied constraint-safe units, and real delta delivery through the captured tail. An empty manifest still completes through that predicate. Capturing the tail never advances delivery progress. Normal reopen resumes persisted work.
+The Stream supplied at open is the client's only Stream. `await client.bootstrap()` waits for its entire Bootstrap: finite immutable authority units applied atomically through the captured head. An empty plan still completes. Capturing a head never advances delivery progress. Normal reopen resumes persisted work.
 
-Initial Bootstrap selects Models marked `@@bootstrap`. Rematerialization additionally covers held authority and absence, including unmarked Models. Mutation receipt recovery can materialize exact missing targets through an internal receipt-proved manifest without running the application's Bootstrap handler again, implicitly tracking, or allocating a new cursor.
+Initial Bootstrap selects Models marked `@@bootstrap`. Rematerialization additionally covers held authority and absence, including unmarked Models. Mutation receipt recovery can materialize exact missing targets through an internal settlement-owned plan without running the application's Bootstrap handler again, implicitly tracking, or allocating a new cursor.
 
 Bootstrap and delta failures commit neither the failing unit nor its progress. Earlier independent committed units remain valid. Required constraint closure is indivisible; reducing transport page size cannot split it. Membership Remove releases current live-content protection without deleting the Model or clearing historical evidence; true Stream deletion remains protected.
 

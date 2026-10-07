@@ -66,20 +66,12 @@ Not validated by the repository's tests, and therefore not claimed:
 - More than one backend process behind the proxy. Live wakeups are process-local, so a client connected to one process does not learn about commits made through another until it pulls.
 
 
-## Stream membership cutover
+## Protocol 5 adoption
 
-AXTON 0.3 introduces a coordinated breaking cutover to Stream delivery and application-owned cache reclamation. Package publication and application rollout are separate steps.
+Coordinate a breaking backend/adapter/generated-SDK release. Protocol 5 uses discriminator 5; malformed or incompatible requests must not reach business execution. Application minimum-build admission is a separate policy.
 
-Upgrade the backend, PostgreSQL adapter, generated tooling and JS/Dart runtimes together. Requests and live negotiation require `stream-authority-v1`; old runtime shapes receive `426 protocol.unsupported` before handlers, receipts or progress change. Malformed capability metadata receives `400 request.invalid`. Application build admission is a separate gate.
+Apply the forward PostgreSQL migration chain before traffic. Keep the old release and server available while unresolved protocol-4 work is drained, exported or migrated through a separately designed coordinated process. Protocol 5 requires a fresh local format-5 file and refuses an old file without changing its database, WAL or SHM. It offers no automatic wipe or in-place conversion.
 
-1. Stop old writers and live sessions; keep traffic stopped through the repair and coordinated deployment.
-2. Apply the prior upgrades appropriate to the installed layout: v0.1 → [Channel membership](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-09-30-channel-members.sql) → [Scope](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-09-30-scopes.sql) → [Stream](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-10-01-streams.sql), then current DDL. Never rerun older-layout upgrades after cutover.
-3. Run [2026-10-01-local-authority.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migrations/2026-10-01-local-authority.sql) transactionally. It re-tracks latest historical removed pairs, advances each affected identity once and publishes newer upserts to all its current tracking pairs. Each viewer Loader decides current content or null when delivered. Reapplying allocates nothing; malformed layouts or overflow roll back wholly.
-4. Deploy coordinated authority-capable server, adapter, generated tooling and SDKs, with protocol negotiation and application admission. Clients migrate existing SQLite files before scheduling network work.
-5. Resume traffic only after repair and admission are in place.
+Review installed host and matching iOS/Android artifacts from the same tagged commit before rollout. Host-only native tests do not establish mobile installation or device startup. Large complete constraint components can hold the SQLite writer and backend publication fence for seconds; validate staging space and actual capacity on target devices.
 
-Never reset or rewind cursors, or reinterpret an old Remove as stamped null. Fresh PostgreSQL retains six framework tables, including server `axton_stream_member`: tracking routes invalidation and survives absence. Repair preserves other records, viewers, receipts, saved calls and all business result/continuation bytes. The earlier Stream-name migration may rewrite framework top-level claim keys; authority repair rewrites no saved outcome bytes.
-
-SQLite commits `local_authority_version=1` and drops its obsolete holding table/index in one validated opening transaction. Supported original Channel, Scope and Stream files preserve their paths, identities, Model rows/stamps, subscription cursors, explicit bootstrap state, pending/frozen/rejected work, companions, device-only Models and legacy evicted/token history. Retained `reconcile_*` columns are inert; no implicit reconstruction or resubscription history walk runs. Unsupported or inconsistent files remain untouched. Successful reopen is idempotent.
-
-Historical top-level claims remain decodable/replayable; fresh responses emit none. Cache presence grants no permission, and unsubscribe/Remove retain Models. Application Queries apply current access rules ([standing cleanup](../frontend/sync.md#accounts-and-cache-authority)). Canonical newer authority may repopulate application-cleared cache. No automatic server tracking/log retention policy is supplied. Custom hosts retain the [bulk persistence contract](database.md#current-04-persistence).
+Publication, backend deployment, legacy-table cleanup and old-server retirement require separate authorization. The historical 0.3 Stream/authority cutover recipe is not a protocol-5 local migration procedure.

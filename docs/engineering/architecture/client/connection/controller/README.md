@@ -1,5 +1,7 @@
 # Controller
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 The controller decides when the client talks to the server. Rust owns the decisions, the session and the cursor rules, and the client [runtime](../../runtime.md) drives them; the host language owns timers, sockets, HTTP and credential storage, and executes the effects the runtime asks for.
 
 - [Scheduling](scheduling.md) — Per-lane state machine: when to run a cycle, when to retry, how pause, resume, wake and close behave.

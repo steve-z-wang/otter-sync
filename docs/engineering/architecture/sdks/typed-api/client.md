@@ -17,7 +17,7 @@ The generated API names application Models, Mutations and Queries. The generic S
 | `call.wait()` | Wait for backend outcome and this Store's committed settlement. It does not wait for other clients. |
 | `client.queries.<name>(input, options?)` | Direct named read; await the invocation result and permitted local cache commit. Never enqueue a Query. |
 | `client.fetch.<model>(identity, options?)` | Direct versioned Model Loader read; no user-written Query handler. |
-| `client.bootstrap()` | Await finite historical manifest coverage and delivery through one captured tail. |
+| `client.bootstrap()` | Await finite Bootstrap coverage at a captured head. |
 | `client.connection`, `connect`, `close`, `resetStore`, sync/recovery APIs | Lifecycle and recovery within the same Store binding. Reset changes incarnation; ordinary reconnect/reopen does not. |
 
 The [public guide](../../../../../website/docs/frontend/client-api.md) owns runnable TypeScript/Dart examples. TypeScript accepts a typed Input or a callback returning Input. Dart uses the typed invoker's `withTransaction` for that callback form. Both expose local typed `models` inside the callback. The companion scope cannot queue another Mutation, perform remote reads or escape its lifetime. `tx.mutations` supports the same invocation forms inside an outer transaction. React Native uses the generated TypeScript surface with its own transaction adapter.
@@ -28,7 +28,7 @@ Public anonymous mutations, direct Mutation `call`, queued Query `enqueue`, Load
 
 ## 5. Building Block View
 
-[Compiler emission](../../../../../crates/compiler/src/emit.rs) and [transaction emission](../../../../../crates/compiler/src/emit_transactions.rs) generate typed facades/codecs. [Node runtime](../../../../../packages/client-js/runtime.mts), [Dart client](../../../../../packages/dart/lib/src/client.dart) and the [RN adapter](../../../../../packages/client-react-native/transaction.mts) submit through native Bridges. [Bindings](../bindings.md) own platform loading and per-client actors. [Client protocol 4](../../client/protocol4.md) owns persisted semantics.
+[Compiler emission](../../../../../crates/compiler/src/emit.rs) and [transaction emission](../../../../../crates/compiler/src/emit_transactions.rs) generate typed facades/codecs. [Node runtime](../../../../../packages/client-js/runtime.mts), [Dart client](../../../../../packages/dart/lib/src/client.dart) and the [RN adapter](../../../../../packages/client-react-native/transaction.mts) submit through native Bridges. [Bindings](../bindings.md) own platform loading and per-client actors. [Protocol 5](../../protocol/0.5.md) owns persisted semantics.
 
 [Command accounting](../../../../../packages/client-js/command-accounting.mts) owns pending work, draining and first command failure for Node, RN and local companion scopes. Each adapter retains its own admission and lifetime guards; Node savepoint rollback restores the enclosing scope's recorded failure.
 
@@ -38,7 +38,7 @@ A Mutation invocation resolves after local commit; a Call obtained inside an out
 
 Query/Fetch use request-level boolean `store`, default true. Results always describe the invocation snapshot. Ordinary returned Model content has `cursor:null`; true writes only where no current Stream content/deletion guard prevents it. A protected no-op succeeds and may return content different from the Store. False installs no Model/authority. Returning a Model does not track it, and missing results do not mean canonical deletion.
 
-The protocol-5 facades submit a fresh task for every Query invocation. Public `once`, `refresh` and Query invalidation controls are removed; authentication refresh remains. Open takes a path, schema and Stream with an optional connection, allowing offline operation. Native protocol-5 lifecycle evidence is tracked separately from facade checks until the runtime join.
+The protocol-5 facades submit a fresh task for every Query invocation. Public `once`, `refresh` and Query invalidation controls are removed; authentication refresh remains. Open takes a path, schema and Stream with an optional connection, allowing offline operation. Joined native lifecycle evidence belongs to `integration/v05-sdk/run-host.sh`; installed mobile evidence remains separate.
 
 Language scopes refuse captured/expired capabilities and unawaited operations before commit. Node uses async-context ownership. RN's guard conservatively refuses remote/write operations while its callback runs; ordinary reads can queue behind the active transaction. Cross-Store overlapping RN callbacks require async-context support and are refused. Bootstrap and named Mutation entry checks prevent waiting behind their own callback. Priority close settles outstanding tasks and cancels runtime effects without waiting for unresolved user code.
 

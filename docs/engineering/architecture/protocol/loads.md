@@ -1,5 +1,7 @@
 # Loads
 
+Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+
 This is the retained protocol-3 Load carrier. It is not a public 0.4 request path; see [protocol 4](0.4.md) for finite Bootstrap manifests and ordinary reads.
 
 ## 1. Introduction and Goals

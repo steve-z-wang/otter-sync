@@ -1,5 +1,7 @@
 # Scheduling
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 Scheduling answers one question per lane: should the lane run a cycle now, wait, or stay idle? Putting that decision in Rust keeps retry policy identical across languages. The client [runtime](../../runtime.md) asks the question, turns a wait into a `timer` effect and a cycle into `http` or `socket` effects; the host only runs those effects on its platform's timers and network.

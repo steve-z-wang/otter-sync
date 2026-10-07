@@ -1,12 +1,13 @@
 # Local storage
 
-AXTON persists Models, named Mutation intent and ownership, durable Call completion, Query once results, Stream progress, record guards and Bootstrap manifests in one SQLite Store.
 
 ## Choose a database path
 
+Protocol 5 requires a fresh format-5 file. Another format is refused intact, including its WAL and SHM. Keep the old release and backend available while unresolved work is drained, exported or migrated through a coordinated process. Opening a fresh file neither transfers nor abandons that work.
+
+
 Use a writable application directory and one active client per physical file. A Store binds backend, viewer, Stream and contract; changing credentials cannot change that binding. Normal close/reopen retains its incarnation and frozen request identities. Independently writable copies must not send the same queued calls.
 
-Android Dart hosts call `Client.configureApplicationData` once with their stable application container before opening Stores. The directory is process-wide; it is not a per-client lock-root option. See [runtime setup](runtime.md#opening-and-schema-changes).
 
 ## Change the schema
 
@@ -28,10 +29,8 @@ Bootstrap manifest coverage and ordinary Stream progress persist separately. A p
 
 Ordinary Query and Fetch records carry null cursors. They may populate unprotected cache, but never advance Stream progress, replace current Stream authority or clear a tombstone. An ordinary null returns absence without deleting a cached row. Returned invocation snapshots and the current Model projection are distinct.
 
-Query `once` results persist by the active materialization contract, Query name/version, normalized arguments and store boolean. Hits return saved business snapshots without applying them again to Models. `refresh` replaces a saved result only after success; `queries.invalidate.<name>` removes all store-policy variants for those arguments and fences older in-flight saves.
 
 ## Storage size and SQL
 
-No automatic cache eviction or outcome TTL is provided. Applications bound the argument sets retained by Query once and invalidate results when appropriate. The backend retains publication dependency evidence needed to prove safe delivery groups; configured capacity failures are explicit.
 
 Each Model has a table named exactly the Model, with one column per field. Read these tables using `readSql` or `watchSql`. Tables beginning `axton_` belong to the engine; do not read or modify them. Local SQL reads use the on-disk SQLite projection rather than a separate full-record copy.

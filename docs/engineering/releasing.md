@@ -2,6 +2,8 @@
 
 Every AXTON artifact of a release carries one version V and is built from one tagged commit: the npm packages `@axtonjs/{native,cli,server,client,postgres}` and their platform packages, the pub.dev package `axton`, and the Dart native libraries its build hook downloads from the GitHub Release. [Release Please](../../.github/workflows/release-please.yml) chooses V and tags it; [Release publish](../../.github/workflows/release-publish.yml) builds, verifies and publishes. The [automated release design](../superpowers/specs/2026-09-29-automated-release-design.md) records why.
 
+For the protocol-5 breaking candidate, complete the [adoption and artifact gates](protocol5-adoption.md) before release authorization. Wire discriminator 5 does not choose the package version.
+
 ## Normal flow
 
 1. Merge changes to `main` with conventional squash titles (`fix:`, `feat:`, `feat!:`). Release Please keeps one release PR open with the next version, `CHANGELOG.md` and every manifest; its `lockfiles` job commits the matching `Cargo.lock` and `pubspec.lock` refresh to that PR.

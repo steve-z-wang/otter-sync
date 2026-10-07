@@ -1,5 +1,7 @@
 # Downlink worker
 
+Protocol-5 policy and failure boundaries are owned by [protocol 5](../../../protocol/0.5.md). Rust owns synchronization; language bindings execute networking, timers and interface callbacks. Descriptions of protocol-4, epoch/Load jobs, once caches or legacy queue tables below are historical component context, not current public APIs.
+
 ## 1. Introduction and Goals
 
 The Downlink worker owns everything the client receives: it follows the subscribed Streams over one [live session](live-session.md) at a time, commits the first delivery boundary of every Stream still waiting for one, compares the acknowledged heads with the durable cursors, catches up over HTTP only when behind, then consumes the stream through a bounded in-memory queue. It belongs to the connected client rather than to a socket, so replacing the socket keeps its queue, its schedule and its durable position. HTTP fills gaps; the WebSocket carries only what is new. Every page, streamed or fetched, goes through the same gate in [Pull](../../engine/pull.md).

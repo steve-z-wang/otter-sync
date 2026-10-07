@@ -1,5 +1,7 @@
 # Direct calls
 
+Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+
 [Protocol 4](0.4.md) owns current bound Query/Fetch and named Mutation envelopes. Any stamp, direct-Mutation, queued-Query or per-output-storage format below belongs to the retained protocol-3 carrier.
 
 ## 1. Introduction and Goals

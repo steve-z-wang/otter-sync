@@ -1,5 +1,7 @@
 # Pull
 
+Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+
 [Protocol 4](0.4.md) owns current immutable pages, complete atomic units and finite manifests. The stamp and Load-bootstrap formats below describe retained protocol-3 carriers.
 
 Engine behavior: [Client Pull](../client/engine/pull.md), [Server Pull](../server/engine/pull.md).

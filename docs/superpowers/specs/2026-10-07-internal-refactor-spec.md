@@ -363,7 +363,7 @@ Retain requestId -> task waiter, effectId -> outstanding effect, observerId -> s
 
 The queue is recoverable memory, not a second authoritative log. Persist only incomplete transfer staging and committed unit progress. A crash discards uncommitted queue entries and refetches from B/C. Reserve capacity for the earliest missing repair; pause HTTP producers and disconnect/recover an overflowing socket rather than lose data while advancing progress. Coalesce one request per missing lane/range; use a Rust timer for backoff.
 
-Bootstrap and Sync cannot share one scalar priority order. Their units connect to different progress counters but enter the same writer. For overlapping deliveries, validate context and immutable plan; skip only units whose exact coverage is already committed, or restart a straddling plan from persisted progress. Do not trim arbitrary record arrays into fabricated coverage proofs.
+Bootstrap and Sync cannot share one scalar priority order. Their units connect to different progress counters but enter the same writer. For overlapping deliveries, validate context and immutable plan. A complete overlapping unit may apply atomically: per-key current/history evidence protects already installed authority while unseen later records commit with coverage. Alternatively, restart a straddling plan from persisted progress. Skip only units whose exact coverage is already committed. Do not trim arbitrary record arrays into fabricated coverage proofs.
 
 Post-commit notifications reuse Client.write/notify and runtime observer invalidation. Requery only affected watches; emit changed results. Rollback emits no committed changes. An observer callback failure cannot roll back or replay a committed delivery.
 

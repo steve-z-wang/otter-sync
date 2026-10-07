@@ -460,3 +460,159 @@ for (const scenario of ["negotiation", "multiple pulls", "rejected pull"]) {
     }
   });
 }
+
+test("throwing upgrade Reporter cannot release another admission or an aborted Live Loader", async () => {
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const held = [0, 1].map(() => ({
+    entered: gate(),
+    release: gate(),
+    finished: gate(),
+    gone: gate(),
+  }));
+  const session = { entered: gate(), release: gate(), finished: gate() };
+  const expected = new Error("upgrade admission failed"),
+    reporterFailure = new Error("upgrade Reporter failed");
+  const diagnostics = [];
+  let admissions = 0,
+    closed = false,
+    closing,
+    sessionResult;
+  const backend = createBackend({
+    config,
+    native,
+    database: pg(pool),
+    authenticate: async (request) => {
+      if (request.headers["x-viewer"] === "held-session") return "held-session";
+      const index = admissions++,
+        item = held[index];
+      request.socket.once("close", item.gone.resolve);
+      item.socket = request.socket;
+      const tx = await pool.connect();
+      try {
+        await tx.query("SELECT 1 AS connected");
+        item.entered.resolve();
+        await item.release.promise;
+        assert.deepEqual((await tx.query("SELECT 1 AS admitted")).rows, [
+          { admitted: 1 },
+        ]);
+        if (index === 0) throw expected;
+        return "admitted";
+      } finally {
+        tx.release();
+        item.finished.resolve();
+      }
+    },
+    protocol4: {
+      backendId: "shutdown",
+      contractId: "app",
+      projectionGeneration: "1",
+      authorizeStream: (viewer, name) => name === `User:${viewer}`,
+    },
+    onError: (error) => {
+      diagnostics.push(error);
+      if (error === expected) throw reporterFailure;
+    },
+    loaders: {
+      space: async ({ tx, ids }) => {
+        await tx.query("SELECT 1 AS connected");
+        session.entered.resolve();
+        await session.release.promise;
+        try {
+          sessionResult = (await tx.query("SELECT 1 AS live")).rows;
+          return ids.map(({ id }) => ({ id, name: "Journal" }));
+        } finally {
+          session.finished.resolve();
+        }
+      },
+    },
+  });
+  await backend.transaction(({ streams }) =>
+    streams("User:held-session").track.space({ id: "held-session" }),
+  );
+  const listener = await backend.listen({ port: 0 });
+  const url = listener.url.replace("http:", "ws:") + "/sync/live";
+  const socket = new WebSocket(url, {
+    headers: { "x-viewer": "held-session" },
+  });
+  const upgrades = held.map(() => {
+    const ws = new WebSocket(url);
+    ws.on("error", () => {});
+    return ws;
+  });
+  try {
+    await once(socket, "open");
+    socket.send(
+      JSON.stringify({
+        context: {
+          protocol: 4,
+          binding: {
+            backend: "shutdown",
+            viewer: "held-session",
+            stream: "User:held-session",
+            contract: "app",
+          },
+          materialization: backend.materializationId,
+          incarnation: randomUUID(),
+        },
+        models: { Space: 1 },
+        cursor: 0,
+      }),
+    );
+    await Promise.all([
+      ...held.map((item) => item.entered.promise),
+      session.entered.promise,
+    ]);
+    const sessionGone = once(socket, "close");
+    socket.terminate();
+    upgrades.forEach((ws) => ws.terminate());
+    held.forEach((item) => item.socket.destroy());
+    await Promise.all([...held.map((item) => item.gone.promise), sessionGone]);
+    closing = listener.close().then(
+      () => {
+        closed = true;
+      },
+      (error) => {
+        closed = true;
+        throw error;
+      },
+    );
+    void closing.catch(() => {});
+    held[0].release.resolve();
+    await held[0].finished.promise;
+    await turn();
+    await turn();
+    assert.equal(
+      closed,
+      false,
+      "upgrade Reporter rejection must not release another admitted database callback",
+    );
+    held[1].release.resolve();
+    await held[1].finished.promise;
+    await turn();
+    await turn();
+    assert.equal(
+      closed,
+      false,
+      "failed upgrade must still drain the already-aborted Live session",
+    );
+    session.release.resolve();
+    await session.finished.promise;
+    await assert.rejects(closing, (error) => error === reporterFailure);
+    await assert.rejects(
+      listener.close(),
+      (error) => error === reporterFailure,
+    );
+    await assert.rejects(
+      fetch(listener.url + "/sync/fetch", { method: "POST", body: "{}" }),
+    );
+    assert.deepEqual(sessionResult, [{ live: 1 }]);
+    assert.ok(diagnostics.includes(expected));
+  } finally {
+    held.forEach((item) => item.release.resolve());
+    session.release.resolve();
+    upgrades.forEach((ws) => ws.terminate());
+    socket.terminate();
+    await Promise.allSettled([closing ?? listener.close()]);
+    await pool.end();
+  }
+});

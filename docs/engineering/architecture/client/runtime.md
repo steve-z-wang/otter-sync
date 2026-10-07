@@ -1,6 +1,18 @@
 # Runtime
 
-Bound 0.4 admission and completion are described in [protocol 4](protocol4.md) and [the current typed API](../sdks/typed-api/client.md). The Load, store-hook, batch/stamp and multi-Stream details below describe retained protocol-3 internals; they are not public bound-client facilities.
+Protocol 5 uses a control task and one Store worker. The retained protocol-3/4 lane details later in this document describe compatibility code, not the protocol-5 public client.
+
+## Protocol 5 execution
+
+The native actor runs `sync05::Control` on the reception thread and `ClientRuntime<SqliteStore>` on a separate worker. Control owns effect correlation, handshake, bounded fragment admission, missing-prefix repair, retries, socket replacement and authentication refresh coordination. The worker alone owns SQLite, application transactions, direct read commits, observer queries and Mutation settlement. Neither thread holds the registry lock across work.
+
+Control sends `Initialize`, `NetworkState`, `Freeze`, `Acknowledge`, `Apply`, `Snapshot` and `Needs` commands. The worker returns durable Store snapshots, frozen request bytes, pending owned transfers, and committed application reports. Shared immutable manifests and staging references cross the channel; control continues receiving while a worker transaction or callback is busy. The carrier still uses open/submit/drain/detach and the same request, effect, callback, observer and Call identities.
+
+The queue admits complete immutable plan headers and individually verified parts. It reserves a plan slot for earlier repair, caps manifest memory, and spills part payloads beyond its memory budget to private temporary files with a bounded total staging size. Only complete verified units enter apply. Bootstrap follows B toward the fixed S; Sync follows C. A matching Store/Stream live envelope naming a different materialization contributes only its finite observed head; HTTP repairs the retained enabled context.
+
+One worker transaction installs authoritative base and evidence, reconciles ready Mutations, replays surviving local work, validates the final state, and writes DeliveryProgress and B/C. Notifications and completed Calls follow COMMIT. Queue dequeue follows the committed worker report. DeliveryProgress fences replay after a crash between COMMIT and dequeue, and plan-key evidence prevents a second occurrence of an identity across units. Owned schema transfers prove their complete requested set and every identity held at commit before enabling the desired context.
+
+Storing network reads wait until initial S and C=S commit. Both read modes park during a pending schema transfer, then start with the enabled descriptor/context after its final COMMIT. Offline local work and no-store reads before initial S remain independent. Each Query/Fetch owns its request and snapshot; matching completions occur once, and Query output never enrolls automatically. Mutation local acceptance follows its local commit; backend completion follows durable receipt reconciliation.
 
 ## 1. Introduction and Goals
 

@@ -481,7 +481,14 @@ impl Control {
         }
         if !self.applying {
             for (id, p) in &self.queue.plans {
-                if p.blocked {
+                if p.blocked
+                    || (p.header.owner.is_none()
+                        && self.queue.plans.values().any(|blocked| {
+                            blocked.blocked
+                                && blocked.header.owner.is_none()
+                                && blocked.header.bootstrap == p.header.bootstrap
+                        }))
+                {
                     continue;
                 }
                 let position = if p.header.bootstrap {
@@ -494,8 +501,7 @@ impl Control {
                 }
                 if p.header.owner.is_some()
                     && (p.owner.is_none()
-                        || (0..p.header.units.len() as u64)
-                            .any(|index| p.unit(index).is_ok_and(|unit| unit.is_none())))
+                        || (0..p.header.units.len() as u64).any(|index| !p.complete(index)))
                 {
                     continue;
                 }

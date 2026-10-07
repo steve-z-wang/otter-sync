@@ -16,7 +16,14 @@ impl<S: ClientStore> Client<S> {
         let status = self.store_status05()?;
         let mut selected = None;
         for (id, p) in &q.plans {
-            if p.blocked {
+            if p.blocked
+                || (p.header.owner.is_none()
+                    && q.plans.values().any(|blocked| {
+                        blocked.blocked
+                            && blocked.header.owner.is_none()
+                            && blocked.header.bootstrap == p.header.bootstrap
+                    }))
+            {
                 continue;
             }
             p.header.context.admit_store(&context)?;

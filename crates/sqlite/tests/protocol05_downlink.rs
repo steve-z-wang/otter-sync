@@ -163,6 +163,10 @@ fn failed_sql_apply_keeps_unit_and_progress_unchanged_until_explicit_retry() {
     q.receive(&f.header, &f.parts, &context, 1).unwrap();
     assert!(c.apply_next_delivery05(&mut q, 1).is_err());
     assert_eq!(q.len(), 1);
+    let overlapping = plan(context.clone(), "overlapping-good", 0, 1, false);
+    q.receive(&overlapping.header, &overlapping.parts, &context, 1)
+        .unwrap();
+    // A failed Sync unit blocks the lane, including another verified offer.
     assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_none());
     assert_eq!(c.store_status05().unwrap().cursor, Some(0));
     drop(c);
@@ -235,7 +239,7 @@ fn oversized_atomic_unit_spills_to_disk_and_applies_as_one_commit() {
     c.initialize_stream05(0).unwrap();
     let context = c.request_context05().unwrap();
     let f = fragmented(context.clone(), false);
-    let mut q = DeliveryQueue::new(32, 4);
+    let mut q = DeliveryQueue::new(1024, 4);
     q.receive(&f.header, &f.parts, &context, 1).unwrap();
     assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_some());
     assert_eq!(c.store_status05().unwrap().cursor, Some(2));
@@ -627,4 +631,132 @@ fn foreign_live_context_is_only_a_head_hint_for_retained_context_repair() {
     assert_eq!(repair.context, context);
     assert_eq!((repair.after, repair.through), (0, 5));
     assert_eq!(c.store_status05().unwrap().cursor, Some(0));
+}
+
+#[test]
+fn slow_observer_receiver_does_not_hold_apply_and_notices_only_commits() {
+    use std::collections::BTreeSet;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let observer = c.watch(BTreeSet::from(["Entry".into()]));
+    let first = v05::freeze_delivery(
+        context.clone(),
+        "observer-one".into(),
+        v05::DeliveryPurpose::Sync,
+        0,
+        1,
+        1,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(1),
+            changes: vec![change("a", 1)],
+        }],
+        1,
+    )
+    .unwrap();
+    let second = v05::freeze_delivery(
+        context.clone(),
+        "observer-two".into(),
+        v05::DeliveryPurpose::Sync,
+        1,
+        2,
+        2,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(2),
+            changes: vec![change("b", 2)],
+        }],
+        1,
+    )
+    .unwrap();
+    let mut q = DeliveryQueue::new(100000, 4);
+    q.receive(&first.header, &first.parts, &context, 1).unwrap();
+    assert!(observer.try_recv().is_err());
+    c.apply_next_delivery05(&mut q, 1).unwrap();
+    // The observer deliberately does not consume the first committed notice.
+    q.receive(&second.header, &second.parts, &context, 1)
+        .unwrap();
+    c.apply_next_delivery05(&mut q, 1).unwrap();
+    assert_eq!(c.store_status05().unwrap().cursor, Some(2));
+    assert_eq!(observer.try_iter().count(), 2);
+}
+
+#[test]
+fn manifest_over_capacity_is_refused_without_data_or_progress() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let before = c.store_status05().unwrap();
+    let f = plan(before.context.clone(), "too-large", 0, 1, false);
+    let mut q = DeliveryQueue::new(16, 4);
+    assert!(q.receive(&f.header, &f.parts, &before.context, 1).is_err());
+    assert!(q.is_empty());
+    assert_eq!(
+        serde_json::to_value(c.store_status05().unwrap()).unwrap(),
+        serde_json::to_value(before).unwrap()
+    );
+}
+
+#[test]
+fn terminal_admission_refusal_cancels_control_without_auth_or_backoff() {
+    use axton_client::{
+        runtime::{Diagnostic, EffectError, EffectOutcome, Event, Operation},
+        sync05::Control,
+    };
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    let status = c.store_status05().unwrap();
+    let mut control = Control::new(status.clone());
+    control.set_refresh_auth(true);
+    control.connect().unwrap();
+    let events = control.events();
+    let id = events
+        .iter()
+        .find_map(|e| {
+            if let Event::Effect { effect_id, .. } = e {
+                Some(effect_id.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    control
+        .receive(
+            &id,
+            EffectOutcome {
+                ok: false,
+                value: None,
+                error: Some(EffectError {
+                    message: "minimum build".into(),
+                    status: Some(426),
+                    retry: false,
+                    refusal: Some("{\"minimumBuild\":7}".into()),
+                }),
+            },
+            1,
+        )
+        .unwrap();
+    let events = control.events();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::Report {
+            diagnostic: Diagnostic::Refused { status: 426, .. }
+        }
+    )));
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        Event::Effect {
+            operation: Operation::Timer { .. } | Operation::RefreshAuth,
+            ..
+        }
+    )));
+    assert!(control.jobs().is_empty());
+    assert_eq!(
+        serde_json::to_value(c.store_status05().unwrap()).unwrap(),
+        serde_json::to_value(status).unwrap()
+    );
 }

@@ -67,6 +67,7 @@ pub(crate) struct Plan {
     pub blocked: bool,
     pub owner: Option<v05::MaterializationRequest>,
     owner_keys: Arc<BTreeSet<String>>,
+    metadata_bytes: usize,
 }
 impl Plan {
     pub fn worker_snapshot(&self) -> Self {
@@ -85,9 +86,21 @@ impl Plan {
             blocked: self.blocked,
             owner: self.owner.clone(),
             owner_keys: self.owner_keys.clone(),
+            metadata_bytes: self.metadata_bytes,
         }
     }
+    pub fn complete(&self, index: u64) -> bool {
+        self.header
+            .units
+            .get(index as usize)
+            .is_some_and(|manifest| {
+                (0..manifest.parts.len() as u64).all(|part| self.parts.contains_key(&(index, part)))
+            })
+    }
     pub fn unit(&self, index: u64) -> Result<Option<v05::DeliveryUnit>> {
+        if !self.complete(index) {
+            return Ok(None);
+        }
         let Some(manifest) = self.header.units.get(index as usize) else {
             return Ok(None);
         };
@@ -152,6 +165,14 @@ impl DeliveryQueue {
             return Err(invalid("delivery.expired"));
         }
         let existing = self.plans.get(&header.plan_id);
+        let metadata_bytes = match existing {
+            Some(plan) => plan.metadata_bytes,
+            None => serde_json::to_vec(header)?.len(),
+        };
+        let metadata_used = self.plans.values().map(|p| p.metadata_bytes).sum::<usize>();
+        if existing.is_none() && metadata_used.saturating_add(metadata_bytes) > self.capacity {
+            return Err(invalid("delivery manifest capacity exceeded"));
+        }
         if let Some(plan) = existing {
             if plan.header.as_ref() != header {
                 return Err(invalid("changed immutable plan"));
@@ -205,7 +226,14 @@ impl DeliveryQueue {
                 continue;
             }
             let size = serde_json::to_vec(part)?.len();
-            let in_memory = memory.saturating_add(size) <= self.capacity / 2;
+            let headers = metadata_used
+                + if existing.is_none() {
+                    metadata_bytes
+                } else {
+                    0
+                };
+            let in_memory =
+                memory.saturating_add(size).saturating_add(headers) <= self.capacity / 2;
             if in_memory {
                 memory += size;
             }
@@ -221,6 +249,7 @@ impl DeliveryQueue {
                 blocked: false,
                 owner: None,
                 owner_keys: Arc::default(),
+                metadata_bytes,
             });
         for (key, part) in staged {
             plan.parts.insert(key, part);

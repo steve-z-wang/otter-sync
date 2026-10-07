@@ -1,0 +1,604 @@
+{
+  "batchAcknowledgement": {
+    "batchId": 1,
+    "digest": "e1e8ded0a38f66aac623f190ca5cca1de826d326592c73ee140594b795535f56",
+    "materialization": "schema1",
+    "protocol": 5,
+    "results": [
+      {
+        "mutationId": 1,
+        "outcome": {
+          "kind": "accepted",
+          "result": {
+            "appOpaque": [
+              1,
+              null
+            ]
+          },
+          "syncCursor": 0,
+          "targets": []
+        }
+      }
+    ],
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "cases": {
+    "bootstrapRecordMovesPastStart": {
+      "atPlan": [
+        {
+          "cursor": 45,
+          "id": "e",
+          "model": "Entry",
+          "text": "b"
+        }
+      ],
+      "before": [
+        {
+          "cursor": 20,
+          "id": "e",
+          "model": "Entry",
+          "text": "a"
+        }
+      ],
+      "bootstrapCursor": null,
+      "expected": {
+        "bootstrapCursor": 40,
+        "entryCursor": 45,
+        "entryText": "b"
+      },
+      "observedHead": 45,
+      "startCursor": 40
+    }
+  },
+  "continuedDelta": {
+    "after": 0,
+    "bootstrap": false,
+    "continuation": {
+      "digest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+      "part": 1,
+      "planId": "plan",
+      "unit": 0
+    },
+    "materialization": "schema1",
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a",
+    "through": 4
+  },
+  "deliveryHeader": {
+    "after": 0,
+    "bootstrap": false,
+    "digest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+    "expiresAt": 100,
+    "materialization": "schema1",
+    "observedHead": 4,
+    "owner": null,
+    "planId": "plan",
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a",
+    "through": 4,
+    "units": [
+      {
+        "digest": "985a8ea491817f40c6d4162cd383213728a5327d63caa4627eec0f9ca3febf61",
+        "minimumCursor": 4,
+        "parts": [
+          "12a9a003278d90dc5ec8d7a894f46941e0e7da600912341a0556d2aac653d2c3",
+          "1bb428dc9b85809ffbe57354f0ab251778a1b0468b813841570a7530c1f6c29e"
+        ],
+        "through": 4
+      }
+    ]
+  },
+  "deliveryPart": {
+    "changes": [
+      {
+        "cursor": 4,
+        "key": {
+          "identity": {
+            "id": "a"
+          },
+          "model": "Entry"
+        },
+        "kind": "record",
+        "state": {
+          "text": "a"
+        }
+      }
+    ],
+    "part": 0,
+    "planDigest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+    "planId": "plan",
+    "unit": 0
+  },
+  "deliveryProgress": {
+    "covered": null,
+    "header": {
+      "after": 0,
+      "bootstrap": false,
+      "digest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+      "expiresAt": 100,
+      "materialization": "schema1",
+      "observedHead": 4,
+      "owner": null,
+      "planId": "plan",
+      "protocol": 5,
+      "storeId": "store",
+      "stream": "User:a",
+      "through": 4,
+      "units": [
+        {
+          "digest": "985a8ea491817f40c6d4162cd383213728a5327d63caa4627eec0f9ca3febf61",
+          "minimumCursor": 4,
+          "parts": [
+            "12a9a003278d90dc5ec8d7a894f46941e0e7da600912341a0556d2aac653d2c3",
+            "1bb428dc9b85809ffbe57354f0ab251778a1b0468b813841570a7530c1f6c29e"
+          ],
+          "through": 4
+        }
+      ]
+    },
+    "nextUnit": 0,
+    "parts": {}
+  },
+  "deliveryResponse": {
+    "header": {
+      "after": 0,
+      "bootstrap": false,
+      "digest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+      "expiresAt": 100,
+      "materialization": "schema1",
+      "observedHead": 4,
+      "owner": null,
+      "planId": "plan",
+      "protocol": 5,
+      "storeId": "store",
+      "stream": "User:a",
+      "through": 4,
+      "units": [
+        {
+          "digest": "985a8ea491817f40c6d4162cd383213728a5327d63caa4627eec0f9ca3febf61",
+          "minimumCursor": 4,
+          "parts": [
+            "12a9a003278d90dc5ec8d7a894f46941e0e7da600912341a0556d2aac653d2c3",
+            "1bb428dc9b85809ffbe57354f0ab251778a1b0468b813841570a7530c1f6c29e"
+          ],
+          "through": 4
+        }
+      ]
+    },
+    "parts": [
+      {
+        "changes": [
+          {
+            "cursor": 4,
+            "key": {
+              "identity": {
+                "id": "a"
+              },
+              "model": "Entry"
+            },
+            "kind": "record",
+            "state": {
+              "text": "a"
+            }
+          }
+        ],
+        "part": 0,
+        "planDigest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+        "planId": "plan",
+        "unit": 0
+      },
+      {
+        "changes": [
+          {
+            "cursor": 4,
+            "key": {
+              "identity": {
+                "id": "b"
+              },
+              "model": "Entry"
+            },
+            "kind": "record",
+            "state": {
+              "text": "b"
+            }
+          }
+        ],
+        "part": 1,
+        "planDigest": "68263a54eaba02f2dd89264e6a84987b3c35bac04dac2d47059032791f18cbc9",
+        "planId": "plan",
+        "unit": 0
+      }
+    ]
+  },
+  "deliveryUnit": {
+    "changes": [
+      {
+        "cursor": 4,
+        "key": {
+          "identity": {
+            "id": "a"
+          },
+          "model": "Entry"
+        },
+        "kind": "record",
+        "state": {
+          "text": "a"
+        }
+      },
+      {
+        "cursor": 4,
+        "key": {
+          "identity": {
+            "id": "b"
+          },
+          "model": "Entry"
+        },
+        "kind": "record",
+        "state": {
+          "text": "b"
+        }
+      }
+    ],
+    "index": 0,
+    "through": 4
+  },
+  "deltaRequest": {
+    "after": 0,
+    "bootstrap": false,
+    "continuation": null,
+    "materialization": "schema1",
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a",
+    "through": 4
+  },
+  "fetchRequest": {
+    "invocation": {
+      "key": {
+        "identity": {
+          "id": "e"
+        },
+        "model": "Entry"
+      },
+      "kind": "fetch",
+      "version": 1
+    },
+    "materialization": "schema1",
+    "protocol": 5,
+    "requestId": "f1",
+    "store": false,
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "handshakeRequest": {
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "handshakeResponse": {
+    "head": 40,
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "materializationRequest": {
+    "continuation": null,
+    "keys": [
+      {
+        "identity": {
+          "id": "e"
+        },
+        "model": "Entry"
+      }
+    ],
+    "materialization": "schema1",
+    "models": {},
+    "owner": {
+      "batchId": 1,
+      "kind": "settlement",
+      "mutationId": 2
+    },
+    "protocol": 5,
+    "requestId": "owned1",
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "materializationResponse": {
+    "delivery": {
+      "header": {
+        "after": null,
+        "bootstrap": false,
+        "digest": "03f99311e93fe16e443def6c6576f351918cfe5d7e6c5ec247753a2fe7176ed0",
+        "expiresAt": 100,
+        "materialization": "schema1",
+        "observedHead": 40,
+        "owner": {
+          "batchId": 1,
+          "kind": "settlement",
+          "mutationId": 2
+        },
+        "planId": "owned",
+        "protocol": 5,
+        "storeId": "store",
+        "stream": "User:a",
+        "through": null,
+        "units": [
+          {
+            "digest": "4c57c70d4df9cd7bfbae305cfff827e320a61847cf5e5112e7b30f74f435a43c",
+            "minimumCursor": 20,
+            "parts": [
+              "b5a6d27890c4822bee3920960682163d0fc2f6d442bd0c5fd68a07bc7db06c6f"
+            ],
+            "through": null
+          }
+        ]
+      },
+      "parts": [
+        {
+          "changes": [
+            {
+              "cursor": 20,
+              "key": {
+                "identity": {
+                  "id": "e"
+                },
+                "model": "Entry"
+              },
+              "kind": "record",
+              "state": {
+                "text": "accepted"
+              }
+            }
+          ],
+          "part": 0,
+          "planDigest": "03f99311e93fe16e443def6c6576f351918cfe5d7e6c5ec247753a2fe7176ed0",
+          "planId": "owned",
+          "unit": 0
+        }
+      ]
+    },
+    "requestId": "owned1"
+  },
+  "mutationRequest": {
+    "batchId": 1,
+    "digest": "e1e8ded0a38f66aac623f190ca5cca1de826d326592c73ee140594b795535f56",
+    "materialization": "schema1",
+    "mutations": [
+      {
+        "descriptor": "retained1",
+        "id": 1,
+        "name": "Write",
+        "operations": [
+          {
+            "identity": null,
+            "inputPath": "text",
+            "model": null,
+            "operation": "argument",
+            "step": 0,
+            "value": "hello"
+          },
+          {
+            "identity": null,
+            "inputPath": "items",
+            "model": null,
+            "operation": "argument",
+            "step": 1,
+            "value": []
+          },
+          {
+            "identity": null,
+            "inputPath": "optional",
+            "model": null,
+            "operation": "argument",
+            "step": 2,
+            "value": null
+          }
+        ],
+        "version": 1
+      }
+    ],
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "ownedDeliveryHeader": {
+    "after": null,
+    "bootstrap": false,
+    "digest": "03f99311e93fe16e443def6c6576f351918cfe5d7e6c5ec247753a2fe7176ed0",
+    "expiresAt": 100,
+    "materialization": "schema1",
+    "observedHead": 40,
+    "owner": {
+      "batchId": 1,
+      "kind": "settlement",
+      "mutationId": 2
+    },
+    "planId": "owned",
+    "protocol": 5,
+    "storeId": "store",
+    "stream": "User:a",
+    "through": null,
+    "units": [
+      {
+        "digest": "4c57c70d4df9cd7bfbae305cfff827e320a61847cf5e5112e7b30f74f435a43c",
+        "minimumCursor": 20,
+        "parts": [
+          "b5a6d27890c4822bee3920960682163d0fc2f6d442bd0c5fd68a07bc7db06c6f"
+        ],
+        "through": null
+      }
+    ]
+  },
+  "ownedDeliveryUnit": {
+    "changes": [
+      {
+        "cursor": 20,
+        "key": {
+          "identity": {
+            "id": "e"
+          },
+          "model": "Entry"
+        },
+        "kind": "record",
+        "state": {
+          "text": "accepted"
+        }
+      }
+    ],
+    "index": 0,
+    "through": null
+  },
+  "privateTarget": {
+    "kind": "private",
+    "record": {
+      "cursor": null,
+      "key": {
+        "identity": {
+          "id": "e"
+        },
+        "model": "Entry"
+      },
+      "state": {
+        "text": "accepted"
+      }
+    }
+  },
+  "queryRequest": {
+    "invocation": {
+      "args": {
+        "limit": 10
+      },
+      "kind": "query",
+      "name": "ReadEntries",
+      "version": 1
+    },
+    "materialization": "schema1",
+    "protocol": 5,
+    "requestId": "q1",
+    "store": true,
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "readFailure": {
+    "materialization": "schema1",
+    "outcome": {
+      "code": "query.not_allowed",
+      "kind": "failed",
+      "message": null
+    },
+    "protocol": 5,
+    "records": [],
+    "requestId": "q1",
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "readRecord": {
+    "cursor": null,
+    "key": {
+      "identity": {
+        "id": "e"
+      },
+      "model": "Entry"
+    },
+    "state": {
+      "text": "accepted"
+    }
+  },
+  "readSuccess": {
+    "materialization": "schema1",
+    "outcome": {
+      "kind": "succeeded",
+      "result": {
+        "id": "e",
+        "text": "accepted"
+      }
+    },
+    "protocol": 5,
+    "records": [
+      {
+        "cursor": null,
+        "key": {
+          "identity": {
+            "id": "e"
+          },
+          "model": "Entry"
+        },
+        "state": {
+          "text": "accepted"
+        }
+      }
+    ],
+    "requestId": "f1",
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "rejectedAcknowledgement": {
+    "batchId": 1,
+    "digest": "e1e8ded0a38f66aac623f190ca5cca1de826d326592c73ee140594b795535f56",
+    "materialization": "schema1",
+    "protocol": 5,
+    "results": [
+      {
+        "mutationId": 1,
+        "outcome": {
+          "code": "write.not_allowed",
+          "kind": "rejected",
+          "message": "refused"
+        }
+      }
+    ],
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "removeChange": {
+    "cursor": 30,
+    "key": {
+      "identity": {
+        "id": "removed"
+      },
+      "model": "Entry"
+    },
+    "kind": "remove"
+  },
+  "schemaMaterializationRequest": {
+    "continuation": null,
+    "keys": [],
+    "materialization": "schema1",
+    "models": {
+      "Entry": 2
+    },
+    "owner": {
+      "kind": "schema",
+      "previousMaterialization": "schema0"
+    },
+    "protocol": 5,
+    "requestId": "schema1",
+    "storeId": "store",
+    "stream": "User:a"
+  },
+  "streamTarget": {
+    "cursor": 20,
+    "fallback": {
+      "cursor": null,
+      "key": {
+        "identity": {
+          "id": "e"
+        },
+        "model": "Entry"
+      },
+      "state": {
+        "text": "accepted"
+      }
+    },
+    "key": {
+      "identity": {
+        "id": "e"
+      },
+      "model": "Entry"
+    },
+    "kind": "stream"
+  }
+}

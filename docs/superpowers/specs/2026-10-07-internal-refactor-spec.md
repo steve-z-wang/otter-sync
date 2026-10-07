@@ -129,6 +129,7 @@ type MutationRequest = {
   protocol: 5;
   storeId: string;
   stream: string;
+  materialization: string; // generated/retained descriptor context
   batchId: number;
   digest: string;
   mutations: Array<{
@@ -150,6 +151,8 @@ type MutationRequest = {
 type BatchAcknowledgement = {
   protocol: 5;
   storeId: string;
+  stream: string;
+  materialization: string;
   batchId: number;
   digest: string;
   results: Array<{
@@ -215,25 +218,43 @@ Store ID is carried as authenticated request metadata when needed for durable pr
 
 ```typescript
 type DeltaRequest = {
+  protocol: 5;
+  storeId: string;
+  stream: string;
+  materialization: string;
   after: number;
   through: number;
   bootstrap?: boolean; // default false
-  continuation?: { planId: string; unit: number; part: number };
+  continuation?: { planId: string; digest: string; unit: number; part: number };
 };
 
 type AuthorityChange =
   | { kind: 'record'; key: RecordKey; cursor: number; state: unknown | null }
   | { kind: 'remove'; key: RecordKey; cursor: number };
 
+type MaterializationOwner =
+  | { kind: 'settlement'; batchId: number; mutationId: number }
+  | { kind: 'schema'; previousMaterialization: string };
+
 type DeliveryHeader = {
+  protocol: 5;
+  storeId: string;
   planId: string;
   digest: string;
   stream: string;
   materialization: string;
   bootstrap: boolean;
-  after: number;
-  through: number;
+  after: number | null;
+  through: number | null;
   observedHead: number;
+  expiresAt: number; // Unix milliseconds
+  owner: MaterializationOwner | null;
+  units: Array<{
+    through: number | null;
+    minimumCursor: number | null;
+    digest: string;
+    parts: string[]; // ordered fragment digests
+  }>;
 };
 
 type DeliveryUnit = {
@@ -246,6 +267,51 @@ type DeliveryUnit = {
 Each network fragment names the immutable header, unit index, part index/count and payload digest. Only a complete verified unit can be applied. Empty units prove scanned coverage. A unit with through=null leaves the lane's cursor unchanged. In particular, with S=0 it must not turn a null B into 0 until the final required unit commits.
 
 A materialization request names purpose (`settlement` or `schema`), descriptor context and explicit keys; a schema request can also select newly Bootstrap-marked Model names within the bound Stream. Its immutable response names plan/owner/context and contains authority units without range coverage. It neither enrolls unknown keys nor advances B/C. Schema rematerialization admits equal positions only through the compatible descriptor-generation rules, preserving later local layers. Settlement materialization cannot bypass ordinary duplicate-position checks.
+
+### Shared contract boundary
+
+Task 1 freezes the messages in `axton_core::v05` and
+`fixtures/protocol/0.5.json`. Logical envelopes carry direct `protocol`,
+`storeId`, `stream` and generated/retained `materialization` fields. Handshake
+protocol/Store fields are transport metadata around its stream-only body.
+Store ID is the persistent file lifecycle: reset/fresh-file creation allocates
+a new ID; no separate incarnation is persisted. Authentication independently
+authorizes principal and Stream.
+
+The common header refines the sketch minimally: Bootstrap/Sync have both bounds
+and `owner:null`; materialization has both bounds null, `bootstrap:false`, and
+an owner. Owned units have `through:null`. Ordinary Delta retains optional
+`bootstrap`, default false. Separate materialization requests have request ID,
+owner, keys, optional continuation and selected new Model versions for schema
+work, with no range. Settlement ownership is `(batchId,mutationId)` under the
+Store. Schema ownership names `previousMaterialization`; the envelope names
+the desired context. A schema transfer is admitted while either its previous
+or desired context is active, and rejects unrelated contexts. Only complete
+owned identity coverage enables the desired descriptor.
+
+Unit manifests store optional coverage, minimum record cursor, unit digest and
+ordered fragment digests, without copying payload. Minimum cursor prevents an
+earlier unit's coverage crossing a future uncommitted candidate before its
+pages arrive. Fragment hashes bind unit/part ordinals and payload; plan hash
+binds context, owner, expiry and manifest. Identical fragments are idempotent;
+changed/foreign/expired/future-unit fragments advance nothing. Staging enforces
+its byte bound before mutation. Complete `DeliveryUnit` is the apply boundary.
+
+Query/Fetch share `ReadRequest` (request ID, boolean store mode and strict
+invocation) and `ReadResponse` (success result or definitive error, plus explicit
+null-cursor records). Omitted store means true. Fetch success matches its exact
+snapshot; failure has no records. Opaque application values remain opaque;
+existing descriptor normalization remains mandatory before execution.
+
+Operation paths are exactly `slot` or `slot[index]`: ASCII identifier names,
+canonical zero-based decimal indices, and contiguous Model lists. Omitted
+slots have no operation; explicit null/empty lists have an argument operation.
+Ordered steps may have gaps where device companions were excluded. Model input
+reconstruction merges identity/value without repeated fields; retained core
+descriptors validate slot kinds, versions, bindings and canonical values.
+
+This boundary proves contracts and pure algorithms. It does not adopt the new
+runtime or retire protocol 4, manifests, PublicationGroup or existing storage.
 
 ### Why Bootstrap may contain records newer than S
 

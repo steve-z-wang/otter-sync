@@ -1062,3 +1062,60 @@ fn existing_format5_adds_rejection_acknowledgement_only_after_valid_admission() 
         metadata
     );
 }
+
+#[test]
+fn legacy_drop_retains_own_refusal_until_explicit_acknowledgement() {
+    use axton_client::ClientStore;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db");
+    let mut client = open(&path);
+    let call = client
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"drop","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    client
+        .transaction(|tx| tx.drop_mutation05(call.ordinal))
+        .unwrap();
+    drop(client);
+    let mut store = SqliteStore::open(&path).unwrap();
+    assert_eq!(
+        store
+            .query(
+                "SELECT rejection_acknowledged,rejection_code FROM axton_mutation_queue WHERE id=?",
+                &[json!(call.ordinal)]
+            )
+            .unwrap()
+            .rows,
+        vec![vec![json!(0), json!("dropped")]]
+    );
+    assert!(
+        !store
+            .query(
+                "SELECT * FROM axton_mutation_queue_operation WHERE mutation_id=?",
+                &[json!(call.ordinal)]
+            )
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    drop(store);
+    let mut client = open(&path);
+    let completed = client.call_completion05(&call.call_id).unwrap().unwrap();
+    assert!(
+        matches!(&completed.outcome, axton_client::ActionOutcome::Failed {code,..} if code=="dropped")
+    );
+    client
+        .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+        .unwrap();
+    assert_eq!(
+        client.call_completion05(&call.call_id).unwrap(),
+        Some(completed)
+    );
+    assert!(client.freeze_batch05().unwrap().is_none());
+}

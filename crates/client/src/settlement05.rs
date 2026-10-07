@@ -662,6 +662,12 @@ impl<S: ClientStore> Client<S> {
 }
 impl<S: ClientStore> ClientTransaction<'_, S> {
     pub fn discard_mutation05(&mut self, id: u64) -> Result<ApplyReport> {
+        self.cancel_unsent05(id, true)
+    }
+    pub fn drop_mutation05(&mut self, id: u64) -> Result<ApplyReport> {
+        self.cancel_unsent05(id, false)
+    }
+    fn cancel_unsent05(&mut self, id: u64, acknowledge: bool) -> Result<ApplyReport> {
         self.savepoint(|tx| {
             if tx.local_only {
                 return Err(invalid("cannot discard in authority callback"));
@@ -685,7 +691,9 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
             let report = tx
                 .engine
                 .reject_owned05(BTreeMap::from([(id, ("dropped".into(), None))]))?;
-            tx.engine.acknowledge_rejection05(id)?;
+            if acknowledge {
+                tx.engine.acknowledge_rejection05(id)?;
+            }
             Ok(report)
         })
     }

@@ -948,14 +948,14 @@ fn partial_transfer_retention_is_bounded_and_expiry_clears_keys() {
         let mut q = DeliveryQueue::new(100000, 4);
         q.receive(&f.header, &f.parts[..1], &context, 1).unwrap();
         c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
-        assert!(c.active_delivery_plans05().unwrap().len() <= 32);
+        assert!(c.active_delivery_plans05().unwrap().len() <= 1);
     }
-    assert_eq!(c.active_delivery_plans05().unwrap().len(), 32);
+    assert_eq!(c.active_delivery_plans05().unwrap().len(), 1);
     assert_eq!(c.store_status05().unwrap().cursor, Some(1));
     assert_eq!(
         c.read_sql("SELECT COUNT(*) AS n FROM axton_delivery_key", &[])
             .unwrap()[0]["n"],
-        32
+        1
     );
     assert!(c.cleanup_delivery05(10000).unwrap().is_empty());
     assert_eq!(
@@ -1044,4 +1044,148 @@ fn process_crash_spill_reclaims_without_sweeping_other_clients() {
         .unwrap();
     assert_eq!(status.code(), Some(74));
     assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn offline_needs_never_dispatches_owned_http_and_reconnect_cancels_old_owner() {
+    use axton_client::{
+        runtime::{Event, HttpRoute, Operation},
+        sync05::{Control, StoreReport},
+    };
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = client(&path);
+    c.initialize_stream05(0).unwrap();
+    drop(c);
+    let mut s: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    s["models"][0]["fields"].as_array_mut().unwrap().push(serde_json::json!({"name":"extra","type":{"kind":"scalar","name":"string"},"nullable":true}));
+    let mut c = Client::open05(
+        SqliteStore::open(&path).unwrap(),
+        Schema::from_value(s).unwrap(),
+        "User:u",
+    )
+    .unwrap();
+    let pending = c.pending_schema05().unwrap().unwrap();
+    let mut control = Control::new(c.store_status05().unwrap());
+    control
+        .report(
+            StoreReport::Needs {
+                schema: Some(pending.clone()),
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    assert!(!control.events().iter().any(|e| matches!(
+        e,
+        Event::Effect {
+            operation: Operation::Http {
+                route: HttpRoute::Materialize,
+                ..
+            },
+            ..
+        }
+    )));
+    control.connect().unwrap();
+    control.events();
+    control
+        .report(
+            StoreReport::Needs {
+                schema: Some(pending),
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    let owner = control
+        .events()
+        .into_iter()
+        .find_map(|e| match e {
+            Event::Effect {
+                effect_id,
+                operation:
+                    Operation::Http {
+                        route: HttpRoute::Materialize,
+                        ..
+                    },
+            } => Some(effect_id),
+            _ => None,
+        })
+        .unwrap();
+    control.connect().unwrap();
+    assert!(
+        control
+            .events()
+            .iter()
+            .any(|e| matches!(e,Event::CancelEffect{effect_id} if *effect_id==owner))
+    );
+}
+
+#[test]
+fn repair_continuation_can_replace_near_capacity_future_payload() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let future = plan(context.clone(), "future", 2, 3, false);
+    let repair = fragmented(context.clone(), false);
+    let budget = serde_json::to_vec(&future.parts[0]).unwrap().len()
+        + repair
+            .parts
+            .iter()
+            .map(|p| serde_json::to_vec(p).unwrap().len())
+            .sum::<usize>()
+        - 1;
+    let mut q = DeliveryQueue::with_limits(100000, 4, budget);
+    q.receive(&future.header, &future.parts, &context, 1)
+        .unwrap();
+    q.receive(&repair.header, &repair.parts[..1], &context, 1)
+        .unwrap();
+    assert!(c.apply_next_delivery05(&mut q, 1).unwrap().is_none());
+    assert_eq!(c.store_status05().unwrap().cursor, Some(0));
+    q.receive(&repair.header, &repair.parts[1..], &context, 1)
+        .unwrap();
+    c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+    assert_eq!(c.store_status05().unwrap().cursor, Some(2));
+}
+
+#[test]
+fn background_network_failures_keep_status_during_retry_and_auth_refresh() {
+    use axton_client::{
+        runtime::{Diagnostic, EffectError, EffectOutcome, Event},
+        sync05::Control,
+    };
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    for status in [503, 401] {
+        let mut control = Control::new(c.store_status05().unwrap());
+        control.set_refresh_auth(true);
+        control.connect().unwrap();
+        let id = control
+            .events()
+            .into_iter()
+            .find_map(|e| match e {
+                Event::Effect { effect_id, .. } => Some(effect_id),
+                _ => None,
+            })
+            .unwrap();
+        control
+            .receive(
+                &id,
+                EffectOutcome {
+                    ok: false,
+                    value: None,
+                    error: Some(EffectError {
+                        message: "network failed".into(),
+                        status: Some(status),
+                        refusal: None,
+                        retry: false,
+                    }),
+                },
+                1,
+            )
+            .unwrap();
+        assert!(control.events().iter().any(|e|matches!(e,Event::Report{diagnostic:Diagnostic::Error{status:Some(value),..}} if *value==status)));
+    }
 }

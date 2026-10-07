@@ -101,7 +101,16 @@ impl Control {
         let old = self
             .flights
             .iter()
-            .filter(|(_, f)| matches!(f, Flight::Socket | Flight::Delta(_) | Flight::Handshake(_)))
+            .filter(|(_, f)| {
+                matches!(
+                    f,
+                    Flight::Socket
+                        | Flight::Delta(_)
+                        | Flight::Handshake(_)
+                        | Flight::Owned(_)
+                        | Flight::Push(_)
+                )
+            })
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         for id in old {
@@ -198,6 +207,14 @@ impl Control {
                 && self.refresh_auth
                 && !matches!(flight, Flight::Refresh)
             {
+                if let Some(error) = &outcome.error {
+                    self.events.push(Event::Report {
+                        diagnostic: Diagnostic::Error {
+                            message: error.message.clone(),
+                            status: error.status,
+                        },
+                    });
+                }
                 self.flights.remove(id);
                 self.refresh_waiters.push(flight);
                 if !self.refreshing {
@@ -211,7 +228,10 @@ impl Control {
                 self.refresh_waiters.clear();
             }
             self.flights.remove(id);
-            self.retry(outcome.error.map_or("network failed".into(), |e| e.message));
+            let (message, status) = outcome
+                .error
+                .map_or(("network failed".into(), None), |e| (e.message, e.status));
+            self.retry_status(message, status);
             return Ok(());
         }
         if matches!(flight, Flight::Refresh) {
@@ -375,11 +395,11 @@ impl Control {
         }
     }
     fn retry(&mut self, message: String) {
+        self.retry_status(message, None)
+    }
+    fn retry_status(&mut self, message: String, status: Option<u16>) {
         self.events.push(Event::Report {
-            diagnostic: Diagnostic::Error {
-                message,
-                status: None,
-            },
+            diagnostic: Diagnostic::Error { message, status },
         });
         if self.connected && !self.flights.values().any(|f| matches!(f, Flight::Retry)) {
             self.failures = self.failures.saturating_add(1);
@@ -531,6 +551,9 @@ impl Control {
         self.schedule(now)
     }
     fn owned(&mut self, request: v05::MaterializationRequest) -> Result<()> {
+        if !self.connected || self.paused {
+            return Ok(());
+        }
         if self
             .flights
             .values()

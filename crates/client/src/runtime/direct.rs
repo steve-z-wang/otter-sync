@@ -790,9 +790,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         invocation: crate::v05::ReadInvocation,
         store: &Option<Value>,
     ) -> std::result::Result<(), String> {
-        if self.connection.is_none() {
-            return Err(UNAVAILABLE.into());
-        }
         if self
             .client
             .pending_schema05()
@@ -819,12 +816,32 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     return Err("invoke requires Query".into());
                 }
             }
-            crate::v05::ReadInvocation::Fetch { key, .. } => {
+            crate::v05::ReadInvocation::Fetch { key, version } => {
+                if self
+                    .client
+                    .schema
+                    .result_model(&key.model, *version)
+                    .is_err()
+                    && !self
+                        .client
+                        .schema
+                        .models
+                        .iter()
+                        .any(|m| m.name == key.model && m.version == *version)
+                {
+                    return Err(format!(
+                        "unsupported Fetch Model {} v{}",
+                        key.model, version
+                    ));
+                }
                 self.client
                     .schema
                     .record_key(&key.model, &key.identity)
                     .map_err(|e| e.to_string())?;
             }
+        }
+        if self.connection.is_none() {
+            return Err(UNAVAILABLE.into());
         }
         let request = crate::v05::ReadRequest {
             context: self.client.request_context05().map_err(|e| e.to_string())?,
@@ -898,7 +915,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let (request, response) = match decoded {
             Ok(value) => value,
             Err(error) => {
-                let kind = if fetch {
+                let kind = if fetch
+                    && error
+                        .to_string()
+                        .contains("Fetch result differs from snapshot")
+                {
+                    FETCH_STORE_FAILED
+                } else if fetch {
                     FETCH_INVALID_RESPONSE
                 } else {
                     EXECUTION_UNKNOWN

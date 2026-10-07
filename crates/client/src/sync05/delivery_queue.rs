@@ -238,7 +238,6 @@ impl DeliveryQueue {
         } else {
             0
         };
-        let is_new = existing.is_none();
         // Recoverable future offers may be replaced to admit an earlier
         // prefix, without advancing coverage or disturbing its SQL snapshot.
         let mut candidates: Vec<_> = self
@@ -246,8 +245,7 @@ impl DeliveryQueue {
             .iter()
             .filter_map(|(id, p)| match (header.after, p.header.after) {
                 (Some(after), Some(future))
-                    if is_new
-                        && header.owner.is_none()
+                    if header.owner.is_none()
                         && p.header.owner.is_none()
                         && header.bootstrap == p.header.bootstrap
                         && future > after =>

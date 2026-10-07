@@ -150,15 +150,20 @@ impl<S: ClientStore> Client<S> {
             }else{
                 e.exec("axton_delivery_progress","UPDATE axton_delivery_progress SET next_unit=?,covered=COALESCE(?,covered) WHERE plan_id=?",&[json!(next),unit.through.map_or(Value::Null,Value::from),json!(id)])?;
             }
-            // Only active transfers retain headers/identity keys. Retiring a
-            // partial plan is safe: committed authority and coverage survive,
-            // and control repairs from that prefix using a fresh transfer.
-            e.exec("axton_delivery_key","DELETE FROM axton_delivery_key WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress ORDER BY rowid DESC LIMIT -1 OFFSET 32)",&[])?;
-            e.exec("axton_delivery_progress","DELETE FROM axton_delivery_progress WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress ORDER BY rowid DESC LIMIT -1 OFFSET 32)",&[])?;
+            // Each ordinary coverage lane has one durable active transfer.
+            // Replacing its partial plan preserves authority/coverage; control
+            // drops the retired staging and repairs from the durable prefix.
+            if header.owner.is_none() {
+                e.exec("axton_delivery_key","DELETE FROM axton_delivery_key WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress WHERE plan_id<>? AND json_extract(header,'$.owner') IS NULL AND json_extract(header,'$.bootstrap')=?)",&[json!(id),json!(header.bootstrap)])?;
+                e.exec("axton_delivery_progress","DELETE FROM axton_delivery_progress WHERE plan_id<>? AND json_extract(header,'$.owner') IS NULL AND json_extract(header,'$.bootstrap')=?",&[json!(id),json!(header.bootstrap)])?;
+            }
             Ok((Some(ApplyReport{applied,reports,completions,..Default::default()}),next))
         });
         match applied {
             Ok((report, next)) => {
+                let active = self.active_delivery_plans05()?;
+                q.plans
+                    .retain(|other, p| other == &id || p.next == 0 || active.contains(other));
                 let plan = q.plans.get_mut(&id).unwrap();
                 plan.next = next;
                 plan.parts.retain(|(unit, _), _| *unit >= next);

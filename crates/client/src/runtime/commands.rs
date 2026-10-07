@@ -145,7 +145,7 @@ pub(super) fn execute<S: ClientStore + 'static>(
         }
         Command::Drop { ordinal } => {
             if client.request_context05().is_ok() {
-                json!(client.transaction(|tx| tx.discard_mutation05(*ordinal))?)
+                json!(client.transaction(|tx| tx.drop_mutation05(*ordinal))?)
             } else {
                 json!({"completions":client.drop_action(*ordinal)?})
             }

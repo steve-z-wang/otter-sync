@@ -792,6 +792,13 @@ fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
             return;
         }
     };
+    // The exclusive Store lease makes admission a safe place to retire any
+    // partial transfer whose process died before its expiry timer fired.
+    if let Err(error) = runtime.client().cleanup_delivery05(facts().0) {
+        send(WorkerMessage::Opened(Err(error.to_string())));
+        send(WorkerMessage::Closed);
+        return;
+    }
     let opened = runtime.opened();
     match runtime.client().store_status05() {
         Ok(status) => send(WorkerMessage::Opened(Ok((opened, status)))),

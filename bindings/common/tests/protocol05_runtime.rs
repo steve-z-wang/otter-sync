@@ -937,3 +937,38 @@ fn protocol05_raw_stream_seams_refuse_and_pause_resume_has_no_load_lane() {
     actor::detach(id);
     assert!(actor::wait_closed(id, Duration::from_secs(5)));
 }
+
+#[test]
+fn fetch_wrong_version_and_invalid_store_refuse_before_network() {
+    let d = tempfile::tempdir().unwrap();
+    let id = open(&d.path().join("db"));
+    wait(id);
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"connect","command":{"kind":"connect"}}),
+    )
+    .unwrap();
+    wait(id);
+    for (request, command) in [
+        (
+            "version",
+            json!({"kind":"fetch","model":"Entry","version":99,"identity":{"id":"e"},"store":false}),
+        ),
+        (
+            "store",
+            json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"},"store":{"Entry":false}}),
+        ),
+    ] {
+        actor::submit(
+            id,
+            json!({"type":"task","requestId":request,"command":command}),
+        )
+        .unwrap();
+        let events = wait(id);
+        let e = events.iter().find(|e| e["requestId"] == request).unwrap();
+        assert_eq!(e["details"]["code"], "fetch.invalid_options", "{events:?}");
+        assert!(!events.iter().any(|e| e["operation"]["route"] == "fetch"));
+    }
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
+}

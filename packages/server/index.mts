@@ -1807,18 +1807,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           : host.includes(":")
             ? `[${host}]`
             : host;
-    let closed = false;
+    let closing: Promise<void> | undefined;
     return {
       url: `http://${urlHost}:${actual}`,
-      close: async () => {
-        if (closed) return;
-        closed = true;
-        await live.close();
-        server.closeIdleConnections();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-      },
+      close: () =>
+        (closing ??= (async () => {
+          await live.close();
+          server.closeIdleConnections();
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve())),
+          );
+        })()),
     };
   };
   return { ...api, listen };
@@ -1987,6 +1986,8 @@ function attachLive(
     maxPayload: options.maxPayloadBytes ?? 1_048_576,
   });
   let closing = false;
+  const sessions = new Set<Promise<void>>();
+  const upgrades = new Set<Promise<void>>();
   const refuse = (socket: Duplex, status: number) => {
     socket.end(
       `HTTP/1.1 ${status} ${status === 401 ? "Unauthorized" : "Error"}\r\nConnection: close\r\n\r\n`,
@@ -2002,7 +2003,7 @@ function attachLive(
     );
   };
   const upgrade = (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    void (async () => {
+    const pending = (async () => {
       if (request.url?.split("?")[0] !== "/sync/live") return;
       if (closing) {
         refuse(socket, 503);
@@ -2030,9 +2031,24 @@ function attachLive(
         return;
       }
       sockets.handleUpgrade(request, socket, head, (connection) => {
-        void serveLive(connection, owner!, options.backend, options.onError);
+        const session = serveLive(
+          connection,
+          owner!,
+          options.backend,
+          options.onError,
+        );
+        sessions.add(session);
+        void session.then(
+          () => sessions.delete(session),
+          () => sessions.delete(session),
+        );
       });
     })();
+    upgrades.add(pending);
+    void pending.then(
+      () => upgrades.delete(pending),
+      () => upgrades.delete(pending),
+    );
   };
   server.on("upgrade", upgrade);
   return {
@@ -2042,6 +2058,8 @@ function attachLive(
       server.off("upgrade", upgrade);
       for (const socket of sockets.clients) socket.close(1001, "closing");
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await Promise.all(upgrades);
+      await Promise.all(sessions);
     },
   };
 }
@@ -2059,6 +2077,14 @@ async function serveLive(
   onError?: (error: unknown) => void,
 ): Promise<void> {
   const cleanups: (() => void)[] = [];
+  const pulls = new Set<Promise<void>>();
+  const trackPull = (pull: Promise<void>) => {
+    pulls.add(pull);
+    void pull.then(
+      () => pulls.delete(pull),
+      () => pulls.delete(pull),
+    );
+  };
   let settled = false;
   let handshakeReject: ((error: Error) => void) | undefined;
   const transportError = (error: Error) => {
@@ -2100,16 +2126,20 @@ async function serveLive(
           fail(new Error("v04 pull carrier unavailable"));
           return;
         }
-        backend
-          .pull(owner, action.request)
-          .then((page) => dispatch({ type: "pulled", page }), fail);
+        trackPull(
+          backend
+            .pull(owner, action.request)
+            .then((page) => dispatch({ type: "pulled", page }), fail),
+        );
       } else {
-        backend
-          .pullLive(owner, action.cursors, action.models)
-          .then(
-            (progress) => dispatch({ type: "pulled", page: progress.page }),
-            fail,
-          );
+        trackPull(
+          backend
+            .pullLive(owner, action.cursors, action.models)
+            .then(
+              (progress) => dispatch({ type: "pulled", page: progress.page }),
+              fail,
+            ),
+        );
       }
     }
   };
@@ -2169,5 +2199,8 @@ async function serveLive(
       backend.liveClose(handle);
     }
     for (const cleanup of cleanups) cleanup();
+    // Socket closure stops new work; already admitted database pulls still own
+    // their transaction and must finish before the listener releases its host.
+    await Promise.all(pulls);
   }
 }

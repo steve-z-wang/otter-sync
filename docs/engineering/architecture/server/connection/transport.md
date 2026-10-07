@@ -14,13 +14,13 @@ The server transport terminates HTTP and WebSocket traffic, authenticates and ad
 
 Request handling is a pipeline: `authenticate`, then the application's optional `admit(request, userId)` with the user id or `null` (a refusal answers its own status and body, below), then no identity → `401 unauthenticated`, read the body under the size cap (`413 request_too_large`), parse strict UTF-8 JSON (`400 request.invalid`), call the engine inside a transaction, answer `200` with the engine's JSON. Engine errors map by their code, never by message text ([Bindings](../../sdks/bindings.md)):
 
-| Engine code | Status | Body |
-| --- | --- | --- |
-| `request.invalid` | 400 | `{code}` |
-| `client.owner_mismatch` | 403 | `{code}` |
-| `gap`, `overlap` | 409 | `{code}` |
-| `model_version_unsupported` (pull and live subscribe only) | 409 | `{code, model, version}` |
-| any other code, or a non-engine error | 500 | `{code: "server"}`, and the error goes to `onError` |
+| Engine code                                                | Status | Body                                                |
+| ---------------------------------------------------------- | ------ | --------------------------------------------------- |
+| `request.invalid`                                          | 400    | `{code}`                                            |
+| `client.owner_mismatch`                                    | 403    | `{code}`                                            |
+| `gap`, `overlap`                                           | 409    | `{code}`                                            |
+| `model_version_unsupported` (pull and live subscribe only) | 409    | `{code, model, version}`                            |
+| any other code, or a non-engine error                      | 500    | `{code: "server"}`, and the error goes to `onError` |
 
 A push answers `200` even when one or more mutations are rejected: `mutation_version_unsupported`, `model_version_unsupported`, `handler.failed` and `loader.failed` are per-mutation entries in the receipt's `rejections`, never a status of their own ([Server / Push §9](../engine/push.md#9-architecture-decisions), [#95](https://github.com/zanminwang/axton/issues/95)). A Model Fetch likewise answers `200` with a `failed` completion when its read was rejected, `model_version_unsupported`, `loader.unregistered` and Loader failures included; only a malformed envelope or identity is `400 request.invalid` ([fetch.test.mjs](../../../../../integration/persistence/server/fetch.test.mjs)).
 
@@ -28,7 +28,7 @@ A push answers `200` even when one or more mutations are rejected: `mutation_ver
 
 The live path closes with `1002` when negotiation fails with `request.invalid`, and with `1011` for any other failure (a failed pull, or a controller error such as `live.invalid_page`), which also goes to `onError`. What to pull and send is decided by the Rust controller; `serveLive` only executes its actions ([Controller](controller.md)).
 
-The upgrade path authenticates and admits before accepting the socket and refuses with a raw `401`, `500` (`authenticate` or `admit` threw or answered wrongly), `503` (server closing), or an admission refusal written as a complete HTTP response with its status, JSON body, `Content-Length` and the marker. `close` stops upgrades, closes sockets with `1001`, then closes the server.
+The upgrade path authenticates and admits before accepting the socket and refuses with a raw `401`, `500` (`authenticate` or `admit` threw or answered wrongly), `503` (server closing), or an admission refusal written as a complete HTTP response with its status, JSON body, `Content-Length` and the marker. `close` stops upgrades, closes sockets with `1001`, drains pending upgrade admission callbacks and each admitted Live session and its pending database pulls, then closes the HTTP server. Concurrent `close` calls await the same completion. The application may release its database after that completion; closing a socket alone does not cancel its transaction.
 
 Code: `createHttpHandler`, `attachLive`, `serveLive`, `listen` in [server/index.mts](../../../../../packages/server/index.mts).
 
@@ -45,6 +45,8 @@ One Node process runs the listener, the handlers, the loaders and the native eng
 - **Behind a reverse proxy that forwards HTTP and relays the WebSocket upgrade with headers preserved, push, pull and live work; a proxy that strips `Authorization` is refused.** Evidence: `a reverse proxy forwarding HTTP and the WebSocket upgrade with headers serves push, pull and live; a stripped Authorization header is refused` (an in-process proxy with TCP-level upgrade pass-through). Verified 2026-09-14 by `bash integration/persistence/server/run.sh`.
 
 Verified 2026-09-14: `bash integration/persistence/server/run.sh` passed with the proxy and structured-error tests.
+
+- **Listener close drains admitted Live database work before the application disconnects, for protocol 4 and the retained legacy carrier; concurrent close callers share that drain.** Evidence: [live-shutdown.test.mjs](../../../../../integration/persistence/server/live-shutdown.test.mjs) gates a real Space Loader inside PostgreSQL, closes the real WebSocket, and checks successful query completion before database release. It also covers held negotiation, multiple pending sessions, a rejected pull reaching Reporter, and database-backed upgrade admission after the raw socket is destroyed. Its RED disconnects the fixture’s held backend connection and preserves the resulting Loader/Reporter errors. Ordering uses promise gates and a socket-close event, without timing sleeps.
 
 ## 11. Risks and Technical Debt
 

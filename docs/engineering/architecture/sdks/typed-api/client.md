@@ -34,7 +34,7 @@ Public anonymous mutations, direct Mutation `call`, queued Query `enqueue`, Load
 
 ## 6. Runtime View
 
-A Mutation invocation resolves after local commit; a Call obtained inside an outer transaction remains provisional until that commit. `wait()` before commit refuses promptly with `transaction_uncommitted`; rollback ends the handle with `transaction_rolled_back`. Backend acceptance followed by local apply failure remains accepted-awaiting-settlement. Callback code runs once: retry/reopen replay retained operations, not application code.
+A Mutation invocation resolves after local commit; a Call obtained inside an outer transaction remains provisional until that commit. `wait()` before commit refuses promptly with `transaction_uncommitted`; rollback ends the handle with `transaction_rolled_back`. Callback input encoding errors reject the invocation and roll back its local scope without queuing a Call. Backend acceptance followed by local apply failure remains accepted-awaiting-settlement. Callback code runs once: retry/reopen replay retained operations, not application code.
 
 Query/Fetch use request-level boolean `store`, default true. Results always describe the invocation snapshot. Ordinary returned Model content has `cursor:null`; true writes only where no current Stream content/deletion guard prevents it. A protected no-op succeeds and may return content different from the Store. False installs no Model/authority. Returning a Model does not track it, and missing results do not mean canonical deletion.
 

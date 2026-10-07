@@ -1017,15 +1017,14 @@ class Bridge implements RuntimeHost, ObserverHost, Finalizable {
           companionId: companionId,
         ),
       );
-      Future<Map<String, dynamic>>.sync(() => local(send)).then(
-        (input) => answer(ok: true, input: input),
-        onError: (Object error, StackTrace stack) {
-          route
-            ..thrown = error
-            ..stack = stack;
-          answer(ok: false, error: error.toString());
-        },
-      );
+      Future<Map<String, dynamic>>.sync(() => local(send))
+          .then<void>((input) => answer(ok: true, input: input))
+          .catchError((Object error, StackTrace stack) {
+            route
+              ..thrown = error
+              ..stack = stack;
+            answer(ok: false, error: error.toString());
+          });
     });
   }
 

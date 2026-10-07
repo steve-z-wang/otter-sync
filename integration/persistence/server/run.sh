@@ -19,6 +19,7 @@ node --test "$root/integration/persistence/server/effects.test.mjs" "$root/integ
 test=(node --test --test-timeout=300000 --test-force-exit)
 "${test[@]}" "$root/integration/persistence/server/driver-conformance.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/runtime.test.mjs" "$root/integration/persistence/server/host-contract.test.mjs"
+"${test[@]}" "$root/integration/persistence/server/live-shutdown.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/actions.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/membership.test.mjs"
 "${test[@]}" "$root/integration/persistence/server/loads.test.mjs"

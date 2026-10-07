@@ -274,6 +274,75 @@ void main() {
       expect((await client.syncState())['pending'], 0);
     },
   );
+  for (final invalid in [
+    double.infinity,
+    double.negativeInfinity,
+    double.nan,
+  ]) {
+    test(
+      'unencodable callback input ($invalid) rejects and rolls back',
+      () async {
+        await client.close();
+        final entry = (schema['models'] as List).single as Map;
+        (entry['fields'] as List).add({
+          'name': 'score',
+          'nullable': true,
+          'type': {'kind': 'scalar', 'name': 'float'},
+        });
+        client = await open('encoding');
+        await client.direct(create('e', 'before'));
+        await expectLater(
+          client
+              .transaction((tx) async {
+                await tx.direct(update('outer change'));
+                await publish(
+                  tx,
+                  'p',
+                  callback: (local) async {
+                    await local.direct(create('companion', 'temporary'));
+                    return {
+                      'entry': {
+                        'id': 'p',
+                        'text': 'published',
+                        'note': null,
+                        'score': invalid,
+                      },
+                    };
+                  },
+                );
+              })
+              .timeout(const Duration(seconds: 1)),
+          throwsA(isA<JsonUnsupportedObjectError>()),
+        );
+        expect(await text(), 'before');
+        expect(await text('companion'), isNull);
+        expect(await text('p'), isNull);
+        expect((await client.syncState())['pending'], 0);
+        // The failed callback releases the runtime's transaction; a valid
+        // submission still commits its own input and companion normally.
+        await client.submitMutation<void>(
+          'Publish',
+          1,
+          null,
+          (_) {},
+          input: (local) async {
+            await local.direct(create('kept', 'local'));
+            return input('p');
+          },
+        );
+        expect(await text('p'), 'published');
+        expect(await text('kept'), 'local');
+        expect((await client.syncState())['pending'], 1);
+        await client.close();
+        client = await open('encoding');
+        expect(await text(), 'before');
+        expect(await text('companion'), isNull);
+        expect(await text('kept'), 'local');
+        expect((await client.syncState())['pending'], 1);
+      },
+    );
+  }
+
   test(
     'several named calls commit together and stay independently durable',
     () async {

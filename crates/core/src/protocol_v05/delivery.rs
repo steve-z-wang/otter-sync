@@ -90,11 +90,8 @@ pub fn plan_units(
     let mut covered = after;
     let mut units = Vec::new();
     for (index, group) in groups.iter().enumerate() {
-        let next = groups[index + 1..]
-            .iter()
-            .flatten()
-            .map(AuthorityChange::cursor)
-            .min();
+        // Components are ordered by their first (minimum-cursor) record.
+        let next = groups.get(index + 1).map(|next| next[0].cursor());
         let boundary = if let Some(next) = next {
             through
                 .checked_sub(1)
@@ -426,6 +423,13 @@ impl Validate for DeliveryHeader {
             }
             _ => return Err(invalid("range/owner mismatch")),
         }
+        let mut suffix_minima = vec![None; self.units.len() + 1];
+        for (index, unit) in self.units.iter().enumerate().rev() {
+            suffix_minima[index] = match (unit.minimum_cursor, suffix_minima[index + 1]) {
+                (Some(cursor), Some(later)) => Some(cursor.min(later)),
+                (minimum, None) | (None, minimum) => minimum,
+            };
+        }
         let mut covered = self.after;
         for (index, unit) in self.units.iter().enumerate() {
             digest(&unit.digest)?;
@@ -446,10 +450,7 @@ impl Validate for DeliveryHeader {
                 if covered.is_none_or(|covered| through < covered)
                     || self.through.is_none_or(|end| through > end)
                     || (index + 1 < self.units.len() && Some(through) == self.through)
-                    || self.units[index + 1..]
-                        .iter()
-                        .filter_map(|u| u.minimum_cursor)
-                        .any(|cursor| cursor <= through)
+                    || suffix_minima[index + 1].is_some_and(|cursor| cursor <= through)
                 {
                     return Err(invalid("invalid unit coverage"));
                 }

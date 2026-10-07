@@ -496,3 +496,48 @@ fn a15_one_publication_position_per_affected_stream_and_overflow_is_atomic() {
     assert!(publication_positions(&overflow, &affected).is_err());
     assert_eq!(overflow["User:b"], 20);
 }
+
+#[test]
+fn many_independent_units_preserve_ordered_coverage_and_ahead_barrier() {
+    let count = 256usize;
+    let head = (count * 3) as u64;
+    let changes: Vec<_> = (0..count)
+        .rev()
+        .map(|index| {
+            record(
+                "Independent",
+                &index.to_string(),
+                ((index + 1) * 3) as u64,
+                json!({"index":index}),
+            )
+        })
+        .collect();
+    for through in [40, head] {
+        let units = plan(changes.clone(), 0, through, head, &[], &[]);
+        assert_eq!(units.len(), count);
+        for (index, unit) in units.iter().enumerate() {
+            assert_eq!(unit.index, index as u64);
+            assert_eq!(unit.changes.len(), 1);
+            assert_eq!(unit.changes[0].cursor(), ((index + 1) * 3) as u64);
+            let expected = if index + 1 == count {
+                Some(through)
+            } else if through == head {
+                Some(((index + 2) * 3 - 1) as u64)
+            } else if index < 13 {
+                Some((((index + 2) * 3 - 1) as u64).min(39))
+            } else {
+                None
+            };
+            assert_eq!(unit.through, expected, "coverage at unit {index}");
+        }
+        let frozen = freeze(units.clone(), DeliveryPurpose::Sync, 0, through, head, 1);
+        validate_delivery(&frozen.header, &units).unwrap();
+        let mut invalid = frozen.header;
+        invalid.units[128].minimum_cursor = Some(1);
+        invalid.digest = delivery_digest(&invalid).unwrap();
+        assert!(
+            invalid.validate().is_err(),
+            "a late low cursor crossed committed coverage"
+        );
+    }
+}

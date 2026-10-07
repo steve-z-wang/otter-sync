@@ -17,14 +17,14 @@
 //! its writes become the call's companions - and its end answers the
 //! submission without committing or closing the transaction.
 use super::*;
-use crate::{ClientStore, PreparedStore, StoreChange, StoreDelivery, StoreResult, SubmittedCall};
+use crate::{ClientStore, SubmittedCall};
 use std::collections::VecDeque;
 
 const INVALID_SCOPE: &str = "invalid transaction scope";
 const CLOSED: &str = "transaction_closed";
-/// A command the active capability does not admit: the parent's handle
-/// while a local callback runs, a companion token that names no running
-/// local callback, or anything but a local read or write from one.
+// A command the active capability does not admit: the parent's handle
+// while a local callback runs, a companion token that names no running
+// local callback, or anything but a local read or write from one.
 const CAPABILITY: &str = "invalid transaction capability";
 const UNAWAITED: &str = "unawaited transaction operation";
 
@@ -32,45 +32,44 @@ pub(super) struct Transaction {
     pub(super) owner: TransactionOwner,
     transaction_id: String,
     effect_id: String,
-    /// Open savepoints, innermost last.
+    // Open savepoints, innermost last.
     scopes: Vec<Scope>,
-    /// The first engine failure not cleared by a savepoint rollback.
+    // The first engine failure not cleared by a savepoint rollback.
     failure: Option<String>,
-    /// The first wrong-scope command; it always rolls the unit back.
+    // The first wrong-scope command; it always rolls the unit back.
     structural: Option<String>,
-    /// The callback's result, once it arrived: `(ok, error)`.
+    // The callback's result, once it arrived: `(ok, error)`.
     finishing: Option<(bool, Option<String>)>,
-    /// Submitted commands of the callback, in order.
+    // Submitted commands of the callback, in order.
     pub(super) lane: VecDeque<Continuation>,
-    current_model: Option<String>,
-    /// The Mutation local callback running inside the transaction.
+    // The Mutation local callback running inside the transaction.
     pub(super) local: Option<LocalCallback>,
-    /// The calls submitted in the transaction and not rolled back, in
-    /// order: provisional until the commit.
+    // The calls submitted in the transaction and not rolled back, in
+    // order: provisional until the commit.
     pub(super) calls: Vec<String>,
-    /// What the transaction's resolutions of unsent work announce once it
-    /// commits, in order ([#205](https://github.com/zanminwang/axton/issues/205)).
+    // What the transaction's resolutions of unsent work announce once it
+    // commits, in order ([#205](https://github.com/zanminwang/axton/issues/205)).
     pub(super) resolved: Vec<Resolved>,
 }
-/// One announcement a resolution made in a transaction defers to its commit.
+// One announcement a resolution made in a transaction defers to its commit.
 pub(super) enum Resolved {
-    /// A discarded Call, or a dependent refused with it, completed.
+    // A discarded Call, or a dependent refused with it, completed.
     Completed(crate::CallCompletion),
-    /// A task was made pending: its backoff is over.
+    // A task was made pending: its backoff is over.
     Retried(String),
 }
-/// One running Mutation local callback: the restricted capability its
-/// token admits and the submission waiting for its end.
+// One running Mutation local callback: the restricted capability its
+// token admits and the submission waiting for its end.
 pub(super) struct LocalCallback {
     companion_id: String,
     effect_id: String,
-    /// The `submitMutation` command answered at its end.
+    // The `submitMutation` command answered at its end.
     pub(super) request_id: String,
     call: SubmittedCall,
     deferred: Option<DeferredMutation>,
-    /// The first failure of its own commands.
+    // The first failure of its own commands.
     failure: Option<String>,
-    /// Its result includes the input returned after the local callback.
+    // Its result includes the input returned after the local callback.
     finishing: Option<(bool, Option<String>, Option<Value>)>,
 }
 struct DeferredMutation {
@@ -89,7 +88,6 @@ impl Transaction {
             structural: None,
             finishing: None,
             lane: VecDeque::new(),
-            current_model: None,
             local: None,
             calls: vec![],
             resolved: vec![],
@@ -97,141 +95,18 @@ impl Transaction {
     }
 }
 pub(super) enum TransactionOwner {
-    Application {
-        request_id: String,
-    },
-    Authority {
-        prepared: Box<PreparedStore>,
-        continuation: StoreContinuation,
-        pending: VecDeque<(String, Vec<StoreChange>)>,
-    },
+    Application { request_id: String },
 }
-pub(super) enum StoreContinuation {
-    Ack {
-        request_id: String,
-    },
-    Pull {
-        request_id: String,
-    },
-    Direct {
-        request_id: String,
-    },
-    /// A Model Fetch's single-record delivery.
-    Fetch {
-        request_id: String,
-    },
-    Push,
-    Downlink {
-        token: crate::downlink_worker::StoreToken,
-    },
-    /// One page of the Load worker's `batch`.
-    Load {
-        batch: u64,
-        sent: crate::LoadSent,
-    },
-}
-impl StoreContinuation {
-    fn path(&self) -> &'static str {
-        match self {
-            Self::Ack { .. } | Self::Push => "receipt",
-            Self::Pull { .. } => "pull",
-            Self::Direct { .. } => "direct",
-            Self::Fetch { .. } => "fetch",
-            Self::Downlink { token } => token.path(),
-            Self::Load { .. } => "load",
-        }
-    }
-    /// The delivery failed. `callback` names the store hook effect when a
-    /// hook refused it, `model` that hook's Model, and `identities` the
-    /// records the hook was handed (a Load page keeps them as diagnostics).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn fail<S: ClientStore + 'static>(
-        self,
-        runtime: &mut ClientRuntime<S>,
-        error: String,
-        callback: Option<&str>,
-        model: Option<&str>,
-        identities: &[Value],
-        now: u64,
-        entropy: u64,
-    ) {
-        let path = self.path();
-        if let Some(model) = model {
-            runtime.report(Diagnostic::StoreHook {
-                code: "store_hook_failed".into(),
-                model: model.into(),
-                path: path.into(),
-                message: error.clone(),
-                callback_effect_id: callback.map(str::to_string),
-            });
-        }
-        match self {
-            Self::Ack { request_id } | Self::Pull { request_id } => {
-                if let Some(effect_id) = callback {
-                    runtime.fail(request_id, error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
-                } else {
-                    runtime.complete(request_id, Err(error));
-                }
-            }
-            Self::Direct { request_id } => {
-                if let Some(effect_id) = callback {
-                    runtime.fail_direct(&request_id, &error, json!({"code":"store_hook_failed","model":model,"path":path,"callbackEffectId":effect_id}));
-                } else {
-                    runtime.fail_direct(
-                        &request_id,
-                        direct::EXECUTION_UNKNOWN,
-                        direct::transport_failure(&EffectError {
-                            message: error,
-                            status: None,
-                            refusal: None,
-                            retry: false,
-                        }),
-                    );
-                }
-            }
-            // A read claims nothing about side effects: the refused store is
-            // the cause, with the hook's callback when one refused it.
-            Self::Fetch { request_id } => {
-                let mut details = json!({"code": direct::FETCH_STORE_FAILED, "message": error});
-                if let Some(effect_id) = callback {
-                    details["model"] = json!(model);
-                    details["path"] = json!(path);
-                    details["callbackEffectId"] = json!(effect_id);
-                }
-                runtime.fail_direct(&request_id, direct::FETCH_STORE_FAILED, details);
-            }
-            Self::Push => {
-                if callback.is_none() {
-                    runtime.error(error);
-                }
-                runtime.push_failed(now, entropy);
-            }
-            Self::Downlink { token } => {
-                runtime.downlink_store_failed(token, error, callback.is_some(), now, entropy)
-            }
-            // The page rolled back: a hook failure is terminal, any other
-            // failure retries the same call. The next Load unit records it.
-            Self::Load { batch, sent } => {
-                let failure = match (callback, model) {
-                    (Some(_), Some(model)) => {
-                        crate::LoadFailure::hook_failed(model, identities, error)
-                    }
-                    _ => crate::LoadFailure::local_retry(error),
-                };
-                runtime.requeue_load(batch, sent, failure);
-            }
-        }
-    }
-}
+
 struct Scope {
     token: String,
-    /// `failure` when the savepoint opened: what a rollback restores.
+    // `failure` when the savepoint opened: what a rollback restores.
     failure: Option<String>,
-    /// How many calls were submitted before it opened: a rollback turns the
-    /// later ones `rolledBack`.
+    // How many calls were submitted before it opened: a rollback turns the
+    // later ones `rolledBack`.
     calls: usize,
-    /// How many resolutions were made before it opened: a rollback forgets
-    /// the later ones.
+    // How many resolutions were made before it opened: a rollback forgets
+    // the later ones.
     resolved: usize,
 }
 pub(super) struct Continuation {
@@ -241,7 +116,7 @@ pub(super) struct Continuation {
     pub(super) companion_id: Option<String>,
     pub(super) command: TransactionCommand,
 }
-/// What a Mutation local callback may do: read, and write local companions.
+// What a Mutation local callback may do: read, and write local companions.
 fn local_command(command: &TransactionCommand) -> bool {
     matches!(
         command,
@@ -257,8 +132,8 @@ fn local_command(command: &TransactionCommand) -> bool {
 }
 
 impl<S: ClientStore + 'static> ClientRuntime<S> {
-    /// Run a `transaction` task: open the session, issue its capability and
-    /// ask the host for the callback. The task parks until the result.
+    // Run a `transaction` task: open the session, issue its capability and
+    // ask the host for the callback. The task parks until the result.
     pub(super) fn open_transaction(&mut self, request_id: String) {
         let issued = self.issue().and_then(|transaction| {
             self.issue()
@@ -286,130 +161,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             effect_id,
         ));
     }
-    pub(super) fn has_store_hook_candidate(&self, models: impl Iterator<Item = String>) -> bool {
-        self.client.store_hooks_active()
-            && models
-                .into_iter()
-                .any(|model| self.store_hooks.contains(&model))
-    }
-    /// Discard authority state if it still owns a logical session, then report
-    /// any physical rollback failure once. A failed physical rollback closes
-    /// the runtime before its queued work can touch the uncertain connection.
-    pub(super) fn abort_authority_session(&mut self) {
-        if self.client.session_active() {
-            let _ = self.client.rollback_session();
-        }
-        if let Some(error) = self.client.take_physical_rollback_failure() {
-            self.error(format!("authority rollback failed: {error}"));
-            self.lifecycle = Lifecycle::Closing;
-        }
-    }
-    pub(super) fn open_store(
-        &mut self,
-        delivery: StoreDelivery,
-        continuation: StoreContinuation,
-        now: u64,
-        entropy: u64,
-    ) {
-        if let Err(error) = self.client.begin_session() {
-            continuation.fail(self, error.to_string(), None, None, &[], now, entropy);
-            return;
-        }
-        let prepared = match self.client.prepare_store(delivery) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.abort_authority_session();
-                continuation.fail(self, error.to_string(), None, None, &[], now, entropy);
-                return;
-            }
-        };
-        // A Load page with a record that cannot be applied is refused before
-        // any hook runs; nothing of it is kept.
-        if let Some(refusal) = prepared.load_refusal().cloned() {
-            let reports = prepared.load_refusal_reports().to_vec();
-            self.abort_authority_session();
-            // The application hears which records refused the page, as for
-            // every other delivery; the job keeps their bounded summary.
-            if !reports.is_empty() {
-                self.report(Diagnostic::Records { reports });
-            }
-            match continuation {
-                StoreContinuation::Load { batch, sent } => self.requeue_load(batch, sent, refusal),
-                continuation => continuation.fail(
-                    self,
-                    "a refused Load page cannot be stored".into(),
-                    None,
-                    None,
-                    &[],
-                    now,
-                    entropy,
-                ),
-            }
-            return;
-        }
-        let pending: VecDeque<_> = prepared
-            .changes()
-            .iter()
-            .filter(|(model, changes)| self.store_hooks.contains(*model) && !changes.is_empty())
-            .map(|(model, changes)| (model.clone(), changes.clone()))
-            .collect();
-        if pending.is_empty() {
-            self.finish_store_owner(prepared, continuation, now, entropy);
-            return;
-        }
-        let transaction_id = match self.issue() {
-            Ok(id) => self.capability_token("tx", id),
-            Err(error) => {
-                self.abort_authority_session();
-                continuation.fail(self, error, None, None, &[], now, entropy);
-                return;
-            }
-        };
-        let effect_id = match self.issue() {
-            Ok(id) => id.to_string(),
-            Err(error) => {
-                self.abort_authority_session();
-                continuation.fail(self, error, None, None, &[], now, entropy);
-                return;
-            }
-        };
-        self.transaction = Some(Transaction::new(
-            TransactionOwner::Authority {
-                prepared: Box::new(prepared),
-                continuation,
-                pending,
-            },
-            transaction_id,
-            effect_id,
-        ));
-        self.emit_next_store_callback();
-    }
-    fn emit_next_store_callback(&mut self) {
-        let Some(open) = &mut self.transaction else {
-            return;
-        };
-        let TransactionOwner::Authority { pending, .. } = &mut open.owner else {
-            return;
-        };
-        let Some((model, changes)) = pending.pop_front() else {
-            return;
-        };
-        open.current_model = Some(model.clone());
-        let effect_id = open.effect_id.clone();
-        self.effects
-            .insert(effect_id.clone(), effects::EffectKind::Callback);
-        self.events.push(Event::Effect {
-            effect_id,
-            operation: Operation::StoreCallback {
-                transaction_id: open.transaction_id.clone(),
-                model,
-                changes,
-            },
-        });
-    }
-    /// Admit one command of the callback: onto the lane when it names the
-    /// open transaction and the result has not arrived, otherwise closed at
-    /// once.
+
+    // Admit one command of the callback: onto the lane when it names the
+    // open transaction and the result has not arrived, otherwise closed at
+    // once.
     pub(super) fn continue_transaction(&mut self, command: Continuation) {
         match &mut self.transaction {
             Some(open)
@@ -420,9 +175,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             _ => self.complete(command.request_id, Err(CLOSED.into())),
         }
     }
-    /// Record the callback's result when it names the open transaction and
-    /// its callback effect - or, with a companion token, the running local
-    /// callback's effect and token; anything else is stale and ignored.
+    // Record the callback's result when it names the open transaction and
+    // its callback effect - or, with a companion token, the running local
+    // callback's effect and token; anything else is stale and ignored.
     pub(super) fn callback_result(
         &mut self,
         effect_id: &str,
@@ -455,8 +210,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
         }
     }
-    /// One unit of the open transaction: its finish once the result arrived,
-    /// else one command of its lane. False while it waits on the callback.
+    // One unit of the open transaction: its finish once the result arrived,
+    // else one command of its lane. False while it waits on the callback.
     pub(super) fn step_transaction(&mut self, now: u64, entropy: u64) -> bool {
         let Some(open) = &mut self.transaction else {
             return false;
@@ -478,9 +233,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
         true
     }
-    /// Run one command inside the session under the scope and capability
-    /// rules, keeping the failure accounting. `None` while the command waits
-    /// for the local callback it started.
+    // Run one command inside the session under the scope and capability
+    // rules, keeping the failure accounting. `None` while the command waits
+    // for the local callback it started.
     fn run_command(
         &mut self,
         command: &Continuation,
@@ -525,7 +280,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
             return Some(Err(INVALID_SCOPE.into()));
         }
-        let authority = matches!(open.owner, TransactionOwner::Authority { .. });
         let outcome = match &command.command {
             TransactionCommand::Savepoint => self.savepoint().map(Some),
             TransactionCommand::Release { .. } => {
@@ -549,13 +303,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     })
                 }
             },
-            TransactionCommand::Enqueue { .. } if authority => {
-                Err(crate::invalid("store hook cannot enqueue"))
-            }
-            // onStore stays local-only: refused by its owner, not by decoding.
-            TransactionCommand::SubmitMutation { .. } if authority => {
-                Err(crate::invalid(crate::STORE_HOOK_SUBMIT))
-            }
             TransactionCommand::SubmitMutation {
                 name,
                 version,
@@ -575,7 +322,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     .is_some_and(|local| local.deferred.is_some())
                 {
                     self.client
-                        .session(|tx| tx.preview_callback04(operation.clone()))
+                        .session(|tx| tx.preview_callback(operation.clone()))
                         .map(|operations| {
                             self.transaction
                                 .as_mut()
@@ -623,11 +370,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             }
         }
     }
-    /// `submitMutation`: write the call into the session. Without `local`
-    /// it answers at once; with it, the local callback's effect is issued
-    /// and the answer waits for that callback's end (`None`). Nothing runs
-    /// between the call's write and its callback: every other command is
-    /// refused while the callback runs, and nothing else can take the writer.
+    // `submitMutation`: write the call into the session. Without `local`
+    // it answers at once; with it, the local callback's effect is issued
+    // and the answer waits for that callback's end (`None`). Nothing runs
+    // between the call's write and its callback: every other command is
+    // refused while the callback runs, and nothing else can take the writer.
     fn submit_mutation(
         &mut self,
         request_id: &str,
@@ -646,7 +393,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 ));
             }
         };
-        let bound = self.protocol05 || self.client.request_context().is_ok();
+        let bound = true;
         if bound && store.is_some() {
             return Err(crate::invalid("Mutation does not accept store"));
         }
@@ -669,14 +416,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 ordinal: 0,
             }
         } else {
-            let options = commands::options(store)?;
-            self.client.session(|tx| {
-                if self.protocol05 {
-                    tx.submit_mutation05(name, version, args.clone(), vec![])
-                } else {
-                    tx.submit_mutation(name, version, args.clone(), options)
-                }
-            })?
+            self.client
+                .session(|tx| tx.submit_mutation05(name, version, args.clone(), vec![]))?
         };
         if !local {
             let answer = submission(&call);
@@ -713,10 +454,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         });
         Ok(None)
     }
-    /// The local callback ended: its commands still queued were not awaited,
-    /// and its submission is answered - with the call, which is then
-    /// provisional like any other, or with the first failure, which poisons
-    /// the transaction. The parent's capability is back either way.
+    // The local callback ended: its commands still queued were not awaited,
+    // and its submission is answered - with the call, which is then
+    // provisional like any other, or with the first failure, which poisons
+    // the transaction. The parent's capability is back either way.
     fn finish_local(&mut self, ok: bool, error: Option<String>, input: Option<Value>) {
         let Some(open) = &mut self.transaction else {
             return;
@@ -747,21 +488,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     .ok_or_else(|| crate::invalid("Mutation callback must return input"))
                     .and_then(|input| {
                         self.client.session(|tx| {
-                            if self.protocol05 {
-                                tx.submit_mutation05(
-                                    &deferred.name,
-                                    deferred.version,
-                                    input,
-                                    deferred.operations,
-                                )
-                            } else {
-                                tx.submit_mutation_companions_first04(
-                                    &deferred.name,
-                                    deferred.version,
-                                    input,
-                                    deferred.operations,
-                                )
-                            }
+                            tx.submit_mutation05(
+                                &deferred.name,
+                                deferred.version,
+                                input,
+                                deferred.operations,
+                            )
                         })
                     });
                 match submitted {
@@ -788,7 +520,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         };
         self.complete(local.request_id, outcome);
     }
-    /// Announce where provisional calls went.
+    // Announce where provisional calls went.
     pub(super) fn call_transitions(&mut self, calls: Vec<String>, state: CallTransition) {
         for call_id in calls {
             self.events
@@ -812,18 +544,18 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
         Ok(json!({ "scope": token }))
     }
-    /// Pop the top scope - the client pops its savepoint name before the
-    /// store call can fail, so the stacks stay aligned - and answer the
-    /// failure it opened under and the calls submitted and resolutions made
-    /// before it.
+    // Pop the top scope - the client pops its savepoint name before the
+    // store call can fail, so the stacks stay aligned - and answer the
+    // failure it opened under and the calls submitted and resolutions made
+    // before it.
     fn pop_scope(&mut self) -> Option<(Option<String>, usize, usize)> {
         self.transaction
             .as_mut()
             .and_then(|open| open.scopes.pop())
             .map(|scope| (scope.failure, scope.calls, scope.resolved))
     }
-    /// Commit or roll back once the callback finished, then settle its
-    /// unawaited commands and the parent task.
+    // Commit or roll back once the callback finished, then settle its
+    // unawaited commands and the parent task.
     fn finish_transaction(&mut self, ok: bool, error: Option<String>, now: u64, entropy: u64) {
         let Some(mut open) = self.transaction.take() else {
             return;
@@ -853,71 +585,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         for command in open.lane {
             self.complete(command.request_id, Err(CLOSED.into()));
         }
-        if matches!(open.owner, TransactionOwner::Authority { .. }) {
-            if let Some(refusal) = refusal {
-                self.abort_authority_session();
-                if let TransactionOwner::Authority {
-                    continuation,
-                    prepared,
-                    ..
-                } = open.owner
-                {
-                    let identities =
-                        loads::hook_identities(&prepared, open.current_model.as_deref());
-                    continuation.fail(
-                        self,
-                        refusal,
-                        Some(&open.effect_id),
-                        open.current_model.as_deref(),
-                        &identities,
-                        now,
-                        entropy,
-                    );
-                }
-            } else if let TransactionOwner::Authority {
-                prepared,
-                continuation,
-                pending,
-            } = open.owner
-            {
-                if !pending.is_empty() {
-                    let transaction_id = self.issue().map(|id| self.capability_token("tx", id));
-                    let effect_id = self.issue().map(|id| id.to_string());
-                    match (transaction_id, effect_id) {
-                        (Ok(transaction_id), Ok(effect_id)) => {
-                            self.transaction = Some(Transaction::new(
-                                TransactionOwner::Authority {
-                                    prepared,
-                                    continuation,
-                                    pending,
-                                },
-                                transaction_id,
-                                effect_id,
-                            ));
-                            self.emit_next_store_callback();
-                        }
-                        _ => {
-                            self.abort_authority_session();
-                            continuation.fail(
-                                self,
-                                "runtime identifiers exhausted".into(),
-                                None,
-                                None,
-                                &[],
-                                now,
-                                entropy,
-                            );
-                        }
-                    }
-                } else {
-                    self.finish_store_owner(*prepared, continuation, now, entropy);
-                }
-            }
-            return;
-        }
-        let TransactionOwner::Application { request_id } = open.owner else {
-            unreachable!()
-        };
+        let TransactionOwner::Application { request_id } = open.owner;
         let outcome = match refusal {
             Some(refusal) => {
                 if let Err(e) = self.client.rollback_session() {
@@ -952,102 +620,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         };
         self.complete(request_id, outcome);
     }
-    fn finish_store_owner(
-        &mut self,
-        prepared: PreparedStore,
-        continuation: StoreContinuation,
-        now: u64,
-        entropy: u64,
-    ) {
-        let generation = self.client.generation();
-        let result = self
-            .client
-            .apply_prepared_store(prepared)
-            .and_then(|result| {
-                let value = match &result {
-                    StoreResult::Page(report) | StoreResult::Receipt(report) => {
-                        serde_json::to_value(report)?
-                    }
-                    StoreResult::Direct(_)
-                    | StoreResult::Fetch(_)
-                    | StoreResult::Bootstrap(_)
-                    | StoreResult::Load(_) => Value::Null,
-                };
-                // A Load page is committed only when it applied: one whose job
-                // moved on wrote nothing, and a refused one must keep nothing.
-                if matches!(
-                    result,
-                    StoreResult::Load(crate::LoadApply::Stale | crate::LoadApply::Refused { .. })
-                ) {
-                    self.client.rollback_session()?;
-                } else {
-                    self.client.commit_session()?;
-                }
-                Ok((value, result))
-            });
-        if result.is_err() {
-            self.abort_authority_session();
-        }
-        self.committed_since(generation);
-        // A Load page changes no queue, Scope or cursor: the lanes have
-        // nothing new to look at.
-        if self.client.generation() != generation
-            && !matches!(continuation, StoreContinuation::Load { .. })
-        {
-            self.wake_lanes(now, entropy);
-        }
-        match result {
-            Ok((_, StoreResult::Load(apply))) => match continuation {
-                StoreContinuation::Load { batch, sent } => self.load_stored(batch, sent, apply),
-                continuation => continuation.fail(
-                    self,
-                    "a Load page answered another delivery".into(),
-                    None,
-                    None,
-                    &[],
-                    now,
-                    entropy,
-                ),
-            },
-            Ok((_, StoreResult::Direct(report))) => {
-                if let StoreContinuation::Direct { request_id } = continuation {
-                    self.finish_direct_store(request_id, report);
-                } else {
-                    unreachable!()
-                }
-            }
-            Ok((_, StoreResult::Fetch(report))) => {
-                if let StoreContinuation::Fetch { request_id } = continuation {
-                    self.finish_fetch(request_id, report);
-                } else {
-                    unreachable!()
-                }
-            }
-            Ok((_, StoreResult::Receipt(report)))
-                if matches!(continuation, StoreContinuation::Push) =>
-            {
-                self.push_store_committed(report);
-            }
-            Ok((_, result)) if matches!(continuation, StoreContinuation::Downlink { .. }) => {
-                if let StoreContinuation::Downlink { token } = continuation {
-                    self.lanes.downlink.store_committed(token, result);
-                    if let Some(connection) = &mut self.connection {
-                        connection.downlink.dirty = true;
-                    }
-                }
-            }
-            Ok((value, _)) => match continuation {
-                StoreContinuation::Ack { request_id } | StoreContinuation::Pull { request_id } => {
-                    self.seam_completions(&value);
-                    self.complete(request_id, Ok(value));
-                }
-                _ => unreachable!(),
-            },
-            Err(error) => continuation.fail(self, error.to_string(), None, None, &[], now, entropy),
-        }
-    }
 }
-/// What a submission answers: the durable call identity and its ordinal.
+// What a submission answers: the durable call identity and its ordinal.
 fn submission(call: &SubmittedCall) -> Value {
     json!({"callId": call.call_id, "ordinal": call.ordinal})
 }

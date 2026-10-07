@@ -64,7 +64,6 @@ export interface Subscription {
    * retries the saved run.
    */
   bootstrap(): Promise<void>;
-  unsubscribe(): Promise<void>;
 }
 /** Work attempted through a handle that is closed: unsubscribed, or stopped with its client. */
 export const subscriptionClosed = () =>
@@ -151,7 +150,6 @@ class Handle implements Subscription {
    */
   #closed: "removed" | "stopped" | undefined;
   /** This handle submitted its own removal: the terminal snapshot is that. */
-  #removing = false;
   #listeners = new Set<(status: SubscriptionStatus) => void>();
   constructor(
     state: SubscriptionState,
@@ -191,7 +189,7 @@ class Handle implements Subscription {
     this.#publish(
       frozen(snapshot.status),
       snapshot.closed === true
-        ? this.#removing || !this.#registry.closing
+        ? !this.#registry.closing
           ? "removed"
           : "stopped"
         : undefined,
@@ -254,17 +252,7 @@ class Handle implements Subscription {
         },
       );
   }
-  /** Resolves once the runtime's terminal snapshot closed this handle. */
-  async unsubscribe(): Promise<void> {
-    if (this.#closed === "removed") return;
-    if (this.#closed === "stopped") throw subscriptionClosed();
-    this.#removing = true;
-    await this.#bridge.task({
-      kind: "streamUnsubscribe",
-      stream: this.stream,
-      subscriptionId: this.subscriptionId,
-    });
-  }
+
 }
 
 /**
@@ -313,18 +301,6 @@ export class Subscriptions {
       },
     );
     return handle;
-  }
-  /**
-   * Remove whatever registration a Stream name has. One command, so a removal and a
-   * registration of the same Stream commit in the order they were called in;
-   * the runtime closes the handle it had before the command completes.
-   */
-  async unsubscribeStream(stream: string): Promise<void> {
-    await this.#bridge.task({
-      kind: "stream",
-      stream: stream,
-      subscribed: false,
-    });
   }
   /** A handle the runtime closed is no longer the identity's handle. */
   forget(handle: Handle): void {

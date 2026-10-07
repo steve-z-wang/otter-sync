@@ -24,10 +24,8 @@ CREATE INDEX axton_queue_operation_record ON axton_mutation_queue_operation(mode
 
 CREATE TABLE axton_local_replica_layer(model TEXT NOT NULL,identity TEXT NOT NULL,operations TEXT NOT NULL,PRIMARY KEY(model,identity));
 CREATE TABLE axton_authority(model TEXT NOT NULL,identity TEXT NOT NULL,evidence TEXT NOT NULL,base TEXT NOT NULL DEFAULT 'null',PRIMARY KEY(model,identity));
-CREATE VIEW axton_record AS SELECT model,identity,0 AS stamp,CASE WHEN base='null' THEN 'absent' ELSE 'materialized' END AS base_state,0 AS evicted_at FROM axton_authority;
-CREATE TRIGGER axton_record_projection INSTEAD OF UPDATE OF base_state ON axton_record BEGIN SELECT 1; END;
-CREATE VIEW axton_client AS SELECT id AS client_id,next_mutation_id AS next_ordinal,last_acknowledged_batch_id+1 AS next_push,generation,last_acknowledged_batch_id AS last_completed_push,NULL AS push_models,NULL AS push_results,0 AS store_epoch,1 AS next_subscription FROM axton_store;
-CREATE VIEW axton_mutation AS SELECT id AS ordinal,name,descriptor_version AS version,batch_id AS push,diverged,(SELECT id FROM axton_store)||':'||id AS call_id,NULL AS args,NULL AS store,0 AS store_epoch FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL;
+CREATE VIEW axton_client AS SELECT id AS client_id,next_mutation_id AS next_ordinal,generation FROM axton_store;
+CREATE VIEW axton_mutation AS SELECT id AS ordinal,name,descriptor_version AS version,batch_id AS push,diverged,(SELECT id FROM axton_store)||':'||id AS call_id FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL;
 CREATE VIEW axton_mutation_operation AS SELECT o.mutation_id AS ordinal,o.step AS position,o.kind,o.model,o.identity,o.operation AS op,o.value AS "values" FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL;
 CREATE TRIGGER axton_queue_diverged INSTEAD OF UPDATE OF diverged ON axton_mutation BEGIN UPDATE axton_mutation_queue SET diverged=NEW.diverged WHERE id=OLD.ordinal; END;
 CREATE TRIGGER axton_queue_frozen_update BEFORE UPDATE OF name,descriptor_version,descriptor,batch_id ON axton_mutation_queue WHEN OLD.batch_id IS NOT NULL AND (NEW.name<>OLD.name OR NEW.descriptor_version<>OLD.descriptor_version OR NEW.descriptor<>OLD.descriptor OR NEW.batch_id IS NOT OLD.batch_id) BEGIN SELECT RAISE(ABORT,'assigned mutation is immutable'); END;
@@ -204,26 +202,15 @@ impl<S: ClientStore> Client<S> {
         });
         Ok(Self {
             store,
-            context04: None,
             context05,
-            store_epoch: Default::default(),
-            request_tokens: Default::default(),
             schema,
             client_id,
             generation,
-            replica: 1,
             watchers: vec![],
             watcher_ids: 0,
             session: None,
-            physical_rollback_failure: None,
-            session_serial: 0,
             last_changed: BTreeSet::new(),
             last_bootstrap: BTreeSet::new(),
-            pulls: Default::default(),
-            schema_state: Default::default(),
-            origin: None,
-            query_contract: String::new(),
-            query_flights: Default::default(),
         })
     }
     pub fn request_context05(&mut self) -> Result<v05::RequestContext> {
@@ -238,14 +225,6 @@ impl<S: ClientStore> Client<S> {
     }
 }
 impl<S: ClientStore> Engine<'_, S> {
-    pub(crate) fn is05(&mut self) -> Result<bool> {
-        Ok(self
-            .scalar(
-                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='axton_store'",
-                &[],
-            )?
-            .is_some())
-    }
     pub fn context05(&mut self) -> Result<v05::RequestContext> {
         let r = self
             .rows("SELECT id,stream,materialization FROM axton_store", &[])?

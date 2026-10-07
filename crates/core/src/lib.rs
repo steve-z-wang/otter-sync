@@ -6,8 +6,6 @@ mod loads;
 pub mod materialization;
 mod protocol;
 mod schema;
-#[path = "protocol_v04.rs"]
-pub mod v04;
 #[path = "protocol_v05.rs"]
 pub mod v05;
 pub use actions::*;

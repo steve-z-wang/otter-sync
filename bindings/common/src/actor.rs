@@ -382,32 +382,7 @@ fn open_runtime(request: &Value) -> axton_client::Result<ClientRuntime<SqliteSto
             "prerequisite names",
         )?);
     }
-    let binding: axton_client::v04::StoreBinding =
-        serde_json::from_value(request["binding"].clone())
-            .map_err(|_| axton_client::invalid("binding is required"))?;
-    axton_client::v04::Validate::validate(&binding)?;
-    let generation = match request.get("projectionGeneration") {
-        None => "1",
-        Some(Value::String(value)) => value.as_str(),
-        _ => return Err(axton_client::invalid("projectionGeneration must be string")),
-    };
-    if request.get("storeHooks").is_some() {
-        return Err(axton_client::invalid(
-            "storeHooks are not supported in protocol4",
-        ));
-    }
-    let prerequisites = names(request, "prerequisiteHandlers", "prerequisite names")?;
-    let client = axton_client::Client::open_bound_with_projection(
-        SqliteStore::open_exclusive(path)?,
-        Schema::from_value(request["schema"].clone())?,
-        binding,
-        generation,
-    )?;
-    let mut runtime = ClientRuntime::new(client);
-    if !prerequisites.is_empty() {
-        runtime = runtime.register_prerequisite_handlers(prerequisites)?;
-    }
-    Ok(runtime)
+    Err(axton_client::invalid("protocol5 Store is required"))
 }
 
 /// The optional array of strings `field` of the open request.

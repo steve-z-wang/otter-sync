@@ -154,16 +154,11 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// identity the commit answered with. Repeated calls for one identity
     /// answer the same observer.
     pub(super) fn subscribe_stream(&mut self, stream: &str) -> std::result::Result<Value, String> {
-        let state = if self.protocol05 {
-            self.client
-                .subscription_state05(stream)
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "foreign Stream".to_string())?
-        } else {
-            self.client
-                .ensure_subscription(stream)
-                .map_err(|e| e.to_string())?
-        };
+        let state = self
+            .client
+            .subscription_state05(stream)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "foreign Stream".to_string())?;
         let id = state.subscription_id;
         let known = self.observers.registrations.contains_key(&id);
         let observer = match self
@@ -185,11 +180,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         if !known {
             // A load of this identity may already be running or finished from
             // before this runtime: its status needs no new transition.
-            match if self.protocol05 {
-                self.client.bootstrap_state05(&state.stream, id)
-            } else {
-                self.client.bootstrap_state(&state.stream, id)
-            } {
+            match self.client.bootstrap_state05(&state.stream, id) {
                 Ok(run) => self.observe_run(run),
                 Err(e) => self.error(e.to_string()),
             }
@@ -206,17 +197,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         command: &Command,
     ) -> Option<std::result::Result<Value, String>> {
         let generation = self.client.generation();
-        let answered = if self.protocol05 {
-            match command {
-                Command::StreamBootstrap {
-                    stream,
-                    subscription_id,
-                } => self.client.bootstrap_state05(stream, *subscription_id),
-                _ => Err(crate::invalid("invalid Bootstrap command")),
-            }
-        } else {
-            commands::execute(&mut self.client, command)
-                .and_then(|value| Ok(serde_json::from_value::<BootstrapState>(value)?))
+        let answered = match command {
+            Command::StreamBootstrap {
+                stream,
+                subscription_id,
+            } => self.client.bootstrap_state05(stream, *subscription_id),
+            _ => Err(crate::invalid("invalid Bootstrap command")),
         };
         self.committed_since(generation);
         let state = match answered {
@@ -241,11 +227,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         self.observe_run(state);
         // Whatever committed for this identity since the registration's own
         // answer settles the waiter now rather than never.
-        match if self.protocol05 {
-            self.client.bootstrap_state05(&stream, id)
-        } else {
-            self.client.bootstrap_state(&stream, id)
-        } {
+        match self.client.bootstrap_state05(&stream, id) {
             Ok(stored) => self.observe_run(stored),
             Err(e) => self.error(e.to_string()),
         }
@@ -312,89 +294,6 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         }
     }
 
-    /// The Downlink worker committed for these Streams: re-read their stored
-    /// starting boundary.
-    pub(super) fn streams_changed(&mut self, streams: &[String]) {
-        for stream in streams {
-            if !self
-                .observers
-                .registrations
-                .values()
-                .any(|r| &r.stream == stream)
-            {
-                continue;
-            }
-            match self.client.subscription_state(stream) {
-                Ok(Some(state)) => {
-                    if let Some(registration) = self
-                        .observers
-                        .registrations
-                        .get_mut(&state.subscription_id)
-                        .filter(|r| r.stream == state.stream)
-                    {
-                        registration.ready = state.starting_cursor.is_some();
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => self.error(e.to_string()),
-            }
-        }
-    }
-
-    /// The handshake of the open session covered these Streams.
-    pub(super) fn acknowledged(&mut self, streams: Vec<String>) {
-        let Some(epoch) = self.connection.as_ref().and_then(|c| c.session()) else {
-            return;
-        };
-        // Coverage belongs to one session: a new one starts from nothing.
-        let acknowledged = &mut self.observers.acknowledged;
-        if acknowledged.as_ref().is_none_or(|(of, _)| *of != epoch) {
-            *acknowledged = Some((epoch, BTreeSet::new()));
-        }
-        if let Some((_, covered)) = acknowledged {
-            covered.extend(streams);
-        }
-    }
-
-    /// An ordinary command committed a removal: the identities it removed are
-    /// closed and their Streams' acknowledgement is forgotten.
-    pub(super) fn removed(&mut self, command: &Command, value: &Value) {
-        match command {
-            Command::StreamUnsubscribe {
-                stream,
-                subscription_id,
-            } => {
-                self.close_registration(*subscription_id, crate::SUBSCRIPTION_CLOSED);
-                // Nothing went: another registration is this Stream's current
-                // one, and the acknowledgement it may hold is not this one's.
-                if value["removed"] == true {
-                    self.forget(stream);
-                }
-            }
-            Command::Stream {
-                stream,
-                subscribed: false,
-            } => {
-                let ids: Vec<u64> = self
-                    .observers
-                    .registrations
-                    .iter()
-                    .filter(|(_, r)| &r.stream == stream)
-                    .map(|(id, _)| *id)
-                    .collect();
-                for id in ids {
-                    self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
-                }
-                self.forget(stream);
-            }
-            _ => {}
-        }
-    }
-    fn forget(&mut self, stream: &str) {
-        if let Some((_, covered)) = &mut self.observers.acknowledged {
-            covered.remove(stream);
-        }
-    }
     /// A callback may edit Streams through transaction commands. Reconcile
     /// observer ownership after its commit from durable subscription identity,
     /// including remove-and-recreate under the same name.
@@ -406,24 +305,17 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             .map(|(id, registration)| (*id, registration.stream.clone()))
             .collect();
         for (id, stream) in registrations {
-            match if self.protocol05 {
-                self.client.subscription_state05(&stream)
-            } else {
-                self.client.subscription_state(&stream)
-            } {
+            match self.client.subscription_state05(&stream) {
                 Ok(Some(state)) if state.subscription_id == id => {
-                    if self.protocol05 {
-                        if let Some(registration) = self.observers.registrations.get_mut(&id) {
-                            registration.ready = state.starting_cursor.is_some();
-                        }
-                        if let Ok(run) = self.client.bootstrap_state05(&stream, id) {
-                            self.observe_run(run);
-                        }
+                    if let Some(registration) = self.observers.registrations.get_mut(&id) {
+                        registration.ready = state.starting_cursor.is_some();
+                    }
+                    if let Ok(run) = self.client.bootstrap_state05(&stream, id) {
+                        self.observe_run(run);
                     }
                 }
                 Ok(_) => {
                     self.close_registration(id, crate::SUBSCRIPTION_CLOSED);
-                    self.forget(&stream);
                 }
                 Err(error) => self.error(error.to_string()),
             }
@@ -461,40 +353,19 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
 
     /// The `connection` of a live registration of `stream`.
-    fn connection_status(&self, stream: &str) -> &'static str {
-        let Some(connection) = &self.connection else {
-            return "offline";
-        };
-        if connection.paused {
-            return "offline";
-        }
-        if self.protocol05 {
-            return if !self.sync05_live {
-                "connecting"
-            } else if self.sync05_catching_up {
-                "catching-up"
-            } else {
-                "live"
-            };
-        }
-        let Some(epoch) = connection.session() else {
-            return "connecting";
-        };
-        if connection.catching_up() {
-            return "catching-up";
-        }
-        match &self.observers.acknowledged {
-            Some((acknowledged, covered)) if *acknowledged == epoch && covered.contains(stream) => {
-                "live"
-            }
-            _ => "connecting",
+    fn connection_status(&self, _stream: &str) -> &'static str {
+        match &self.connection {
+            None => "offline",
+            Some(c) if c.paused => "offline",
+            Some(_) if !self.sync05_live => "connecting",
+            Some(_) if self.sync05_catching_up => "catching-up",
+            Some(_) => "live",
         }
     }
 
     /// Publish every subscription status that changed. Memory only: it runs
     /// after an effect result is admitted as well as after a unit.
     pub(super) fn publish_statuses(&mut self) {
-        self.publish_loads();
         let mut changed = vec![];
         for (id, registration) in &self.observers.registrations {
             let Some(observer_id) = &registration.observer else {

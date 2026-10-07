@@ -44,8 +44,6 @@ impl<S: ClientStore> Client<S> {
         })?;
         self.client_id = report.context.store_id.clone();
         self.context05 = Some(report.context.clone());
-        self.replica += 1;
-        self.request_tokens.borrow_mut().clear();
         Ok(report)
     }
 }

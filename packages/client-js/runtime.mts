@@ -32,29 +32,6 @@ export type ModelSyncState<Name extends string = string> = {
   pending: PendingMutation<Name>[];
   rejections: Rejection[];
 };
-/** What a rebuild left in the old database file. */
-export type RebuildReport = {
-  oldFile: string;
-  newFile: string;
-  reason: string;
-  leftPending: number;
-  leftDirect: number;
-  abandonedCalls: { callId: string; frozen: boolean }[];
-  /** The Load jobs of the replica left behind; their handles and waiters ended with `load.schema_changed`. */
-  abandonedLoads: string[];
-};
-/** The open-time schema check: whether this open rebuilt, or is waiting to. */
-export type SchemaState = {
-  rebuilt: boolean;
-  /** The incompatible file is still in use because it holds unsent work. */
-  pending: {
-    oldFile: string;
-    reason: string;
-    pending: number;
-    direct: number;
-  } | null;
-  lastRebuild: RebuildReport | null;
-};
 /** The whole client's sync state: a local snapshot, not a network probe. */
 export type ClientSyncState = {
   clientId: string;
@@ -63,7 +40,6 @@ export type ClientSyncState = {
   cursors: Record<string, number>;
   streams: string[];
   rejections: Rejection[];
-  schema: SchemaState;
 };
 import type { QuerySpec, RecordValue } from "./values.mts";
 import {
@@ -73,31 +49,8 @@ import {
   type ObserverSnapshot,
   type TaskError,
   type TaskHooks,
-  type RawStoreChange,
 } from "./bridge.mts";
 export type { NativeCarrier } from "./bridge.mts";
-export type { RawStoreChange } from "./bridge.mts";
-export type StoreHook<Tx = import("./transaction.mts").Transaction> = (
-  tx: Tx,
-  changes: readonly RawStoreChange[],
-) => void | Promise<void>;
-
-/** Clear the payload before a hook's Promise can become long lived. */
-class StoreHookInvocation<Tx> {
-  #hook: StoreHook<Tx> | undefined;
-  #changes: readonly RawStoreChange[] | undefined;
-  constructor(hook: StoreHook<Tx>, changes: readonly RawStoreChange[]) {
-    this.#hook = hook;
-    this.#changes = changes;
-  }
-  run = (tx: Tx): void | Promise<void> => {
-    const hook = this.#hook!;
-    const changes = this.#changes!;
-    this.#hook = undefined;
-    this.#changes = undefined;
-    return hook(tx, changes);
-  };
-}
 import type { ServerOptions, ServerConnection } from "./live.mts";
 import { Subscriptions, type Subscription } from "./subscriptions.mts";
 export type {
@@ -185,13 +138,6 @@ const INVOKE_CODES: Record<string, "unknown" | "rejected"> = {
  * error for `actionError` to map.
  */
 function invokeError(error: unknown): unknown {
-  const details = (error as TaskError | null)?.details;
-  if (details?.code === "store_hook_failed")
-    return new CallError(
-      "store_hook_failed",
-      "unknown",
-      (error as Error & { cause?: unknown }).cause ?? error,
-    );
   const message = (error as { message?: unknown } | null)?.message;
   if (message === "client_closed")
     return new CallError("action.unavailable", "unknown", error);
@@ -243,7 +189,6 @@ function fetchStore(options: unknown): { store?: unknown } {
 /** Fetch failures refused before any request was sent. */
 const FETCH_REJECTED = new Set([
   "fetch.invalid_options",
-  "fetch.schema_pending",
 ]);
 /**
  * A `fetch` task's failure as a {@link CallError}: a `fetch.*` code the
@@ -503,24 +448,6 @@ export function createClient<
         cancellation?.removeEventListener("abort", cancel);
         if (this.#activePublicTx === tx) this.#activePublicTx = undefined;
       }
-    }
-    /** Store invocation and completion bookkeeping use separate frames. */
-    #runStoreTransaction(
-      transactionId: string,
-      hook: StoreHook<Tx>,
-      changes: readonly RawStoreChange[],
-      cancellation: AbortSignal,
-    ): Promise<void> {
-      this.#transactions++;
-      const invocation = new StoreHookInvocation(hook, changes);
-      return this.#trackStoreTransaction(
-        this.#runTransactionBody(transactionId, invocation.run, cancellation),
-      );
-    }
-    #trackStoreTransaction(running: Promise<void>): Promise<void> {
-      return running.finally(() => {
-        this.#transactions--;
-      });
     }
     read(model: string, identity: object): Promise<RecordValue | null> {
       return this.#task({ kind: "read", key: { model, identity } });
@@ -795,19 +722,6 @@ export function createClient<
       return model === undefined
         ? this.#task({ kind: "status" })
         : this.#task({ kind: "recordStatus", key: { model, identity } });
-    }
-    /**
-     * Leave an incompatible database behind and open a fresh file for the
-     * schema this client asked for. Refused while unsent mutations remain
-     * unless `discardPending`; the report says what the old file keeps. The
-     * runtime completes every abandoned call, ends every subscription handle
-     * of the replica it left and re-runs every watch before the report
-     * arrives.
-     */
-    rebuild(
-      options: { discardPending?: boolean } = {},
-    ): Promise<RebuildReport> {
-      return this.#task({ kind: "rebuild", ...options });
     }
     pendingTasks(): Promise<RecordValue[]> {
       return this.#task({ kind: "tasks" });

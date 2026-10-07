@@ -327,21 +327,7 @@ class Subscription {
         };
       });
 
-  /// Commit the local removal of this registration and stop the handle: the
-  /// runtime publishes the terminal snapshot before the removal completes.
-  /// Repeating it on a closed handle is a no-op; a handle its client stopped
-  /// cannot commit work at all.
-  Future<void> unsubscribe() async {
-    // Handle lifetime: nothing is left to remove, and a stopped handle has no
-    // runtime to ask.
-    if (_stopped) throw const SubscriptionClosedException();
-    if (_closed) return;
-    await _registry._host.task({
-      'kind': 'streamUnsubscribe',
-      'stream': stream,
-      'subscriptionId': subscriptionId,
-    });
-  }
+
 }
 
 /// The registry: one handle per persistent subscription identity, claimed
@@ -387,12 +373,6 @@ class Subscriptions {
       _handles.remove(handle.subscriptionId);
     }
     _host.unlisten(handle._observerId);
-  }
-
-  /// Remove whatever registration a Stream name has. The runtime ends the handle it had
-  /// before the removal completes.
-  Future<void> unsubscribeStream(String stream) async {
-    await _host.task({'kind': 'stream', 'stream': stream, 'subscribed': false});
   }
 
   /// The client began closing: the runtime's terminal snapshots from here on

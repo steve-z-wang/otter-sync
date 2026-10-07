@@ -67,9 +67,7 @@ class Client implements WritePort, SubmitMutationPort {
       );
     }
     final message = error is StateError ? error.message : null;
-    if (error is TaskFailure && error.details['code'] == 'store_hook_failed') {
-      return CallError('store_hook_failed', cause: error.cause ?? error);
-    }
+
     if (message == 'action.invalid_options') {
       return CallError(message!, execution: 'rejected', cause: error);
     }
@@ -200,11 +198,9 @@ class Client implements WritePort, SubmitMutationPort {
 
   Future<T> _runTransactionBody<T>(
     String transactionId,
-    FutureOr<T> Function(Transaction tx) body, [
-    StoreCancellation? cancellation,
-  ]) async {
+    FutureOr<T> Function(Transaction tx) body,
+  ) async {
     final tx = Transaction._(this, transactionId);
-    cancellation?.onCancel(tx._cancel);
     final token = Object();
     _activeTxToken = token;
     try {
@@ -337,7 +333,6 @@ class Client implements WritePort, SubmitMutationPort {
   /// Fetch failures refused before any request was sent.
   static const _fetchRejected = {
     'fetch.invalid_options',
-    'fetch.schema_pending',
   };
 
   /// A `fetch` task's failure as a [CallError]: a `fetch.*` code the runtime
@@ -400,12 +395,7 @@ class Client implements WritePort, SubmitMutationPort {
       if (_unknownExecution.contains(code)) {
         throw ActionTransportException(code, _directCause(details));
       }
-      if (code == 'store_hook_failed') {
-        throw ActionTransportException(
-          code,
-          error is TaskFailure ? error.cause ?? error : error,
-        );
-      }
+
       // The runtime is gone: no call can be made.
       if (error.message == 'client_closed') {
         throw ActionTransportException('action.unavailable', error);
@@ -485,21 +475,6 @@ class Client implements WritePort, SubmitMutationPort {
   /// The client's sync state: a local snapshot, not a network probe.
   Future<Map<String, dynamic>> syncState() async =>
       (await _task({'kind': 'status'})) as Map<String, dynamic>;
-
-  /// Leave an incompatible database behind and open a fresh file for the
-  /// schema this client asked for. Refused while unsent mutations remain
-  /// unless [discardPending]; the report says what the old file keeps:
-  /// `oldFile`, `newFile`, `reason`, `leftPending`, `leftDirect`,
-  /// `abandonedCalls` and `abandonedLoads`, the IDs of the Load jobs left
-  /// behind, whose handles and waiters ended with `load.schema_changed`.
-  Future<Map<String, dynamic>> rebuild({bool discardPending = false}) async {
-    final report =
-        (await _task({'kind': 'rebuild', 'discardPending': discardPending}))
-            as Map<String, dynamic>;
-    // The runtime ended every handle of the replica left behind and completed
-    // every abandoned call before this completion.
-    return report;
-  }
 
   Future<List<Map<String, dynamic>>> pendingTasks() async =>
       (await _task({'kind': 'tasks'}) as List).cast<Map<String, dynamic>>();
@@ -673,7 +648,6 @@ class Transaction implements WritePort, SubmitMutationPort {
   /// Submissions with a `local` callback that have not completed.
   int _locals = 0;
   Transaction._(this._client, this._transactionId);
-  void _cancel() => _open = false;
 
   /// Dismiss a refusal as part of this transaction.
   late final TransactionRejections rejections = TransactionRejections._(this);

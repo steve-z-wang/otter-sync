@@ -1,5 +1,4 @@
 import { strictJson, type RecordValue } from "./values.mts";
-import type { SchemaState } from "./runtime.mts";
 
 /**
  * The carrier a platform supplies for its Rust-owned client runtimes
@@ -18,7 +17,7 @@ export type NativeCarrier = {
 };
 
 /** What a successful open answers. */
-export type Opened = { clientId: string; schema: SchemaState };
+export type Opened = { clientId: string };
 
 /** One effect's answer, as the runtime reads it. */
 export type EffectOutcome =
@@ -87,45 +86,6 @@ type LocalCallbackRoute = {
   cancelled?: true;
   thrown?: { value: unknown };
 };
-/** A raw incoming change, before a generated Model adapter decodes it. */
-export type RawStoreChange =
-  | { kind: "upsert"; identity: RecordValue; row: RecordValue }
-  | { kind: "delete"; identity: RecordValue };
-/** The bridge invokes a registered Model handler inside Rust's transaction. */
-export type RawStoreHandler = (
-  transactionId: string,
-  changes: readonly RawStoreChange[],
-  cancellation: AbortSignal,
-) => void | Promise<void>;
-type StorePending = {
-  controller: AbortController;
-  payload: {
-    model: string;
-    handler: RawStoreHandler | undefined;
-    changes: RawStoreChange[] | undefined;
-  };
-};
-
-/** Invoke once, then clear the host's payload reference before user work waits. */
-function startStoreInvocation(
-  pending: StorePending,
-  transactionId: string,
-): Promise<void> {
-  return Promise.resolve().then(() => {
-    if (pending.controller.signal.aborted) return;
-    const { model, handler, changes } = pending.payload;
-    pending.payload.handler = undefined;
-    pending.payload.changes = undefined;
-    if (!handler || !changes) throw Error(`missing store hook for ${model}`);
-    return handler(transactionId, changes, pending.controller.signal);
-  });
-}
-
-function cancelStorePending(pending: StorePending): void {
-  pending.controller.abort();
-  pending.payload.handler = undefined;
-  pending.payload.changes = undefined;
-}
 type Event = { type: string; [field: string]: any };
 /** A task's failure: the runtime's message, and its machine-readable reason when it gave one. */
 export type TaskError = Error & {
@@ -176,10 +136,6 @@ export class Bridge {
   #callbacks = new Map<string, Callback>();
   /** `local` callbacks by the request id of their submission. */
   #locals = new Map<string, LocalCallbackRoute>();
-  #storeHandlers = new Map<string, RawStoreHandler>();
-  #storeCallbacks = new Map<string, StorePending>();
-  #storeCauses = new Map<string, unknown>();
-  #reportedStoreCauses = new Set<string>();
   #listeners = new Map<BridgeEventType, Set<(event: any) => void>>();
   #effects = new Map<string, (effectId: string, operation: any) => void>();
   /**
@@ -219,22 +175,19 @@ export class Bridge {
       projectionGeneration?: string;
       discardPending?: boolean;
       migration?: unknown;
-      onStore?: Record<string, RawStoreHandler>;
       /** The prerequisite names the host installs handlers for. */
       prerequisiteHandlers?: string[];
     },
     install?: (bridge: Bridge) => void,
   ): Promise<{ bridge: Bridge; opened: Opened }> {
     const bridge = new Bridge(native);
-    const { onStore, ...wire } = request;
     // Capture names and function values before native open can publish work.
-    bridge.#storeHandlers = new Map(Object.entries(onStore ?? {}));
     // Effect executors the runtime may ask for from its first step.
     install?.(bridge);
     const opened = bridge.#route<Opened>((requestId) => {
       bridge.#runtimeId = native.runtimeOpen(
         strictJson({
-          ...wire,
+          ...request,
           type: "open",
           protocol: 5,
           requestId,
@@ -546,11 +499,7 @@ export class Bridge {
       }
     } finally {
       this.#dispatching = false;
-      // Rust emits the diagnostic before all direct and joined once task
-      // completions. Preserve causes through the entire drain, then release.
-      for (const effectId of this.#reportedStoreCauses)
-        this.#storeCauses.delete(effectId);
-      this.#reportedStoreCauses.clear();
+
     }
   }
 
@@ -573,12 +522,10 @@ export class Bridge {
           route.resolve(event.value);
         } else if (callback?.thrown) route.reject(callback.thrown.value);
         else {
-          const cause = this.#storeCauses.get(event.details?.callbackEffectId);
           route.reject(
             Object.assign(
               Error(event.error ?? "task failed"),
               event.details === undefined ? {} : { details: event.details },
-              cause === undefined ? {} : { cause },
             ),
           );
         }
@@ -593,20 +540,12 @@ export class Bridge {
         return this.#snapshot(event.observerId, event.snapshot);
       case "cancelEffect":
         this.#cancelCallback(event.effectId);
-        this.#cancelStoreCallback(event.effectId);
         return this.#emit(event.type, event);
       case "transactionCallState":
         return this.#emit(event.type, event);
       case "callCompleted":
-      case "report": {
-        const id = event.diagnostic?.callbackEffectId;
-        if (event.diagnostic?.kind === "storeHook" && typeof id === "string") {
-          const cause = this.#storeCauses.get(id);
-          if (cause !== undefined) event.diagnostic.cause = cause;
-          this.#reportedStoreCauses.add(id);
-        }
-        return this.#emit(event.type, event);
-      }
+      case "report": return this.#emit(event.type,event);
+
     }
   }
 
@@ -639,15 +578,6 @@ export class Bridge {
   }
 
   #effect(effectId: string, operation: { kind: string; [field: string]: any }) {
-    if (operation.kind === "storeCallback")
-      return this.#storeCallback(
-        effectId,
-        operation as unknown as {
-          transactionId: string;
-          model: string;
-          changes: RawStoreChange[];
-        },
-      );
     if (operation.kind === "callback") {
       const callback = this.#callbacks.get(operation.requestId);
       if (!callback)
@@ -692,74 +622,6 @@ export class Bridge {
     }
   }
 
-  #storeCallback(
-    effectId: string,
-    operation: {
-      transactionId: string;
-      model: string;
-      changes: RawStoreChange[];
-    },
-  ): void {
-    const pending: StorePending = {
-      controller: new AbortController(),
-      payload: {
-        model: operation.model,
-        handler: this.#storeHandlers.get(operation.model),
-        changes: operation.changes,
-      },
-    };
-    this.#storeCallbacks.set(effectId, pending);
-    this.#finishStoreCallback(
-      effectId,
-      operation.transactionId,
-      pending.controller,
-      startStoreInvocation(pending, operation.transactionId),
-    );
-  }
-
-  /** Completion closures have no lexical access to the decoded payload. */
-  #finishStoreCallback(
-    effectId: string,
-    transactionId: string,
-    controller: AbortController,
-    running: Promise<void>,
-  ): void {
-    void running
-      .then(
-        () => {
-          if (!controller.signal.aborted)
-            this.#answer({
-              type: "callbackResult",
-              effectId,
-              transactionId,
-              ok: true,
-            });
-        },
-        (error) => {
-          if (!controller.signal.aborted) {
-            this.#storeCauses.set(effectId, error);
-            this.#answer({
-              type: "callbackResult",
-              effectId,
-              transactionId,
-              ok: false,
-              error: describe(error).slice(0, 1024),
-            });
-          }
-        },
-      )
-      .finally(() => {
-        this.#storeCallbacks.delete(effectId);
-      });
-  }
-
-  #cancelStoreCallback(effectId: string): void {
-    const pending = this.#storeCallbacks.get(effectId);
-    if (pending) cancelStorePending(pending);
-    this.#storeCallbacks.delete(effectId);
-    this.#storeCauses.delete(effectId);
-  }
-
   /** A cancelled callback effect: its callback must not start any more. */
   #cancelCallback(effectId: string): void {
     for (const callback of [
@@ -777,12 +639,6 @@ export class Bridge {
     this.#routes.clear();
     this.#callbacks.clear();
     this.#locals.clear();
-    for (const pending of this.#storeCallbacks.values())
-      cancelStorePending(pending);
-    this.#storeCallbacks.clear();
-    this.#storeHandlers.clear();
-    this.#storeCauses.clear();
-    this.#reportedStoreCauses.clear();
     this.#observers.clear();
     for (const route of routes) route.reject(Error("client_closed"));
     this.#native.runtimeDetach(this.#runtimeId);

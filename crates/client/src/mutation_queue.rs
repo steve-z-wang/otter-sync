@@ -362,9 +362,6 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         companions: Vec<Operation>,
     ) -> Result<SubmittedCall> {
         self.savepoint(|tx| {
-            if tx.local_only {
-                return Err(invalid("cannot submit in authority callback"));
-            }
             let call = tx.engine.enqueue05(name, version, input, companions)?;
             tx.submitted.insert(call.ordinal);
             Ok(call)

@@ -40,9 +40,7 @@ export type {
   ClientSyncState,
   ModelSyncState,
   PendingMutation,
-  RebuildReport,
   Rejection,
-  SchemaState,
 } from "./runtime.mts";
 export type {
   ActOperation,

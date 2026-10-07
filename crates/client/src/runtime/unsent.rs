@@ -41,12 +41,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     /// The current snapshot of `view` on the committed state.
     fn unsent_snapshot(&mut self, view: UnsentView) -> std::result::Result<Value, String> {
         let snapshot = match view {
-            UnsentView::Rejections => if self.protocol05 {
-                self.client.refused_acts05()
-            } else {
-                self.client.refused_acts()
-            }
-            .map(|items| json!({"kind":"rejections","items":items})),
+            UnsentView::Rejections => self
+                .client
+                .refused_acts05()
+                .map(|items| json!({"kind":"rejections","items":items})),
             UnsentView::Failures => self
                 .client
                 .failed_acts()
@@ -137,13 +135,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     ) -> Result<Option<Value>> {
         let resolved = match command {
             TransactionCommand::Dismiss { ordinal } => {
-                self.client.session(|tx| {
-                    if self.protocol05 {
-                        tx.dismiss_rejection05(*ordinal)
-                    } else {
-                        tx.dismiss_rejection(*ordinal)
-                    }
-                })?;
+                self.client.session(|tx| tx.dismiss_rejection05(*ordinal))?;
                 vec![]
             }
             TransactionCommand::RetryTasks { keys } => {
@@ -153,12 +145,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             TransactionCommand::Discard { ordinal } => self
                 .client
                 .session(|tx| {
-                    if self.protocol05 {
-                        tx.discard_mutation05(*ordinal)
-                            .map(|report| report.completions)
-                    } else {
-                        tx.discard(*ordinal)
-                    }
+                    tx.discard_mutation05(*ordinal)
+                        .map(|report| report.completions)
                 })?
                 .into_iter()
                 .map(Resolved::Completed)

@@ -14,7 +14,7 @@
 //! A success resolves the task and a plain failure fails it with its reason,
 //! each in its own unit. A failure the handler declared transient
 //! (`error.retry`) writes nothing: the task stays pending and waits
-//! [`crate::load_backoff`] of its consecutive transient failures, counted in
+//! [`crate::ConnectionDriver::backoff`] of its consecutive transient failures, counted in
 //! memory, so a reopen runs it at once. One `timer` effect waits for the
 //! earliest retry. A readiness change forgets a task's backoff.
 use super::effects::{EffectKind, Ready};
@@ -144,7 +144,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     due: now,
                 });
                 backoff.attempts = backoff.attempts.saturating_add(1);
-                backoff.due = now.saturating_add(crate::load_backoff(backoff.attempts, entropy));
+                backoff.due = now.saturating_add(prerequisite_backoff(backoff.attempts, entropy));
             }
             (false, error) => self.ready.push_back(Ready::PrerequisiteOutcome {
                 key,
@@ -230,4 +230,10 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             ..Prerequisites::default()
         };
     }
+}
+
+// Preserve the prerequisite retry schedule independently of retired Load jobs.
+fn prerequisite_backoff(attempts: u64, entropy: u64) -> u64 {
+    let base = (1_000u64 << attempts.saturating_sub(1).min(5)).min(30_000);
+    (base * (800 + entropy % 401) / 1000).min(30_000)
 }

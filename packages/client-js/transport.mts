@@ -7,7 +7,6 @@ const ROUTES: Readonly<Record<string, string>> = {
   pull: "pull",
   action: "actions",
   fetch: "fetch",
-  load: "loads",
 };
 /** The response header that marks an admission refusal (`refused`). */
 export const ADMISSION_HEADER = "axton-admission";

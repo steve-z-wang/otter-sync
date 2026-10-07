@@ -491,7 +491,7 @@ impl<S: ClientStore> Engine<'_, S> {
                     if admission == evidence::AuthorityAdmission::Newer {
                         self.stage_one(&key, incoming.as_ref(), held)?;
                     } else {
-                        self.stage_preserving_local04(&key, incoming.as_ref(), held)?;
+                        self.stage_preserving_local(&key, incoming.as_ref(), held)?;
                     }
                     if incoming.is_none() {
                         for child in self.descendants_where(&key, |e, k| {
@@ -506,7 +506,7 @@ impl<S: ClientStore> Engine<'_, S> {
                             if admission == evidence::AuthorityAdmission::Newer {
                                 self.stage_one(&child, None, held)?;
                             } else {
-                                self.stage_preserving_local04(&child, None, held)?;
+                                self.stage_preserving_local(&child, None, held)?;
                             }
                             self.direct_evidence05(&child)?;
                         }
@@ -669,9 +669,6 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     }
     fn cancel_unsent05(&mut self, id: u64, acknowledge: bool) -> Result<ApplyReport> {
         self.savepoint(|tx| {
-            if tx.local_only {
-                return Err(invalid("cannot discard in authority callback"));
-            }
             let row = tx
                 .engine
                 .rows(
@@ -698,12 +695,7 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
         })
     }
     pub fn dismiss_rejection05(&mut self, id: u64) -> Result<()> {
-        self.savepoint(|tx| {
-            if tx.local_only {
-                return Err(invalid("cannot dismiss in authority callback"));
-            }
-            tx.engine.acknowledge_rejection05(id)
-        })
+        self.savepoint(|tx| tx.engine.acknowledge_rejection05(id))
     }
 }
 impl<S: ClientStore> Client<S> {

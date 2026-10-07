@@ -5,22 +5,22 @@ use crate::engine::Engine;
 use crate::queue::{LocalWrite, LocalWriteKind, OpKind, QueuedOp};
 use crate::rows::merge_identity;
 use crate::store::ClientStore;
-use crate::{Mutation, Operation, OperationKind, actions, policies};
-use axton_core::{ActionIntent, RecordKey, Result, Schema, invalid};
+use crate::{Operation, OperationKind};
+use axton_core::{RecordKey, Result, Schema, invalid};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-/// One entry of a record's local history above its base.
+// One entry of a record's local history above its base.
 enum Step {
-    /// An operation of a call still in the queue: wire, companion or effect.
+    // An operation of a call still in the queue: wire, companion or effect.
     Pending(QueuedOp),
-    /// A settled local write retained at its place.
+    // A settled local write retained at its place.
     Settled(LocalWrite),
 }
 impl Step {
-    /// Committed local order: a call's operations by position, an accepted
-    /// companion at its owner's position, an independent write after every
-    /// operation of the ordinal it followed.
+    // Committed local order: a call's operations by position, an accepted
+    // companion at its owner's position, an independent write after every
+    // operation of the ordinal it followed.
     fn order(&self) -> (u64, u8, u64, u64) {
         match self {
             Step::Pending(q) => (q.ordinal, 0, q.position, 0),
@@ -34,11 +34,11 @@ impl Step {
     }
 }
 
-/// Apply a settled local write. It was validated when it was made, so it is
-/// never a replay conflict: a create sets the row it created (a recreation
-/// keeps its newer content), an update of a row that no longer exists
-/// changes nothing (it cannot preserve a record whose creation went), and a
-/// delete removes the row.
+// Apply a settled local write. It was validated when it was made, so it is
+// never a replay conflict: a create sets the row it created (a recreation
+// keeps its newer content), an update of a row that no longer exists
+// changes nothing (it cannot preserve a record whose creation went), and a
+// delete removes the row.
 pub(crate) fn apply_settled(row: &mut Option<Value>, op: &Operation) {
     match op.op {
         OperationKind::Create => {
@@ -58,8 +58,8 @@ pub(crate) fn apply_settled(row: &mut Option<Value>, op: &Operation) {
         OperationKind::Delete => *row = None,
     }
 }
-/// The base with only the settled writes applied: what stays visible when a
-/// pending operation no longer replays.
+// The base with only the settled writes applied: what stays visible when a
+// pending operation no longer replays.
 fn settled_view(base: &Option<Value>, steps: &[Step]) -> Option<Value> {
     let mut row = base.clone();
     for step in steps {
@@ -150,9 +150,9 @@ impl<S: ClientStore> Engine<'_, S> {
             None => self.row_delete(&key.model, &model, &key.identity),
         }
     }
-    /// The last known server state of a record with the settled local writes
-    /// on it: the before image and its retained writes while it is dirty with
-    /// pending mutations, otherwise the visible row itself.
+    // The last known server state of a record with the settled local writes
+    // on it: the before image and its retained writes while it is dirty with
+    // pending mutations, otherwise the visible row itself.
     pub fn truth(&mut self, key: &RecordKey) -> Result<Option<Value>> {
         if self.dirty(key)? {
             let base = self.before_get(key)?;
@@ -162,7 +162,7 @@ impl<S: ClientStore> Engine<'_, S> {
             self.read_row(key)
         }
     }
-    /// Everything above one record's base, in committed local order.
+    // Everything above one record's base, in committed local order.
     fn history(&mut self, key: &RecordKey) -> Result<Vec<Step>> {
         let mut steps: Vec<Step> = self.ops_for(key)?.into_iter().map(Step::Pending).collect();
         steps.extend(self.local_writes_for(key)?.into_iter().map(Step::Settled));
@@ -203,13 +203,13 @@ impl<S: ClientStore> Engine<'_, S> {
         let model = self.schema.model(&key.model)?.clone();
         self.copy_aside(&model, &key.identity)
     }
-    /// Rebuild one record from its base and its history in committed local
-    /// order. Settled writes no earlier pending operation precedes are folded
-    /// into the base and forgotten; with nothing pending left the base itself
-    /// becomes the row. When a pending operation no longer replays, the base
-    /// with the settled writes stays visible and the failing mutation's
-    /// ordinal is returned and marked diverged; the queue is untouched
-    /// ([#122](https://github.com/zanminwang/axton/issues/122)).
+    // Rebuild one record from its base and its history in committed local
+    // order. Settled writes no earlier pending operation precedes are folded
+    // into the base and forgotten; with nothing pending left the base itself
+    // becomes the row. When a pending operation no longer replays, the base
+    // with the settled writes stays visible and the failing mutation's
+    // ordinal is returned and marked diverged; the queue is untouched
+    // ([#122](https://github.com/zanminwang/axton/issues/122)).
     pub fn rebuild(&mut self, key: &RecordKey) -> Result<Option<u64>> {
         let mut base = self.before_get(key)?;
         let mut steps = self.history(key)?;
@@ -259,7 +259,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(failed)
     }
-    /// Every record reachable from `parent` through declared cascading deletes.
+    // Every record reachable from `parent` through declared cascading deletes.
     pub fn descendants(&mut self, parent: &RecordKey) -> Result<Vec<RecordKey>> {
         self.descendants_where(parent, |_, _| Ok(true))
     }
@@ -302,10 +302,10 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(result)
     }
-    /// Whether the last delete of `parent` by call `ordinal` is followed by a
-    /// local recreation: a create later in the same call, or a settled local
-    /// write (a direct write or an accepted companion) after it. A recreation
-    /// by a later pending call is not one: the server has yet to answer both.
+    // Whether the last delete of `parent` by call `ordinal` is followed by a
+    // local recreation: a create later in the same call, or a settled local
+    // write (a direct write or an accepted companion) after it. A recreation
+    // by a later pending call is not one: the server has yet to answer both.
     fn recreated_locally(&mut self, parent: &RecordKey, ordinal: u64) -> Result<bool> {
         let steps = self.history(parent)?;
         let Some(at) = steps.iter().rposition(|step| {
@@ -318,11 +318,11 @@ impl<S: ClientStore> Engine<'_, S> {
             Step::Settled(w) => w.op.op == OperationKind::Create,
         }))
     }
-    /// Extend queued deletes to descendants that appeared after they were
-    /// queued. A parent visible again because a local write recreated it
-    /// after the delete keeps its current children: they belong to that
-    /// recreation, not to the earlier delete. A companion delete's cascade
-    /// stays the call's companion.
+    // Extend queued deletes to descendants that appeared after they were
+    // queued. A parent visible again because a local write recreated it
+    // after the delete keeps its current children: they belong to that
+    // recreation, not to the earlier delete. A companion delete's cascade
+    // stays the call's companion.
     pub fn refresh_pending(&mut self) -> Result<()> {
         for queued in self.queued()? {
             let deletes: Vec<(OpKind, Operation)> = queued
@@ -380,140 +380,16 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(())
     }
-    pub fn enqueue(&mut self, mutation: Mutation) -> Result<u64> {
-        self.enqueue_ordered(mutation, false)
-    }
-    pub(crate) fn enqueue_companions_first(&mut self, mutation: Mutation) -> Result<u64> {
-        self.enqueue_ordered(mutation, true)
-    }
-    fn enqueue_ordered(&mut self, mut mutation: Mutation, companions_first: bool) -> Result<u64> {
-        if mutation.name.trim().is_empty()
-            || mutation.version == 0
-            || (mutation.operations.is_empty() && mutation.call_id.is_none())
-        {
-            return Err(invalid("invalid named mutation"));
-        }
-        if mutation.call_id.is_some() != mutation.args.is_some() {
-            return Err(invalid("Action identity and args must appear together"));
-        }
-        if mutation.call_id.is_none() && !mutation.store.is_all() {
-            return Err(invalid("store policy requires an Action call"));
-        }
-        if let (Some(call_id), Some(args)) = (&mutation.call_id, &mutation.args) {
-            let intent = ActionIntent {
-                call_id: call_id.clone(),
-                name: mutation.name.clone(),
-                version: mutation.version,
-                args: args.clone(),
-                store: mutation.store.clone(),
-            }
-            .normalize(self.schema)?;
-            // Persist the canonical policy; validation saw the explicit one.
-            mutation.store = intent.store.clone();
-            let descriptor = self.schema.action(&intent.name, intent.version)?;
-            actions::validate_bindings(self.schema, descriptor, &intent.args)?;
-            let expected = actions::derive_operations(self.schema, descriptor, &intent.args)?;
-            if intent.call_id != *call_id
-                || intent.args != *args
-                || serde_json::to_value(expected)? != serde_json::to_value(&mutation.operations)?
-                || (!companions_first && !mutation.companion.is_empty())
-                || !mutation.effects.is_empty()
-                || !mutation.prerequisites.is_empty()
-                || !mutation.lifecycle_dependencies.is_empty()
-                || !mutation.sequence_dependencies.is_empty()
-            {
-                return Err(invalid(
-                    "Action queue row does not match its canonical intent",
-                ));
-            }
-        }
-        for dependency in mutation
-            .lifecycle_dependencies
-            .iter()
-            .chain(&mutation.sequence_dependencies)
-        {
-            if self.queued_one(*dependency)?.is_none() {
-                return Err(invalid("unknown mutation dependency"));
-            }
-        }
-        if mutation.call_id.is_none() {
-            // A fresh low-level create: its values become concrete before
-            // they are queued. An Action's operations were derived from
-            // already expanded args and are checked against them above.
-            for op in mutation
-                .operations
-                .iter_mut()
-                .chain(&mut mutation.companion)
-            {
-                crate::defaults::fill_operation(self.schema, op);
-            }
-        }
-        mutation.effects.clear();
-        // Every operation in the local order it is applied in: a delete's
-        // cascade first, then the delete. The cascade of a companion delete is
-        // the call's companion too: it settles locally with the call, never
-        // on the wire.
-        let mut ordered: Vec<(OpKind, Operation)> = vec![];
-        let wire = mutation.operations.len();
-        let companions = mutation.companion.len();
-        let mut all: Vec<Operation> = if companions_first {
-            mutation
-                .companion
-                .drain(..)
-                .chain(mutation.operations.drain(..))
-                .collect()
-        } else {
-            mutation
-                .operations
-                .drain(..)
-                .chain(mutation.companion.drain(..))
-                .collect()
-        };
-        // Each hold_truth runs before its operation reaches the queue, so `dirty`
-        // still reflects only earlier mutations.
-        for (index, op) in all.iter_mut().enumerate() {
-            normalize(self.schema, op)?;
-            let is_wire = if companions_first {
-                index >= companions
-            } else {
-                index < wire
-            };
-            let (own, cascade) = if is_wire {
-                (OpKind::Wire, OpKind::Effect)
-            } else {
-                (OpKind::Companion, OpKind::Companion)
-            };
-            self.apply_in_order(op, own, cascade, |_, kind, op| {
-                ordered.push((kind, op));
-                Ok(())
-            })?;
-        }
-        let of = |kind: OpKind| -> Vec<Operation> {
-            ordered
-                .iter()
-                .filter(|(k, _)| *k == kind)
-                .map(|(_, op)| op.clone())
-                .collect()
-        };
-        mutation.operations = of(OpKind::Wire);
-        mutation.companion = of(OpKind::Companion);
-        mutation.effects = of(OpKind::Effect);
-        policies::derive(self, &mut mutation)?;
-        let ordinal = self.allocate_ordinal()?;
-        let ordered: Vec<(OpKind, &Operation)> =
-            ordered.iter().map(|(kind, op)| (*kind, op)).collect();
-        self.insert_mutation_ordered(ordinal, &mutation, &ordered)?;
-        Ok(ordinal)
-    }
-    /// Append a local companion to queued call `ordinal`, after everything
-    /// the call already wrote: a fresh create gets its generated values, the
-    /// operation is normalized and applied, a delete cascades to its
-    /// descendants, and each record's base is held first. The operations are
-    /// stored as the call's companions in the order they were applied, so
-    /// they settle with its outcome and are never sent. The call must be the
-    /// latest one, unsent and a canonical Action call, with no independent
-    /// write journaled after it: a companion then never settles out of local
-    /// order.
+
+    // Append a local companion to queued call `ordinal`, after everything
+    // the call already wrote: a fresh create gets its generated values, the
+    // operation is normalized and applied, a delete cascades to its
+    // descendants, and each record's base is held first. The operations are
+    // stored as the call's companions in the order they were applied, so
+    // they settle with its outcome and are never sent. The call must be the
+    // latest one, unsent and a canonical Action call, with no independent
+    // write journaled after it: a companion then never settles out of local
+    // order.
     pub(crate) fn append_companion(
         &mut self,
         ordinal: u64,
@@ -539,11 +415,11 @@ impl<S: ClientStore> Engine<'_, S> {
             |engine, kind, op| engine.append_op(ordinal, kind, &op),
         )
     }
-    /// Apply one queued operation in local order and hand every write to
-    /// `record` as it happens: each record's base is held first, a delete's
-    /// cascade to its descendants comes before the delete (as `cascade`),
-    /// then the operation itself (as `own`). Queued calls and appended
-    /// companions share it, so a cascade is stored at its trigger either way.
+    // Apply one queued operation in local order and hand every write to
+    // `record` as it happens: each record's base is held first, a delete's
+    // cascade to its descendants comes before the delete (as `cascade`),
+    // then the operation itself (as `own`). Queued calls and appended
+    // companions share it, so a cascade is stored at its trigger either way.
     pub(crate) fn apply_in_order(
         &mut self,
         op: &Operation,
@@ -569,12 +445,9 @@ impl<S: ClientStore> Engine<'_, S> {
         self.apply_main(op)?;
         record(self, own, op.clone())
     }
-    /// Temporary callback visibility. The enclosing savepoint owns these rows;
-    /// concrete operations are recorded once and replayed as owned companions.
-    pub(crate) fn preview_callback04(
-        &mut self,
-        mut operation: Operation,
-    ) -> Result<Vec<Operation>> {
+    // Temporary callback visibility. The enclosing savepoint owns these rows;
+    // concrete operations are recorded once and replayed as owned companions.
+    pub(crate) fn preview_callback(&mut self, mut operation: Operation) -> Result<Vec<Operation>> {
         crate::defaults::fill_operation(self.schema, &mut operation);
         normalize(self.schema, &mut operation)?;
         let key = self
@@ -597,7 +470,7 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(operations)
     }
-    /// A local write that is never sent: it moves the truth along with the row.
+    // A local write that is never sent: it moves the truth along with the row.
     pub fn direct(&mut self, mut operation: Operation) -> Result<()> {
         crate::defaults::fill_operation(self.schema, &mut operation);
         normalize(self.schema, &mut operation)?;
@@ -616,32 +489,27 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         self.direct_one(operation)
     }
-    /// On a dirty record the write is retained after everything already
-    /// written, so settling earlier work neither undoes nor reorders it; on a
-    /// clean record its operation is retained separately for replica release.
+    // On a dirty record the write is retained after everything already
+    // written, so settling earlier work neither undoes nor reorders it; on a
+    // clean record its operation is retained separately for replica release.
     fn direct_one(&mut self, operation: Operation) -> Result<()> {
         let key = self
             .schema
             .record_key(&operation.model, &operation.identity)?;
         let is_dirty = self.dirty(&key)?;
         self.apply_main(&operation)?;
-        self.direct_evidence04(&key)?;
+        self.direct_evidence05(&key)?;
         if is_dirty {
             let after = self.last_ordinal()?;
             self.insert_local_write(after, None, LocalWriteKind::Independent, &operation)?;
         } else {
-            if self.is05()? {
-                self.allocate05("next_local_sequence")?;
-            }
+            self.allocate05("next_local_sequence")?;
             self.retain_local_operation(&key, &operation)?;
         }
         Ok(())
     }
-    /// Stop following a scope, whichever subscription it holds; whether one
-    /// was removed. Records it delivered stay: a scope is a delivery path,
-    /// not an owner, so local content, stamps, before images and pending
-    /// operations are all retained.
-    pub fn unsubscribe(&mut self, scope: &str) -> Result<bool> {
-        self.remove_subscription(scope, None)
-    }
+    // Stop following a scope, whichever subscription it holds; whether one
+    // was removed. Records it delivered stay: a scope is a delivery path,
+    // not an owner, so local content, stamps, before images and pending
+    // operations are all retained.
 }

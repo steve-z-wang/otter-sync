@@ -37,7 +37,7 @@ def snippets(language, sources=None, *, context='ordinary'):
         pattern = r'^(?P<indent> *)```' + fences + r'(?P<meta>[^\n]*)\n(?P<code>.*?)^(?P=indent)```'
         for match in re.finditer(pattern, text, re.M | re.S):
             meta = match['meta'].strip()
-            actual_context = 'operation' if meta == 'title="action-contract"' else 'v04' if meta == 'title="v04-sdk"' else 'ordinary'
+            actual_context = 'operation' if meta == 'title="action-contract"' else 'v05' if meta == 'title="v05-sdk"' else 'ordinary'
             if actual_context != context:
                 continue
             code = re.sub(r'^import .*?;\n', '', textwrap.dedent(match['code']), flags=re.M | re.S)
@@ -181,13 +181,13 @@ declare function loadVisibleTodo(tx: Tx, userId: string, id: TodoIdentity): Prom
             subprocess.run([str(ROOT / 'target/debug/axton'), 'compile', str(directory),
                             str(directory / 'generated')], cwd=ROOT, check=True)
             print(f'Compiled schema from {source}')
-    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/v04-sdk') as temp:
+    with tempfile.TemporaryDirectory(prefix='.docs-check-', dir=ROOT / 'integration/v05-sdk') as temp:
         directory = Path(temp)
         ts = directory / 'examples.mts'
-        ts.write_text("import type { GeneratedClient } from '../client.ts';\ndeclare const client: GeneratedClient;\n" + '\n'.join(f'// {source}\nasync function example{i}() {{\n{code}\n}}' for i, (source, code) in enumerate(snippets('ts', context='v04'))))
+        ts.write_text("import type { GeneratedClient } from '../client.ts';\ndeclare const client: GeneratedClient;\n" + '\n'.join(f'// {source}\nasync function example{i}() {{\n{code}\n}}' for i, (source, code) in enumerate(snippets('ts', context='v05'))))
         subprocess.run([str(ROOT / 'node_modules/.bin/tsc'), *TSC_FLAGS, str(ts)], cwd=ROOT, check=True)
         dart = directory / 'examples.dart'
-        dart.write_text("// ignore_for_file: unused_local_variable\nimport '../generated.dart';\nlate GeneratedClient client;\n" + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}' for i, (source, code) in enumerate(snippets('dart', context='v04'))))
+        dart.write_text("// ignore_for_file: unused_local_variable\nimport '../generated.dart';\nlate GeneratedClient client;\n" + '\n'.join(f'// {source}\nFuture<void> example{i}() async {{\n{code}\n}}' for i, (source, code) in enumerate(snippets('dart', context='v05'))))
         subprocess.run(['dart', 'analyze', str(dart)], cwd=ROOT / 'packages/dart', check=True)
     check_load_guide()
     print(f"Typechecked {len(snippets('ts')) + len(snippets('ts', BACKEND_SOURCES))} TypeScript, {len(snippets('ts', context='operation')) + len(snippets('ts', BACKEND_SOURCES, context='operation'))} Mutation/Query TypeScript, {len(snippets('dart'))} Dart and {len(snippets('dart', context='operation'))} Mutation/Query Dart documentation snippets.")

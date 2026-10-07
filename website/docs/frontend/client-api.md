@@ -215,11 +215,11 @@ Only named Mutations are durable remote writes. The first await commits the owne
 | `client.queries.find(args, options?)` | `FindOutput` | Validated invocation snapshot and permitted cache writes committed |
 | `client.fetch.entry(identity, options?)` | `Entry` or null | Validated Loader snapshot and permitted cache writes committed |
 
-The examples use [the typed SDK fixture](https://github.com/zanminwang/axton/tree/main/integration/v04-sdk).
+The examples use [the typed SDK fixture](https://github.com/zanminwang/axton/tree/main/integration/v05-sdk).
 
 === "TypeScript"
 
-    ```ts title="v04-sdk"
+    ```ts title="v05-sdk"
     const call = await client.mutations.publish(async tx => {
       const draft = await tx.models.draft.get({ id: 'draft-1' });
       if (!draft) throw Error('draft missing');
@@ -233,7 +233,7 @@ The examples use [the typed SDK fixture](https://github.com/zanminwang/axton/tre
 
 === "Flutter"
 
-    ```dart title="v04-sdk"
+    ```dart title="v05-sdk"
     final call = await client.mutations.publish.withTransaction((tx) async {
       final draft = await tx.models.draft.get(const DraftIdentity(id: 'draft-1'));
       if (draft == null) throw StateError('draft missing');
@@ -258,14 +258,14 @@ A returned snapshot can differ from current Store state: Stream authority, tombs
 
 === "TypeScript"
 
-    ```ts title="v04-sdk"
+    ```ts title="v05-sdk"
     const snapshot = await client.queries.find({ id: 'entry-1' }, { store: false });
     const entry = await client.fetch.entry({ id: 'entry-1' }, { store: false });
     ```
 
 === "Flutter"
 
-    ```dart title="v04-sdk"
+    ```dart title="v05-sdk"
     final snapshot = await client.queries.find(id: 'entry-1', store: false);
     final entry = await client.fetch.entry(const EntryIdentity(id: 'entry-1'), store: false);
     ```

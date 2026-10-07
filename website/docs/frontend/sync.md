@@ -18,7 +18,7 @@ A refusal removes that call's owned optimism and companions while retaining late
 
 Pause the connection to keep local work available while delaying network delivery:
 
-```ts title="v04-sdk"
+```ts title="v05-sdk"
 await client.connection!.pause();
 const call = await client.mutations.publish(async tx => {
   await tx.models.draft.delete({ id: 'draft-1' });

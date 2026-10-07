@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createClient } from "../../../packages/client-js/runtime.mts";
 
 export function invocationTests(Transaction) {
-  function fixture() {
+  function fixture(connected = false) {
     let wake;
     const events = [],
       requests = [];
@@ -45,7 +45,13 @@ export function invocationTests(Transaction) {
     };
     return {
       Client: createClient(carrier, Transaction, () => {
-        throw Error("offline open connected");
+        if (!connected) throw Error("offline open connected");
+        return {
+          open() {},
+          async push() {
+            throw Error("no network effects expected");
+          },
+        };
       }),
       requests,
       get open() {
@@ -65,6 +71,17 @@ export function invocationTests(Transaction) {
     assert.equal(f.open.binding, undefined);
     assert.equal(f.open.projectionGeneration, "1");
     assert.equal(c.connection, undefined);
+    await c.close();
+  });
+  test("connection projection generation is forwarded to the internal open", async () => {
+    const f = fixture(true);
+    const c = await f.Client.open({
+      path: "test.sqlite",
+      schema: {},
+      stream: "User:u",
+      connection: { url: "unused", token: "x", projectionGeneration: "3" },
+    });
+    assert.equal(f.open.projectionGeneration, "3");
     await c.close();
   });
   test("each Query invocation submits a fresh task with store policy and business arguments", async () => {

@@ -128,7 +128,6 @@ class Client implements WritePort, SubmitMutationPort {
     required Map<String, dynamic> schema,
     required String stream,
     StoreConnection? connection,
-    String? projectionGeneration,
     String? libraryPath,
     Carrier? carrier,
     Map<String, PrerequisiteHandler>? prerequisites,
@@ -140,8 +139,7 @@ class Client implements WritePort, SubmitMutationPort {
       path: path,
       schema: schema,
       stream: stream,
-      projectionGeneration:
-          projectionGeneration ?? connection?.projectionGeneration ?? '1',
+      projectionGeneration: connection?.projectionGeneration ?? '1',
       libraryPath: libraryPath,
       carrier: carrier,
       prerequisiteHandlers: required.keys.toList(),

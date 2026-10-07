@@ -22,6 +22,22 @@ void main() {
       await client.close();
     },
   );
+  test('connection projection generation is forwarded internally', () async {
+    final carrier = FakeCarrier();
+    final client = await Client.open(
+      path: 'unused',
+      schema: {},
+      stream: 'User:u',
+      carrier: carrier,
+      connection: StoreConnection(
+        url: 'http://unused',
+        token: () => 'x',
+        projectionGeneration: '3',
+      ),
+    );
+    expect(carrier.openedRequest['projectionGeneration'], '3');
+    await client.close();
+  });
   test(
     'identical Query invocations independently submit store-only tasks',
     () async {

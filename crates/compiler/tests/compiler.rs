@@ -608,6 +608,8 @@ fn generated_clients_expose_one_server_connection() {
         ts.contains("stream:string; connection?:StoreConnection"),
         "{ts}"
     );
+    assert!(!ts.contains("projectionGeneration"), "{ts}");
+    assert!(!dart.contains("projectionGeneration"), "{dart}");
     assert!(ts.contains("Client.open({...options,schema})"), "{ts}");
     assert!(
         dart.contains("required String stream, StoreConnection? connection"),

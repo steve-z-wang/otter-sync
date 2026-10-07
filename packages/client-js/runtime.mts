@@ -397,7 +397,6 @@ export function createClient<
       schema: object;
       stream: string;
       connection?: StoreConnection;
-      projectionGeneration?: string;
       prerequisites?: Record<string, PrerequisiteHandler>;
     }) {
       if (options.connection && "identity" in options.connection)
@@ -410,10 +409,7 @@ export function createClient<
           path: options.path,
           schema: options.schema,
           stream: options.stream,
-          projectionGeneration:
-            options.projectionGeneration ??
-            options.connection?.projectionGeneration ??
-            "1",
+          projectionGeneration: options.connection?.projectionGeneration ?? "1",
           prerequisiteHandlers: Object.keys(required),
         },
         (bridge) => {

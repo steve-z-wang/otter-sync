@@ -1,8 +1,11 @@
 // Every marked line must fail for its stated analyzer code.
 // ignore_for_file: unused_local_variable
 import '../generated.dart';
+import 'package:axton/axton.dart' show Client;
 
 Future<void> misuse(GeneratedClient client, ApplicationTransaction tx, CompanionContext local, Entry row) async {
+ Client.open(path:'unused',schema:{},stream:'User:u',projectionGeneration:'2'); // reject: UNDEFINED_NAMED_PARAMETER
+ GeneratedClient.open(path:'unused',stream:'User:u',projectionGeneration:'2'); // reject: UNDEFINED_NAMED_PARAMETER
  client.queries.readEntry(id:row.id,once:false); // reject: UNDEFINED_NAMED_PARAMETER
  client.queries.readEntry(id:row.id,refresh:false); // reject: UNDEFINED_NAMED_PARAMETER
  client.queries.invalidate; // reject: UNDEFINED_GETTER

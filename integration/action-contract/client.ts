@@ -12,7 +12,7 @@ export class GeneratedClient {
  readonly queries: ReturnType<typeof makeQueries>;
  readonly fetch: FetchModels;
  private constructor(client: Client) { this.client=client; this.models=liveModels(client); this.mutations=makeMutations(client); this.queries=makeQueries(client); this.fetch=fetchModels(client); }
- static async open(options: {path:string; stream:string; connection?:StoreConnection; projectionGeneration?:string; prerequisites?:Record<string,PrerequisiteHandler>}):Promise<GeneratedClient> { return new GeneratedClient(await Client.open({...options,schema})); }
+ static async open(options: {path:string; stream:string; connection?:StoreConnection; prerequisites?:Record<string,PrerequisiteHandler>}):Promise<GeneratedClient> { return new GeneratedClient(await Client.open({...options,schema})); }
  bootstrap():Promise<void> { return this.client.bootstrap(); }
  connect(server:ServerOptions,options?:ConnectionOptions):Promise<Connection> { return this.client.connect(server,options); }
  resetStore(options:{discardPending?:boolean}={}):Promise<void> { return this.client.resetStore(options); }

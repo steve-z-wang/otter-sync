@@ -1119,3 +1119,58 @@ fn legacy_drop_retains_own_refusal_until_explicit_acknowledgement() {
     );
     assert!(client.freeze_batch05().unwrap().is_none());
 }
+
+#[test]
+fn dismiss_missing_is_noop_but_pending_and_accepted_outcomes_are_protected() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db");
+    let mut descriptor: Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    descriptor["actions"] = json!([{"name":"Ping","version":1,"inputs":[],"outputs":[]}]);
+    let schema = Schema::from_value(descriptor).unwrap();
+    let mut client =
+        Client::open05(SqliteStore::open(&path).unwrap(), schema.clone(), "User:u").unwrap();
+    client.initialize_stream05(0).unwrap();
+    client.transaction(|tx| tx.dismiss_rejection05(99)).unwrap();
+    let call = client
+        .transaction(|tx| tx.submit_mutation05("Ping", 1, json!({}), vec![]))
+        .unwrap();
+    assert!(
+        client
+            .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+            .is_err()
+    );
+    let batch = client.freeze_batch05().unwrap().unwrap();
+    client
+        .acknowledge_batch05(&ack(
+            &batch,
+            v05::MutationOutcome::Accepted {
+                sync_cursor: 0,
+                result: Value::Null,
+                targets: vec![],
+            },
+        ))
+        .unwrap();
+    assert!(
+        client
+            .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+            .is_err()
+    );
+    client.settle_ready05().unwrap();
+    let completed = client.call_completion05(&call.call_id).unwrap();
+    assert!(completed.is_some());
+    assert!(
+        client
+            .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+            .is_err()
+    );
+    drop(client);
+    let mut client = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
+    client.transaction(|tx| tx.dismiss_rejection05(99)).unwrap();
+    assert_eq!(client.call_completion05(&call.call_id).unwrap(), completed);
+    assert!(
+        client
+            .transaction(|tx| tx.dismiss_rejection05(call.ordinal))
+            .is_err()
+    );
+}

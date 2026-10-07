@@ -728,6 +728,15 @@ impl<S: ClientStore> Client<S> {
 
 impl<S: ClientStore> Engine<'_, S> {
     fn acknowledge_rejection05(&mut self, id: u64) -> Result<()> {
+        if self
+            .scalar(
+                "SELECT 1 FROM axton_mutation_queue WHERE id=?",
+                &[json!(id)],
+            )?
+            .is_none()
+        {
+            return Ok(());
+        }
         if self.scalar("SELECT 1 FROM axton_mutation_queue WHERE id=? AND rejection_code IS NOT NULL AND reconciled=1", &[json!(id)])?.is_none() {
             return Err(invalid("completed rejection required"));
         }

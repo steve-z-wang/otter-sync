@@ -15,12 +15,14 @@ Future<void> main(List<String> args) async {
   final created = DateTime.utc(2026, 9, 28, 12, 34, 56, 789, 123);
   final moved = DateTime(2026, 9, 28, 15, 0, 0, 1, 999);
   final at = DateTime.utc(2026, 9, 28, 16, 0, 0, 2, 500);
+  final diagnostics = <String>[];
   Future<app.GeneratedClient> open() => app.GeneratedClient.open(
     path: path,
     stream: 'User:alice',
     connection: sdk.StoreConnection(
       url: url,
       token: () => 'alice',
+      onError: (error) => diagnostics.add(error.toString()),
     ),
     libraryPath: library,
   );
@@ -74,7 +76,7 @@ Future<void> main(List<String> args) async {
     }
     check(
       (await client.syncState())['pending'] == 0,
-      'DateTime durable queue settled',
+      'DateTime durable queue settled: ${jsonEncode(await client.readSql("SELECT id,name,batch_id,result,reconciled FROM axton_mutation_queue ORDER BY id"))}; diagnostics=$diagnostics',
     );
     check(
       (await client.models.note.get(

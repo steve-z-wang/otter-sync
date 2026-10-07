@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/zanminwang/axton/compare/v0.4.0...v0.4.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* correct Delta handoff, Live close and Dart rejection ([#243](https://github.com/zanminwang/axton/issues/243)) ([d677126](https://github.com/zanminwang/axton/commit/d677126ec6de1885dbdeebbb932dcf886805566b))
+
 ## [0.4.0](https://github.com/zanminwang/axton/compare/v0.3.0...v0.4.0) (2026-10-06)
 
 

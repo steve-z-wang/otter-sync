@@ -126,11 +126,11 @@ async function fixture(n, unique = true) {
     [n],
   );
   await q(
-    "INSERT INTO axton_record(model,identity_key,stamp) SELECT 'Entry',json_build_object('id','e'||i)::text::jsonb::text ,1 FROM generate_series(1,$1) i",
+    "INSERT INTO axton_record(model,identity_key) SELECT 'Entry',json_build_object('id','e'||i)::text::jsonb::text FROM generate_series(1,$1) i",
     [0],
   ); // canonical keys without pg JSON spacing
   await q(
-    "INSERT INTO axton_record(model,identity_key,stamp) SELECT 'Entry','{\"id\":\"e'||i||'\"}',1 FROM generate_series(1,$1) i",
+    "INSERT INTO axton_record(model,identity_key) SELECT 'Entry','{\"id\":\"e'||i||'\"}' FROM generate_series(1,$1) i",
     [n],
   );
   await q("INSERT INTO axton_stream VALUES('User:alice',45)");
@@ -513,7 +513,7 @@ test("capacity refusal preserves existing plan and stages no partial payload", a
     "INSERT INTO delivery_business SELECT 'more'||i,'morevalue'||i FROM generate_series(1,100000) i",
   );
   await q(
-    "INSERT INTO axton_record(model,identity_key,stamp) SELECT 'Entry','{\"id\":\"more'||i||'\"}',1 FROM generate_series(1,100000) i",
+    "INSERT INTO axton_record(model,identity_key) SELECT 'Entry','{\"id\":\"more'||i||'\"}' FROM generate_series(1,100000) i",
   );
   await q(
     "INSERT INTO axton_stream_record SELECT 'User:alice',id,45,'upsert' FROM axton_record WHERE id>1",
@@ -788,7 +788,7 @@ test("Query carrier normalizes result snapshots without enrollment; refusal roll
 test("retained read context repairs only its known Models while covering unrelated publications", async () => {
   await fixture(1);
   await q(
-    "INSERT INTO axton_record(model,identity_key,stamp) VALUES('Extra','{\"id\":\"extra\"}',1)",
+    "INSERT INTO axton_record(model,identity_key) VALUES('Extra','{\"id\":\"extra\"}')",
   );
   await q(
     "INSERT INTO axton_stream_record SELECT 'User:alice',id,45,'upsert' FROM axton_record WHERE model='Extra'",
@@ -947,7 +947,7 @@ test("retained cascade metadata keeps related distinct positions in one componen
   await fixture(501);
   await q("UPDATE axton_stream_record SET cursor=record_id");
   await q(
-    "INSERT INTO axton_record(model,identity_key,stamp) VALUES('Extra','{\"id\":\"e1\"}',1)",
+    "INSERT INTO axton_record(model,identity_key) VALUES('Extra','{\"id\":\"e1\"}')",
   );
   await q(
     "INSERT INTO axton_stream_record SELECT 'User:alice',id,502,'upsert' FROM axton_record WHERE model='Extra'",

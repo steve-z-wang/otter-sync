@@ -1,113 +1,32 @@
-DO $$
-BEGIN
- IF EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_channel','axton_channel_member','axton_channel_tag','axton_channel_member_tag','axton_channel_log','axton_scope','axton_scope_member','axton_scope_tag','axton_scope_member_tag','axton_scope_log']) AND relkind='r') THEN
-  RAISE EXCEPTION 'installed legacy framework layout: apply forward migrations before migration.sql';
+-- Fresh protocol-5 namespaces only. Installed historical tables stay unchanged.
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_client','axton_call','axton_stream_member','axton_stream_log','axton_publication_group','axton_bootstrap_manifest','axton_channel','axton_scope','axton_bootstrap_identity','axton_bootstrap_range','axton_channel_member','axton_channel_log','axton_channel_tag','axton_scope_member','axton_scope_log','axton_scope_tag','axton_membership','axton_invalidation']) AND relkind='r') OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND ((table_name='axton_record' AND column_name='stamp') OR (table_name='axton_publication_fence' AND column_name='held'))) THEN
+  RAISE EXCEPTION 'installed legacy framework layout: protocol 5 requires a fresh namespace; existing data is unchanged';
  END IF;
-END
-$$;
+END $$;
 -- AXTON's framework tables for a new database. Apply the whole file at once
 -- (psql, or one simple-protocol query): the trigger functions are
 -- dollar-quoted. Re-applying it changes nothing. A database installed from
--- an earlier layout requires its forward upgrade before this file.
-CREATE TABLE IF NOT EXISTS axton_client (
- client_id text PRIMARY KEY,
- owner_id text NOT NULL,
- sequence bigint NOT NULL DEFAULT 0 CHECK(sequence >= 0 AND sequence <= 9007199254740991),
- receipt text
-);
-CREATE TABLE IF NOT EXISTS axton_call (
- owner_id text NOT NULL,
- call_id text NOT NULL,
- request text NOT NULL,
- response text,
- claim_tx xid8 NOT NULL DEFAULT pg_current_xact_id(),
- PRIMARY KEY(owner_id,call_id)
-);
+-- an earlier layout must use a separately adopted fresh namespace.
 CREATE TABLE IF NOT EXISTS axton_stream (
  stream text PRIMARY KEY,
  head bigint NOT NULL CHECK(head >= 0 AND head <= 9007199254740991)
 );
--- One row per record ever stamped or represented in a Stream. `identity` is
+-- One stable catalog row per represented record. `identity` is
 -- the decoded canonical `identity_key`, so a removal needs no domain row.
 CREATE TABLE IF NOT EXISTS axton_record (
  model text NOT NULL,
  identity_key text NOT NULL,
- stamp bigint NOT NULL CHECK(stamp > 0 AND stamp <= 9007199254740991),
  id bigint GENERATED ALWAYS AS IDENTITY,
  identity jsonb GENERATED ALWAYS AS (identity_key::jsonb) STORED,
  CONSTRAINT axton_record_pkey PRIMARY KEY(id),
  CONSTRAINT axton_record_model_identity_key_key UNIQUE(model,identity_key),
  CONSTRAINT axton_record_identity_object CHECK(jsonb_typeof(identity) = 'object')
 );
--- Durable tracking, including when a viewer Loader currently answers null.
--- Historical withdrawals are repaired by 2026-10-01-local-authority.sql.
-CREATE TABLE IF NOT EXISTS axton_stream_member (
- id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
- stream text NOT NULL REFERENCES axton_stream(stream),
- record_id bigint NOT NULL REFERENCES axton_record(id),
- CONSTRAINT axton_stream_member_stream_record_id_key UNIQUE(stream,record_id)
-);
-CREATE INDEX IF NOT EXISTS axton_stream_member_record
- ON axton_stream_member(record_id, stream);
--- The latest deliverable state of each pair, whose `(stream, cursor)` orders scans.
-CREATE TABLE IF NOT EXISTS axton_stream_log (
- stream text NOT NULL REFERENCES axton_stream(stream),
- record_id bigint NOT NULL REFERENCES axton_record(id),
- cursor bigint NOT NULL CHECK(cursor > 0 AND cursor <= 9007199254740991),
- kind text NOT NULL CHECK(kind IN ('upsert','remove')),
- PRIMARY KEY(stream,record_id),
- CONSTRAINT axton_stream_log_stream_cursor_key UNIQUE(stream,cursor)
-);
--- A tracking row never moves between Streams or changes identity.
-CREATE OR REPLACE FUNCTION axton_stream_owner_fixed() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
- IF NEW.id IS DISTINCT FROM OLD.id OR NEW.stream IS DISTINCT FROM OLD.stream OR NEW.record_id IS DISTINCT FROM OLD.record_id THEN
-  RAISE EXCEPTION 'tracking row cannot move' USING ERRCODE = 'check_violation';
- END IF;
- RETURN NEW;
-END
-$$;
-DO $$ BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='axton_stream_member'::regclass AND tgname='axton_stream_member_fixed') THEN
- CREATE TRIGGER axton_stream_member_fixed BEFORE UPDATE ON axton_stream_member FOR EACH ROW EXECUTE FUNCTION axton_stream_owner_fixed();
- END IF;
-END $$;
-
 -- One namespace-wide publication serialization fence, retained across restarts.
-CREATE TABLE IF NOT EXISTS axton_publication_fence (id integer PRIMARY KEY CHECK(id=1), held boolean NOT NULL DEFAULT true);
+CREATE TABLE IF NOT EXISTS axton_publication_fence (id integer PRIMARY KEY CHECK(id=1));
 INSERT INTO axton_publication_fence(id) VALUES(1) ON CONFLICT(id) DO NOTHING;
 
--- Original publication transaction spans/keys are durable coverage evidence.
--- Never garbage-collect by age: compacted members may still need this group.
-CREATE TABLE IF NOT EXISTS axton_publication_group (
- stream text NOT NULL REFERENCES axton_stream(stream),
- transaction_id xid8 NOT NULL DEFAULT pg_current_xact_id(),
- from_cursor bigint NOT NULL CHECK(from_cursor>=0),
- through_cursor bigint NOT NULL CHECK(through_cursor>from_cursor),
- keys jsonb NOT NULL CHECK(jsonb_typeof(keys)='array'),
- PRIMARY KEY(stream,transaction_id), UNIQUE(stream,through_cursor)
-);
-
-CREATE TABLE IF NOT EXISTS axton_bootstrap_manifest (
- owner_id text NOT NULL, manifest_id text NOT NULL, context jsonb NOT NULL,
- start_cursor bigint NOT NULL CHECK(start_cursor>=0), total bigint NOT NULL CHECK(total>=0),
- models jsonb NOT NULL, tail bigint CHECK(tail>=start_cursor),
- PRIMARY KEY(owner_id,manifest_id)
-);
-CREATE TABLE IF NOT EXISTS axton_bootstrap_identity (
- owner_id text NOT NULL,manifest_id text NOT NULL,ordinal bigint NOT NULL CHECK(ordinal>=0),
- model text NOT NULL,identity_key text NOT NULL,
- PRIMARY KEY(owner_id,manifest_id,ordinal), UNIQUE(owner_id,manifest_id,model,identity_key),
- FOREIGN KEY(owner_id,manifest_id) REFERENCES axton_bootstrap_manifest(owner_id,manifest_id)
-);
-CREATE TABLE IF NOT EXISTS axton_bootstrap_range (
- owner_id text NOT NULL,manifest_id text NOT NULL,from_ordinal bigint NOT NULL,to_ordinal bigint NOT NULL CHECK(to_ordinal>=from_ordinal),
- PRIMARY KEY(owner_id,manifest_id,from_ordinal,to_ordinal),
- FOREIGN KEY(owner_id,manifest_id) REFERENCES axton_bootstrap_manifest(owner_id,manifest_id)
-);
-
--- Protocol 5 is additive while protocol 4 remains operational.
 CREATE TABLE IF NOT EXISTS axton_store (
  id text PRIMARY KEY,
  principal text NOT NULL,

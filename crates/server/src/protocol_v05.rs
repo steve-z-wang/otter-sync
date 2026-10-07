@@ -88,9 +88,6 @@ impl<'a, H: Host> Publication05<'a, H> {
     }
 }
 impl<H: Host> Host for Publication05<'_, H> {
-    fn publication05(&self) -> bool {
-        true
-    }
     fn call(
         &self,
         mut request: Value,

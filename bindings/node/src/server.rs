@@ -50,149 +50,6 @@ fn config(raw: &str) -> Result<axton_server::Config> {
 pub fn validate_config(config_json: String) -> Result<()> {
     config(&config_json).map(|_| ())
 }
-#[napi]
-pub async fn process_push(
-    config_json: String,
-    owner: String,
-    request_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    let decoded = config(&config_json)?;
-    let action_batch = serde_json::from_str::<Value>(&request_json).ok()
-        .and_then(|request| request.get("mutations")?.as_array().cloned())
-        .is_some_and(|calls| calls.iter().any(|call| call.get("callId").is_some()));
-    if action_batch {
-        axton_server::process_action_push(&decoded, &owner, request_json.as_bytes(), &CallbackHost(callback)).await.map_err(reason)
-    } else {
-        axton_server::process_push(&decoded, &owner, request_json.as_bytes(), &CallbackHost(callback)).await.map_err(reason)
-    }
-}
-#[napi]
-pub async fn process_action(
-    config_json: String,
-    owner: String,
-    request_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    axton_server::process_action(&config(&config_json)?, &owner, request_json.as_bytes(), &CallbackHost(callback)).await.map_err(reason)
-}
-/// Structural validation of one `POST /sync/loads` envelope; answers each
-/// item's canonical JSON in request order. The carrier runs each item through
-/// `process_load` in its own transaction and never accepts a looser envelope.
-#[napi]
-pub fn validate_load_batch(request_json: String) -> Result<Vec<String>> {
-    axton_server::validate_load_batch(request_json.as_bytes()).map_err(reason)
-}
-/// What escaped one Load item's transaction: `kind` is `engine` (with the
-/// engine error's `code` and `message`), `conflict` or `unavailable`.
-#[napi(object)]
-pub struct LoadFault {
-    pub kind: String,
-    pub code: Option<String>,
-    pub message: Option<String>,
-}
-/// One Load item as its transaction ended: exactly one of the page
-/// `processLoad` answered, or the fault that escaped the transaction.
-#[napi(object)]
-pub struct LoadItemAnswer {
-    pub page: Option<String>,
-    pub fault: Option<LoadFault>,
-}
-/// The one bounded `{"loads":[…]}` response to a batch: the canonical items
-/// `validateLoadBatch` answered and each item's answer, in the same order.
-/// The engine classifies every fault (`retryable` or unsaved `failed`) and
-/// checks every page against its item.
-#[napi]
-pub fn encode_load_batch(items: Vec<String>, answers: Vec<LoadItemAnswer>) -> Result<String> {
-    let answers = answers
-        .into_iter()
-        .map(|answer| match answer {
-            LoadItemAnswer { page: Some(page), fault: None } => {
-                Ok(axton_server::LoadItemAnswer::Page(page))
-            }
-            LoadItemAnswer { page: None, fault: Some(fault) } => Ok(axton_server::LoadItemAnswer::Fault(
-                match (fault.kind.as_str(), fault.code, fault.message) {
-                    ("engine", Some(code), Some(message)) => {
-                        axton_server::LoadFault::Engine { code, message }
-                    }
-                    ("conflict", None, None) => axton_server::LoadFault::Conflict,
-                    ("unavailable", None, None) => axton_server::LoadFault::Unavailable,
-                    (kind, _, _) => return Err(internal(format!("invalid Load fault {kind}"))),
-                },
-            )),
-            _ => Err(internal("a Load answer is exactly one page or fault")),
-        })
-        .collect::<Result<Vec<_>>>()?;
-    axton_server::encode_load_batch(&items, answers).map_err(reason)
-}
-/// Executes or replays one Load page (one validated batch item) in the
-/// host's transaction and answers its page JSON.
-#[napi]
-pub async fn process_load(
-    config_json: String,
-    owner: String,
-    item_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    axton_server::process_load(
-        &config(&config_json)?,
-        &owner,
-        item_json.as_bytes(),
-        &CallbackHost(callback),
-    )
-    .await
-    .map_err(reason)
-}
-/// One Model Fetch (`POST /sync/fetch`) in the caller's application transaction.
-#[napi]
-pub async fn process_fetch(
-    config_json: String,
-    owner: String,
-    request_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    axton_server::process_fetch(
-        &config(&config_json)?,
-        &owner,
-        request_json.as_bytes(),
-        &CallbackHost(callback),
-    )
-    .await
-    .map_err(reason)
-}
-#[napi]
-pub async fn process_pull(
-    config_json: String,
-    owner: String,
-    request_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    axton_server::process_stream_pull(
-        &config(&config_json)?,
-        &owner,
-        request_json.as_bytes(),
-        &CallbackHost(callback),
-    )
-    .await
-    .map_err(reason)
-}
-#[napi]
-pub async fn settle_external(
-    config_json: String,
-    settlement_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    let settlement = serde_json::from_str(&settlement_json).map_err(|e: serde_json::Error| {
-        reason(axton_server::Error::new(
-            axton_server::code::PUBLISH_INVALID,
-            e.to_string(),
-        ))
-    })?;
-    axton_server::settle_external(&config(&config_json)?, &settlement, &CallbackHost(callback))
-        .await
-        .map(|v| v.to_string())
-        .map_err(reason)
-}
 /// The open live sessions of this process, one `Subscriptions` per socket
 /// under a handle the host carries between native calls (like the client
 /// `RuntimeHost`). The controller is pure state, so the lock is held only for
@@ -226,13 +83,7 @@ pub async fn negotiate_live(
     callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
 ) -> Result<String> {
     let cfg=config(&config_json)?;
-    let value:serde_json::Value=serde_json::from_str(&request_json).map_err(internal)?;
-    let (subscriptions,actions)=if value["protocol"]==5 {
-       axton_server::live::negotiate05(&cfg,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)?
-    } else {
-       let negotiation=axton_server::live::negotiate(&cfg,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)?;
-       Subscriptions::open(negotiation)
-    };
+    let (subscriptions,actions)=axton_server::live::negotiate05(&cfg,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)?;
     let handle = {
         let mut sessions = live_sessions()?;
         sessions.next += 1;
@@ -268,51 +119,6 @@ pub fn live_close(handle: i64) -> Result<()> {
     }
     Ok(())
 }
-#[napi]
-pub async fn pull_live(
-    config_json: String,
-    owner: String,
-    cursors_json: String,
-    models_json: String,
-    callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
-) -> Result<String> {
-    // The engine validates the declaration and the cursors again when it
-    // decodes the pull.
-    let models: std::collections::BTreeMap<String, u64> = serde_json::from_str(&models_json)
-        .map_err(|_| {
-            reason(axton_server::Error::new(
-                axton_server::code::REQUEST_INVALID,
-                "invalid live models",
-            ))
-        })?;
-    let cursors: std::collections::BTreeMap<String, u64> = serde_json::from_str(&cursors_json)
-        .map_err(|_| {
-            reason(axton_server::Error::new(
-                axton_server::code::REQUEST_INVALID,
-                "invalid live cursors",
-            ))
-        })?;
-    let result = axton_server::live::stream_pull(
-        &config(&config_json)?,
-        &owner,
-        &cursors,
-        &models,
-        &CallbackHost(callback),
-    )
-    .await
-    .map_err(reason)?;
-    serde_json::to_string(&result).map_err(internal)
-}
-
-/// Same Model-only context derivation used by the offline client runtime.
-#[napi]
-pub fn server_materialization_id(config_json:String,projection_generation:String)->Result<String>{
-    axton_core_materialization(&config(&config_json)?,&projection_generation)
-}
-fn axton_core_materialization(config:&axton_server::Config,generation:&str)->Result<String>{
-    axton_server::materialization_id(config,generation).map_err(reason)
-}
-
 #[napi]
 pub fn validate_mutation_batch(config_json:String,request_json:String)->Result<String> {
  axton_server::validate_mutation_batch(&config(&config_json)?,request_json.as_bytes()).map_err(reason)

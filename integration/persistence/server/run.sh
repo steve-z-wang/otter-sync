@@ -3,7 +3,10 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$root/scripts/env.sh"
 node "$root/bindings/node/build.mjs"
-(cd "$root/integration/bindings/node" && npm ci && npm run generate)
+if [[ -z "${AXTON_PRISMA_CLIENT:-}" ]]; then
+ (cd "$root/integration/bindings/node" && npm ci && npm run generate)
+ export AXTON_PRISMA_CLIENT="$root/integration/bindings/node/generated/client"
+fi
 cluster="$(mktemp -d "${TMPDIR:-/tmp}/axton-server-pg.XXXXXX")"
 cleanup(){ pg_ctl -D "$cluster/data" -m immediate stop >/dev/null 2>&1 || true; rm -rf -- "$cluster"; }
 trap cleanup EXIT
@@ -11,32 +14,10 @@ port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));prin
 initdb -D "$cluster/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$cluster/data" -l "$cluster/log" -o "-p $port -h 127.0.0.1 -k $cluster" start >/dev/null
 export DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres"
-# The declaration collector needs no database.
-node --test "$root/integration/persistence/server/effects.test.mjs" "$root/integration/persistence/server/protocol-admission.test.mjs"
-# Test files run in parallel by default; both apply migration.sql to one cluster, so keep them sequential.
-# A test that waits on a transaction another one left open fails at the timeout, and the
-# runner exits rather than waiting on a pool that cannot drain.
+# Pure declaration, host codec, startup and retry gates need no database.
+node --test "$root/integration/persistence/server/effects.test.mjs" "$root/integration/persistence/server/host-contract.test.mjs" "$root/integration/persistence/server/driver-runtime.test.mjs" "$root/integration/persistence/server/startup.test.mjs"
+# Each file owns its fixtures; serialize files sharing the fresh namespace.
 test=(node --test --test-timeout=300000 --test-force-exit)
-"${test[@]}" "$root/integration/persistence/server/driver-conformance.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/runtime.test.mjs" "$root/integration/persistence/server/host-contract.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/live-shutdown.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/actions.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/membership.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/loads.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/fetch.test.mjs"
-"${test[@]}" "$root/integration/persistence/server/stream-tracking.test.mjs"
-# Protocol 4 starts from an empty publication history. Legacy tests above may
-# leave compacted positions without protocol-4 group evidence, so use a fresh
-# database in the same disposable cluster for its vertical and adapter gates.
-createdb -h 127.0.0.1 -p "$port" axton_protocol4
-protocol4_database_url="${DATABASE_URL%/postgres}/axton_protocol4"
-DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04.test.mjs"
-DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/protocol-v04-drivers.test.mjs"
-DATABASE_URL="$protocol4_database_url" "${test[@]}" "$root/integration/persistence/server/publication-closure.test.mjs"
-
-# Protocol 5 keeps an independent fresh database and its legacy gates above.
-createdb -h 127.0.0.1 -p "$port" axton_protocol5
-DATABASE_URL="${DATABASE_URL%/postgres}/axton_protocol5" "${test[@]}" "$root/integration/persistence/server/protocol-v05-batch.test.mjs"
-DATABASE_URL="${DATABASE_URL%/postgres}/axton_protocol5" "${test[@]}" "$root/integration/persistence/server/protocol-v05-drivers.test.mjs"
-
-DATABASE_URL="${DATABASE_URL%/postgres}/axton_protocol5" "${test[@]}" "$root/integration/persistence/server/protocol-v05-delivery.test.mjs"
+for file in namespace-and-locks historical-migrations live-shutdown protocol-v05-batch protocol-v05-drivers protocol-v05-delivery; do
+ "${test[@]}" "$root/integration/persistence/server/$file.test.mjs"
+done

@@ -132,6 +132,7 @@ let calls = 0,
   loads = 0,
   prepares = 0;
 let fault = "";
+let injectedError;
 function app(cfg = config, materializations = {}) {
   const options = {
     config: cfg,
@@ -165,7 +166,7 @@ function app(cfg = config, materializations = {}) {
         if (args.mode === "refuse") throw new MutationRejected("write.no");
         if (args.mode === "transient" && fault === "handler") {
           fault = "";
-          throw new Error("temporary handler crash");
+          throw injectedError ?? new Error("temporary handler crash");
         }
         return {};
       },
@@ -175,7 +176,7 @@ function app(cfg = config, materializations = {}) {
         loads++;
         if (fault === "loader") {
           fault = "";
-          throw new Error("temporary loader crash");
+          throw injectedError ?? new Error("temporary loader crash");
         }
         if (fault === "loader-refusal") {
           fault = "";
@@ -535,11 +536,10 @@ test("real publication fence serializes tracking against global invalidation and
   assert.equal(
     (
       await q(
-        "SELECT stamp FROM axton_record WHERE identity->>'id'='fence-record'",
+        "SELECT count(*) n FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='axton_record' AND column_name='stamp'",
       )
-    )[0].stamp,
-    "1",
-    "v05 invalidation relies on the real publication fence, not per-record stamps",
+    )[0].n,
+    "0",
   );
 });
 test("no-op with no Model targets accepts at head zero and replays without business execution", async () => {
@@ -774,6 +774,59 @@ test("HTTP Batch endpoint replays identical ack and answers changed immutable bo
     await server.close();
   }
 });
+test("raw SQLSTATE and wrapped Prisma retry errors survive Handler and Loader native callbacks", async () => {
+  const errors = [
+    { code: "40001" },
+    { code: "40P01" },
+    { code: "P2034" },
+    { code: "P2010", meta: { code: "40001" } },
+    {
+      code: "P2010",
+      meta: {
+        driverAdapterError: {
+          name: "DriverAdapterError",
+          cause: { kind: "TransactionWriteConflict" },
+        },
+      },
+    },
+  ];
+  try {
+    for (const kind of ["handler", "loader"])
+      for (const fields of errors) {
+        const s = store(),
+          before = calls;
+        injectedError = Object.assign(
+          new Error("injected native retry"),
+          fields,
+        );
+        fault = kind;
+        const ack = JSON.parse(
+          await app().push(
+            "alice",
+            JSON.stringify(batch(s, [kind === "handler" ? "transient" : "ok"])),
+          ),
+        );
+        assert.equal(ack.results.length, 1);
+        assert.equal(
+          calls,
+          before + 2,
+          "whole member transaction retries once",
+        );
+        assert.equal(
+          (
+            await q("SELECT count(*) n FROM v05_business WHERE id=$1", [
+              `${s}-1-0`,
+            ])
+          )[0].n,
+          "1",
+        );
+      }
+  } finally {
+    injectedError = undefined;
+    fault = "";
+  }
+});
+
 test("safe head overflow aborts business/result/progress atomically", async () => {
   const s = store(),
     r = batch(s);

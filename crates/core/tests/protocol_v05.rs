@@ -851,3 +851,15 @@ fn retained_mutation_descriptor_independent_digest_vector() {
         "aeb5c299c83ce9990ca03ab9f3928c7cc0d821949b510ade6d7144d936c8ff3b"
     );
 }
+#[test]
+fn protocol05_materialization_preserves_read_semantics_with_distinct_domain() {
+    let mut s: axton_core::Schema =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    let a = axton_core::v05::materialization_id(&s, "1").unwrap();
+    assert_ne!(a, axton_core::v04::materialization_id(&s, "1").unwrap());
+    s.models[0].fields.reverse();
+    assert_eq!(a, axton_core::v05::materialization_id(&s, "1").unwrap());
+    assert_ne!(a, axton_core::v05::materialization_id(&s, "2").unwrap());
+    s.models[0].bootstrap = !s.models[0].bootstrap;
+    assert_ne!(a, axton_core::v05::materialization_id(&s, "1").unwrap());
+}

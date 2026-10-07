@@ -805,30 +805,6 @@ pub(crate) fn dart_store_param(action: &Value) -> String {
     }
     name
 }
-/// The Dart named parameters for the `once` and `refresh` call-site
-/// controls beside the `taken` parameter names: `callOnce`/`callRefresh`
-/// when a business input already uses the plain name, then `$`-suffixed
-/// until unique, so the final parameter list never collides.
-pub(crate) fn dart_option_params(mut taken: Vec<String>) -> (String, String) {
-    let once = dart_unique_param(&mut taken, "once", "callOnce");
-    let refresh = dart_unique_param(&mut taken, "refresh", "callRefresh");
-    (once, refresh)
-}
-/// A Dart named parameter for a call-site control beside the `taken` names:
-/// `base`, or `fallback` when a business input already uses `base`, then
-/// `$`-suffixed until unique. The chosen name joins `taken`.
-pub(crate) fn dart_unique_param(taken: &mut Vec<String>, base: &str, fallback: &str) -> String {
-    let mut name = if taken.iter().any(|t| t == base) {
-        fallback.to_string()
-    } else {
-        base.to_string()
-    };
-    while taken.contains(&name) {
-        name.push('$');
-    }
-    taken.push(name.clone());
-    name
-}
 pub(crate) fn ts_action_encode_input(input: &Value, x: &str) -> String {
     if input["kind"] == "value" {
         let ty = if input["list"] == true {

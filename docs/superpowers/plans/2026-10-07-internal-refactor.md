@@ -109,7 +109,7 @@ Native Task/Effect/Event carriers remain in `crates/client/src/runtime/protocol.
 **Files**
 
 - Create: `crates/client/src/store05.rs`, `crates/client/src/mutation_queue.rs`, `crates/client/src/settlement05.rs`.
-- Modify: `crates/client/src/lib.rs`, `crates/client/src/ddl.rs`, `crates/client/src/mutate.rs`, `crates/client/src/queue.rs`, `crates/client/src/authority.rs`, `crates/client/src/rows.rs`, `crates/client/src/runtime/transactions.rs`.
+- Modify: `crates/client/src/lib.rs`, `crates/client/src/ddl.rs`, `crates/client/src/mutate.rs`, `crates/client/src/queue.rs`, `crates/client/src/authority.rs`, `crates/client/src/rows.rs`, `crates/client/src/runtime/transactions.rs`, `crates/sqlite/src/lib.rs`.
 - Create: `crates/sqlite/tests/protocol05_queue.rs`, `crates/sqlite/tests/protocol05_settlement.rs`.
 - Reuse behavioral fixtures from `crates/sqlite/tests/direct_writes.rs`, `protocol04_settlement.rs`, `protocol04_receipt_drain.rs`, `transaction_mutation_crash.rs`.
 
@@ -117,7 +117,7 @@ Native Task/Effect/Event carriers remain in `crates/client/src/runtime/protocol.
 
 **Produces:** transactional enqueue/reconstruction, Batch restore/freeze, receipt persistence and settlement operations for Task 5. Persisted truth lives in Store/MutationQueue/MutationQueueOperation; Call routing is a view of those rows.
 
-- [ ] Create the new-format Store tables from spec §4. Reject unsupported formats before any schema/data write; add file-hash verification of refusal.
+- [ ] Create the new-format Store tables from spec §4. Reject unsupported formats before any schema/data write or journal-mode mutation; add locked read-only format admission in SqliteStore before WAL initialization and file-hash verification of refusal.
 - [ ] Implement canonical input decomposition/reconstruction. Cover scalar, explicit null, omission, empty/nonempty Model arrays and relation slot binding. Device-only paths are null and never serialize to the request. Store the descriptor version, not a duplicate input blob.
 - [ ] Allocate Mutation IDs and operation order in the user transaction. Keep before images and the LocalWrite journal. Exercise nested rollback and provisional Call handles.
 - [ ] Implement Batch assignment with the following transaction rule; readiness includes existing prerequisite/dependency semantics.
@@ -155,7 +155,7 @@ expect X = B; M rejected and reconciled; no second server execution of M
 **Files**
 
 - Create: `crates/server/src/mutation_batch.rs`, `crates/server/src/protocol_v05.rs`.
-- Modify: `crates/server/src/lib.rs`, `crates/server/src/host.rs`, `crates/server/src/settlement.rs`, `bindings/node/src/server.rs`, `packages/server/index.mts`, `packages/server/host-contract.mts`, `packages/postgres/src/pg.mts`, `packages/postgres/src/sql.mts`.
+- Modify: `crates/server/src/lib.rs`, `crates/server/src/host.rs`, `crates/server/src/settlement.rs`, `bindings/node/src/server.rs`, `packages/server/index.mts`, `packages/server/host-contract.mts`, `packages/postgres/src/pg.mts`, `packages/postgres/src/persistence.mts`, `packages/postgres/src/sql.mts`.
 - Modify: `packages/postgres/migration.sql`, `packages/postgres/package.json`. The package currently exports one SQL file, not a versioned migration loader. Add new structures additively there; publish a separately named forward cutover script only when the release adoption procedure is approved.
 - Create: `integration/persistence/server/protocol-v05-batch.test.mjs`.
 
@@ -188,7 +188,7 @@ commit
 **Files**
 
 - Create: `crates/server/src/delivery_plan.rs`, `integration/persistence/server/protocol-v05-delivery.test.mjs`.
-- Modify: `crates/server/src/protocol_v05.rs`, `crates/server/src/live.rs`, `crates/server/src/host.rs`, `packages/server/index.mts`, `packages/server/host-contract.mts`, `packages/postgres/src/pg.mts`, `packages/postgres/src/sql.mts`, the Task 3 forward schema.
+- Modify: `crates/server/src/protocol_v05.rs`, `crates/server/src/live.rs`, `crates/server/src/host.rs`, `packages/server/index.mts`, `packages/server/host-contract.mts`, `packages/postgres/src/pg.mts`, `packages/postgres/src/persistence.mts`, `packages/postgres/src/sql.mts`, the Task 3 forward schema.
 - Read: `integration/persistence/server/publication-closure.test.mjs` and current Bootstrap driver tests.
 
 **Consumes:** DeliveryHeader/DeliveryUnit and schema descriptors from Task 1; StreamRecord/fence contract from Task 3's schema commit. **Produces:** Bootstrap, compacted HTTP repair, socket delivery and targeted materialization using the same frozen Loader authority rules.

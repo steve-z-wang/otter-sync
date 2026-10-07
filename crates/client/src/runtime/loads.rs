@@ -155,7 +155,8 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
     }
     /// Whether the Load lane has a unit to run.
     pub(super) fn load_ready(&self) -> bool {
-        self.client.request_context().is_err()
+        !self.protocol05
+            && self.client.request_context().is_err()
             && (self.loads.worker.has_outcome()
                 || (self.loads.worker.wants_dispatch() && self.load_online()))
     }

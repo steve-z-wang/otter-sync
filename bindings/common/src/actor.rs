@@ -664,7 +664,7 @@ fn run05(
                     outbox.closed.store(true, Ordering::SeqCst);
                     if let Some(c) = &mut control {
                         c.stop();
-                        outbox.publish(refresh_broker.filter(c.events()));
+                        publish_control05(c, &work_sender, &outbox, &mut refresh_broker);
                     }
                     break;
                 }
@@ -690,7 +690,7 @@ fn run05(
                         }
                     }
                     if let Some(c) = &mut control {
-                        outbox.publish(refresh_broker.filter(c.events()));
+                        publish_control05(c, &work_sender, &outbox, &mut refresh_broker);
                         for job in c.jobs() {
                             let _ = work_sender.send(Work05::Store(job));
                         }
@@ -704,7 +704,7 @@ fn run05(
                         if let Err(error) = c.receive(effect_id, outcome.clone(), now) {
                             c.network_error(error.to_string());
                         }
-                        outbox.publish(refresh_broker.filter(c.events()));
+                        publish_control05(c, &work_sender, &outbox, &mut refresh_broker);
                         for job in c.jobs() {
                             let _ = work_sender.send(Work05::Store(job));
                         }
@@ -742,7 +742,7 @@ fn run05(
             }
         }
         if let Some(c) = &mut control {
-            outbox.publish(refresh_broker.filter(c.events()));
+            publish_control05(c, &work_sender, &outbox, &mut refresh_broker);
             for job in c.jobs() {
                 let _ = work_sender.send(Work05::Store(job));
             }
@@ -751,6 +751,32 @@ fn run05(
     drop(work_sender);
     let _ = worker.join();
     outbox.publish(vec![Event::RuntimeClosed]);
+}
+// Queue retirement before exposing the refusal. A reconnect submitted by the
+// observer then follows Stop on the ordinary Store input lane.
+fn publish_control05(
+    control: &mut axton_client::sync05::Control,
+    sender: &Sender<Work05>,
+    outbox: &Outbox,
+    broker: &mut RefreshBroker,
+) {
+    let events = control.events();
+    if events.iter().any(|e| {
+        matches!(
+            e,
+            Event::Report {
+                diagnostic: Diagnostic::Refused { .. }
+            }
+        )
+    }) {
+        let _ = sender.send(Work05::Input(Mail::Input(Box::new(Input::Task {
+            request_id: "control05:retire-admission".into(),
+            command: axton_client::runtime::Command::Connection {
+                event: axton_client::runtime::ConnectionEvent::Stop,
+            },
+        }))));
+    }
+    outbox.publish(broker.filter(events));
 }
 fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
     let send = |message| {
@@ -817,7 +843,11 @@ fn worker05(request: Value, mailbox: Receiver<Work05>, reports: Sender<Mail>) {
             if !runtime.store_worker_busy05()
                 && let Some(mut job) = jobs.pop_front()
             {
-                if let axton_client::sync05::StoreCommand::Apply { now, .. } = &mut job {
+                let apply = match &mut job {
+                    axton_client::sync05::StoreCommand::Guarded { command, .. } => command.as_mut(),
+                    command => command,
+                };
+                if let axton_client::sync05::StoreCommand::Apply { now, .. } = apply {
                     *now = facts().0;
                 }
                 send(WorkerMessage::Report(

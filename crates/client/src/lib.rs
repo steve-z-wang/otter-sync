@@ -1390,6 +1390,9 @@ impl<S: ClientStore> ClientTransaction<'_, S> {
     /// already subscribed stream is not a membership change: it touches no
     /// cursor and leaves the subscription generation alone.
     pub fn set_stream(&mut self, stream: String, subscribed: bool) -> Result<()> {
+        if self.engine.is05()? {
+            return Err(invalid("protocol5 bound Stream is immutable"));
+        }
         if let Some(context) = self.engine.context04()?
             && (context.binding.stream != stream || !subscribed)
         {

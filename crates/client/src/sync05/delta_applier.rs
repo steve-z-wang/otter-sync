@@ -3,6 +3,24 @@ use crate::{ApplyReport, Client, ClientStore, Result, authority::Held, invalid, 
 use serde_json::{Value, json};
 const DDL: &str = "CREATE TABLE IF NOT EXISTS axton_delivery_progress(plan_id TEXT PRIMARY KEY,digest TEXT NOT NULL,header TEXT NOT NULL,next_unit INTEGER NOT NULL,covered INTEGER)";
 impl<S: ClientStore> Client<S> {
+    pub fn cleanup_delivery05(&mut self, now: u64) -> Result<Vec<String>> {
+        self.write(|e| {
+            e.exec("axton_delivery_progress", DDL, &[])?;
+            e.exec("axton_delivery_key", "CREATE TABLE IF NOT EXISTS axton_delivery_key(plan_id TEXT NOT NULL,identity TEXT NOT NULL,PRIMARY KEY(plan_id,identity))", &[])?;
+            e.exec("axton_delivery_key", "DELETE FROM axton_delivery_key WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress WHERE json_extract(header,'$.expiresAt')<=?)", &[json!(now)])?;
+            e.exec("axton_delivery_progress", "DELETE FROM axton_delivery_progress WHERE json_extract(header,'$.expiresAt')<=?", &[json!(now)])?;
+            Ok(e.rows("SELECT plan_id FROM axton_delivery_progress", &[])?.rows.into_iter().filter_map(|r| r[0].as_str().map(str::to_owned)).collect())
+        })
+    }
+    pub fn active_delivery_plans05(&mut self) -> Result<Vec<String>> {
+        self.view(|e| {
+            Ok(e.rows("SELECT plan_id FROM axton_delivery_progress", &[])?
+                .rows
+                .into_iter()
+                .filter_map(|r| r[0].as_str().map(str::to_owned))
+                .collect())
+        })
+    }
     pub fn initialize_stream05(&mut self, start: u64) -> Result<()> {
         self.write(|e| e.initialize_stream05(start))
     }
@@ -14,6 +32,20 @@ impl<S: ClientStore> Client<S> {
         q.expire(now);
         let context = self.request_context05()?;
         let status = self.store_status05()?;
+        // Surviving contiguous coverage is the receipt for completed ordinary
+        // transfers. Replays must not restore cache state after a later read.
+        q.plans.retain(|_, p| {
+            let position = if p.header.bootstrap {
+                status.bootstrap_cursor
+            } else {
+                status.cursor
+            };
+            !(p.header.owner.is_none()
+                && p.header.context == context
+                && position
+                    .zip(p.header.through)
+                    .is_some_and(|(c, through)| c >= through))
+        });
         let mut selected = None;
         for (id, p) in &q.plans {
             if p.blocked
@@ -46,6 +78,7 @@ impl<S: ClientStore> Client<S> {
             }
         }
         let Some((id, header, unit, owner)) = selected else {
+            self.cleanup_delivery05(now)?;
             return Ok(None);
         };
         // Owned transfers prove the entire identity set before installation.
@@ -65,6 +98,9 @@ impl<S: ClientStore> Client<S> {
         };
         let applied=self.write(|e|{
             e.exec("axton_delivery_progress",DDL,&[])?;
+            e.exec("axton_delivery_key", "CREATE TABLE IF NOT EXISTS axton_delivery_key(plan_id TEXT NOT NULL,identity TEXT NOT NULL,PRIMARY KEY(plan_id,identity))", &[])?;
+            e.exec("axton_delivery_key", "DELETE FROM axton_delivery_key WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress WHERE json_extract(header,'$.expiresAt')<=?)", &[json!(now)])?;
+            e.exec("axton_delivery_progress", "DELETE FROM axton_delivery_progress WHERE json_extract(header,'$.expiresAt')<=?", &[json!(now)])?;
             let saved=e.rows("SELECT digest,next_unit FROM axton_delivery_progress WHERE plan_id=?",&[json!(id)])?.rows;
             let next=if let Some(row)=saved.first(){
                 if row[0]!=header.digest {return Err(invalid("persisted plan digest mismatch"))}
@@ -106,11 +142,19 @@ impl<S: ClientStore> Client<S> {
             let completions=e.reconcile_ready05(&mut held)?;
             let reports=e.rebuild_held(&held)?;
             let next=if owned.is_some(){header.units.len() as u64}else{unit.index+1};
-            if saved.is_empty() {
+            if final_unit {
+                e.exec("axton_delivery_key","DELETE FROM axton_delivery_key WHERE plan_id=?",&[json!(id)])?;
+                e.exec("axton_delivery_progress","DELETE FROM axton_delivery_progress WHERE plan_id=?",&[json!(id)])?;
+            } else if saved.is_empty() {
                 e.exec("axton_delivery_progress","INSERT INTO axton_delivery_progress(plan_id,digest,header,next_unit,covered) VALUES(?,?,?,?,?)",&[json!(id),json!(header.digest),json!(serde_json::to_string(header.as_ref())?),json!(next),unit.through.map_or(Value::Null,Value::from)])?;
             }else{
                 e.exec("axton_delivery_progress","UPDATE axton_delivery_progress SET next_unit=?,covered=COALESCE(?,covered) WHERE plan_id=?",&[json!(next),unit.through.map_or(Value::Null,Value::from),json!(id)])?;
             }
+            // Only active transfers retain headers/identity keys. Retiring a
+            // partial plan is safe: committed authority and coverage survive,
+            // and control repairs from that prefix using a fresh transfer.
+            e.exec("axton_delivery_key","DELETE FROM axton_delivery_key WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress ORDER BY rowid DESC LIMIT -1 OFFSET 32)",&[])?;
+            e.exec("axton_delivery_progress","DELETE FROM axton_delivery_progress WHERE plan_id IN (SELECT plan_id FROM axton_delivery_progress ORDER BY rowid DESC LIMIT -1 OFFSET 32)",&[])?;
             Ok((Some(ApplyReport{applied,reports,completions,..Default::default()}),next))
         });
         match applied {
@@ -153,7 +197,7 @@ impl<S: ClientStore> Client<S> {
     ) -> Result<crate::bootstrap::BootstrapState> {
         let status = self.store_status05()?;
         if status.context.stream != stream || id != 1 {
-            return Err(invalid("foreign Stream registration"));
+            return Err(invalid("subscription.closed: foreign Stream registration"));
         }
         Ok(crate::bootstrap::BootstrapState {
             stream: stream.into(),

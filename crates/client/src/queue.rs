@@ -633,6 +633,12 @@ impl<S: ClientStore> Engine<'_, S> {
             .collect()
     }
     pub fn rejection_details(&mut self) -> Result<Vec<Value>> {
+        if self.is05()? {
+            return Ok(self.refused_acts()?.into_iter().map(|act| {
+                let records:Vec<_>=act.act.operations.iter().map(|op|json!({"model":op.model,"identity":op.identity})).collect();
+                json!({"ordinal":act.id,"code":act.code,"mutation":{"name":act.name,"version":act.version,"args":act.act.args,"operations":act.act.operations},"records":records})
+            }).collect());
+        }
         let rows = self.rows("SELECT detail FROM axton_rejection ORDER BY ordinal", &[])?;
         rows.rows
             .iter()

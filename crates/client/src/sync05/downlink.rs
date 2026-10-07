@@ -15,6 +15,7 @@ enum Flight {
     Push(v05::MutationRequest),
     Owned(v05::MaterializationRequest),
     Socket,
+    Expire,
     Retry,
     Refresh,
 }
@@ -35,6 +36,7 @@ pub struct Control {
     applying_plan: Option<String>,
     freezing: bool,
     failures: u32,
+    epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
     refresh_auth: bool,
     refreshing: bool,
     refresh_waiters: Vec<Flight>,
@@ -58,6 +60,7 @@ impl Control {
             applying_plan: None,
             freezing: false,
             failures: 0,
+            epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             refresh_auth: false,
             refreshing: false,
             refresh_waiters: vec![],
@@ -91,6 +94,10 @@ impl Control {
         Ok(())
     }
     fn handshake(&mut self) -> Result<()> {
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.applying = false;
+        self.applying_plan = None;
+        self.freezing = false;
         let old = self
             .flights
             .iter()
@@ -113,6 +120,9 @@ impl Control {
         )
     }
     pub fn stop(&mut self) {
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.applying = false;
+        self.applying_plan = None;
         self.connected = false;
         self.live = false;
         self.network_state = None;
@@ -147,7 +157,18 @@ impl Control {
         std::mem::take(&mut self.events)
     }
     pub fn jobs(&mut self) -> Vec<StoreCommand> {
-        self.jobs.drain(..).collect()
+        let fence = super::WorkFence05 {
+            context: self.context.clone(),
+            epoch: self.epoch.load(std::sync::atomic::Ordering::SeqCst),
+            current: self.epoch.clone(),
+        };
+        self.jobs
+            .drain(..)
+            .map(|command| StoreCommand::Guarded {
+                fence: fence.clone(),
+                command: Box::new(command),
+            })
+            .collect()
     }
     pub fn receive(&mut self, id: &str, outcome: EffectOutcome, now: u64) -> Result<()> {
         let Some(flight) = self.flights.get(id).cloned() else {
@@ -199,6 +220,10 @@ impl Control {
                 self.resend(waiter)?;
             }
             return Ok(());
+        }
+        if matches!(flight, Flight::Expire) {
+            self.jobs.push_back(StoreCommand::Cleanup(now));
+            return self.schedule(now);
         }
         if matches!(flight, Flight::Retry) {
             self.queue.retry_blocked();
@@ -381,6 +406,19 @@ impl Control {
     }
     pub fn report(&mut self, report: StoreReport, now: u64) -> Result<()> {
         match report {
+            StoreReport::Obsolete => return Ok(()),
+            StoreReport::Guarded { fence, report } => {
+                if !fence.current() || fence.context != self.context {
+                    return Ok(());
+                }
+                return match *report {
+                    Ok(report) => self.report(report, now),
+                    Err(message) => {
+                        self.failed(message);
+                        Ok(())
+                    }
+                };
+            }
             StoreReport::Snapshot(status) => {
                 if status.context.store_id != self.context.store_id {
                     let reconnect = self.connected;
@@ -439,7 +477,17 @@ impl Control {
                     self.http(Flight::Push(request.clone()), HttpRoute::Push, &request)?;
                 }
             }
-            StoreReport::Committed { status, plan, .. } => {
+            StoreReport::ActivePlans(active) => {
+                self.queue
+                    .plans
+                    .retain(|id, p| p.next == 0 || active.contains(id));
+            }
+            StoreReport::Committed {
+                status,
+                plan,
+                active_plans,
+                ..
+            } => {
                 if status.context != self.context {
                     self.queue
                         .plans
@@ -457,6 +505,11 @@ impl Control {
                         self.flights.remove(&id);
                         self.events.push(Event::CancelEffect { effect_id: id });
                     }
+                }
+                if let Some(active) = active_plans {
+                    self.queue
+                        .plans
+                        .retain(|id, p| p.next == 0 || active.contains(id));
                 }
                 self.context = status.context.clone();
                 self.status = status;
@@ -500,7 +553,21 @@ impl Control {
         if !self.connected || self.paused {
             return Ok(());
         }
+        let before = self.queue.len();
         self.queue.expire(now);
+        if before != self.queue.len() {
+            self.jobs.push_back(StoreCommand::Cleanup(now));
+        }
+        if let Some(expires) = self.queue.plans.values().map(|p| p.header.expires_at).min()
+            && !self.flights.values().any(|f| matches!(f, Flight::Expire))
+        {
+            self.effect(
+                Flight::Expire,
+                Operation::Timer {
+                    millis: expires.saturating_sub(now).max(1),
+                },
+            );
+        }
         let state = (self.live, self.status.cursor.is_none_or(|c| c < self.head));
         if self.network_state != Some(state) {
             self.network_state = Some(state);

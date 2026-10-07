@@ -1,7 +1,6 @@
 use crate::{Result, invalid, v05};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
     sync::Arc,
 };
 use v05::Validate;
@@ -12,19 +11,34 @@ pub(crate) struct StagedPart {
     disk: Option<Arc<Spool>>,
     bytes: usize,
 }
-struct Spool(PathBuf);
-impl Drop for Spool {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
+struct Spool(std::fs::File);
 impl StagedPart {
     fn load(&self) -> Result<v05::DeliveryPart> {
         if let Some(part) = &self.memory {
             return Ok((**part).clone());
         }
-        let bytes = std::fs::read(&self.disk.as_ref().unwrap().0)
-            .map_err(|e| invalid(format!("delivery staging: {e}")))?;
+        let file = &self.disk.as_ref().unwrap().0;
+        let mut bytes = vec![0; self.bytes];
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileExt;
+            file.read_exact_at(&mut bytes, 0)
+                .map_err(|e| invalid(format!("delivery staging: {e}")))?;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileExt;
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let count = file
+                    .seek_read(&mut bytes[offset..], offset as u64)
+                    .map_err(|e| invalid(format!("delivery staging: {e}")))?;
+                if count == 0 {
+                    return Err(invalid("truncated delivery staging"));
+                }
+                offset += count;
+            }
+        }
         Ok(serde_json::from_slice(&bytes)?)
     }
     fn new(part: &v05::DeliveryPart, memory: bool) -> Result<Self> {
@@ -40,7 +54,7 @@ impl StagedPart {
             std::env::temp_dir().join(format!("axton-delivery-{}.json", uuid::Uuid::new_v4()));
         use std::io::Write;
         let mut options = std::fs::OpenOptions::new();
-        options.create_new(true).write(true);
+        options.create_new(true).write(true).read(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -49,12 +63,18 @@ impl StagedPart {
         let mut file = options
             .open(&path)
             .map_err(|e| invalid(format!("delivery staging: {e}")))?;
-        let spool = Arc::new(Spool(path));
+        // Unlink while the handle is alive: the kernel reclaims it even on
+        // process exit. No per-Store sweep can touch another live client.
+        if let Err(error) = std::fs::remove_file(&path) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(invalid(format!("anonymous delivery staging: {error}")));
+        }
         file.write_all(&bytes)
             .map_err(|e| invalid(format!("delivery staging: {e}")))?;
         Ok(Self {
             memory: None,
-            disk: Some(spool),
+            disk: Some(Arc::new(Spool(file))),
             bytes: bytes.len(),
         })
     }
@@ -142,13 +162,18 @@ pub struct DeliveryQueue {
     pub(crate) plans: BTreeMap<String, Plan>,
     capacity: usize,
     slots: usize,
+    payload_limit: usize,
 }
 impl DeliveryQueue {
     pub fn new(capacity: usize, slots: usize) -> Self {
+        Self::with_limits(capacity, slots, 256 * 1024 * 1024)
+    }
+    pub fn with_limits(capacity: usize, slots: usize, payload_limit: usize) -> Self {
         Self {
             plans: BTreeMap::new(),
             capacity,
             slots: slots.max(2),
+            payload_limit,
         }
     }
     pub fn receive(
@@ -169,17 +194,18 @@ impl DeliveryQueue {
             Some(plan) => plan.metadata_bytes,
             None => serde_json::to_vec(header)?.len(),
         };
-        let metadata_used = self.plans.values().map(|p| p.metadata_bytes).sum::<usize>();
-        if existing.is_none() && metadata_used.saturating_add(metadata_bytes) > self.capacity {
-            return Err(invalid("delivery manifest capacity exceeded"));
-        }
         if let Some(plan) = existing {
             if plan.header.as_ref() != header {
                 return Err(invalid("changed immutable plan"));
             }
         } else {
             header.admit(active)?;
-            let earliest = self.plans.values().filter_map(|p| p.header.after).min();
+            let earliest = self
+                .plans
+                .values()
+                .filter(|p| p.header.owner.is_none() && p.header.bootstrap == header.bootstrap)
+                .filter_map(|p| p.header.after)
+                .min();
             let repair = header.after.is_some_and(|a| earliest.is_none_or(|e| a < e));
             if self.plans.len() >= self.slots || (!repair && self.plans.len() >= self.slots - 1) {
                 return Err(invalid("delivery queue overflow"));
@@ -207,16 +233,81 @@ impl DeliveryQueue {
                 extra += serde_json::to_vec(part)?.len();
             }
         }
-        let all = self.plans.values().flat_map(|p| p.parts.values());
-        let used = all
-            .clone()
+        let metadata_new = if existing.is_none() {
+            metadata_bytes
+        } else {
+            0
+        };
+        let is_new = existing.is_none();
+        // Recoverable future offers may be replaced to admit an earlier
+        // prefix, without advancing coverage or disturbing its SQL snapshot.
+        let mut candidates: Vec<_> = self
+            .plans
+            .iter()
+            .filter_map(|(id, p)| match (header.after, p.header.after) {
+                (Some(after), Some(future))
+                    if is_new
+                        && header.owner.is_none()
+                        && p.header.owner.is_none()
+                        && header.bootstrap == p.header.bootstrap
+                        && future > after =>
+                {
+                    Some((future, id.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        candidates.sort_by(|a, b| b.cmp(a));
+        let totals = |plans: &BTreeMap<String, Plan>| {
+            (
+                plans.values().map(|p| p.metadata_bytes).sum::<usize>(),
+                plans
+                    .values()
+                    .flat_map(|p| p.parts.values())
+                    .map(|p| p.bytes)
+                    .sum::<usize>(),
+            )
+        };
+        for (_, id) in candidates {
+            let (metadata, total) = totals(&self.plans);
+            if metadata.saturating_add(metadata_new) <= self.capacity
+                && total.saturating_add(extra) <= self.payload_limit
+            {
+                break;
+            }
+            self.plans.remove(&id);
+        }
+        let (metadata_used, total) = totals(&self.plans);
+        if metadata_used.saturating_add(metadata_new) > self.capacity {
+            return Err(invalid("delivery manifest capacity exceeded"));
+        }
+        if total.saturating_add(extra) > self.payload_limit {
+            return Err(invalid("delivery disk staging capacity exceeded"));
+        }
+        let mut used = self
+            .plans
+            .values()
+            .flat_map(|p| p.parts.values())
             .filter(|p| p.memory.is_some())
             .map(|p| p.bytes)
             .sum::<usize>();
-        let total = all.map(|p| p.bytes).sum::<usize>();
-        if total.saturating_add(extra) > 256 * 1024 * 1024 {
-            return Err(invalid("delivery disk staging capacity exceeded"));
+        let memory_budget = self
+            .capacity
+            .saturating_sub(metadata_used.saturating_add(metadata_new));
+        for p in self.plans.values_mut() {
+            for part in p.parts.values_mut() {
+                if used <= memory_budget {
+                    break;
+                }
+                if part.memory.is_some() {
+                    let payload = part.load()?;
+                    let disk = StagedPart::new(&payload, false)?;
+                    used -= part.bytes;
+                    *part = disk;
+                }
+            }
         }
+        let existing = self.plans.get(&header.plan_id);
         let mut staged = Vec::new();
         let mut memory = used;
         for part in parts {

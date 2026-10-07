@@ -5,7 +5,7 @@ pub use delivery_queue::DeliveryQueue;
 mod downlink;
 mod uplink;
 pub use downlink::Control;
-pub use uplink::{StoreCommand, StoreReport};
+pub use uplink::{StoreCommand, StoreReport, WorkFence05};
 mod status;
 
 mod reset;

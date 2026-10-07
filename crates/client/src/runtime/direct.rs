@@ -708,7 +708,12 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 },
                 store,
             ) {
-                self.complete(request_id.into(), Err(error));
+                let kind = match error.as_str() {
+                    UNAVAILABLE => FETCH_UNAVAILABLE,
+                    "read.schema_pending" => FETCH_SCHEMA_PENDING,
+                    _ => FETCH_INVALID_OPTIONS,
+                };
+                self.fail(request_id.into(), kind, caused(kind, error));
             }
             return;
         }
@@ -845,25 +850,91 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         let Some(call) = self.directs.calls.remove(&request_id) else {
             return;
         };
-        let generation = self.client.generation();
-        let outcome = (|| {
+        let fetch = call.fetch.is_some();
+        let decoded = (|| {
             let request = crate::v05::decode::<crate::v05::ReadRequest>(call.body.as_bytes())?;
             let response = crate::v05::decode::<crate::v05::ReadResponse>(response.as_bytes())?;
             response.admit(&request, &self.client.request_context05()?)?;
-            if request.store {
-                self.client.install_cache05(&response.records, true)?;
+            if let crate::v05::ReadInvocation::Fetch { key, .. } = &request.invocation
+                && let crate::v05::ReadOutcome::Succeeded { result } = &response.outcome
+                && !result.is_null()
+            {
+                let model = self.client.schema.model(&key.model)?;
+                let identity = serde_json::Value::Object(
+                    model
+                        .identity
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.clone(),
+                                result.get(field).cloned().unwrap_or_default(),
+                            )
+                        })
+                        .collect(),
+                );
+                if self
+                    .client
+                    .schema
+                    .record_key(&key.model, &identity)?
+                    .identity
+                    != key.identity
+                {
+                    return Err(crate::invalid("Fetch result identity mismatch"));
+                }
+                self.client.schema.normalize_state(&key.model, result)?;
             }
-            Ok::<_, crate::Error>(match response.outcome {
-                crate::v05::ReadOutcome::Succeeded { result } => {
-                    json!({"outcome":{"status":"succeeded","result":result}})
+            for record in &response.records {
+                self.client
+                    .schema
+                    .record_key(&record.key.model, &record.key.identity)?;
+                if !record.state.is_null() {
+                    self.client
+                        .schema
+                        .validate_state(&record.key.model, &record.state)?;
                 }
-                crate::v05::ReadOutcome::Failed { code, message } => {
-                    json!({"outcome":{"status":"failed","code":code,"message":message,"execution":"rejected"}})
-                }
-            })
+            }
+            Ok::<_, crate::Error>((request, response))
         })();
+        let (request, response) = match decoded {
+            Ok(value) => value,
+            Err(error) => {
+                let kind = if fetch {
+                    FETCH_INVALID_RESPONSE
+                } else {
+                    EXECUTION_UNKNOWN
+                };
+                self.fail(request_id, kind, caused(kind, error));
+                return;
+            }
+        };
+        let generation = self.client.generation();
+        if request.store
+            && let Err(error) = self.client.install_cache05(&response.records, true)
+        {
+            let kind = if fetch {
+                FETCH_STORE_FAILED
+            } else {
+                OBSERVATION_FAILED
+            };
+            self.fail(request_id, kind, caused(kind, error));
+            return;
+        }
         self.committed_since(generation);
-        self.complete(request_id, outcome.map_err(|e| e.to_string()));
+        let outcome = match response.outcome {
+            crate::v05::ReadOutcome::Succeeded { result } => {
+                json!({"status":"succeeded","result":result})
+            }
+            crate::v05::ReadOutcome::Failed { code, message } => {
+                json!({"status":"failed","code":code,"message":message,"execution":"rejected"})
+            }
+        };
+        if !fetch {
+            self.events.push(Event::CallCompleted {
+                call_id: call.call_id,
+                outcome: outcome.clone(),
+            });
+        }
+        self.complete(request_id, Ok(json!({"outcome":outcome})));
     }
     /// Forget one Fetch flight and answer the callers joined to it.
     fn release_fetch(&mut self, key: &FetchKey, owner: &str) -> Vec<String> {

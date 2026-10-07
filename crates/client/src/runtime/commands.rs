@@ -28,7 +28,11 @@ pub(super) fn execute<S: ClientStore + 'static>(
                 | Command::InvalidateQueryOnce { .. }
         )
     {
-        return Err(invalid("legacy protocol seam is retired in protocol 4"));
+        return Err(invalid(if client.request_context05().is_ok() {
+            "protocol 5 requires named Mutations and its owned transport"
+        } else {
+            "legacy protocol seam is retired in protocol 4"
+        }));
     }
     Ok(match command {
         Command::Read { key } => client.read(key)?.unwrap_or(Value::Null),
@@ -222,8 +226,14 @@ pub(super) fn execute_in_session<S: ClientStore>(
     client: &mut Client<S>,
     command: &TransactionCommand,
 ) -> Result<Value> {
-    if client.request_context().is_ok() && matches!(command, TransactionCommand::Enqueue { .. }) {
-        return Err(invalid("legacy protocol seam is retired in protocol 4"));
+    if (client.request_context05().is_ok() || client.request_context().is_ok())
+        && matches!(command, TransactionCommand::Enqueue { .. })
+    {
+        return Err(invalid(if client.request_context05().is_ok() {
+            "protocol 5 requires named Mutations and its owned transport"
+        } else {
+            "legacy protocol seam is retired in protocol 4"
+        }));
     }
     Ok(match command {
         TransactionCommand::Read { key } => {

@@ -321,7 +321,7 @@ impl<S: ClientStore> Client<S> {
     /// went. A Stream whose current subscription is another one is left alone:
     /// an old handle cannot remove the subscription that replaced it.
     pub fn remove_subscription(&mut self, stream: &str, subscription_id: u64) -> Result<bool> {
-        if self.context04.is_some() {
+        if self.context05.is_some() || self.context04.is_some() {
             return Err(invalid("bound Stream cannot be removed"));
         }
         self.write(|e| {

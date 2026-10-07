@@ -833,3 +833,215 @@ fn explicit_reset_retires_frozen_batch_and_reused_ids_have_new_store_owner() {
     let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
     assert_eq!(c.freeze_batch05().unwrap().unwrap(), fresh);
 }
+
+#[test]
+fn completed_and_expired_transfer_staging_is_cleared() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let f = fragmented(context.clone(), false);
+    let mut q = DeliveryQueue::new(100000, 4);
+    q.receive(&f.header, &f.parts, &context, 1).unwrap();
+    c.apply_next_delivery05(&mut q, 1).unwrap();
+    assert_eq!(
+        c.read_sql("SELECT COUNT(*) AS n FROM axton_delivery_progress", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+    assert_eq!(
+        c.read_sql("SELECT COUNT(*) AS n FROM axton_delivery_key", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+}
+
+#[test]
+fn earlier_missing_prefix_can_replace_near_capacity_future_manifest() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let later = plan(context.clone(), "future", 2, 3, false);
+    let early = plan(context.clone(), "repair", 0, 2, false);
+    let cap = serde_json::to_vec(&later.header).unwrap().len()
+        + serde_json::to_vec(&early.header).unwrap().len()
+        - 1;
+    let mut q = DeliveryQueue::new(cap, 4);
+    q.receive(&later.header, &later.parts, &context, 1).unwrap();
+    assert!(q.receive(&early.header, &early.parts, &context, 1).is_ok());
+    c.apply_next_delivery05(&mut q, 1).unwrap();
+    assert_eq!(c.store_status05().unwrap().cursor, Some(2));
+}
+
+#[test]
+fn stopped_control_ignores_already_dispatched_freeze_report() {
+    use axton_client::{
+        runtime::{ClientRuntime, Event, HttpRoute, Operation},
+        sync05::Control,
+    };
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut s: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    s["actions"] = serde_json::json!([{"name":"Write","version":1,"inputs":[],"outputs":[]}]);
+    let mut c = Client::open05(
+        SqliteStore::open(&path).unwrap(),
+        Schema::from_value(s).unwrap(),
+        "User:u",
+    )
+    .unwrap();
+    c.transaction(|tx| tx.submit_mutation05("Write", 1, serde_json::json!({}), vec![]))
+        .unwrap();
+    let mut control = Control::new(c.store_status05().unwrap());
+    control.connect().unwrap();
+    control.events();
+    control.wake();
+    let command = control.jobs().into_iter().next().unwrap();
+    let mut runtime = ClientRuntime::new(c);
+    let report = runtime.store_worker05(command).unwrap();
+    control.stop();
+    control.events();
+    control.report(report, 1).unwrap();
+    assert!(!control.events().iter().any(|e| matches!(
+        e,
+        Event::Effect {
+            operation: Operation::Http {
+                route: HttpRoute::Push,
+                ..
+            },
+            ..
+        }
+    )));
+}
+
+#[test]
+fn partial_transfer_retention_is_bounded_and_expiry_clears_keys() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    for index in 0..35 {
+        let f = v05::freeze_delivery(
+            context.clone(),
+            format!("partial{index}"),
+            v05::DeliveryPurpose::Sync,
+            0,
+            2,
+            2,
+            10000,
+            vec![
+                v05::DeliveryUnit {
+                    index: 0,
+                    through: Some(1),
+                    changes: vec![change(&format!("row{index}"), 1)],
+                },
+                v05::DeliveryUnit {
+                    index: 1,
+                    through: Some(2),
+                    changes: vec![],
+                },
+            ],
+            1,
+        )
+        .unwrap();
+        let mut q = DeliveryQueue::new(100000, 4);
+        q.receive(&f.header, &f.parts[..1], &context, 1).unwrap();
+        c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+        assert!(c.active_delivery_plans05().unwrap().len() <= 32);
+    }
+    assert_eq!(c.active_delivery_plans05().unwrap().len(), 32);
+    assert_eq!(c.store_status05().unwrap().cursor, Some(1));
+    assert_eq!(
+        c.read_sql("SELECT COUNT(*) AS n FROM axton_delivery_key", &[])
+            .unwrap()[0]["n"],
+        32
+    );
+    assert!(c.cleanup_delivery05(10000).unwrap().is_empty());
+    assert_eq!(
+        c.read_sql("SELECT COUNT(*) AS n FROM axton_delivery_key", &[])
+            .unwrap()[0]["n"],
+        0
+    );
+    let repair = plan(context.clone(), "fresh-prefix", 1, 2, false);
+    let mut q = DeliveryQueue::new(100000, 4);
+    q.receive(&repair.header, &repair.parts, &context, 10001)
+        .unwrap_err();
+    // Repair must be newly frozen, rather than reviving an expired transfer.
+    let repair = plan(context.clone(), "fresh-prefix", 1, 2, false);
+    q.receive(&repair.header, &repair.parts, &context, 2)
+        .unwrap();
+    c.apply_next_delivery05(&mut q, 2).unwrap().unwrap();
+    assert_eq!(c.store_status05().unwrap().cursor, Some(2));
+}
+
+#[test]
+fn earlier_missing_prefix_can_replace_near_capacity_payload() {
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let later = plan(context.clone(), "future", 2, 3, false);
+    let early = plan(context.clone(), "repair", 0, 2, false);
+    let budget = serde_json::to_vec(&later.parts[0]).unwrap().len()
+        + serde_json::to_vec(&early.parts[0]).unwrap().len()
+        - 1;
+    let mut q = DeliveryQueue::with_limits(100000, 4, budget);
+    q.receive(&later.header, &later.parts, &context, 1).unwrap();
+    q.receive(&early.header, &early.parts, &context, 1).unwrap();
+    c.apply_next_delivery05(&mut q, 1).unwrap().unwrap();
+    assert_eq!(c.store_status05().unwrap().cursor, Some(2));
+}
+
+#[test]
+#[ignore]
+fn crash_spill_has_no_named_remnants_child() {
+    let dir = std::env::var("AXTON_TASK5_SPOOL_DIR").unwrap();
+    let context = v05::RequestContext {
+        protocol: 5,
+        store_id: "spool".into(),
+        stream: "User:u".into(),
+        materialization: "m".into(),
+    };
+    let mut value = change("a", 1);
+    if let v05::AuthorityChange::Record { state, .. } = &mut value {
+        state["text"] = serde_json::json!("x".repeat(100000));
+    }
+    let f = v05::freeze_delivery(
+        context.clone(),
+        "spilled".into(),
+        v05::DeliveryPurpose::Sync,
+        0,
+        1,
+        1,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(1),
+            changes: vec![value],
+        }],
+        1,
+    )
+    .unwrap();
+    let mut q = DeliveryQueue::new(10000, 4);
+    q.receive(&f.header, &f.parts, &context, 1).unwrap();
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+    std::process::exit(74);
+}
+
+#[test]
+fn process_crash_spill_reclaims_without_sweeping_other_clients() {
+    let d = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "crash_spill_has_no_named_remnants_child",
+        ])
+        .env("TMPDIR", d.path())
+        .env("AXTON_TASK5_SPOOL_DIR", d.path())
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(74));
+    assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+}

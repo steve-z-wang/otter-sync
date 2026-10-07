@@ -119,6 +119,52 @@ impl<S: ClientStore> Engine<'_, S> {
             .next())
     }
     fn refused_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<RefusedAct>> {
+        if self.is05()? {
+            let filter = if filter.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " AND {}",
+                    filter.trim_start_matches("WHERE ").replace("ordinal", "id")
+                )
+            };
+            let rows=self.rows(&format!("SELECT id,name,descriptor_version,rejection_code FROM axton_mutation_queue WHERE rejection_code IS NOT NULL AND rejection_acknowledged=0 {filter} ORDER BY id"),params)?.rows;
+            return rows
+                .into_iter()
+                .map(|row| {
+                    let id = as_u64(&row[0])?;
+                    let ops = self.wire_ops05(id)?;
+                    let args = crate::v05::reconstruct_input(&ops)?;
+                    let operations = ops
+                        .into_iter()
+                        .filter_map(|op| {
+                            let kind = match op.operation {
+                                crate::v05::Operation::Create => crate::OperationKind::Create,
+                                crate::v05::Operation::Update => crate::OperationKind::Update,
+                                crate::v05::Operation::Delete => crate::OperationKind::Delete,
+                                crate::v05::Operation::Argument => return None,
+                            };
+                            Some(crate::Operation {
+                                model: op.model?,
+                                identity: op.identity,
+                                op: kind,
+                                values: (!op.value.is_null()).then_some(op.value),
+                            })
+                        })
+                        .collect();
+                    Ok(RefusedAct {
+                        id,
+                        name: row[1].as_str().unwrap().into(),
+                        version: as_u64(&row[2])?,
+                        code: row[3].as_str().unwrap().into(),
+                        act: SubmittedAct {
+                            args: Some(args),
+                            operations,
+                        },
+                    })
+                })
+                .collect();
+        }
         let rows = self.rows(
             &format!(
                 "SELECT ordinal, name, code, detail FROM axton_rejection {filter} ORDER BY ordinal"
@@ -171,11 +217,21 @@ impl<S: ClientStore> Engine<'_, S> {
             if tasks.is_empty() {
                 continue;
             }
+            let act = if self.is05()? {
+                SubmittedAct {
+                    args: Some(crate::v05::reconstruct_input(
+                        &self.wire_ops05(queued.ordinal)?,
+                    )?),
+                    operations: queued.mutation.operations.clone(),
+                }
+            } else {
+                SubmittedAct::of(&queued.mutation)
+            };
             acts.push(FailedAct {
                 ordinal: queued.ordinal,
                 name: queued.mutation.name.clone(),
                 version: queued.mutation.version,
-                act: SubmittedAct::of(&queued.mutation),
+                act,
                 tasks,
             });
         }

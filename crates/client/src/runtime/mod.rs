@@ -398,11 +398,22 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
         command: crate::sync05::StoreCommand,
     ) -> Result<crate::sync05::StoreReport> {
         use crate::sync05::{StoreCommand, StoreReport};
+        if let StoreCommand::Guarded { fence, command } = command {
+            if !fence.current() || self.client.request_context05()? != fence.context {
+                return Ok(StoreReport::Obsolete);
+            }
+            let report = self.store_worker05(*command).map_err(|e| e.to_string());
+            return Ok(StoreReport::Guarded {
+                fence,
+                report: Box::new(report),
+            });
+        }
         if self.transaction.is_some() {
             return Err(crate::invalid("Store worker transaction active"));
         }
         let generation = self.client.generation();
         let result = match command {
+            StoreCommand::Guarded { .. } => unreachable!(),
             StoreCommand::NetworkState { live, catching_up } => {
                 self.sync05_live = live;
                 self.sync05_catching_up = catching_up;
@@ -424,6 +435,9 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     settlements: self.client.pending_settlement05()?,
                 }
             }
+            StoreCommand::Cleanup(now) => {
+                StoreReport::ActivePlans(self.client.cleanup_delivery05(now)?)
+            }
             StoreCommand::Snapshot => StoreReport::Snapshot(self.client.store_status05()?),
             StoreCommand::Freeze => StoreReport::Frozen(self.client.freeze_batch05()?),
             StoreCommand::Acknowledge(receipt) => {
@@ -433,6 +447,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     status: self.client.store_status05()?,
                     report,
                     plan: None,
+                    active_plans: None,
                 }
             }
             StoreCommand::Apply {
@@ -453,6 +468,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                     status: self.client.store_status05()?,
                     report,
                     plan: Some((plan_id, next)),
+                    active_plans: Some(self.client.active_delivery_plans05()?),
                 }
             }
         };

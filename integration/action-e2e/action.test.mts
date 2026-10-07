@@ -714,7 +714,17 @@ test("a suspended real Query handler leaves Stream sync and committed local tran
     const mutation = await s.client.mutations.addTodo({
       todo: { id: "responsive-live", title: "responsive" },
     });
-    assert.equal((await mutation.wait()).error, null);
+    let deadline!: ReturnType<typeof setTimeout>;
+    const outcome = await Promise.race([
+      mutation.wait(),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(Error("Mutation cannot settle while Query is suspended")),
+          10000,
+        );
+      }),
+    ]).finally(() => clearTimeout(deadline));
+    assert.equal(outcome.error, null);
     assert.equal(
       (await s.client.models.todo.get({ id: "responsive-live" }))?.title,
       "responsive",

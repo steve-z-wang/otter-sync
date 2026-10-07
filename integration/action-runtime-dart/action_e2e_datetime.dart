@@ -74,10 +74,21 @@ Future<void> main(List<String> args) async {
         DateTime.now().isBefore(end)) {
       await Future<void>.delayed(Duration.zero);
     }
-    check(
-      (await client.syncState())['pending'] == 0,
-      'DateTime durable queue settled: ${jsonEncode(await client.readSql("SELECT id,name,batch_id,result,reconciled FROM axton_mutation_queue ORDER BY id"))}; diagnostics=$diagnostics',
-    );
+    if ((await client.syncState())['pending'] != 0) {
+      Future<Object> inspect(String sql) async {
+        try { return await client.readSql(sql); }
+        catch (error) { return {'error': error.toString()}; }
+      }
+      final evidence = {
+        'queue': await inspect('SELECT id,name,batch_id,result,reconciled,rejection_code FROM axton_mutation_queue ORDER BY id'),
+        'dependencies': await inspect('SELECT * FROM axton_mutation_dependency'),
+        'mutationPrerequisites': await inspect('SELECT * FROM axton_mutation_prerequisite'),
+        'prerequisites': await inspect('SELECT * FROM axton_prerequisite'),
+        'store': await inspect('SELECT last_acknowledged_batch_id,next_mutation_id FROM axton_store'),
+        'diagnostics': diagnostics,
+      };
+      throw StateError('DateTime durable queue settled: ${jsonEncode(evidence)}');
+    }
     check(
       (await client.models.note.get(
             const app.NoteIdentity(id: id),

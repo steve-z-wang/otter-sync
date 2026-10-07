@@ -326,6 +326,8 @@ class RuntimeConnection {
   void _http(Effect effect) => _run(() {
     final body = effect.operation['body'] as String;
     final Future<String> sent = switch (effect.operation['route']) {
+      'handshake' => _network.handshake(body, effect.cancelled),
+      'materialize' => _network.materialize(body, effect.cancelled),
       'push' => _network.push(body, effect.cancelled),
       'pull' => _network.pull(body, effect.cancelled),
       'action' => _network.action(body, effect.cancelled),

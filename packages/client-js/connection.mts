@@ -7,7 +7,8 @@ import type { RecordValue } from "./values.mts";
  * Fetch) to `/sync/fetch` and `load` (a batch of native Load pages) to
  * `/sync/loads`.
  */
-export type HttpRoute = "push" | "pull" | "action" | "fetch" | "load";
+export type HttpRoute =
+  "handshake" | "materialize" | "push" | "pull" | "action" | "fetch" | "load";
 /** One HTTP POST: `kind` is the route; an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
   kind: HttpRoute,

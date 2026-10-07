@@ -94,6 +94,14 @@ class ServerSession {
     }
   }
 
+  /// `POST /sync/handshake`: the Store's current Stream head.
+  Future<String> handshake(String body, Future<void> cancellation) =>
+      _post('handshake', 'handshake', body, cancellation);
+
+  /// `POST /sync/materialize`: an owned settlement or schema plan.
+  Future<String> materialize(String body, Future<void> cancellation) =>
+      _post('materialize', 'materialize', body, cancellation);
+
   /// `POST /sync/mutations`: one frozen push batch.
   Future<String> push(String body, Future<void> cancellation) =>
       _post('mutations', 'push', body, cancellation);

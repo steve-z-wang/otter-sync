@@ -318,7 +318,8 @@ impl<S: ClientStore> Engine<'_, S> {
             .rows;
         let mut authority_keys = vec![];
         for row in rows {
-            let evidence: axton_core::v04::RecordEvidence = crate::mutation_queue::decode(&row[2])?;
+            let evidence: axton_core::authority::RecordEvidence =
+                crate::mutation_queue::decode(&row[2])?;
             if !evidence.history.is_empty() && evidence.membership.is_some_and(|m| m.live) {
                 authority_keys.push(v05::RecordKey {
                     model: row[0].as_str().unwrap().into(),

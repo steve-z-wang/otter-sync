@@ -1,8 +1,8 @@
 use crate::{authority::Held, engine::Engine, *};
-use axton_core::v04;
+use axton_core::authority as evidence;
 use serde_json::{Value, json};
 impl<S: ClientStore> Engine<'_, S> {
-    pub(crate) fn evidence05(&mut self, key: &RecordKey) -> Result<v04::RecordEvidence> {
+    pub(crate) fn evidence05(&mut self, key: &RecordKey) -> Result<evidence::RecordEvidence> {
         self.scalar(
             "SELECT evidence FROM axton_authority WHERE model=? AND identity=?",
             &[json!(key.model), json!(key.encoded_identity()?)],
@@ -19,7 +19,7 @@ impl<S: ClientStore> Engine<'_, S> {
     pub(crate) fn set_evidence05(
         &mut self,
         key: &RecordKey,
-        e: &v04::RecordEvidence,
+        e: &evidence::RecordEvidence,
     ) -> Result<()> {
         self.exec("axton_authority","INSERT INTO axton_authority(model,identity,evidence) VALUES(?,?,?) ON CONFLICT(model,identity) DO UPDATE SET evidence=excluded.evidence",&[json!(key.model),json!(key.encoded_identity()?),crate::mutation_queue::text(e)?])?;
         Ok(())
@@ -470,7 +470,7 @@ impl<S: ClientStore> Engine<'_, S> {
                 }
                 v05::AuthorityChange::Record { cursor, state, .. } => {
                     let admission = evidence.admission(&context.materialization, *cursor)?;
-                    if admission == v04::AuthorityAdmission::Duplicate {
+                    if admission == evidence::AuthorityAdmission::Duplicate {
                         continue;
                     }
                     let incoming = if state.is_null() {
@@ -488,7 +488,7 @@ impl<S: ClientStore> Engine<'_, S> {
                         "UPDATE axton_authority SET base=? WHERE model=? AND identity=?",
                         &[text(&incoming)?, json!(key.model), text(&key.identity)?],
                     )?;
-                    if admission == v04::AuthorityAdmission::Newer {
+                    if admission == evidence::AuthorityAdmission::Newer {
                         self.stage_one(&key, incoming.as_ref(), held)?;
                     } else {
                         self.stage_preserving_local04(&key, incoming.as_ref(), held)?;
@@ -503,7 +503,7 @@ impl<S: ClientStore> Engine<'_, S> {
                                 .unwrap_or(0)
                                 <= *cursor)
                         })? {
-                            if admission == v04::AuthorityAdmission::Newer {
+                            if admission == evidence::AuthorityAdmission::Newer {
                                 self.stage_one(&child, None, held)?;
                             } else {
                                 self.stage_preserving_local04(&child, None, held)?;
@@ -655,7 +655,7 @@ impl<S: ClientStore> Client<S> {
             })
         })
     }
-    pub fn record_evidence05(&mut self, key: &RecordKey) -> Result<v04::RecordEvidence> {
+    pub fn record_evidence05(&mut self, key: &RecordKey) -> Result<evidence::RecordEvidence> {
         self.request_context05()?;
         self.view(|e| e.evidence05(key))
     }

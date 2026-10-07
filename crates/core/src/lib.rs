@@ -1,7 +1,9 @@
 //! Shared schema-driven semantics. Business model types live in generated SDKs.
 mod actions;
+pub mod authority;
 mod fetch;
 mod loads;
+pub mod materialization;
 mod protocol;
 mod schema;
 #[path = "protocol_v04.rs"]

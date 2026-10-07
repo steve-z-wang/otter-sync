@@ -75,12 +75,6 @@ export async function createExample() {
     protocol5: {
       authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
     },
-    handlers: {
-      async edit({ input, tx }) {
-        const { identity, patch } = input.entry;
-        await tx.entry.update({ where: identity, data: patch });
-      },
-    },
     mutations,
     queries: {
       async findEntry({ ctx, args }) {

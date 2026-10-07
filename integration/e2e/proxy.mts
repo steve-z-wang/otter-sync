@@ -70,7 +70,7 @@ export async function createProxy(target: string) {
     }
     try {
       const answer = await fetch(new URL(request.url ?? "/", upstream), {
-        method: request.method,
+        method: request.method ?? "POST",
         headers: {
           authorization: String(request.headers.authorization ?? ""),
           "content-type": String(

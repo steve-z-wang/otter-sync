@@ -35,13 +35,6 @@ export interface QueryContext<Tx> {
  readonly stream: LoadStream;
  streams(names: readonly string[]): LoadStream;
 }
-export interface HandlerCall<Tx, Input> {
- input: Input;
- tx: Tx;
- userId: string;
- streams(names: readonly string[]): Stream;
- invalidate: RecordDeclaration;
-}
 export interface TransactionCall<Tx> {
  tx: Tx;
  streams(names: readonly string[]): Stream;
@@ -136,8 +129,6 @@ export interface TodoPagesHandlerOutput {
  todos: TodoIdentity[];
  moments: MomentIdentity[];
 }
-export interface Handlers<Tx> {
-}
 export interface Mutations<Tx> {
  change: { v1(call: MutationHandlerCall<Tx, ChangeInput>): Promise<ChangeHandlerOutput> } | ((call: MutationHandlerCall<Tx, ChangeInput>) => Promise<ChangeHandlerOutput>);
  clear: { v1(call: MutationHandlerCall<Tx, ClearInput>): Promise<ClearHandlerOutput> } | ((call: MutationHandlerCall<Tx, ClearInput>) => Promise<ClearHandlerOutput>);
@@ -162,7 +153,7 @@ export interface LoaderHooks<Tx> {
  moment?: { prepareForViewer(call:LoaderCall<Tx,MomentIdentity> & PreparationContext<Tx>):Promise<void> };
  pin?: { prepareForViewer(call:LoaderCall<Tx,PinIdentity> & PreparationContext<Tx>):Promise<void> };
 }
-export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "handlers" | "mutations" | "queries" | "loaders" | "loads" | "bootstrap" | "loaderHooks" | "protocol4" | "protocol5"> & { handlers?: Handlers<Tx>; mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx>; protocol5: NonNullable<BackendOptions<Tx>["protocol5"]>; bootstrap?: (call: {ctx: QueryContext<Tx>}) => void | Promise<void>; loaderHooks?:LoaderHooks<Tx> };
+export type Options<Tx> = Omit<BackendOptions<Tx>, "config" | "mutations" | "queries" | "loaders" | "bootstrap" | "loaderHooks" | "protocol5"> & { mutations: Mutations<Tx>; queries: Queries<Tx>; loaders: Loaders<Tx>; protocol5: NonNullable<BackendOptions<Tx>["protocol5"]>; bootstrap?: (call: {ctx: QueryContext<Tx>}) => void | Promise<void>; loaderHooks?:LoaderHooks<Tx> };
 export function createBackend<Tx>(options:Options<Tx>) { const {bootstrap,loaderHooks,...rest}=options;
- return createRuntimeBackend<Tx,TransactionCall<Tx>>({...rest,config:schema, handlers:options.handlers as unknown as BackendOptions<Tx>['handlers'],mutations:options.mutations as unknown as BackendOptions<Tx>['mutations'],queries:options.queries as unknown as BackendOptions<Tx>['queries'],loaders:options.loaders as unknown as BackendOptions<Tx>['loaders'],...(bootstrap===undefined?{}:{bootstrap:bootstrap as unknown as NonNullable<BackendOptions<Tx>['bootstrap']>}),...(loaderHooks===undefined?{}:{loaderHooks:loaderHooks as unknown as NonNullable<BackendOptions<Tx>['loaderHooks']>})});
+ return createRuntimeBackend<Tx,TransactionCall<Tx>>({...rest,config:schema, mutations:options.mutations as unknown as BackendOptions<Tx>['mutations'],queries:options.queries as unknown as BackendOptions<Tx>['queries'],loaders:options.loaders as unknown as BackendOptions<Tx>['loaders'],...(bootstrap===undefined?{}:{bootstrap:bootstrap as unknown as NonNullable<BackendOptions<Tx>['bootstrap']>}),...(loaderHooks===undefined?{}:{loaderHooks:loaderHooks as unknown as NonNullable<BackendOptions<Tx>['loaderHooks']>})});
 }

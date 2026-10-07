@@ -1231,8 +1231,6 @@ class GeneratedClient {
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.
  Future<Map<String,dynamic>> syncState() => client.syncState();
- /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].
- Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);
  /// Remove a handled rejection from the local inbox; it is not retried.
  Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);
  /// Remove unsent work and recompute local state; frozen work cannot be dropped.

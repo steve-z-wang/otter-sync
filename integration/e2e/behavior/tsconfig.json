@@ -4,12 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": [
-    "*.ts",
-    "*.mts"
-  ]
+  "include": ["*.ts", "*.mts"]
 }

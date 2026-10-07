@@ -58,20 +58,6 @@ class EntryCreate implements EntryCreateInput {
  'note': note == null ? null : note!,
  };
 }
-class EditEntryUpdate {
- final EntryIdentity identity;
- final Present<String>? text;
- final Present<String?>? note;
- const EditEntryUpdate({required this.identity,this.text,this.note});
- Map<String,dynamic> toRecord() => {
- if (text != null) 'text': text!.value,
- if (note != null) 'note': note!.value == null ? null : note!.value!,
- };
-}
-Map<String,dynamic> edit({required EditEntryUpdate entry}) { final operations=<Map<String,dynamic>>[];
- for (final value in [entry]) {
- operations.add({'model':'Entry','op':'update','identity':value.identity.toRecord(),'values':value.toRecord()}); }
- return {'name':'Edit','version':1,'operations':operations}; }
 class EntryFilter {
  final Present<String>? id;
  final Present<String>? text;
@@ -249,8 +235,6 @@ class GeneratedClient {
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.
  Future<Map<String,dynamic>> syncState() => client.syncState();
- /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].
- Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);
  /// Remove a handled rejection from the local inbox; it is not retried.
  Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);
  /// Remove unsent work and recompute local state; frozen work cannot be dropped.

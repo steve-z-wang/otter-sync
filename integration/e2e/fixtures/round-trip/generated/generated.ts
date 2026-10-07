@@ -59,13 +59,6 @@ export function encodeEntryCreate(value:EntryCreate):Record<string,unknown> { re
 export function encodeEntryCreateIdentity(value:EntryCreate):Record<string,unknown> { return {
  id: value.id,
 }; }
-export interface EditArgs {
- entry: { identity:EntryIdentity; values:Pick<EntryPatch, "text" | "note"> };
-}
-export function Edit(args:EditArgs) { const operations:object[] = [];
- for (const value of [args.entry]) {
- operations.push({ model:'Entry', op:'update', identity:encodeEntryIdentity(value.identity), values:encodeEntryPatch(value.values) }); }
- return {name:'Edit',version:1,operations}; }
 export class EntryModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
  async get(identity:EntryIdentity):Promise<Entry|null> { const row=await this.port.read('Entry',encodeEntryIdentity(identity)); return row===null ? null : decodeEntry(row); }
  async query(options:{where?:Partial<Entry>;orderBy?:{field:'id' | 'text' | 'note';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Entry[]> { return (await this.port.querySpec('Entry',{filter:encodeEntryWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeEntry); }

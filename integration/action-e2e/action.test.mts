@@ -176,7 +176,7 @@ test("Query/Fetch store policies preserve invocation snapshot separately from cu
         todo: { id: "policy-a", title: "policy initial" },
       })
     ).wait();
-    const hold = proxy.holdResponse(action("SearchTodos"));
+    const hold = proxy.holdResponse((x) => x.path === "/sync/actions" && JSON.parse(x.body).invocation?.name === "SearchTodos");
     const reading = s.client.queries.searchTodos(
       { query: "policy" },
       { store: true },

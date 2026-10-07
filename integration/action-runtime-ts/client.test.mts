@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Client, type Call } from "../../packages/client-js/index.mts";
+import {
+  type Call,
+  type QueryOptions,
+} from "../../packages/client-js/index.mts";
 import { GeneratedClient } from "./client.ts";
 import { makeMutations, makeQueries, type Todo } from "./generated.ts";
 
@@ -16,11 +18,11 @@ test("generated operation codecs retain null, lists, omitted patches and DateTim
     args: Record<string, unknown>;
   }[] = [];
   const port = {
-    async submitMutation(
+    async submitMutation<T>(
       name: string,
       version: number,
       args: object,
-      decode: (value: unknown) => unknown,
+      decode: (value: unknown) => T,
     ) {
       calls.push({ name, version, args: args as Record<string, unknown> });
       // This port fixture checks codecs only; real settlement is exercised by v05-sdk/run-host.sh.
@@ -47,11 +49,11 @@ test("generated operation codecs retain null, lists, omitted patches and DateTim
         },
       };
     },
-    async invokeQuery(
+    async invokeQuery<T>(
       name: string,
       version: number,
       args: object,
-      decode: (value: unknown) => unknown,
+      decode: (value: unknown) => T,
     ) {
       calls.push({ name, version, args: args as Record<string, unknown> });
       return decode({ todo: null });
@@ -133,12 +135,6 @@ test("generated operation codecs retain null, lists, omitted patches and DateTim
 
 test("generated bound native Store keeps local CRUD and named optimism durable offline", async () => {
   const directory = await mkdtemp(join(tmpdir(), "axton-generated-actions-"));
-  const native = createRequire(import.meta.url)(
-    "../../bindings/node/axton-node.node",
-  );
-  const originalOpen = Client.open;
-  Client.open = ((options: Parameters<typeof Client.open>[0]) =>
-    originalOpen({ ...options, native })) as typeof Client.open;
   let client: GeneratedClient | undefined;
   const at = new Date("2026-01-01T00:00:00.000Z");
   const row = {
@@ -203,7 +199,6 @@ test("generated bound native Store keeps local CRUD and named optimism durable o
       "companion",
     );
   } finally {
-    Client.open = originalOpen;
     await client?.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -212,7 +207,13 @@ test("generated bound native Store keeps local CRUD and named optimism durable o
 test("generated Query store boolean and DateTime arguments stay request-local", async () => {
   const seen: unknown[] = [];
   const queries = makeQueries({
-    async invokeQuery(name, version, args, decode, options) {
+    async invokeQuery<T>(
+      name: string,
+      version: number,
+      args: object,
+      decode: (value: unknown) => T,
+      options?: QueryOptions,
+    ) {
       seen.push({ name, version, args, options });
       return decode({ todo: null });
     },

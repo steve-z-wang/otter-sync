@@ -392,6 +392,40 @@ pub const OPERATIONS: [&str; 32] = [
     deny_unknown_fields
 )]
 pub enum Protocol05Operation {
+    BootstrapState {
+        store_id: String,
+    },
+    HandleBootstrap05 {
+        owner: String,
+        store_id: String,
+        stream: String,
+    },
+    FinishBootstrap {
+        store_id: String,
+    },
+    DeliveryHead {
+        stream: String,
+    },
+    DeliveryNow {},
+    DeliveryCandidates {
+        stream: String,
+        after: u64,
+        models: Option<Vec<String>>,
+        keys: Option<Vec<MemberKey>>,
+        capacity: u64,
+    },
+    SaveDelivery {
+        owner: String,
+        intent: String,
+        header: axton_core::v05::DeliveryHeader,
+        parts: Vec<axton_core::v05::DeliveryPart>,
+    },
+    ReadDelivery {
+        owner: String,
+        context: axton_core::v05::RequestContext,
+        intent: String,
+        continuation: axton_core::v05::Continuation,
+    },
     Admit {
         owner: String,
         context: axton_core::v05::RequestContext,

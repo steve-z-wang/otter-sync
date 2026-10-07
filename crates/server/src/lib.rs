@@ -1,5 +1,9 @@
 //! Server protocol orchestration. Host calls run in the application's outer transaction.
 mod action_results;
+mod delivery_plan;
+pub use delivery_plan::{
+    handshake05, process_delivery05, process_live05, process_materialization05, process_read05,
+};
 mod actions;
 mod calls;
 pub mod error;

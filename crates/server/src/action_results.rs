@@ -493,3 +493,14 @@ pub(crate) fn snapshot_keys(
     }
     Ok(keys)
 }
+
+/// Ordinary protocol-5 reads do not run Loader preparation publications.
+pub(crate) async fn load_one_canonical_state(
+    config: &Config,
+    owner: &str,
+    key: &RecordKey,
+    version: u64,
+    host: &impl Host,
+) -> Result<Value> {
+    load_state(config, owner, key, version, true, host).await
+}

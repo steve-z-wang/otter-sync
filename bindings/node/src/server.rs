@@ -225,15 +225,14 @@ pub async fn negotiate_live(
     request_json: String,
     callback: ThreadsafeFunction<String, Promise<String>, String, Status, false>,
 ) -> Result<String> {
-    let negotiation = axton_server::live::negotiate(
-        &config(&config_json)?,
-        &owner,
-        request_json.as_bytes(),
-        &CallbackHost(callback),
-    )
-    .await
-    .map_err(reason)?;
-    let (subscriptions, actions) = Subscriptions::open(negotiation);
+    let cfg=config(&config_json)?;
+    let value:serde_json::Value=serde_json::from_str(&request_json).map_err(internal)?;
+    let (subscriptions,actions)=if value["protocol"]==5 {
+       axton_server::live::negotiate05(&cfg,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)?
+    } else {
+       let negotiation=axton_server::live::negotiate(&cfg,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)?;
+       Subscriptions::open(negotiation)
+    };
     let handle = {
         let mut sessions = live_sessions()?;
         sessions.next += 1;
@@ -336,4 +335,29 @@ pub async fn settle_external05(config_json:String,settlement_json:String,callbac
 #[napi]
 pub fn server_materialization_id05(config_json:String,projection_generation:String)->Result<String> {
  axton_server::materialization_id05(&config(&config_json)?,&projection_generation).map_err(reason)
+}
+
+#[napi]
+pub async fn process_delivery05(config_json:String,owner:String,request_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ axton_server::process_delivery05(&config(&config_json)?,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)
+}
+
+#[napi]
+pub async fn process_materialization05(config_json:String,owner:String,request_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ axton_server::process_materialization05(&config(&config_json)?,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)
+}
+
+#[napi]
+pub async fn process_read05(config_json:String,owner:String,request_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ axton_server::process_read05(&config(&config_json)?,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)
+}
+
+#[napi]
+pub async fn handshake05(config_json:String,owner:String,request_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String> {
+ axton_server::handshake05(&config(&config_json)?,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)
+}
+
+#[napi]
+pub async fn process_live05(config_json:String,owner:String,request_json:String,callback:ThreadsafeFunction<String,Promise<String>,String,Status,false>)->Result<String>{
+ axton_server::process_live05(&config(&config_json)?,&owner,request_json.as_bytes(),&CallbackHost(callback)).await.map_err(reason)
 }

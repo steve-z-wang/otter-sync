@@ -174,6 +174,38 @@ export type Protocol05Context = {
   materialization: string;
 };
 export type Protocol05Operation =
+  | { op: "bootstrapState"; storeId: string }
+  | { op: "handleBootstrap05"; owner: string; storeId: string; stream: string }
+  | { op: "finishBootstrap"; storeId: string }
+  | { op: "deliveryHead"; stream: string }
+  | { op: "deliveryNow" }
+  | {
+      op: "deliveryCandidates";
+      stream: string;
+      after: number;
+      models: string[] | null;
+      keys: MemberKey[] | null;
+      capacity: number;
+    }
+  | {
+      op: "saveDelivery";
+      owner: string;
+      intent: string;
+      header: JsonValue;
+      parts: JsonValue[];
+    }
+  | {
+      op: "readDelivery";
+      owner: string;
+      context: Protocol05Context;
+      intent: string;
+      continuation: {
+        planId: string;
+        digest: string;
+        unit: number;
+        part: number;
+      };
+    }
   | { op: "admit"; owner: string; context: Protocol05Context }
   | { op: "claimStore"; storeId: string; principal: string; stream: string }
   | {

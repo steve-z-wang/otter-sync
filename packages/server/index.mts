@@ -49,6 +49,36 @@ export type LoadFault =
 /** One Load item as its transaction ended: its committed page or its fault. */
 export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
+  processLive05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processDelivery05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processMaterialization05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processRead05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  handshake05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
   serverMaterializationId05?(
     config: string,
     projectionGeneration: string,
@@ -147,6 +177,7 @@ export type LiveEvent =
 /** What the controller asks the executor to do, in order. */
 export type LiveAction =
   | { type: "pullV04"; request: string }
+  | { type: "pullV05"; request: string }
   | { type: "listen"; stream: string }
   | { type: "send"; frame: string }
   | {
@@ -288,6 +319,23 @@ function typedNative(native: Native): Native {
       }
     };
   return {
+    ...Object.fromEntries(
+      [
+        "processDelivery05",
+        "processMaterialization05",
+        "processRead05",
+        "handshake05",
+        "processLive05",
+      ]
+        .filter((key) => typeof (native as any)[key] === "function")
+        .map((key) => [
+          key,
+          (...args: any[]) =>
+            (native as any)[key](...args).catch((error: unknown) => {
+              throw engineError(error);
+            }),
+        ]),
+    ),
     ...(native.serverMaterializationId05
       ? {
           serverMaterializationId05:
@@ -359,6 +407,8 @@ function typedNative(native: Native): Native {
  * server-side defect: reported to `onError` and answered `500 {code: "server"}`.
  */
 const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
+  "delivery.expired": 410,
+  "delivery.capacity": 413,
   "request.invalid": 400,
   context_mismatch: 409,
   "stream.forbidden": 403,
@@ -1205,6 +1255,29 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               context.stream,
               tx,
             ));
+        } else if (
+          req.op === "protocol05" &&
+          req.request.op === "handleBootstrap05"
+        ) {
+          const effects = createLoadEffects();
+          try {
+            await options.bootstrap?.({
+              ctx: {
+                tx,
+                userId: req.request.owner,
+                callId: `bootstrap:${req.request.storeId}`,
+                stream: Object.assign(
+                  (names: string | readonly string[]) => effects.stream(names),
+                  effects.stream(req.request.stream),
+                ),
+                streams: (names: readonly string[]) => effects.stream(names),
+              },
+            });
+            if (effects.failure()) throw effects.failure()!.error;
+            result = { declarations: effects.tracking() };
+          } finally {
+            effects.close();
+          }
         } else if (req.op === "admitContext") {
           result =
             !!options.protocol4 &&
@@ -1821,6 +1894,23 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     );
     return native.encodeLoadBatch(items, answers);
   };
+  // Expiry is a successful read outcome: commit staging cleanup, then surface
+  // the explicit error outside the transaction. Capacity/faults still roll back.
+  const deliveryRead = async (
+    operation: (tx: T, session: Session) => Promise<string>,
+  ): Promise<string> => {
+    const outcome = await run(async (tx, session) => {
+      try {
+        return { response: await operation(tx, session) };
+      } catch (error) {
+        if (error instanceof EngineError && error.code === "delivery.expired")
+          return { expired: error };
+        throw error;
+      }
+    });
+    if ("expired" in outcome) throw outcome.expired;
+    return outcome.response;
+  };
   /** @internal Raw protocol seams used by the framework's own tests; not part of the supported surface. */
   const api = {
     materializationId,
@@ -1856,17 +1946,55 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     },
     action: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
-        native.processAction(config, owner, text(request), host(tx, session)),
+        (JSON.parse(text(request)).protocol === 5
+          ? native.processRead05!
+          : native.processAction)(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
       ),
     fetch: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
-        native.processFetch(config, owner, text(request), host(tx, session)),
+        (JSON.parse(text(request)).protocol === 5
+          ? native.processRead05!
+          : native.processFetch)(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
       ),
     pull: (owner: string, request: Uint8Array | string) =>
-      run((tx, session) =>
-        native.processPull(config, owner, text(request), host(tx, session)),
+      deliveryRead((tx, session) =>
+        (JSON.parse(text(request)).protocol === 5
+          ? native.processDelivery05!
+          : native.processPull)(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
       ).then(reportInvalidPage),
     loads,
+    pull05Live: (owner: string, request: string) =>
+      deliveryRead((tx, session) =>
+        native.processLive05!(config, owner, request, host(tx, session)),
+      ),
+    handshake: (owner: string, request: Uint8Array | string) =>
+      run((tx, session) =>
+        native.handshake05!(config, owner, text(request), host(tx, session)),
+      ),
+    materialize: (owner: string, request: Uint8Array | string) =>
+      deliveryRead((tx, session) =>
+        native.processMaterialization05!(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
+      ),
     negotiateLive: (
       owner: string,
       request: Uint8Array | string,
@@ -2020,6 +2148,8 @@ function checkedRefusal(answer: unknown): Refusal | null {
   return { status: status as number, body: text };
 }
 interface HttpBackend {
+  handshake?(owner: string, request: Uint8Array | string): Promise<string>;
+  materialize?(owner: string, request: Uint8Array | string): Promise<string>;
   push(owner: string, request: Uint8Array | string): Promise<string>;
   pull(owner: string, request: Uint8Array | string): Promise<string>;
   action(owner: string, request: Uint8Array | string): Promise<string>;
@@ -2051,7 +2181,9 @@ function createHttpHandler(options: {
       path !== "/sync/pull" &&
       path !== "/sync/actions" &&
       path !== "/sync/loads" &&
-      path !== "/sync/fetch"
+      path !== "/sync/fetch" &&
+      path !== "/sync/materialize" &&
+      path !== "/sync/handshake"
     ) {
       send(404, { code: "not_found" });
       return;
@@ -2102,15 +2234,19 @@ function createHttpHandler(options: {
         send(400, { code: "request.invalid" });
         return;
       }
-      const result = await (path === "/sync/mutations"
-        ? options.backend.push(owner, bytes)
-        : path === "/sync/actions"
-          ? options.backend.action(owner, bytes)
-          : path === "/sync/loads"
-            ? options.backend.loads(owner, bytes)
-            : path === "/sync/fetch"
-              ? options.backend.fetch(owner, bytes)
-              : options.backend.pull(owner, bytes));
+      const result = await (path === "/sync/handshake"
+        ? options.backend.handshake!(owner, bytes)
+        : path === "/sync/materialize"
+          ? options.backend.materialize!(owner, bytes)
+          : path === "/sync/mutations"
+            ? options.backend.push(owner, bytes)
+            : path === "/sync/actions"
+              ? options.backend.action(owner, bytes)
+              : path === "/sync/loads"
+                ? options.backend.loads(owner, bytes)
+                : path === "/sync/fetch"
+                  ? options.backend.fetch(owner, bytes)
+                  : options.backend.pull(owner, bytes));
       send(200, result);
     } catch (error) {
       const status =
@@ -2133,6 +2269,7 @@ function createHttpHandler(options: {
  * commit hub it asks the executor to use.
  */
 interface LiveBackend {
+  pull05Live?(owner: string, request: string): Promise<string>;
   pull?(owner: string, request: string): Promise<string>;
   negotiateLive(
     owner: string,
@@ -2299,6 +2436,16 @@ async function serveLive(
         );
       } else if (action.type === "send") {
         if (open()) connection.send(action.frame);
+      } else if (action.type === "pullV05") {
+        if (!backend.pull05Live) {
+          fail(new Error("v05 live carrier unavailable"));
+          return;
+        }
+        trackPull(
+          backend
+            .pull05Live(owner, action.request)
+            .then((page) => dispatch({ type: "pulled", page }), fail),
+        );
       } else if (action.type === "pullV04") {
         if (!backend.pull) {
           fail(new Error("v04 pull carrier unavailable"));

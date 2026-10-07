@@ -1,8 +1,8 @@
-# Protocol 5 Mutation Batches
+# Protocol 5 server paths
 
 ## 1. Introduction and Goals
 
-The additive Batch path commits each named Mutation independently and resumes a fixed request after a crash. Protocol 4 remains operational; protocol-5 delivery planning and client adoption are separate work.
+The additive Batch path commits each named Mutation independently and resumes a fixed request after a crash. Protocol 4 remains operational alongside finite protocol-5 delivery and ordinary reads. Client adoption remains a separate release gate.
 
 ## 3. Context and Scope
 
@@ -14,6 +14,7 @@ The SDK carries one validated immutable request through sequential `processBatch
 
 - [protocol_v05.rs](../../../../crates/server/src/protocol_v05.rs) validates carriers, assembles acknowledgements and adapts existing settlement/Loader machinery.
 - [mutation_batch.rs](../../../../crates/server/src/mutation_batch.rs) owns Store admission, replay, per-member execution and outcome persistence.
+- [delivery_plan.rs](../../../../crates/server/src/delivery_plan.rs) freezes Bootstrap, repair and owned materialization and carries Query/Fetch snapshots.
 - [host.rs](../../../../crates/server/src/host.rs) defines strict `Protocol05Operation` requests, mirrored in [host-contract.mts](../../../../packages/server/host-contract.mts).
 - [persistence.mts](../../../../packages/postgres/src/persistence.mts) dispatches those operations through the shared pg/Prisma/Drizzle driver; [migration.sql](../../../../packages/postgres/migration.sql) adds Store, MutationResult and StreamRecord tables without removing legacy data.
 
@@ -27,6 +28,20 @@ Explicit tracking and invalidation use the retained discovery/recheck and canoni
 
 Input targets are read under the same fence after preparation. A tracked initiating-Stream target records its position and a call-owned null-cursor fallback. Other targets stay private. Returning an identity or snapshot never tracks it. Business rows, final positions, target evidence, result and progress commit together; subscriber wakes follow commit.
 
+## 7. Finite authority delivery
+
+Handshake authenticates the Store and Stream, runs Bootstrap preparation once, settles its tracking and saves the initial head in one fenced Serializable transaction. Retries recover committed preparation; reconnect returns the current head.
+
+Bootstrap selects the retained schema's marked Models. Repair selects current positions above its committed prefix, including records ahead of the requested boundary. Loader preparation reaches a bounded identity closure before head capture; canonical reads then freeze record/null/Remove authority at that finite head. Core groups same-cursor, unique-Model and cascade dependencies. Independent components may share a bounded unit, but a component is never split to satisfy transport size.
+
+`axton_delivery_plan` and `axton_delivery_unit` store immutable context, principal, full intent, header and part digests and payloads. Continuations authorize again and read staged payloads. Plans expire after five minutes; `delivery.expired` commits cascade cleanup and claims no coverage. Successful new plans also reclaim expired staging. Count capacity is 100,000 identities and plan capacity is 256 MiB; refusal rolls back without partial staging or changed progress.
+
+The socket controller drains immutable fragments and advances its connection-local offered cursor only at complete units. Reconnect starts at its new handshake head; HTTP repairs missed coverage. Live headers name the backend's active materialization. A client retaining an older descriptor must treat a foreign-context live header as a repair hint and request HTTP authority under its own context, without installing the foreign payload or advancing its cursors.
+
+Owned materialization binds saved settlement targets or a compatible schema owner. Explicit keys must already have StreamRecord evidence; selected schema Models must be Bootstrap-marked. It returns current authority or membership Remove, never enrollment or range coverage. Private receipt fallback remains the client's separate owned-settlement path.
+
+Query/Fetch use the shared `ReadRequest`/`ReadResponse` carrier and existing retained descriptor normalization, Loader state normalization and Query snapshot assembly. Records carry explicit null cursors. Query exposes no tracking handles; storing a snapshot never implies enrollment. Business refusal rolls back its read savepoint. Infrastructure failures abort the outer transaction.
+
 ## 10. Quality Requirements
 
-[protocol-v05-batch.test.mjs](../../../../integration/persistence/server/protocol-v05-batch.test.mjs) inspects actual PostgreSQL rows after partial execution, process exit, refusal, infrastructure failure, duplicate replay, publication races and overflow. The explicit server runner includes it alongside retained protocol-4 gates. Large delivery-plan capacity and end-to-end client settlement remain later adoption gates.
+[protocol-v05-batch.test.mjs](../../../../integration/persistence/server/protocol-v05-batch.test.mjs) inspects actual PostgreSQL rows after partial execution, process exit, refusal, infrastructure failure, duplicate replay, publication races and overflow. [protocol-v05-delivery.test.mjs](../../../../integration/persistence/server/protocol-v05-delivery.test.mjs) covers frozen interleavings, expiry cleanup, atomic unique transfers, capacity rollback, ordinary reads, socket/reconnect and 10k/100k capacity measurements. The server runner retains every protocol-4 gate. Measured costs do not establish a production latency promise; end-to-end native client installation and settlement remain adoption gates.

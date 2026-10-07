@@ -717,6 +717,11 @@ impl Host for MemHost {
                 .map_err(|error| format!("unsupported host request: {error}"))?;
             let mut s = self.0.lock().unwrap();
             Ok(match request {
+                HostRequest::Protocol05 { .. } => {
+                    return Err(
+                        "legacy MemHost does not implement protocol 5; use actual adapters".into(),
+                    );
+                }
                 HostRequest::AdmitContext { .. }
                 | HostRequest::PublicationFence {}
                 | HostRequest::HandleBootstrap { .. }

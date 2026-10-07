@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/zanminwang/axton/compare/v0.4.1...v0.4.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **server:** drain admitted work before closing listener ([#245](https://github.com/zanminwang/axton/issues/245)) ([8b1bd56](https://github.com/zanminwang/axton/commit/8b1bd56531242e8e5a84095be5c9663174a0038b))
+
 ## [0.4.1](https://github.com/zanminwang/axton/compare/v0.4.0...v0.4.1) (2026-10-07)
 
 

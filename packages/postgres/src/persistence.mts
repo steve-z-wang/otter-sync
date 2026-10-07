@@ -126,11 +126,9 @@ async function lockStreams(q: Query, r: unknown): Promise<Acknowledged> {
     await q(SQL.LOCK_STREAMS, JSON.stringify(group));
   return null;
 }
-type Publication05 = Map<string, number> & { transactionId?: string };
 async function answer05(
   q: Query,
   r: Record<string, unknown>,
-  cursors: Publication05,
 ): Promise<unknown> {
   switch (r.op) {
     case "bootstrapState": {
@@ -267,6 +265,10 @@ async function answer05(
     }
     case "handleBootstrap05":
       throw new Error("bootstrap belongs to application host");
+    case "inspectStore": {
+      const [row] = await q(SQL.V05_STORE_INSPECT, r.storeId);
+      return row ? { principal: row.principal, stream: row.stream } : null;
+    }
     case "claimStore": {
       await q(SQL.V05_STORE_INSERT, r.storeId, r.principal, r.stream);
       const [row] = await q(SQL.V05_STORE_LOCK, r.storeId);
@@ -398,18 +400,7 @@ async function answer05(
       }
       return positions;
     }
-    case "readTracking":
-    case "guardRecords":
     case "applyStreamMembers": {
-      // Object handles (PoolClient/ORM wrappers) may survive COMMIT and be reused.
-      // Reservations are owned by the actual transaction, never by that object.
-      const [transaction] = await q(SQL.V05_TRANSACTION_ID);
-      if (!transaction) throw new Error("publication transaction missing");
-      const transactionId = String(transaction.transaction_id);
-      if (cursors.transactionId !== transactionId) {
-        cursors.clear();
-        cursors.transactionId = transactionId;
-      }
       const deltas = arrayOf(r.deltas, "deltas").map((value) =>
         keyOf(value, ["identity", "stream", "publish"]),
       );
@@ -422,14 +413,15 @@ async function answer05(
           deltas.filter((d) => d.publish).map((d) => streamName(d.stream)),
         ),
       ].sort(byteOrder);
+      // SQL owns reservation lifetime: both rows and their first table creation
+      // roll back with caller savepoints, and COMMIT clears connection-local rows.
+      // Repeated preparation/publication in this transaction reuses one cursor.
+      if (streams.length) await q(SQL.V05_PUBLICATION_CURSORS);
+      const cursors = new Map<string, number>();
       for (const stream of streams) {
-        if (cursors.has(stream)) continue;
-        const [row] = await q(
-          SQL.RESERVE_HEADS,
-          JSON.stringify([{ stream, count: 1 }]),
-        );
+        const [row] = await q(SQL.V05_RESERVE_CURSOR, stream);
         if (!row) throw new Error(`Stream ${stream} head counter overflow`);
-        cursors.set(stream, positiveCounter(row.head));
+        cursors.set(stream, positiveCounter(row.cursor));
       }
       const positions = [];
       for (const d of deltas) {
@@ -466,21 +458,20 @@ async function answer05(
 
 /**
  * Answer the persistence half of the host contract through a driver, inside
- * the transaction the driver's runner opened. `handle` and `load` never reach
+ * the current application transaction. `handleAction` and `load` never reach
  * here; an operation added to the contract without an arm is a compile error.
  */
 export async function answer<Tx>(
   driver: PostgresDriver<Tx>,
   tx: Tx,
   r: HostRequest,
-  publication05: Publication05 = new Map(),
 ): Promise<unknown> {
   const q = (sql: string, ...params: unknown[]) =>
     driver.query(tx, sql, params);
   await requireFreshLayout(q);
   switch (r.op) {
     case "protocol05":
-      return answer05(q, r.request, publication05);
+      return answer05(q, r.request);
     case "head": {
       const [row] = await q(SQL.HEAD, r.stream);
       return row ? safe(row.head) : 0;
@@ -496,7 +487,7 @@ export async function answer<Tx>(
     case "readTracking":
     case "guardRecords":
     case "applyStreamMembers":
-      return answer05(q, r, publication05);
+      return answer05(q, r);
     case "savepoint":
     case "rollback":
     case "release": {
@@ -533,43 +524,11 @@ export async function answer<Tx>(
 export function persistence<Tx>(
   driver: PostgresDriver<Tx>,
 ): Database<Tx> & { driver: PostgresDriver<Tx> } {
-  const contexts = new WeakMap<object, Publication05>();
-  const context = (tx: Tx): Publication05 => {
-    if ((typeof tx !== "object" && typeof tx !== "function") || tx === null)
-      throw new Error("protocol05 requires an object transaction handle");
-    let value = contexts.get(tx as object);
-    if (!value) {
-      value = new Map();
-      contexts.set(tx as object, value);
-    }
-    return value;
-  };
   return {
     driver,
-    transaction: (body) =>
-      driver.transaction(async (tx) => {
-        try {
-          return await body(tx);
-        } finally {
-          if (
-            (typeof tx === "object" || typeof tx === "function") &&
-            tx !== null
-          )
-            contexts.delete(tx as object);
-        }
-      }),
+    transaction: (body) => driver.transaction(body),
     persistence: (tx: Tx): Persistence => ({
-      call: (request) => {
-        const state =
-          request.op === "protocol05"
-            ? context(tx)
-            : (((typeof tx === "object" || typeof tx === "function") &&
-              tx !== null
-                ? contexts.get(tx as object)
-                : undefined) ?? new Map<string, number>());
-        if (request.op === "rollback") state.clear();
-        return answer(driver, tx, request as HostRequest, state);
-      },
+      call: (request) => answer(driver, tx, request as HostRequest),
     }),
   };
 }

@@ -100,6 +100,7 @@ export type Protocol05Operation =
       };
     }
   | { op: "admit"; owner: string; context: Protocol05Context }
+  | { op: "inspectStore"; storeId: string }
   | { op: "claimStore"; storeId: string; principal: string; stream: string }
   | {
       op: "beginBatch";

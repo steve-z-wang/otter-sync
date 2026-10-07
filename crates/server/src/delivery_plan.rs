@@ -33,6 +33,30 @@ async fn bind(owner: &str, context: &v05::RequestContext, host: &impl Host) -> R
     }
     Ok(())
 }
+/// Ordinary reads validate immutable ownership without locking Mutation progress.
+/// A new Store is claimed only after the application read has returned.
+async fn inspect_read_binding(
+    owner: &str,
+    context: &v05::RequestContext,
+    host: &impl Host,
+) -> Result<bool> {
+    crate::principal(owner)?;
+    let binding: Option<Binding> = call(
+        host,
+        json!({"op":"inspectStore","storeId":context.store_id}),
+    )
+    .await?;
+    if let Some(s) = &binding
+        && (s.principal != owner || s.stream != context.stream)
+    {
+        return Err(Error::code("store.binding"));
+    }
+    let allowed: bool = call(host, json!({"op":"admit","owner":owner,"context":context})).await?;
+    if !allowed {
+        return Err(Error::code("stream.forbidden"));
+    }
+    Ok(binding.is_some())
+}
 async fn fence(host: &impl Host) -> Result<()> {
     let _: Acknowledged = host.call_typed(HostRequest::PublicationFence {}).await?;
     Ok(())
@@ -598,9 +622,8 @@ pub async fn process_read05(
 ) -> Result<String> {
     let r: v05::ReadRequest = v05::decode(bytes).map_err(request_invalid)?;
     let versions = crate::mutation_batch::models(config, &r.context)?;
-    bind(owner, &r.context, raw).await?;
+    let bound = inspect_read_binding(owner, &r.context, raw).await?;
     let host = Publication05::new(raw);
-    fence(&host).await?;
     let _: Acknowledged = host
         .call_typed(HostRequest::Savepoint { ordinal: 1 })
         .await?;
@@ -619,6 +642,9 @@ pub async fn process_read05(
                     config, owner, &k, *version, &host,
                 )
                 .await?;
+                if !bound {
+                    bind(owner, &r.context, raw).await?;
+                }
                 let result = if state.is_null() {
                     Value::Null
                 } else {
@@ -663,6 +689,9 @@ pub async fn process_read05(
                         context: Some(crate::protocol_v05::handler_context(owner, &r.context)),
                     })
                     .await?;
+                if !bound {
+                    bind(owner, &r.context, raw).await?;
+                }
                 let outputs = match handled {
                     crate::host::HandledAction::Settled {
                         outputs,
@@ -673,6 +702,9 @@ pub async fn process_read05(
                             .iter()
                             .any(|d| matches!(d, crate::host::StreamIntent::Invalidate { .. })) =>
                     {
+                        if !declarations.is_empty() {
+                            fence(&host).await?;
+                        }
                         crate::settlement::settle_changes(
                             config,
                             &Default::default(),

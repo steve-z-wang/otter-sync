@@ -18,6 +18,6 @@ export DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres"
 node --test "$root/integration/persistence/server/effects.test.mjs" "$root/integration/persistence/server/host-contract.test.mjs" "$root/integration/persistence/server/driver-runtime.test.mjs" "$root/integration/persistence/server/startup.test.mjs"
 # Each file owns its fixtures; serialize files sharing the fresh namespace.
 test=(node --test --test-timeout=300000 --test-force-exit)
-for file in namespace-and-locks historical-migrations live-shutdown protocol-v05-batch protocol-v05-drivers protocol-v05-delivery; do
+for file in namespace-and-locks historical-migrations publication-savepoint publication-semantics read-liveness live-shutdown protocol-v05-batch protocol-v05-drivers protocol-v05-delivery; do
  "${test[@]}" "$root/integration/persistence/server/$file.test.mjs"
 done

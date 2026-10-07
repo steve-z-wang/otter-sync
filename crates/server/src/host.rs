@@ -366,6 +366,10 @@ pub enum Protocol05Operation {
         owner: String,
         context: axton_core::v05::RequestContext,
     },
+    /// Read immutable Store ownership without locking Batch progress.
+    InspectStore {
+        store_id: String,
+    },
     ClaimStore {
         store_id: String,
         principal: String,
@@ -434,19 +438,12 @@ pub enum HostRequest {
     Protocol05 {
         request: Protocol05Operation,
     },
-    /// Current authorization, including saved response replay.
     /// Persisted namespace-wide write fence; acquire before relevant work.
     PublicationFence {},
-    /// Lock this client's row and report its last accepted batch.
-    /// Record the receipt for an accepted batch.
-    /// Lock an invocation's immutable request and completed response.
-    /// Complete a newly claimed invocation in the caller's transaction.
     /// The stream's current head cursor.
     Head {
         stream: String,
     },
-    /// Retained upsert and removal log rows after `after`, at most `limit`
-    /// in cursor order. Identity comes from centralized record metadata.
     /// Open the savepoint that isolates one mutation.
     Savepoint {
         ordinal: u64,
@@ -459,8 +456,6 @@ pub enum HostRequest {
     Release {
         ordinal: u64,
     },
-    /// Run one mutation's handler. `arguments` carries the decoded slots
-    /// verbatim: its shape is the schema's business, not the contract's.
     /// Execute one generated Action handler with its normalized flat arguments.
     HandleAction {
         name: String,
@@ -472,16 +467,12 @@ pub enum HostRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         context: Option<crate::protocol_v05::HandlerContext>,
     },
-    /// Execute one generated Load handler for one page: the normalized flat
-    /// arguments and the page's continuation (`null` on the first page). Its
-    /// context declares no changes: the answer carries identities, the next
-    /// continuation and the Stream additions its add-only handles declared.
     /// Load the current state of these identities as the records of one
     /// retained model read contract (`version`), for this caller. Loads name
     /// no Stream: the same identity and version describe current content.
     Load {
-        /// Omitted preserves the ordinary read. Preparation returns an empty row list;
-        /// canonical reads must follow completed preparation in the same fenced transaction.
+        /// Preparation returns empty rows; canonical reads exclude hooks. Frozen
+        /// delivery follows preparation in its fenced transaction.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<LoaderMode>,
         model: String,

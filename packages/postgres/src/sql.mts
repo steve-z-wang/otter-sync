@@ -24,20 +24,6 @@ selected AS (
  UNION
  SELECT m.stream,r.model,r.identity_key FROM pairs w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_record m ON m.record_id=r.id AND m.kind='upsert' AND m.stream=w.stream)
 SELECT * FROM selected`;
-/**
- * One reservation per Stream: `$1` is a JSON array of `{stream, count}`
- * in canonical order. A missing Stream is inserted at `count`; an existing
- * one is locked by the upsert and advanced, so two first writers of one
- * Stream serialize on its primary key. A head that would pass the safe bound
- * is not updated and its row is not returned, which the caller refuses.
- * Answers each Stream's new head; its range ends there.
- */
-export const RESERVE_HEADS =
-  "INSERT INTO axton_stream(stream,head) " +
-  "SELECT v->>'stream', (v->>'count')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
-  "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+EXCLUDED.head " +
-  "WHERE axton_stream.head <= 9007199254740991 - EXCLUDED.head " +
-  "RETURNING stream, head";
 export const savepointName = (ordinal: number): string =>
   `axton_mutation_${ordinal}`;
 
@@ -48,6 +34,8 @@ export const PUBLICATION_FENCE =
 /** Protocol-5 Store, immutable outcome and coalesced publication persistence. */
 export const V05_STORE_INSERT =
   "INSERT INTO axton_store(id,principal,stream) VALUES($1,$2,$3) ON CONFLICT(id) DO NOTHING";
+export const V05_STORE_INSPECT =
+  "SELECT principal,stream FROM axton_store WHERE id=$1";
 export const V05_STORE_LOCK =
   "SELECT principal,stream,last_processed_batch_id,progress,current_digest,current_count,last_digest,last_count FROM axton_store WHERE id=$1 FOR UPDATE";
 export const V05_BATCH_BEGIN =
@@ -64,8 +52,16 @@ export const V05_PROGRESS_SAVE =
   "UPDATE axton_store SET progress=CASE WHEN $3+1=$4 THEN 0 ELSE $3+1 END,last_processed_batch_id=CASE WHEN $3+1=$4 THEN $2 ELSE last_processed_batch_id END,last_digest=CASE WHEN $3+1=$4 THEN current_digest ELSE last_digest END,last_count=CASE WHEN $3+1=$4 THEN current_count ELSE last_count END,current_digest=CASE WHEN $3+1=$4 THEN NULL ELSE current_digest END,current_count=CASE WHEN $3+1=$4 THEN NULL ELSE current_count END WHERE id=$1 AND last_processed_batch_id=$2-1 AND progress=$3 AND current_count=$4 RETURNING id";
 export const V05_POSITIONS_READ =
   "SELECT s.cursor,s.kind FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE s.stream=$1 AND r.model=$2 AND r.identity_key=$3";
-export const V05_TRANSACTION_ID =
-  "SELECT pg_current_xact_id()::text AS transaction_id";
+/** Ephemeral reservations follow SQL savepoints and are cleared at COMMIT. */
+export const V05_PUBLICATION_CURSORS =
+  "CREATE TEMP TABLE IF NOT EXISTS pg_temp.axton_publication_cursor (stream text PRIMARY KEY,cursor bigint NOT NULL) ON COMMIT DELETE ROWS";
+/** Reserve only once per transaction; a rolled-back reservation is free again. */
+export const V05_RESERVE_CURSOR =
+  "WITH reserved AS (INSERT INTO axton_stream(stream,head) " +
+  "SELECT $1::text,1 WHERE NOT EXISTS (SELECT 1 FROM pg_temp.axton_publication_cursor WHERE stream=$1) " +
+  "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+1 WHERE axton_stream.head<9007199254740991 RETURNING head), " +
+  "saved AS (INSERT INTO pg_temp.axton_publication_cursor(stream,cursor) SELECT $1,head FROM reserved RETURNING cursor) " +
+  "SELECT cursor FROM saved UNION ALL SELECT cursor FROM pg_temp.axton_publication_cursor WHERE stream=$1";
 export const V05_RECORD_ID =
   "SELECT id FROM axton_record WHERE model=$1 AND identity_key=$2";
 export const V05_POSITION_WRITE =

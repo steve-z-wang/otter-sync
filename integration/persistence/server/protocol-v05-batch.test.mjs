@@ -827,6 +827,122 @@ test("raw SQLSTATE and wrapped Prisma retry errors survive Handler and Loader na
   }
 });
 
+for (const existing of [false, true])
+  test(`caller savepoint publication rolls back and publishes again on ${existing ? "existing" : "new"} Stream`, async () => {
+    const backend = app(),
+      tx = await pool.connect();
+    const stream = `User:savepoint-${existing}`,
+      undone = `savepoint-${existing}-undone`,
+      kept = `savepoint-${existing}-kept`;
+    if (existing)
+      await q("INSERT INTO axton_stream(stream,head) VALUES($1,4)", [stream]);
+    let woke = 0;
+    const stop = backend.onCommitted(stream, () => woke++);
+    try {
+      await tx.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await tx.query("SAVEPOINT caller_act");
+      await tx.query("INSERT INTO v05_business VALUES($1,'undone')", [undone]);
+      await backend.acquirePublicationFence(tx);
+      const discardedWake = await backend.publish(
+        tx,
+        ({ stream: select, invalidate }) => {
+          invalidate.todo({ id: undone });
+          select(stream).track.todo({ id: undone });
+        },
+      );
+      assert.equal(typeof discardedWake, "function");
+      await tx.query("ROLLBACK TO SAVEPOINT caller_act");
+      await tx.query("INSERT INTO v05_business VALUES($1,'kept')", [kept]);
+      await backend.acquirePublicationFence(tx);
+      const wake = await backend.publish(
+        tx,
+        ({ stream: select, invalidate }) => {
+          invalidate.todo({ id: kept });
+          select(stream).track.todo({ id: kept });
+        },
+      );
+      assert.equal(woke, 0, "publication cannot wake before commit");
+      await tx.query("COMMIT");
+      assert.deepEqual(
+        await q(
+          "SELECT id,title FROM v05_business WHERE id=ANY($1) ORDER BY id",
+          [[undone, kept]],
+        ),
+        [{ id: kept, title: "kept" }],
+      );
+      assert.deepEqual(
+        await q(
+          "SELECT identity->>'id' id FROM axton_record WHERE identity->>'id'=ANY($1)",
+          [[undone, kept]],
+        ),
+        [{ id: kept }],
+      );
+      const rows = await q(
+        "SELECT r.identity->>'id' id,s.cursor,h.head,s.kind FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id JOIN axton_stream h ON h.stream=s.stream WHERE s.stream=$1",
+        [stream],
+      );
+      assert.deepEqual(rows, [
+        {
+          id: kept,
+          cursor: existing ? "5" : "1",
+          head: existing ? "5" : "1",
+          kind: "upsert",
+        },
+      ]);
+      assert.equal(woke, 0, "caller owns the postcommit wake");
+      wake();
+      await Promise.resolve();
+      assert.equal(woke, 1, "only kept publication wake is delivered");
+    } finally {
+      await tx.query("ROLLBACK");
+      tx.release();
+      stop();
+    }
+  });
+
+test("reused caller-owned PoolClient restores reservations after full ROLLBACK", async () => {
+  const backend = app(),
+    tx = await pool.connect(),
+    stream = "User:rollback-reused";
+  try {
+    for (const [id, commit] of [
+      ["rolled", false],
+      ["kept", true],
+    ]) {
+      await tx.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+      await backend.acquirePublicationFence(tx);
+      await tx.query("INSERT INTO v05_business VALUES($1,$2)", [
+        "reuse-" + id,
+        id,
+      ]);
+      await backend.publish(tx, ({ stream: select }) =>
+        select(stream).track.todo({ id: "reuse-" + id }),
+      );
+      await tx.query(commit ? "COMMIT" : "ROLLBACK");
+    }
+    assert.deepEqual(
+      await q("SELECT id FROM v05_business WHERE id LIKE 'reuse-%'"),
+      [{ id: "reuse-kept" }],
+    );
+    assert.deepEqual(
+      await q(
+        "SELECT r.identity->>'id' id,h.head,s.cursor FROM axton_record r JOIN axton_stream_record s ON s.record_id=r.id JOIN axton_stream h USING(stream) WHERE stream=$1",
+        [stream],
+      ),
+      [{ id: "reuse-kept", head: "1", cursor: "1" }],
+    );
+    assert.deepEqual(
+      await q(
+        "SELECT id FROM axton_record WHERE identity->>'id'='reuse-rolled'",
+      ),
+      [],
+    );
+  } finally {
+    await tx.query("ROLLBACK");
+    tx.release();
+  }
+});
+
 test("safe head overflow aborts business/result/progress atomically", async () => {
   const s = store(),
     r = batch(s);

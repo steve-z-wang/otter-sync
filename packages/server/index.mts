@@ -991,12 +991,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             tx,
             userId: req.owner,
           };
-          // A read refusal (`MutationRejected` or a translated error) is
-          // answered as data: the engine records it as the mutation's
-          // rejection in a push and as that record's `error` change in a
-          // pull. Any other thrown error is also answered as data - a
-          // failure - which becomes `loader.failed` for that one mutation or
-          // record.
+          // Explicit business refusal is data. Other thrown errors abort the
+          // acceptance/read transaction; the caller's retry loop keeps the
+          // original infrastructure error.
           let refused: { rejection: string } | { error: string } | undefined;
           let rows: unknown;
           try {

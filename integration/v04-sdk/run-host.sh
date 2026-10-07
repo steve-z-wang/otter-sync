@@ -9,3 +9,7 @@ port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));prin
 initdb -D "$cluster/data" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "$cluster/data" -l "$cluster/log" -o "-p $port -h 127.0.0.1 -k $cluster" start >/dev/null
 DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/postgres" node --test integration/v04-sdk/host.test.mts
+# The shutdown fixture has a different business Loader for Entry. Give it its
+# own publication history rather than reusing the generated host's tracked IDs.
+createdb -h 127.0.0.1 -p "$port" axton_http_shutdown
+DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/axton_http_shutdown" node --test integration/v04-sdk/http-shutdown.test.mts

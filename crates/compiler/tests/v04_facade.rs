@@ -87,8 +87,8 @@ fn dart_retained_slot_helpers_do_not_emit_unused_private_aliases() {
     descriptor["mutations"] = serde_json::json!([{ "name": "Rename", "version": 1, "slots": [{ "name": "entry", "model": "Entry", "operation": "update", "cardinality": "single", "allowedPatchFields": ["text"] }] }]);
     let dart = axton_compiler::dart(&descriptor);
     assert!(
-        dart.contains("Map<String,dynamic> rename("),
-        "slot encoder missing"
+        !dart.contains("Map<String,dynamic> rename("),
+        "retired generic slot encoder remains"
     );
     assert!(
         !dart.contains("final _rename = rename;"),

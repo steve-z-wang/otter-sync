@@ -422,7 +422,8 @@ fn cli_writes_backend_ts_with_the_requested_runtime_import() {
     assert!(status.success());
     let backend = fs::read_to_string(out.join("backend.ts")).unwrap();
     assert!(backend.contains("from \"../../packages/server/index.mts\""));
-    assert!(backend.contains(" save: { v1(call: HandlerCall<Tx, SaveInput>)"));
+    assert!(!backend.contains("HandlerCall<Tx, SaveInput>"));
+    assert!(!backend.contains("options.handlers"));
     assert!(backend.contains(" a?: { v1(call: LoaderCall<Tx, AIdentity>)"));
     let client = fs::read_to_string(out.join("client.ts")).unwrap();
     assert!(client.contains("from \"../../packages/client-js/index.mts\""));

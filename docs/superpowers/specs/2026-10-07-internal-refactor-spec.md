@@ -97,6 +97,8 @@ Completed accepted rows retain their result for durable Call lookup. No time-bas
 
 ### Reconstructing typed input
 
+The wire Mutation's descriptor is an immutable caller-artifact fingerprint: SHA-256 of canonical retained ActionDescriptor JSON under `axton:mutation-descriptor:5` plus NUL. Local retention keeps that exact schema/artifact independently of the read materialization context; a compatible reorder must not rehash assigned work. The server selects its trusted action by name/version and validates reconstructed input, operation slots and bindings using the retained/backward-compatible contract. It does not compare the artifact fingerprint with today's descriptor: compiler-compatible same-version changes can alter that artifact. The saved Batch digest binds the original fingerprint and input and refuses changed retries.
+
 Each server-bound operation has an inputPath identifying a generated descriptor slot and optional list index. Model operations retain create/update/delete payloads. A scalar/object argument is an `argument` operation with no Model or identity. Explicit null and empty lists have argument entries; omitted arguments have no entry. Model lists use their ordered slot indices. No entry stores a second copy of the entire input.
 
 Device-only companions have a null inputPath and never enter the wire request. Declarative derived operations keep their original ownership but are regenerated/validated by the schema rules, not misclassified as additional server input. Retained descriptors reconstruct and validate the exact canonical input before freezing a Batch.

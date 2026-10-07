@@ -595,3 +595,33 @@ fn pending_schema_parks_desired_reads_until_owned_rollover_commits() {
     actor::detach(id);
     assert!(actor::wait_closed(id, Duration::from_secs(5)));
 }
+
+#[test]
+fn runtime_closed_event_releases_exclusive_store_before_immediate_reopen() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    // Establish the process's test lock directory before the custom wake sink.
+    let first = open(&path);
+    assert_eq!(wait(first)[0]["ok"], true);
+    actor::detach(first);
+    assert!(actor::wait_closed(first, Duration::from_secs(5)));
+    for _ in 0..32 {
+        let (sent, received) = std::sync::mpsc::channel();
+        let reopen = path.clone();
+        let id=actor::open(json!({"type":"open","requestId":"o","protocol":5,"path":path,"stream":"User:u","schema":schema()}),Box::new(move |id| {
+            for event in actor::drain(id) {
+                if event["type"]=="runtimeClosed" {
+                    let result=axton_sqlite::SqliteStore::open_exclusive05(&reopen,"User:u").map(|_|()).map_err(|e|e.to_string());
+                    sent.send(result).unwrap();
+                }
+            }
+        })).unwrap();
+        actor::submit(id, json!({"type":"close"})).unwrap();
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(())
+        );
+        actor::detach(id);
+        assert!(actor::wait_closed(id, Duration::from_secs(5)));
+    }
+}

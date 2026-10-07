@@ -629,7 +629,10 @@ fn run05(
                         }]);
                     }
                 },
-                WorkerMessage::Events(events) => {
+                WorkerMessage::Events(mut events) => {
+                    // The worker's lifecycle closes before its Store is dropped.
+                    // Publish the sole runtimeClosed only after Closed + join.
+                    events.retain(|event| !matches!(event, Event::RuntimeClosed));
                     if let Some(c) = &mut control {
                         for event in &events {
                             if let Event::TaskCompleted { request_id, ok, .. } = event

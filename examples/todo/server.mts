@@ -32,22 +32,42 @@ function titleForInsert(title: string): string {
   return value;
 }
 
-function validateCreate(userId: string, values: { createdById: string; done: boolean }): void {
-  if (values.createdById !== userId) throw new CallRejected("todo.creator_invalid");
-  if (values.done !== false) throw new CallRejected("todo.initial_state_invalid");
+function validateCreate(
+  userId: string,
+  values: { createdById: string; done: boolean },
+): void {
+  if (values.createdById !== userId)
+    throw new CallRejected("todo.creator_invalid");
+  if (values.done !== false)
+    throw new CallRejected("todo.initial_state_invalid");
 }
 
 function prismaCode(error: unknown): string | undefined {
-  return error instanceof Prisma.PrismaClientKnownRequestError ? error.code : undefined;
+  return error instanceof Prisma.PrismaClientKnownRequestError
+    ? error.code
+    : undefined;
 }
 
 /** True only for a unique violation on the Todo primary key, never for any other database failure. */
 function isTodoIdConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") return false;
-  const meta = error.meta as { target?: unknown; modelName?: unknown } | undefined;
+  if (
+    !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+    error.code !== "P2002"
+  )
+    return false;
+  const meta = error.meta as
+    { target?: unknown; modelName?: unknown } | undefined;
   const target = meta?.target;
-  const columns = Array.isArray(target) ? target : typeof target === "string" ? [target] : [];
-  return columns.length === 1 && columns[0] === "id" && (meta?.modelName === undefined || meta.modelName === "Todo");
+  const columns = Array.isArray(target)
+    ? target
+    : typeof target === "string"
+      ? [target]
+      : [];
+  return (
+    columns.length === 1 &&
+    columns[0] === "id" &&
+    (meta?.modelName === undefined || meta.modelName === "Todo")
+  );
 }
 
 /** Sequential savepoint names keep the transaction usable after a rejected insert. */
@@ -80,7 +100,14 @@ export async function createExample() {
       const savepoint = `todo_create_${++savepoints}`;
       await tx.$executeRawUnsafe(`SAVEPOINT ${savepoint}`);
       try {
-        await tx.todo.create({ data: { id: todo.id, title, done: false, createdById: todo.createdById } });
+        await tx.todo.create({
+          data: {
+            id: todo.id,
+            title,
+            done: false,
+            createdById: todo.createdById,
+          },
+        });
       } catch (error) {
         if (!isTodoIdConflict(error)) throw error;
         await tx.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${savepoint}`);
@@ -112,12 +139,16 @@ export async function createExample() {
   };
   const loaders: Loaders<Tx> = {
     async user({ ids, tx }) {
-      const rows = await tx.user.findMany({ where: { id: { in: ids.map((identity) => identity.id) } } });
+      const rows = await tx.user.findMany({
+        where: { id: { in: ids.map((identity) => identity.id) } },
+      });
       const byId = new Map(rows.map((row) => [row.id, row]));
       return ids.map((identity) => byId.get(identity.id) ?? null);
     },
     async todo({ ids, tx }) {
-      const rows = await tx.todo.findMany({ where: { id: { in: ids.map((identity) => identity.id) } } });
+      const rows = await tx.todo.findMany({
+        where: { id: { in: ids.map((identity) => identity.id) } },
+      });
       const byId = new Map(rows.map((row) => [row.id, row]));
       return ids.map((identity) => byId.get(identity.id) ?? null);
     },
@@ -125,7 +156,10 @@ export async function createExample() {
   const backend = createBackend<Tx>({
     database: observedDatabase,
     authenticate: demoAuth,
-    protocol4: { backendId: "todo-demo", contractId: "todo-v04", authorizeStream: (viewer, stream) => DEMO_USERS.has(viewer) && stream === SCOPE },
+    protocol5: {
+      authorizeStream: (viewer, stream) =>
+        DEMO_USERS.has(viewer) && stream === SCOPE,
+    },
     mutations,
     loaders,
   });
@@ -143,7 +177,8 @@ export async function createExample() {
         "utf8",
       );
       // Prisma runs one statement per call.
-      for (const sql of sqlStatements(migration)) await db.$executeRawUnsafe(sql);
+      for (const sql of sqlStatements(migration))
+        await db.$executeRawUnsafe(sql);
       await db.$executeRawUnsafe(
         'CREATE TABLE IF NOT EXISTS "User" (id TEXT PRIMARY KEY, name TEXT NOT NULL)',
       );
@@ -173,7 +208,8 @@ export async function createExample() {
       await server?.close();
       // Listener close ends sockets; already admitted database work still owns
       // its transaction until it settles. Dispose Prisma only after that work.
-      while (pendingTransactions.size) await Promise.allSettled([...pendingTransactions]);
+      while (pendingTransactions.size)
+        await Promise.allSettled([...pendingTransactions]);
       await db.$disconnect();
     },
   };

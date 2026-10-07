@@ -10,17 +10,16 @@ function retired(client: GeneratedClient) {
   client.queries.enqueue.searchTodos({});
   // @ts-expect-error No anonymous top-level write lane.
   client.mutate([]);
+  // @ts-expect-error Query snapshots are fresh; once cache is retired.
+  client.queries.searchTodos({}, { once: true });
+  // @ts-expect-error There is no public Query invalidation facade.
+  client.queries.invalidate.searchTodos({});
   Client.open({
     path: "unused",
     stream: "User:alice",
     connection: {
       url: "http://unused",
       token: "alice",
-      identity: {
-        backend: "action-e2e",
-        viewer: "alice",
-        contract: "action-v04",
-      },
     },
     // @ts-expect-error Store hooks were replaced by typed owned companions.
     onStore: () => {},

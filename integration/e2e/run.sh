@@ -22,3 +22,7 @@ node --test "$root/integration/e2e/round-trip.test.mjs"
 node --test "$root/integration/e2e/subscriptions.test.mjs"
 node --test "$root/integration/e2e/bootstrap.test.mjs"
 node --test "$root/integration/e2e/parity.test.mjs"
+
+# Retained HTTP shutdown assertions use the default protocol5 generated API.
+createdb -h 127.0.0.1 -p "$port" axton_http_shutdown
+DATABASE_URL="postgresql://$(id -un)@127.0.0.1:$port/axton_http_shutdown" node --experimental-strip-types --test "$root/integration/e2e/http-shutdown.test.mts"

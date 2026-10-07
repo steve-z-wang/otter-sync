@@ -112,4 +112,4 @@ void main() {
     } finally { await free.close(); }
   });
 }
-sdk.StoreConnection offline() => sdk.StoreConnection(url: 'http://127.0.0.1:1', token: () => 'offline', identity: const sdk.StoreIdentity(backend: 'generated-dart', viewer: 'viewer', contract: 'v04'), onError: (_) {});
+sdk.StoreConnection offline() => sdk.StoreConnection(url: 'http://127.0.0.1:1', token: () => 'offline', onError: (_) {});

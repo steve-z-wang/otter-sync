@@ -43,10 +43,10 @@ async function fixture() {
     },
   };
 }
-const page = (x) => x.path === "/sync/pull" && intent(x).kind === "page";
+const page = (x) => x.path === "/sync/pull" && intent(x).bootstrap;
 
 test(
-  "finite marked manifest covers empty, exact and multi-page histories without hook side effects",
+  "Bootstrap range covers empty and multi-unit histories",
   { timeout: 90000 },
   async () => {
     const f = await fixture();
@@ -71,9 +71,9 @@ test(
           new Set(ids),
         );
         const coverage = await other.readSql(
-          "SELECT coverage FROM axton_v04_bootstrap WHERE purpose='bootstrap'",
+          "SELECT start_cursor,bootstrap_cursor FROM axton_store",
         );
-        assert.ok(coverage.length);
+        assert.equal(coverage[0].bootstrap_cursor, coverage[0].start_cursor);
         assert.equal((await other.syncState()).pending, 0);
       } finally {
         await other.close();
@@ -116,7 +116,7 @@ test(
 );
 
 test(
-  "interrupted manifest resumes saved ownership after reopen and pending named edit completes",
+  "interrupted Bootstrap resumes its saved range after reopen and pending named edit completes",
   { timeout: 90000 },
   async () => {
     const f = await fixture();
@@ -144,13 +144,14 @@ test(
         (await reopened.models.entry.get({ id: "resume-1" })).text,
         "edited",
       );
-      const starts = f.proxy
+      const pulls = f.proxy
         .requests("/sync/pull")
-        .filter((x) => x.request.kind === "start");
+        .filter((x) => x.request.bootstrap);
+      assert.ok(pulls.length >= 2);
       assert.equal(
-        new Set(starts.map((x) => x.request.callId)).size,
+        new Set(pulls.map((x) => x.request.through)).size,
         1,
-        "reopen reuses saved start, not a fresh interval",
+        "reopen retains the original Bootstrap range",
       );
     } finally {
       await reopened?.close();
@@ -160,7 +161,7 @@ test(
 );
 
 test(
-  "failing authority does not fabricate prefix or completion; healthy bounded work proceeds and retry completes",
+  "Loader failure leaves Bootstrap coverage incomplete and retry completes its range",
   { timeout: 90000 },
   async () => {
     const f = await fixture();
@@ -175,28 +176,15 @@ test(
         () =>
           f.proxy
             .requests("/sync/pull")
-            .some((x) => x.request.kind === "page" && x.status !== 200),
-        "failed manifest request",
+            .some((x) => x.request.bootstrap && x.status !== 200),
+        "failed Bootstrap range",
       );
-      await wait(
-        async () =>
-          (await f.client.models.entry.get({ id: "a-healthy" }))?.text ===
-          "a-healthy",
-        "independent healthy manifest prefix before broken authority",
-        60000,
+      const [state] = await f.client.readSql(
+        "SELECT start_cursor,bootstrap_cursor FROM axton_store",
       );
-      const state = await f.client.readSql(
-        "SELECT coverage FROM axton_v04_bootstrap WHERE purpose='bootstrap'",
-      );
-      const C = (await f.client.syncState()).cursors["User:demo-user"];
       assert.ok(
-        state.every((x) => {
-          const proof = JSON.parse(x.coverage);
-          return (
-            proof.covered < proof.total || proof.tail === null || C < proof.tail
-          );
-        }),
-        "failure cannot complete",
+        (state.bootstrap_cursor ?? 0) < state.start_cursor,
+        "failed authority cannot complete coverage",
       );
       f.app.allowLoads("z-broken");
       await running;
@@ -209,7 +197,7 @@ test(
 );
 
 test(
-  "captured tail stays fixed under later publications and independent viewer files cover their own manifests",
+  "captured Bootstrap start stays fixed under later publications and independent viewer files cover their ranges",
   { timeout: 90000 },
   async () => {
     const f = await fixture();
@@ -218,21 +206,22 @@ test(
     try {
       await f.app.publishOne("tail-row", "initial", ["User:demo-user"]);
       hold = f.proxy.holdResponse(
-        (x) => x.path === "/sync/pull" && intent(x).kind === "tail",
+        (x) => x.path === "/sync/pull" && intent(x).bootstrap,
       );
       await f.start();
       const running = f.client.bootstrap();
       running.catch(() => {});
       const exchange = await hold.arrived;
-      const H = JSON.parse(exchange.response).head;
+      const H = intent(exchange).through;
       assert.ok(Number.isSafeInteger(H));
       await f.app.publishOne("tail-row", "after-tail", ["User:demo-user"]);
       hold.release();
       await running;
       const saved = await f.client.readSql(
-        "SELECT coverage FROM axton_v04_bootstrap WHERE purpose='bootstrap' AND active=1",
+        "SELECT start_cursor,bootstrap_cursor FROM axton_store AND active=1",
       );
-      assert.equal(JSON.parse(saved[0].coverage).tail, H);
+      assert.equal(saved[0].start_cursor, H);
+      assert.equal(saved[0].bootstrap_cursor, H);
       assert.ok((await f.client.syncState()).cursors["User:demo-user"] >= H);
       await wait(
         async () =>

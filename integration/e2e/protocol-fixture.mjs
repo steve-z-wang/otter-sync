@@ -1,6 +1,6 @@
 // Transport-only harness: every state change enters the public native actor.
 import { setImmediate } from "node:timers/promises";
-import { createProxy } from "../load-e2e/server.mts";
+import { createProxy } from "./proxy.mts";
 export { createProxy };
 export async function wait(predicate, label, timeout = 20000) {
   const deadline = Date.now() + timeout;
@@ -13,8 +13,8 @@ export async function wait(predicate, label, timeout = 20000) {
 export const connection = (url, viewer = "demo-user") => ({
   url,
   token: viewer,
-  identity: { backend: "round-trip", viewer, contract: "round-trip-v04" },
 });
 export const intent = (exchange) => JSON.parse(exchange.body);
 export const mutation = (exchange) =>
-  exchange.path === "/sync/actions" && intent(exchange).name === "EditEntry";
+  exchange.path === "/sync/mutations" &&
+  intent(exchange).mutations.some((mutation) => mutation.name === "EditEntry");

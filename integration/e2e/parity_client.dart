@@ -9,11 +9,6 @@ Future<void> main(List<String> args) async {
     connection: StoreConnection(
       url: args[0],
       token: () => 'demo-user',
-      identity: const StoreIdentity(
-        backend: 'round-trip',
-        viewer: 'demo-user',
-        contract: 'round-trip-v04',
-      ),
     ),
     libraryPath: Platform.environment['AXTON_LIBRARY'],
   );

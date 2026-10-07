@@ -21,11 +21,6 @@ Future<void> main(List<String> args) async {
     connection: sdk.StoreConnection(
       url: url,
       token: () => 'alice',
-      identity: const sdk.StoreIdentity(
-        backend: 'action-e2e',
-        viewer: 'alice',
-        contract: 'action-v04',
-      ),
     ),
     libraryPath: library,
   );

@@ -13,7 +13,7 @@ import {
 import { schema } from "./generated/generated.ts";
 import { sqlStatements } from "../../../../packages/postgres/src/statements.mts";
 
-import { drainedDatabase } from "../../../load-e2e/lifecycle.mts";
+import { drainedDatabase } from "../../lifecycle.mts";
 import { isRetryableTransactionError } from "../../../../packages/server/index.mts";
 
 type Tx = Prisma.TransactionClient;
@@ -72,9 +72,7 @@ export async function createExample() {
       unexpected.push(error);
     },
     authenticate: devAuth(),
-    protocol4: {
-      backendId: "round-trip",
-      contractId: "round-trip-v04",
+    protocol5: {
       authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
     },
     handlers: {
@@ -103,13 +101,6 @@ export async function createExample() {
     schema,
     get loaderCalls() {
       return loaderCalls;
-    },
-    async members(scope: string) {
-      const rows = await db.$queryRawUnsafe<{ identity_key: string }[]>(
-        "SELECT r.identity_key FROM axton_stream_member m JOIN axton_record r ON r.id=m.record_id WHERE m.stream=$1 AND r.model='Entry' ORDER BY r.identity_key",
-        scope,
-      );
-      return rows.map((row) => JSON.parse(row.identity_key).id);
     },
     get handlerCalls() {
       return calls;
@@ -206,24 +197,9 @@ export async function createExample() {
     allowLoads(...ids: string[]) {
       for (const id of ids) refusing.delete(id);
     },
-    async head(scope: string): Promise<number> {
-      const rows = await db.$queryRawUnsafe<{ head: bigint }[]>(
-        "SELECT head FROM axton_stream WHERE stream = $1",
-        scope,
-      );
-      return rows.length === 0 ? 0 : Number(rows[0]!.head);
-    },
-    async positionOf(scope: string, id: string): Promise<number | null> {
-      const rows = await db.$queryRawUnsafe<{ cursor: bigint }[]>(
-        "SELECT l.cursor FROM axton_stream_log l JOIN axton_record r ON r.id = l.record_id WHERE l.stream = $1 AND r.model = 'Entry' AND r.identity_key = $2 AND l.kind = 'upsert'",
-        scope,
-        JSON.stringify({ id }),
-      );
-      return rows.length === 0 ? null : Number(rows[0]!.cursor);
-    },
     async reset(): Promise<void> {
       await db.$executeRawUnsafe(
-        "TRUNCATE axton_bootstrap_range, axton_bootstrap_identity, axton_bootstrap_manifest, axton_publication_group, axton_stream_member, axton_stream_log, axton_stream, axton_record, axton_client, axton_call",
+        "TRUNCATE axton_delivery_unit, axton_delivery_plan, axton_mutation_result, axton_stream_record, axton_store, axton_stream, axton_record",
       );
       await db.$executeRawUnsafe('DELETE FROM "Entry"');
       refusing.clear();

@@ -221,7 +221,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
 
 ## Pending work and recovery
 
-`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections }`. `pending` counts queued work; `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` describes the single bound Stream; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
+`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections }`. `pending` counts queued work; `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` describes the single bound Stream; account-wide `rejections` contains `RefusedAct` entries `{ id, name, version, code, act }`, keyed by `id`. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`, whose rejection entries use `{ ordinal, code }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
 
 === "TypeScript"
 

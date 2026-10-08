@@ -619,6 +619,61 @@ fn late_cascade_discovery_extends_owned_effects_without_changing_frozen_input() 
 }
 
 #[test]
+fn offline_create_then_sequenced_update_preserves_lifecycle_dependency() {
+    let d = tempfile::tempdir().unwrap();
+    let mut value = serde_json::to_value(schema()).unwrap();
+    value["actions"].as_array_mut().unwrap().push(json!({
+        "name":"Edit","version":1,
+        "inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single"}],
+        "outputs":[],
+        "sequence":{"after":[{"name":"Write","arguments":{"entries":"entry"}}]}
+    }));
+    let s = Schema::from_value(value).unwrap();
+    let mut c =
+        Client::open05(SqliteStore::open(d.path().join("db")).unwrap(), s, "User:u").unwrap();
+    let (created, edited) = c
+        .transaction(|tx| {
+            let created = tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entries":[{"id":"e","text":"created","note":null}]}),
+                vec![],
+            )?;
+            let edited = tx.submit_mutation05(
+                "Edit",
+                1,
+                json!({"entry":{"id":"e","text":"edited"}}),
+                vec![],
+            )?;
+            Ok((created, edited))
+        })
+        .expect("a lifecycle dependency may also match an explicit sequence predecessor");
+    assert_eq!(c.status_snapshot05().unwrap()["pending"], 2);
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(
+        batch.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![created.ordinal]
+    );
+    c.acknowledge_batch05(&v05::BatchAcknowledgement {
+        context: batch.context.clone(),
+        batch_id: batch.batch_id,
+        digest: batch.digest.clone(),
+        results: vec![v05::MutationResult {
+            mutation_id: created.ordinal,
+            outcome: v05::MutationOutcome::Rejected {
+                code: "write.denied".into(),
+                message: None,
+            },
+        }],
+    })
+    .unwrap();
+    assert!(
+        matches!(c.mutation_result05(edited.ordinal).unwrap().unwrap().outcome,
+        v05::MutationOutcome::Rejected { ref code, .. } if code == "dependency.rejected")
+    );
+}
+
+#[test]
 fn rejected_predecessor_releases_sequence_survivor_and_rolls_back_lifecycle_dependent() {
     use axton_client::{Operation, OperationKind, RecordKey};
     for reopen in [false, true] {

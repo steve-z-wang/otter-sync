@@ -248,3 +248,41 @@ fn same_position_rematerialized_absence_keeps_later_direct_recreation_and_pendin
     assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "pending");
     assert_eq!(c.pending_count().unwrap(), 1);
 }
+
+#[test]
+fn repeated_clean_direct_updates_retain_one_patch_and_authority_clears_it() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = open(&path);
+    stream(&mut c, 1, Some("replica"));
+    for n in 0..20 {
+        c.transaction(|tx| tx.direct(op(OperationKind::Update, Some(&format!("local {n}")))))
+            .unwrap();
+    }
+    let rows = c
+        .read_sql("SELECT operations FROM axton_local_replica_layer", &[])
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let operations: Value = serde_json::from_str(rows[0]["operations"].as_str().unwrap()).unwrap();
+    assert_eq!(operations.as_array().unwrap().len(), 1);
+    assert_eq!(operations[0]["values"]["text"], "local 19");
+    assert_eq!(c.pending_count().unwrap(), 0);
+    drop(c);
+    let mut c = open(&path);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "local 19");
+    stream(&mut c, 2, Some("server"));
+    assert!(
+        c.read_sql("SELECT * FROM axton_local_replica_layer", &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        c.read_sql("SELECT * FROM axton_local_write", &[])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(c.pending_count().unwrap(), 0);
+    assert_eq!(c.read(&key()).unwrap().unwrap()["text"], "server");
+    drop(c);
+    assert_eq!(open(&path).read(&key()).unwrap().unwrap()["text"], "server");
+}

@@ -1071,6 +1071,7 @@ fn offline_needs_never_dispatches_owned_http_and_reconnect_cancels_old_owner() {
     control
         .report(
             StoreReport::Needs {
+                status: None,
                 schema: Some(pending.clone()),
                 settlements: vec![],
             },
@@ -1092,6 +1093,7 @@ fn offline_needs_never_dispatches_owned_http_and_reconnect_cancels_old_owner() {
     control
         .report(
             StoreReport::Needs {
+                status: None,
                 schema: Some(pending),
                 settlements: vec![],
             },
@@ -1188,4 +1190,58 @@ fn background_network_failures_keep_status_during_retry_and_auth_refresh() {
             .unwrap();
         assert!(control.events().iter().any(|e|matches!(e,Event::Report{diagnostic:Diagnostic::Error{status:Some(value),..}} if *value==status)));
     }
+}
+
+#[test]
+fn settlement_progress_wakes_uplink_once_and_waiting_needs_stays_idle() {
+    use axton_client::sync05::{Control, StoreCommand, StoreReport};
+    let d = tempfile::tempdir().unwrap();
+    let mut c = client(&d.path().join("db"));
+    c.initialize_stream05(0).unwrap();
+    let status = c.store_status05().unwrap();
+    let mut control = Control::new(status.clone());
+    control.connect().unwrap();
+    control.events();
+    control.report(StoreReport::Frozen(None), 1).unwrap();
+    control.jobs();
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: None,
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    assert!(
+        control.jobs().is_empty(),
+        "waiting settlement must not spin Freeze/Needs"
+    );
+    control
+        .report(
+            StoreReport::Needs {
+                status: Some(status),
+                schema: None,
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    let jobs = control.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert!(
+        matches!(&jobs[0], StoreCommand::Guarded { command, .. } if matches!(**command, StoreCommand::Freeze))
+    );
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: None,
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    assert!(control.jobs().is_empty());
 }

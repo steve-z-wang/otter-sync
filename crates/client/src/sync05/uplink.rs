@@ -46,6 +46,8 @@ pub enum StoreReport {
     ActivePlans(Vec<String>),
     Snapshot(StoreStatus05),
     Needs {
+        // Present only when settlement committed terminal Call progress.
+        status: Option<StoreStatus05>,
         schema: Option<crate::store05::PendingSchema05>,
         settlements: Vec<crate::settlement05::PendingSettlement05>,
     },

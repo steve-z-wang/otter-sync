@@ -13,12 +13,15 @@ fn wait(id: u64) -> Vec<Value> {
     }
 }
 fn open(path: &std::path::Path) -> u64 {
+    open_schema(path, schema())
+}
+fn open_schema(path: &std::path::Path, schema: Value) -> u64 {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         axton_sqlite::SqliteStore::set_application_data_directory("/private/tmp/axton-task5-locks")
             .unwrap()
     });
-    actor::open(json!({"type":"open","requestId":"o","protocol":5,"path":path,"stream":"User:u","schema":schema()}),Box::new(|_|{})).unwrap()
+    actor::open(json!({"type":"open","requestId":"o","protocol":5,"path":path,"stream":"User:u","schema":schema}),Box::new(|_|{})).unwrap()
 }
 #[test]
 fn protocol05_open_derives_durable_context_and_keeps_routing_id() {
@@ -1133,4 +1136,114 @@ fn earlier_startup_failures_close_runtime_and_release_store() {
         actor::detach(id);
         assert!(actor::wait_closed(id, Duration::from_secs(1)));
     }
+}
+
+#[test]
+fn accepted_create_settlement_wakes_lifecycle_dependent_update() {
+    use axton_client::v05;
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut schema = schema();
+    schema["actions"].as_array_mut().unwrap().push(json!({"name":"Edit","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single","fields":["text"]}],"outputs":[]}));
+    let id = open_schema(&path, schema);
+    let opened = wait(id);
+    assert_eq!(opened[0]["ok"], true);
+    actor::submit(id,json!({"type":"task","requestId":"submit","command":{"kind":"submitAction","name":"Write","version":1,"args":{"entry":{"id":"e","text":"local","note":null}}}})).unwrap();
+    let local = wait(id);
+    let completion = local.iter().find(|e| e["requestId"] == "submit").unwrap();
+    assert_eq!(completion["ok"], true, "{local:?}");
+    let call = completion["value"]["callId"].clone();
+    assert!(local.iter().all(|e| e["type"] != "callCompleted"));
+    actor::submit(id,json!({"type":"task","requestId":"dependent","command":{"kind":"submitAction","name":"Edit","version":1,"args":{"entry":{"id":"e","text":"edited"}}}})).unwrap();
+    assert_eq!(
+        wait(id)
+            .iter()
+            .find(|e| e["requestId"] == "dependent")
+            .unwrap()["ok"],
+        true
+    );
+    actor::submit(
+        id,
+        json!({"type":"task","requestId":"connect","command":{"kind":"connect"}}),
+    )
+    .unwrap();
+    let mut completed = Vec::new();
+    let start = Instant::now();
+    let mut batches = Vec::new();
+    while completed.len() < 2 {
+        for e in actor::drain(id) {
+            if e["type"] == "callCompleted" {
+                completed.push(e);
+                continue;
+            }
+            let Some(body) = e["operation"]["body"].as_str() else {
+                continue;
+            };
+            let b: Value = serde_json::from_str(body).unwrap();
+            let response = match e["operation"]["route"].as_str() {
+                Some("handshake") => {
+                    json!({"protocol":5,"storeId":b["storeId"],"stream":b["stream"],"head":0})
+                }
+                Some("push") => {
+                    let request: v05::MutationRequest = serde_json::from_value(b).unwrap();
+                    batches.push(request.batch_id);
+                    assert_eq!(request.mutations.len(), 1);
+                    json!(v05::BatchAcknowledgement {
+                        context: request.context,
+                        batch_id: request.batch_id,
+                        digest: request.digest,
+                        results: vec![v05::MutationResult {
+                            mutation_id: request.mutations[0].id,
+                            outcome: v05::MutationOutcome::Accepted {
+                                sync_cursor: 0,
+                                result: Value::Null,
+                                targets: vec![v05::SettlementTarget::Private {
+                                    record: v05::ReadRecord {
+                                        key: v05::RecordKey {
+                                            model: "Entry".into(),
+                                            identity: json!({"id":"e"})
+                                        },
+                                        cursor: (),
+                                        state: json!({"text":"server","note":null})
+                                    }
+                                }]
+                            }
+                        }]
+                    })
+                }
+                Some("pull") => {
+                    let request: v05::DeltaRequest = serde_json::from_value(b).unwrap();
+                    let p = v05::freeze_delivery(
+                        request.context,
+                        "empty".into(),
+                        v05::DeliveryPurpose::Bootstrap,
+                        0,
+                        0,
+                        0,
+                        8_000_000_000_000_000,
+                        vec![v05::DeliveryUnit {
+                            index: 0,
+                            through: Some(0),
+                            changes: vec![],
+                        }],
+                        1,
+                    )
+                    .unwrap();
+                    json!({"header":p.header,"parts":p.parts})
+                }
+                _ => continue,
+            };
+            actor::submit(id,json!({"type":"effectResult","effectId":e["effectId"],"outcome":{"ok":true,"value":response.to_string()}})).unwrap();
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "lifecycle dependent remained idle after accepted predecessor: {batches:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(completed.len(), 2);
+    assert_eq!(batches, vec![1, 2]);
+    assert_eq!(completed[0]["callId"], call);
+    actor::detach(id);
+    assert!(actor::wait_closed(id, Duration::from_secs(5)));
 }

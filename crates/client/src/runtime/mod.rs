@@ -261,7 +261,13 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
                 // remains accepted and is retried independently of the wire.
                 let report = self.client.settle_ready05()?;
                 self.settled(&report);
+                let status = if report.completions.is_empty() {
+                    None
+                } else {
+                    Some(self.client.store_status05()?)
+                };
                 StoreReport::Needs {
+                    status,
                     schema: self.client.pending_schema05()?,
                     settlements: self.client.pending_settlement05()?,
                 }

@@ -458,6 +458,7 @@ impl Control {
                 self.jobs.push_back(StoreCommand::Needs);
             }
             StoreReport::Needs {
+                status,
                 schema,
                 settlements,
             } => {
@@ -473,6 +474,12 @@ impl Control {
                         continuation: None,
                     };
                     self.owned(request)?;
+                }
+                if let Some(status) = status {
+                    self.status = status;
+                    // Receipt acknowledgement can freeze before settlement makes
+                    // lifecycle dependents ready. Wake only after durable progress.
+                    self.wake();
                 }
                 for pending in settlements {
                     if !pending.missing_keys.is_empty() {

@@ -622,7 +622,7 @@ pub async fn process_read05(
 ) -> Result<String> {
     let r: v05::ReadRequest = v05::decode(bytes).map_err(request_invalid)?;
     let versions = crate::mutation_batch::models(config, &r.context)?;
-    let bound = inspect_read_binding(owner, &r.context, raw).await?;
+    let mut bound = inspect_read_binding(owner, &r.context, raw).await?;
     let host = Publication05::new(raw);
     let _: Acknowledged = host
         .call_typed(HostRequest::Savepoint { ordinal: 1 })
@@ -689,9 +689,6 @@ pub async fn process_read05(
                         context: Some(crate::protocol_v05::handler_context(owner, &r.context)),
                     })
                     .await?;
-                if !bound {
-                    bind(owner, &r.context, raw).await?;
-                }
                 let outputs = match handled {
                     crate::host::HandledAction::Settled {
                         outputs,
@@ -703,6 +700,10 @@ pub async fn process_read05(
                             .any(|d| matches!(d, crate::host::StreamIntent::Invalidate { .. })) =>
                     {
                         if !declarations.is_empty() {
+                            if !bound {
+                                bind(owner, &r.context, raw).await?;
+                                bound = true;
+                            }
                             fence(&host).await?;
                         }
                         crate::settlement::settle_changes(
@@ -739,6 +740,10 @@ pub async fn process_read05(
                 .await?;
                 let result = axton_core::validate_action_result(&config.schema, action, &result)
                     .map_err(|_| Error::code("handler.invalid"))?;
+                // Ordinary reads claim a new Store only after every application await.
+                if !bound {
+                    bind(owner, &r.context, raw).await?;
+                }
                 Ok((
                     result,
                     snapshots

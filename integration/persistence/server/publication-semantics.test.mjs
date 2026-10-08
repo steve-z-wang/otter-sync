@@ -36,8 +36,10 @@ async function fixture(body) {
     await admin.query(
       "CREATE TABLE business_entry(id text PRIMARY KEY,text text NOT NULL); CREATE TABLE permission(user_id text,entry_id text,PRIMARY KEY(user_id,entry_id))",
     );
-    const loader = async ({ tx, ids, userId }) =>
-      Promise.all(
+    let faultOwner;
+    const loader = async ({ tx, ids, userId }) => {
+      if (userId === faultOwner) throw new Error("Loader operational failure");
+      return Promise.all(
         ids.map(
           async ({ id }) =>
             (
@@ -48,9 +50,11 @@ async function fixture(body) {
             ).rows[0] ?? null,
         ),
       );
+    };
     const backend = createBackend({
       native,
       database,
+      onError: () => {},
       authenticate: () => "alice",
       protocol5: {
         authorizeStream: (owner, stream) => stream === `User:${owner}`,
@@ -93,7 +97,38 @@ async function fixture(body) {
           }),
         ),
       );
-    await body({ backend, admin, rows, heads, fetch });
+    const pull = async (owner, after = 0) => {
+      const head = (
+        await admin.query("SELECT head FROM axton_stream WHERE stream=$1", [
+          `User:${owner}`,
+        ])
+      ).rows[0].head;
+      return JSON.parse(
+        await backend.pull(
+          owner,
+          JSON.stringify({
+            protocol: 5,
+            storeId: `viewer-${owner}`,
+            stream: `User:${owner}`,
+            materialization: backend.materializationId,
+            after,
+            through: Number(head),
+            bootstrap: false,
+          }),
+        ),
+      );
+    };
+    await body({
+      backend,
+      admin,
+      rows,
+      heads,
+      fetch,
+      pull,
+      failLoader: (owner) => {
+        faultOwner = owner;
+      },
+    });
   } finally {
     await admin.query(`DROP SCHEMA ${namespace} CASCADE`);
     admin.release();
@@ -205,4 +240,63 @@ test("targeted permission loss affects only selected viewer; canonical absence p
       id,
       "recreation retains canonical identity",
     );
+  }));
+
+test("tracking and invalidating commute; new holders receive canonical current state", async () => {
+  const results = [];
+  for (const reverse of [false, true])
+    await fixture(async ({ backend, admin, rows, heads, pull }) => {
+      await backend.transaction(async ({ tx, stream }) => {
+        await tx.query(
+          "INSERT INTO business_entry VALUES('e','first'); INSERT INTO permission VALUES('alice','e'),('bob','e')",
+        );
+        stream("User:alice").track.entry("e");
+      });
+      await backend.transaction(async ({ tx, stream, invalidate }) => {
+        await tx.query("UPDATE business_entry SET text='current' WHERE id='e'");
+        const track = () => stream("User:bob").track.entry("e"),
+          global = () => invalidate.entry("e");
+        if (reverse) {
+          global();
+          track();
+        } else {
+          track();
+          global();
+        }
+      });
+      const delivery = await pull("bob");
+      assert.equal(delivery.parts[0].changes[0].state.text, "current");
+      results.push({
+        rows: await rows(),
+        heads: await heads(),
+        changes: delivery.parts[0].changes,
+      });
+    });
+  assert.deepEqual(results[0], results[1]);
+});
+test("targeted authoritative Loader failure aborts delivery without fabricating absence", () =>
+  fixture(async ({ backend, admin, rows, pull, failLoader }) => {
+    await backend.transaction(async ({ tx, streams }) => {
+      await tx.query(
+        "INSERT INTO business_entry VALUES('e','kept'); INSERT INTO permission VALUES('alice','e'),('bob','e')",
+      );
+      streams(["User:alice", "User:bob"]).track.entry("e");
+    });
+    await backend.transaction(async ({ stream }) => {
+      stream("User:alice").invalidate.entry("e");
+    });
+    const before = await rows();
+    failLoader("alice");
+    await assert.rejects(pull("alice"));
+    assert.equal(
+      (await admin.query("SELECT count(*) n FROM axton_delivery_plan")).rows[0]
+        .n,
+      "0",
+    );
+    assert.deepEqual(await rows(), before);
+    assert.equal((await pull("bob")).parts[0].changes[0].state.text, "kept");
+    failLoader(undefined);
+    const recovered = await pull("alice");
+    assert.equal(recovered.parts[0].changes[0].state.text, "kept");
+    assert.equal(recovered.parts[0].changes[0].kind, "record");
   }));

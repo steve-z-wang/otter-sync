@@ -156,3 +156,125 @@ for (const [name, database] of adapters)
           admin.release();
         }
       });
+
+for (const [name, first] of adapters)
+  for (const existing of [false, true])
+    test(`[${name}] independent namespaces reserve identical Stream separately with caller rollback (${existing ? "existing" : "new"} Stream)`, async () => {
+      const namespaces = [
+          `reserve_a_${name}_${++serial}`,
+          `reserve_b_${name}_${serial}`,
+        ],
+        stream = "User:alice",
+        admin = await pool.connect();
+      const second =
+        name === "prisma"
+          ? prisma(pr)
+          : name === "drizzle"
+            ? drizzle(orm(pool))
+            : pg(pool);
+      const query = (tx, sql, args = []) => first.driver.query(tx, sql, args);
+      const create = (database) =>
+        createBackend({
+          native,
+          database,
+          authenticate: () => "alice",
+          protocol5: { authorizeStream: () => true },
+          mutations: { publish: async () => ({ entry: { id: "unused" } }) },
+          queries: {
+            find: async () => ({ entry: null }),
+            peek: async () => ({ entry: null }),
+          },
+          loaders: {
+            entry: async ({ ids }) => ids.map(() => null),
+            snapshot: async ({ ids }) => ids.map(() => null),
+          },
+        });
+      const backends = [create(first), create(second)],
+        wakes = [0, 0],
+        stops = backends.map((backend, index) =>
+          backend.onCommitted(stream, () => wakes[index]++),
+        );
+      try {
+        for (const namespace of namespaces) {
+          await admin.query(`CREATE SCHEMA ${namespace}`);
+          await admin.query(`SET search_path=${namespace}`);
+          await admin.query(
+            await readFile(
+              new URL(
+                "../../../packages/postgres/migration.sql",
+                import.meta.url,
+              ),
+              "utf8",
+            ),
+          );
+          await admin.query(
+            "CREATE TABLE business_entry(id text PRIMARY KEY,text text NOT NULL)",
+          );
+          if (existing)
+            await admin.query(
+              "INSERT INTO axton_stream(stream,head) VALUES($1,0)",
+              [stream],
+            );
+        }
+        const kept = await first.transaction(async (tx) => {
+          await query(
+            tx,
+            "DROP TABLE IF EXISTS pg_temp.axton_publication_cursor",
+          );
+          const publish = async (index, id) => {
+            await query(tx, `SET LOCAL search_path=${namespaces[index]}`);
+            await query(tx, "INSERT INTO business_entry VALUES($1,$2)", [
+              id,
+              id,
+            ]);
+            await backends[index].acquirePublicationFence(tx);
+            return backends[index].publish(tx, ({ stream: select }) =>
+              select(stream).track.entry(id),
+            );
+          };
+          const committed = [await publish(0, "a1")];
+          await query(tx, "SAVEPOINT before_b");
+          await publish(1, "undone");
+          await query(tx, "ROLLBACK TO SAVEPOINT before_b");
+          committed.push(
+            await publish(0, "a2"),
+            await publish(1, "b1"),
+            await publish(1, "b2"),
+            await publish(0, "a3"),
+          );
+          assert.deepEqual(wakes, [0, 0]);
+          return committed;
+        });
+        for (const [index, namespace] of namespaces.entries()) {
+          await admin.query(`SET search_path=${namespace}`);
+          const ids = index === 0 ? ["a1", "a2", "a3"] : ["b1", "b2"];
+          assert.deepEqual(
+            (
+              await admin.query("SELECT id FROM business_entry ORDER BY id")
+            ).rows.map((row) => row.id),
+            ids,
+          );
+          assert.deepEqual(
+            (
+              await admin.query(
+                "SELECT r.identity->>'id' id,h.head,s.cursor FROM axton_record r JOIN axton_stream_record s ON s.record_id=r.id JOIN axton_stream h USING(stream) ORDER BY r.identity->>'id'",
+              )
+            ).rows,
+            ids.map((id) => ({ id, head: "1", cursor: "1" })),
+          );
+          assert.equal(
+            (await admin.query("SELECT count(*) n FROM axton_record")).rows[0]
+              .n,
+            String(ids.length),
+          );
+        }
+        for (const wake of kept) wake();
+        await Promise.resolve();
+        assert.deepEqual(wakes, [3, 2]);
+      } finally {
+        stops.forEach((stop) => stop());
+        for (const namespace of namespaces)
+          await admin.query(`DROP SCHEMA ${namespace} CASCADE`);
+        admin.release();
+      }
+    });

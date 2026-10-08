@@ -52,16 +52,16 @@ export const V05_PROGRESS_SAVE =
   "UPDATE axton_store SET progress=CASE WHEN $3+1=$4 THEN 0 ELSE $3+1 END,last_processed_batch_id=CASE WHEN $3+1=$4 THEN $2 ELSE last_processed_batch_id END,last_digest=CASE WHEN $3+1=$4 THEN current_digest ELSE last_digest END,last_count=CASE WHEN $3+1=$4 THEN current_count ELSE last_count END,current_digest=CASE WHEN $3+1=$4 THEN NULL ELSE current_digest END,current_count=CASE WHEN $3+1=$4 THEN NULL ELSE current_count END WHERE id=$1 AND last_processed_batch_id=$2-1 AND progress=$3 AND current_count=$4 RETURNING id";
 export const V05_POSITIONS_READ =
   "SELECT s.cursor,s.kind FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE s.stream=$1 AND r.model=$2 AND r.identity_key=$3";
-/** Ephemeral reservations follow SQL savepoints and are cleared at COMMIT. */
+/** Relation identity separates namespaces; reservations follow SQL savepoints and COMMIT. */
 export const V05_PUBLICATION_CURSORS =
-  "CREATE TEMP TABLE IF NOT EXISTS pg_temp.axton_publication_cursor (stream text PRIMARY KEY,cursor bigint NOT NULL) ON COMMIT DELETE ROWS";
+  "CREATE TEMP TABLE IF NOT EXISTS pg_temp.axton_publication_cursor (relation oid NOT NULL,stream text NOT NULL,cursor bigint NOT NULL,PRIMARY KEY(relation,stream)) ON COMMIT DELETE ROWS";
 /** Reserve only once per transaction; a rolled-back reservation is free again. */
 export const V05_RESERVE_CURSOR =
   "WITH reserved AS (INSERT INTO axton_stream(stream,head) " +
-  "SELECT $1::text,1 WHERE NOT EXISTS (SELECT 1 FROM pg_temp.axton_publication_cursor WHERE stream=$1) " +
+  "SELECT $1::text,1 WHERE NOT EXISTS (SELECT 1 FROM pg_temp.axton_publication_cursor WHERE relation='axton_stream'::regclass::oid AND stream=$1) " +
   "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+1 WHERE axton_stream.head<9007199254740991 RETURNING head), " +
-  "saved AS (INSERT INTO pg_temp.axton_publication_cursor(stream,cursor) SELECT $1,head FROM reserved RETURNING cursor) " +
-  "SELECT cursor FROM saved UNION ALL SELECT cursor FROM pg_temp.axton_publication_cursor WHERE stream=$1";
+  "saved AS (INSERT INTO pg_temp.axton_publication_cursor(relation,stream,cursor) SELECT 'axton_stream'::regclass::oid,$1,head FROM reserved RETURNING cursor) " +
+  "SELECT cursor FROM saved UNION ALL SELECT cursor FROM pg_temp.axton_publication_cursor WHERE relation='axton_stream'::regclass::oid AND stream=$1";
 export const V05_RECORD_ID =
   "SELECT id FROM axton_record WHERE model=$1 AND identity_key=$2";
 export const V05_POSITION_WRITE =

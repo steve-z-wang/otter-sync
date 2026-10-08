@@ -1737,3 +1737,277 @@ fn unsent_resolutions_roll_back_at_savepoint_outer_failure_failed_commit_and_pri
         );
     }
 }
+
+fn observer_harness() -> Harness<SqliteStore> {
+    let mut raw = serde_json::to_value(mutation_schema(Value::Null)).unwrap();
+    let text = |name: &str, nullable: bool| json!({"name":name,"nullable":nullable,"type":{"kind":"scalar","name":"string"}});
+    let models = raw["models"].as_array_mut().unwrap();
+    models.push(json!({"name":"Media","identity":["id"],"fields":[text("id",false),text("entryId",false),text("url",false),text("caption",true)]}));
+    models.push(json!({"name":"Person","identity":["id"],"fields":[text("id",false),text("entryId",false),text("name",false)]}));
+    models.push(
+        json!({"name":"Note","identity":["id"],"fields":[text("id",false),text("body",false)]}),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    Harness {
+        runtime: ClientRuntime::new(
+            Client::open05(
+                SqliteStore::open(dir.path().join("db")).unwrap(),
+                Schema::from_value(raw).unwrap(),
+                "User:u",
+            )
+            .unwrap(),
+        ),
+        _dir: dir,
+    }
+}
+fn sql_snapshots(events: &[Value], observer: &Value) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "observerChanged" && e["observerId"] == *observer)
+        .map(|e| e["snapshot"].clone())
+        .collect()
+}
+const JOURNAL: &str = "SELECT e.id AS entry, e.text AS text, m.url AS media, p.name AS person \
+    FROM Entry e JOIN Media m ON m.entryId = e.id JOIN Person p ON p.entryId = e.id ORDER BY e.id";
+/// Every re-run of this statement publishes: its `random()` column differs.
+const PROBE: &str = "SELECT count(*) AS n, random() AS r FROM Entry";
+fn put(model: &str, id: &str, values: Value) -> Value {
+    json!({"kind":"direct","operation":{"model":model,"op":"create","identity":{"id":id},"values":values}})
+}
+fn change(model: &str, id: &str, values: Value) -> Value {
+    json!({"kind":"direct","operation":{"model":model,"op":"update","identity":{"id":id},"values":values}})
+}
+fn watch_sql(sql: &str, parameters: Value) -> Value {
+    json!({"kind":"watchSql","sql":sql,"parameters":parameters})
+}
+/// The rows of every snapshot `observer` published, in order.
+fn rows(events: &[Value], observer: &Value) -> Vec<Value> {
+    sql_snapshots(events, observer)
+        .into_iter()
+        .map(|snapshot| snapshot["rows"].clone())
+        .collect()
+}
+fn journal(entry: &str, text: &str, media: &str, person: &str) -> Value {
+    json!({"entry":entry,"text":text,"media":media,"person":person})
+}
+
+impl<S: ClientStore + 'static> Harness<S> {
+    fn completion<'a>(&self, events: &'a [Value], id: &str) -> &'a Value {
+        events
+            .iter()
+            .find(|e| e["type"] == "taskCompleted" && e["requestId"] == id)
+            .unwrap()
+    }
+    fn watch_sql(&mut self, id: &str, sql: &str, parameters: Value) -> (Value, Vec<Value>) {
+        let (done, events) = self.call(id, watch_sql(sql, parameters));
+        let observer = done["value"]["observerId"].clone();
+        assert!(observer.is_string(), "{events:?}");
+        assert!(
+            position(&events, |e| e["requestId"] == id)
+                < position(&events, |e| e["observerId"] == observer)
+        );
+        (observer, events)
+    }
+    fn commit(&mut self, id: &str, command: Value) -> Vec<Value> {
+        let (done, events) = self.call(id, command);
+        assert_eq!(done["ok"], true, "{done}");
+        events
+    }
+}
+
+#[test]
+fn a_join_over_three_models_re_emits_after_a_commit_to_each_and_nothing_else() {
+    let mut h = observer_harness();
+    h.commit("entry", put("Entry", "e", json!({"text":"first"})));
+    h.commit(
+        "media",
+        put("Media", "m", json!({"entryId":"e","url":"a.jpg"})),
+    );
+    h.commit(
+        "person",
+        put("Person", "p", json!({"entryId":"e","name":"Ann"})),
+    );
+    let (page, events) = h.watch_sql("journal", JOURNAL, json!([]));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "first", "a.jpg", "Ann")])]
+    );
+    let (probe, events) = h.watch_sql("probe", PROBE, json!([]));
+    assert_eq!(rows(&events, &probe).len(), 1);
+
+    // A commit to each joined Model re-emits the join.
+    let events = h.commit("text", change("Entry", "e", json!({"text":"second"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "a.jpg", "Ann")])]
+    );
+    assert_eq!(rows(&events, &probe).len(), 1, "Entry is the probe's table");
+    let events = h.commit("url", change("Media", "m", json!({"url":"b.jpg"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "b.jpg", "Ann")])]
+    );
+    assert!(
+        rows(&events, &probe).is_empty(),
+        "Media is not read by the probe"
+    );
+    let events = h.commit("name", change("Person", "p", json!({"name":"Bea"})));
+    assert_eq!(
+        rows(&events, &page),
+        [json!([journal("e", "second", "b.jpg", "Bea")])]
+    );
+    assert!(rows(&events, &probe).is_empty());
+
+    // An unrelated Model, a Scope registration and a queued call write no
+    // table either statement reads: neither re-runs.
+    let generation = h.runtime.client().generation();
+    let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
+    let events = [
+        events,
+        h.commit(
+            "queued",
+            json!({"kind":"submitAction","name":"Ping","version":1,"args":{}}),
+        ),
+    ]
+    .concat();
+    assert!(h.runtime.client().generation() >= generation + 2);
+    assert!(rows(&events, &page).is_empty() && rows(&events, &probe).is_empty());
+    // A commit to a joined table that leaves the answer unchanged re-runs the
+    // join and publishes nothing.
+    let events = h.commit(
+        "caption",
+        change("Media", "m", json!({"caption":"unselected"})),
+    );
+    assert!(rows(&events, &page).is_empty(), "{events:?}");
+}
+
+#[test]
+fn a_watched_statement_refuses_writes_and_engine_tables_and_lives_like_a_watch() {
+    let mut h = harness();
+    for (id, sql) in [
+        ("write", "DELETE FROM Entry RETURNING id"),
+        ("pragma", "PRAGMA table_info(Entry)"),
+        ("engine", "SELECT count(*) AS n FROM axton_mutation"),
+        (
+            "before",
+            "SELECT e.id FROM Entry e JOIN axton_before_Entry b ON b.id = e.id",
+        ),
+        ("missing", "SELECT id FROM Nope"),
+    ] {
+        h.task(id, watch_sql(sql, json!([])));
+        let events = h.run();
+        assert_eq!(h.completion(&events, id)["ok"], false, "{sql}");
+        assert!(
+            !events.iter().any(|e| e["type"] == "observerChanged"),
+            "{events:?}"
+        );
+    }
+
+    h.commit("seed", create("e", "first"));
+    let (one, events) = h.watch_sql("one", "SELECT text FROM Entry WHERE id = ?", json!(["e"]));
+    assert_eq!(rows(&events, &one), [json!([{"text":"first"}])]);
+    // Fails to run while exactly two Entries exist.
+    let (fragile, events) = h.watch_sql(
+        "fragile",
+        "SELECT CASE WHEN count(*) = 2 THEN abs(-9223372036854775807 - 1) ELSE count(*) END AS n FROM Entry",
+        json!([]),
+    );
+    assert_eq!(rows(&events, &fragile), [json!([{"n":1}])]);
+    let events = h.commit("second", create("f", "second"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["type"] == "report" && e["diagnostic"]["kind"] == "error")
+            .count(),
+        1,
+        "{events:?}"
+    );
+    assert!(rows(&events, &fragile).is_empty() && rows(&events, &one).is_empty());
+    let events = h.commit("third", create("g", "third"));
+    assert_eq!(
+        rows(&events, &fragile),
+        [json!([{"n":3}])],
+        "the watch stayed"
+    );
+
+    // A callback's write is not visible until it commits.
+    h.task("tx", json!({"kind":"transaction"}));
+    let events = h.run();
+    let callback = events
+        .iter()
+        .find(|e| e["type"] == "effect" && e["operation"]["kind"] == "callback")
+        .unwrap()
+        .clone();
+    let transaction = callback["operation"]["transactionId"].clone();
+    h.submit(json!({"type":"transactionCommand","requestId":"write","transactionId":transaction,"command":{"kind":"direct","operation":{"model":"Entry","op":"update","identity":{"id":"e"},"values":{"text":"inside"}}}})).unwrap();
+    let events = h.run();
+    assert!(events.contains(&done("write", Value::Null)));
+    assert!(
+        !events.iter().any(|e| e["type"] == "observerChanged"),
+        "{events:?}"
+    );
+    h.submit(json!({"type":"callbackResult","effectId":callback["effectId"],"transactionId":transaction,"ok":true})).unwrap();
+    let events = h.run();
+    assert!(
+        position(&events, |e| *e == done("tx", Value::Null))
+            < position(&events, |e| e["observerId"] == one)
+    );
+    assert_eq!(rows(&events, &one), [json!([{"text":"inside"}])]);
+
+    // unwatch: nothing more for that observer; the other goes on.
+    h.task("stop", json!({"kind":"unwatch","observerId":one}));
+    let events = [h.run(), h.commit("fourth", create("h", "fourth"))].concat();
+    assert!(events.contains(&done("stop", Value::Null)));
+    assert!(rows(&events, &one).is_empty());
+    assert_eq!(rows(&events, &fragile), [json!([{"n":4}])]);
+
+    // Close ends it with its last rows.
+    h.submit(json!({"type":"close"})).unwrap();
+    let events = h.run();
+    assert_eq!(
+        sql_snapshots(&events, &fragile),
+        [json!({"kind":"watch","rows":[{"n":4}],"closed":true})]
+    );
+    assert!(sql_snapshots(&events, &one).is_empty());
+}
+
+#[test]
+fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registers_none() {
+    let mut h = observer_harness();
+    let before = h.runtime.client().watcher_count();
+    let (none, events) = h.watch_sql("constant", "SELECT 1 AS one", json!([]));
+    assert_eq!(rows(&events, &none), [json!([{"one":1}])]);
+    let (schema, _) = h.watch_sql(
+        "schema",
+        "SELECT count(*) AS n FROM sqlite_master",
+        json!([]),
+    );
+    assert_eq!(
+        h.runtime.client().watcher_count(),
+        before,
+        "no table a commit writes, no watcher"
+    );
+    // Mount and unmount a view over rarely written data many times.
+    for round in 0..5 {
+        let (notes, _) = h.watch_sql(&format!("notes{round}"), "SELECT id FROM Note", json!([]));
+        assert_eq!(h.runtime.client().watcher_count(), before + 1);
+        h.commit(
+            &format!("stop{round}"),
+            json!({"kind":"unwatch","observerId":notes}),
+        );
+        assert_eq!(h.runtime.client().watcher_count(), before, "round {round}");
+    }
+    let (kept, _) = h.watch_sql("kept", JOURNAL, json!([]));
+    assert_eq!(h.runtime.client().watcher_count(), before + 1);
+    let events = h.commit("note", put("Note", "n", json!({"body":"aside"})));
+    assert!(rows(&events, &none).is_empty() && rows(&events, &schema).is_empty());
+    h.submit(json!({"type":"close"})).unwrap();
+    let events = h.run();
+    assert_eq!(sql_snapshots(&events, &kept)[0]["closed"], true);
+    assert_eq!(sql_snapshots(&events, &none)[0]["closed"], true);
+    assert_eq!(
+        h.runtime.client().watcher_count(),
+        before,
+        "close removes it"
+    );
+}

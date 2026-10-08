@@ -8,7 +8,12 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { Client } from "../../packages/client-js/index.mts";
 import { Bridge } from "../../packages/client-js/bridge.mts";
-import { GeneratedClient, schema } from "./client.ts";
+import {
+  GeneratedClient,
+  schema,
+  liveModels,
+  makeMutations,
+} from "./client.ts";
 import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
 import { GeneratedClient as VersionedClient } from "./versioned/client.ts";
 import { host } from "./server.mjs";
@@ -150,6 +155,103 @@ if (process.argv[2] === "enqueue-child") {
         0,
       );
     } finally {
+      await client?.close();
+      await h.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  test("Batch ownership: delayed historical settlement survives disjoint queued work and reopen", async () => {
+    const h = await host({ unbootstrapped: true }),
+      dir = await mkdtemp(join(tmpdir(), "axton-batch-window-"));
+    let client;
+    try {
+      await h.backend.transaction(async ({ tx, streams }) => {
+        await tx.query(
+          "INSERT INTO sdk05_entry VALUES('window-owned','canonical','window'),('window-independent','independent','window')",
+        );
+        streams(["User:window"]).track.entry("window-owned");
+      });
+      const path = join(dir, "db");
+      client = await Client.open({
+        path,
+        schema: h.mixedSchema,
+        stream: "User:window",
+        connection: { url: h.url, token: "window" },
+      });
+      await until(
+        async () =>
+          (await client.readSql("SELECT start_cursor FROM axton_store"))[0]
+            .start_cursor !== null,
+        "handshake prefix",
+      );
+      h.holdSettlement();
+      await makeMutations(client).publish({
+        entry: { id: "window-owned", text: "optimistic" },
+        call: "noop",
+      });
+      await until(
+        () => h.heldSettlementCount > 0,
+        "historical owned request parked before server admission",
+      );
+      const first = (
+        await client.readSql(
+          "SELECT batch_id,sync_cursor,targets,reconciled FROM axton_mutation_queue WHERE id=1",
+        )
+      )[0];
+      assert.equal(first.reconciled, 0);
+      assert.equal(JSON.parse(first.targets)[0].kind, "stream");
+      await makeMutations(client).publish({
+        entry: { id: "window-independent", text: "second optimism" },
+        call: "noop",
+      });
+      // Keep the owned request in flight while the actor can schedule disjoint work.
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await client.close();
+      client = undefined;
+      client = await Client.open({
+        path,
+        schema: h.mixedSchema,
+        stream: "User:window",
+        connection: { url: h.url, token: "window" },
+      });
+      await until(
+        () => h.heldSettlementCount > 1,
+        "owned request rebuilt after reopen",
+      );
+      assert.equal(
+        (
+          await h.pool.query(
+            "SELECT count(*)::int n FROM axton_mutation_result WHERE store_id=$1 AND batch_id=$2",
+            [client.clientId, first.batch_id],
+          )
+        ).rows[0].n,
+        1,
+        "next Batch must preserve the unresolved owner",
+      );
+      h.releaseSettlement();
+      await until(
+        async () => (await client.syncState()).pending === 0,
+        "both disjoint calls settle after ownership release",
+      );
+      assert.equal(
+        (await liveModels(client).entry.get({ id: "window-owned" })).text,
+        "canonical",
+      );
+      assert.equal(
+        (await liveModels(client).entry.get({ id: "window-independent" })).text,
+        "independent",
+      );
+      assert.equal(
+        h.requests
+          .filter((r) => r.route === "/sync/materialize")
+          .map((r) => JSON.parse(r.body))
+          .filter((r) => r.owner.kind === "settlement")
+          .every((r) => r.owner.batchId === first.batch_id),
+        true,
+      );
+      assert.equal(h.errors.some(error => error.includes("unknown settlement owner")), false, h.errors.join("\n"));
+    } finally {
+      h.releaseSettlement();
       await client?.close();
       await h.close();
       await rm(dir, { recursive: true, force: true });

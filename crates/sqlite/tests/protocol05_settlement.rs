@@ -1566,3 +1566,75 @@ fn historical_receipt_target_settles_below_prefix_while_public_bootstrap_remains
         57
     );
 }
+
+#[test]
+fn failed_local_settlement_retains_previous_batch_window_after_reopen() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("db");
+    let failure = Arc::new(AtomicBool::new(false));
+    let mut c = Client::open05(
+        FaultStore {
+            inner: SqliteStore::open(&p).unwrap(),
+            fail_commit: failure.clone(),
+            crash_ack: false,
+        },
+        schema(),
+        "User:u",
+    )
+    .unwrap();
+    c.initialize_stream05(0).unwrap();
+    let first = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"optimistic","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    c.acknowledge_batch05(&ack(
+        &batch,
+        v05::MutationOutcome::Accepted {
+            sync_cursor: 0,
+            result: Value::Null,
+            targets: vec![v05::SettlementTarget::Private {
+                record: v05::ReadRecord {
+                    key: stream_key("e"),
+                    cursor: (),
+                    state: state("canonical"),
+                },
+            }],
+        },
+    ))
+    .unwrap();
+    let next = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"other","text":"independent","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    failure.store(true, Ordering::SeqCst);
+    assert!(c.settle_ready05().is_err());
+    assert!(c.call_completion05(&first.call_id).unwrap().is_none());
+    assert!(
+        c.freeze_batch05().unwrap().is_none(),
+        "failed settlement cannot release the window"
+    );
+    drop(c);
+    let mut c = open(&p);
+    assert!(c.freeze_batch05().unwrap().is_none());
+    assert_eq!(c.settle_ready05().unwrap().completions.len(), 1);
+    assert!(c.call_completion05(&first.call_id).unwrap().is_some());
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(batch.batch_id, 2);
+    assert_eq!(
+        batch.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![next.ordinal]
+    );
+}

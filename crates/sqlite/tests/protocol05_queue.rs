@@ -137,7 +137,7 @@ fn value_arguments_have_one_entry_and_do_not_create_model_optimism() {
     );
 }
 #[test]
-fn dependent_waits_for_settlement_but_next_independent_batch_can_proceed() {
+fn next_batch_preserves_previous_ownership_until_settlement() {
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::open05(
         SqliteStore::open(d.path().join("db")).unwrap(),
@@ -197,13 +197,46 @@ fn dependent_waits_for_settlement_but_next_independent_batch_can_proceed() {
         }],
     };
     c.acknowledge_batch05(&a).unwrap();
+    assert!(
+        c.freeze_batch05().unwrap().is_none(),
+        "an acknowledged Batch still owns settlement targets"
+    );
+    assert_eq!(
+        c.pending_settlement05().unwrap()[0].mutation_id,
+        first.ordinal
+    );
+    drop(c);
+    let mut c = Client::open05(
+        SqliteStore::open(d.path().join("db")).unwrap(),
+        schema(),
+        "User:u",
+    )
+    .unwrap();
+    assert!(
+        c.freeze_batch05().unwrap().is_none(),
+        "reopen retains the ownership fence"
+    );
+    c.initialize_stream05(9).unwrap();
+    c.install_authority05(
+        &b.context,
+        &[v05::AuthorityChange::Record {
+            key: v05::RecordKey {
+                model: "Entry".into(),
+                identity: json!({"id":"e"}),
+            },
+            cursor: 9,
+            state: json!({"text":"one","note":null}),
+        }],
+        None,
+    )
+    .unwrap();
+    assert!(c.call_completion05(&first.call_id).unwrap().is_some());
     let b2 = c.freeze_batch05().unwrap().unwrap();
     assert_eq!(b2.batch_id, 2);
     assert_eq!(
         b2.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
-        vec![independent.ordinal]
+        vec![dependent.ordinal, independent.ordinal]
     );
-    assert!(!b2.mutations.iter().any(|m| m.id == dependent.ordinal));
 }
 #[test]
 fn descriptor_snapshot_reorder_retains_original_hash_in_identical_read_context() {

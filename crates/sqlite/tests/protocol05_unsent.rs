@@ -343,3 +343,56 @@ fn a_new_requirement_on_a_failed_task_inherits_its_failure_and_one_retry_covers_
     assert!(client.failed_acts().unwrap().is_empty());
     assert_eq!(client.pending_tasks().unwrap()[0]["state"], "pending");
 }
+
+#[test]
+fn unassigned_prerequisite_work_does_not_hold_the_batch_ownership_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let blocked = write(&mut client, "waiting for media", Some("pending"));
+    let enqueue = |client: &mut Client<SqliteStore>, id: &str| {
+        client
+            .transaction(|tx| {
+                tx.submit_mutation05(
+                    "Create",
+                    1,
+                    json!({"note":{"id":id,"text":"ready","blob":null}}),
+                    vec![],
+                )
+            })
+            .unwrap()
+    };
+    let ready = enqueue(&mut client, "first-ready");
+    let batch = client.freeze_batch05().unwrap().unwrap();
+    assert_eq!(
+        batch.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![ready.ordinal]
+    );
+    client
+        .acknowledge_batch05(&v05::BatchAcknowledgement {
+            context: batch.context,
+            batch_id: batch.batch_id,
+            digest: batch.digest,
+            results: vec![v05::MutationResult {
+                mutation_id: ready.ordinal,
+                outcome: v05::MutationOutcome::Rejected {
+                    code: "create.denied".into(),
+                    message: None,
+                },
+            }],
+        })
+        .unwrap();
+    let next = enqueue(&mut client, "second-ready");
+    let batch = client.freeze_batch05().unwrap().unwrap();
+    assert_eq!(batch.batch_id, 2);
+    assert_eq!(
+        batch.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![next.ordinal]
+    );
+    assert!(
+        client
+            .call_completion05(&blocked.call_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(client.pending_tasks().unwrap().len(), 1);
+}

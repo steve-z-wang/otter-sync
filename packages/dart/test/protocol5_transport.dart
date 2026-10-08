@@ -71,55 +71,19 @@ Map<String, Object?> read05(Map body, Object? result, List<Object?> records) =>
       'records': records,
     };
 
-Map<String, Object?> emptyPull(Map body, {int total = 0}) =>
-    body['protocol'] == 5
-    ? (body.containsKey('materialization')
-          ? delivery05(body)
-          : emptyHandshake(body))
-    : switch (body['kind']) {
-        'start' => {
-          'context': body['context'],
-          'manifestId': 'transport-${body['callId']}',
-          'start': 0,
-          'total': total,
-        },
-        'tail' => {
-          'context': body['context'],
-          'manifestId': body['manifestId'],
-          'head': 0,
-        },
-        _ => {
-          'context': body['context'],
-          'pageId': 'empty-${body['callId']}',
-          'from': body['after'],
-          'to': body['after'],
-          'head': body['after'],
-          'units': <Object>[],
-        },
-      };
+Map<String, Object?> emptyPull(Map body) => body.containsKey('materialization')
+    ? delivery05(body)
+    : emptyHandshake(body);
 
-Map<String, Object?> emptyRead(Map body) => body['protocol'] == 5
-    ? read05(
-        body,
-        null,
-        body['invocation']['kind'] == 'fetch'
-            ? [
-                {
-                  'key': body['invocation']['key'],
-                  'cursor': null,
-                  'state': null,
-                },
-              ]
-            : [],
-      )
-    : {
-        'context': body['context'],
-        'completion': {
-          'callId': body['callId'],
-          'outcome': {'status': 'succeeded', 'result': null},
-        },
-        'records': <Object>[],
-      };
+Map<String, Object?> emptyRead(Map body) => read05(
+  body,
+  null,
+  body['invocation']['kind'] == 'fetch'
+      ? [
+          {'key': body['invocation']['key'], 'cursor': null, 'state': null},
+        ]
+      : [],
+);
 
 String _canonical(Object? value) {
   if (value is Map) {
@@ -130,37 +94,23 @@ String _canonical(Object? value) {
   return jsonEncode(value);
 }
 
-Map<String, Object?> emptyMutation(Map body) => body['protocol'] == 5
-    ? {
-        ...context05(body),
-        'batchId': body['batchId'],
-        'digest': body['digest'],
-        'results': [
-          for (final mutation in body['mutations'])
-            {
-              'mutationId': mutation['id'],
-              'outcome': {
-                'kind': 'accepted',
-                'syncCursor': 0,
-                'result': null,
-                'targets': <Object>[],
-              },
-            },
-        ],
-      }
-    : {
-        'context': body['context'],
-        'intentDigest': sha256.convert([
-          ...utf8.encode('axton:protocol4:sha256:mutation-intent'),
-          0,
-          ...utf8.encode(_canonical(body)),
-        ]).toString(),
-        'completion': {
-          'callId': body['callId'],
-          'outcome': {'status': 'succeeded', 'result': null},
+Map<String, Object?> emptyMutation(Map body) => {
+  ...context05(body),
+  'batchId': body['batchId'],
+  'digest': body['digest'],
+  'results': [
+    for (final mutation in body['mutations'])
+      {
+        'mutationId': mutation['id'],
+        'outcome': {
+          'kind': 'accepted',
+          'syncCursor': 0,
+          'result': null,
+          'targets': <Object>[],
         },
-        'targets': <Object>[],
-      };
+      },
+  ],
+};
 
 Future<bool> answerEmptyBackground(HttpRequest request) async {
   if (request.uri.path == '/sync/pull' ||
@@ -174,17 +124,7 @@ Future<bool> answerEmptyBackground(HttpRequest request) async {
     final socket = await WebSocketTransformer.upgrade(request);
     socket.listen((message) {
       final body = jsonDecode(message as String) as Map;
-      socket.add(
-        jsonEncode(
-          body['protocol'] == 5
-              ? emptyHandshake(body)
-              : {
-                  'context': body['context'],
-                  'cursor': body['cursor'],
-                  'head': body['cursor'],
-                },
-        ),
-      );
+      socket.add(jsonEncode(emptyHandshake(body)));
     }, onError: (Object _) {});
     return true;
   }

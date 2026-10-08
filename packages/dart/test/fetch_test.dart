@@ -1,5 +1,5 @@
 import 'store_fixture.dart';
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 // Model Fetch through the real native runtime (#153): Rust validates, joins or
 // starts the request, stores the reply and completes every caller; this host
 // only posts the `fetch` HTTP effect to `/sync/fetch` and decodes each

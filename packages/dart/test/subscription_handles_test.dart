@@ -32,7 +32,7 @@ Map<String, dynamic> snapshot({
   if (closed) 'closed': true,
 };
 
-/// A terminal snapshot: removed, rebuilt or stopped with the runtime.
+/// A terminal snapshot: stopped with the runtime.
 Map<String, dynamic> terminal() =>
     snapshot(active: false, connection: 'stopped', closed: true);
 
@@ -123,9 +123,9 @@ Future<(Subscriptions, Subscription)> handle(
 
 void main() {
   // The public multi-Stream manager is retired. Current bound single-Stream
-  // bootstrap/catch-up/reconnect behavior is covered by protocol4 transport
-  // fixtures and the generated real-backend SDK suite. These tests retain the
-  // internal observer registry's error/lifetime routes for saved legacy tasks.
+  // Bootstrap/reconnect behavior uses the current protocol 5 transport
+  // and generated real-backend SDK suite. These tests exercise the bound
+  // Stream observer registry and its error/lifetime routes.
   test(
     'a registration the engine refuses as closed rejects with subscription.closed',
     () async {
@@ -160,14 +160,13 @@ void main() {
     'a handle closed while its registration commits settles as closed',
     () async {
       final host = FakeHost();
-      final (registry, subscription) = await handle(host);
+      final (_, subscription) = await handle(host);
       final pending = subscription.bootstrap().then<Object?>(
         (_) => null,
         onError: (Object error) => error,
       );
       // The client closes: the runtime stops the observer, then fails the
       // waiter it parked.
-      registry.closing();
       host.emit('7', terminal());
       host.fail(
         'streamBootstrap',
@@ -176,7 +175,7 @@ void main() {
       expect(await pending, isA<ClientClosedException>());
       expect(subscription.status.connection, SubscriptionConnection.stopped);
       await expectLater(
-        subscription.unsubscribe(),
+        subscription.bootstrap(),
         throwsA(isA<SubscriptionClosedException>()),
         reason: 'a handle stopped with its client commits no work',
       );
@@ -385,7 +384,6 @@ void main() {
       expect(host.listeners, isEmpty, reason: 'nothing follows a terminal one');
       // A closed handle takes nothing further and submits nothing.
       final submitted = host.submitted.length;
-      await subscription.unsubscribe();
       await expectLater(
         subscription.bootstrap(),
         throwsA(isA<SubscriptionClosedException>()),
@@ -406,38 +404,12 @@ void main() {
   );
 
   test(
-    'unsubscribe resolves after the terminal snapshot closed the handle',
-    () async {
-      final host = FakeHost();
-      final (_, subscription) = await handle(host);
-      final removing = subscription.unsubscribe();
-      expect(host.pending('streamUnsubscribe').command, {
-        'kind': 'streamUnsubscribe',
-        'stream': 'scope',
-        'subscriptionId': 1,
-      });
-      expect(subscription.status.active, isTrue);
-      host.emit('7', terminal());
-      host.succeed('streamUnsubscribe', {'removed': true});
-      await removing;
-      expect(subscription.status.active, isFalse);
-      await subscription.unsubscribe();
-      expect(
-        host.submitted.where((t) => t.command['kind'] == 'streamUnsubscribe'),
-        hasLength(1),
-        reason: 'repeating it on a closed handle is a no-op',
-      );
-    },
-  );
-
-  test(
     'a client whose runtime is already gone stops its handles locally',
     () async {
       final host = FakeHost();
       final (registry, subscription) = await handle(host);
       var completed = false;
       subscription.watch().listen((_) {}, onDone: () => completed = true);
-      registry.closing();
       registry.close();
       await pumpEventQueue();
       expect(completed, isTrue);
@@ -451,7 +423,7 @@ void main() {
       );
       expect(host.listeners, isEmpty);
       await expectLater(
-        subscription.unsubscribe(),
+        subscription.bootstrap(),
         throwsA(isA<SubscriptionClosedException>()),
       );
     },

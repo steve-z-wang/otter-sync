@@ -1,4 +1,4 @@
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -6,24 +6,14 @@ import 'package:axton/axton.dart';
 import 'package:axton/src/live.dart' show ServerSession, SocketEvents;
 import 'package:test/test.dart';
 
-final subscribeFrame = jsonEncode({
-  'context': {
-    'binding': {'stream': 'scope'},
-  },
+final subscribe = {
+  'protocol': 5,
+  'storeId': 'store',
+  'stream': 'User:viewer',
   'cursor': 7,
-});
-
-/// The acknowledgement: every subscribed scope at `head`.
-String ack(Map sub, [int head = 0]) => jsonEncode({
-  'context': sub['context'],
-  'cursor': sub['cursor'],
-  'head': head,
-});
-Map<String, dynamic> range(int from, int to, [int? head]) => {
-  'from': from,
-  'to': to,
-  'head': head ?? to,
 };
+final subscribeFrame = jsonEncode(subscribe);
+
 SocketEvents events({
   Future<void> Function(String)? message,
   void Function(Object, StackTrace?)? closed,
@@ -63,11 +53,18 @@ void main() {
         final socket = await WebSocketTransformer.upgrade(request);
         socket.listen((message) {
           handshake.complete(jsonDecode(message as String) as Map);
-          socket.add(ack(jsonDecode(message) as Map));
           socket.add(
             jsonEncode({
-              'cursors': {'scope': range(7, 8)},
-              'changes': [],
+              ...emptyHandshake(jsonDecode(message) as Map),
+              'head': 7,
+            }),
+          );
+          socket.add(
+            jsonEncode({
+              'protocol': 5,
+              'storeId': 'store',
+              'stream': 'User:viewer',
+              'head': 8,
             }),
           );
         }, onDone: () => finished.complete());
@@ -92,19 +89,17 @@ void main() {
         ),
       );
       try {
-        expect(await handshake.future.timeout(const Duration(seconds: 2)), {
-          'context': {
-            'binding': {'stream': 'scope'},
-          },
-          'cursor': 7,
-        });
+        expect(
+          await handshake.future.timeout(const Duration(seconds: 2)),
+          subscribe,
+        );
         await second.future.timeout(const Duration(seconds: 2));
         expect(
-          frames[0]['cursor'],
+          frames[0]['head'],
           7,
           reason: 'the transport does not interpret frames',
         );
-        expect(frames[1]['cursors']['scope']['to'], 8);
+        expect(frames[1]['head'], 8);
         cancel.complete();
         await finished.future.timeout(const Duration(seconds: 2));
       } finally {

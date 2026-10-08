@@ -1,5 +1,5 @@
 import 'store_fixture.dart';
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 // The connection as an effect executor (#134): the runtime owns the lanes,
 // direct calls, refresh coordination and timeouts; the SDK executes the
 // effects it asks for and aborts each one when it is cancelled. The executor
@@ -615,9 +615,11 @@ void main() {
       expect(
         reported.take(2),
         everyElement(
-          isA<AxtonReport>()
-              .having((r) => r.kind, 'kind', 'conflict')
-              .having((r) => r.identity, 'identity', {'id': 'e'}),
+          isA<AxtonReport>().having((r) => r.kind, 'kind', 'conflict').having(
+            (r) => r.identity,
+            'identity',
+            {'id': 'e'},
+          ),
         ),
       );
       expect(reported.skip(2).map((e) => (e as StateError).message), [
@@ -1253,7 +1255,7 @@ void main() {
             loads++;
             return;
           }
-          request.response.write(jsonEncode(emptyPull(body, total: 1)));
+          request.response.write(jsonEncode(emptyPull(body)));
           await request.response.close();
           return;
         }

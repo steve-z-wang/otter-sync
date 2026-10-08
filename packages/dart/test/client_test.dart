@@ -50,7 +50,7 @@ void main() {
     input: callback,
   );
   setUp(() async {
-    dir = await Directory.systemTemp.createTemp('axton-dart-client04-');
+    dir = await Directory.systemTemp.createTemp('axton-dart-client05-');
     schema =
         jsonDecode(
               await File('../../fixtures/schemas/entry.json').readAsString(),

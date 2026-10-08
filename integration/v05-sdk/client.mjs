@@ -57,6 +57,69 @@ if (process.argv[2] === "enqueue-child") {
   await (await publish(client, "killed-accepted", " accepted ")).wait();
   throw Error("accepted response should remain held");
 } else {
+  test("P7: unsupported name/version is a durable member refusal over real HTTP, with exact replay and next Batch", async () => {
+    for (const [name, version, owner] of [["Publish", 2, "p7-version"], ["RetiredPublish", 1, "p7-name"]]) {
+      const h = await host(), dir = await mkdtemp(join(tmpdir(), "axton-p7-"));
+      const retained = structuredClone(schema);
+      const descriptor = structuredClone(retained.actions.find((a) => a.name === "Publish"));
+      descriptor.name = name; descriptor.version = version;
+      retained.actions.push(descriptor);
+      const path = join(dir, "db");
+      let client;
+      try {
+        client = await Client.open({ path, schema: retained, stream: `User:${owner}` });
+        const submit = (name, version, suffix) => client.submitMutation(name, version,
+          { entry: { id: `${owner}-${suffix}`, text: suffix }, call: "normal" }, (value) => value);
+        const before = await submit("Publish", 1, "before");
+        const unsupported = await submit(name, version, "unsupported");
+        const after = await submit("Publish", 1, "after");
+        h.loseNext();
+        await client.connect({ url: h.url, token: owner });
+        const waiting = Promise.all([before.wait(), unsupported.wait(), after.wait()]);
+        await until(() => before.status === "succeeded" && unsupported.status === "failed" && after.status === "succeeded", "P7 durable member outcomes");
+        const outcomes = await waiting;
+        assert.equal(outcomes[0].error, null);
+        assert.equal(outcomes[1].error.code, "mutation_version_unsupported");
+        assert.equal(outcomes[2].error, null);
+        assert.deepEqual(h.executions, [`${owner}-before`, `${owner}-after`]);
+        assert.ok(h.batches.length >= 2);
+        assert.equal(h.batches[1], h.batches[0]);
+        const frozen = JSON.parse(h.batches[0]);
+        assert.equal(frozen.mutations.length, 3);
+        const post = async (body) => {
+          const response = await fetch(`${h.url}/sync/mutations`, { method: "POST",
+            headers: { authorization: `Bearer ${owner}`, "content-type": "application/json" }, body });
+          return { status: response.status, body: await response.json() };
+        };
+        const replay = await post(h.batches[0]);
+        assert.equal(replay.status, 200);
+        assert.equal(replay.body.results[1].outcome.code, "mutation_version_unsupported");
+        assert.equal(replay.body.results[0].outcome.kind, "accepted");
+        assert.equal(replay.body.results[2].outcome.kind, "accepted");
+        assert.deepEqual(await post(h.batches[0]), replay);
+        assert.deepEqual(h.executions, [`${owner}-before`, `${owner}-after`]);
+        assert.deepEqual(await post("not JSON"), { status: 400, body: { code: "request.invalid" } });
+        const corrupt = { ...frozen, digest: "0".repeat(64) };
+        assert.deepEqual(await post(JSON.stringify(corrupt)), { status: 400, body: { code: "request.invalid" } });
+        assert.deepEqual(h.executions, [`${owner}-before`, `${owner}-after`]);
+        assert.equal(await client.read("Entry", { id: `${owner}-unsupported` }), null);
+        assert.equal((await client.read("Entry", { id: `${owner}-before` })).text, "before");
+        assert.equal((await client.read("Entry", { id: `${owner}-after` })).text, "after");
+        await client.close();
+        client = await Client.open({ path, schema: retained, stream: `User:${owner}` });
+        assert.equal((await client.rejections.get(frozen.mutations[1].id)).code, "mutation_version_unsupported");
+        assert.equal((await client.syncState()).pending, 0);
+        const next = await submit("Publish", 1, "next");
+        await client.connect({ url: h.url, token: owner });
+        assert.equal((await next.wait()).error, null);
+        assert.equal(JSON.parse(h.batches.at(-1)).batchId, frozen.batchId + 1);
+        assert.deepEqual(h.executions, [`${owner}-before`, `${owner}-after`, `${owner}-next`]);
+        assert.deepEqual(h.errors, []);
+      } finally {
+        await client?.close(); await h.close(); await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
   test("ported reads: SIGKILL after cloud acceptance replays identical frozen Batch without repeating execution", async () => {
     const h = await host(),
       dir = await mkdtemp(join(tmpdir(), "axton-killed-accepted-"));

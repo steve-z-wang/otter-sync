@@ -87,6 +87,28 @@ pub(crate) async fn execute(
     if store.current_digest.is_none() {
         let _:Acknowledged=protocol_v05::call(raw_host,json!({"op":"beginBatch","storeId":request.context.store_id,"batchId":request.batch_id,"digest":request.digest,"count":count})).await?;
     }
+    let args = match protocol_v05::validate_member(config, member)? {
+        protocol_v05::MutationInput::Supported(args) => args,
+        protocol_v05::MutationInput::Unsupported => {
+            let result = v05::MutationResult {
+                mutation_id: member.id,
+                outcome: v05::MutationOutcome::Rejected {
+                    code: crate::code::MUTATION_VERSION_UNSUPPORTED.into(),
+                    message: None,
+                },
+            };
+            let _: Acknowledged = protocol_v05::call(
+                raw_host,
+                json!({
+                    "op":"saveResult", "storeId":request.context.store_id,
+                    "batchId":request.batch_id, "ordinal":ordinal, "count":count,
+                    "result":result,
+                }),
+            )
+            .await?;
+            return Ok(result);
+        }
+    };
     let host = Publication05::new(raw_host);
     let _: Acknowledged = host.call_typed(HostRequest::PublicationFence {}).await?;
     let _: Acknowledged = host
@@ -94,7 +116,6 @@ pub(crate) async fn execute(
             ordinal: ordinal + 1,
         })
         .await?;
-    let args = protocol_v05::validate_member(config, member)?;
     let handled: HandledAction = host
         .call_typed(HostRequest::HandleAction {
             name: member.name.clone(),

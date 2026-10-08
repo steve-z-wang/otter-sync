@@ -18,6 +18,8 @@ acknowledgement and settlement commits after the real cloud has accepted work. T
 `client.mjs` also starts a process that exits immediately after a committed
 local transaction, then reopens its Store without the original Call waiter.
 
+The P7 scenario sends supported/unsupported/supported calls through real HTTP and PostgreSQL, checks exact saved-result replay, retains structural HTTP400 for malformed JSON/digests, and reopens the SQLite client before the next Batch. Both an unretained name and an unsupported version become durable member refusals without executing their handler.
+
 The tests assert exact Batch retry, refusal isolation, private settlement,
 later local ownership, independent Store identities, zero-cursor Bootstrap,
 fresh read snapshots, Store modes, direct-delete refill, physical file aliases,

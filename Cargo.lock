@@ -95,6 +95,7 @@ dependencies = [
  "axton-binding",
  "axton-client",
  "axton-core",
+ "axton-server",
  "axton-sqlite",
  "serde_json",
  "tempfile",

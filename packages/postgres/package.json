@@ -28,14 +28,12 @@
       "types": "./dist/src/drizzle.d.mts",
       "default": "./dist/src/drizzle.mjs"
     },
-    "./migration.sql": "./migration.sql",
-    "./migrations/*": "./migrations/*"
+    "./migration.sql": "./migration.sql"
   },
   "files": [
     "dist/**/*.mjs",
     "dist/**/*.d.mts",
-    "migration.sql",
-    "migrations/*.sql"
+    "migration.sql"
   ],
   "engines": {
     "node": ">=22.18.0"

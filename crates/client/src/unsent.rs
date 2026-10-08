@@ -152,11 +152,11 @@ impl<S: ClientStore> Engine<'_, S> {
             return Ok(vec![]);
         }
         // Only the calls waiting on a failed key are read: every table the
-        // queue reader filters has an `ordinal` column. A key rather than a
+        // queue reader joins is bound to the canonical Mutation id. A key rather than a
         // row decides, so a row written before failures were inherited
         // (#204) is still listed.
         let waiting = self.queued_where(
-            "WHERE ordinal IN (SELECT ordinal FROM axton_mutation_prerequisite WHERE key IN (SELECT key FROM axton_mutation_prerequisite WHERE error IS NOT NULL))",
+            "AND q.id IN (SELECT ordinal FROM axton_mutation_prerequisite WHERE key IN (SELECT key FROM axton_mutation_prerequisite WHERE error IS NOT NULL))",
             &[],
         )?;
         let mut acts = vec![];

@@ -268,7 +268,7 @@ fn private_acceptance_finalizes_at_original_position_and_retains_result_after_cl
     let db = rusqlite::Connection::open(&p).unwrap();
     assert_eq!(
         db.query_row(
-            "SELECT COUNT(*) FROM axton_mutation_queue_operation",
+            "SELECT COUNT(*) FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL",
             [],
             |r| r.get::<_, i64>(0)
         )
@@ -633,10 +633,11 @@ fn lifecycle_dependents_are_rejected_atomically_and_retained_but_not_replayed() 
         2
     );
     assert_eq!(
-        db.query_row("SELECT COUNT(*) FROM axton_mutation_operation", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
+        db.query_row(
+            "SELECT COUNT(*) FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
         .unwrap(),
         0
     );
@@ -1018,39 +1019,47 @@ fn dismissed_rejection_keeps_durable_completion_but_retires_input_after_reopen()
 }
 
 #[test]
-fn existing_format5_adds_rejection_acknowledgement_only_after_valid_admission() {
+fn incomplete_format5_is_refused_without_upgrade_or_file_changes() {
     use axton_client::ClientStore;
     let directory = tempfile::tempdir().unwrap();
-    let fresh_path = directory.path().join("fresh.db");
-    drop(open(&fresh_path));
-    let mut fresh = SqliteStore::open(&fresh_path).unwrap();
-    let metadata = fresh
-        .query("SELECT * FROM axton_store", &[])
+    let path = directory.path().join("incomplete.db");
+    let mut client = open(&path);
+    client
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entry":{"id":"e","text":"unsent","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    drop(client);
+    let mut store = SqliteStore::open(&path).unwrap();
+    let metadata = store.query("SELECT * FROM axton_store", &[]).unwrap().rows;
+    let queue = store
+        .query(
+            "SELECT id,name,descriptor,result FROM axton_mutation_queue",
+            &[],
+        )
         .unwrap()
-        .rows
-        .remove(0);
-    let path = directory.path().join("prior-format5.db");
-    std::fs::copy(&fresh_path, &path).unwrap();
-    let mut prior = SqliteStore::open(&path).unwrap();
-    prior
+        .rows;
+    store
         .execute_batch("ALTER TABLE axton_mutation_queue DROP COLUMN rejection_acknowledged")
         .unwrap();
-    drop(prior);
-    assert!(Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:other").is_err());
-    let mut prior = SqliteStore::open(&path).unwrap();
+    drop(store);
+    let before = std::fs::read(&path).unwrap();
+    for stream in ["User:other", "User:u"] {
+        assert!(Client::open05(SqliteStore::open(&path).unwrap(), schema(), stream).is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "admission must not upgrade a prior provisional file"
+        );
+    }
+    let mut store = SqliteStore::open(&path).unwrap();
     assert!(
-        !prior
-            .query("PRAGMA table_info(axton_mutation_queue)", &[])
-            .unwrap()
-            .rows
-            .iter()
-            .any(|r| r[1] == "rejection_acknowledged")
-    );
-    drop(prior);
-    drop(open(&path));
-    let mut prior = SqliteStore::open(&path).unwrap();
-    assert!(
-        prior
+        !store
             .query("PRAGMA table_info(axton_mutation_queue)", &[])
             .unwrap()
             .rows
@@ -1058,8 +1067,18 @@ fn existing_format5_adds_rejection_acknowledgement_only_after_valid_admission() 
             .any(|r| r[1] == "rejection_acknowledged")
     );
     assert_eq!(
-        prior.query("SELECT * FROM axton_store", &[]).unwrap().rows[0],
+        store.query("SELECT * FROM axton_store", &[]).unwrap().rows,
         metadata
+    );
+    assert_eq!(
+        store
+            .query(
+                "SELECT id,name,descriptor,result FROM axton_mutation_queue",
+                &[]
+            )
+            .unwrap()
+            .rows,
+        queue
     );
 }
 

@@ -336,8 +336,7 @@ class Client implements WritePort, SubmitMutationPort {
   };
 
   /// A `fetch` task's failure as a [CallError]: a `fetch.*` code the runtime
-  /// decided keeps its cause - the refusing onStore callback's error or the
-  /// transport failure with its status. A closed client's admission error
+  /// decided keeps its cache commit cause or transport failure with its status. A closed client's admission error
   /// and any other engine error stay as they are.
   Object _fetchError(Object error) {
     if (error is TaskFailure) {

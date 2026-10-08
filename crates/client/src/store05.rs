@@ -1,5 +1,4 @@
-//! Protocol-5 file state. Compatibility views feed the existing local replay
-//! algorithm; the Store and queue tables are the only durable lifecycle truth.
+//! Protocol-5 file state. Store and queue tables are the durable lifecycle truth.
 use crate::{
     Client, ClientStore, Result, Schema, ddl,
     engine::{Engine, as_u64},
@@ -24,10 +23,6 @@ CREATE INDEX axton_queue_operation_record ON axton_mutation_queue_operation(mode
 
 CREATE TABLE axton_local_replica_layer(model TEXT NOT NULL,identity TEXT NOT NULL,operations TEXT NOT NULL,PRIMARY KEY(model,identity));
 CREATE TABLE axton_authority(model TEXT NOT NULL,identity TEXT NOT NULL,evidence TEXT NOT NULL,base TEXT NOT NULL DEFAULT 'null',PRIMARY KEY(model,identity));
-CREATE VIEW axton_client AS SELECT id AS client_id,next_mutation_id AS next_ordinal,generation FROM axton_store;
-CREATE VIEW axton_mutation AS SELECT id AS ordinal,name,descriptor_version AS version,batch_id AS push,diverged,(SELECT id FROM axton_store)||':'||id AS call_id FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL;
-CREATE VIEW axton_mutation_operation AS SELECT o.mutation_id AS ordinal,o.step AS position,o.kind,o.model,o.identity,o.operation AS op,o.value AS "values" FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL;
-CREATE TRIGGER axton_queue_diverged INSTEAD OF UPDATE OF diverged ON axton_mutation BEGIN UPDATE axton_mutation_queue SET diverged=NEW.diverged WHERE id=OLD.ordinal; END;
 CREATE TRIGGER axton_queue_frozen_update BEFORE UPDATE OF name,descriptor_version,descriptor,batch_id ON axton_mutation_queue WHEN OLD.batch_id IS NOT NULL AND (NEW.name<>OLD.name OR NEW.descriptor_version<>OLD.descriptor_version OR NEW.descriptor<>OLD.descriptor OR NEW.batch_id IS NOT OLD.batch_id) BEGIN SELECT RAISE(ABORT,'assigned mutation is immutable'); END;
 CREATE TRIGGER axton_operation_frozen_update BEFORE UPDATE ON axton_mutation_queue_operation WHEN OLD.input_path IS NOT NULL AND EXISTS(SELECT 1 FROM axton_mutation_queue WHERE id=OLD.mutation_id AND batch_id IS NOT NULL) BEGIN SELECT RAISE(ABORT,'assigned input is immutable'); END;
 CREATE TRIGGER axton_operation_frozen_insert BEFORE INSERT ON axton_mutation_queue_operation WHEN NEW.input_path IS NOT NULL AND EXISTS(SELECT 1 FROM axton_mutation_queue WHERE id=NEW.mutation_id AND batch_id IS NOT NULL) BEGIN SELECT RAISE(ABORT,'assigned input is immutable'); END;
@@ -100,7 +95,7 @@ pub fn admit05<S: ClientStore>(store: &mut S, stream: &str) -> Result<bool> {
         return Err(invalid("retained Store descriptor missing"));
     }
     for sql in [
-        "SELECT id,name,descriptor_version,descriptor,batch_id,sync_cursor,result,targets,rejection_code,rejection_message,reconciled FROM axton_mutation_queue LIMIT 0",
+        "SELECT id,name,descriptor_version,descriptor,batch_id,sync_cursor,result,targets,rejection_code,rejection_message,rejection_acknowledged,reconciled FROM axton_mutation_queue LIMIT 0",
         "SELECT mutation_id,step,local_sequence,input_path,model,identity,operation,value,owner_history FROM axton_mutation_queue_operation LIMIT 0",
         "SELECT sequence,ordinal,position,disposition,model,identity,op,\"values\" FROM axton_local_write LIMIT 0",
         "SELECT model,identity,evidence,base FROM axton_authority LIMIT 0",
@@ -159,14 +154,6 @@ impl<S: ClientStore> Client<S> {
             if !existing {
                 store.execute_batch(DDL)?;
                 store.execute("INSERT INTO axton_store(singleton,format,id,stream,materialization,desired_materialization,schema_descriptor,enabled_descriptor) VALUES(1,5,?,?,?,?,?,?)",&[json!(uuid::Uuid::new_v4().to_string()),json!(stream),json!(materialization),json!(materialization),json!(descriptor_context),json!(descriptor_context)])?;
-            }
-            if existing {
-                let columns = store
-                    .query("PRAGMA table_info(axton_mutation_queue)", &[])?
-                    .rows;
-                if !columns.iter().any(|row| row[1] == "rejection_acknowledged") {
-                    store.execute_batch("ALTER TABLE axton_mutation_queue ADD COLUMN rejection_acknowledged INTEGER NOT NULL DEFAULT 0")?;
-                }
             }
             ddl::reconcile(&mut store, &schema)?;
             store.execute("INSERT OR IGNORE INTO axton_descriptor(context,materialization,descriptor,projection_generation) VALUES(?,?,?,?)",&[json!(descriptor_context),json!(materialization),json!(descriptor_text),json!(projection)])?;

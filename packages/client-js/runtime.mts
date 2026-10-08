@@ -164,7 +164,7 @@ function directCause(error: unknown): unknown {
 /**
  * Model Fetch options ([#153](https://github.com/zanminwang/axton/issues/153)):
  * `store` defaults to `true`; `false` returns the snapshot without local
- * storage or onStore. There is no other option.
+ * storage. There is no other option.
  */
 export type FetchOptions = { store?: boolean };
 /**
@@ -192,8 +192,8 @@ const FETCH_REJECTED = new Set([
 ]);
 /**
  * A `fetch` task's failure as a {@link CallError}: a `fetch.*` code the
- * runtime decided keeps its cause - the refusing onStore callback's value or
- * the transport failure with its status. A closed client's admission error
+ * runtime decided keeps its cache commit cause or transport failure with its
+ * status. A closed client's admission error
  * and any other engine error stay as they are.
  */
 function fetchError(error: unknown): unknown {

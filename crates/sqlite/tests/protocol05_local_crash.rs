@@ -97,7 +97,7 @@ fn interrupted(committed: bool) {
         assert!(!String::from_utf8(bytes).unwrap().contains("draft"));
         let rows = c
             .read_sql(
-                "SELECT kind FROM axton_mutation_operation ORDER BY position",
+                "SELECT kind FROM axton_mutation_queue_operation WHERE model IS NOT NULL ORDER BY step",
                 &[],
             )
             .unwrap();
@@ -108,7 +108,7 @@ fn interrupted(committed: bool) {
     } else {
         assert!(batch.is_none());
         assert!(
-            c.read_sql("SELECT * FROM axton_mutation_operation", &[])
+            c.read_sql("SELECT * FROM axton_mutation_queue_operation", &[])
                 .unwrap()
                 .is_empty()
         );

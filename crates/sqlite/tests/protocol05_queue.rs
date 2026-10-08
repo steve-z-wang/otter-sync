@@ -692,3 +692,21 @@ fn rejected_predecessor_releases_sequence_survivor_and_rolls_back_lifecycle_depe
         );
     }
 }
+
+#[test]
+fn fresh_store_uses_only_canonical_tables_without_compatibility_views_or_triggers() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("db");
+    let mut client = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    let objects = client.read_sql("SELECT name,type FROM sqlite_schema WHERE name IN ('axton_client','axton_mutation','axton_mutation_operation','axton_queue_diverged')", &[]).unwrap();
+    assert!(objects.is_empty(), "retired framework objects: {objects:?}");
+    assert_eq!(client.pending_count().unwrap(), 0);
+    client
+        .transaction(|tx| tx.submit_mutation05("Write", 1, json!({"entries":[]}), vec![]))
+        .unwrap();
+    assert_eq!(client.pending_count().unwrap(), 1);
+    drop(client);
+    let mut client = Client::open05(SqliteStore::open(&path).unwrap(), schema(), "User:u").unwrap();
+    assert_eq!(client.pending_count().unwrap(), 1);
+    assert_eq!(client.freeze_batch05().unwrap().unwrap().mutations.len(), 1);
+}

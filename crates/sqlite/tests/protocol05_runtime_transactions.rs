@@ -56,6 +56,9 @@ impl ClientStore for FailingCommit {
     fn query_committed(&mut self, sql: &str, parameters: &[Value]) -> Result<SqlRows> {
         self.inner.query_committed(sql, parameters)
     }
+    fn read_tables(&mut self, sql: &str) -> Result<std::collections::BTreeSet<String>> {
+        self.inner.read_tables(sql)
+    }
 }
 struct LocalCallback {
     effect: String,
@@ -208,7 +211,7 @@ impl<S: ClientStore + 'static> Harness<S> {
     fn pending(&mut self) -> u64 {
         self.runtime
             .client()
-            .read_sql("SELECT COUNT(*) AS n FROM axton_mutation", &[])
+            .read_sql("SELECT COUNT(*) AS n FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL", &[])
             .unwrap()[0]["n"]
             .as_u64()
             .unwrap()
@@ -218,7 +221,7 @@ impl<S: ClientStore + 'static> Harness<S> {
         self.runtime
             .client()
             .read_sql(
-                "SELECT kind, model, identity, op FROM axton_mutation_operation ORDER BY ordinal, position",
+                "SELECT o.kind,o.model,o.identity,o.operation AS op FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL ORDER BY o.mutation_id,o.step",
                 &[],
             )
             .unwrap()
@@ -244,11 +247,11 @@ impl<S: ClientStore + 'static> Harness<S> {
         for (name, sql) in [
             (
                 "axton_mutation",
-                "SELECT * FROM axton_mutation ORDER BY ordinal",
+                "SELECT * FROM axton_mutation_queue ORDER BY id",
             ),
             (
                 "axton_mutation_operation",
-                "SELECT * FROM axton_mutation_operation ORDER BY ordinal, position",
+                "SELECT * FROM axton_mutation_queue_operation ORDER BY mutation_id,step",
             ),
             (
                 "axton_local_write",
@@ -1108,7 +1111,7 @@ fn savepoint_rollback_rolls_back_only_the_calls_of_its_scope() {
     let calls: Vec<Value> = h
         .runtime
         .client()
-        .read_sql("SELECT call_id FROM axton_mutation ORDER BY ordinal", &[])
+        .read_sql("SELECT (SELECT id FROM axton_store)||':'||id AS call_id FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL ORDER BY id", &[])
         .unwrap()
         .into_iter()
         .map(|row| row["call_id"].clone())
@@ -1887,7 +1890,7 @@ fn a_watched_statement_refuses_writes_and_engine_tables_and_lives_like_a_watch()
     for (id, sql) in [
         ("write", "DELETE FROM Entry RETURNING id"),
         ("pragma", "PRAGMA table_info(Entry)"),
-        ("engine", "SELECT count(*) AS n FROM axton_mutation"),
+        ("engine", "SELECT count(*) AS n FROM axton_mutation_queue"),
         (
             "before",
             "SELECT e.id FROM Entry e JOIN axton_before_Entry b ON b.id = e.id",
@@ -2010,4 +2013,63 @@ fn unwatch_and_close_remove_the_engine_watcher_and_a_tableless_statement_registe
         before,
         "close removes it"
     );
+}
+
+#[test]
+fn a_direct_apply_that_fails_to_commit_fails_the_call_and_lets_nothing_escape() {
+    let directory = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let mut client = Client::open05(
+        FailingCommit {
+            inner: SqliteStore::open(directory.path().join("db")).unwrap(),
+            armed: armed.clone(),
+        },
+        schema(),
+        "User:u",
+    )
+    .unwrap();
+    client.initialize_stream05(0).unwrap();
+    let mut h = Harness {
+        runtime: ClientRuntime::new(client),
+        _dir: directory,
+    };
+    let (observer, events) =
+        h.watch_sql("rows", "SELECT id,text FROM Entry ORDER BY id", json!([]));
+    assert_eq!(rows(&events, &observer), [json!([])]);
+    h.task("connect", json!({"kind":"connect"}));
+    h.run();
+    for (id, fail) in [("bad", true), ("good", false)] {
+        h.task(
+            id,
+            json!({"kind":"fetch","model":"Entry","version":1,"identity":{"id":"e"},"store":true}),
+        );
+        let events = h.run();
+        let http = events
+            .iter()
+            .find(|e| e["operation"]["route"] == "fetch")
+            .unwrap();
+        let request: Value =
+            serde_json::from_str(http["operation"]["body"].as_str().unwrap()).unwrap();
+        let response = json!({"protocol":5,"storeId":request["storeId"],"stream":request["stream"],"materialization":request["materialization"],"requestId":request["requestId"],"outcome":{"kind":"succeeded","result":{"id":"e","text":"returned","note":null}},"records":[{"key":{"model":"Entry","identity":{"id":"e"}},"cursor":null,"state":{"text":"returned","note":null}}]});
+        armed.store(fail, Ordering::SeqCst);
+        h.submit(json!({"type":"effectResult","effectId":http["effectId"],"outcome":{"ok":true,"value":response.to_string()}})).unwrap();
+        let events = h.run();
+        let completion = h.completion(&events, id);
+        assert_eq!(completion["ok"], !fail);
+        if fail {
+            assert_eq!(completion["error"], "fetch.store_failed");
+            assert!(rows(&events, &observer).is_empty());
+            assert!(h.entry("e").is_none());
+        } else {
+            assert_eq!(
+                rows(&events, &observer),
+                [json!([{"id":"e","text":"returned"}])]
+            );
+            assert_eq!(h.entry("e"), Some(row("returned")));
+            assert!(
+                position(&events, |e| e["requestId"] == id)
+                    < position(&events, |e| e["observerId"] == observer)
+            );
+        }
+    }
 }

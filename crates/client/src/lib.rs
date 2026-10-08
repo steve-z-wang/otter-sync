@@ -337,7 +337,7 @@ impl<S: ClientStore> Client<S> {
                     return Err(e);
                 }
                 self.generation += 1;
-                changed.insert("axton_client".into());
+                changed.insert("axton_store".into());
                 self.notify(changed);
                 Ok(value)
             }
@@ -431,7 +431,7 @@ impl<S: ClientStore> Client<S> {
         self.generation += 1;
 
         let mut changed = session.changed;
-        changed.insert("axton_client".into());
+        changed.insert("axton_store".into());
         self.notify(changed);
         Ok(())
     }
@@ -531,7 +531,7 @@ impl<S: ClientStore> Client<S> {
         query::rows_to_objects(rows)
     }
     pub fn pending_count(&mut self) -> Result<usize> {
-        self.view(|e| Ok(e.count("axton_mutation")? as usize))
+        self.view(|e| Ok(e.queued()?.len()))
     }
     pub fn before_image_count(&mut self) -> Result<usize> {
         let tables: Vec<String> = self

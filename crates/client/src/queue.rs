@@ -154,7 +154,7 @@ impl<S: ClientStore> Engine<'_, S> {
     // is the call's companion.
     pub(crate) fn append_op(&mut self, ordinal: u64, kind: OpKind, op: &Operation) -> Result<()> {
         let next = self.scalar(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM axton_mutation_operation WHERE ordinal=?",
+            "SELECT COALESCE(MAX(step), -1) + 1 FROM axton_mutation_queue_operation WHERE mutation_id=?",
             &[json!(ordinal)],
         )?;
         let position = as_u64(&next.unwrap_or(json!(0)))?;
@@ -173,7 +173,7 @@ impl<S: ClientStore> Engine<'_, S> {
     // The operations of one queued call with their positions and kinds.
     pub(crate) fn call_ops(&mut self, ordinal: u64) -> Result<Vec<QueuedOp>> {
         Ok(self
-            .ops_by_ordinal("WHERE ordinal=?", &[json!(ordinal)])?
+            .ops_by_ordinal("AND q.id=?", &[json!(ordinal)])?
             .into_values()
             .flatten()
             .collect())
@@ -182,8 +182,8 @@ impl<S: ClientStore> Engine<'_, S> {
     // written before anything written now.
     pub(crate) fn last_ordinal(&mut self) -> Result<u64> {
         let next = self
-            .scalar("SELECT next_ordinal FROM axton_client", &[])?
-            .ok_or_else(|| invalid("client row missing"))?;
+            .scalar("SELECT next_mutation_id FROM axton_store", &[])?
+            .ok_or_else(|| invalid("Store row missing"))?;
         Ok(as_u64(&next)?.saturating_sub(1))
     }
     // Retain a settled local write at its place in the record's local order.
@@ -244,7 +244,7 @@ impl<S: ClientStore> Engine<'_, S> {
         filter: &str,
         params: &[Value],
     ) -> Result<BTreeMap<u64, Vec<QueuedOp>>> {
-        let rows = self.rows(&format!("SELECT ordinal, position, kind, model, identity, op, \"values\" FROM axton_mutation_operation {filter} ORDER BY ordinal, position"), params)?;
+        let rows = self.rows(&format!("SELECT o.mutation_id,o.step,o.kind,o.model,o.identity,o.operation,o.value FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model IS NOT NULL AND q.reconciled=0 AND q.rejection_code IS NULL {filter} ORDER BY o.mutation_id,o.step"), params)?;
         let mut result: BTreeMap<u64, Vec<QueuedOp>> = BTreeMap::new();
         for row in &rows.rows {
             let op = decode_op(row)?;
@@ -255,7 +255,7 @@ impl<S: ClientStore> Engine<'_, S> {
     pub(crate) fn queued_where(&mut self, filter: &str, params: &[Value]) -> Result<Vec<Queued>> {
         let mutations = self.rows(
             &format!(
-                "SELECT ordinal, name, version, push, diverged, call_id FROM axton_mutation {filter} ORDER BY ordinal"
+                "SELECT q.id,q.name,q.descriptor_version,q.batch_id,q.diverged,(SELECT id FROM axton_store)||':'||q.id FROM axton_mutation_queue q WHERE q.reconciled=0 AND q.rejection_code IS NULL {filter} ORDER BY q.id"
             ),
             params,
         )?;
@@ -265,13 +265,13 @@ impl<S: ClientStore> Engine<'_, S> {
         let ops = self.ops_by_ordinal(filter, params)?;
         let deps = self.rows(
             &format!(
-                "SELECT ordinal, depends_on, kind FROM axton_mutation_dependency {filter} ORDER BY ordinal, depends_on"
+                "SELECT d.ordinal,d.depends_on,d.kind FROM axton_mutation_dependency d JOIN axton_mutation_queue q ON q.id=d.ordinal WHERE q.reconciled=0 AND q.rejection_code IS NULL {filter} ORDER BY d.ordinal,d.depends_on"
             ),
             params,
         )?;
         let prerequisites = self.rows(
             &format!(
-                "SELECT ordinal, key FROM axton_mutation_prerequisite {filter} ORDER BY ordinal, key"
+                "SELECT p.ordinal,p.key FROM axton_mutation_prerequisite p JOIN axton_mutation_queue q ON q.id=p.ordinal WHERE q.reconciled=0 AND q.rejection_code IS NULL {filter} ORDER BY p.ordinal,p.key"
             ),
             params,
         )?;
@@ -322,14 +322,14 @@ impl<S: ClientStore> Engine<'_, S> {
     }
     pub fn queued_one(&mut self, ordinal: u64) -> Result<Option<Queued>> {
         Ok(self
-            .queued_where("WHERE ordinal=?", &[json!(ordinal)])?
+            .queued_where("AND q.id=?", &[json!(ordinal)])?
             .into_iter()
             .next())
     }
     pub fn ops_for(&mut self, key: &RecordKey) -> Result<Vec<QueuedOp>> {
         Ok(self
             .ops_by_ordinal(
-                "WHERE model=? AND identity=?",
+                "AND o.model=? AND o.identity=?",
                 &[json!(key.model), json!(key.encoded_identity()?)],
             )?
             .into_values()
@@ -340,8 +340,8 @@ impl<S: ClientStore> Engine<'_, S> {
     // the row and with it the mark.
     pub fn set_diverged(&mut self, ordinal: u64) -> Result<()> {
         self.exec(
-            "axton_mutation",
-            "UPDATE axton_mutation SET diverged=1 WHERE ordinal=?",
+            "axton_mutation_queue",
+            "UPDATE axton_mutation_queue SET diverged=1 WHERE id=?",
             &[json!(ordinal)],
         )?;
         Ok(())
@@ -349,7 +349,7 @@ impl<S: ClientStore> Engine<'_, S> {
     pub fn dirty(&mut self, key: &RecordKey) -> Result<bool> {
         Ok(self
             .scalar(
-                "SELECT 1 FROM axton_mutation_operation WHERE model=? AND identity=? LIMIT 1",
+                "SELECT 1 FROM axton_mutation_queue_operation o JOIN axton_mutation_queue q ON q.id=o.mutation_id WHERE o.model=? AND o.identity=? AND q.reconciled=0 AND q.rejection_code IS NULL LIMIT 1",
                 &[json!(key.model), json!(key.encoded_identity()?)],
             )?
             .is_some())

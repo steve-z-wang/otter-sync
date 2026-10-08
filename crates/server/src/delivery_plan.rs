@@ -630,9 +630,9 @@ pub async fn process_read05(
     let read = async {
         match &r.invocation {
             v05::ReadInvocation::Fetch { key, version } => {
-                if versions.get(&key.model) != Some(version) {
-                    return Err(Error::code("model_version_unsupported"));
-                }
+                let cache_version = *versions
+                    .get(&key.model)
+                    .ok_or_else(|| Error::code("model_version_unsupported"))?;
                 let k = config
                     .contract(&key.model, *version)
                     .ok_or_else(|| Error::code("model_version_unsupported"))?
@@ -642,6 +642,19 @@ pub async fn process_read05(
                     config, owner, &k, *version, &host,
                 )
                 .await?;
+                // Caller and cache contracts may project the same identity differently.
+                let cache_state = if cache_version == *version {
+                    state.clone()
+                } else {
+                    crate::action_results::load_one_canonical_state(
+                        config,
+                        owner,
+                        &k,
+                        cache_version,
+                        &host,
+                    )
+                    .await?
+                };
                 if !bound {
                     bind(owner, &r.context, raw).await?;
                 }
@@ -660,7 +673,7 @@ pub async fn process_read05(
                             identity: k.identity,
                         },
                         cursor: (),
-                        state,
+                        state: cache_state,
                     }],
                 ))
             }

@@ -531,7 +531,11 @@ impl<S: ClientStore> Client<S> {
         query::rows_to_objects(rows)
     }
     pub fn pending_count(&mut self) -> Result<usize> {
-        self.view(|e| Ok(e.queued()?.len()))
+        self.view(|e| {
+            let count = e.scalar("SELECT count(*) FROM axton_mutation_queue WHERE reconciled=0 AND rejection_code IS NULL", &[])?
+                .ok_or_else(|| invalid("queue count missing"))?;
+            Ok(engine::as_u64(&count)? as usize)
+        })
     }
     pub fn before_image_count(&mut self) -> Result<usize> {
         let tables: Vec<String> = self

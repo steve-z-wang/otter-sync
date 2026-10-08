@@ -4,12 +4,9 @@
 //! [#205](https://github.com/zanminwang/axton/issues/205),
 //! [#204](https://github.com/zanminwang/axton/issues/204)).
 //!
-//! These are read models over the queue and the rejection inbox; they add no
-//! table. A refusal keeps the whole act in `axton_rejection.detail.mutation`
-//! from the moment it is recorded ([Settlement](../../../docs/engineering/architecture/client/engine/settlement.md)),
-//! and a failed act is a queued, unsent act one of whose tasks carries an
-//! error. The shapes here are public and stable: an application recovers an
-//! author's words from a refusal's `act`.
+//! These read models reconstruct named input and operations from the canonical
+//! Mutation queue. Refused work retains the author's input until acknowledged;
+//! failed work names the prerequisite keys that still block it.
 use crate::Operation;
 use crate::engine::{Engine, as_u64};
 use crate::store::ClientStore;
@@ -18,10 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-// An act as it was submitted: the call's arguments (after their one-time
-// default fill; `null` for a legacy mutation, which has none) and its Model
-// operations with their values. Local companions and cascade effects are not
-// part of the act.
+// The normalized named input and declared Model operations as submitted.
+// Local companions and cascade effects are not part of the act.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmittedAct {
     pub args: Option<Value>,
@@ -59,10 +54,6 @@ pub struct FailedAct {
     pub act: SubmittedAct,
     pub tasks: Vec<FailedTask>,
 }
-
-// The refusal a rejection row describes. A row whose detail predates the
-// retained act, or lacks part of it, reads as an act with no args and no
-// operations rather than failing the whole list.
 
 fn failed_task(key: &str, error: &str) -> FailedTask {
     let invocation = serde_json::from_str::<Value>(key)

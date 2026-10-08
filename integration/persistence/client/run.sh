@@ -29,7 +29,7 @@ cmp "$fixture/js.before" "$fixture/js.after"
 python3 "$root/integration/persistence/client/seed.py" "$fixture/dart.sqlite"
 snapshot "$fixture/dart.sqlite" "$fixture/dart.before"
 cp "$root/integration/persistence/client/reopen.dart" "$fixture/reopen.dart"
-dart --packages="$root/integration/generated-api/.dart_tool/package_config.json" "$fixture/reopen.dart" "$fixture/dart.sqlite" "$root/crates/sqlite/tests/fixtures/frozen-push-logical.json"
+dart --packages="$root/integration/generated-api/.dart_tool/package_config.json" "$fixture/reopen.dart" "$fixture/dart.sqlite"
 
 snapshot "$fixture/dart.sqlite" "$fixture/dart.after"
 cmp "$fixture/dart.before" "$fixture/dart.after"

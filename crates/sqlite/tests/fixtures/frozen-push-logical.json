@@ -1,1 +1,0 @@
-{"batchSequence":1,"clientId":"fixture-client","models":{"Todo":1},"mutations":[{"args":{"todo":{"channel":"queued Channel","id":"live"}},"callId":"01890f47-1234-7123-8123-000000000001","name":"Edit","ordinal":1,"version":1}]}

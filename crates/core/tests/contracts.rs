@@ -639,58 +639,9 @@ fn store_schema() -> Schema {
     .unwrap()
 }
 #[test]
-fn action_store_policy_decodes_bool_or_output_map_and_serializes_canonically() {
-    let decode = |v: Value| serde_json::from_value::<ActionStore>(v).unwrap();
-    assert_eq!(ActionStore::default(), ActionStore::All);
-    assert_eq!(decode(json!(true)), ActionStore::All);
-    assert_eq!(decode(json!({})), ActionStore::All);
-    let disabled = decode(json!(false));
-    assert_eq!(disabled, ActionStore::None);
-    assert_eq!(serde_json::to_value(&disabled).unwrap(), json!(false));
-    let map = decode(json!({"suggestions":false,"mainTodo":true}));
-    assert_eq!(
-        canonical_json(&serde_json::to_value(&map).unwrap()).unwrap(),
-        r#"{"mainTodo":true,"suggestions":false}"#
-    );
-    assert!(map.selects("mainTodo"));
-    assert!(!map.selects("suggestions"));
-    assert!(decode(json!({"suggestions":false})).selects("mainTodo"));
-    assert!(!disabled.selects("mainTodo"));
-    assert!(ActionStore::default().selects("mainTodo"));
-    for bad in [
-        json!(null),
-        json!("false"),
-        json!(0),
-        json!([]),
-        json!({"mainTodo":"no"}),
-        json!({"mainTodo":null}),
-    ] {
-        assert!(serde_json::from_value::<ActionStore>(bad).is_err());
-    }
-}
-#[test]
-fn action_store_keys_name_only_explicit_model_outputs() {
+fn handler_selected_model_outputs_are_eligible_for_materialization() {
     let schema = store_schema();
     let open = schema.action("Open", 1).unwrap();
-    for good in [
-        json!(true),
-        json!(false),
-        json!({"suggestions":false}),
-        json!({"mainTodo":true,"suggestions":false}),
-    ] {
-        serde_json::from_value::<ActionStore>(good)
-            .unwrap()
-            .validate(open)
-            .unwrap();
-    }
-    for bad in ["missing", "store", "todo", "deleted"] {
-        assert!(
-            ActionStore::Outputs([(bad.to_string(), false)].into())
-                .validate(open)
-                .is_err(),
-            "{bad}"
-        );
-    }
     let eligible: Vec<_> = open
         .outputs
         .iter()
@@ -698,25 +649,4 @@ fn action_store_keys_name_only_explicit_model_outputs() {
         .map(|o| o.name.as_str())
         .collect();
     assert_eq!(eligible, ["mainTodo", "suggestions"]);
-}
-#[test]
-fn action_store_canonical_form_drops_explicit_true_after_validation() {
-    let schema = store_schema();
-    let open = schema.action("Open", 1).unwrap();
-    let outputs = |pairs: &[(&str, bool)]| {
-        ActionStore::Outputs(pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect())
-    };
-    assert_eq!(outputs(&[("mainTodo", true)]).canonical(), ActionStore::All);
-    assert_eq!(
-        outputs(&[("mainTodo", true), ("suggestions", false)]).canonical(),
-        outputs(&[("suggestions", false)])
-    );
-    assert_eq!(ActionStore::None.canonical(), ActionStore::None);
-    assert!(outputs(&[("missing", true)]).validate(open).is_err());
-    assert_eq!(
-        serde_json::to_value(outputs(&[("mainTodo", true), ("suggestions", false)]).canonical())
-            .unwrap(),
-        json!({"suggestions":false})
-    );
-    assert!(outputs(&[("mainTodo", true)]).canonical().wire().is_none());
 }

@@ -35,6 +35,8 @@ pub struct Control {
     applying: bool,
     applying_plan: Option<String>,
     freezing: bool,
+    wake_after_needs: bool,
+    waiting_push: Option<v05::MutationRequest>,
     failures: u32,
     epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
     refresh_auth: bool,
@@ -59,6 +61,8 @@ impl Control {
             applying: false,
             applying_plan: None,
             freezing: false,
+            wake_after_needs: false,
+            waiting_push: None,
             failures: 0,
             epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             refresh_auth: false,
@@ -98,6 +102,8 @@ impl Control {
         self.applying = false;
         self.applying_plan = None;
         self.freezing = false;
+        self.wake_after_needs = false;
+        self.waiting_push = None;
         let old = self
             .flights
             .iter()
@@ -143,6 +149,8 @@ impl Control {
         self.flights.clear();
         self.jobs.clear();
         self.freezing = false;
+        self.wake_after_needs = false;
+        self.waiting_push = None;
         self.refreshing = false;
         self.refresh_waiters.clear();
     }
@@ -152,6 +160,7 @@ impl Control {
     }
     pub fn wake(&mut self) {
         if self.connected
+            && !self.wake_after_needs
             && !self.freezing
             && !self.flights.values().any(|f| matches!(f, Flight::Push(_)))
         {
@@ -454,7 +463,7 @@ impl Control {
                 }
                 self.context = status.context.clone();
                 self.status = status;
-                self.wake();
+                self.wake_after_needs = true;
                 self.jobs.push_back(StoreCommand::Needs);
             }
             StoreReport::Needs {
@@ -462,6 +471,62 @@ impl Control {
                 schema,
                 settlements,
             } => {
+                // Needs is the Store's complete durable owner snapshot. A
+                // completed owner cannot keep network or staged work alive.
+                let pending = |context: &v05::RequestContext, owner: &v05::MaterializationOwner| {
+                    match owner {
+                        v05::MaterializationOwner::Schema {
+                            previous_materialization,
+                        } => schema.as_ref().is_some_and(|s| {
+                            &s.desired_context == context
+                                && &s.previous_context.materialization == previous_materialization
+                        }),
+                        v05::MaterializationOwner::Settlement {
+                            batch_id,
+                            mutation_id,
+                        } => {
+                            context == &self.context
+                                && settlements.iter().any(|s| {
+                                    s.batch_id == *batch_id && s.mutation_id == *mutation_id
+                                })
+                        }
+                    }
+                };
+                let stale = self
+                    .flights
+                    .iter()
+                    .filter_map(|(id, flight)| match flight {
+                        Flight::Owned(r) if !pending(&r.context, &r.owner) => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                for id in stale {
+                    self.flights.remove(&id);
+                    self.events.push(Event::CancelEffect { effect_id: id });
+                }
+                self.refresh_waiters.retain(|flight| match flight {
+                    Flight::Owned(r) => pending(&r.context, &r.owner),
+                    _ => true,
+                });
+                self.queue.plans.retain(|_, plan| {
+                    plan.header
+                        .owner
+                        .as_ref()
+                        .is_none_or(|owner| pending(&plan.header.context, owner))
+                });
+                // Undispatched Apply work can be removed here. A dispatched
+                // snapshot finishes through its guarded Store report, which
+                // releases applying without resurrecting the retired plan.
+                let mut retired_apply = false;
+                self.jobs.retain(|job| {
+                    let stale = matches!(job, StoreCommand::Apply {plan_id,..} if !self.queue.plans.contains_key(plan_id));
+                    retired_apply |= stale;
+                    !stale
+                });
+                if retired_apply {
+                    self.applying = false;
+                    self.applying_plan = None;
+                }
                 if let Some(schema) = schema {
                     let request = v05::MaterializationRequest {
                         context: schema.desired_context,
@@ -479,7 +544,7 @@ impl Control {
                     self.status = status;
                     // Receipt acknowledgement can freeze before settlement makes
                     // lifecycle dependents ready. Wake only after durable progress.
-                    self.wake();
+                    self.wake_after_needs = true;
                 }
                 for pending in settlements {
                     if !pending.missing_keys.is_empty() {
@@ -497,11 +562,22 @@ impl Control {
                         self.owned(request)?;
                     }
                 }
+                let wake = std::mem::take(&mut self.wake_after_needs);
+                if let Some(request) = self.waiting_push.take() {
+                    self.http(Flight::Push(request.clone()), HttpRoute::Push, &request)?;
+                }
+                if wake {
+                    self.wake();
+                }
             }
             StoreReport::Frozen(request) => {
                 self.freezing = false;
                 if let Some(request) = request {
-                    self.http(Flight::Push(request.clone()), HttpRoute::Push, &request)?;
+                    if self.wake_after_needs {
+                        self.waiting_push = Some(request);
+                    } else {
+                        self.http(Flight::Push(request.clone()), HttpRoute::Push, &request)?;
+                    }
                 }
             }
             StoreReport::ActivePlans(active) => {
@@ -540,7 +616,7 @@ impl Control {
                 }
                 self.context = status.context.clone();
                 self.status = status;
-                self.wake();
+                self.wake_after_needs = true;
                 self.jobs.push_back(StoreCommand::Needs);
                 if let Some((id, next)) = plan {
                     self.applying = false;

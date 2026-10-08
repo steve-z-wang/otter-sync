@@ -1245,3 +1245,743 @@ fn settlement_progress_wakes_uplink_once_and_waiting_needs_stays_idle() {
         .unwrap();
     assert!(control.jobs().is_empty());
 }
+
+fn pending_settlement_control(
+    path: &std::path::Path,
+) -> (
+    Client<SqliteStore>,
+    axton_client::sync05::Control,
+    String,
+    v05::MaterializationRequest,
+) {
+    use axton_client::{
+        runtime::{Event, HttpRoute, Operation},
+        sync05::{Control, StoreReport},
+    };
+    let mut schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    schema["actions"] = serde_json::json!([{"name":"Write","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"create","cardinality":"single"}],"outputs":[]}]);
+    let mut c = Client::open05(
+        SqliteStore::open(path).unwrap(),
+        Schema::from_value(schema).unwrap(),
+        "User:u",
+    )
+    .unwrap();
+    c.initialize_stream05(0).unwrap();
+    let context = c.request_context05().unwrap();
+    let bootstrap = plan(context.clone(), "initial", 0, 0, true);
+    let mut queue = DeliveryQueue::new(1000000, 4);
+    queue
+        .receive(&bootstrap.header, &bootstrap.parts, &context, 1)
+        .unwrap();
+    c.apply_next_delivery05(&mut queue, 1).unwrap();
+    let call = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                serde_json::json!({"entry":{"id":"e","text":"optimistic","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    let key = v05::RecordKey {
+        model: "Entry".into(),
+        identity: serde_json::json!({"id":"e"}),
+    };
+    c.acknowledge_batch05(&v05::BatchAcknowledgement {
+        context: context.clone(),
+        batch_id: batch.batch_id,
+        digest: batch.digest,
+        results: vec![v05::MutationResult {
+            mutation_id: call.ordinal,
+            outcome: v05::MutationOutcome::Accepted {
+                sync_cursor: 1,
+                result: serde_json::Value::Null,
+                targets: vec![v05::SettlementTarget::Stream {
+                    key: key.clone(),
+                    cursor: 1,
+                    fallback: v05::ReadRecord {
+                        key,
+                        cursor: (),
+                        state: serde_json::json!({"text":"accepted","note":null}),
+                    },
+                }],
+            },
+        }],
+    })
+    .unwrap();
+    assert_eq!(c.pending_settlement05().unwrap().len(), 1);
+    let mut control = Control::new(c.store_status05().unwrap());
+    control.connect().unwrap();
+    control.events();
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: None,
+                settlements: c.pending_settlement05().unwrap(),
+            },
+            1,
+        )
+        .unwrap();
+    let (id, request) = control
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            Event::Effect {
+                effect_id,
+                operation:
+                    Operation::Http {
+                        route: HttpRoute::Materialize,
+                        body,
+                    },
+            } => Some((effect_id, serde_json::from_str(&body).unwrap())),
+            _ => None,
+        })
+        .unwrap();
+    (c, control, id, request)
+}
+
+fn complete_settlement_from_stream(
+    c: &mut Client<SqliteStore>,
+    control: &mut axton_client::sync05::Control,
+) {
+    use axton_client::sync05::StoreReport;
+    let context = c.request_context05().unwrap();
+    let delivery = v05::freeze_delivery(
+        context.clone(),
+        "settling-stream".into(),
+        v05::DeliveryPurpose::Sync,
+        0,
+        1,
+        1,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: Some(1),
+            changes: vec![change("e", 1)],
+        }],
+        1,
+    )
+    .unwrap();
+    let mut queue = DeliveryQueue::new(1000000, 4);
+    queue
+        .receive(&delivery.header, &delivery.parts, &context, 2)
+        .unwrap();
+    let report = c.apply_next_delivery05(&mut queue, 2).unwrap().unwrap();
+    assert_eq!(report.completions.len(), 1);
+    assert!(c.pending_settlement05().unwrap().is_empty());
+    control
+        .report(
+            StoreReport::Needs {
+                status: Some(c.store_status05().unwrap()),
+                schema: None,
+                settlements: c.pending_settlement05().unwrap(),
+            },
+            2,
+        )
+        .unwrap();
+    c.transaction(|tx| {
+        tx.submit_mutation05(
+            "Write",
+            1,
+            serde_json::json!({"entry":{"id":"next","text":"next","note":null}}),
+            vec![],
+        )
+    })
+    .unwrap();
+    assert_eq!(c.freeze_batch05().unwrap().unwrap().batch_id, 2);
+}
+
+#[test]
+fn completed_settlement_cancels_owned_request_and_ignores_late_failure() {
+    use axton_client::runtime::{EffectError, EffectOutcome, Event};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut c, mut control, id, _) = pending_settlement_control(&dir.path().join("db"));
+    complete_settlement_from_stream(&mut c, &mut control);
+    let events = control.events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event,Event::CancelEffect {effect_id} if effect_id==&id)),
+        "durably completed Settlement must cancel its owned request before the next Batch"
+    );
+    control
+        .receive(
+            &id,
+            EffectOutcome {
+                ok: false,
+                value: None,
+                error: Some(EffectError {
+                    message: "unknown settlement owner".into(),
+                    status: Some(400),
+                    refusal: None,
+                    retry: false,
+                }),
+            },
+            3,
+        )
+        .unwrap();
+    assert!(
+        control.events().is_empty(),
+        "an obsolete request must not disturb the live connection"
+    );
+    control
+        .receive(
+            &id,
+            EffectOutcome {
+                ok: true,
+                value: Some(serde_json::json!("late response must never be admitted")),
+                error: None,
+            },
+            4,
+        )
+        .unwrap();
+    assert!(
+        control.events().is_empty(),
+        "obsolete success is ignored before decoding"
+    );
+}
+
+#[test]
+fn completed_settlement_is_not_resubmitted_after_auth_refresh() {
+    use axton_client::runtime::{EffectError, EffectOutcome, Event, HttpRoute, Operation};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut c, mut control, id, _) = pending_settlement_control(&dir.path().join("db"));
+    control.set_refresh_auth(true);
+    control
+        .receive(
+            &id,
+            EffectOutcome {
+                ok: false,
+                value: None,
+                error: Some(EffectError {
+                    message: "expired token".into(),
+                    status: Some(401),
+                    refusal: None,
+                    retry: false,
+                }),
+            },
+            2,
+        )
+        .unwrap();
+    let refresh = control
+        .events()
+        .into_iter()
+        .find_map(|event| match event {
+            Event::Effect {
+                effect_id,
+                operation: Operation::RefreshAuth,
+            } => Some(effect_id),
+            _ => None,
+        })
+        .unwrap();
+    complete_settlement_from_stream(&mut c, &mut control);
+    control.events();
+    control
+        .receive(
+            &refresh,
+            EffectOutcome {
+                ok: true,
+                value: None,
+                error: None,
+            },
+            3,
+        )
+        .unwrap();
+    assert!(
+        !control.events().iter().any(|event| matches!(
+            event,
+            Event::Effect {
+                operation: Operation::Http {
+                    route: HttpRoute::Materialize,
+                    ..
+                },
+                ..
+            }
+        )),
+        "refresh must not resurrect a completed Settlement owner"
+    );
+}
+
+#[test]
+fn completed_settlement_discards_partial_owned_plan() {
+    use axton_client::{
+        runtime::{EffectOutcome, Event, HttpRoute, Operation},
+        sync05::StoreReport,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (mut c, mut control, id, request) = pending_settlement_control(&dir.path().join("db"));
+    let frozen = v05::freeze_materialization(
+        request.context.clone(),
+        "old-owned".into(),
+        request.owner.clone(),
+        1,
+        10000,
+        vec![v05::DeliveryUnit {
+            index: 0,
+            through: None,
+            changes: vec![change("e", 1)],
+        }],
+        1,
+    )
+    .unwrap();
+    let response = v05::MaterializationResponse {
+        request_id: request.request_id,
+        delivery: v05::DeliveryResponse {
+            header: frozen.header,
+            parts: vec![],
+        },
+    };
+    control
+        .receive(
+            &id,
+            EffectOutcome {
+                ok: true,
+                value: Some(serde_json::Value::String(
+                    serde_json::to_string(&response).unwrap(),
+                )),
+                error: None,
+            },
+            1,
+        )
+        .unwrap();
+    let continuation = control
+        .events()
+        .into_iter()
+        .find_map(|e| match e {
+            Event::Effect {
+                effect_id,
+                operation:
+                    Operation::Http {
+                        route: HttpRoute::Materialize,
+                        ..
+                    },
+            } => Some(effect_id),
+            _ => None,
+        })
+        .expect("incomplete pending owner must request its missing fragment");
+    control.set_refresh_auth(true);
+    control
+        .receive(
+            &continuation,
+            EffectOutcome {
+                ok: false,
+                value: None,
+                error: Some(axton_client::runtime::EffectError {
+                    message: "expired token".into(),
+                    status: Some(401),
+                    refusal: None,
+                    retry: false,
+                }),
+            },
+            2,
+        )
+        .unwrap();
+    control.events();
+    complete_settlement_from_stream(&mut c, &mut control);
+    assert!(
+        !control.events().iter().any(|e| matches!(
+            e,
+            Event::Effect {
+                operation: Operation::Http {
+                    route: HttpRoute::Materialize,
+                    ..
+                },
+                ..
+            }
+        )),
+        "owner completion must remove staging before the first scheduling pass"
+    );
+    control
+        .report(StoreReport::Snapshot(c.store_status05().unwrap()), 3)
+        .unwrap();
+    // No old continuation may be resurrected after cancellation, including by a
+    // subsequent scheduling pass with the unchanged materialization context.
+    control.report(StoreReport::Frozen(None), 3).unwrap();
+    assert!(
+        !control.events().iter().any(|e| matches!(
+            e,
+            Event::Effect {
+                operation: Operation::Http {
+                    route: HttpRoute::Materialize,
+                    ..
+                },
+                ..
+            }
+        )),
+        "completed owner must release its partial staging"
+    );
+}
+
+#[test]
+fn completed_settlement_retires_already_dispatched_worker_snapshot() {
+    use axton_client::{
+        runtime::{ClientRuntime, EffectOutcome},
+        sync05::StoreCommand,
+    };
+    for dispatched in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, mut control, id, request) = pending_settlement_control(&dir.path().join("db"));
+        let frozen = v05::freeze_materialization(
+            request.context.clone(),
+            "queued-owned".into(),
+            request.owner.clone(),
+            1,
+            10000,
+            vec![v05::DeliveryUnit {
+                index: 0,
+                through: None,
+                changes: vec![v05::AuthorityChange::Record {
+                    key: v05::RecordKey {
+                        model: "Entry".into(),
+                        identity: serde_json::json!({"id":"e"}),
+                    },
+                    cursor: 1,
+                    state: serde_json::json!({"text":"obsolete owned snapshot","note":null}),
+                }],
+            }],
+            1,
+        )
+        .unwrap();
+        let response = v05::MaterializationResponse {
+            request_id: request.request_id,
+            delivery: v05::DeliveryResponse {
+                header: frozen.header,
+                parts: frozen.parts,
+            },
+        };
+        control
+            .receive(
+                &id,
+                EffectOutcome {
+                    ok: true,
+                    value: Some(serde_json::Value::String(
+                        serde_json::to_string(&response).unwrap(),
+                    )),
+                    error: None,
+                },
+                1,
+            )
+            .unwrap();
+        let command = if dispatched {
+            Some(control.jobs().into_iter().find(|job| matches!(job,StoreCommand::Guarded {command,..} if matches!(**command,StoreCommand::Apply {..}))).unwrap())
+        } else {
+            None
+        };
+        complete_settlement_from_stream(&mut c, &mut control);
+        let mut runtime = ClientRuntime::new(c);
+        if let Some(command) = command {
+            let report = runtime.store_worker05(command).unwrap();
+            control.report(report, 3).unwrap();
+        } else {
+            assert!(!control.jobs().iter().any(|job| matches!(job,StoreCommand::Guarded {command,..} if matches!(**command,StoreCommand::Apply {..}))), "undispatched retired Apply must leave the worker queue");
+        }
+        assert_eq!(
+            runtime
+                .client()
+                .read_sql("SELECT text FROM Entry WHERE id='e'", &[])
+                .unwrap()[0]["text"],
+            serde_json::json!("e"),
+            "dispatched obsolete owned materialization cannot reinstall same-position content"
+        );
+    }
+}
+
+#[test]
+fn pending_settlement_keeps_its_owned_request() {
+    use axton_client::{
+        runtime::{Event, HttpRoute, Operation},
+        sync05::StoreReport,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (mut c, mut control, id, _) = pending_settlement_control(&dir.path().join("db"));
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: None,
+                settlements: c.pending_settlement05().unwrap(),
+            },
+            2,
+        )
+        .unwrap();
+    assert!(
+        !control.events().iter().any(
+            |e| matches!(e,Event::CancelEffect {effect_id} if effect_id==&id)
+                || matches!(
+                    e,
+                    Event::Effect {
+                        operation: Operation::Http {
+                            route: HttpRoute::Materialize,
+                            ..
+                        },
+                        ..
+                    }
+                )
+        ),
+        "unchanged pending owner retains its request without cancellation or duplication"
+    );
+}
+
+#[test]
+fn pending_schema_keeps_its_desired_context_owned_request() {
+    use axton_client::{
+        runtime::{Event, HttpRoute, Operation},
+        sync05::{Control, StoreReport},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut c = client(&path);
+    c.initialize_stream05(0).unwrap();
+    let old = c.request_context05().unwrap();
+    c.install_authority05(&old, &[change("e", 1)], None)
+        .unwrap();
+    drop(c);
+    let mut schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
+    schema["models"][0]["version"] = serde_json::json!(2);
+    let mut c = Client::open05(
+        SqliteStore::open(&path).unwrap(),
+        Schema::from_value(schema).unwrap(),
+        "User:u",
+    )
+    .unwrap();
+    let mut control = Control::new(c.store_status05().unwrap());
+    control.connect().unwrap();
+    control.events();
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: c.pending_schema05().unwrap(),
+                settlements: vec![],
+            },
+            1,
+        )
+        .unwrap();
+    let id = control
+        .events()
+        .into_iter()
+        .find_map(|e| match e {
+            Event::Effect {
+                effect_id,
+                operation:
+                    Operation::Http {
+                        route: HttpRoute::Materialize,
+                        ..
+                    },
+            } => Some(effect_id),
+            _ => None,
+        })
+        .unwrap();
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: c.pending_schema05().unwrap(),
+                settlements: vec![],
+            },
+            2,
+        )
+        .unwrap();
+    assert!(
+        !control
+            .events()
+            .iter()
+            .any(|e| matches!(e,Event::CancelEffect {effect_id} if effect_id==&id)),
+        "schema owner belongs to desired context, not the current active context"
+    );
+}
+
+#[test]
+fn settlement_commit_reconciles_owners_before_freezing_next_batch() {
+    use axton_client::{
+        ApplyReport,
+        sync05::{StoreCommand, StoreReport},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (mut c, mut control, _, _) = pending_settlement_control(&dir.path().join("db"));
+    control.jobs();
+    // Stream authority commits the accepted Mutation while Materialize is live.
+    let context = c.request_context05().unwrap();
+    let delivery = plan(context.clone(), "settled-prefix", 0, 1, false);
+    c.install_authority05(&context, &[change("e", 1)], None)
+        .unwrap();
+    let mut queue = DeliveryQueue::new(1000000, 4);
+    queue
+        .receive(&delivery.header, &delivery.parts, &context, 2)
+        .unwrap();
+    c.apply_next_delivery05(&mut queue, 2).unwrap();
+    assert!(c.pending_settlement05().unwrap().is_empty());
+    control
+        .report(
+            StoreReport::Committed {
+                status: c.store_status05().unwrap(),
+                report: ApplyReport::default(),
+                plan: None,
+                active_plans: None,
+            },
+            2,
+        )
+        .unwrap();
+    let jobs = control.jobs();
+    assert!(jobs.iter().any(|job| matches!(job,StoreCommand::Guarded {command,..} if matches!(**command,StoreCommand::Needs))));
+    assert!(!jobs.iter().any(|job| matches!(job,StoreCommand::Guarded {command,..} if matches!(**command,StoreCommand::Freeze))),"next Batch cannot freeze before durable owner reconciliation");
+    control
+        .report(
+            StoreReport::Needs {
+                status: None,
+                schema: None,
+                settlements: c.pending_settlement05().unwrap(),
+            },
+            3,
+        )
+        .unwrap();
+    assert!(control.jobs().iter().any(|job| matches!(job,StoreCommand::Guarded {command,..} if matches!(**command,StoreCommand::Freeze))),"owner reconciliation must release the committed wake even without another Call completion");
+}
+
+#[test]
+fn already_dispatched_freeze_waits_for_owner_reconciliation_before_push() {
+    use axton_client::{
+        ApplyReport,
+        runtime::{Event, HttpRoute, Operation},
+        sync05::StoreReport,
+    };
+    for mode in [0, 1, 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, mut control, owned_id, _) = pending_settlement_control(&dir.path().join("db"));
+        let context = c.request_context05().unwrap();
+        c.install_authority05(&context, &[change("e", 1)], None)
+            .unwrap();
+        let delivery = plan(context.clone(), "settled-prefix", 0, 1, false);
+        let mut queue = DeliveryQueue::new(1000000, 4);
+        queue
+            .receive(&delivery.header, &delivery.parts, &context, 2)
+            .unwrap();
+        c.apply_next_delivery05(&mut queue, 2).unwrap();
+        c.transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                serde_json::json!({"entry":{"id":"next","text":"next","note":null}}),
+                vec![],
+            )
+        })
+        .unwrap();
+        let batch = c.freeze_batch05().unwrap().unwrap();
+        control
+            .report(
+                StoreReport::Committed {
+                    status: c.store_status05().unwrap(),
+                    report: ApplyReport::default(),
+                    plan: None,
+                    active_plans: None,
+                },
+                2,
+            )
+            .unwrap();
+        control.report(StoreReport::Frozen(Some(batch)), 2).unwrap();
+        assert!(
+            !control.events().iter().any(|e| matches!(
+                e,
+                Event::Effect {
+                    operation: Operation::Http {
+                        route: HttpRoute::Push,
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "already dispatched Freeze must hold Push until owner reconciliation"
+        );
+        if mode == 1 {
+            control.stop();
+            control.events();
+        } else if mode == 2 {
+            control.connect().unwrap();
+            control.events();
+        }
+        control
+            .report(
+                StoreReport::Needs {
+                    status: None,
+                    schema: None,
+                    settlements: c.pending_settlement05().unwrap(),
+                },
+                3,
+            )
+            .unwrap();
+        let events = control.events();
+        let pushes: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                matches!(
+                    e,
+                    Event::Effect {
+                        operation: Operation::Http {
+                            route: HttpRoute::Push,
+                            ..
+                        },
+                        ..
+                    }
+                )
+            })
+            .collect();
+        if mode != 0 {
+            assert!(
+                pushes.is_empty(),
+                "stop and handshake must discard held Push"
+            );
+        } else {
+            assert_eq!(pushes.len(), 1);
+            let cancel = events
+                .iter()
+                .position(|e| matches!(e,Event::CancelEffect {effect_id} if effect_id==&owned_id))
+                .unwrap();
+            assert!(
+                cancel < pushes[0].0,
+                "old owner must be canceled before new Batch can prune its result"
+            );
+            control
+                .report(
+                    StoreReport::Needs {
+                        status: None,
+                        schema: None,
+                        settlements: vec![],
+                    },
+                    4,
+                )
+                .unwrap();
+            control
+                .report(StoreReport::Snapshot(c.store_status05().unwrap()), 4)
+                .unwrap();
+            control
+                .report(
+                    StoreReport::Needs {
+                        status: None,
+                        schema: None,
+                        settlements: vec![],
+                    },
+                    4,
+                )
+                .unwrap();
+            assert!(
+                !control.events().iter().any(|e| matches!(
+                    e,
+                    Event::Effect {
+                        operation: Operation::Http {
+                            route: HttpRoute::Push,
+                            ..
+                        },
+                        ..
+                    }
+                )),
+                "repeated reports must not send a held Batch twice"
+            );
+        }
+    }
+}

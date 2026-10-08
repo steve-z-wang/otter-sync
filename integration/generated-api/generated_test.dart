@@ -7,7 +7,7 @@ import 'package:test/test.dart';
 import 'generated.dart';
 import 'package:axton/axton.dart' show WritePort, SubmitMutationPort;
 import '../../packages/dart/test/store_fixture.dart';
-import '../../packages/dart/test/protocol4_transport.dart';
+import '../../packages/dart/test/protocol5_transport.dart';
 
 const id = '123e4567-e89b-42d3-a456-426614174000';
 final row = Entry(

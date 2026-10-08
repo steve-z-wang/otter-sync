@@ -5,13 +5,14 @@ fn cache_admission_uses_current_protection_not_historical_position() {
     let mut evidence = RecordEvidence::default();
     assert!(evidence.install("schema-one", 57, false).unwrap());
     assert!(!evidence.allows_cache());
-    evidence.direct_write();
+    evidence.current = None; // State after an explicit local operation.
     assert!(evidence.allows_cache());
     assert!(!evidence.install("schema-one", 57, false).unwrap());
     assert_eq!(evidence.history["schema-one"], 57);
     assert!(evidence.install("schema-one", 58, true).unwrap());
-    evidence.direct_write();
-    assert!(!evidence.allows_cache());
+    evidence.current = None; // State after an explicit local operation.
+    assert!(evidence.allows_cache());
+    assert_eq!(evidence.history["schema-one"], 58);
     assert!(!evidence.install("schema-one", 56, false).unwrap());
 }
 
@@ -50,7 +51,7 @@ fn membership_remove_releases_live_content_but_preserves_true_deletion() {
 fn rematerialization_preserves_direct_guard_state_and_never_regresses_position() {
     let mut evidence = RecordEvidence::default();
     evidence.install("schema-one", 57, false).unwrap();
-    evidence.direct_write();
+    evidence.current = None; // State after an explicit local operation.
     assert_eq!(
         evidence.admission("schema-two", 57).unwrap(),
         AuthorityAdmission::Rematerialize

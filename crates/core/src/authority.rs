@@ -75,12 +75,6 @@ impl RecordEvidence {
     pub fn allows_cache(&self) -> bool {
         self.current.is_none()
     }
-    /// Local changes clear content authority, never an existing Stream tombstone.
-    pub fn direct_write(&mut self) {
-        if self.current.as_ref().is_some_and(|value| !value.deleted) {
-            self.current = None;
-        }
-    }
     /// The caller must first admit the active direct/Stream context. A new
     /// context can adapt the same base position, but never an older position.
     pub fn admission(&self, materialization: &str, cursor: u64) -> Result<AuthorityAdmission> {

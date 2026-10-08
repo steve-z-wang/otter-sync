@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/zanminwang/axton/compare/v0.4.2...v0.5.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* simplify AXTON to the Rust-owned protocol-5 engine
+
+### Features
+
+* simplify AXTON to the Rust-owned protocol-5 engine ([5443978](https://github.com/zanminwang/axton/commit/54439785eeb8013b219f8d7071a5670a8bbeb375))
+
 ## [0.4.2](https://github.com/zanminwang/axton/compare/v0.4.1...v0.4.2) (2026-10-07)
 
 

@@ -231,7 +231,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
     for (const rejection of (await client.syncState()).rejections) {
       console.log(rejection.code);
       // After your UI has handled it:
-      await client.dismissRejection(rejection.ordinal);
+      await client.dismissRejection(rejection.id);
     }
     ```
 
@@ -247,7 +247,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
     for (final rejection in (await client.syncState())['rejections'] as List) {
       print(rejection['code']);
       // After your UI has handled it:
-      await client.dismissRejection(rejection['ordinal'] as int);
+      await client.dismissRejection(rejection['id'] as int);
     }
     ```
 

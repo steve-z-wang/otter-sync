@@ -18,6 +18,8 @@ export async function host({
   materializations = {},
   mixed = false,
   unbootstrapped = false,
+  transactionFailures = [],
+  onTransactionEscape = async () => {},
 } = {}) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   await pool.query(
@@ -34,7 +36,10 @@ export async function host({
     queries = [],
     batches = [],
     requests = [],
-    errors = [];
+    responses = [],
+    errors = [],
+    rawErrors = [],
+    transactions = [];
   let snapshotFailure = false;
   const loader = async ({ tx, ids, userId }) => {
     const { rows } = await tx.query(
@@ -46,8 +51,31 @@ export async function host({
     );
     return ids.map((x) => byId.get(x.id) ?? null);
   };
+  // Observe only the adapter boundary. pg still owns BEGIN/ROLLBACK and its
+  // declared finite retry budget; faults run inside that transaction body.
+  const database = pg(pool), transaction = database.transaction.bind(database);
+  const failures = [...transactionFailures];
+  database.transaction = async (body) => {
+    const observed = { attempts: 0, outcome: "running" };
+    try {
+      const result = await transaction(async (tx) => {
+        observed.attempts++;
+        if (failures.length) throw failures.shift();
+        return body(tx);
+      });
+      observed.outcome = "committed";
+      return result;
+    } catch (error) {
+      observed.outcome = "escaped";
+      observed.error = error;
+      await onTransactionEscape({ pool, error, observed });
+      throw error;
+    } finally {
+      transactions.push(observed);
+    }
+  };
   const options = {
-    database: pg(pool),
+    database,
     authenticate: devAuth(),
     protocol5: {
       materializations,
@@ -55,6 +83,7 @@ export async function host({
     },
     onError: (error) => {
       errors.push(String(error));
+      rawErrors.push(error);
       if (process.env.AXTON_GATE_TRACE)
         console.error("host error", String(error));
     },
@@ -196,6 +225,12 @@ export async function host({
         new URL(incoming.url, real.url),
         { method: incoming.method, headers: incoming.headers },
         (response) => {
+          const bytes = [];
+          response.on("data", (chunk) => bytes.push(chunk));
+          response.on("end", () => responses.push({
+            route: incoming.url, status: response.statusCode,
+            body: Buffer.concat(bytes).toString(),
+          }));
           if (process.env.AXTON_GATE_TRACE) {
             const trace = [];
             response.on("data", (chunk) => trace.push(chunk));
@@ -330,7 +365,10 @@ export async function host({
     queries,
     batches,
     requests,
+    responses,
     errors,
+    rawErrors,
+    transactions,
     url: `http://127.0.0.1:${proxy.address().port}`,
     holdSettlement() {
       holdSettlement = true;

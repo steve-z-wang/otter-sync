@@ -17,6 +17,20 @@ import {
 import { GeneratedClient as RolloverClient } from "./rollover/client.ts";
 import { GeneratedClient as VersionedClient } from "./versioned/client.ts";
 import { host } from "./server.mjs";
+import { isRetryableTransactionError } from "../../packages/server/retryable.mts";
+
+const assertReportedExhaustion = (h) => {
+  const escaped = h.transactions.filter((tx) => tx.outcome === "escaped");
+  assert.equal(h.rawErrors.length, escaped.length, "each exhausted transaction is reported once");
+  for (const tx of escaped)
+    assert.equal(h.rawErrors.filter((error) => error === tx.error).length, 1, "each escape reports the same raw object exactly once");
+  for (const error of h.rawErrors) {
+    const matches = escaped.filter((tx) => tx.error === error);
+    assert.equal(matches.length, 1, "reported error is the original exhausted transaction error");
+    assert.equal(matches[0].attempts, 4, "default adapter budget: initial attempt plus three retries");
+    assert.equal(isRetryableTransactionError(error), true, "handler/nonretryable failures are not allowed");
+  }
+};
 const until = async (probe, label) => {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
@@ -114,10 +128,61 @@ if (process.argv[2] === "enqueue-child") {
         assert.equal((await next.wait()).error, null);
         assert.equal(JSON.parse(h.batches.at(-1)).batchId, frozen.batchId + 1);
         assert.deepEqual(h.executions, [`${owner}-before`, `${owner}-after`, `${owner}-next`]);
-        assert.deepEqual(h.errors, []);
+        assertReportedExhaustion(h);
       } finally {
         await client?.close(); await h.close(); await rm(dir, { recursive: true, force: true });
       }
+    }
+  });
+  test("exhaustion oracle refuses unmatched, nonretryable and duplicate fault reports", () => {
+    const retryable = Object.assign(new Error("serialization"), { code: "40001" });
+    const handler = new Error("handler defect");
+    const escape = (error, attempts = 4) => ({ outcome: "escaped", error, attempts });
+    const check = (rawErrors, transactions) => assertReportedExhaustion({ rawErrors, transactions });
+    assert.throws(() => check([retryable], []));
+    assert.throws(() => check([], [escape(retryable)]));
+    assert.throws(() => check([handler], [escape(handler)]));
+    assert.throws(() => check([retryable], [escape(retryable, 1)]));
+    assert.throws(() => check([retryable, retryable], [escape(retryable), escape(handler)]));
+    assert.throws(() => check([retryable], [escape(retryable), escape(retryable)]));
+  });
+  test("bounded transaction exhaustion reports the original fault over HTTP and the SDK recovers", async () => {
+    const failures = Array.from({ length: 4 }, () => Object.assign(
+      new Error("injected transaction serialization conflict"), { code: "40001" }));
+    let failedRequestState;
+    const h = await host({ transactionFailures: failures,
+      onTransactionEscape: async ({ pool, error }) => {
+        if (error !== failures[3]) return;
+        failedRequestState = (await pool.query(`SELECT
+          (SELECT count(*) FROM axton_store WHERE principal='exhaustion')::int AS stores,
+          (SELECT count(*) FROM axton_mutation_result r JOIN axton_store s ON s.id=r.store_id WHERE s.principal='exhaustion')::int AS results,
+          (SELECT count(*) FROM sdk05_entry WHERE id='exhaustion-entry')::int AS entries`)).rows[0];
+      },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "axton-exhaustion-"));
+    let client;
+    try {
+      client = await open(join(dir, "db"), undefined, "exhaustion");
+      const call = await publish(client, "exhaustion-entry", "recover", "private");
+      await client.connect({ url: h.url, token: "exhaustion" });
+      await until(() => call.status === "succeeded", "SDK recovers after transaction exhaustion");
+      assert.equal((await call.wait()).error, null);
+      assert.equal(call.status, "succeeded");
+      assert.deepEqual(h.executions, ["exhaustion-entry"]);
+      assert.equal((await client.syncState()).pending, 0);
+      const exhausted = h.transactions.find((tx) => tx.error === failures[3]);
+      assert.equal(exhausted.attempts, 4);
+      assert.equal(exhausted.outcome, "escaped");
+      assert.deepEqual(failedRequestState, { stores: 0, results: 0, entries: 0 });
+      assert.equal(h.rawErrors.filter((error) => error === failures[3]).length, 1);
+      assert.ok(!h.rawErrors.includes(failures[0]) && !h.rawErrors.includes(failures[1]) && !h.rawErrors.includes(failures[2]));
+      const response = h.responses.find((response) => response.status === 500);
+      assert.equal(response.route, "/sync/handshake");
+      assert.deepEqual(JSON.parse(response.body), { code: "server" });
+      assert.ok(h.responses.some((response) => response.route === "/sync/handshake" && response.status === 200));
+      assertReportedExhaustion(h);
+    } finally {
+      await client?.close(); await h.close(); await rm(dir, { recursive: true, force: true });
     }
   });
   test("ported reads: SIGKILL after cloud acceptance replays identical frozen Batch without repeating execution", async () => {

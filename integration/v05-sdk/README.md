@@ -20,6 +20,15 @@ local transaction, then reopens its Store without the original Call waiter.
 
 The P7 scenario sends supported/unsupported/supported calls through real HTTP and PostgreSQL, checks exact saved-result replay, retains structural HTTP400 for malformed JSON/digests, and reopens the SQLite client before the next Batch. Both an unretained name and an unsupported version become durable member refusals without executing their handler.
 
+PostgreSQL's adapter reports the last original serialization error after its
+initial attempt and three retries fail. The P7 oracle requires an exact object
+bijection between reported errors and transaction escapes, four attempts and a
+typed retryable failure; unmatched and nonretryable defects fail the test.
+An independent case injects four raw failures inside the initial handshake's
+adapter body, checks HTTP500 and no account framework/domain writes, then proves
+SDK recovery through a successful handshake and one named Mutation execution.
+Existing adapter/native tests own retry classification and rollback internals.
+
 The tests assert exact Batch retry, refusal isolation, private settlement,
 later local ownership, independent Store identities, zero-cursor Bootstrap,
 fresh read snapshots, Store modes, direct-delete refill, physical file aliases,

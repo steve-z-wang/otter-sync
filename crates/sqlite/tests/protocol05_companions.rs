@@ -329,3 +329,109 @@ fn a_direct_edit_follows_the_fate_of_a_pending_companion_create() {
         );
     }
 }
+
+#[test]
+fn overlapping_companions_keep_local_order_across_outcome_order_and_reopen() {
+    // Both outcomes together, later acceptance first, and earlier refusal first.
+    for held in [None, Some(0), Some(1)] {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("db");
+        let mut s = serde_json::to_value(common05::schema()).unwrap();
+        s["prerequisites"] = json!([{"name":"Ready","fields":[{"name":"key","type":"String"}]}]);
+        s["requirements"] =
+            json!([{"model":"Entry","field":"note","name":"Ready","arguments":{"key":"self"}}]);
+        s["actions"].as_array_mut().unwrap().push(json!({"name":"HeldEdit","version":1,"inputs":[{"kind":"model","name":"entry","model":"Entry","operation":"update","cardinality":"single","fields":["text","note"]}],"outputs":[]}));
+        let schema = axton_client::Schema::from_value(s).unwrap();
+        let mut c =
+            Client::open05(SqliteStore::open(&path).unwrap(), schema.clone(), "User:u").unwrap();
+        c.initialize_stream05(0).unwrap();
+        c.transaction(|tx| {
+            tx.direct(common05::create(
+                "Entry",
+                "e",
+                json!({"text":"base","note":null}),
+            ))?;
+            tx.direct(common05::create(
+                "Entry",
+                "comp",
+                json!({"text":"0","note":null}),
+            ))
+        })
+        .unwrap();
+        for i in 0..2 {
+            let (name, input) = if held == Some(i) {
+                (
+                    "HeldEdit",
+                    json!({"entry":{"id":"e","text":"wire","note":"hold"}}),
+                )
+            } else {
+                ("Edit", json!({"entry":{"id":"e","text":"wire"}}))
+            };
+            c.transaction(|tx| {
+                tx.submit_mutation05(
+                    name,
+                    1,
+                    input,
+                    vec![edit("comp", if i == 0 { "1" } else { "2" })],
+                )
+            })
+            .unwrap();
+        }
+        let settle = |c: &mut Client<SqliteStore>| {
+            let b = c.freeze_batch05().unwrap().unwrap();
+            let results = b
+                .mutations
+                .iter()
+                .map(|m| v05::MutationResult {
+                    mutation_id: m.id,
+                    outcome: if m.id == 1 {
+                        v05::MutationOutcome::Rejected {
+                            code: "edit.denied".into(),
+                            message: None,
+                        }
+                    } else {
+                        v05::MutationOutcome::Accepted {
+                            sync_cursor: 0,
+                            result: Value::Null,
+                            targets: vec![v05::SettlementTarget::Private {
+                                record: v05::ReadRecord {
+                                    key: v05::RecordKey {
+                                        model: "Entry".into(),
+                                        identity: json!({"id":"e"}),
+                                    },
+                                    cursor: (),
+                                    state: json!({"text":"server","note":null}),
+                                },
+                            }],
+                        }
+                    },
+                })
+                .collect();
+            c.acknowledge_batch05(&v05::BatchAcknowledgement {
+                context: b.context,
+                batch_id: b.batch_id,
+                digest: b.digest,
+                results,
+            })
+            .unwrap();
+            c.settle_ready05().unwrap();
+        };
+        settle(&mut c);
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+        drop(c);
+        let mut c = Client::open05(SqliteStore::open(&path).unwrap(), schema, "User:u").unwrap();
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+        if held.is_some() {
+            assert_eq!(c.pending_count().unwrap(), 1);
+            c.set_readiness(
+                &json!({"arguments":{"key":"hold"},"name":"Ready"}).to_string(),
+                axton_client::Readiness::Ready,
+            )
+            .unwrap();
+            settle(&mut c);
+        }
+        assert_eq!(text_of(&mut c, "comp").as_deref(), Some("2"));
+        assert_eq!(c.pending_count().unwrap(), 0);
+        assert_eq!(c.before_image_count().unwrap(), 0);
+    }
+}

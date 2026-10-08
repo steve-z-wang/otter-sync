@@ -1,4 +1,4 @@
-mod common05;
+pub mod common05;
 use axton_client::{Client, Operation, OperationKind, Schema, v05};
 use axton_sqlite::SqliteStore;
 use common05::{key, open};

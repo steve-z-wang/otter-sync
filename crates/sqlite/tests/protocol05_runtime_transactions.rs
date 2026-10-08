@@ -1,4 +1,4 @@
-mod common05;
+pub mod common05;
 use axton_client::runtime::{BridgeError, ClientRuntime, Input};
 use axton_client::*;
 use axton_sqlite::SqliteStore;
@@ -148,10 +148,6 @@ impl<S: ClientStore + 'static> Harness<S> {
         })]
         .clone();
         (completion, events)
-    }
-    fn close(mut self) {
-        self.submit(json!({"type":"close"})).unwrap();
-        assert_eq!(self.run().last().unwrap(), &json!({"type":"runtimeClosed"}));
     }
 }
 impl<S: ClientStore + 'static> Harness<S> {
@@ -2072,4 +2068,97 @@ fn a_direct_apply_that_fails_to_commit_fails_the_call_and_lets_nothing_escape() 
             );
         }
     }
+}
+
+#[test]
+fn every_commit_path_re_emits_a_watched_statement() {
+    let mut h = harness();
+    h.runtime.client().initialize_stream05(0).unwrap();
+    let context = h.runtime.client().request_context05().unwrap();
+    let record = |cursor, text: &str, note: Value| v05::AuthorityChange::Record {
+        key: v05::RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"e"}),
+        },
+        cursor,
+        state: json!({"text":text,"note":note}),
+    };
+    h.runtime
+        .client()
+        .install_authority05(&context, &[record(1, "server", Value::Null)], Some((0, 1)))
+        .unwrap();
+    let (observer, events) = h.watch_sql(
+        "rows",
+        "SELECT id,text,note FROM Entry ORDER BY id",
+        json!([]),
+    );
+    assert_eq!(rows(&events, &observer), [json!([row("server")])]);
+    let transaction = h.begin("optimism");
+    h.command(
+        "mine",
+        &transaction.transaction,
+        None,
+        submit_mutation("Edit", json!({"entry":{"id":"e","text":"mine"}}), false),
+    );
+    let provisional = h.run();
+    assert!(rows(&provisional, &observer).is_empty());
+    h.callback(&transaction, true, None);
+    let events = h.run();
+    assert_eq!(
+        rows(&events, &observer),
+        [json!([row("mine")])],
+        "named optimism commit"
+    );
+    let batch = h.runtime.client().freeze_batch05().unwrap().unwrap();
+    h.runtime
+        .client()
+        .install_authority05(&context, &[record(2, "scope", json!("n"))], Some((1, 2)))
+        .unwrap();
+    let events = h.call("authority-publish", json!({"kind":"status"})).1;
+    assert_eq!(
+        rows(&events, &observer),
+        [json!([{"id":"e","text":"mine","note":"n"}])],
+        "authority replays pending update"
+    );
+    h.runtime
+        .client()
+        .acknowledge_batch05(&v05::BatchAcknowledgement {
+            context: batch.context,
+            batch_id: batch.batch_id,
+            digest: batch.digest,
+            results: vec![v05::MutationResult {
+                mutation_id: batch.mutations[0].id,
+                outcome: v05::MutationOutcome::Rejected {
+                    code: "edit.refused".into(),
+                    message: None,
+                },
+            }],
+        })
+        .unwrap();
+    let events = h.call("settlement-publish", json!({"kind":"status"})).1;
+    assert_eq!(
+        rows(&events, &observer),
+        [json!([{"id":"e","text":"scope","note":"n"}])],
+        "rejection commit"
+    );
+    h.runtime
+        .client()
+        .install_cache05(
+            &[v05::ReadRecord {
+                key: v05::RecordKey {
+                    model: "Entry".into(),
+                    identity: json!({"id":"f"}),
+                },
+                cursor: (),
+                state: json!({"text":"cached","note":null}),
+            }],
+            true,
+        )
+        .unwrap();
+    let events = h.call("cache-publish", json!({"kind":"status"})).1;
+    assert_eq!(
+        rows(&events, &observer),
+        [json!([{"id":"e","text":"scope","note":"n"},{"id":"f","text":"cached","note":null}])],
+        "ordinary cache commit"
+    );
 }

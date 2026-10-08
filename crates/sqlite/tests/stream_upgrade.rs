@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 fn schema() -> Schema {
     Schema::from_value(serde_json::from_str(include_str!("fixtures/schema.json")).unwrap()).unwrap()
 }
-fn snapshot(path: &std::path::Path) -> (Vec<Vec<Value>>, Vec<(String, Vec<Vec<Value>>)>) {
+type CatalogRows = Vec<Vec<Value>>;
+type FileSnapshot = (CatalogRows, Vec<(String, CatalogRows)>);
+fn snapshot(path: &std::path::Path) -> FileSnapshot {
     let mut s = SqliteStore::open(path).unwrap();
     let catalog = s
         .query(

@@ -54,7 +54,9 @@ fn cascading_reference_cache_guard_uses_only_current_parent_tombstone() {
     .unwrap();
     let record = child(json!("p"));
     assert_eq!(
-        c.install_cache05(&[record.clone()], true).unwrap().applied,
+        c.install_cache05(std::slice::from_ref(&record), true)
+            .unwrap()
+            .applied,
         1
     ); // unloaded parent
     parent(&mut c, 57, false);
@@ -68,17 +70,23 @@ fn cascading_reference_cache_guard_uses_only_current_parent_tombstone() {
     })
     .unwrap();
     assert_eq!(
-        c.install_cache05(&[record.clone()], true).unwrap().applied,
+        c.install_cache05(std::slice::from_ref(&record), true)
+            .unwrap()
+            .applied,
         1
     ); // local absence has no authority
     parent(&mut c, 58, true);
     assert!(c.read(&key("Child", "c")).unwrap().is_none());
     assert_eq!(
-        c.install_cache05(&[record.clone()], true).unwrap().applied,
+        c.install_cache05(std::slice::from_ref(&record), true)
+            .unwrap()
+            .applied,
         0
     );
     assert_eq!(
-        c.install_cache05(&[record.clone()], false).unwrap().applied,
+        c.install_cache05(std::slice::from_ref(&record), false)
+            .unwrap()
+            .applied,
         0
     );
     assert_eq!(

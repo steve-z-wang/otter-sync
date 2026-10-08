@@ -1,4 +1,4 @@
-mod common05;
+pub mod common05;
 use axton_client::{Client, RecordKey, v05};
 use axton_sqlite::SqliteStore;
 use serde_json::{Value, json};

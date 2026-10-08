@@ -1,4 +1,4 @@
-mod common05;
+pub mod common05;
 use axton_client::*;
 use axton_sqlite::SqliteStore;
 use common05::*;

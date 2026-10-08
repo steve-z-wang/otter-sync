@@ -397,7 +397,9 @@ fn a8_receipt_and_authority_orders_owned_private_remove_and_old_targets() {
         },
     };
     let mut evidence = BTreeMap::new();
-    assert!(!settlement_ready(20, Some(40), &[target.clone()], "m1", &evidence).unwrap());
+    assert!(
+        !settlement_ready(20, Some(40), std::slice::from_ref(&target), "m1", &evidence).unwrap()
+    );
     evidence.insert(
         key("Entry", "e").encoded().unwrap(),
         TargetEvidence {
@@ -407,9 +409,15 @@ fn a8_receipt_and_authority_orders_owned_private_remove_and_old_targets() {
             protected: true,
         },
     );
-    assert!(!settlement_ready(20, Some(19), &[target.clone()], "m1", &evidence).unwrap());
-    assert!(settlement_ready(20, Some(40), &[target.clone()], "m1", &evidence).unwrap());
-    assert!(!settlement_ready(20, Some(40), &[target.clone()], "m2", &evidence).unwrap());
+    assert!(
+        !settlement_ready(20, Some(19), std::slice::from_ref(&target), "m1", &evidence).unwrap()
+    );
+    assert!(
+        settlement_ready(20, Some(40), std::slice::from_ref(&target), "m1", &evidence).unwrap()
+    );
+    assert!(
+        !settlement_ready(20, Some(40), std::slice::from_ref(&target), "m2", &evidence).unwrap()
+    );
     let removed = TargetEvidence {
         content_cursor: None,
         materialization: None,

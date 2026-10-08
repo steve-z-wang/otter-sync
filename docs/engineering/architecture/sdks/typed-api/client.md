@@ -44,12 +44,11 @@ Language scopes refuse captured/expired capabilities and unawaited operations be
 
 ## 10. Quality Requirements
 
-- Bound files, lifecycle, requests, observations, cache and queues stay independent. Evidence: [native protocol tests](../../../../../crates/sqlite/tests), [RN binding tests](../../../../../integration/bindings/client-react-native) and [protocol transport verification](../../../testing/0.4.md).
+- Bound files, lifecycle, requests, observations, cache and queues stay independent. Evidence: [native protocol tests](../../../../../crates/sqlite/tests), [RN binding tests](../../../../../integration/bindings/client-react-native) and [protocol-5 host](../../../../../integration/v05-sdk/README.md).
 - Typed input and callback-before-input preserve local atomicity and independent Call fates. Evidence: [generated contract checks](../../../../../integration/action-contract), [Node native Mutation checks](../../../../../packages/client-js/mutation-native05.test.mjs) and [Dart package tests](../../../../../packages/dart/test).
 - Ordinary reads cannot overwrite current Stream protection; result snapshots remain independent. Evidence: [Query/Fetch bindings](../../../../../integration/bindings/client-js) and the [protocol-5 host](../../../../../integration/v05-sdk/README.md).
 - Installed generated APIs and bundled libraries work outside the checkout. Evidence: [installed-package runner](../../../../../integration/release/verify-installed.sh).
 
-On 2026-10-05, current Dart package tests passed 152 with analyzer clean; parent RN binding checks passed 63 using real SQLite, HTTP and WebSocket. These package results do not establish Expo/Flutter device startup or final all-platform CI.
 
 ## 11. Risks and Technical Debt
 

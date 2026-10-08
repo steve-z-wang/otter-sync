@@ -757,8 +757,20 @@ fn callback_held_reset_fences_pre_reset_handshake_initialization() {
         json!({"type":"task","requestId":"status","command":{"kind":"status"}}),
     )
     .unwrap();
-    let events = wait(id);
-    let status = &events.iter().find(|e| e["requestId"] == "status").unwrap()["value"];
+    // Reset can publish reconnect effects before the worker answers status.
+    // Wait for this request's completion rather than the first nonempty drain.
+    let start = Instant::now();
+    let mut events = Vec::new();
+    let completed = loop {
+        events.extend(actor::drain(id));
+        if let Some(event) = events.iter().find(|e| e["requestId"] == "status") {
+            break event.clone();
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{events:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(completed["ok"], true, "{events:?}");
+    let status = &completed["value"];
     assert!(status["cursors"]["User:u"].is_null(), "{events:?}");
     actor::detach(id);
     assert!(actor::wait_closed(id, Duration::from_secs(5)));

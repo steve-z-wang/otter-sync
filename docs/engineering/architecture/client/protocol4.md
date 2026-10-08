@@ -26,7 +26,7 @@ Real SQLite carrier regressions cover overlaps, failure recovery and lifecycle i
 
 ## 5. Building block view
 
-[Bound Store and evidence](../../../../crates/client/src/protocol04.rs), [unit/manifest progress](../../../../crates/client/src/progress04.rs), [receipt settlement](../../../../crates/client/src/settlement04.rs) and [existing downlink worker](../../../../crates/client/src/downlink04.rs) own the native rules. [SQLite](../../../../crates/sqlite/src/lib.rs) owns SQL execution and physical-file locking.
+[Bound Store and evidence](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/protocol04.rs), [unit/manifest progress](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/progress04.rs), [receipt settlement](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/settlement04.rs) and [existing downlink worker](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/downlink04.rs) own the native rules. [SQLite](../../../../crates/sqlite/src/lib.rs) owns SQL execution and physical-file locking.
 
 ## 6. Runtime view: materialization and settlement
 

@@ -48,7 +48,7 @@ An error message is at most 1,024 bytes. A `succeeded` page's `data`, `next` and
 
 ## 5. Building Block View
 
-The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `LoadOutcome`, `LoadError`, `LoadPageResponse`, `LoadBatchResponse`, `LoadPageReply`, `LoadItemError`) and their validators are in [core/loads.rs](../../../../crates/core/src/loads.rs), re-exported from `axton_core`; the bounds are the `LOAD_*` constants of `limits` in [core/protocol.rs](../../../../crates/core/src/protocol.rs). The server's envelope validator and response encoder are in [server/loads.rs](../../../../crates/server/src/loads.rs); the HTTP route is in [server/index.mts](../../../../packages/server/index.mts). The client asks for the route as the `load` route of an `http` effect ([Runtime](../client/runtime.md#3-context-and-scope)).
+The wire types (`Continuation`, `LoadNext`, `LoadIntent`, `LoadBatchRequest`, `LoadOutcome`, `LoadError`, `LoadPageResponse`, `LoadBatchResponse`, `LoadPageReply`, `LoadItemError`) and their validators are in [core/loads.rs](../../../../crates/core/src/loads.rs), re-exported from `axton_core`; the bounds are the `LOAD_*` constants of `limits` in [core/protocol.rs](../../../../crates/core/src/protocol.rs). The server's envelope validator and response encoder are in [server/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/loads.rs); the HTTP route is in [server/index.mts](../../../../packages/server/index.mts). The client asks for the route as the `load` route of an `http` effect ([Runtime](../client/runtime.md)).
 
 ## 6. Runtime View
 

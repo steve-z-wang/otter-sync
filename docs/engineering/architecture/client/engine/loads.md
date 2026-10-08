@@ -1,12 +1,14 @@
 # Loads
 
+Historical carrier reference. Current responsibilities are owned by [protocol 5](../../protocol/0.5.md). This page describes the old release, not a supported current API.
+
 ## 1. Introduction and Goals
 
 The Load engine owns the durable state of native [Loads](../../schema/loads.md) on the client ([#173](https://github.com/zanminwang/axton/issues/173)): the job ledger, the once mappings that let a call site reuse a job, the frozen page request, and the transaction that applies a page. Its rules make a Load resumable after exit, replayable by call ID and atomic per page ([guarantees N1–N7](../../../guarantees.md#n-native-loads)). When pages are requested and batched is the [Load worker](../connection/controller/load-worker.md).
 
 ## 3. Context and Scope
 
-`Client` operations: `start_load(name, version, args, LoadOptions {once, refresh})` answering `LoadStarted {job, kind: Created | Joined | Reused}`, `get_load`, `list_loads`, `cancel_load`, `retry_load`, `forget_load` and `invalidate_load`, plus, for the worker, `replica_generation`, `load_ready_pages`, `load_page_step`, `record_load_failure` and page application as `StoreDelivery::Load`. The runtime exposes them as the `loadStart`, `loadGet`, `loadStatus`, `loadList`, `loadWait`, `loadCancel`, `loadRetry`, `loadForget`, `loadInvalidate` and `loadDispose` commands ([Runtime](../runtime.md#6-runtime-view)). Every operation is local and works offline. None runs inside a client transaction: the engine refuses it ("client transaction active"), and the runtime's commands are tasks that a callback transaction or `onStore` cannot issue.
+`Client` operations: `start_load(name, version, args, LoadOptions {once, refresh})` answering `LoadStarted {job, kind: Created | Joined | Reused}`, `get_load`, `list_loads`, `cancel_load`, `retry_load`, `forget_load` and `invalidate_load`, plus, for the worker, `replica_generation`, `load_ready_pages`, `load_page_step`, `record_load_failure` and page application as `StoreDelivery::Load`. The runtime exposes them as the `loadStart`, `loadGet`, `loadStatus`, `loadList`, `loadWait`, `loadCancel`, `loadRetry`, `loadForget`, `loadInvalidate` and `loadDispose` commands ([Runtime](../runtime.md)). Every operation is local and works offline. None runs inside a client transaction: the engine refuses it ("client transaction active"), and the runtime's commands are tasks that a callback transaction or `onStore` cannot issue.
 
 ## 5. Building Block View
 
@@ -16,7 +18,7 @@ The Load engine owns the durable state of native [Loads](../../schema/loads.md) 
 
 **Row validation.** Rows decode one by one and are checked for coherence: phase against frozen page and error, and the frozen intent against the job's own fields. A damaged row fails a named `get` with an error naming the job, appears in `list` as a failed status with `load.ledger_invalid`, and is reported once by the worker and skipped; it never blocks a healthy job. Scheduler reads are bounded.
 
-Code: [client/loads.rs](../../../../../crates/client/src/loads.rs) (operations, once key, `LoadFailure`, `LoadStatus`), [client/load_ledger.rs](../../../../../crates/client/src/load_ledger.rs) (rows and statements), DDL in [client/ddl.rs](../../../../../crates/client/src/ddl.rs), page application in [client/store_delivery.rs](../../../../../crates/client/src/store_delivery.rs).
+Code: [client/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/loads.rs) (operations, once key, `LoadFailure`, `LoadStatus`), [client/load_ledger.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/load_ledger.rs) (rows and statements), DDL in [client/ddl.rs](../../../../../crates/client/src/ddl.rs), page application in [client/store_delivery.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/store_delivery.rs).
 
 ## 6. Runtime View
 
@@ -58,9 +60,9 @@ A terminal failure is recorded in its own short transaction after the rollback. 
 
 **Explicit retry.** `retry_load` on a failed job increments the run, freezes a fresh call ID and a new intent at the last committed continuation in one transaction; committed Models, callback writes and the page count stay, and replies to the old call are inert. It applies to a backend rejection as well as a local failure and promises nothing: a persisting failure fails the new run again. On a pending job it is idempotent. A complete or cancelled job is `load.not_retryable`, and a version that is no longer retained is `load.contract_unavailable`.
 
-**Cancel and forget.** Cancel moves a pending or failed job to `cancelled` with the error `load.cancelled`, clears its frozen page and fences late replies; committed pages stay, and cancelling a complete or cancelled job changes nothing. Forget removes a terminal job (`load.not_terminal` otherwise); `get` then answers null, and later management calls on that ID fail with `load.not_found` (the runtime answers `load.schema_changed` instead for a job a rebuild abandoned, see [Reconciliation](../storage/reconciliation.md#6-runtime-view)). `get` of a string that is not a UUID answers null. `list_loads` accepts a limit from 1 to 100 (`load.invalid_options` otherwise), newest first. No terminal job is removed automatically.
+**Cancel and forget.** Cancel moves a pending or failed job to `cancelled` with the error `load.cancelled`, clears its frozen page and fences late replies; committed pages stay, and cancelling a complete or cancelled job changes nothing. Forget removes a terminal job (`load.not_terminal` otherwise); `get` then answers null, and later management calls on that ID fail with `load.not_found` (the runtime answers `load.schema_changed` instead for a job a rebuild abandoned, see [Reconciliation](../storage/reconciliation.md)). `get` of a string that is not a UUID answers null. `list_loads` accepts a limit from 1 to 100 (`load.invalid_options` otherwise), newest first. No terminal job is removed automatically.
 
-**Schema changes.** Opening a client fails, in its opening transaction, every pending job whose frozen Load version is no longer retained or whose frozen output Model versions no longer match, with `load.contract_unavailable`; retained versions keep the exact row and frozen page. A pending incompatible rebuild and the rebuild itself follow [Reconciliation](../storage/reconciliation.md#6-runtime-view): jobs park, then the rebuild abandons them.
+**Schema changes.** Opening a client fails, in its opening transaction, every pending job whose frozen Load version is no longer retained or whose frozen output Model versions no longer match, with `load.contract_unavailable`; retained versions keep the exact row and frozen page. A pending incompatible rebuild and the rebuild itself follow [Reconciliation](../storage/reconciliation.md): jobs park, then the rebuild abandons them.
 
 ## 9. Architecture Decisions
 

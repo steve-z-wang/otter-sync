@@ -1,54 +1,13 @@
 # Persistence
 
-Persistence implements the strict Rust host operation contract inside the application transaction. Store binds principal/Stream and Batch progress; MutationResult retains member outcomes; StreamRecord retains explicit interest and positions; DeliveryPlan/DeliveryUnit retain finite immutable payloads. Publication locks and reserved cursors are transaction-owned. Shared legacy SQL names do not create independent protocol-5 lifecycle truth.
-
-[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../packages/postgres/migration.sql) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
-
 ## 1. Introduction and Goals
 
-Persistence answers the engine's storage requests inside the application's transaction. Business writes, authority stamps, Stream tracking/positions and saved outcomes share one commit or rollback. The PostgreSQL adapter owns SQL; application shims supply a transaction runner and query executor.
-
-## 3. Context and Scope
-
-[host.rs](../../../../crates/server/src/host.rs) and [host-contract.mts](../../../../packages/server/host-contract.mts) define requests and response validation. [Backend interface](backend-interface.md#9-architecture-decisions) owns signatures; [database guide](../../../../website/docs/backend/database.md) owns shim setup.
-
-| Storage | Responsibility |
-| --- | --- |
-| `axton_client` | Client claim, batch progress and saved receipt. |
-| `axton_call` | Immutable call-ID outcomes, including Load pages and Fetch snapshots. |
-| `axton_stream` | Opaque names and delivery heads. |
-| `axton_record` | Catalog identity and authority stamp. |
-| `axton_stream_member` | Durable unique tracking pairs. |
-| `axton_stream_log` | Latest retained position per Stream/record, including historical removals. |
-
-Fresh DDL has six tables and no tag dictionaries/member-label joins. Tracking survives authority absence; no automatic retention policy is provided. Log removals remain identity-only protocol evidence, distinct from Loader null and unrelated to a public withdrawal API.
+Persistence implements the strict Rust host operation contract inside the application transaction. Store binds principal/Stream and Batch progress; MutationResult retains member outcomes; StreamRecord retains explicit interest and positions; DeliveryPlan/DeliveryUnit retain finite immutable payloads. Publication locks and reserved cursors are transaction-owned. Shared legacy SQL names do not create independent protocol-5 lifecycle truth.
 
 ## 5. Building Block View
 
-[PostgreSQL persistence](../../../../packages/postgres/src/persistence.mts) uses [SQL statements](../../../../packages/postgres/src/sql.mts) over the chosen driver. `claim` serializes client retries; `claimCall` and `saveCall` persist exact outcomes. Saved replay runs no handler, Loader or declarations. Savepoint operations isolate one call and preserve outer transaction ownership.
-
-Bulk `readTracking({records, pairs})` returns the union of all holders of named record keys and existing explicit pair candidates, without duplicates. `guardRecords` takes canonical `{model, identityKey, mode}` records and returns aligned safe stamps: advance once, ensure without advancing existing authority, or compatibility lock (null for absent metadata). Invalid cardinality, order or response pairs abort settlement.
-
-`lockStreams` locks candidate Stream rows before record guards in canonical UTF-8 byte order. Settlement re-reads tracking under locks; an unlocked global destination triggers whole-transaction retry. `applyStreamMembers` writes final pairs, reserves grouped head ranges and compacts upsert positions. `scan` resolves current authority for upserts and preserves identity-only removals without Loader calls. Existing single-record stamp operations remain for non-settlement read paths.
-
-SQL uses bounded set-based chunks of 1,000 items. Host round trips and SQL statement counts scale with chunks; row, lock, WAL and log work still scale with records, Streams and tracking pairs. Guard order spans all mixed modes and chunks, retaining existing-row no-op write fencing. Sorted output or plain `SELECT FOR UPDATE` is not proof of acquisition order or an equivalent Repeatable Read conflict fence. Retry serialization failures/deadlocks as whole owning transactions; caller-owned publication retains the caller's transaction/retry responsibility.
-
-## 9. Architecture Decisions
-
-[Publish](engine/publish.md) owns global/selected invalidation and combined settlement. Inferred changed Mutation inputs are global. Tracking another Stream does not change authority; targeted invalidation does not enroll. PostgreSQL shims run framework-owned transactions at Serializable with bounded retries. Side effects that cannot repeat belong in an application outbox.
+[Implementation](../../../../packages/postgres/migration.sql) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
 ## 10. Quality Requirements
 
-[Driver conformance](../../../../integration/persistence/server/driver-conformance.test.mjs), [membership integration](../../../../integration/persistence/server/membership.test.mjs) and [host conformance](../../../../fixtures/protocol/host-operations.json) cover aligned responses, rollback, replay, chunking and concurrency. Task evidence records executed checks separately from this coverage description.
-
-## 11. Risks and Technical Debt
-
-Hot Stream heads and record stamps serialize; retries can occur even across disjoint rows under Serializable predicate locking. Saved calls, tracking and logs have no automatic TTL/pruning ([#61](https://github.com/zanminwang/axton/issues/61)). In-process wakes do not cross backend processes ([#62](https://github.com/zanminwang/axton/issues/62)).
-
-## Stream forward migration
-
-Existing layouts upgrade forward with old writers stopped: legacy v0.1 → [Channel membership](../../../../packages/postgres/migrations/2026-09-30-channel-members.sql) → [Scope](../../../../packages/postgres/migrations/2026-09-30-scopes.sql) → [Stream](../../../../packages/postgres/migrations/2026-10-01-streams.sql), then current DDL. Start from the migration appropriate to the installed layout; never reapply an older-layout migration after cutover. Fresh databases use [migration.sql](../../../../packages/postgres/migration.sql).
-
-The Stream migration preserves heads, catalog IDs, pairs, positions/removals, receipts and saved calls, retires tag-only tables and rewrites only framework top-level `memberships[*].scope` to `memberships[*].stream`. Business results, identities, continuation JSON and opaque names remain byte-identical. Failed migration rolls back wholly; repeat migration is idempotent. See [coordinated negotiation](../../../../website/docs/backend/deployment.md#stream-membership-cutover). Historical migration files remain unchanged.
-
-Before authority traffic resumes, apply [2026-10-01-local-authority.sql](../../../../packages/postgres/migrations/2026-10-01-local-authority.sql) with writers and live sessions stopped, after the installed layout reaches Stream vocabulary. The atomic repair restores every latest historical Remove pair, advances each affected identity once, and positions newer upserts to every current pair; it preserves other records/viewers and all saved business bytes. Repeat application allocates zero stamps/positions. Never reset or rewind client cursors, or reinterpret Remove as null. See [deployment order](../../../../website/docs/backend/deployment.md#stream-membership-cutover).
+Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.

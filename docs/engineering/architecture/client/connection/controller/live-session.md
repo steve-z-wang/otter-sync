@@ -1,5 +1,7 @@
 # Live session
 
+Historical carrier reference. Current responsibilities are owned by [protocol 5](../../../protocol/0.5.md). This page describes the old release, not a supported current API.
+
 ## 1. Introduction and Goals
 
 A live session is one socket attempt of the [Downlink worker](downlink-worker.md): the wire subscription the worker asked for, the epoch that fences the frames of that socket, and the handshake order. It decides nothing about delivery, so replacing the socket cannot lose queued work or a durable position: the session holds no queue, no cursor and no client.
@@ -23,7 +25,7 @@ A live session is one socket attempt of the [Downlink worker](downlink-worker.md
 - **Handshake order.** Exactly one acknowledgement, first, for exactly the subscribed streams; pages only after it. Both refusals are protocol violations the worker turns into `close {reason}` plus a retry with backoff.
 - **What it does not own.** Page application, the frame queue, cursors, pull building, the retry schedule and Bootstrap progress all belong to the worker ([#150](https://github.com/zanminwang/axton/issues/150)).
 
-Code: [client/live.rs](../../../../../../crates/client/src/live.rs).
+Code: [client/live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/live.rs).
 
 ## 10. Quality Requirements
 

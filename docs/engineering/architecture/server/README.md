@@ -1,18 +1,20 @@
 # Server
 
+## 1. Introduction and Goals
+
 The Rust server validates protocol-5 context and immutable Batch intent, invokes application Handlers/Loaders through the host contract and persists outcomes with business writes. Publication tracks explicit recipients under a persisted fence. Finite delivery plans capture canonical authority and immutable continuations. Node implements the host and HTTP/WebSocket effects, with no alternate sync policy.
 
-[Protocol 5](../protocol/0.5.md) owns the shared contract; [implementation](../../../../crates/server/src/protocol_v05.rs) owns this component. Earlier carrier mechanics below are historical references, not current public contracts.
+## 5. Building Block View
 
-The server runtime executes the sync protocol on top of the application's own database and business logic.
+[Implementation](../../../../crates/server/src/protocol_v05.rs) owns this component. [Protocol 5](../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
-- [Protocol 5 Mutation Batches](protocol5.md) — Additive per-Mutation transactions, fixed Batch replay and coalesced publication.
-- [Protocol 4 runtime](protocol4.md) — Bound Store contexts, null reads, identity manifests, receipts and constraint-safe delivery.
-- [Backend interface](backend-interface.md) — Invoke application handlers and loaders.
-- [Engine](engine/README.md) — Process mutations, read their results back, serve pulls and produce receipts.
-- [Persistence](persistence.md) — Persist sync metadata within the application's transaction; no business logic.
-- [Connection](connection/README.md) — HTTP/WebSocket, subscriptions and streaming.
+- [backend-interface](backend-interface.md)
+- [connection](connection/README.md)
+- [engine](engine/README.md)
+- [persistence](persistence.md)
+- [protocol4](protocol4.md)
+- [protocol5](protocol5.md)
 
-## How the parts work together
+## 10. Quality Requirements
 
-Each protocol-5 Batch member runs in its own application database transaction; retained single-call paths run one request per transaction. The [connection](connection/README.md) authenticates it and calls the Rust [engine](engine/README.md); the engine drives the work through a small set of host operations that the [backend interface](backend-interface.md) routes either to application code (handlers, loaders) or to [persistence](persistence.md) (the framework tables). The engine applies explicit Stream declarations and resolves canonical state through viewer Loaders. Business writes, memberships, publications, framework rows and the saved outcome share the transaction and commit or roll back together. Protocol 4 uses real per-Stream positions; ordinary reads and call-private snapshots carry null cursors. Live subscribers are woken only after the commit.
+Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.

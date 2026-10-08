@@ -23,7 +23,7 @@ const database = prisma(db, { retries: 3, timeout: 20_000 });
 
 ## Apply the migration
 
-Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs Store, MutationResult, StreamRecord, immutable DeliveryPlan/DeliveryUnit metadata and the persisted publication fence. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Existing databases follow the [forward migration chain](https://github.com/zanminwang/axton/blob/v0.3.0/website/docs/backend/database.md#stream-forward-migration).
+Apply [migration.sql](https://github.com/zanminwang/axton/blob/main/packages/postgres/migration.sql) to a fresh database using your deployment migration process before sync traffic. Apply the whole file transactionally, for example `psql -v ON_ERROR_STOP=1 -f migration.sql`. It installs Store, MutationResult, StreamRecord, immutable DeliveryPlan/DeliveryUnit metadata and the persisted publication fence. Business tables remain application-owned. Fresh DDL refuses installed older layouts rather than creating parallel empty truth. Installed legacy layouts are refused intact: protocol 5 requires a separately adopted fresh framework namespace. There is no production migration in this candidate.
 
 ## The driver interface
 
@@ -47,12 +47,10 @@ For a PostgreSQL tool without a shipped shim, write these two methods and pass `
 | `persistence(driver)` | The `database` option built on any driver |
 | `PostgresDriver<Tx>`, `DriverOptions` | The interface and the options every shim accepts |
 
-The retained 0.3 driver conformance suite ([driver-conformance.test.mjs](https://github.com/zanminwang/axton/blob/main/integration/persistence/server/driver-conformance.test.mjs)) exercises legacy persistence: it proves claim locking, receipt replay, stamp allocation, `ensureStamp` under concurrency, Stream range reservation, kept positions, removal scans, savepoints, serialization retry and rollback on a real database, once per shim.
-
 ## Protocol 5 persistence
 
-The migration chain adds `axton_store`, `axton_mutation_result`, `axton_stream_record`, `axton_delivery_plan` and `axton_delivery_unit`. Store rows bind authenticated principal, Stream and immutable Batch progress. Each member result commits with its business transaction. StreamRecord holds explicit membership and current positions; returning a Model does not create one.
+Fresh DDL installs exactly eight tables: `axton_stream`, `axton_record`, `axton_publication_fence`, `axton_store`, `axton_mutation_result`, `axton_stream_record`, `axton_delivery_plan` and `axton_delivery_unit`. Cursor reservation uses ephemeral SQL transaction state, not another durable table. Store rows bind authenticated principal, Stream and immutable Batch progress. Each member result commits with its business transaction. StreamRecord holds explicit membership and current positions; returning a Model does not create one.
 
 The persisted publication fence and canonical Stream locks keep Loader snapshots consistent with reserved positions. Each transaction reserves at most one cursor per affected Stream. Preparation settles before final reads. Delivery plans retain immutable header, part digests and payloads; continuation reauthorizes and expiry cleans staging without coverage.
 
-Apply the forward migration chain before protocol-5 traffic. Existing server tables are not permission to open protocol-4 local files with protocol 5, and documentation completion does not authorize legacy-table deletion. Run the protocol-v05 Batch and delivery suites through the PostgreSQL runner when changing a shim. They cover real replay, isolation, finite units, expiry and capacity rollback.
+Install into a fresh framework namespace before protocol-5 traffic. Existing server tables are not permission to open protocol-4 local files with protocol 5, and documentation completion does not authorize legacy-table deletion. Run the protocol-v05 Batch and delivery suites through the PostgreSQL runner when changing a shim. They cover real replay, isolation, finite units, expiry and capacity rollback.

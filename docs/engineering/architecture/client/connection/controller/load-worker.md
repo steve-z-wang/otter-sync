@@ -1,16 +1,18 @@
 # Load worker
 
+Historical carrier reference. Current responsibilities are owned by [protocol 5](../../../protocol/0.5.md). This page describes the old release, not a supported current API.
+
 ## 1. Introduction and Goals
 
 The Load worker decides when native [Load](../../../schema/loads.md) pages are requested ([#173](https://github.com/zanminwang/axton/issues/173)). One worker per client runtime reads jobs with a ready page from SQLite, groups them into bounded `POST /sync/loads` batches, and queues each answer for the [Load engine](../../engine/loads.md) to apply. It is a pure Rust state machine driven by the [runtime](../../runtime.md), not a thread per job and not a JavaScript or Dart loop. Mutation ordering, push sequences and Stream cursors are untouched.
 
 ## 3. Context and Scope
 
-Inputs: ready pages from the ledger (`load_ready_pages`), connection controls, effect results, the clock and entropy. Outputs: `http` effects on the `load` route, a per-attempt deadline `timer` for each batch, one backoff `timer` for the earliest due job, `refreshAuth` requests shared with the other lanes, and queued outcomes that the runtime applies as lane units ([Runtime](../../runtime.md#6-runtime-view)).
+Inputs: ready pages from the ledger (`load_ready_pages`), connection controls, effect results, the clock and entropy. Outputs: `http` effects on the `load` route, a per-attempt deadline `timer` for each batch, one backoff `timer` for the earliest due job, `refreshAuth` requests shared with the other lanes, and queued outcomes that the runtime applies as lane units ([Runtime](../../runtime.md)).
 
 ## 5. Building Block View
 
-`LoadWorker` in [client/load_worker.rs](../../../../../../crates/client/src/load_worker.rs) keeps in memory only the batches in flight, the outcomes waiting to apply and each job's backoff (`{call_id, attempts, due}`). Every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its reads are bounded: one scan reads at most the batch size plus the pages it must skip plus 20 damaged rows. The runtime glue is [client/runtime/loads.rs](../../../../../../crates/client/src/runtime/loads.rs); lane readiness and alternation are in [client/runtime/tasks.rs](../../../../../../crates/client/src/runtime/tasks.rs).
+`LoadWorker` in [client/load_worker.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/load_worker.rs) keeps in memory only the batches in flight, the outcomes waiting to apply and each job's backoff (`{call_id, attempts, due}`). Every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its reads are bounded: one scan reads at most the batch size plus the pages it must skip plus 20 damaged rows. The runtime glue is [client/runtime/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/runtime/loads.rs); lane readiness and alternation are in [client/runtime/tasks.rs](../../../../../../crates/client/src/runtime/tasks.rs).
 
 | Limit (internal default) | Value |
 | --- | --- |
@@ -33,9 +35,9 @@ These are not public settings.
 
 **A rejected request.** A whole-request 4xx other than 401, 408 and 429 means the backend refused the request itself, which one page may have caused. The worker sends each page of that request alone next time, so one bad page cannot fail its siblings; a single-page request refused again with such a 4xx fails that job with `load.protocol_invalid`. A `408`, `429` or `5xx` backs the batch's jobs off without splitting it. Retrying a job that is backing off keeps its delay.
 
-**Controls and close.** `pause` and `stop` cancel unanswered batches and the backoff timer without counting an attempt ([Scheduling](scheduling.md#6-runtime-view)); `resume`, `connect` and `wake` look again, and answers already admitted still apply. A stored pending job is projected as `loading` while a page is requested, answered or applying, `waiting` while offline, paused, backing off or behind a pending rebuild, and `pending` otherwise. Close rejects process-local waiters with `client_closed` and leaves every job durable; after reopen it resumes with its persisted attempts.
+**Controls and close.** `pause` and `stop` cancel unanswered batches and the backoff timer without counting an attempt ([Scheduling](scheduling.md)); `resume`, `connect` and `wake` look again, and answers already admitted still apply. A stored pending job is projected as `loading` while a page is requested, answered or applying, `waiting` while offline, paused, backing off or behind a pending rebuild, and `pending` otherwise. Close rejects process-local waiters with `client_closed` and leaves every job durable; after reopen it resumes with its persisted attempts.
 
-**Rebuild.** While an incompatible rebuild waits for old Mutations to drain, the ledger yields no ready page and the worker is offline for Loads, so it dispatches and applies nothing; Load never delays that drain. A rebuild resets the worker and fences every answer by the new replica generation ([Reconciliation](../../storage/reconciliation.md#6-runtime-view)).
+**Rebuild.** While an incompatible rebuild waits for old Mutations to drain, the ledger yields no ready page and the worker is offline for Loads, so it dispatches and applies nothing; Load never delays that drain. A rebuild resets the worker and fences every answer by the new replica generation ([Reconciliation](../../storage/reconciliation.md)).
 
 ## 9. Architecture Decisions
 

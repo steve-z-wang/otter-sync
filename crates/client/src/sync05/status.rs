@@ -6,7 +6,6 @@ impl<S: ClientStore> Client<S> {
     }
     pub fn status_snapshot05(&mut self) -> Result<serde_json::Value> {
         let status = self.store_status05()?;
-        let pending = self.pending_schema05()?.is_some();
         Ok(json!({
             "clientId": status.context.store_id,
             "context": status.context,
@@ -14,8 +13,7 @@ impl<S: ClientStore> Client<S> {
             "beforeImages": self.before_image_count()?,
             "cursors": {status.context.stream.clone(): status.cursor},
             "streams": [status.context.stream],
-            "rejections": self.refused_acts05()?,
-            "schema": {"rebuilt": false, "pending": pending}
+            "rejections": self.refused_acts05()?
         }))
     }
 }

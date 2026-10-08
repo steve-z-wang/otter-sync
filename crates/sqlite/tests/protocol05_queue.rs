@@ -103,6 +103,11 @@ fn compatible_descriptor_reopen_preserves_assigned_context_and_input() {
         b.context.materialization
     );
     assert!(c.pending_schema05().unwrap().is_some());
+    let status = c.status_snapshot05().unwrap();
+    assert!(status.get("schema").is_none());
+    assert_eq!(status["context"], serde_json::to_value(&b.context).unwrap());
+    assert_eq!(status["pending"], 1);
+    assert!(c.pending_schema05().unwrap().is_some());
     assert_eq!(c.freeze_batch05().unwrap().unwrap(), b);
 }
 #[test]

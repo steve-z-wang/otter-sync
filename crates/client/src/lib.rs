@@ -21,9 +21,7 @@ pub mod unsent;
 
 pub use actions::SubmittedCall;
 pub use axton_core::*;
-pub use bootstrap::{
-    BootstrapError, BootstrapPhase, BootstrapRecordFailure, BootstrapState, SUBSCRIPTION_CLOSED,
-};
+pub use bootstrap::{BootstrapError, BootstrapPhase, BootstrapState, SUBSCRIPTION_CLOSED};
 pub use query::{Direction, QueryOrder, QuerySpec};
 pub use store::*;
 pub use subscriptions::SubscriptionState;
@@ -117,13 +115,6 @@ pub enum Readiness {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReportKind {
-    // The server could not read the record: the change carried `error`
-    // instead of a state. Local content and stamp are kept.
-    ReadFailed,
-    // The delivered state does not fit this client's schema. Nothing written.
-    Skipped,
-    // The same stamp with different content. Nothing written.
-    Conflict,
     // A queued operation no longer replays over the new base: the base is
     // visible and the mutation is still sent (`ordinal`).
     Diverged,
@@ -168,17 +159,8 @@ impl ApplyReport {
     pub fn count(&self, kind: ReportKind) -> usize {
         self.reports.iter().filter(|r| r.kind == kind).count()
     }
-    pub fn skipped(&self) -> usize {
-        self.count(ReportKind::Skipped)
-    }
-    pub fn conflicts(&self) -> usize {
-        self.count(ReportKind::Conflict)
-    }
     pub fn diverged(&self) -> usize {
         self.count(ReportKind::Diverged)
-    }
-    pub fn read_failed(&self) -> usize {
-        self.count(ReportKind::ReadFailed)
     }
 }
 
@@ -552,20 +534,11 @@ impl<S: ClientStore> Client<S> {
             Ok(total)
         })
     }
-    // The record's stamp evidence: the last authoritative version this client
-    // applied, retained across deletion and unsubscription; 0 when none.
-
-    // The sequence of the last push a receipt completed.
-
     // The read contracts this client expects; see [`declared_models`].
     pub fn declared_models(&self) -> std::collections::BTreeMap<String, u64> {
         declared_models(&self.schema)
     }
-    // Hook names belong to the requested schema. A pending rebuild may be
-    // draining a replica whose stored schema differs from that request.
-
-    // The prerequisite names the requested schema declares: the target
-    // schema while an incompatible old replica drains.
+    // Prerequisite names declared by the current schema.
     pub(crate) fn target_prerequisites(&self) -> BTreeSet<String> {
         self.schema
             .prerequisites

@@ -89,33 +89,8 @@ void deliverDiagnostic(
           diagnostic['message'] as String,
         ),
       );
-    case 'storeHook':
-      deliver(
-        StoreHookFailure(
-          model: diagnostic['model'] as String,
-          path: diagnostic['path'] as String,
-          message: diagnostic['message'] as String,
-          cause: diagnostic['cause'],
-        ),
-      );
-  }
-}
 
-/// A store callback failure reported from a delivery lane.
-class StoreHookFailure implements Exception {
-  const StoreHookFailure({
-    required this.model,
-    required this.path,
-    required this.message,
-    this.cause,
-  });
-  final String code = 'store_hook_failed';
-  final String model;
-  final String path;
-  final String message;
-  final Object? cause;
-  @override
-  String toString() => 'StoreHookFailure($model, $path: $message)';
+  }
 }
 
 /// Thrown by a prerequisite handler to say its failure is transient: the
@@ -378,10 +353,8 @@ class RuntimeConnection {
   });
 }
 
-/// A delivery the client could not apply, handed to `onError`. The client
-/// stays consistent: a `readFailed` or `skipped` record keeps its local
-/// content, a `conflict` keeps the local content, a `diverged`
-/// mutation shows the server's row and is still sent.
+/// A queued operation that no longer replays over accepted authority.
+/// The server row is visible and the durable Mutation remains queued.
 class AxtonReport implements Exception {
   AxtonReport({
     required this.kind,
@@ -400,12 +373,12 @@ class AxtonReport implements Exception {
     detail: json['detail'],
   );
 
-  /// `readFailed`, `skipped`, `conflict` or `diverged`.
+  /// `diverged`.
   final String kind;
   final String model;
   final Map<String, dynamic> identity;
 
-  /// `readFailed`: the server's code (`loader.failed`, or the refusal code).
+  /// A diagnostic code supplied by the runtime.
   final String? code;
 
   /// `diverged`: the queued mutation whose replay failed; it is still sent.

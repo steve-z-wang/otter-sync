@@ -319,13 +319,7 @@ impl<S: ClientStore + 'static> ClientRuntime<S> {
             self.complete(request_id, outcome);
         }
     }
-    // `rebuild {discardPending?}`: the report the client answers, plus the
-    // fence - everything in flight belongs to the replaced replica. Lane
-    // effects are cancelled and the lanes start over in the same intent,
-    // direct calls fail with an unknown execution (Fetches with
-    // `fetch.schema_changed`, their flights fenced), the prerequisite handler
-    // in flight is cancelled and the new replica scanned, every observer of the old replica ends and every abandoned
-    // durable call is completed. A refused rebuild changes nothing.
+    // Reset the bound Store and cancel work belonging to its old incarnation.
     fn reset_store(
         &mut self,
         discard_pending: bool,

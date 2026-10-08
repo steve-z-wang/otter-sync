@@ -65,7 +65,7 @@ export interface Subscription {
    */
   bootstrap(): Promise<void>;
 }
-/** Work attempted through a handle that is closed: unsubscribed, or stopped with its client. */
+/** Work attempted through a handle that is closed after a Store reset or client shutdown. */
 export const subscriptionClosed = () =>
   Object.assign(Error("subscription.closed"), {
     code: "subscription.closed" as const,
@@ -144,12 +144,10 @@ class Handle implements Subscription {
   #report: (error: unknown) => void;
   #snapshot: SubscriptionStatus;
   /**
-   * Why the handle is closed: `removed` through a removal or rebuild, whose
-   * later `unsubscribe()` is a harmless no-op, or `stopped` with its client,
-   * through which no work can be committed.
+   * Why the bound handle ended: its Store incarnation ended (`removed`),
+   * or its client stopped (`stopped`).
    */
   #closed: "removed" | "stopped" | undefined;
-  /** This handle submitted its own removal: the terminal snapshot is that. */
   #listeners = new Set<(status: SubscriptionStatus) => void>();
   constructor(
     state: SubscriptionState,
@@ -252,13 +250,11 @@ class Handle implements Subscription {
         },
       );
   }
-
 }
 
 /**
- * The registry: one handle per persistent subscription identity, held until
- * the runtime's terminal snapshot for it - after a removal, a rebuild or the
- * client's close - releases it.
+ * The bound Stream handle cache. Reset and close release handles only after
+ * the runtime publishes their terminal snapshot.
  */
 export class Subscriptions {
   #bridge: SubscriptionBridge;

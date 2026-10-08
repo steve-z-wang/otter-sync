@@ -42,21 +42,20 @@ export type Connection = {
 };
 
 /** Why one record or one queued mutation could not be applied as delivered. */
-export type ReportKind = "readFailed" | "skipped" | "conflict" | "diverged";
+export type ReportKind = "diverged";
 export type ReportDetails = {
   kind: ReportKind;
   model: string;
   identity: Record<string, unknown>;
-  /** `readFailed`: the server's code (`loader.failed`, or the refusal code). */
+  /** A diagnostic code supplied by the runtime. */
   code?: string;
   /** `diverged`: the queued mutation whose replay failed; it is still sent. */
   ordinal?: number;
   detail?: unknown;
 };
 /**
- * A delivery the client could not apply, handed to `onError`. The client stays
- * consistent: a `readFailed` or `skipped` record keeps its local content, a `conflict` keeps the local content, a `diverged` mutation shows the
- * server's row and is still sent.
+ * A queued operation that no longer replays over accepted authority.
+ * The server row is visible and the durable Mutation remains queued.
  */
 export class AxtonReport extends Error {
   readonly kind: ReportKind;
@@ -103,16 +102,7 @@ export type Diagnostic =
   | { kind: "records"; reports: ReportDetails[] }
   | { kind: "error"; message: string; status?: number }
   | { kind: "protocol"; message: string }
-  | { kind: "refused"; message: string; status: number; body: unknown }
-  | {
-      kind: "storeHook";
-      code: "store_hook_failed";
-      model: string;
-      path: string;
-      message: string;
-      callbackEffectId?: string;
-      cause?: unknown;
-    };
+  | { kind: "refused"; message: string; status: number; body: unknown };
 
 /** The part of the Bridge an effect executor uses; tests supply a fake. */
 export type EffectBridge = {
@@ -331,14 +321,7 @@ export function startConnection(
                   Error(diagnostic.message),
                   diagnostic.kind === "error" && diagnostic.status !== undefined
                     ? { status: diagnostic.status }
-                    : diagnostic.kind === "storeHook"
-                      ? {
-                          code: diagnostic.code,
-                          model: diagnostic.model,
-                          path: diagnostic.path,
-                          cause: diagnostic.cause,
-                        }
-                      : {},
+                    : {},
                 ),
               ];
       for (const error of errors)

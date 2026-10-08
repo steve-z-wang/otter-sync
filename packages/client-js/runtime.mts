@@ -64,7 +64,6 @@ import {
   ActionRegistry,
   CallError,
   actionError,
-  assertCallOptions,
   assertQueryOptions,
   type Call,
   type CallOptions,
@@ -90,14 +89,6 @@ export type {
   TransactionRejections,
 } from "./unsent.mts";
 
-/**
- * The native command field for an Action's store option, beside its args.
- * Once controls never reach this seam: Mutations and `enqueue` refuse them.
- */
-function storeOption(options?: CallOptions): { store?: unknown } {
-  assertCallOptions(options);
-  return options?.store === undefined ? {} : { store: options.store };
-}
 type DirectOutcome = {
   status: string;
   result?: unknown;
@@ -187,9 +178,7 @@ function fetchStore(options: unknown): { store?: unknown } {
   return store === undefined ? {} : { store };
 }
 /** Fetch failures refused before any request was sent. */
-const FETCH_REJECTED = new Set([
-  "fetch.invalid_options",
-]);
+const FETCH_REJECTED = new Set(["fetch.invalid_options"]);
 /**
  * A `fetch` task's failure as a {@link CallError}: a `fetch.*` code the
  * runtime decided keeps its cache commit cause or transport failure with its
@@ -291,7 +280,7 @@ export function createClient<
       this.failures = unsent.failures;
       this.outbound = unsent.outbound;
       // Every call outcome the runtime committed - receipts, discards, direct
-      // calls, once flights and rebuild abandonments - after the commit that
+      // calls and reset abandonments - after the commit that
       // decided it. This is the only path completions take.
       bridge.on("callCompleted", (event) =>
         this.#deliverCompletions([
@@ -539,8 +528,8 @@ export function createClient<
     /**
      * Fetch one Model by identity through its existing Loader
      * ([#153](https://github.com/zanminwang/axton/issues/153)). Rust
-     * validates the identity and options, joins an identical request in
-     * flight or sends a new one, and by default stores the reply before
+     * validates the identity and options, sends an independent request,
+     * and by default stores its guarded cache projection before
      * answering; this submits the task and decodes this caller's own copy of
      * the snapshot. `null` when the Loader has no readable record.
      */
@@ -595,7 +584,8 @@ export function createClient<
       options?: CallOptions,
     ): Promise<{ outcome: DirectOutcome }> {
       this.#guard(true);
-      const store = storeOption(options);
+      const store =
+        options?.store === undefined ? {} : { store: options.store };
       try {
         return await this.#bridge.task({
           kind: "invoke",

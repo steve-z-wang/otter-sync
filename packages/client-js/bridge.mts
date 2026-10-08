@@ -497,7 +497,6 @@ export class Bridge {
       }
     } finally {
       this.#dispatching = false;
-
     }
   }
 
@@ -542,8 +541,8 @@ export class Bridge {
       case "transactionCallState":
         return this.#emit(event.type, event);
       case "callCompleted":
-      case "report": return this.#emit(event.type,event);
-
+      case "report":
+        return this.#emit(event.type, event);
     }
   }
 

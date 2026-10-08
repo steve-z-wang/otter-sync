@@ -508,8 +508,4 @@ impl<S: ClientStore> Engine<'_, S> {
         }
         Ok(())
     }
-    // Stop following a scope, whichever subscription it holds; whether one
-    // was removed. Records it delivered stay: a scope is a delivery path,
-    // not an owner, so local content, stamps, before images and pending
-    // operations are all retained.
 }

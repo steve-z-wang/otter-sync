@@ -185,14 +185,10 @@ pub enum Command {
     Tasks,
 
     // --- Writes, each in its own local transaction ---
-    // Queue a mutation; answers its ordinal.
-
     // Apply one local-only operation.
     Direct {
         operation: crate::Operation,
     },
-    // Subscribe or unsubscribe a Stream.
-
     // Submit a durable Action call; answers `{callId, ordinal}`. `store` is
     // the call's store policy, beside its arguments, never inside them.
     SubmitAction {
@@ -223,18 +219,11 @@ pub enum Command {
         #[serde(deserialize_with = "counter")]
         ordinal: u64,
     },
-    // Discard the saved Query once results of one argument set.
-
     // Atomically retire this bound Store's content and delivery incarnation.
     ResetStore {
         #[serde(default)]
         discard_pending: Option<bool>,
     },
-
-    // --- Protocol seams for tests and tools; the lanes never use them ---
-    // Freeze the next push batch; answers its body or `null`.
-
-    // Settle batch `sequence` with `receipt`.
 
     // --- Stream and Bootstrap ---
     // Register durable intent to follow `stream`; answers the stored state
@@ -275,8 +264,7 @@ pub enum Command {
     Connection {
         event: ConnectionEvent,
     },
-    // A direct Query or Mutation call; with `once`, a Query answered from
-    // the saved result when there is one (`refresh` fetches anyway).
+    // A direct named Query invocation.
     Invoke {
         name: String,
         version: u64,
@@ -295,7 +283,7 @@ pub enum Command {
     // invocation's own completion outcome: `{"status":"succeeded","result":
     // <Model object or null>}`, or the backend's terminal refusal
     // `{"status":"failed","code","execution":"rejected"}`. A stored success
-    // answers only after its authority - and any onStore callback - committed.
+    // answers only after its guarded cache transaction committed.
     // A local failure carries `details.code`: `fetch.invalid_options`,
     // `fetch.unavailable`, `fetch.timeout`, `fetch.transport_failed`,
     // `fetch.invalid_response`, `fetch.store_failed`, `fetch.schema_pending`
@@ -331,33 +319,6 @@ pub enum Command {
     Unwatch {
         observer_id: String,
     },
-
-    // --- Native Loads (#173); refused inside a callback transaction ---
-    // Start a Load: a local commit that needs no connection. `once` and
-    // `refresh` are call-site options, never business arguments, and must be
-    // booleans when present. Answers `{loadId, observerId, start, status}`,
-    // `start` being `created`, `joined` or `reused`; the observer publishes
-    // the job's status after the answer.
-
-    // Reattach to a job of this replica: `null`, or
-    // `{loadId, observerId, status}` with a fresh observer.
-
-    // The job's current status snapshot.
-
-    // The statuses of the most recently started jobs, newest first; `limit`
-    // is 1 to 100, 50 when absent.
-
-    // Wait for the job's current run: `null` after its final page committed,
-    // or its terminal error.
-
-    // Cancel the job; answers its status.
-
-    // Read a failed job again from its committed continuation; answers its
-    // status.
-
-    // Delete a terminal job.
-
-    // Remove the once mappings of `name` for `args`; answers `{removed}`.
 
     // --- Unsent work (#186) ---
     // Observe unsent work; answers the observer id. Its snapshots are
@@ -505,8 +466,8 @@ pub enum TransactionCommand {
     // ([#205](https://github.com/zanminwang/axton/issues/205)): each takes
     // effect for the later commands of the transaction and commits or rolls
     // back with it. What they announce - a discarded Call's completion, a
-    // retried task's handler run - waits for the commit. The onStore
-    // transaction and a local callback cannot issue them.
+    // retried task's handler run - waits for the commit. A local callback
+    // cannot issue them.
     Dismiss {
         #[serde(deserialize_with = "counter")]
         ordinal: u64,
@@ -670,8 +631,7 @@ pub enum Event {
         // failure, the refused credential refresh, the failed apply, or
         // `"direct call timed out"` for the deadline. A `fetch` fails with
         // `error` equal to its `fetch.*` code and `details`
-        // `{"code", "message"?, "status"?}`; a refused onStore callback adds
-        // `model`, `path: "fetch"` and `callbackEffectId`.
+        // `{"code", "message"?, "status"?}`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         details: Option<Value>,
     },
@@ -727,17 +687,9 @@ pub enum Event {
     //   `{"kind":"failures","items":[{"ordinal","name","version","act",
     //   "tasks":[{"key","name","arguments","error"}]}]}` or
     //   `{"kind":"pending","count"}`;
-    // - a Load handle (`loadStart`, `loadGet`): `{"kind":"load","status":
-    //   {"id","name","version","phase","pages","error"}}`, the phase being
-    //   `pending`, `loading`, `waiting`, `complete`, `failed` or
-    //   `cancelled`. A terminal snapshot also carries `"code"`:
-    //   `client_closed` (the status is the last one published), or
-    //   `load.schema_changed` when a rebuild replaced the replica the job
-    //   belonged to (the status is then `failed` with that error).
     //
     // A terminal snapshot adds `"closed": true` and nothing follows it for
-    // that observer: a subscription that was removed, replaced by a rebuild
-    // or stopped with the runtime (`active: false`, `connection: "stopped"`),
+    // that observer: a bound Stream handle stopped with the runtime (`active: false`, `connection: "stopped"`),
     // or a watch or unsent-work observer ended by the runtime's close
     // (carrying its last result). An `unwatch` ends either with no snapshot.
     #[serde(rename_all = "camelCase")]

@@ -31,32 +31,17 @@ export type CallOptions<K extends string = string> = {
 export type QueryOptions<K extends string = string> = CallOptions<K>;
 const invalidOptions = (message: string) =>
   new CallError("action.invalid_options", "rejected", Error(message));
-/** Removed Query controls are refused even from dynamic callers. */
-export function assertNoOnce(options: unknown): void {
-  const value = options as { once?: unknown; refresh?: unknown } | undefined;
-  if (value != null && ("once" in Object(value) || "refresh" in Object(value)))
-    throw invalidOptions("once and refresh are no longer supported");
-}
-/**
- * Only a Mutation submitted in a transaction (`tx.mutations`) runs a `local`
- * callback; every other route refuses one, even from dynamic callers, rather
- * than queue the call without it.
- */
-function assertNoLocal(options: unknown): void {
-  if ((options as { local?: unknown } | undefined)?.local !== undefined)
-    throw invalidOptions(
-      "local applies only to a Mutation submitted in a transaction",
-    );
-}
-/** A standalone Mutation or direct call: no once controls, no `local`. */
-export function assertCallOptions(options: unknown): void {
-  assertNoOnce(options);
-  assertNoLocal(options);
-}
-/** Validate direct Query options before I/O. */
+/** Validate the current boolean storage option before I/O. */
 export function assertQueryOptions(options: unknown): void {
-  assertCallOptions(options);
-  const store = (options as { store?: unknown } | undefined)?.store;
+  if (options === undefined) return;
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    Object.keys(options).some((key) => key !== "store")
+  )
+    throw invalidOptions("Query accepts only a boolean store option");
+  const store = (options as { store?: unknown }).store;
   if (store !== undefined && typeof store !== "boolean")
     throw invalidOptions("store must be a boolean");
 }
@@ -332,18 +317,12 @@ export function actionError(error: unknown): CallError {
   const code =
     typeof value?.code === "string"
       ? value.code
-      : value?.details?.code === "store_hook_failed"
-        ? "store_hook_failed"
-        : error instanceof Error && error.message === "transaction_active"
-          ? "transaction_active"
-          : "action.transport_failed";
+      : error instanceof Error && error.message === "transaction_active"
+        ? "transaction_active"
+        : "action.transport_failed";
   const execution =
     value?.execution === "rejected" || code === "transaction_active"
       ? "rejected"
       : "unknown";
-  return new CallError(
-    code,
-    execution,
-    code === "store_hook_failed" ? (value?.cause ?? error) : error,
-  );
+  return new CallError(code, execution, error);
 }

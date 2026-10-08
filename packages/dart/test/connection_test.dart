@@ -598,9 +598,12 @@ void main() {
 
   group('reports', () {
     final record = {
-      'kind': 'conflict',
+      'kind': 'diverged',
       'model': 'Entry',
       'identity': {'id': 'e'},
+      'ordinal': 7,
+      'code': 'replay.invalid',
+      'detail': {'reason': 'authority'},
     };
 
     test('records become AxtonReports; errors become StateErrors', () {
@@ -615,11 +618,12 @@ void main() {
       expect(
         reported.take(2),
         everyElement(
-          isA<AxtonReport>().having((r) => r.kind, 'kind', 'conflict').having(
-            (r) => r.identity,
-            'identity',
-            {'id': 'e'},
-          ),
+          isA<AxtonReport>()
+              .having((r) => r.kind, 'kind', 'diverged')
+              .having((r) => r.identity, 'identity', {'id': 'e'})
+              .having((r) => r.ordinal, 'ordinal', 7)
+              .having((r) => r.code, 'code', 'replay.invalid')
+              .having((r) => r.detail, 'detail', {'reason': 'authority'}),
         ),
       );
       expect(reported.skip(2).map((e) => (e as StateError).message), [

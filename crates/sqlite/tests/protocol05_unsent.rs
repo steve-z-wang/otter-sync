@@ -249,3 +249,97 @@ fn a_call_written_before_inheritance_is_listed_by_its_failed_key() {
     write(&mut client, "three", None);
     assert_eq!(client.failed_acts().unwrap().len(), 2);
 }
+#[test]
+fn a_terminal_failure_lists_the_act_and_a_retry_makes_its_task_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let call = write(&mut client, "with a photo", Some("X"));
+    assert!(
+        client.failed_acts().unwrap().is_empty(),
+        "pending, not failed"
+    );
+    client.outcome(&blob("X"), Some("upload refused")).unwrap();
+    let failed = client.failed_acts().unwrap();
+    assert_eq!(
+        serde_json::to_value(&failed).unwrap(),
+        json!([{"ordinal":call.ordinal,"name":"Write","version":1,
+            "act":{"args":{"note":{"id":"n","text":"with a photo","blob":"X"}},
+                "operations":[{"model":"Note","op":"update","identity":{"id":"n"},
+                    "values":{"text":"with a photo","blob":"X"}}]},
+            "tasks":[{"key":blob("X"),"name":"RemoteBlob","arguments":{"key":"X"},"error":"upload refused"}]}])
+    );
+    client.retry_tasks(&[blob("X")]).unwrap();
+    assert!(client.failed_acts().unwrap().is_empty());
+    assert_eq!(client.pending_tasks().unwrap()[0]["state"], "pending");
+    client.retry_tasks(&["nothing".into()]).unwrap();
+    assert!(client.failed_acts().unwrap().is_empty());
+}
+#[test]
+fn a_new_requirement_on_a_failed_task_inherits_its_failure_and_one_retry_covers_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let first = write(&mut client, "one", Some("X"));
+    client.outcome(&blob("X"), Some("upload refused")).unwrap();
+    let second = write(&mut client, "two", Some("X"));
+    // Act 2 reports the failure at once; its own row carries it.
+    let failed = client.failed_acts().unwrap();
+    assert_eq!(ordinals(&failed), vec![first.ordinal, second.ordinal]);
+    assert_eq!(failed[1].tasks[0].error, "upload refused");
+    let rows = client
+        .read_sql(
+            "SELECT ordinal, error FROM axton_mutation_prerequisite ORDER BY ordinal",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            json!({"ordinal":first.ordinal,"error":"upload refused"}),
+            json!({"ordinal":second.ordinal,"error":"upload refused"})
+        ]
+    );
+    // Not reset: the task stays failed and nothing is sendable.
+    assert_eq!(client.pending_tasks().unwrap()[0]["state"], "failed");
+    assert!(client.freeze_batch05().unwrap().is_none());
+    // One retry covers every act waiting on the task.
+    client.retry_tasks(&[blob("X")]).unwrap();
+    assert!(client.failed_acts().unwrap().is_empty());
+    client.outcome(&blob("X"), None).unwrap();
+    let request = client.freeze_batch05().unwrap().unwrap();
+    let sent: Vec<u64> = request.mutations.iter().map(|m| m.id).collect();
+    assert_eq!(
+        sent,
+        vec![first.ordinal],
+        "current sequence waits for settlement"
+    );
+    client
+        .acknowledge_batch05(&v05::BatchAcknowledgement {
+            context: request.context.clone(),
+            batch_id: request.batch_id,
+            digest: request.digest.clone(),
+            results: vec![v05::MutationResult {
+                mutation_id: first.ordinal,
+                outcome: v05::MutationOutcome::Rejected {
+                    code: "write.refused".into(),
+                    message: None,
+                },
+            }],
+        })
+        .unwrap();
+    let next = client.freeze_batch05().unwrap().unwrap();
+    assert_eq!(
+        next.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![second.ordinal]
+    );
+    // A requirement on a task nobody waits on any more starts pending.
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = seeded(&dir);
+    let first = write(&mut client, "one", Some("Y"));
+    client.outcome(&blob("Y"), Some("refused")).unwrap();
+    client
+        .transaction(|tx| tx.discard_mutation05(first.ordinal))
+        .unwrap();
+    write(&mut client, "two", Some("Y"));
+    assert!(client.failed_acts().unwrap().is_empty());
+    assert_eq!(client.pending_tasks().unwrap()[0]["state"], "pending");
+}

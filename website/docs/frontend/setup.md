@@ -4,14 +4,13 @@ Generate your Model and named Mutation/Query interfaces first ([schema generatio
 
 ## Open local storage
 
-Supply a writable database path, one Stream and a connection with stable identity. The identity is available offline: backend, viewer and contract must match backend configuration. Tokens and URLs are connection details, not Store identity.
+Supply a writable database path and one Stream. The generated client supplies the schema; the generic runtime also requires `schema`. A connection is optional. Tokens and URLs are connection settings, not Store identity.
 
 ```ts
 const client = await GeneratedClient.open({
   path: 'local.sqlite', stream: 'User:alice',
   connection: {
     url: 'http://127.0.0.1:4242', token: 'alice',
-    identity: { backend: 'my-api', viewer: 'alice', contract: 'my-app' },
     projectionGeneration: '1',
     options: { onError: console.error },
   },
@@ -23,13 +22,11 @@ final client = await GeneratedClient.open(
   path: 'local.sqlite', stream: 'User:alice',
   connection: StoreConnection(
     url: 'http://127.0.0.1:4242', token: () => 'alice',
-    identity: const StoreIdentity(
-      backend: 'my-api', viewer: 'alice', contract: 'my-app'),
   ),
 );
 ```
 
-Opening commits local storage before starting network work; connectivity is not required to reopen a Store. Normal reopen retains its incarnation, pending Calls, manifests and delivery progress. Use a separate file for each binding and one active owner per file. Configure the same `projectionGeneration` on client and backend; it defaults to `'1'`.
+Opening commits local storage before starting network work; connectivity is not required to reopen a Store. Normal reopen retains its Store identity, pending Mutations, frozen Batch and delivery progress. Use a separate file for each Stream binding and one active owner per physical file. Protocol 5 requires a fresh format-5 file; another format is refused without changing the original database, WAL or SHM. Keep the old release available to drain or export unresolved work before retiring its backend. Configure the same `projectionGeneration` on client and backend; it defaults to `'1'`.
 
 ## Native libraries
 
@@ -56,6 +53,6 @@ await client.bootstrap();
 final subscription = client.models.entry.watch().listen(render);
 ```
 
-Bootstrap waits for the entire bounded manifest and real delta catch-up. An empty result still completes. Models marked `@@bootstrap` are selected initially; later rematerialization also covers held authority. The Stream supplied at open continues delivering after Bootstrap. Watch local Models for continuous state and use Query/Fetch results as invocation snapshots.
+Bootstrap waits for complete finite authority units at its captured head; it does not promise perpetual freshness. An empty result still completes. Models marked `@@bootstrap` are selected initially; later rematerialization also covers held authority. The Stream supplied at open continues delivering after Bootstrap. Watch local Models for continuous state and use Query/Fetch results as invocation snapshots.
 
-Close the client when its application session ends; cancel individual observers when their view ends. See [the generated API](client-api.md) for named Mutations, request-level storage, once results, local transactions and unsent-work controls.
+Close the client when its application session ends; cancel individual observers when their view ends. See [the generated API](client-api.md) for named Mutations, request-level storage, local transactions and unsent-work controls.

@@ -1,5 +1,7 @@
 # Push
 
+Historical carrier reference. Current behavior is owned by [protocol 5](0.5.md). This page does not promise support for old local files or an alternate current API.
+
 Current bound clients send one named [protocol-4 Mutation](0.4.md), without row stamps or a public batch sequence. The batch/receipt format below is the retained protocol-3 carrier.
 
 Durable calls - a Mutation's default route and a Query's `queries.enqueue` override ([Mutations and Queries](../schema/actions.md)) - use the same ordered batch lane as the retained mutation protocol below. Each call entry carries `ordinal`, `callId`, `name`, `version`, canonical `args` and, when not the default, its [`store` policy](actions.md#store-policy); the frozen request keeps these bytes across retry and restart. The entry carries no kind; the server takes it from the retained descriptor, and a queued Query is an ordinary entry that derived no local Model operations. Its receipt carries a correlated completion for every call (`succeeded` with typed output or `failed` with a stable code and execution state), plus batch-final `records` for Model authority. Per-invocation Model output snapshots belong to completions; they cannot be reconstructed from the batch-final records. The server saves each call outcome atomically with business writes and the batch receipt. See [direct calls](actions.md) for the separate request/response route and [server execution](../server/engine/README.md) for shared handling.
@@ -30,7 +32,7 @@ Batch `n+1` is accepted only after `n`. Resending `n` returns the stored receipt
 
 - Unknown request fields survive a round trip and appear in the canonical bytes, which do not depend on field order; a request without `models` is refused. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `batch_envelope_keeps_unknown_data_in_canonical_bytes`.
 - The canonical receipt bytes are stable, a receipt round-trips, a page change converts to receipt authority without its cursor, and every case in [receipt-authority.json](../../../../fixtures/protocol/receipt-authority.json) decodes as declared: success without streams, all rejected, deletion, repeated record with one final result, and the refusals (duplicate record, duplicate or zero rejection ordinal, blank code, missing field, legacy checkpoint receipt, out-of-range counter, malformed identity or state). Evidence: `receipt_wire_round_trips_and_carries_authority_without_a_cursor`, `receipt_fixture_cases_decode_as_declared`.
-- The receipt a client stores equals the one the server stored, byte for byte. Evidence: [crates/sim/tests/push.rs](../../../../crates/sim/tests/push.rs) `receipts_round_trip`.
+- The receipt a client stores equals the one the server stored, byte for byte. Evidence: [crates/sim/tests/push.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sim/tests/push.rs) `receipts_round_trip`.
 
 ## 11. Risks and Technical Debt
 

@@ -27,7 +27,6 @@ async function scenario(run) {
         connection: {
           url: proxy.url,
           token: viewer,
-          identity: { backend: "todo-demo", viewer, contract: "todo-v04" },
           options: {
             onError: (error) =>
               diagnostics.push({
@@ -82,7 +81,8 @@ const todo = (id, title = " task ") => ({
   createdById: "alice",
 });
 const target = (name) => (x) =>
-  x.path === "/sync/actions" && intent(x).name === name;
+  x.path === "/sync/mutations" &&
+  intent(x).mutations.some((mutation) => mutation.name === name);
 
 test("seeds materialize for both viewers and durable reopen keeps their edited state", async () =>
   scenario(async (ctx) => {
@@ -215,8 +215,10 @@ test("lost accepted receipt retries exact intent after reopen and does not rerun
     assert.equal(ctx.app.handlerCalls, calls);
     assert.equal((await reopened.models.todo.get({ id })).title, "task");
     const requests = ctx.proxy
-      .requests("/sync/actions")
-      .filter((x) => x.request.name === "AddTodo");
+      .requests("/sync/mutations")
+      .filter((x) =>
+        x.request.mutations.some((mutation) => mutation.name === "AddTodo"),
+      );
     assert.ok(requests.length >= 2);
     assert.deepEqual(requests.at(-1).request, requests[0].request);
   }));
@@ -256,36 +258,24 @@ test("offline create then complete persists in order while another viewer keeps 
         diagnostics: reopened.testDiagnostics.slice(-8),
         bobDiagnostics: bob.testDiagnostics.slice(-8),
         state: await reopened.syncState(),
-        queue: await inspect("SELECT * FROM axton_mutation"),
         dependencies: await inspect("SELECT * FROM axton_mutation_dependency"),
-        operations: await inspect("SELECT * FROM axton_mutation_operation"),
+        operations: await inspect("SELECT * FROM axton_mutation_queue_operation"),
         tasks: await reopened.pendingTasks(),
-        refusals: await inspect("SELECT * FROM axton_rejection"),
-        outstandingRequests: await inspect("SELECT * FROM axton_v04_request"),
-        receipts: await inspect(
-          "SELECT * FROM axton_v04_call ORDER BY ordinal DESC LIMIT 4",
-        ),
-        evidence: await inspect(
-          `SELECT * FROM axton_v04_record WHERE model='Todo' AND json_extract(identity,'$.id')='${id}'`,
-        ),
-        page: await inspect("SELECT * FROM axton_v04_page"),
-        materializations: await inspect("SELECT * FROM axton_v04_bootstrap"),
+        refusals: await inspect("SELECT id,rejection_code,rejection_message FROM axton_mutation_queue WHERE rejection_code IS NOT NULL"),
+        store: await inspect("SELECT * FROM axton_store"),
+        queue: await inspect("SELECT * FROM axton_mutation_queue"),
+        evidence: await inspect("SELECT * FROM axton_authority"),
+        delivery: await inspect("SELECT * FROM axton_delivery_progress"),
         local: await reopened.models.todo.get({ id }),
         prisma: await ctx.app.db.todo.findUnique({ where: { id } }),
         savedCalls: await ctx.app.db
           .$queryRawUnsafe(
-            "SELECT owner_id,call_id,request,response,claim_tx::text FROM axton_call WHERE request::text LIKE $1 LIMIT 4",
+            "SELECT store_id,batch_id,mutation_id,result FROM axton_mutation_result WHERE result::text LIKE $1 LIMIT 4",
             `%${id}%`,
           )
           .catch((error) => ({ error: String(error) })),
-        requests: ctx.proxy.requests("/sync/actions").slice(-6),
+        requests: ctx.proxy.requests("/sync/mutations").slice(-6),
         deliveryRequests: ctx.proxy.requests("/sync/pull").slice(-6),
-        frozenDelivery: await inspect(
-          "SELECT * FROM axton_v04_delivery_request",
-        ),
-        completions: await inspect(
-          "SELECT * FROM axton_v04_completion ORDER BY rowid DESC LIMIT 4",
-        ),
       };
       console.error(
         "TODO_DEPENDENT_TIMEOUT",

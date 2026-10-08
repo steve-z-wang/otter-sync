@@ -56,9 +56,7 @@ test("listener close drains an admitted HTTP Fetch after the native requester cl
           request.socket.once("close", socketClosed.resolve);
         return authenticate(request);
       },
-      protocol4: {
-        backendId: "sdk",
-        contractId: "sdk-v04",
+      protocol5: {
         authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
       },
       onError: (error) => diagnostics.push(error),
@@ -102,7 +100,6 @@ test("listener close drains an admitted HTTP Fetch after the native requester cl
       connection: {
         url: server.url,
         token: "alice",
-        identity: { backend: "sdk", viewer: "alice", contract: "sdk-v04" },
       },
     });
     await client.bootstrap();
@@ -187,9 +184,7 @@ for (const reporterThrows of [false, true]) {
           item.finished.resolve();
         }
       },
-      protocol4: {
-        backendId: "sdk",
-        contractId: "sdk-v04",
+      protocol5: {
         authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
       },
       onError: (error) => {

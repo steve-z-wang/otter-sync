@@ -4,7 +4,7 @@ The generated client is the whole client: besides the [typed Model, Mutation and
 
 ## Opening and schema changes
 
-Open with `path`, the single `stream`, and a `StoreConnection` containing stable backend/viewer/contract identity. The generated facade supplies its compiled schema. Binding happens before network startup, so an offline reopen can validate the same database without a handshake. Credentials are separate from this identity.
+Open with `path`, the single `stream`, and an optional `StoreConnection`. Protocol 5 requires a fresh format-5 file; an unsupported existing file is refused intact. The generated facade supplies its compiled schema. Binding happens before network startup, so an offline reopen can validate the same database without a handshake. The backend binds the Store to its authenticated principal; credentials do not create a new file lifecycle.
 
 Normal reopen retains the database's incarnation and durable calls. A supported schema or projection-generation change creates a new materialization context; retained Mutation contracts remain available for frozen retries. Bootstrap rematerializes held authority under the active context without inventing delivery progress. Keep the configured projection generation the same on backend and client, and change it when projection behavior changes.
 
@@ -191,7 +191,7 @@ Pass `connection` when opening the bound generated client. `client.connect` can 
 | `refreshAuth` | `() => Promise<void>`, in connection options | Named async callback on `connect` / `open` |
 | Direct timeout | `connection.directTimeoutMs` on `open`, or `directTimeoutMs` on `connect`: integer milliseconds, 1–2,147,483,647; default 30,000 | `directTimeout` on `open` / `connect`: positive `Duration`; default 30 seconds |
 
-Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A platform host build (such as the Node and React Native packages) supplies the HTTP carrier; `open` and `connect` take no carrier. Such a TypeScript carrier implements `Transport`: it receives an `HttpRoute` (`push`, `pull`, `action`, `fetch` or `load`) and the request body, and the built-in carrier posts them to `/sync/mutations`, `/sync/pull`, `/sync/actions`, `/sync/fetch` and `/sync/loads`, and refuses any other route. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
+Here `backendUrl`, `accessToken` and `renewAccessToken` belong to your application. Credentials travel in authorization headers. A platform host build (such as the Node and React Native packages) supplies the HTTP carrier; `open` and `connect` take no carrier. Such a TypeScript carrier implements `Transport`: current protocol-5 effects route `handshake`, `push`, `pull`, `action`, `fetch` and `materialize` to `/sync/handshake`, `/sync/mutations`, `/sync/pull`, `/sync/actions`, `/sync/fetch` and `/sync/materialize`. These carry Store admission, immutable Batches, finite delivery, fresh named Query/Model reads and owned materialization. Token functions run for new requests and connections, so they can read refreshed credentials. Authentication failures can invoke `refreshAuth`; background failures reach `onError` and retry with backoff.
 
 `headers` travel with every request and the WebSocket upgrade, for example your app's platform and build so the backend's [`admit`](../backend/api.md#admission) can turn away an outdated release. Headers AXTON sets itself (`Authorization`, `Content-Type`, the WebSocket handshake) are refused when you connect. If the backend refuses the client, `onError` receives one `AdmissionRefused` carrying the `status` and `body` the backend chose, and the connection stops: nothing is retried, `refreshAuth` is not called, and local reads and writes go on. Queued work waits; connect again (for example after an update, with new `headers`) to resume. On React Native a refused WebSocket upgrade is not visible, so the refusal arrives with the first HTTP request instead.
 
@@ -201,7 +201,7 @@ The native runtime owns one Stream subscription and its durable cursor. A fresh 
 
 HTTP Delta and live delivery apply through the same native commit-unit path. A unit commits its records, authority evidence and delivery prefix atomically. An independent successful prefix may commit before a later unit fails. A unit that violates a required constraint cannot be split merely by lowering a transport limit. Adaptive smaller requests permit independent earlier units to progress, without skipping the failed group.
 
-Named Mutation requests use the durable single-intent Action route. Query and Fetch use finite request routes, while Bootstrap and receipt-target recovery use bounded immutable manifests. A Bootstrap tail capture does not advance the Stream cursor; completion waits for actual Delta coverage. These jobs share the connection and resume durable progress after interruption.
+Named Mutations use immutable Batches with independently committed member outcomes. Query and Fetch use fresh finite read requests. Bootstrap, Sync and settlement-target recovery use immutable plans whose required units commit whole. Head capture advances no progress; handshake commits S and C=S, while B appears only after the final Bootstrap unit. Reopen retains committed coverage and frozen work.
 
 Pause and close cancel requests and sockets. A replaced session's late response cannot write into the active Store. Normal reconnect retains context/incarnation; explicit reset creates a new lifecycle.
 
@@ -221,7 +221,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
 
 ## Pending work and recovery
 
-`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections, schema }`. `pending` counts queued work; `schema` is `{ rebuilt, pending, lastRebuild }` from the open-time schema check ([opening and schema changes](#opening-and-schema-changes)); `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` lists desired subscriptions; `rejections` contains `{ ordinal, code }` entries. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
+`client.syncState()` returns `{ clientId, pending, beforeImages, cursors, streams, rejections }`. `pending` counts queued work; `beforeImages` is a diagnostic count; `cursors` maps streams to received positions; `streams` describes the single bound Stream; account-wide `rejections` contains `RefusedAct` entries `{ id, name, version, code, act }`, keyed by `id`. `client.models.<name>.syncState(identity)` returns one record's `{ pending, rejections }`, whose rejection entries use `{ ordinal, code }`: pending entries carry an ordinal, Mutation name, phase, prerequisite states and `diverged` when replay failed over newer authority. Both are local snapshots, not network probes.
 
 === "TypeScript"
 
@@ -231,7 +231,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
     for (const rejection of (await client.syncState()).rejections) {
       console.log(rejection.code);
       // After your UI has handled it:
-      await client.dismissRejection(rejection.ordinal);
+      await client.dismissRejection(rejection.id);
     }
     ```
 
@@ -247,7 +247,7 @@ All controls return promise/future void. Pause/close cancel network activity tha
     for (final rejection in (await client.syncState())['rejections'] as List) {
       print(rejection['code']);
       // After your UI has handled it:
-      await client.dismissRejection(rejection['ordinal'] as int);
+      await client.dismissRejection(rejection['id'] as int);
     }
     ```
 
@@ -397,4 +397,4 @@ A task that failed stays failed while any call waits on it. A call queued later 
 
 ## Protocol primitives
 
-The engine's protocol methods (`freeze`, `acknowledge`, `applyPull`, the last two returning reports for records they could not apply) are not part of the application surface; they exist on the runtime handle the framework's own tests use. Application synchronization is managed by `connect`. Wire fields are defined in the [protocol source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol_v04.rs) and exercised by [shared wire fixtures](https://github.com/zanminwang/axton/blob/main/fixtures). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.
+The application SDK exposes no `freeze`, `acknowledge` or `applyPull` methods. Application synchronization is managed by the bound connection. Rust owns frozen Batches, acknowledgment and authority installation; wire fields are defined in the [protocol 5 source](https://github.com/zanminwang/axton/blob/main/crates/core/src/protocol_v05.rs) and exercised by [current carrier tests](https://github.com/zanminwang/axton/blob/main/crates/core/tests/protocol_v05.rs). Do not manufacture receipts, advance cursors yourself or rewrite frozen requests to recover from a network failure.

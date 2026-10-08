@@ -31,13 +31,13 @@ Local-first apps read and write data on the device, so everyday interactions don
 
 ## How it works
 
-The Stream API below requires the [coordinated AXTON 0.3 upgrade](website/docs/backend/deployment.md#stream-membership-cutover); 0.2 packages retain the earlier contract.
+Protocol 5 uses fresh canonical framework storage: one Client, physical SQLite file and Stream, plus a fresh backend framework namespace. Existing layouts are refused intact; no old-format migration or compatibility bridge is supplied. See [adoption limits](docs/engineering/protocol5-adoption.md).
 
 ![AXTON architecture: local state and background sync](website/docs/assets/architecture.svg)
 
 Clients push mutations over HTTP. On connection, they catch up from saved progress over HTTP, then receive ongoing record updates over WebSocket. AXTON manages this as one connection.
 
-On your server, **handlers** process writes and **loaders** read records to send to clients. After a handler runs, AXTON reads the records the mutation targeted back through your loaders and returns them to the client in the receipt. A **Stream** is a resumable delivery sequence clients subscribe to. Track a record once; global invalidation of its authority reaches every tracking Stream, through the viewer's Loader.
+On your server, **handlers** process writes and **loaders** read records to send to clients. Each named Mutation commits its backend outcome independently; execution acknowledgment and locally committed settlement are separate boundaries. A **Stream** carries authoritative delivery. Track a record once; global invalidation of its authority reaches every tracking Stream, through the viewer's Loader.
 
 Writes update local SQLite immediately, so reads see changes before sync completes. Changes to local data update query subscriptions (`watch`). If the backend rejects a mutation, its local changes roll back.
 
@@ -84,7 +84,8 @@ import { GeneratedClient } from "./generated/client.ts";
 
 const client = await GeneratedClient.open({
   path: "local.sqlite",
-  server: {
+  stream: "User:demo-user",
+  connection: {
     url: "http://127.0.0.1:4242",
     token: "demo-user",
   },
@@ -102,7 +103,7 @@ const open = await client.models.todo.query({ where: { done: false } });
 client.models.todo.watch({ where: { done: false } }, (todos) => render(todos));
 
 // Run a Mutation. It commits locally and returns once it is queued;
-// wait() yields the backend result or rejection.
+// wait() also waits for this Store’s committed settlement.
 const call = await client.mutations.addTodo({
   todo: { id: "t1", title: "Buy milk", done: false },
 });
@@ -111,11 +112,11 @@ const { error } = await call.wait();
 // Run a Query. It asks the backend directly and returns its result.
 const { todos } = await client.queries.searchTodos({ text: "milk" });
 
-// Receive record changes published to the "todos" stream.
-await client.streams.subscribe("todos");
+// Await finite initial authority for the Stream supplied at open.
+await client.bootstrap();
 ```
 
-AXTON sends queued Mutations when the network allows, retries failed sync requests, and fetches changed records from your subscribed streams. `client.mutations.call` waits for the backend instead, and `client.queries.enqueue` queues a Query.
+Rust sends immutable Mutation Batches and resumes finite authority delivery. Query/Fetch are fresh invocation snapshots, not queued calls; their null-cursor Models cannot replace current Stream protection. SDKs execute native networking and interface effects.
 
 ### 3. Implement handlers and loaders for your backend
 
@@ -127,13 +128,12 @@ const mutations: Mutations<Tx> = {
   async addTodo({ ctx, args }) {
     await ctx.tx.todo.create({ data: args.todo });
 
-    // The new todo is read back for the caller regardless. Adding it to the
-    // "todos" stream once sends it, and every later change, to subscribers.
-    ctx.stream("todos").track.todo(args.todo);
+    // Track explicitly in the initiating authenticated Stream.
+    ctx.stream.track.todo(args.todo);
   },
 };
 
-// Answer a read. A Query's context has no invalidate or stream.
+// Answer a read. Query contexts can track explicitly, but cannot invalidate.
 const queries: Queries<Tx> = {
   async searchTodos({ ctx, args }) {
     const rows = await ctx.tx.todo.findMany({
@@ -158,7 +158,7 @@ Add these imports and the transaction type before the handlers and loaders above
 
 ```ts
 import { PrismaClient, type Prisma } from "@prisma/client";
-import { prisma } from "./packages/postgres/index.mts";
+import { prisma } from "@axtonjs/postgres/prisma";
 import {
   createBackend,
   devAuth,
@@ -177,6 +177,9 @@ Start the server after defining the handlers and loaders:
 const backend = createBackend({
   database: prisma(new PrismaClient()),
   authenticate: devAuth(),
+  protocol5: {
+    authorizeStream: (principal, stream) => stream === `User:${principal}`,
+  },
   mutations,
   queries,
   loaders,

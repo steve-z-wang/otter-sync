@@ -2,160 +2,16 @@
 
 ## 1. Introduction and Goals
 
-A local database records the schema it was built for. Opening a client compares that stored descriptor with the compiled schema it is given and takes one of three ways: open as is, apply an additive change in place, or leave the file behind and build a fresh one beside it that resynchronises from the server. No row, pending mutation or direct record ever moves between schemas, and the runtime never deletes a file an application could still need ([#20](https://github.com/zanminwang/axton/issues/20)).
-
-## 3. Context and Scope
-
-The application passes one `path`; the client chooses the file. Opening reads the sidecar `<path>.current` (one line, the file name; missing means `path` itself), opens that file, and runs the **layout gate** on the committed reader before any DDL: a file laid out by the checkpoint-era runtime is a legacy layout, a file without `axton_client` is fresh, anything else is current. It then runs the framework DDL, reads the stored descriptor from `axton_schema` and classifies the difference with the shared rule `Schema::compatibility(stored, incoming)` from [core/schema.rs](../../../../../crates/core/src/schema.rs). **Reconciliation** proper, the DDL that makes the model tables match, runs once inside the opening transaction for a fresh file and for an additive change; a rebuild runs it on the new file. Input: the sidecar, the `axton_` table names, the stored descriptor and the compiled schema. Output: an open client whose `schema_state()` says what happened, or an error and an untouched file.
-
-Callers are [`Client::open_at`](../frontend-interface.md) (the [runtime](../runtime.md), simulation) and `Client::open` for a store the caller opened itself; the latter has no path, so it refuses a legacy layout instead of rebuilding.
+Schema artifacts preserve the original Mutation input contract and exact frozen request. Canonical read materialization is separate: a compatible descriptor reorder keeps queued input, while a changed read contract stages a desired context. Enabling that context requires complete authority transfer; Model DDL alone proves no coverage. Format-4 files are refused intact rather than rebuilt or wiped automatically.
 
 ## 5. Building Block View
 
-Per model there are two tables with identical columns: the visible table named after the model and `axton_before_<Model>` for before images ([Writes](../engine/local-operations/writes.md)). Column types follow [Types](../../schema/types.md); the identity is the primary key in `@@id` order; each `@@unique` becomes a unique index on the visible table. Framework tables (`axton_schema`, `axton_client`, `axton_record`, `axton_subscription`, the four queue tables, the local write journal `axton_local_write`, `axton_rejection`, `axton_query_cache`, and the native Load ledger `axton_load` and `axton_load_once`, owned by [Loads](../engine/loads.md#5-building-block-view)) are created with `IF NOT EXISTS`, so an existing database gains a missing one in place without a rebuild; `axton_query_cache` holds Query `once` snapshots (key, contract, name, version, canonical args and store, generation, and a nullable result where SQL NULL is an invalidated tombstone), and opening deletes its rows of any other contract fingerprint ([frontend interface](../frontend-interface.md)); `axton_schema` holds one row, the canonical JSON of the descriptor and when it was written; `axton_client` carries `last_completed_push`, `push_models` and the `next_subscription` allocator ([Settlement](../engine/settlement.md)).
-
-The local write journal keeps settled local writes in a dirty record's local order until no earlier pending operation needs them ([Writes](../engine/local-operations/writes.md#5-building-block-view)):
-
-```sql
-CREATE TABLE axton_local_write (
-  sequence    INTEGER PRIMARY KEY,  -- allocation order, in the writing transaction
-  ordinal     INTEGER NOT NULL,     -- the owner of an accepted companion; the last ordinal allocated before an independent write
-  position    INTEGER,              -- the companion's position in its owner; NULL for an independent write
-  disposition TEXT NOT NULL CHECK (disposition IN ('independent','accepted')),
-  model TEXT NOT NULL, identity TEXT NOT NULL,
-  op TEXT NOT NULL CHECK (op IN ('create','update','delete')),
-  "values" TEXT,
-  CHECK ((disposition = 'independent') = (position IS NULL))
-);
-CREATE INDEX axton_local_write_record ON axton_local_write (model, identity, sequence);
-```
-
-A row is either a direct write made while its record had pending work (`independent`) or the companion of an accepted call (`accepted`); a pending companion stays with its call in `axton_mutation_operation`. The journal is not a queue: nothing in it is sent, and no row outlives the pending work ordered before it on its record. A file from before the journal **gains the empty table in place**: its direct writes and accepted companions were already folded into the before images, so its records reconstruct as before, and its queued companions settle through the journal from then on. That runtime stored a companion delete's cascade as an `effect` row after all of the call's operations; at acceptance an `effect` row on a descendant of one of the call's companion deletes is journaled with the companion, so the cascade keeps following the call and the child does not return. Such an old row keeps its end-of-call position: a later operation of the same old call on that child still replays before the cascade, as it did in that runtime.
-
-A Mutation submitted inside an application transaction uses these same tables: its queue row, its wire operations and optimism, its companion rows (`kind = 'companion'` in `axton_mutation_operation`) and the before images they need are written in that transaction, so a rollback leaves none of them and a commit makes all of them durable together. The rows hold concrete operations, never callback code, so a reopen resumes the same call and its settlement without running the application's callback again. Beyond the local write journal above, it adds no table or column, so a file with the journal opens unchanged.
-
-The subscription ledger is one row per followed Stream ([#150](https://github.com/zanminwang/axton/issues/150)):
-
-```sql
-CREATE TABLE axton_subscription (
-  stream           TEXT PRIMARY KEY,  -- the Stream name
-  subscription_id   INTEGER NOT NULL UNIQUE,
-  starting_cursor   INTEGER,           -- the boundary the first initialization committed
-  cursor            INTEGER,           -- how far delivery has committed
-  bootstrap_state   TEXT NOT NULL DEFAULT 'not_requested',
-  bootstrap_run     INTEGER NOT NULL DEFAULT 0,
-  bootstrap_cursor  INTEGER NOT NULL DEFAULT 0,
-  bootstrap_barrier INTEGER,
-  bootstrap_error   TEXT,
-  CHECK ((starting_cursor IS NULL AND cursor IS NULL) OR
-         (starting_cursor IS NOT NULL AND cursor IS NOT NULL AND
-          starting_cursor >= 0 AND cursor >= starting_cursor))
-)
-```
-
-The five `bootstrap_` columns are the same row's historical load ([#151](https://github.com/zanminwang/axton/issues/151)): the phase (`not_requested`, `requested`, `loading`, `catching_up`, `complete`, `failed`), the run that fences retries and in-flight responses, the committed progress B through the interval below `starting_cursor`, the completion barrier the terminal page fixed, and a bounded JSON failure. Their defaults are a load that was never requested, so a ledger from before them **gains them in place** with every identity and boundary intact. SQLite can add a column-level `CHECK` with a new column, but not the table-level constraint across the five that their coherence needs - a barrier only once the interval finished, a failure only on a failed run - so that coherence is enforced in [client/bootstrap.rs](../../../../../crates/client/src/bootstrap.rs), on every read and every write of a row in [client/bootstrap_ledger.rs](../../../../../crates/client/src/bootstrap_ledger.rs).
-
-A row means subscribed; no row means unsubscribed. **Both cursors NULL** means the intent is durable but its first delivery boundary is not committed yet - what an offline registration leaves behind - and zero is an initialized position, never a stand-in for uninitialized. The `CHECK` is why a half-initialized pair cannot be stored: only the first initialization writes both fields, together, and later page application moves `cursor` alone while `starting_cursor` stays fixed for that identity. `subscription_id` comes from the `next_subscription` allocator in `axton_client`, is never recycled, and fences a handle, an acknowledgement or a request against the registration it was made for, including a recreation at the same Stream name. Who writes what is in [Frontend interface](../frontend-interface.md) and [Downlink worker](../connection/controller/downlink-worker.md).
-
-Beside the database: the sidecar `<path>.current`, written as `<path>.current.tmp` and renamed, and the numbered files `<path>.<n>` a rebuild creates, `n` being the smallest unused positive integer.
-
-Code: [client/ddl.rs](../../../../../crates/client/src/ddl.rs) (`check_layout` → `Layout`, `FRAMEWORK_DDL`, `reconcile`); [client/schema_store.rs](../../../../../crates/client/src/schema_store.rs) (descriptor read and write, sidecar, next free file, removal of an abandoned file); the open flow, `rebuild` and the pending counts in [client/lib.rs](../../../../../crates/client/src/lib.rs) (`open_at`, `rebuild_beside`, `rebuild`); the compatibility rule in [core/schema.rs](../../../../../crates/core/src/schema.rs) (`Schema::compatibility`, `Compatibility`, `AdditiveStep`).
-
-### The table contract
-
-Applications read the Model tables with their own SQL, `readSql` once and `watchSql` reactively ([Queries](../engine/local-operations/queries.md)), so the layout they see is a public, stable contract ([#184](https://github.com/zanminwang/axton/issues/184)):
-
-- a Model's table is named exactly the Model name (`Space`, `MomentPlacement`), and each column exactly its field name, in declaration order;
-- every table the engine owns is named `axton_*`: the framework tables above and each Model's `axton_before_<Model>`. Applications must not read them, and `watchSql` refuses a statement that does;
-- changing either rule is a breaking change.
-
-The compiler refuses a Model named with the `axton_` or `sqlite_` prefix, so no Model table can collide with an engine one. An audit of every table the client creates found none outside the prefix, so nothing was renamed. The unique indexes (`<Model>_<fields>_unique`) and SQLite's own `sqlite_*` objects are not tables and not part of the contract; the engine creates no view or trigger.
-
-## 6. Runtime View
-
-The comparison is the compiler's model rule ([Models §9](../../schema/models.md#9-architecture-decisions)), never a hash: a hash can tell that something changed, not whether the change is safe.
-
-| Comparison of stored and incoming schema | Outcome |
-| --- | --- |
-| Identical (field order ignored) | **open** |
-| A new model; a new nullable stored field; a new non-nullable field with a descriptor default | **additive**: the tables and columns are added by `reconcile` in the opening transaction and the stored descriptor is replaced in the same transaction |
-| A removed model; a model version change; an identity change; a removed, retyped or nullability-changed field; a changed unique set or relation; changed values of an enum a stored field uses | **incompatible**: the file is not touched; a fresh `<path>.<n>` is created (see below) |
-| Legacy layout from the checkpoint era (`axton_push_checkpoint`, `axton_claim`, or `axton_client` without the completion columns) | **incompatible** as well: it stops being a refusal and becomes a rebuild; its checkpoint-era queue cannot be sent by this runtime, so the count of mutations it held is reported as left behind |
-| Current layout without a descriptor row (a file from before this rule) | a read-only table check (`ddl::incompatibility`: identity columns, column types, a missing non-nullable column without a default) decides: tables that fit open in place and adopt the incoming descriptor; tables that do not are rebuilt with that reason. Any other open failure is an error, never a reason to switch files |
-| Current layout whose `axton_mutation` lacks `diverged` (a file from before [#122](https://github.com/zanminwang/axton/issues/122)), or whose `axton_subscription` lacks the `bootstrap_` columns (a file from before [#151](https://github.com/zanminwang/axton/issues/151)) | the columns are **added in place** with their defaults before anything else, so the queue stays sendable and the subscriptions keep their identities and boundaries |
-
-A **rebuild** creates `<path>.<n>`, where `n` is one above every existing numbered file (numbers only grow, even after the application deletes an old generation), runs the framework DDL and `reconcile` for the incoming schema, stores its descriptor, carries the old file's Stream names over as fresh subscriptions with NULL cursors and no load state (a fresh identity's load is `not_requested` at run zero, so no loading coverage is claimed across the rebuild) and carries the `next_subscription` allocator forward where the old layout had one (never the old cursors: an old cursor must not claim old rows are present, and an equal numeric identity in a replaced replica is not the same handle), commits, and only then writes the sidecar. Initialization is reset by that: each carried Stream waits for the next acknowledged head, and no loading completeness is claimed across the rebuild. Reopening follows the sidecar to the new file. An interrupted rebuild leaves the sidecar untouched, so the next open finds the old file again, classifies it again, removes every numbered file **above** the one in use (it was never pointed at and holds nothing durable) and retries with the next number. The file in use and every earlier generation are kept. The old file stays where it was, with every row, pending mutation and direct record it held; the application may delete the numbered files it no longer needs.
-
-**Native Loads across a rebuild** ([#173](https://github.com/zanminwang/axton/issues/173)). A rebuild copies no Load job, once mapping, completion or continuation into the new file, so an old completion cannot satisfy a `once` call against an empty replica; `get` of an old ID on the new replica answers null. The runtime ends every handle of the old replica with a `failed` status carrying `load.schema_changed`, fails its parked waiters with that code, and remembers the abandoned IDs for the session: status, wait, cancel, retry and forget of them answer `load.schema_changed` rather than `load.not_found`. `RebuildReport.abandoned_loads` (`abandonedLoads` in the runtime's report) lists every job ID of the old ledger, oldest first. A rebuild also advances the client's replica generation, which every Load page fence carries, so an answer requested against the old replica is inert. While the old file stays open for unsent Mutations, its jobs are parked: no page is ready and no answer applies, and start (plain, once or refresh), retry and invalidate fail with `load.schema_pending` before writing anything, while get, list, cancel and forget read and change the old ledger. Load never delays the Mutation drain. A compatible reopen keeps every job with its frozen request; a job whose Load version the schema no longer retains fails as `load.contract_unavailable`. Evidence: `a_pending_rebuild_parks_loads_and_the_rebuild_abandons_them`, `an_incompatible_open_without_unsent_work_abandons_every_load` in [sqlite/tests/rebuild.rs](../../../../../crates/sqlite/tests/rebuild.rs), and `a_compatible_reopen_keeps_retained_jobs_and_fails_removed_versions`, `the_ledger_tables_are_added_beside_existing_work` in [sqlite/tests/loads.rs](../../../../../crates/sqlite/tests/loads.rs); through the runtime, `a_pending_rebuild_parks_loads_beside_the_mutation_drain_and_the_rebuild_ends_their_handles` in [runtime_loads.rs](../../../../../crates/sqlite/tests/runtime_loads.rs); through the SDKs, `a rebuild reports the Load jobs it left behind` and `a rebuild ends live handles and parked waiters with load.schema_changed` in [loads.test.mjs](../../../../../integration/bindings/client-js/loads.test.mjs), and `a rebuild ends live handles and parked waiters with load.schema_changed` (which reads `abandonedLoads` from the Dart `rebuild()` report) in [dart/test/loads_test.dart](../../../../../packages/dart/test/loads_test.dart).
-
-**Unsent work in the old file.** Before an incompatible rebuild the client counts the old file's queued mutations (`pending`) and its direct records (`direct`: rows with no stamp in `axton_record` and no pending operation, which nothing will ever send). With `pending > 0` and `discard_pending = false`, the old file is opened as it is, **with its stored schema** (its frozen bytes and declaration were compiled for that schema and the server serves that mutation version), and `schema_state().pending` reports `{old_file, reason, pending, direct}`. The push lane runs as usual; reads answer from the old schema. When the queue is empty the application reopens, or calls `rebuild(false)`, which performs the switch in place: the same handle now serves the new file, its watchers are moved, every model table is notified, and a connected Downlink lane is reset for the new file without another `connect` ([Downlink worker](../connection/controller/downlink-worker.md)). There is no automatic switch inside a running process. `rebuild(true)`, or `discard_pending = true` at open, rebuilds at once and the report says what the old file keeps: `RebuildReport { old_file, new_file, reason, left_pending, left_direct, abandoned_calls, abandoned_loads }`, also available as `schema_state().last_rebuild`. `rebuild` refuses when nothing is pending, when a client transaction is open, and when unsent mutations remain unless told to leave them.
-
-Consequences worth knowing: a field rename is a removal plus an addition, so it is incompatible and rebuilds; a source `@default` is creation policy (`createDefault`), not the descriptor `default` this table reads, so the "non-nullable with default" additive row stays unreachable from a `.model` file and a required field always rebuilds, matching the model-version rule that already demands a bump for it ([#27](https://github.com/zanminwang/axton/issues/27)). Adding, changing or removing a creation default is not a storage change: the schema compares identical, the file opens in place, and no row, queued argument or frozen request is rewritten. The SQLite reader connection is refreshed after an additive change, and double-quoted string literals are disabled on both connections, so an added column is a column, never a string that looks like one.
-
-## 9. Architecture Decisions
-
-**Detect compatibility and rebuild incompatible replicas — implemented ([#20](https://github.com/zanminwang/axton/issues/20)).** The rule lives in `axton-core` so the compiler's history check and the client's open check cannot drift. Rebuilding is automatic framework behaviour: no migration SQL, no migration command, no registered upgrade callback. A compatible database is reused rather than rebuilt on every start.
-
-**The old file is kept and nothing moves.** Rows, pending mutations and direct records stay in the file they were written to. Carrying them into another schema would mean inventing values or rewriting frozen request bytes, both of which the framework refuses to do. The `migration` option the SDK `open` still accepts is ignored: there is no defaults or replay mechanism, and documenting one would promise a seamless upgrade the runtime does not perform.
-
-**Unsent work is sent first, or left behind on the application's say-so.** The client never decides a timeout. It keeps the old file open for its work and reports the state; the application decides whether to wait or to call `rebuild({ discardPending: true })` and tell the user what stayed behind.
-
-**Selection is a sidecar, not a rename.** Renaming the live file under an open connection is not atomic on every platform; a one-line pointer written by temp-and-rename is. The sidecar is written last, so a crash at any earlier point leaves a file the next open discards.
-
-**The table layout is a public contract ([#184](https://github.com/zanminwang/axton/issues/184)).** Product SQL needs names that survive an upgrade, and the layout already carried the schema's names. Promising it, with the `axton_` prefix as the only boundary, is cheaper than a stable view layer and costs no storage change; the price is that renaming a Model table or column scheme becomes a breaking change.
-
-**Ruling: a file without a descriptor adopts the schema it opens with** when reconciliation succeeds. Such files predate the rule and were, by construction, reconciled by the same DDL; refusing or rebuilding them would discard working replicas for no gain.
+[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
 ## 10. Quality Requirements
 
-- **Unchanged and additive schemas open in place; the descriptor is updated; an added column reads as null.** Evidence: [sqlite/tests/rebuild.rs](../../../../../crates/sqlite/tests/rebuild.rs) `unchanged_and_additive_schemas_open_in_place`; [sqlite/tests/ddl.rs](../../../../../crates/sqlite/tests/ddl.rs) `adds_missing_columns_to_both_tables_and_keeps_unknown_ones`.
-- **A file without the local write journal gains it in place; its queue and frozen bytes are unchanged and a companion queued there settles in local order; a companion cascade that runtime stored as an effect follows its companion in both outcomes.** Evidence: [sqlite/tests/settlement.rs](../../../../../crates/sqlite/tests/settlement.rs) `a_file_without_the_local_write_journal_gains_it_in_place`, `an_old_queued_companion_cascade_stored_as_an_effect_settles_with_its_companion`.
-- **A ledger without the `bootstrap_` columns gains them in place and keeps its identities and boundaries; a second open changes nothing.** Evidence: [sqlite/tests/ddl.rs](../../../../../crates/sqlite/tests/ddl.rs) `a_subscription_ledger_without_bootstrap_columns_gains_them_in_place`.
-- **An incompatible schema gets `<path>.1`, the sidecar points to it, the old file keeps its rows, the Stream names are carried over with fresh identities, NULL cursors and no load state, the new file is empty until it syncs.** Evidence: `an_incompatible_schema_gets_a_fresh_file_and_keeps_the_old_one`, `a_rebuild_resets_the_bootstrap_state_with_the_fresh_identity`, `a_subscription_table_without_identities_is_rebuilt_beside` (a ledger without identities is itself a rebuild reason, and the allocator is carried forward where the old file had one); the initialization that follows in [sqlite/tests/downlink_worker.rs](../../../../../crates/sqlite/tests/downlink_worker.rs) `scopes_carried_through_a_rebuild_initialize_at_the_next_acknowledged_head`.
-- **A checkpoint-era layout is rebuilt beside, not refused; the old file is left as found.** Evidence: `an_earlier_framework_layout_is_rebuilt_beside_not_refused`; through a caller-opened store it is still refused untouched: `a_database_from_the_checkpoint_era_is_refused_untouched` in ddl.rs.
-- **An abandoned partial rebuild is removed and the retry takes the next number; earlier generations survive later rebuilds and numbers only grow.** Evidence: `an_abandoned_partial_rebuild_is_removed_and_retried`, `earlier_generations_survive_later_rebuilds`.
-- **A file without a descriptor is rebuilt only when its tables do not fit.** Evidence: `a_database_without_a_descriptor_is_rebuilt_only_when_its_tables_do_not_fit`.
-- **Unsent work keeps the old file open with its stored schema until sent; the frozen bytes are unchanged; then `rebuild` switches the same handle.** Evidence: `unsent_work_keeps_the_old_file_open_until_it_is_sent_then_rebuild_switches`.
-- **Discarding reports the mutations and direct records left behind and keeps the file.** Evidence: `discarding_pending_work_reports_what_the_old_file_keeps`.
-- **A descriptor-less current file adopts the schema it opens with.** Evidence: `a_current_layout_file_without_a_descriptor_adopts_the_schema_it_opens_with`.
-- **Model tables and columns carry exactly the Model and field names; every other table the engine creates is `axton_*`, and there is no view or trigger.** Evidence: [sqlite/tests/ddl.rs](../../../../../crates/sqlite/tests/ddl.rs) `model_tables_carry_model_and_field_names_and_every_engine_table_is_prefixed`, executed 2026-09-28 with `cargo test -p axton-sqlite --locked`.
-- **Every rule of the comparison names its reason.** Evidence: [core/tests/compatibility.rs](../../../../../crates/core/tests/compatibility.rs).
-- **Across the runtime and SDKs: `syncState().schema`, a refused rebuild while work is unsent, the report, the empty fresh file.** Evidence: [sqlite/tests/runtime.rs](../../../../../crates/sqlite/tests/runtime.rs) `an_incompatible_schema_keeps_its_file_until_the_work_is_settled_and_rebuilt`; [integration/bindings/client-js/rebuild.test.mjs](../../../../../integration/bindings/client-js/rebuild.test.mjs); [packages/dart/test/client_test.dart](../../../../../packages/dart/test/client_test.dart) `an incompatible schema keeps unsent work in the old file until rebuild is asked to leave it`.
-- **End to end: the rebuilt client converges like a fresh one; a restart follows the sidecar.** Evidence: [sim/tests/upgrade.rs](../../../../../crates/sim/tests/upgrade.rs).
+Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.
 
-Executed 2026-09-16: `cargo test -p axton-core -p axton-client -p axton-sqlite -p axton-binding -p axton-sim --locked`, the JS and Dart suites, passed with the tests above. The runtime test that replaced the binding session test ran in `cargo test --workspace --locked` on 2026-09-26, 687 passed (owner, [#165](https://github.com/zanminwang/axton/pull/165)).
+### The table contract
 
-## 11. Risks and Technical Debt
-
-**Accepted limitation: a non-nullable field cannot be added without a rebuild.** Creation defaults never supply historical values ([Models](../../schema/models.md#9-architecture-decisions)), so every required field rebuilds the local database. Evidence: [sqlite/tests/defaults.rs](../../../../../crates/sqlite/tests/defaults.rs) `a_creation_default_never_backfills_a_new_required_column`, `a_default_only_change_opens_in_place_and_rewrites_nothing`.
-
-**Accepted limitation.** Old files accumulate until the application deletes them; the runtime removes only an abandoned partial rebuild. A direct record in an old file is reported, never carried. A legacy checkpoint-era queue is counted as left behind, not sent.
-
-## Stream membership upgrade
-
-The authority framework upgrade is an in-place opening transaction, separate from incompatible application-schema rebuilding. Supported original Channel, Scope and Stream layouts are validated before editing. The transaction commits `axton_client.local_authority_version=1`, removes obsolete client `axton_stream_member` and its index, and preserves Model rows/stamps, identity, subscriptions/cursors, explicit bootstrap state, queued/pending/rejected work, frozen Push and Load requests, continuations, companions and device-only Models. Original historical fixture files remain migration inputs. Malformed modern layouts are refused atomically, leaving the file untouched; unsupported older checkpoint layouts retain the existing nondestructive rebuild-beside policy and preserve the original file. Successful reopen is idempotent.
-
-Existing `reconcile_*` columns and their saved values remain inert for compatibility. They schedule no network requests, choose no bounds and advance no progress. Opening or resubscribing does not reconstruct historical Stream ownership. A fresh registration initializes at its acknowledged head; an explicit `bootstrap()` retains its ordinary registration/run fences, cancellation and fixed completion barrier.
-
-Pending Held state, `axton_local_replica_layer` history and legacy record classifications remain. Stamped cache is not promoted to local authorship; lost direct-write provenance is not reconstructed. Historical saved claims do not create a client holding table. Application query-cache JSON and opaque names are not rewritten.
-
-### Frozen request ownership
-
-The retained legacy global recovery mechanism uses client-local `StoreToken { epoch }` and old `evicted_at` evidence. It may refuse stale positive restoration to an already evicted base; null authority remains canonical. This exception preserves old recovery history and frozen tokens, rather than introducing Stream ownership. Historical Remove, unsubscribe and application cache deletion never advance this epoch.
-
-| Work | Token owner |
-| --- | --- |
-| Direct Query/Mutation | Prepared call ID; retry keeps it and completion/failure/cancellation retires it |
-| Query once | Miss/refresh flight; joins share its token and cache hits apply no authority |
-| Stored Model Fetch | Prepared call; coalesced callers join it |
-| Prepared store | Copies the transient token for its admitted delivery |
-| Native Load | Durable logical page; continuation or explicit retry captures anew, automatic retry/reopen keeps it |
-| Queued Mutation/Query | Durable enqueue row; receipt uses that original token |
-
-Pending/frozen work preserves call IDs, sequence, original logical bytes and tokens across supported migration and reopen. Negotiation decorates outgoing copies with `stream-authority-v1`, outside saved logical equality. Request lifecycle retires transient tokens; low-level hosts abandoning a request call `Client::retire_request(call_id)`.
-
-### Stream metadata rename
-
-Prior Channel/Scope naming upgrades run before authority migration inside the same validated opening transaction. Paths, IDs, business fields, saved result/continuation JSON and opaque Stream names retain their meaning. No hidden history walk follows this rename. [Cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover) owns coordinated server repair and negotiation; [ddl.rs](../../../../../crates/client/src/ddl.rs) owns local migration.
-
-Direct application child deletion through `tx.models` creates no request-epoch fence. A later newer canonical upsert may materialize cache again; current standing and independent reachability must gate Queries. See [standing cleanup](../../../../../website/docs/frontend/sync.md#authentication-and-account-changes).
+Each public Model table uses its Model name and field columns. Engine tables use the `axton_` prefix and are not application query surfaces. Ordinary application reads see the replayed projection.

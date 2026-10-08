@@ -46,7 +46,7 @@ before(async () => {
 });
 after(() => admin.end());
 
-for (const carrier of ["protocol4", "legacy"]) {
+for (const carrier of ["protocol5"]) {
   test(`listener close drains an admitted ${carrier} Live Space Loader before database disconnect`, async () => {
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
     // Capture genuine connection/Reporter failures, including after the socket closes.
@@ -73,16 +73,10 @@ for (const carrier of ["protocol4", "legacy"]) {
       native,
       database: pg(pool),
       authenticate: () => viewer,
-      ...(carrier === "protocol4"
-        ? {
-            protocol4: {
-              backendId: "shutdown",
-              contractId: "app",
-              projectionGeneration: "1",
-              authorizeStream: (owner, name) => name === `User:${owner}`,
-            },
-          }
-        : {}),
+      protocol5: {
+        projectionGeneration: "1",
+        authorizeStream: (owner, name) => name === `User:${owner}`,
+      },
       onError: (error) => diagnostics.push(error),
       loaders: {
         space: async ({ tx, ids }) => {
@@ -135,35 +129,9 @@ for (const carrier of ["protocol4", "legacy"]) {
     try {
       await once(socket, "open");
       const ack = once(socket, "message");
-      socket.send(
-        JSON.stringify(
-          carrier === "protocol4"
-            ? {
-                context: {
-                  protocol: 4,
-                  binding: {
-                    backend: "shutdown",
-                    viewer,
-                    stream,
-                    contract: "app",
-                  },
-                  materialization: app.materializationId,
-                  incarnation: randomUUID(),
-                },
-                models: { Space: 1 },
-                cursor: 0,
-              }
-            : {
-                capabilities: ["stream-authority-v1"],
-                type: "subscribe",
-                streams: [stream],
-                models: { Space: 1 },
-              },
-        ),
-      );
+      socket.send(JSON.stringify({ protocol: 5, storeId: viewer, stream }));
       await ack;
-      if (carrier === "legacy")
-        await app.transaction(({ invalidate }) => invalidate.space(identity));
+      await app.transaction(({ invalidate }) => invalidate.space(identity));
       await entered.promise;
       let closed = false,
         closedAgain = false;
@@ -359,9 +327,7 @@ for (const scenario of ["negotiation", "multiple pulls", "rejected pull"]) {
         },
       },
       authenticate: (request) => request.headers["x-viewer"],
-      protocol4: {
-        backendId: "shutdown",
-        contractId: "app",
+      protocol5: {
         projectionGeneration: "1",
         authorizeStream: (owner, name) => name === `User:${owner}`,
       },
@@ -400,26 +366,17 @@ for (const scenario of ["negotiation", "multiple pulls", "rejected pull"]) {
         );
         sockets.push(socket);
         await once(socket, "open");
+        const ready = once(socket, "message");
         socket.send(
           JSON.stringify({
-            context: {
-              protocol: 4,
-              binding: {
-                backend: "shutdown",
-                viewer,
-                stream: `User:${viewer}`,
-                contract: "app",
-              },
-              materialization: app.materializationId,
-              incarnation: randomUUID(),
-            },
-            models: { Space: 1 },
-            cursor: 0,
+            protocol: 5,
+            storeId: viewer,
+            stream: `User:${viewer}`,
           }),
         );
+        if (scenario !== "negotiation") await ready;
       }
       if (scenario !== "negotiation") {
-        await Promise.all(initial.map((item) => item.promise));
         await app.transaction(({ invalidate }) => {
           for (const id of viewers) invalidate.space({ id });
           armed = true;
@@ -502,9 +459,7 @@ test("throwing upgrade Reporter cannot release another admission or an aborted L
         item.finished.resolve();
       }
     },
-    protocol4: {
-      backendId: "shutdown",
-      contractId: "app",
+    protocol5: {
       projectionGeneration: "1",
       authorizeStream: (viewer, name) => name === `User:${viewer}`,
     },
@@ -541,22 +496,17 @@ test("throwing upgrade Reporter cannot release another admission or an aborted L
   });
   try {
     await once(socket, "open");
+    const ready = once(socket, "message");
     socket.send(
       JSON.stringify({
-        context: {
-          protocol: 4,
-          binding: {
-            backend: "shutdown",
-            viewer: "held-session",
-            stream: "User:held-session",
-            contract: "app",
-          },
-          materialization: backend.materializationId,
-          incarnation: randomUUID(),
-        },
-        models: { Space: 1 },
-        cursor: 0,
+        protocol: 5,
+        storeId: "held-session",
+        stream: "User:held-session",
       }),
+    );
+    await ready;
+    await backend.transaction(({ invalidate }) =>
+      invalidate.space({ id: "held-session" }),
     );
     await Promise.all([
       ...held.map((item) => item.entered.promise),

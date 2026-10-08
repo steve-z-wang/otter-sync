@@ -1,5 +1,5 @@
 import 'store_fixture.dart';
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 // Model Fetch through the real native runtime (#153): Rust validates, joins or
 // starts the request, stores the reply and completes every caller; this host
 // only posts the `fetch` HTTP effect to `/sync/fetch` and decodes each
@@ -96,7 +96,10 @@ void main() {
     gates.clear();
     token = 'first';
     reply = (request, n) => {
-      'result': {'id': (request['identity'] as Map)['id'], ..._state('v$n')},
+      'result': {
+        'id': (request['invocation']['key']['identity'] as Map)['id'],
+        ..._state('v$n'),
+      },
       'stamp': n,
     };
     directory = await Directory.systemTemp.createTemp('axton-fetch-');
@@ -120,32 +123,29 @@ void main() {
       final a = answer as Map<String, dynamic>;
       final failure = a['failure'] as String?;
       final result = a['result'] as Map<String, dynamic>?;
-      http.response.write(
-        jsonEncode({
-          'context': request['context'],
-          'completion': {
-            'callId': request['callId'],
-            'outcome': failure == null
-                ? {'status': 'succeeded', 'result': result}
-                : {
-                    'status': 'failed',
-                    'code': failure,
-                    'execution': 'rejected',
-                  },
+      final records = <Object?>[
+        if (failure == null)
+          {
+            'key': request['invocation']['key'],
+            'cursor': null,
+            'state': result == null ? null : ({...result}..remove('id')),
           },
-          'records': failure != null
-              ? []
-              : [
-                  {
-                    'model': request['model'],
-                    'identity': request['identity'],
-                    'cursor': null,
-                    'state': result == null
-                        ? null
-                        : ({...result}..remove('id')),
+      ];
+      http.response.write(
+        jsonEncode(
+          failure == null
+              ? read05(request, result, records)
+              : {
+                  ...context05(request),
+                  'requestId': request['requestId'],
+                  'outcome': {
+                    'kind': 'failed',
+                    'code': failure,
+                    'message': null,
                   },
-                ],
-        }),
+                  'records': <Object>[],
+                },
+        ),
       );
       await http.response.close();
     });
@@ -164,10 +164,10 @@ void main() {
         await connect(client);
         expect(await fetch(client, 'a'), {'id': 'a', ..._state('v1')});
         expect(seen, ['/sync/fetch Bearer first']);
-        expect(requests.single['model'], 'Entry');
-        expect(requests.single['version'], 2);
-        expect(requests.single['identity'], {'id': 'a'});
-        expect(requests.single.containsKey('store'), isFalse);
+        expect(requests.single['invocation']['key']['model'], 'Entry');
+        expect(requests.single['invocation']['version'], 2);
+        expect(requests.single['invocation']['key']['identity'], {'id': 'a'});
+        expect(requests.single['store'], true);
         expect(await client.read('Entry', {'id': 'a'}), {
           'id': 'a',
           ..._state('v1'),
@@ -228,7 +228,7 @@ void main() {
   });
 
   test(
-    'joined callers share one request and decode independent maps',
+    'each invocation reads its own snapshot and decodes independent maps',
     () async {
       final client = await open();
       final gate = Completer<void>();
@@ -239,11 +239,13 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
         gate.complete();
         final results = await Future.wait(waiting);
-        expect(requests, hasLength(1));
-        expect(results[0], results[1]);
+        expect(requests, hasLength(2));
+        expect(requests.map((r) => r['requestId']).toSet(), hasLength(2));
+        expect(results[0], {'id': 'a', ..._state('v1')});
+        expect(results[1], {'id': 'a', ..._state('v2')});
         expect(identical(results[0], results[1]), isFalse);
         (results[0]!['tags'] as List).add('mutated');
-        expect(results[1]!['tags'], ['v1']);
+        expect(results[1]!['tags'], ['v2']);
       } finally {
         // A failed step must not leave the fake server's request held.
         if (!gate.isCompleted) gate.complete();
@@ -339,7 +341,7 @@ void main() {
             };
       expect((await fetch(client, 'a', store: false))!['title'], 'v2');
       expect(seen, ['/sync/fetch Bearer first', '/sync/fetch Bearer second']);
-      expect(requests[0]['callId'], requests[1]['callId']);
+      expect(requests[0]['requestId'], requests[1]['requestId']);
     } finally {
       await client.close();
     }
@@ -366,6 +368,7 @@ void main() {
       final client = await open();
       final gate = Completer<void>();
       gates[1] = gate;
+      gates[2] = gate;
       try {
         await connect(client);
         final waiting = [fetch(client, 'a'), fetch(client, 'a')];
@@ -373,7 +376,7 @@ void main() {
           for (final future in waiting)
             future.then<Object?>((value) => value, onError: (Object e) => e),
         ];
-        while (requests.isEmpty) {
+        while (requests.length < 2) {
           await Future<void>.delayed(const Duration(milliseconds: 5));
         }
         // The HTTP effect is still outstanding when the runtime closes.
@@ -389,7 +392,7 @@ void main() {
         // A reply released after close is fenced: nothing is stored.
         gate.complete();
         await Future<void>.delayed(const Duration(milliseconds: 20));
-        expect(requests, hasLength(1));
+        expect(requests, hasLength(2));
       } finally {
         // A failed step must not leave the fake server's request held.
         if (!gate.isCompleted) gate.complete();

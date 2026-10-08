@@ -1,29 +1,28 @@
 //! Server protocol orchestration. Host calls run in the application's outer transaction.
 mod action_results;
+mod delivery_plan;
+pub use delivery_plan::{
+    handshake05, process_delivery05, process_live05, process_materialization05, process_read05,
+};
 mod actions;
-mod calls;
 pub mod error;
-mod fetch;
 pub mod host;
 pub mod live;
-mod loading;
-mod loads;
-mod protocol_v04;
-mod readback;
+mod materialization;
+pub use materialization::RetainedMaterialization;
+mod protocol_v05;
+pub use protocol_v05::{
+    encode_batch_acknowledgement, process_batch_member, settle_external05, validate_mutation_batch,
+};
+mod mutation_batch;
 mod settlement;
 pub mod stream_members;
-pub use actions::{ActionResponse, execute_action, process_action, process_action_push};
-use axton_core::{PushReceipt, PushRequest, RecordKey, Rejection, Schema, read_counter};
+use axton_core::{Schema, read_counter};
 pub use error::{Error, code};
-pub use fetch::process_fetch;
-use host::{Acknowledged, Claimed, Handled, Head, HostExt, HostRequest};
-pub use loads::{
-    LoadFault, LoadItemAnswer, encode_load_batch, load_fault_outcome, process_load,
-    validate_load_batch,
-};
-use readback::Outcome;
+use host::{Handled, Head, HostExt, HostRequest};
+
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use settlement::Changes;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,8 +39,7 @@ pub trait Host: Send + Sync {
 pub struct Config {
     pub schema: Schema,
     #[serde(default)]
-    pub protocol4: Option<protocol_v04::ProtocolConfig>,
-    pub mutations: Vec<Mutation>,
+    pub protocol5: Option<protocol_v05::ProtocolConfig>,
     pub loaders: Vec<String>,
     /// Every retained model read contract, one per `(name, version)`. Absent
     /// in a hand-written config, in which case each model is retained at the
@@ -86,105 +84,19 @@ impl ModelContract {
         }
     }
 }
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Mutation {
-    pub name: String,
-    pub version: u64,
-    pub slots: Vec<Slot>,
-    #[serde(default)]
-    pub input: Option<Schema>,
-    #[serde(default, rename = "knownFields")]
-    pub known_fields: BTreeMap<String, Vec<String>>,
-}
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Slot {
-    pub name: String,
-    pub model: String,
-    pub operation: String,
-    pub cardinality: String,
-    #[serde(default)]
-    pub allowed_patch_fields: Vec<String>,
-    #[serde(default)]
-    pub bindings: Vec<Binding>,
-}
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Binding {
-    pub fields: Vec<String>,
-    pub slot: String,
-}
 impl Config {
     pub fn decode(value: Value) -> Result<Self> {
+        if value.get("protocol4").is_some()
+            || value
+                .get("mutations")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        {
+            return Err(config_invalid("legacy server configuration is unsupported"));
+        }
+
         let c: Self = serde_json::from_value(value).map_err(config_invalid)?;
         c.schema.validate().map_err(config_invalid)?;
-        let mut versions = BTreeSet::new();
-        for m in &c.mutations {
-            if m.name.is_empty()
-                || read_counter(&json!(m.version), true).is_err()
-                || !versions.insert((&m.name, m.version))
-            {
-                return Err(Error::new(
-                    code::CONFIG_INVALID,
-                    "invalid mutation descriptor",
-                ));
-            }
-            let mut slots = BTreeSet::new();
-            let schema = m.input.as_ref().unwrap_or(&c.schema);
-            schema.validate().map_err(config_invalid)?;
-            for s in &m.slots {
-                let model = schema.model(&s.model).map_err(config_invalid)?;
-                let mut capabilities = BTreeSet::new();
-                if s.operation != "update" && !s.allowed_patch_fields.is_empty() {
-                    return Err(Error::new(
-                        code::CONFIG_INVALID,
-                        "patch capabilities require update operation",
-                    ));
-                }
-                for field in &s.allowed_patch_fields {
-                    if !capabilities.insert(field)
-                        || model.identity.contains(field)
-                        || !model.fields.iter().any(|f| f.name == *field)
-                    {
-                        return Err(Error::new(code::CONFIG_INVALID, "invalid patch capability"));
-                    }
-                }
-
-                if !slots.insert(&s.name)
-                    || !["single", "optional", "list"].contains(&s.cardinality.as_str())
-                    || !["create", "update", "delete"].contains(&s.operation.as_str())
-                {
-                    return Err(Error::new(code::CONFIG_INVALID, "invalid slot descriptor"));
-                }
-            }
-        }
-        for m in &c.mutations {
-            let schema = m.input.as_ref().unwrap_or(&c.schema);
-            for slot in &m.slots {
-                for binding in &slot.bindings {
-                    let parent =
-                        m.slots
-                            .iter()
-                            .find(|s| s.name == binding.slot)
-                            .ok_or_else(|| {
-                                Error::new(code::CONFIG_INVALID, "binding target missing")
-                            })?;
-                    let parent_model = schema.model(&parent.model).map_err(config_invalid)?;
-                    let child = schema.model(&slot.model).map_err(config_invalid)?;
-                    if parent.cardinality != "single"
-                        || binding.fields.len() != parent_model.identity.len()
-                        || binding
-                            .fields
-                            .iter()
-                            .any(|n| !child.fields.iter().any(|f| f.name == *n))
-                    {
-                        return Err(Error::new(
-                            code::CONFIG_INVALID,
-                            "invalid binding descriptor",
-                        ));
-                    }
-                }
-            }
-        }
         for loader in &c.loaders {
             c.schema.model(loader).map_err(config_invalid)?;
         }
@@ -245,24 +157,6 @@ impl Config {
                 ));
             }
         }
-        if let Some(protocol) = &mut c.protocol4 {
-            let derived =
-                axton_core::v04::materialization_id(&c.schema, &protocol.projection_generation)
-                    .map_err(config_invalid)?;
-            if !protocol.materialization_id.is_empty() && protocol.materialization_id != derived {
-                return Err(Error::new(
-                    code::CONFIG_INVALID,
-                    "materializationId must match shared Model contracts/projection generation",
-                ));
-            }
-            if protocol.backend_id.trim().is_empty() || protocol.contract_id.trim().is_empty() {
-                return Err(Error::new(
-                    code::CONFIG_INVALID,
-                    "protocol4 stable identity is blank",
-                ));
-            }
-            protocol.materialization_id = derived;
-        }
         Ok(c)
     }
     /// A Model without a Loader is device-only
@@ -287,18 +181,6 @@ impl Config {
                 ),
             ))
         };
-        for m in &self.mutations {
-            for slot in &m.slots {
-                refuse(
-                    "Mutation",
-                    &m.name,
-                    m.version,
-                    "slot",
-                    &slot.name,
-                    &slot.model,
-                )?;
-            }
-        }
         for action in &self.schema.actions {
             let kind = match action.kind {
                 axton_core::CallKind::Mutation => "Mutation",
@@ -369,16 +251,6 @@ impl Config {
             .find(|m| m.name == model && m.version == version)
             .and_then(|m| m.contract.as_ref())
     }
-    fn descriptor(&self, body: &Value) -> Result<&Mutation> {
-        let name = body["name"]
-            .as_str()
-            .ok_or_else(|| Error::code("mutation.invalid"))?;
-        let version = version(body).ok_or_else(|| Error::code("mutation.invalid"))?;
-        self.mutations
-            .iter()
-            .find(|m| m.name == name && m.version == version)
-            .ok_or_else(|| Error::code("mutation.invalid"))
-    }
 }
 fn config_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::CONFIG_INVALID, e.to_string())
@@ -389,169 +261,8 @@ fn internal(e: impl std::fmt::Display) -> Error {
 fn storage_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::STORAGE_INVALID, e.to_string())
 }
-/// Framework protocol admission precedes every external host operation.
-pub(crate) fn admit_protocol(bytes: &[u8]) -> Result<()> {
-    axton_core::require_capability(bytes, axton_core::STREAM_AUTHORITY_CAPABILITY)
-        .map_err(|error| Error::new(error.code(), error.to_string()))
-}
-
 fn request_invalid(e: impl std::fmt::Display) -> Error {
     Error::new(code::REQUEST_INVALID, e.to_string())
-}
-fn version(body: &Value) -> Option<u64> {
-    read_counter(body.get("version").unwrap_or(&json!(1)), true).ok()
-}
-fn invalid<T>(r: axton_core::Result<T>) -> Result<T> {
-    r.map_err(|_| Error::code("mutation.invalid"))
-}
-pub fn decode_arguments(config: &Value, body: &Value) -> Result<Value> {
-    decode(&Config::decode(config.clone())?, body).map(|(args, _)| args)
-}
-/// The decoded slot arguments and the records the uploaded operations target,
-/// in operation order: the seed of the mutation's change set.
-fn decode(c: &Config, body: &Value) -> Result<(Value, Vec<RecordKey>)> {
-    let d = c.descriptor(body)?;
-    let schema = d.input.as_ref().unwrap_or(&c.schema);
-    let ops = body["operations"]
-        .as_array()
-        .ok_or_else(|| Error::code("mutation.invalid"))?;
-    let mut at = 0;
-    let mut args = Map::new();
-    let mut targets = vec![];
-    for slot in &d.slots {
-        let mut values = vec![];
-        while at < ops.len() && ops[at]["model"] == slot.model && ops[at]["op"] == slot.operation {
-            let op = &ops[at];
-            let model = invalid(schema.model(&slot.model))?;
-            let source = op["identity"]
-                .as_object()
-                .ok_or_else(|| Error::code("mutation.invalid"))?;
-            let identity = Value::Object(
-                source
-                    .iter()
-                    .filter(|(k, _)| model.identity.contains(k))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-            );
-            let key = invalid(schema.record_key(&slot.model, &identity))?;
-            let mut argument = json!({"identity":key.identity});
-            targets.push(key.clone());
-            if slot.operation != "delete" {
-                let source = op["values"]
-                    .as_object()
-                    .ok_or_else(|| Error::code("mutation.invalid"))?;
-                let mut data = Map::new();
-                if slot.operation == "create" {
-                    for field in model
-                        .fields
-                        .iter()
-                        .filter(|f| !model.identity.contains(&f.name))
-                    {
-                        let v = source
-                            .get(&field.name)
-                            .or({
-                                if field.nullable {
-                                    Some(&Value::Null)
-                                } else {
-                                    None
-                                }
-                            })
-                            .ok_or_else(|| Error::code("mutation.invalid"))?;
-                        data.insert(
-                            field.name.clone(),
-                            invalid(schema.normalize_value(field, v))?,
-                        );
-                    }
-                    argument["data"] = Value::Object(data);
-                } else {
-                    for (name, v) in source {
-                        let known = d
-                            .known_fields
-                            .get(&slot.model)
-                            .map(|names| names.contains(name))
-                            .unwrap_or_else(|| model.fields.iter().any(|f| f.name == *name));
-                        if known && !slot.allowed_patch_fields.contains(name) {
-                            return Err(Error::code(format!(
-                                "{}.not_allowed",
-                                machine_name(&d.name)
-                            )));
-                        }
-                        if let Some(field) = model.fields.iter().find(|f| f.name == *name) {
-                            if !slot.allowed_patch_fields.contains(name) {
-                                return Err(Error::code(format!(
-                                    "{}.not_allowed",
-                                    machine_name(&d.name)
-                                )));
-                            }
-                            data.insert(name.clone(), invalid(schema.normalize_value(field, v))?);
-                        }
-                    }
-                    argument["patch"] = Value::Object(data);
-                }
-            }
-            values.push(argument);
-            at += 1;
-            if slot.cardinality != "list" {
-                break;
-            }
-        }
-        let value = if slot.cardinality == "list" {
-            Value::Array(values)
-        } else if values.len() == 1 {
-            values.remove(0)
-        } else if slot.cardinality == "optional" {
-            Value::Null
-        } else {
-            return Err(Error::code("mutation.invalid"));
-        };
-        args.insert(slot.name.clone(), value);
-    }
-    if at != ops.len() {
-        return Err(Error::code("mutation.invalid"));
-    }
-    for slot in d.slots.iter().filter(|s| s.operation == "create") {
-        for binding in &slot.bindings {
-            let parent = d
-                .slots
-                .iter()
-                .find(|s| s.name == binding.slot)
-                .ok_or_else(|| Error::code("mutation.invalid"))?;
-            let parent_model = schema.model(&parent.model).map_err(config_invalid)?;
-            let rows = if slot.cardinality == "list" {
-                args[&slot.name]
-                    .as_array()
-                    .ok_or_else(|| Error::code("mutation.invalid"))?
-                    .clone()
-            } else if args[&slot.name].is_null() {
-                vec![]
-            } else {
-                vec![args[&slot.name].clone()]
-            };
-            for row in rows {
-                for (field, id) in binding.fields.iter().zip(&parent_model.identity) {
-                    let actual = row["identity"].get(field).unwrap_or(&row["data"][field]);
-                    if actual != &args[&parent.name]["identity"][id] {
-                        return Err(Error::code(format!("{}.invalid", machine_name(&d.name))));
-                    }
-                }
-            }
-        }
-    }
-    Ok((Value::Object(args), targets))
-}
-fn machine_name(name: &str) -> String {
-    let mut s = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_uppercase() {
-            if !s.is_empty() {
-                s.push('_')
-            }
-            s.push(ch.to_ascii_lowercase())
-        } else {
-            s.push(ch)
-        }
-    }
-    s
 }
 pub(crate) fn valid_code(s: &str) -> bool {
     let mut parts = s.split(['.', '_', '-']);
@@ -581,199 +292,7 @@ async fn head(host: &impl Host, stream: &str) -> Result<u64> {
         .await?;
     Ok(cursor)
 }
-/// Process one push: every mutation runs in its own savepoint, its changed
-/// records are settled (stamped and distributed to their Streams) and its
-/// uploaded targets read back by the loaders in that savepoint, and the
-/// receipt carries the final authority of every record a successful
-/// mutation's operations targeted. An unsupported mutation version, a
-/// handler failure, a loader failure and an undeclared or unretained model
-/// read contract each reject only the mutation they belong to; the rest of
-/// the batch stands.
-/// The receipt is stored before the outer transaction commits, so a retry
-/// answers from storage without running a handler.
-pub async fn process_push(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    admit_protocol(bytes)?;
-    principal(owner)?;
-    let request = PushRequest::decode(bytes).map_err(request_invalid)?;
-    let locked: Claimed = host
-        .call_typed(HostRequest::Claim {
-            owner: owner.into(),
-            client_id: request.client_id.clone(),
-        })
-        .await?;
-    if locked.client_id != request.client_id {
-        return Err(storage_invalid("storage client mismatch"));
-    }
-    if locked.owner != owner {
-        return Err(Error::code(code::OWNER_MISMATCH));
-    }
-    let last = locked.sequence;
-    if request.batch_sequence == last {
-        return locked
-            .receipt
-            .ok_or_else(|| storage_invalid("receipt missing"));
-    }
-    if request.batch_sequence < last {
-        return Err(Error::code(code::OVERLAP));
-    }
-    if request.batch_sequence != last + 1 {
-        return Err(Error::code(code::GAP));
-    }
-    let mut rejections = vec![];
-    // The last successful authority per record, in canonical key order.
-    let mut results: BTreeMap<String, axton_core::AuthorityRecord> = BTreeMap::new();
-    for m in &request.mutations {
-        // A mutation naming a version this backend does not serve rejects
-        // only itself; its handler never runs.
-        if let (Some(name), Some(v)) = (m.raw["name"].as_str(), version(&m.raw))
-            && config.mutations.iter().any(|d| d.name == name)
-            && !config
-                .mutations
-                .iter()
-                .any(|d| d.name == name && d.version == v)
-        {
-            rejections.push(Rejection {
-                ordinal: m.ordinal,
-                code: code::MUTATION_VERSION_UNSUPPORTED.into(),
-            });
-            continue;
-        }
-        // `decode` resolves the same descriptor first, so both refuse together.
-        let (name, mutation_version) = match config.descriptor(&m.raw) {
-            Ok(d) => (d.name.clone(), d.version),
-            Err(refused) => {
-                rejections.push(Rejection {
-                    ordinal: m.ordinal,
-                    code: refused.code,
-                });
-                continue;
-            }
-        };
-        let (args, targets) = match decode(config, &m.raw) {
-            Ok(decoded) => decoded,
-            Err(refused) => {
-                rejections.push(Rejection {
-                    ordinal: m.ordinal,
-                    code: refused.code,
-                });
-                continue;
-            }
-        };
-        let Acknowledged = host
-            .call_typed(HostRequest::Savepoint { ordinal: m.ordinal })
-            .await?;
-        // Host returns only explicit refusal as data; every thrown error aborts the outer transaction.
-        let settlement: Handled = host
-            .call_typed(HostRequest::Handle {
-                name,
-                version: mutation_version,
-                arguments: args,
-                owner: owner.into(),
-                ordinal: m.ordinal,
-            })
-            .await?;
-        let outcome = match settlement {
-            Handled::Rejected { rejection } => Outcome::Refused(rejection),
-            // A thrown handler error rejects only this mutation; it never
-            // reaches the caller as a business rejection.
-            Handled::Failed { .. } => Outcome::Refused(code::HANDLER_FAILED.into()),
-            Handled::Settled {
-                changes,
-                declarations,
-            } => {
-                // The uploaded targets are this mutation's caller authority;
-                // the handler's extra changes are distributed, not read back.
-                let mut input_targets = Changes::new();
-                for key in targets {
-                    settlement::insert(&mut input_targets, key)?;
-                }
-                let mut changed = input_targets.clone();
-                for record in &changes {
-                    settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
-                }
-                let stamps =
-                    settlement::settle_changes(config, &changed, &declarations, host).await?;
-                readback::read_back(
-                    config,
-                    &request.models,
-                    owner,
-                    &input_targets,
-                    &stamps,
-                    host,
-                )
-                .await?
-            }
-        };
-        match outcome {
-            Outcome::Refused(code) => {
-                let Acknowledged = host
-                    .call_typed(HostRequest::Rollback { ordinal: m.ordinal })
-                    .await?;
-                rejections.push(Rejection {
-                    ordinal: m.ordinal,
-                    code,
-                });
-            }
-            Outcome::Records(records) => {
-                for record in records {
-                    let key = config
-                        .schema
-                        .record_key(&record.model, &record.identity)
-                        .map_err(internal)?;
-                    results.insert(key.encoded().map_err(internal)?, record);
-                }
-            }
-        }
-        let Acknowledged = host
-            .call_typed(HostRequest::Release { ordinal: m.ordinal })
-            .await?;
-    }
-    let receipt = PushReceipt {
-        client_id: request.client_id.clone(),
-        batch_sequence: request.batch_sequence,
-        rejections,
-        completions: vec![],
-        records: results.into_values().collect(),
-        memberships: Vec::new(),
-    };
-    let text = String::from_utf8(receipt.encode().map_err(internal)?).map_err(internal)?;
-    let Acknowledged = host
-        .call_typed(HostRequest::SaveReceipt {
-            owner: owner.into(),
-            client_id: request.client_id.clone(),
-            sequence: request.batch_sequence,
-            receipt: text.clone(),
-        })
-        .await?;
-    Ok(text)
-}
-/// The one pull entry point every binding, route and direct backend caller
-/// shares. The request's `mode` selects what it serves, before either mode
-/// decodes: an absent mode is the ordinary delta pull over every stream a
-/// client follows, `"bootstrap"` is one bounded page of a Stream's historical
-/// interval (`loading::process_bootstrap`), and any other present value is
-/// refused.
-/// Both modes run in the caller's transaction and make no extra host calls
-/// ([Protocol / Pull](../../../docs/engineering/architecture/protocol/pull.md)).
-pub async fn process_pull(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    process_stream_pull(config, owner, bytes, host).await
-}
-/// Settle a business change made outside a handler, in the application's
-/// transaction: the same `{changes, declarations}` shape a handler answers
-/// with, through the same settlement. Every changed record gets its next
-/// stamp and reaches its Streams at that stamp; nothing is read back, since
-/// no client is waiting for a receipt. Answers `[{model, identity, stamp}]`
-/// for the changed records.
+/// Settle explicit external publication in the caller's transaction. No implicit enrollment.
 pub async fn settle_external(
     config: &Config,
     settlement: &Value,
@@ -795,45 +314,17 @@ pub async fn settle_external(
     for record in &changes {
         settlement::insert(&mut changed, settlement::resolve(config, record)?)?;
     }
-    let stamps = settlement::settle_changes(config, &changed, &declarations, host).await?;
+    settlement::settle_changes(config, &changed, &declarations, host).await?;
     Ok(Value::Array(
         changed
-            .iter()
-            .map(|(encoded, key)| {
-                json!({"model": key.model, "identity": key.identity, "stamp": stamps[encoded]})
-            })
+            .values()
+            .map(|key| json!({"model": key.model, "identity": key.identity}))
             .collect(),
     ))
 }
 
-/// Stream-aware pull delivery.
-pub async fn process_stream_pull(
-    config: &Config,
-    owner: &str,
-    bytes: &[u8],
-    host: &impl Host,
-) -> Result<String> {
-    if protocol_v04::is_request(bytes) {
-        if serde_json::from_slice::<Value>(bytes)
-            .ok()
-            .is_some_and(|v| v.get("kind").is_some())
-        {
-            return protocol_v04::bootstrap(config, owner, bytes, host).await;
-        }
-        return protocol_v04::delta(config, owner, bytes, host).await;
-    }
-    admit_protocol(bytes)?;
-    principal(owner)?;
-    match axton_core::pull_mode(bytes).as_deref() {
-        None => loading::process_stream_delta(config, owner, bytes, host).await,
-        Some(axton_core::BOOTSTRAP_MODE) => {
-            loading::process_stream_bootstrap(config, owner, bytes, host).await
-        }
-        Some(_) => Err(request_invalid("pull mode must be absent or bootstrap")),
-    }
-}
-
-pub fn materialization_id(config: &Config, projection_generation: &str) -> Result<String> {
-    axton_core::v04::materialization_id(&config.schema, projection_generation)
+/// Canonical protocol-5 read context, independent of authenticated Store binding.
+pub fn materialization_id05(config: &Config, projection_generation: &str) -> Result<String> {
+    axton_core::v05::materialization_id(&config.schema, projection_generation)
         .map_err(config_invalid)
 }

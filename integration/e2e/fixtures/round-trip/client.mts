@@ -7,11 +7,6 @@ const client = await GeneratedClient.open({
   connection: {
     url: process.env.AXTON_URL ?? "http://127.0.0.1:4242",
     token: "demo-user",
-    identity: {
-      backend: "round-trip",
-      viewer: "demo-user",
-      contract: "round-trip-v04",
-    },
   },
 });
 await client.bootstrap();

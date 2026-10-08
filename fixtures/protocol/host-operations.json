@@ -1,28 +1,21 @@
 {
-  "comment": "One canonical request and one response per variant for every host operation. Shared by crates/server/tests/host_contract.rs (Rust types) and integration/persistence/server/host-contract.test.mjs (TypeScript host). The examples describe a backend with one model Task {id, title} and one mutation edit v1 with an update slot named task.",
+  "comment": "One canonical request and each response variant for every current protocol-5 host operation. Shared by Rust host-contract round trips and the TypeScript host replay. The examples describe Task {id, title} and the named Send Mutation; identity guards return presence, not a per-record version.",
   "operations": [
     {
-      "op": "admitContext",
+      "op": "protocol05",
       "request": {
-        "op": "admitContext",
-        "owner": "alice",
-        "context": {
-          "protocol": 4,
-          "binding": {
-            "backend": "api",
-            "viewer": "alice",
-            "stream": "User:alice",
-            "contract": "app"
-          },
-          "materialization": "m1",
-          "incarnation": "store1"
-        },
-        "durable": false
+        "op": "protocol05",
+        "request": {
+          "op": "readResult",
+          "storeId": "store1",
+          "batchId": 1,
+          "ordinal": 0
+        }
       },
       "responses": [
         {
-          "variant": "allowed",
-          "value": true
+          "variant": "absent",
+          "value": null
         }
       ]
     },
@@ -30,320 +23,6 @@
       "op": "publicationFence",
       "request": {
         "op": "publicationFence"
-      },
-      "responses": [
-        {
-          "variant": "acknowledged",
-          "value": null
-        }
-      ]
-    },
-    {
-      "op": "handleBootstrap",
-      "request": {
-        "op": "handleBootstrap",
-        "owner": "alice",
-        "callId": "01890f47-1234-7123-8123-123456789ab1",
-        "context": {
-          "protocol": 4,
-          "binding": {
-            "backend": "api",
-            "viewer": "alice",
-            "stream": "User:alice",
-            "contract": "app"
-          },
-          "materialization": "m1",
-          "incarnation": "store1"
-        }
-      },
-      "responses": [
-        {
-          "variant": "result",
-          "value": {
-            "declarations": []
-          }
-        }
-      ]
-    },
-    {
-      "op": "createManifest",
-      "request": {
-        "op": "createManifest",
-        "owner": "alice",
-        "manifestId": "manifest",
-        "context": {
-          "protocol": 4,
-          "binding": {
-            "backend": "api",
-            "viewer": "alice",
-            "stream": "User:alice",
-            "contract": "app"
-          },
-          "materialization": "m1",
-          "incarnation": "store1"
-        },
-        "start": 7,
-        "models": {
-          "Task": 1
-        },
-        "selected": [
-          "Task"
-        ],
-        "held": [],
-        "budget": 100
-      },
-      "responses": [
-        {
-          "variant": "result",
-          "value": {
-            "start": 7,
-            "total": 1,
-            "models": {
-              "Task": 1
-            },
-            "from": 0,
-            "to": 0,
-            "keys": [],
-            "companions": []
-          }
-        }
-      ]
-    },
-    {
-      "op": "readCall",
-      "request": {
-        "op": "readCall",
-        "owner": "alice",
-        "callId": "01890f47-1234-7123-8123-123456789ab1"
-      },
-      "responses": [
-        {
-          "variant": "result",
-          "value": null
-        }
-      ]
-    },
-    {
-      "op": "readManifest",
-      "request": {
-        "op": "readManifest",
-        "owner": "alice",
-        "manifestId": "manifest",
-        "context": {
-          "protocol": 4,
-          "binding": {
-            "backend": "api",
-            "viewer": "alice",
-            "stream": "User:alice",
-            "contract": "app"
-          },
-          "materialization": "m1",
-          "incarnation": "store1"
-        },
-        "from": 0,
-        "limit": 1,
-        "uniqueModels": []
-      },
-      "responses": [
-        {
-          "variant": "result",
-          "value": {
-            "start": 7,
-            "total": 1,
-            "models": {
-              "Task": 1
-            },
-            "from": 0,
-            "to": 1,
-            "keys": [
-              {
-                "model": "Task",
-                "identityKey": "{\"id\":\"t-1\"}"
-              }
-            ],
-            "companions": []
-          }
-        }
-      ]
-    },
-    {
-      "op": "captureTail",
-      "request": {
-        "op": "captureTail",
-        "owner": "alice",
-        "manifestId": "manifest",
-        "context": {
-          "protocol": 4,
-          "binding": {
-            "backend": "api",
-            "viewer": "alice",
-            "stream": "User:alice",
-            "contract": "app"
-          },
-          "materialization": "m1",
-          "incarnation": "store1"
-        },
-        "head": 8
-      },
-      "responses": [
-        {
-          "variant": "result",
-          "value": 8
-        }
-      ]
-    },
-    {
-      "op": "savePublicationGroups",
-      "request": {
-        "op": "savePublicationGroups",
-        "positions": [
-          {
-            "stream": "shared",
-            "model": "Task",
-            "identityKey": "{\"id\":\"t-1\"}",
-            "cursor": 4,
-            "kind": "upsert"
-          }
-        ]
-      },
-      "responses": [
-        {
-          "variant": "acknowledged",
-          "value": null
-        }
-      ]
-    },
-    {
-      "op": "readPublicationGroups",
-      "request": {
-        "op": "readPublicationGroups",
-        "stream": "shared",
-        "after": 0,
-        "limit": 10
-      },
-      "responses": [
-        {
-          "variant": "groups",
-          "value": [
-            {
-              "from": 3,
-              "through": 4,
-              "keys": [
-                {
-                  "model": "Task",
-                  "identityKey": "{\"id\":\"t-1\"}"
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "op": "readPositions",
-      "request": {
-        "op": "readPositions",
-        "stream": "shared",
-        "records": [
-          {
-            "model": "Task",
-            "identityKey": "{\"id\":\"t-1\"}"
-          }
-        ]
-      },
-      "responses": [
-        {
-          "variant": "positions",
-          "value": [
-            {
-              "stream": "shared",
-              "model": "Task",
-              "identityKey": "{\"id\":\"t-1\"}",
-              "cursor": 4,
-              "kind": "upsert"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "op": "claim",
-      "request": {
-        "op": "claim",
-        "owner": "alice",
-        "clientId": "client-1"
-      },
-      "responses": [
-        {
-          "variant": "claimed",
-          "value": {
-            "clientId": "client-1",
-            "owner": "alice",
-            "sequence": 2,
-            "receipt": "{\"batchSequence\":2,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":4,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"
-          }
-        },
-        {
-          "variant": "unused",
-          "value": {
-            "clientId": "client-1",
-            "owner": "alice",
-            "sequence": 0,
-            "receipt": null
-          }
-        }
-      ]
-    },
-    {
-      "op": "saveReceipt",
-      "request": {
-        "op": "saveReceipt",
-        "owner": "alice",
-        "clientId": "client-1",
-        "sequence": 3,
-        "receipt": "{\"batchSequence\":3,\"clientId\":\"client-1\",\"records\":[{\"identity\":{\"id\":\"t-1\"},\"model\":\"Task\",\"stamp\":5,\"state\":{\"title\":\"typed\"}}],\"rejections\":[]}"
-      },
-      "responses": [
-        {
-          "variant": "acknowledged",
-          "value": null
-        }
-      ]
-    },
-    {
-      "op": "claimCall",
-      "request": {
-        "op": "claimCall",
-        "owner": "alice",
-        "callId": "call-1",
-        "request": "{\"name\":\"edit\",\"version\":1}"
-      },
-      "responses": [
-        {
-          "variant": "fresh",
-          "value": {
-            "fresh": true,
-            "request": "{\"name\":\"edit\",\"version\":1}",
-            "response": null
-          }
-        },
-        {
-          "variant": "replayed",
-          "value": {
-            "fresh": false,
-            "request": "{\"name\":\"edit\",\"version\":1}",
-            "response": "{\"status\":\"succeeded\"}"
-          }
-        }
-      ]
-    },
-    {
-      "op": "saveCall",
-      "request": {
-        "op": "saveCall",
-        "owner": "alice",
-        "callId": "call-1",
-        "response": "{\"status\":\"succeeded\"}"
       },
       "responses": [
         {
@@ -366,37 +45,6 @@
         {
           "variant": "empty",
           "value": 0
-        }
-      ]
-    },
-    {
-      "op": "scan",
-      "request": {
-        "op": "scan",
-        "after": 4,
-        "limit": 50,
-        "stream": "shared"
-      },
-      "responses": [
-        {
-          "variant": "rows",
-          "value": [
-            {
-              "kind": "upsert",
-              "cursor": 5,
-              "model": "Task",
-              "identity": {
-                "id": "t-1"
-              },
-              "identityKey": "{\"id\":\"t-1\"}",
-              "stamp": 4,
-              "stream": "shared"
-            }
-          ]
-        },
-        {
-          "variant": "none",
-          "value": []
         }
       ]
     },
@@ -440,105 +88,6 @@
       ]
     },
     {
-      "op": "handle",
-      "request": {
-        "op": "handle",
-        "name": "edit",
-        "version": 1,
-        "arguments": {
-          "task": {
-            "identity": {
-              "id": "t-1"
-            },
-            "patch": {
-              "title": "typed"
-            }
-          }
-        },
-        "owner": "alice",
-        "ordinal": 1
-      },
-      "responses": [
-        {
-          "variant": "settled",
-          "value": {
-            "changes": [],
-            "declarations": [
-              {
-                "kind": "invalidate",
-                "streams": null,
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-1"
-                  }
-                }
-              },
-              {
-                "kind": "invalidate",
-                "streams": null,
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-2"
-                  }
-                }
-              },
-              {
-                "kind": "track",
-                "stream": "shared",
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-1"
-                  }
-                }
-              },
-              {
-                "kind": "track",
-                "stream": "shared",
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-2"
-                  }
-                }
-              },
-              {
-                "kind": "track",
-                "stream": "other",
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-1"
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "variant": "quiet",
-          "value": {
-            "changes": [],
-            "declarations": []
-          }
-        },
-        {
-          "variant": "rejected",
-          "value": {
-            "rejection": "task.refused"
-          }
-        },
-        {
-          "variant": "failed",
-          "value": {
-            "error": "TypeError: cannot read title of undefined"
-          }
-        }
-      ]
-    },
-    {
       "op": "handleAction",
       "request": {
         "op": "handleAction",
@@ -547,7 +96,13 @@
         "arguments": {},
         "owner": "alice",
         "callId": "01890f47-1234-7123-8123-123456789abc",
-        "ordinal": 1
+        "ordinal": 1,
+        "context": {
+          "owner": "alice",
+          "stream": "User:alice",
+          "storeId": "store1",
+          "materialization": "m1"
+        }
       },
       "responses": [
         {
@@ -564,104 +119,6 @@
           "variant": "rejected",
           "value": {
             "rejection": "send.refused"
-          }
-        },
-        {
-          "variant": "failed",
-          "value": {
-            "error": "handler failure"
-          }
-        }
-      ]
-    },
-    {
-      "op": "handleLoad",
-      "request": {
-        "op": "handleLoad",
-        "name": "Tasks",
-        "version": 1,
-        "arguments": {},
-        "continuation": {
-          "state": {
-            "after": "t-1"
-          }
-        },
-        "owner": "alice",
-        "callId": "01890f47-1234-7123-8123-123456789abd",
-        "loadId": "01890f47-1234-7123-8123-123456789abe"
-      },
-      "responses": [
-        {
-          "variant": "settled",
-          "value": {
-            "data": {
-              "tasks": [
-                {
-                  "id": "t-1"
-                },
-                {
-                  "id": "t-2"
-                }
-              ]
-            },
-            "next": {
-              "state": {
-                "after": "t-2"
-              }
-            }
-          }
-        },
-        {
-          "variant": "completed",
-          "value": {
-            "data": {
-              "tasks": []
-            },
-            "next": null
-          }
-        },
-        {
-          "variant": "enrolled",
-          "value": {
-            "data": {
-              "tasks": [
-                {
-                  "id": "t-1"
-                },
-                {
-                  "id": "t-2"
-                }
-              ]
-            },
-            "next": null,
-            "tracking": [
-              {
-                "kind": "track",
-                "stream": "shared",
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-1"
-                  }
-                }
-              },
-              {
-                "kind": "track",
-                "stream": "other",
-                "record": {
-                  "model": "Task",
-                  "identity": {
-                    "id": "t-1"
-                  }
-                }
-              }
-            ]
-          }
-        },
-        {
-          "variant": "rejected",
-          "value": {
-            "rejection": "tasks.refused"
           }
         },
         {
@@ -714,72 +171,6 @@
       ]
     },
     {
-      "op": "advanceStamp",
-      "request": {
-        "op": "advanceStamp",
-        "model": "Task",
-        "identityKey": "{\"id\":\"t-1\"}"
-      },
-      "responses": [
-        {
-          "variant": "stamped",
-          "value": 4
-        }
-      ]
-    },
-    {
-      "op": "ensureStamp",
-      "request": {
-        "op": "ensureStamp",
-        "model": "Task",
-        "identityKey": "{\"id\":\"t-2\"}"
-      },
-      "responses": [
-        {
-          "variant": "stamped",
-          "value": 1
-        }
-      ]
-    },
-    {
-      "op": "readStamps",
-      "request": {
-        "op": "readStamps",
-        "model": "Task",
-        "identityKeys": [
-          "{\"id\":\"t-1\"}",
-          "{\"id\":\"t-2\"}"
-        ]
-      },
-      "responses": [
-        {
-          "variant": "stamped",
-          "value": [
-            4,
-            1
-          ]
-        }
-      ]
-    },
-    {
-      "op": "lockRecord",
-      "request": {
-        "op": "lockRecord",
-        "model": "Task",
-        "identityKey": "{\"id\":\"t-1\"}"
-      },
-      "responses": [
-        {
-          "variant": "locked",
-          "value": 4
-        },
-        {
-          "variant": "absent",
-          "value": null
-        }
-      ]
-    },
-    {
       "op": "readTracking",
       "request": {
         "op": "readTracking",
@@ -816,7 +207,7 @@
           {
             "model": "Task",
             "identityKey": "{\"id\":\"t-1\"}",
-            "mode": "advance"
+            "mode": "ensure"
           },
           {
             "model": "Task",
@@ -827,10 +218,10 @@
       },
       "responses": [
         {
-          "variant": "stamps",
+          "variant": "presence",
           "value": [
-            8,
-            null
+            true,
+            false
           ]
         }
       ]

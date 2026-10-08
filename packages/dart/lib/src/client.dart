@@ -67,9 +67,7 @@ class Client implements WritePort, SubmitMutationPort {
       );
     }
     final message = error is StateError ? error.message : null;
-    if (error is TaskFailure && error.details['code'] == 'store_hook_failed') {
-      return CallError('store_hook_failed', cause: error.cause ?? error);
-    }
+
     if (message == 'action.invalid_options') {
       return CallError(message!, execution: 'rejected', cause: error);
     }
@@ -127,7 +125,7 @@ class Client implements WritePort, SubmitMutationPort {
     required String path,
     required Map<String, dynamic> schema,
     required String stream,
-    required StoreConnection connection,
+    StoreConnection? connection,
     String? libraryPath,
     Carrier? carrier,
     Map<String, PrerequisiteHandler>? prerequisites,
@@ -138,8 +136,8 @@ class Client implements WritePort, SubmitMutationPort {
     final bridge = await Bridge.open(
       path: path,
       schema: schema,
-      binding: connection.identity.binding(stream),
-      projectionGeneration: connection.projectionGeneration,
+      stream: stream,
+      projectionGeneration: connection?.projectionGeneration ?? '1',
       libraryPath: libraryPath,
       carrier: carrier,
       prerequisiteHandlers: required.keys.toList(),
@@ -151,12 +149,13 @@ class Client implements WritePort, SubmitMutationPort {
     final client = Client._(bridge, bridge.opened['clientId'] as String)
       .._stream = stream;
     try {
-      await client.connect(
-        connection,
-        onError: connection.onError,
-        refreshAuth: connection.refreshAuth,
-        directTimeout: connection.directTimeout,
-      );
+      if (connection != null)
+        await client.connect(
+          connection,
+          onError: connection.onError,
+          refreshAuth: connection.refreshAuth,
+          directTimeout: connection.directTimeout,
+        );
     } catch (_) {
       await client.close();
       rethrow;
@@ -199,11 +198,9 @@ class Client implements WritePort, SubmitMutationPort {
 
   Future<T> _runTransactionBody<T>(
     String transactionId,
-    FutureOr<T> Function(Transaction tx) body, [
-    StoreCancellation? cancellation,
-  ]) async {
+    FutureOr<T> Function(Transaction tx) body,
+  ) async {
     final tx = Transaction._(this, transactionId);
-    cancellation?.onCancel(tx._cancel);
     final token = Object();
     _activeTxToken = token;
     try {
@@ -280,36 +277,18 @@ class Client implements WritePort, SubmitMutationPort {
   Future<void> direct(Map<String, dynamic> operation) =>
       transaction((tx) => tx.direct(operation));
 
-  /// Execute a direct Query. Without [once] it is exactly
-  /// a fresh request that reads and writes no
-  /// snapshot. With [once], Rust decides: a saved result is decoded without
-  /// any request or Model write, an active request is joined, or a new one
-  /// is executed and its successful result saved with its authority.
-  /// [refresh] (only with [once]) always requests and replaces on success.
+  /// Execute a fresh Query and decode its committed invocation snapshot.
   Future<T> invokeQuery<T>(
     String name,
     int version,
     Map<String, dynamic> args,
     T Function(dynamic) decode, {
     bool? store,
-    bool once = false,
-    bool refresh = false,
   }) async {
-    final closedBefore = _closing != null;
     late final Map<String, dynamic> invoked;
     try {
-      invoked = await _invoke(name, version, args, store, once, refresh);
+      invoked = await _invoke(name, version, args, store);
     } catch (error) {
-      // A once caller the closing client left waiting hears that it closed,
-      // as every call close can no longer observe does. Platform-specific: the
-      // public error depends on this object's close, not on the runtime.
-      if (once &&
-          !closedBefore &&
-          _closing != null &&
-          error is ActionTransportException &&
-          error.code == 'action.unavailable') {
-        throw CallError('client.closed', cause: error);
-      }
       throw _publicActionError(error);
     }
     return _decodeOutcome(invoked['outcome'] as Map, decode);
@@ -354,12 +333,10 @@ class Client implements WritePort, SubmitMutationPort {
   /// Fetch failures refused before any request was sent.
   static const _fetchRejected = {
     'fetch.invalid_options',
-    'fetch.schema_pending',
   };
 
   /// A `fetch` task's failure as a [CallError]: a `fetch.*` code the runtime
-  /// decided keeps its cause - the refusing onStore callback's error or the
-  /// transport failure with its status. A closed client's admission error
+  /// decided keeps its cache commit cause or transport failure with its status. A closed client's admission error
   /// and any other engine error stay as they are.
   Object _fetchError(Object error) {
     if (error is TaskFailure) {
@@ -376,26 +353,6 @@ class Client implements WritePort, SubmitMutationPort {
       return _publicActionError(error);
     }
     return error;
-  }
-
-  /// Discard the saved once results of one Query argument set, every store
-  /// variant, in a local transaction. Needs no network; an older request
-  /// still in flight cannot save its result afterwards.
-  Future<void> invalidateQuery(
-    String name,
-    int version,
-    Map<String, dynamic> args,
-  ) async {
-    try {
-      await _task({
-        'kind': 'invalidateQueryOnce',
-        'name': name,
-        'version': version,
-        'args': args,
-      });
-    } catch (error) {
-      throw _publicActionError(error);
-    }
   }
 
   T _decodeOutcome<T>(Map outcome, T Function(dynamic) decode) {
@@ -420,8 +377,6 @@ class Client implements WritePort, SubmitMutationPort {
     int version,
     Map<String, dynamic> args,
     bool? store,
-    bool once,
-    bool refresh,
   ) async {
     final wire = store;
     try {
@@ -431,8 +386,6 @@ class Client implements WritePort, SubmitMutationPort {
             'version': version,
             'args': args,
             if (wire != null) 'store': wire,
-            if (once) 'once': true,
-            if (refresh) 'refresh': true,
           }))
           as Map<String, dynamic>;
     } on StateError catch (error) {
@@ -441,12 +394,7 @@ class Client implements WritePort, SubmitMutationPort {
       if (_unknownExecution.contains(code)) {
         throw ActionTransportException(code, _directCause(details));
       }
-      if (code == 'store_hook_failed') {
-        throw ActionTransportException(
-          code,
-          error is TaskFailure ? error.cause ?? error : error,
-        );
-      }
+
       // The runtime is gone: no call can be made.
       if (error.message == 'client_closed') {
         throw ActionTransportException('action.unavailable', error);
@@ -499,19 +447,6 @@ class Client implements WritePort, SubmitMutationPort {
     return await connecting;
   }
 
-  /// Test seams over the legacy commands: freeze the next push batch, settle
-  /// it with a receipt, apply one page. The connection never uses them.
-  Future<String?> freeze() async => await _task({'kind': 'freeze'}) as String?;
-
-  /// The runtime announces every completion the receipt settled as
-  /// `callCompleted`.
-  Future<void> acknowledge(int sequence, Map<String, dynamic> receipt) async {
-    await _task({'kind': 'ack', 'sequence': sequence, 'receipt': receipt});
-  }
-
-  Future<Map<String, dynamic>> applyPull(Map<String, dynamic> page) async =>
-      (await _task({'kind': 'pull', 'page': page})) as Map<String, dynamic>;
-
   /// One record's sync state: its pending mutations and retained rejections.
   Future<Map<String, dynamic>> recordSyncState(
     String model,
@@ -526,21 +461,6 @@ class Client implements WritePort, SubmitMutationPort {
   /// The client's sync state: a local snapshot, not a network probe.
   Future<Map<String, dynamic>> syncState() async =>
       (await _task({'kind': 'status'})) as Map<String, dynamic>;
-
-  /// Leave an incompatible database behind and open a fresh file for the
-  /// schema this client asked for. Refused while unsent mutations remain
-  /// unless [discardPending]; the report says what the old file keeps:
-  /// `oldFile`, `newFile`, `reason`, `leftPending`, `leftDirect`,
-  /// `abandonedCalls` and `abandonedLoads`, the IDs of the Load jobs left
-  /// behind, whose handles and waiters ended with `load.schema_changed`.
-  Future<Map<String, dynamic>> rebuild({bool discardPending = false}) async {
-    final report =
-        (await _task({'kind': 'rebuild', 'discardPending': discardPending}))
-            as Map<String, dynamic>;
-    // The runtime ended every handle of the replica left behind and completed
-    // every abandoned call before this completion.
-    return report;
-  }
 
   Future<List<Map<String, dynamic>>> pendingTasks() async =>
       (await _task({'kind': 'tasks'}) as List).cast<Map<String, dynamic>>();
@@ -678,7 +598,6 @@ class Client implements WritePort, SubmitMutationPort {
     _actionObservers.close();
     // The runtime stops every handle and watch with a terminal snapshot before
     // it announces its end.
-    _subscriptions.closing();
     final closing = _bridge.close();
     try {
       _abandonConnection();
@@ -714,7 +633,6 @@ class Transaction implements WritePort, SubmitMutationPort {
   /// Submissions with a `local` callback that have not completed.
   int _locals = 0;
   Transaction._(this._client, this._transactionId);
-  void _cancel() => _open = false;
 
   /// Dismiss a refusal as part of this transaction.
   late final TransactionRejections rejections = TransactionRejections._(this);

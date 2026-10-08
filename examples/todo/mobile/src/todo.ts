@@ -46,7 +46,11 @@ export async function openTodoSession(options: {
   const client = await GeneratedClient.open({
     path: await databasePath(`todo-${options.user}.sqlite`),
     stream: scope,
-    connection: { url: options.url, token: options.user, identity: { backend: "todo-demo", viewer: options.user, contract: "todo-v04" }, options: { onError: options.onConnectionError } },
+    connection: {
+      url: options.url,
+      token: options.user,
+      options: { onError: options.onConnectionError },
+    },
   });
   client.bootstrap().catch(options.onConnectionError);
   const session: TodoSession = {

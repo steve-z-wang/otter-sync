@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { setImmediate } from "node:timers/promises";
 import { GeneratedClient } from "./client.ts";
 import { createFixture } from "./backend-fixture.ts";
-import { createProxy, type Proxy } from "../load-e2e/server.mts";
+import { createProxy, type Proxy } from "../e2e/proxy.mts";
 const fixture = await createFixture();
 let proxy: Proxy;
 before(async () => {
@@ -23,7 +23,6 @@ after(async () => {
 const connection = (viewer = "alice") => ({
   url: proxy.url,
   token: viewer,
-  identity: { backend: "action-e2e", viewer, contract: "action-v04" },
 });
 async function wait(predicate: () => Promise<boolean>, label: string) {
   const end = Date.now() + 20000;
@@ -60,7 +59,10 @@ async function session(viewer = "alice") {
   };
 }
 const action = (name: string) => (x: { path: string; body: string }) =>
-  x.path === "/sync/actions" && JSON.parse(x.body).name === name;
+  x.path === "/sync/mutations" &&
+  JSON.parse(x.body).mutations.some(
+    (mutation: { name: string }) => mutation.name === name,
+  );
 const draft = (id: string) => ({
   id,
   title: `draft ${id}`,
@@ -143,8 +145,12 @@ test("lost accepted scalar result retries exact frozen intent after reopen witho
       "saved result replay",
     );
     const requests = proxy
-      .requests("/sync/actions")
-      .filter((x) => x.request.callId === frozen.callId);
+      .requests("/sync/mutations")
+      .filter(
+        (x) =>
+          x.request.batchId === frozen.batchId &&
+          x.request.storeId === frozen.storeId,
+      );
     assert.ok(requests.length >= 2);
     assert.deepEqual(requests.at(-1)!.request, frozen);
     assert.equal(
@@ -170,7 +176,7 @@ test("Query/Fetch store policies preserve invocation snapshot separately from cu
         todo: { id: "policy-a", title: "policy initial" },
       })
     ).wait();
-    const hold = proxy.holdResponse(action("SearchTodos"));
+    const hold = proxy.holdResponse((x) => x.path === "/sync/actions" && JSON.parse(x.body).invocation?.name === "SearchTodos");
     const reading = s.client.queries.searchTodos(
       { query: "policy" },
       { store: true },
@@ -266,11 +272,18 @@ test("real PostgreSQL serialization exhaustion leaves a Call durable; resend eve
     );
     assert.equal((await s.client.syncState()).pending, 0);
     const requests = proxy
-      .requests("/sync/actions")
-      .filter(
-        (x) =>
-          x.request.name === "UpdateTodo" &&
-          x.request.args.todo.id === "conflict",
+      .requests("/sync/mutations")
+      .filter((x) =>
+        x.request.mutations.some(
+          (mutation: {
+            name: string;
+            operations: { identity: { id?: string } }[];
+          }) =>
+            mutation.name === "UpdateTodo" &&
+            mutation.operations.some(
+              (operation) => operation.identity?.id === "conflict",
+            ),
+        ),
       );
     assert.ok(
       requests.length >= 2,
@@ -320,10 +333,21 @@ test("explicit extra publication reaches another bound file without making it an
       "global invalidation cannot enroll an unrelated identity",
     );
     const request = proxy
-      .requests("/sync/actions")
-      .filter((x) => x.request.name === "AnnotateTodo")
+      .requests("/sync/mutations")
+      .filter((x) =>
+        x.request.mutations.some(
+          (mutation: { name: string }) => mutation.name === "AnnotateTodo",
+        ),
+      )
       .at(-1)!.request;
-    assert.equal(request.args.note, saved.id);
+    assert.equal(
+      request.mutations
+        .find((mutation: { name: string }) => mutation.name === "AnnotateTodo")
+        .operations.find(
+          (operation: { inputPath: string }) => operation.inputPath === "note",
+        ).value,
+      saved.id,
+    );
     assert.equal(
       (await a.client.models.todo.get({ id: "extra-a" }))?.title,
       "after",
@@ -366,64 +390,39 @@ test("creation defaults expand once before durable queueing and preserve enum/nu
   }
 });
 
-test("once stores the complete scalar/list/date/model result, survives offline reopen and failed refresh preserves the last success until invalidation", async () => {
+test("fresh Query retains complete scalar/list/date/model codecs across reopen and propagates refusal", async () => {
   const s = await session();
   try {
     await (
       await s.client.mutations.addTodo({
-        todo: { id: "once-a", title: "onceq" },
+        todo: { id: "fresh-a", title: "freshq" },
       })
     ).wait();
     const first = await s.client.queries.todoPage(
-      { query: "onceq" },
-      { store: false, once: true },
+      { query: "freshq" },
+      { store: false },
     );
     assert.equal(first.count, 1);
-    assert.equal(first.todos[0]!.id, "once-a");
+    assert.equal(first.todos[0]!.id, "fresh-a");
     assert.ok(first.asOf instanceof Date);
     await s.reopen();
-    await s.client.connection!.pause();
-    assert.deepEqual(
-      await s.client.queries.todoPage(
-        { query: "onceq" },
-        { store: false, once: true },
-      ),
-      first,
-    );
-    await s.client.connection!.resume();
     await fixture.pool.query(
-      "INSERT INTO action_e2e_todo VALUES('once-b','onceq')",
+      "INSERT INTO action_e2e_todo VALUES('fresh-b','freshq')",
     );
-    const refreshed = await s.client.queries.todoPage(
-      { query: "onceq" },
-      { store: false, once: true, refresh: true },
+    const second = await s.client.queries.todoPage(
+      { query: "freshq" },
+      { store: false },
     );
-    assert.equal(refreshed.count, 2);
-    assert.notEqual(refreshed.asOf.toISOString(), first.asOf.toISOString());
+    assert.equal(second.count, 2);
+    assert.notEqual(second.asOf.toISOString(), first.asOf.toISOString());
     fixture.failQueries = true;
     await assert.rejects(
-      s.client.queries.todoPage(
-        { query: "onceq" },
-        { store: false, once: true, refresh: true },
-      ),
-    );
-    // Refresh replaces the persisted snapshot only on success.
-    assert.deepEqual(
-      await s.client.queries.todoPage(
-        { query: "onceq" },
-        { store: false, once: true },
-      ),
-      refreshed,
+      s.client.queries.todoPage({ query: "freshq" }, { store: false }),
     );
     fixture.failQueries = false;
-    await s.client.queries.invalidate.todoPage({ query: "onceq" });
     assert.equal(
-      (
-        await s.client.queries.todoPage(
-          { query: "onceq" },
-          { store: false, once: true },
-        )
-      ).count,
+      (await s.client.queries.todoPage({ query: "freshq" }, { store: false }))
+        .count,
       2,
     );
     assert.ok((await s.client.queries.countTodos({})).count >= 2);
@@ -506,13 +505,28 @@ test("atomic PublishEntry optimism and backend rows accept or roll back together
       0,
     );
     for (const request of proxy
-      .requests("/sync/actions")
-      .filter((x) => x.request.name === "PublishEntry"))
-      assert.deepEqual(Object.keys(request.request.args).sort(), [
-        "entry",
-        "media",
-        "placement",
-      ]);
+      .requests("/sync/mutations")
+      .filter((x) =>
+        x.request.mutations.some(
+          (mutation: { name: string }) => mutation.name === "PublishEntry",
+        ),
+      ))
+      assert.deepEqual(
+        [
+          ...new Set(
+            request.request.mutations
+              .find(
+                (mutation: { name: string }) =>
+                  mutation.name === "PublishEntry",
+              )
+              .operations.map(
+                (operation: { inputPath: string }) =>
+                  operation.inputPath.split(/[.\[]/)[0],
+              ),
+          ),
+        ].sort(),
+        ["entry", "media", "placement"],
+      );
     assert.equal(
       fixture.publishes.some((input) =>
         JSON.stringify(input).includes("Composition"),
@@ -666,5 +680,61 @@ test("Dart named callbacks/default/date codecs execute against the same actual h
     fixture.rejectedEntries.delete("dart-entry-no");
     fixture.rejectedEntries.delete("dart-entry-live-no");
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a suspended real Query handler leaves Stream sync and committed local transactions responsive", { timeout: 30000 }, async () => {
+  const s = await session();
+  let entered!: () => void, release!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let pending: Promise<unknown> | undefined;
+  try {
+    await s.client.bootstrap();
+    fixture.queryGate = async () => {
+      entered();
+      await held;
+    };
+    pending = s.client.queries.todoPage(
+      { query: "responsive" },
+      { store: false },
+    );
+    pending.catch(() => {});
+    await arrived;
+    await s.client.transaction(async (tx) => {
+      await tx.models.composition.create(draft("responsive-local"));
+    });
+    assert.ok(
+      await s.client.models.composition.get({ id: "responsive-local" }),
+    );
+    const mutation = await s.client.mutations.addTodo({
+      todo: { id: "responsive-live", title: "responsive" },
+    });
+    let deadline!: ReturnType<typeof setTimeout>;
+    const outcome = await Promise.race([
+      mutation.wait(),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(Error("Mutation cannot settle while Query is suspended")),
+          10000,
+        );
+      }),
+    ]).finally(() => clearTimeout(deadline));
+    assert.equal(outcome.error, null);
+    assert.equal(
+      (await s.client.models.todo.get({ id: "responsive-live" }))?.title,
+      "responsive",
+    );
+    release();
+    await pending;
+  } finally {
+    fixture.queryGate = undefined;
+    release();
+    await pending?.catch(() => {});
+    await s.close();
   }
 });

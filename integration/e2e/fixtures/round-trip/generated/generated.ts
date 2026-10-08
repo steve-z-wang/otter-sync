@@ -3,9 +3,9 @@ import type { Call, QueryOptions } from './client.ts';
 export interface ReadPort { read(model:string,identity:object):Promise<Record<string,unknown>|null>; querySpec(model:string,query:object):Promise<Record<string,unknown>[]>; related(model:string,identity:object,relation:string):Promise<Record<string,unknown>|null>; referencing(model:string,identity:object,source:string,relation:string):Promise<Record<string,unknown>[]>; }
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
-export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
+export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; }
 export const schema = {"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"allowedPatchFields":["text","note"],"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"update"}],"kind":"mutation","name":"EditEntry","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"FindEntry","outputEnums":[],"outputs":[{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"enums":[],"models":[{"bootstrap":true,"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]} as const;
-export type MutationName = 'Edit';
+export type MutationName = 'EditEntry';
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
 export interface Rejection { ordinal:number; code:string; [key:string]:unknown; }
 export interface SyncState { pending:PendingMutation[]; rejections:Rejection[]; }
@@ -59,13 +59,6 @@ export function encodeEntryCreate(value:EntryCreate):Record<string,unknown> { re
 export function encodeEntryCreateIdentity(value:EntryCreate):Record<string,unknown> { return {
  id: value.id,
 }; }
-export interface EditArgs {
- entry: { identity:EntryIdentity; values:Pick<EntryPatch, "text" | "note"> };
-}
-export function Edit(args:EditArgs) { const operations:object[] = [];
- for (const value of [args.entry]) {
- operations.push({ model:'Entry', op:'update', identity:encodeEntryIdentity(value.identity), values:encodeEntryPatch(value.values) }); }
- return {name:'Edit',version:1,operations}; }
 export class EntryModel<P extends ReadPort=ReadPort> { readonly port:P; constructor(port:P) { this.port=port; }
  async get(identity:EntryIdentity):Promise<Entry|null> { const row=await this.port.read('Entry',encodeEntryIdentity(identity)); return row===null ? null : decodeEntry(row); }
  async query(options:{where?:Partial<Entry>;orderBy?:{field:'id' | 'text' | 'note';direction:'ascending'|'descending'}[];limit?:number}={}):Promise<Entry[]> { return (await this.port.querySpec('Entry',{filter:encodeEntryWhere(options.where??{}),orderBy:options.orderBy??[],...(options.limit===undefined?{}:{limit:options.limit})})).map(decodeEntry); }
@@ -112,9 +105,6 @@ export type FindEntryOptions = QueryOptions;
 /** Queries return invocation snapshots after permitted cache writes commit. */
 export function makeQueries(port:CallPort) { return {
  findEntry: (args:FindEntryInput, options?:FindEntryOptions):Promise<FindEntryOutput> => port.invokeQuery('FindEntry',1,encodeFindEntryInput(args),decodeFindEntryOutput,options),
- invalidate: {
-  findEntry: (args:FindEntryInput):Promise<void> => port.invalidateQuery('FindEntry',1,encodeFindEntryInput(args)),
- }
 }; }
 export interface LiveModels { entry:EntryLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { entry:new EntryLiveModel(port) }; }

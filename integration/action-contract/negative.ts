@@ -41,7 +41,7 @@ client.mutations.addTodo(async tx=>{
 client.models.note.create({});
 // @ts-expect-error explicit nonnullable default cannot be null
 client.models.note.create({memo:null,id:null});
-// @ts-expect-error patch cannot change identity
+// @ts-expect-error named update field list excludes the existing state field
 const patch:TodoUpdate<'title'>={id:'t',state:'closed'};
 // @ts-expect-error composite identity requires every component
 const identity:ProjectIdentity={id:'p'};
@@ -67,3 +67,6 @@ m.stream.track.project({id:'p'});
 // @ts-expect-error unsupported Model field
 client.models.todo.update({id:'t'},{unknown:true});
 void [patch,identity,old,output,states];
+
+// @ts-expect-error EditMany restricts its named update slot to title
+client.mutations.editMany({todos:[{id:'t',state:'closed'}]});

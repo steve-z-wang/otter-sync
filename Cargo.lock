@@ -95,7 +95,6 @@ dependencies = [
  "axton-binding",
  "axton-client",
  "axton-core",
- "axton-server",
  "axton-sqlite",
  "serde_json",
  "tempfile",
@@ -110,6 +109,7 @@ dependencies = [
  "chrono",
  "rusqlite",
  "serde_json",
+ "sha2",
  "tempfile",
  "uuid",
 ]

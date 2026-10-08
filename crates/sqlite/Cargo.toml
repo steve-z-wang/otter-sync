@@ -8,7 +8,8 @@ axton-core = { path = "../core" }
 axton-client = { path = "../client" }
 rusqlite = { workspace = true, features = ["hooks"] }
 serde_json.workspace = true
-[dev-dependencies]
 tempfile.workspace = true
+[dev-dependencies]
+sha2.workspace = true
 chrono.workspace = true
 uuid.workspace = true

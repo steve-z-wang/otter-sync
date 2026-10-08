@@ -29,6 +29,8 @@ node --test integration/bindings/client-js/*.test.mjs packages/client-js/*.test.
 node --test integration/bindings/client-react-native/*.test.mjs
 bash integration/persistence/transaction-probe/run.sh
 bash integration/persistence/server/run.sh
+bash integration/v05-sdk/run-host.sh
+bash integration/v05-sdk/run-capacity.sh
 case "$(uname -s)" in
  Darwin) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.dylib";;
  Linux) export AXTON_LIBRARY="$root/target/debug/libaxton_dart.so";;
@@ -36,15 +38,15 @@ case "$(uname -s)" in
 esac
 export AXTON_DART_LIBRARY="$AXTON_LIBRARY"
 (cd packages/dart && dart pub get && dart analyze && dart test)
-(cd integration/action-runtime-dart && dart pub get && dart analyze generated.dart generated_test.dart model_only/generated.dart model_free/generated.dart action_e2e_publish.dart action_e2e_datetime.dart && bash check-negative.sh && dart test generated_test.dart)
-bash integration/v04-sdk/check-types.sh
-(cd integration/v04-sdk && dart run application-data.dart && dart run native.dart)
-AXTON_DART="$(command -v dart)" bash integration/v04-sdk/run-host.sh
+cargo run -p axton-compiler --locked -- compile integration/action-runtime-dart integration/action-runtime-dart --backend-runtime ../../packages/server/index.mts --client-runtime ../../packages/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile integration/action-runtime-dart/model_only integration/action-runtime-dart/model_only --backend-runtime ../../../packages/server/index.mts --client-runtime ../../../packages/client-js/index.mts
+cargo run -p axton-compiler --locked -- compile integration/action-runtime-dart/model_free integration/action-runtime-dart/model_free --backend-runtime ../../../packages/server/index.mts --client-runtime ../../../packages/client-js/index.mts
+(cd integration/action-runtime-dart && dart pub get && dart analyze generated.dart generated_test.dart application_data.dart model_only/generated.dart model_free/generated.dart action_e2e_publish.dart action_e2e_datetime.dart && bash check-negative.sh && dart test generated_test.dart && dart run application_data.dart)
 bash integration/generated-api/verify.sh
-bash integration/0.4/run.sh
+# Default-v5 e2e includes retained cascade, constraints/SIGKILL, authenticated
+# Store context, whole-read atomicity and admitted HTTP shutdown assertions.
 bash integration/e2e/run.sh
 bash integration/action-e2e/run.sh
-bash integration/load-e2e/run.sh
 node --test integration/e2e/todo-ui.test.mjs
 bash integration/e2e/todo-run.sh
 python3 website/scripts/check_examples.py

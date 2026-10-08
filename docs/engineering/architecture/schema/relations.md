@@ -27,9 +27,8 @@ Code: resolution in [compiler/validate.rs](../../../../crates/compiler/src/valid
 
 ## 10. Quality Requirements
 
-- Relation metadata compiles and a singular inverse without a unique key is refused. Evidence: [compiler/tests/compiler.rs](../../../../crates/compiler/tests/compiler.rs) `relationships_bindings_and_dependency_metadata`, `singular_inverse_requires_a_unique_foreign_key`.
-- Deleting a record deletes its declared local children, in direct writes, queued mutations and authoritative deletes, and cycles terminate (guarantee L5). Evidence: [sqlite/tests/client.rs](../../../../crates/sqlite/tests/client.rs) `schema_cascade_is_optimistic_same_fate_and_not_extra_wire_operations`, `direct_cascade_handles_cyclic_relationships_once`; [sqlite/tests/downlink.rs](../../../../crates/sqlite/tests/downlink.rs) `delete_cascades_to_descendants_and_their_claims`.
+The [compiler tests](../../../../crates/compiler/tests/compiler.rs) cover resolved relation metadata and unique inverse keys. Current [cascade tests](../../../../crates/sqlite/tests/protocol05_cascade.rs) and [companion cascade tests](../../../../crates/sqlite/tests/protocol05_companion_cascade.rs) cover local child effects and replay. [Delivery-plan tests](../../../../crates/server/tests/delivery_plan.rs) cover finite authority dependency grouping. These are maintained source references, not new execution evidence.
 
 ## 11. Risks and Technical Debt
 
-- **Accepted limitation:** `onTargetDelete` is a client-side rule. The server runtime has no relation handling; a handler must delete children itself, and the client's cascaded deletes never reach it. Evidence: [server/lib.rs](../../../../crates/server/src/lib.rs) never reads `relations`. Stated for authors in the [schema reference](../../../../website/docs/schema/reference.md#relations) and [What your backend owns](../../../../website/docs/backend/api.md#what-your-backend-owns).
+`onTargetDelete` supplies device-side effects; it does not execute server business deletes. A handler must delete and invalidate each server-side child itself, and local cascaded deletes are never sent. Core/server still use retained relation metadata to group cascade dependencies into complete finite authority units ([Protocol 5](../protocol/0.5.md)). This grouping preserves apply atomicity; it is not an application cascade implementation.

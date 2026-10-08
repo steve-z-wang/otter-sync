@@ -1,13 +1,9 @@
 import { reportCallbackError, type EffectOutcome } from "./bridge.mts";
 import type { RecordValue } from "./values.mts";
 
-/**
- * The backend route of one HTTP effect: `push` posts to `/sync/mutations`,
- * `pull` to `/sync/pull`, `action` to `/sync/actions`, `fetch` (one Model
- * Fetch) to `/sync/fetch` and `load` (a batch of native Load pages) to
- * `/sync/loads`.
- */
-export type HttpRoute = "push" | "pull" | "action" | "fetch" | "load";
+/** The six backend routes emitted by the runtime's HTTP effects. */
+export type HttpRoute =
+  "handshake" | "materialize" | "push" | "pull" | "action" | "fetch";
 /** One HTTP POST: `kind` is the route; an unknown route must be refused. Errors carry `status` when the server answered. */
 export type Transport = (
   kind: HttpRoute,
@@ -41,35 +37,31 @@ export type Connection = {
 };
 
 /** Why one record or one queued mutation could not be applied as delivered. */
-export type ReportKind = "readFailed" | "skipped" | "conflict" | "diverged";
+export type ReportKind = "diverged";
 export type ReportDetails = {
   kind: ReportKind;
   model: string;
   identity: Record<string, unknown>;
-  stamp: number;
-  /** `readFailed`: the server's code (`loader.failed`, or the refusal code). */
+  /** A diagnostic code supplied by the runtime. */
   code?: string;
   /** `diverged`: the queued mutation whose replay failed; it is still sent. */
   ordinal?: number;
   detail?: unknown;
 };
 /**
- * A delivery the client could not apply, handed to `onError`. The client stays
- * consistent: a `readFailed` or `skipped` record keeps its local content and
- * stamp, a `conflict` keeps the local content, a `diverged` mutation shows the
- * server's row and is still sent.
+ * A queued operation that no longer replays over accepted authority.
+ * The server row is visible and the durable Mutation remains queued.
  */
 export class AxtonReport extends Error {
   readonly kind: ReportKind;
   readonly model: string;
   readonly identity: Record<string, unknown>;
-  readonly stamp: number;
   readonly code: string | undefined;
   readonly ordinal: number | undefined;
   readonly detail: unknown;
   constructor(report: ReportDetails) {
     super(
-      `${report.kind}: ${report.model} ${JSON.stringify(report.identity)} at stamp ${report.stamp}` +
+      `${report.kind}: ${report.model} ${JSON.stringify(report.identity)}` +
         (report.code ? ` (${report.code})` : "") +
         (report.ordinal !== undefined ? ` (mutation ${report.ordinal})` : ""),
     );
@@ -77,7 +69,6 @@ export class AxtonReport extends Error {
     this.kind = report.kind;
     this.model = report.model;
     this.identity = report.identity;
-    this.stamp = report.stamp;
     this.code = report.code;
     this.ordinal = report.ordinal;
     this.detail = report.detail;
@@ -106,16 +97,7 @@ export type Diagnostic =
   | { kind: "records"; reports: ReportDetails[] }
   | { kind: "error"; message: string; status?: number }
   | { kind: "protocol"; message: string }
-  | { kind: "refused"; message: string; status: number; body: unknown }
-  | {
-      kind: "storeHook";
-      code: "store_hook_failed";
-      model: string;
-      path: string;
-      message: string;
-      callbackEffectId?: string;
-      cause?: unknown;
-    };
+  | { kind: "refused"; message: string; status: number; body: unknown };
 
 /** The part of the Bridge an effect executor uses; tests supply a fake. */
 export type EffectBridge = {
@@ -334,14 +316,7 @@ export function startConnection(
                   Error(diagnostic.message),
                   diagnostic.kind === "error" && diagnostic.status !== undefined
                     ? { status: diagnostic.status }
-                    : diagnostic.kind === "storeHook"
-                      ? {
-                          code: diagnostic.code,
-                          model: diagnostic.model,
-                          path: diagnostic.path,
-                          cause: diagnostic.cause,
-                        }
-                      : {},
+                    : {},
                 ),
               ];
       for (const error of errors)

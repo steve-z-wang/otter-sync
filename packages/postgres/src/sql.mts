@@ -1,77 +1,5 @@
-/** Every statement AXTON runs against PostgreSQL. Tables: `migration.sql`. */
-export const CLAIM_INSERT =
-  "INSERT INTO axton_client (client_id, owner_id) VALUES ($1,$2) ON CONFLICT (client_id) DO NOTHING";
-export const CLAIM_LOCK =
-  "SELECT client_id, owner_id, sequence, receipt FROM axton_client WHERE client_id=$1 FOR UPDATE";
-export const SAVE_RECEIPT =
-  "UPDATE axton_client SET sequence=$3, receipt=$4 WHERE client_id=$1 AND owner_id=$2 RETURNING client_id";
-/** The inserted row is the only fresh claim. A concurrent duplicate waits for commit. */
-export const CLAIM_CALL_INSERT =
-  "INSERT INTO axton_call(owner_id,call_id,request) VALUES($1,$2,$3) ON CONFLICT(owner_id,call_id) DO NOTHING RETURNING call_id";
-export const CLAIM_CALL_LOCK =
-  "SELECT request,response FROM axton_call WHERE owner_id=$1 AND call_id=$2 FOR UPDATE";
-export const SAVE_CALL =
-  // The full creating transaction ID survives savepoints and prevents a later
-  // transaction from completing an unexpectedly committed placeholder.
-  "UPDATE axton_call SET response=$3 WHERE owner_id=$1 AND call_id=$2 AND response IS NULL AND claim_tx=pg_current_xact_id() RETURNING call_id";
+/** Statements for the fresh protocol-5 PostgreSQL namespace. */
 export const HEAD = "SELECT head FROM axton_stream WHERE stream=$1";
-/**
- * The Stream's retained positions after a cursor, including removals,
- * ordered before the limit. Identity comes from centralized record metadata;
- * upserts carry its current stamp from the Loader's snapshot. The outer join
- * exposes a missing record as a storage defect rather than dropping evidence.
- */
-export const SCAN =
-  "SELECT l.stream,l.cursor,l.kind,l.record_id::text AS record_id,r.model,r.identity_key,r.identity,CASE WHEN l.kind='upsert' THEN r.stamp END AS stamp " +
-  "FROM axton_stream_log l LEFT JOIN axton_record r ON r.id=l.record_id " +
-  "WHERE l.stream=$1 AND l.cursor>$2 " +
-  "ORDER BY l.cursor LIMIT $3";
-/** The upsert locks the record row, so concurrent changes never share a stamp. */
-export const ADVANCE_STAMP =
-  "INSERT INTO axton_record(model,identity_key,stamp) VALUES($1,$2,1) ON CONFLICT(model,identity_key) DO UPDATE SET stamp=axton_record.stamp+1 RETURNING stamp";
-/**
- * Initialise at 1 only when the record has no stamp. The no-op update (rather
- * than DO NOTHING plus a SELECT) makes a row another transaction initialised
- * after our snapshot surface as a serialization failure the runner retries.
- */
-export const ENSURE_STAMP =
-  "INSERT INTO axton_record(model,identity_key,stamp) VALUES($1,$2,1) ON CONFLICT(model,identity_key) DO UPDATE SET stamp=axton_record.stamp RETURNING stamp";
-/**
- * The current stamps of many records of one model, in request order (`$2` is
- * a JSON array of identity keys). Only a record without a stamp is inserted
- * at 1; an existing row is read, never rewritten or locked. The outer SELECT
- * reads the transaction snapshot, which cannot see this statement's own
- * inserts, hence COALESCE. The transaction keeps one snapshot (SERIALIZABLE,
- * like Repeatable Read before it), so a key whose row another transaction
- * inserted or re-stamped after the snapshot fails the INSERT with a
- * serialization error the runner retries, and a Load page over records under
- * heavy write churn can retry repeatedly before it succeeds.
- */
-export const READ_STAMPS =
-  "WITH keys AS (SELECT k.identity_key, k.position FROM jsonb_array_elements_text($2::jsonb) WITH ORDINALITY AS k(identity_key, position)), " +
-  "inserted AS (INSERT INTO axton_record(model,identity_key,stamp) SELECT $1, identity_key, 1 FROM keys ON CONFLICT(model,identity_key) DO NOTHING RETURNING identity_key, stamp) " +
-  "SELECT keys.identity_key, COALESCE(inserted.stamp, r.stamp) AS stamp FROM keys " +
-  "LEFT JOIN inserted ON inserted.identity_key=keys.identity_key " +
-  "LEFT JOIN axton_record r ON r.model=$1 AND r.identity_key=keys.identity_key " +
-  "ORDER BY keys.position";
-/**
- * Write-lock an existing record row without changing its stamp. A no-op UPDATE
- * rather than `SELECT … FOR UPDATE`: it writes a new row version, so a
- * concurrent writer of the row fails serialization and retries instead of
- * acting on a membership snapshot taken before this commit. SERIALIZABLE
- * alone already rules out a non-serial outcome; the write conflict also
- * holds in a caller-owned transaction at Repeatable Read (`backend.publish`).
- * Never creates a row.
- */
-export const LOCK_RECORD =
-  "UPDATE axton_record SET stamp=stamp WHERE model=$1 AND identity_key=$2 RETURNING stamp";
-/**
- * The most entries one statement carries in its JSON array parameter. Every
- * Stream statement binds at most three parameters, so PostgreSQL's 65,535
- * bind-parameter limit never applies; this bounds each statement's payload
- * and row count instead. A larger call runs several statements of the same
- * group inside the caller's transaction.
- */
 export const STREAM_BATCH = 1000;
 /**
  * Lock the existing rows of these Streams (`$1`, a JSON array) in exactly
@@ -92,68 +20,59 @@ export const READ_TRACKING = `
 WITH records AS (SELECT v->>'model' model,v->>'identityKey' identity_key FROM jsonb_array_elements($1::jsonb) v),
 pairs AS (SELECT v->>'stream' stream,v->>'model' model,v->>'identityKey' identity_key FROM jsonb_array_elements($2::jsonb) v),
 selected AS (
- SELECT m.stream,r.model,r.identity_key FROM records w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_member m ON m.record_id=r.id
+ SELECT m.stream,r.model,r.identity_key FROM records w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_record m ON m.record_id=r.id AND m.kind='upsert'
  UNION
- SELECT m.stream,r.model,r.identity_key FROM pairs w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_member m ON m.record_id=r.id AND m.stream=w.stream)
+ SELECT m.stream,r.model,r.identity_key FROM pairs w JOIN axton_record r USING(model,identity_key) JOIN axton_stream_record m ON m.record_id=r.id AND m.kind='upsert' AND m.stream=w.stream)
 SELECT * FROM selected`;
-/** Canonical ordered INSERT input acquires mixed-mode record guards in one pass. */
-export const GUARD_RECORDS = `
-WITH wanted AS (
- SELECT v->>'model' model,v->>'identityKey' identity_key,v->>'mode' mode,COALESCE((v->>'ordinal')::bigint,ord) ord
- FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v,ord)
-), guarded AS (
- INSERT INTO axton_record(model,identity_key,stamp)
- SELECT w.model,w.identity_key,1 FROM wanted w
- WHERE w.mode <> 'lock' OR EXISTS (
-  SELECT 1 FROM axton_record r WHERE r.model=w.model AND r.identity_key=w.identity_key)
- ORDER BY w.ord
- ON CONFLICT(model,identity_key) DO UPDATE SET stamp=CASE
-  WHEN (SELECT w.mode FROM wanted w WHERE w.model=EXCLUDED.model AND w.identity_key=EXCLUDED.identity_key)='advance'
-  THEN axton_record.stamp+1 ELSE axton_record.stamp END
- RETURNING model,identity_key,stamp
-)
-SELECT w.ord,g.stamp FROM wanted w LEFT JOIN guarded g USING(model,identity_key) ORDER BY w.ord`;
-/**
- * One reservation per Stream: `$1` is a JSON array of `{stream, count}`
- * in canonical order. A missing Stream is inserted at `count`; an existing
- * one is locked by the upsert and advanced, so two first writers of one
- * Stream serialize on its primary key. A head that would pass the safe bound
- * is not updated and its row is not returned, which the caller refuses.
- * Answers each Stream's new head; its range ends there.
- */
-export const RESERVE_HEADS =
-  "INSERT INTO axton_stream(stream,head) " +
-  "SELECT v->>'stream', (v->>'count')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
-  "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+EXCLUDED.head " +
-  "WHERE axton_stream.head <= 9007199254740991 - EXCLUDED.head " +
-  "RETURNING stream, head";
-/**
- * Write the published deltas' positions and answer every delta's position,
- * in the order of `$1`, a JSON array of `{stream, model, identityKey,
- * cursor, kind}` where an unpublished delta has no cursor. A published one
- * upserts the pair's single log row; an unpublished one answers the existing
- * row, read in one set-based pass. Answers the record ID too, `null` for a
- * record without metadata, which the caller refuses.
- */
-export const WRITE_STREAM_LOG =
-  "WITH d AS (SELECT v->>'stream' AS stream, v->>'model' AS model, v->>'identityKey' AS identity_key, " +
-  "(v->>'cursor')::bigint AS cursor, v->>'kind' AS kind, COALESCE((v->>'ordinal')::bigint,ord) ord FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord)), " +
-  "resolved AS (SELECT d.*, r.id AS record_id FROM d LEFT JOIN axton_record r ON r.model=d.model AND r.identity_key=d.identity_key), " +
-  "written AS (INSERT INTO axton_stream_log(stream,record_id,cursor,kind) " +
-  "SELECT stream, record_id, cursor, kind FROM resolved WHERE cursor IS NOT NULL AND record_id IS NOT NULL ORDER BY ord " +
-  "ON CONFLICT(stream,record_id) DO UPDATE SET cursor=EXCLUDED.cursor, kind=EXCLUDED.kind RETURNING 1) " +
-  "SELECT s.ord, s.record_id::text AS record_id, COALESCE(s.cursor, l.cursor) AS cursor, " +
-  "CASE WHEN s.cursor IS NULL THEN l.kind ELSE s.kind END AS kind " +
-  "FROM resolved s LEFT JOIN axton_stream_log l ON s.cursor IS NULL AND l.stream=s.stream AND l.record_id=s.record_id " +
-  "ORDER BY s.ord";
-/** Make each `{stream, recordId}` of `$1` a live member; an existing one is left alone. */
-export const INSERT_STREAM_MEMBERS =
-  "INSERT INTO axton_stream_member(stream,record_id) " +
-  "SELECT v->>'stream', (v->>'recordId')::bigint FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS x(v, ord) ORDER BY ord " +
-  "ON CONFLICT(stream,record_id) DO NOTHING";
 export const savepointName = (ordinal: number): string =>
   `axton_mutation_${ordinal}`;
 
 /** UPDATE creates the Serializable snapshot conflict fence; advisory locks do not. */
 export const PUBLICATION_FENCE =
-  "UPDATE axton_publication_fence SET held=held WHERE id=1 RETURNING id";
+  "UPDATE axton_publication_fence SET id=id WHERE id=1 RETURNING id";
+
+/** Protocol-5 Store, immutable outcome and coalesced publication persistence. */
+export const V05_STORE_INSERT =
+  "INSERT INTO axton_store(id,principal,stream) VALUES($1,$2,$3) ON CONFLICT(id) DO NOTHING";
+export const V05_STORE_INSPECT =
+  "SELECT principal,stream FROM axton_store WHERE id=$1";
+export const V05_STORE_LOCK =
+  "SELECT principal,stream,last_processed_batch_id,progress,current_digest,current_count,last_digest,last_count FROM axton_store WHERE id=$1 FOR UPDATE";
+export const V05_BATCH_BEGIN =
+  "UPDATE axton_store SET current_digest=$3,current_count=$4 WHERE id=$1 AND last_processed_batch_id=$2-1 AND current_digest IS NULL AND progress=0 RETURNING id";
+export const V05_BATCH_PRUNE =
+  "DELETE FROM axton_mutation_result WHERE store_id=$1 AND batch_id<$2";
+export const V05_RESULT_READ =
+  "SELECT result FROM axton_mutation_result WHERE store_id=$1 AND batch_id=$2 AND ordinal=$3";
+export const V05_RESULTS_READ =
+  "SELECT result FROM axton_mutation_result WHERE store_id=$1 AND batch_id=$2 ORDER BY ordinal";
+export const V05_RESULT_SAVE =
+  "INSERT INTO axton_mutation_result(store_id,batch_id,mutation_id,ordinal,result) VALUES($1,$2,$3,$4,$5::jsonb)";
+export const V05_PROGRESS_SAVE =
+  "UPDATE axton_store SET progress=CASE WHEN $3+1=$4 THEN 0 ELSE $3+1 END,last_processed_batch_id=CASE WHEN $3+1=$4 THEN $2 ELSE last_processed_batch_id END,last_digest=CASE WHEN $3+1=$4 THEN current_digest ELSE last_digest END,last_count=CASE WHEN $3+1=$4 THEN current_count ELSE last_count END,current_digest=CASE WHEN $3+1=$4 THEN NULL ELSE current_digest END,current_count=CASE WHEN $3+1=$4 THEN NULL ELSE current_count END WHERE id=$1 AND last_processed_batch_id=$2-1 AND progress=$3 AND current_count=$4 RETURNING id";
+export const V05_POSITIONS_READ =
+  "SELECT s.cursor,s.kind FROM axton_stream_record s JOIN axton_record r ON r.id=s.record_id WHERE s.stream=$1 AND r.model=$2 AND r.identity_key=$3";
+/** Relation identity separates namespaces; reservations follow SQL savepoints and COMMIT. */
+export const V05_PUBLICATION_CURSORS =
+  "CREATE TEMP TABLE IF NOT EXISTS pg_temp.axton_publication_cursor (relation oid NOT NULL,stream text NOT NULL,cursor bigint NOT NULL,PRIMARY KEY(relation,stream)) ON COMMIT DELETE ROWS";
+/** Reserve only once per transaction; a rolled-back reservation is free again. */
+export const V05_RESERVE_CURSOR =
+  "WITH reserved AS (INSERT INTO axton_stream(stream,head) " +
+  "SELECT $1::text,1 WHERE NOT EXISTS (SELECT 1 FROM pg_temp.axton_publication_cursor WHERE relation='axton_stream'::regclass::oid AND stream=$1) " +
+  "ON CONFLICT(stream) DO UPDATE SET head=axton_stream.head+1 WHERE axton_stream.head<9007199254740991 RETURNING head), " +
+  "saved AS (INSERT INTO pg_temp.axton_publication_cursor(relation,stream,cursor) SELECT 'axton_stream'::regclass::oid,$1,head FROM reserved RETURNING cursor) " +
+  "SELECT cursor FROM saved UNION ALL SELECT cursor FROM pg_temp.axton_publication_cursor WHERE relation='axton_stream'::regclass::oid AND stream=$1";
+export const V05_RECORD_ID =
+  "SELECT id FROM axton_record WHERE model=$1 AND identity_key=$2";
+export const V05_POSITION_WRITE =
+  "INSERT INTO axton_stream_record(stream,record_id,cursor,kind) VALUES($1,$2,$3,'upsert') ON CONFLICT(stream,record_id) DO UPDATE SET cursor=EXCLUDED.cursor,kind='upsert' RETURNING cursor,kind";
+export const V05_POSITION_READ =
+  "SELECT cursor,kind FROM axton_stream_record WHERE stream=$1 AND record_id=$2";
+/** Ensure and lock identities with a real MVCC write, without a content stamp. */
+export const ENSURE_IDENTITY =
+  "INSERT INTO axton_record(model,identity_key) VALUES($1,$2) ON CONFLICT(model,identity_key) DO UPDATE SET identity_key=axton_record.identity_key RETURNING id";
+/** Absence stays absent; an existing identity receives a new row version. */
+export const LOCK_IDENTITY =
+  "UPDATE axton_record SET identity_key=identity_key WHERE model=$1 AND identity_key=$2 RETURNING id";
+export const CHECK_LAYOUT =
+  "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace=current_schema()::regnamespace AND relname=ANY(ARRAY['axton_client','axton_call','axton_stream_member','axton_stream_log','axton_publication_group','axton_bootstrap_manifest','axton_channel','axton_scope','axton_bootstrap_identity','axton_bootstrap_range','axton_channel_member','axton_channel_log','axton_channel_tag','axton_scope_member','axton_scope_log','axton_scope_tag','axton_membership','axton_invalidation']) AND relkind='r') OR EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND ((table_name='axton_record' AND column_name='stamp') OR (table_name='axton_publication_fence' AND column_name='held'))) AS legacy";

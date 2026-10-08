@@ -33,8 +33,10 @@ A `watch` stream whose first query fails ends with that error. If a later re-run
 
 ## Bound Store and application directory
 
-`Client.open` requires `path`, `schema`, `stream` and `StoreConnection`. Its `StoreIdentity(backend, viewer, contract)` is stable offline; credentials refresh never changes a Store binding. `projectionGeneration` defaults to `'1'` and must match the backend. Generated clients provide schema automatically.
+`Client.open` requires `path`, `schema` and one `stream`; `StoreConnection` is optional. Rust owns the durable Store identity, and the backend binds it to the authenticated principal. Credentials refresh does not create a new Store. `projectionGeneration` defaults to `'1'` and must match the backend. Generated clients provide schema automatically.
 
 Android hosts must call `Client.configureApplicationData(stableApplicationSupportOrFilesPath)` once before any Store opens. Obtain the stable directory from the application platform provider. This process-wide initializer supports both the bundled ABI and `libraryPath` development ABI. Repeating the same path is safe; a different path is refused. It is not a per-client lock directory.
 
-Dart named Mutations use `.name(typedInput)` or `.name.withTransaction((tx) async => typedInput)` on client and transaction. The first await commits local acceptance; `Call.wait()` waits for backend outcome and local settlement. The callback's `tx.models` writes are owned device-only companions. Query/Fetch `store` is a boolean, default true. `await client.bootstrap()` covers the one bound Stream's full manifest and catch-up.
+Dart named Mutations use `.name(typedInput)` or `.name.withTransaction((tx) async => typedInput)` on client and transaction. The first await commits local acceptance; `Call.wait()` waits for backend outcome and local settlement. The callback's `tx.models` writes are owned device-only companions. Query/Fetch `store` is a boolean, default true. `await client.bootstrap()` waits for complete finite authority units at the captured head.
+
+Protocol 5 requires a fresh format-5 file. Unsupported files are refused intact; no old-format migration, automatic wipe or compatibility bridge is supplied. Native replay uses canonical tables directly.

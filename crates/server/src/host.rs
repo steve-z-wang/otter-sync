@@ -5,14 +5,12 @@
 //! mirror is `packages/server/host-contract.mts` and the shared examples are
 //! `fixtures/protocol/host-operations.json`; a change here belongs in all three.
 //!
-//! `handle` and `load` may answer a refusal or a failure: a refusal rolls
-//! the mutation back to its savepoint and records the code as that
-//! mutation's rejection; a failure carries a thrown application error as
-//! data. Every other thrown host error still aborts the whole delivery
-//! ([#95](https://github.com/zanminwang/axton/issues/95) narrows nothing more).
+//! `handleAction` and `load` distinguish explicit business refusal from
+//! infrastructure failure. A refusal rolls back the Mutation's savepoint;
+//! infrastructure failures abort its acceptance transaction for retry.
 use crate::stream_members::{MemberDelta, MemberPosition, PositionKind};
 use crate::{Error, Host, Result, code, valid_code};
-use axton_core::{LoadNext, RecordKey, canonical_json, check_stream, read_counter};
+use axton_core::{RecordKey, canonical_json, check_stream, read_counter};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{collections::BTreeSet, fmt::Display, future::Future, pin::Pin};
@@ -41,9 +39,7 @@ macro_rules! counter_field {
     };
 }
 counter_field!(counter, "counter", false);
-counter_field!(sequence, "sequence", false);
 counter_field!(cursor, "cursor", true);
-counter_field!(stamp, "stamp", true);
 
 /// `Some(Value::Null)` for an explicit `null`, `None` only when the key is absent.
 fn present<'de, D: Deserializer<'de>>(
@@ -205,7 +201,6 @@ impl TrackingPair {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardMode {
-    Advance,
     Ensure,
     Lock,
 }
@@ -256,39 +251,13 @@ fn guard_order<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<Guard
     }
     Ok(records)
 }
-/// Full original transaction group keys survive later log compaction.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublicationGroup {
-    #[serde(with = "counter")]
-    pub from: u64,
-    #[serde(with = "cursor")]
-    pub through: u64,
-    pub keys: Vec<MemberKey>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ManifestSlice {
-    #[serde(with = "counter")]
-    pub start: u64,
-    #[serde(with = "counter")]
-    pub total: u64,
-    pub models: std::collections::BTreeMap<String, u64>,
-    #[serde(with = "counter")]
-    pub from: u64,
-    #[serde(with = "counter")]
-    pub to: u64,
-    pub keys: Vec<MemberKey>,
-    #[serde(default)]
-    pub companions: Vec<MemberKey>,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapEffects {
     pub declarations: Vec<TrackIntent>,
 }
 pub type Tracking = Vec<TrackingPair>;
-pub type Guards = Vec<Option<Stamped>>;
+pub type Guards = Vec<bool>;
 /// [`MemberPosition`] on the wire: `{stream, model, identityKey, cursor, kind}`.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -324,19 +293,6 @@ impl From<MemberPosition> for MemberPositionWire {
     }
 }
 
-/// A required continuation member: `null` or exactly `{"state": …}`.
-fn required_next<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<LoadNext, D::Error> {
-    LoadNext::deserialize(deserializer)
-}
-
-fn nullable_string<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(deserializer)
-}
-
 /// Every operation, in the order [`HostRequest`] declares them. The fixture
 /// and `packages/server/host-contract.mts` carry the same list; the contract
 /// test checks this one against the enum itself.
@@ -347,34 +303,15 @@ pub enum LoaderMode {
     Canonical,
 }
 
-pub const OPERATIONS: [&str; 31] = [
-    "admitContext",
+pub const OPERATIONS: [&str; 12] = [
+    "protocol05",
     "publicationFence",
-    "handleBootstrap",
-    "createManifest",
-    "readCall",
-    "readManifest",
-    "captureTail",
-    "savePublicationGroups",
-    "readPublicationGroups",
-    "readPositions",
-    "claim",
-    "saveReceipt",
-    "claimCall",
-    "saveCall",
     "head",
-    "scan",
     "savepoint",
     "rollback",
     "release",
-    "handle",
     "handleAction",
-    "handleLoad",
     "load",
-    "advanceStamp",
-    "ensureStamp",
-    "readStamps",
-    "lockRecord",
     "readTracking",
     "guardRecords",
     "lockStreams",
@@ -382,6 +319,113 @@ pub const OPERATIONS: [&str; 31] = [
 ];
 
 /// Every request the engine issues to a host, tagged by `op` on the wire.
+/// Additive protocol-5 storage operations, all inside the caller's transaction.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "op",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Protocol05Operation {
+    BootstrapState {
+        store_id: String,
+    },
+    HandleBootstrap05 {
+        owner: String,
+        store_id: String,
+        stream: String,
+    },
+    FinishBootstrap {
+        store_id: String,
+    },
+    DeliveryHead {
+        stream: String,
+    },
+    DeliveryNow {},
+    DeliveryCandidates {
+        stream: String,
+        after: u64,
+        models: Option<Vec<String>>,
+        keys: Option<Vec<MemberKey>>,
+        capacity: u64,
+    },
+    SaveDelivery {
+        owner: String,
+        intent: String,
+        header: axton_core::v05::DeliveryHeader,
+        parts: Vec<axton_core::v05::DeliveryPart>,
+    },
+    ReadDelivery {
+        owner: String,
+        context: axton_core::v05::RequestContext,
+        intent: String,
+        continuation: axton_core::v05::Continuation,
+    },
+    Admit {
+        owner: String,
+        context: axton_core::v05::RequestContext,
+    },
+    /// Read immutable Store ownership without locking Batch progress.
+    InspectStore {
+        store_id: String,
+    },
+    ClaimStore {
+        store_id: String,
+        principal: String,
+        stream: String,
+    },
+    BeginBatch {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        digest: String,
+        #[serde(with = "cursor")]
+        count: u64,
+    },
+    ReadResult {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        #[serde(with = "counter")]
+        ordinal: u64,
+    },
+    ReadResults {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+    },
+    SaveResult {
+        store_id: String,
+        #[serde(with = "cursor")]
+        batch_id: u64,
+        #[serde(with = "counter")]
+        ordinal: u64,
+        #[serde(with = "cursor")]
+        count: u64,
+        result: axton_core::v05::MutationResult,
+    },
+    ReadTracking {
+        records: Vec<MemberKey>,
+        pairs: Vec<TrackingPair>,
+    },
+    GuardRecords {
+        #[serde(deserialize_with = "guard_order")]
+        records: Vec<GuardRecord>,
+    },
+    ReadPositions {
+        stream: String,
+        records: Vec<MemberKey>,
+    },
+    TargetPositions {
+        stream: String,
+        records: Vec<MemberKey>,
+    },
+    ApplyStreamMembers {
+        deltas: Vec<MemberDelta>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "op",
@@ -390,100 +434,15 @@ pub const OPERATIONS: [&str; 31] = [
     deny_unknown_fields
 )]
 pub enum HostRequest {
-    /// Current authorization, including saved response replay.
-    AdmitContext {
-        owner: String,
-        context: axton_core::v04::RequestContext,
-        durable: bool,
+    /// Protocol 5 persistence/application seam; its inner operation is validated by the v05 executor.
+    Protocol05 {
+        request: Protocol05Operation,
     },
     /// Persisted namespace-wide write fence; acquire before relevant work.
     PublicationFence {},
-    HandleBootstrap {
-        owner: String,
-        call_id: String,
-        context: axton_core::v04::RequestContext,
-    },
-    CreateManifest {
-        owner: String,
-        manifest_id: String,
-        context: axton_core::v04::RequestContext,
-        #[serde(with = "counter")]
-        start: u64,
-        models: std::collections::BTreeMap<String, u64>,
-        selected: Vec<String>,
-        held: Vec<MemberKey>,
-        #[serde(with = "cursor")]
-        budget: u64,
-    },
-    ReadCall {
-        owner: String,
-        call_id: String,
-    },
-    ReadManifest {
-        owner: String,
-        manifest_id: String,
-        context: axton_core::v04::RequestContext,
-        #[serde(with = "counter")]
-        from: u64,
-        #[serde(with = "cursor")]
-        limit: u64,
-        unique_models: Vec<String>,
-    },
-    CaptureTail {
-        owner: String,
-        manifest_id: String,
-        context: axton_core::v04::RequestContext,
-        #[serde(with = "counter")]
-        head: u64,
-    },
-    SavePublicationGroups {
-        positions: Vec<MemberPosition>,
-    },
-    ReadPublicationGroups {
-        stream: String,
-        #[serde(with = "counter")]
-        after: u64,
-        #[serde(with = "cursor")]
-        limit: u64,
-    },
-    ReadPositions {
-        stream: String,
-        records: Vec<MemberKey>,
-    },
-    /// Lock this client's row and report its last accepted batch.
-    Claim {
-        owner: String,
-        client_id: String,
-    },
-    /// Record the receipt for an accepted batch.
-    SaveReceipt {
-        owner: String,
-        client_id: String,
-        sequence: u64,
-        receipt: String,
-    },
-    /// Lock an invocation's immutable request and completed response.
-    ClaimCall {
-        owner: String,
-        call_id: String,
-        request: String,
-    },
-    /// Complete a newly claimed invocation in the caller's transaction.
-    SaveCall {
-        owner: String,
-        call_id: String,
-        response: String,
-    },
     /// The stream's current head cursor.
     Head {
         stream: String,
-    },
-    /// Retained upsert and removal log rows after `after`, at most `limit`
-    /// in cursor order. Identity comes from centralized record metadata.
-    Scan {
-        stream: String,
-        after: u64,
-        limit: u64,
     },
     /// Open the savepoint that isolates one mutation.
     Savepoint {
@@ -497,15 +456,6 @@ pub enum HostRequest {
     Release {
         ordinal: u64,
     },
-    /// Run one mutation's handler. `arguments` carries the decoded slots
-    /// verbatim: its shape is the schema's business, not the contract's.
-    Handle {
-        name: String,
-        version: u64,
-        arguments: Value,
-        owner: String,
-        ordinal: u64,
-    },
     /// Execute one generated Action handler with its normalized flat arguments.
     HandleAction {
         name: String,
@@ -515,60 +465,20 @@ pub enum HostRequest {
         call_id: String,
         ordinal: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<axton_core::v04::RequestContext>,
-    },
-    /// Execute one generated Load handler for one page: the normalized flat
-    /// arguments and the page's continuation (`null` on the first page). Its
-    /// context declares no changes: the answer carries identities, the next
-    /// continuation and the Stream additions its add-only handles declared.
-    HandleLoad {
-        name: String,
-        version: u64,
-        arguments: Value,
-        #[serde(deserialize_with = "required_next")]
-        continuation: LoadNext,
-        owner: String,
-        call_id: String,
-        load_id: String,
+        context: Option<crate::protocol_v05::HandlerContext>,
     },
     /// Load the current state of these identities as the records of one
     /// retained model read contract (`version`), for this caller. Loads name
-    /// no stream: the same identity, version and stamp describe the same
-    /// content on every delivery path.
+    /// no Stream: the same identity and version describe current content.
     Load {
-        /// Omitted preserves the ordinary read. Preparation returns an empty row list;
-        /// canonical reads must follow completed preparation in the same fenced transaction.
+        /// Preparation returns empty rows; canonical reads exclude hooks. Frozen
+        /// delivery follows preparation in its fenced transaction.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<LoaderMode>,
         model: String,
         version: u64,
         identities: Vec<Value>,
         owner: String,
-    },
-    /// Allocate the next stamp of one record: initialize it at 1 or increment it.
-    AdvanceStamp {
-        model: String,
-        identity_key: String,
-    },
-    /// The record's current stamp, initialized at 1 only when it has none.
-    EnsureStamp {
-        model: String,
-        identity_key: String,
-    },
-    /// The current stamps of these records of one model, one per key in
-    /// request order: an existing stamp is read and never rewritten, and only
-    /// a record without one is initialized at 1.
-    ReadStamps {
-        model: String,
-        identity_keys: Vec<String>,
-    },
-    /// Write-lock one existing record row without changing its stamp
-    /// (`UPDATE ... SET stamp=stamp`), so a concurrent writer of the same row
-    /// whose snapshot predates this commit restarts instead of acting on it.
-    /// Never creates a row: an absent record answers `null`.
-    LockRecord {
-        model: String,
-        identity_key: String,
     },
     ReadTracking {
         records: Vec<MemberKey>,
@@ -620,85 +530,26 @@ impl HostRequest {
                 if records
                     .iter()
                     .zip(rows)
-                    .any(|(r, s)| r.mode != GuardMode::Lock && s.is_none())
+                    .any(|(r, s)| r.mode != GuardMode::Lock && !s)
                 {
-                    return Err(self.invalid_response("null advance/ensure stamp"));
+                    return Err(self.invalid_response("missing ensured identity"));
                 }
             }
             _ => {}
         }
         Ok(())
     }
-    /// The operation, and the ordinal when the operation carries one.
     pub fn label(&self) -> String {
-        match self {
-            Self::HandleBootstrap { .. } => "handleBootstrap".into(),
-            Self::CreateManifest { .. } => "createManifest".into(),
-            Self::ReadCall { .. } => "readCall".into(),
-            Self::ReadManifest { .. } => "readManifest".into(),
-            Self::CaptureTail { .. } => "captureTail".into(),
-            Self::AdmitContext { .. } => "admitContext".into(),
-            Self::PublicationFence {} => "publicationFence".into(),
-            Self::SavePublicationGroups { .. } => "savePublicationGroups".into(),
-            Self::ReadPublicationGroups { .. } => "readPublicationGroups".into(),
-            Self::ReadPositions { .. } => "readPositions".into(),
-            Self::Claim { .. } => "claim".into(),
-            Self::SaveReceipt { .. } => "saveReceipt".into(),
-            Self::ClaimCall { .. } => "claimCall".into(),
-            Self::SaveCall { .. } => "saveCall".into(),
-            Self::Head { .. } => "head".into(),
-            Self::Scan { .. } => "scan".into(),
-            Self::Savepoint { ordinal } => format!("savepoint(ordinal {ordinal})"),
-            Self::Rollback { ordinal } => format!("rollback(ordinal {ordinal})"),
-            Self::Release { ordinal } => format!("release(ordinal {ordinal})"),
-            Self::Handle { ordinal, .. } => format!("handle(ordinal {ordinal})"),
-            Self::HandleAction { ordinal, .. } => format!("handleAction(ordinal {ordinal})"),
-            Self::HandleLoad { .. } => "handleLoad".into(),
-            Self::Load { .. } => "load".into(),
-            Self::AdvanceStamp { .. } => "advanceStamp".into(),
-            Self::EnsureStamp { .. } => "ensureStamp".into(),
-            Self::ReadStamps { .. } => "readStamps".into(),
-            Self::LockRecord { .. } => "lockRecord".into(),
-            Self::ReadTracking { .. } => "readTracking".into(),
-            Self::GuardRecords { .. } => "guardRecords".into(),
-            Self::LockStreams { .. } => "lockStreams".into(),
-            Self::ApplyStreamMembers { .. } => "applyStreamMembers".into(),
-        }
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v["op"].as_str().map(str::to_owned))
+            .unwrap_or_default()
     }
-    /// The code an unusable response to this operation has always carried.
     fn invalid_code(&self) -> &'static str {
         match self {
-            Self::Claim { .. }
-            | Self::SaveReceipt { .. }
-            | Self::ClaimCall { .. }
-            | Self::SaveCall { .. }
-            | Self::Scan { .. } => code::STORAGE_INVALID,
-            Self::Handle { .. }
-            | Self::HandleAction { .. }
-            | Self::HandleLoad { .. }
-            | Self::HandleBootstrap { .. } => code::HANDLER_INVALID,
+            Self::HandleAction { .. } => code::HANDLER_INVALID,
             Self::Load { .. } => code::LOADER_INVALID,
-            Self::AdmitContext { .. }
-            | Self::CreateManifest { .. }
-            | Self::ReadCall { .. }
-            | Self::ReadManifest { .. }
-            | Self::CaptureTail { .. }
-            | Self::PublicationFence {}
-            | Self::SavePublicationGroups { .. }
-            | Self::ReadPublicationGroups { .. }
-            | Self::ReadPositions { .. }
-            | Self::Head { .. }
-            | Self::Savepoint { .. }
-            | Self::Rollback { .. }
-            | Self::Release { .. }
-            | Self::AdvanceStamp { .. }
-            | Self::EnsureStamp { .. }
-            | Self::ReadStamps { .. }
-            | Self::LockRecord { .. }
-            | Self::ReadTracking { .. }
-            | Self::GuardRecords { .. }
-            | Self::LockStreams { .. }
-            | Self::ApplyStreamMembers { .. } => code::HOST_INVALID,
+            _ => code::HOST_INVALID,
         }
     }
     /// A response the protocol cannot use, named by operation.
@@ -715,57 +566,9 @@ impl HostRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acknowledged;
 
-/// The answer to `claim`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Claimed {
-    pub client_id: String,
-    pub owner: String,
-    #[serde(with = "sequence")]
-    pub sequence: u64,
-    /// Absent and `null` both mean "no stored receipt", as they always have.
-    #[serde(default)]
-    pub receipt: Option<String>,
-}
-
-/// The stored invocation; only the inserting transaction may execute a fresh body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ClaimedCall {
-    pub fresh: bool,
-    pub request: String,
-    #[serde(deserialize_with = "nullable_string")]
-    pub response: Option<String>,
-}
-
 /// The answer to `head`: a bare counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Head(#[serde(with = "counter")] pub u64);
-
-/// One retained stream position with centralized identity. Upserts carry
-/// the current content stamp from the Loader's snapshot; removals need no
-/// stamp and never enter a Loader. A missing kind is legacy upsert only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Invalidation {
-    #[serde(default = "legacy_upsert")]
-    pub kind: PositionKind,
-    pub stream: String,
-    #[serde(with = "cursor")]
-    pub cursor: u64,
-    pub model: String,
-    pub identity: Value,
-    pub identity_key: String,
-    #[serde(default, with = "stamp", skip_serializing_if = "zero_stamp")]
-    pub stamp: u64,
-}
-
-fn zero_stamp(stamp: &u64) -> bool {
-    *stamp == 0
-}
-
-/// The answer to `scan`.
-pub type Scanned = Vec<Invalidation>;
 
 /// The answer to `load`: one entry per requested identity, `null` for a record
 /// that does not exist for this caller, a refusal the engine records as the
@@ -817,17 +620,6 @@ impl TryFrom<LoadedWire> for Loaded {
         }
     }
 }
-
-/// The answer to `advanceStamp` and `ensureStamp`: the record's stamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Stamped(#[serde(with = "stamp")] pub u64);
-
-/// The answer to `readStamps`: one stamp per requested key, in request order.
-pub type Stamps = Vec<Stamped>;
-
-/// The answer to `lockRecord`: the locked record's unchanged stamp, or `None`
-/// when the record has no metadata row (nothing was locked or created).
-pub type Locked = Option<Stamped>;
 
 /// The answer to `applyStreamMembers`: one position per delta, in order.
 pub type Positions = Vec<MemberPosition>;
@@ -999,76 +791,6 @@ impl TryFrom<HandledActionWire> for HandledAction {
 /// A native Load answers its identity lists, continuation and optional tracking.
 /// Tracking is legal only beside successful data, never a refusal/failure.
 /// The page engine validates continuation, identities and returned-record bounds.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged, try_from = "HandledLoadWire")]
-pub enum HandledLoad {
-    Settled {
-        data: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        next: Option<Value>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        tracking: Vec<TrackIntent>,
-    },
-    Rejected {
-        rejection: String,
-    },
-    Failed {
-        error: String,
-    },
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HandledLoadWire {
-    #[serde(default, deserialize_with = "present")]
-    data: Option<Value>,
-    #[serde(default, deserialize_with = "present")]
-    next: Option<Value>,
-    #[serde(default, deserialize_with = "present")]
-    tracking: Option<Value>,
-    #[serde(default, deserialize_with = "present")]
-    rejection: Option<Value>,
-    #[serde(default, deserialize_with = "present")]
-    error: Option<Value>,
-}
-
-impl TryFrom<HandledLoadWire> for HandledLoad {
-    type Error = String;
-    fn try_from(wire: HandledLoadWire) -> std::result::Result<Self, String> {
-        if wire.tracking.is_some() && wire.data.is_none() {
-            return Err("a Load answer carries tracking only beside its data".into());
-        }
-        match (wire.data, wire.next, wire.rejection, wire.error) {
-            (None, None, Some(rejection), None) => rejection
-                .as_str()
-                .filter(|code| valid_code(code))
-                .map(|code| Self::Rejected {
-                    rejection: code.into(),
-                })
-                .ok_or_else(|| "invalid rejection code".into()),
-            (None, None, None, Some(error)) => error
-                .as_str()
-                .map(|error| Self::Failed {
-                    error: error.into(),
-                })
-                .ok_or_else(|| "invalid handler error".into()),
-            (Some(data), next, None, None) => {
-                let tracking = match wire.tracking {
-                    None => vec![],
-                    Some(tracking) => serde_json::from_value::<Vec<TrackIntent>>(tracking)
-                        .map_err(|e| format!("invalid Load tracking: {e}"))?,
-                };
-                Ok(Self::Settled {
-                    data,
-                    next,
-                    tracking,
-                })
-            }
-            _ => Err("invalid Load handler settlement".into()),
-        }
-    }
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HandledWire {
@@ -1115,8 +837,6 @@ impl TryFrom<HandledWire> for Handled {
     }
 }
 
-/// Issue one typed request and decode the typed answer. `Host::call` keeps its
-/// `Value` shape, so implementations outside this crate still compile.
 pub trait HostExt {
     fn call_typed<'a, R: DeserializeOwned + Send + 'a>(
         &'a self,
@@ -1137,8 +857,4 @@ impl<H: Host + ?Sized> HostExt for H {
             serde_json::from_value(response).map_err(|error| request.invalid_response(error))
         })
     }
-}
-
-fn legacy_upsert() -> PositionKind {
-    PositionKind::Upsert
 }

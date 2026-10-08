@@ -1,19 +1,17 @@
 # Storage
 
-Storage gives the engine a SQL executor whose tables are the schema record. It contains no sync logic.
+## 1. Introduction and Goals
 
-- [Store](store.md) — The SQL contract and its SQLite implementation: transactions, savepoints, reads and writes.
-- [Reconciliation](reconciliation.md) — Table layout per model and how an existing database is brought in line with a newer compiled schema, or rebuilt beside.
+The storage adapter executes SQL and transactions; Rust owns reconciliation policy. Format-5 admission and physical ownership precede schema coordination. Store metadata retains context, S/B/C, frozen Batch, operation input and acknowledgment. Model tables expose the replayed projection. Production SQL reads the canonical Store and Mutation queue/operation tables directly; there are no legacy table-name views or bridge triggers.
 
-The layout of the Model tables is a public, stable contract: a Model's table is named exactly the Model name and each column exactly its field name, and every table the engine owns is named `axton_*`, which applications must not read ([Reconciliation](reconciliation.md#the-table-contract)).
+## 5. Building Block View
 
-## Code map
+[Implementation](../../../../../crates/client/src/store05.rs) owns this component. [Protocol 5](../../protocol/0.5.md) owns shared context, delivery and settlement rules.
 
-| Part | Code location |
-|---|---|
-| Store | [client/store.rs](../../../../../crates/client/src/store.rs), [sqlite/lib.rs](../../../../../crates/sqlite/src/lib.rs) |
-| Reconciliation | [client/ddl.rs](../../../../../crates/client/src/ddl.rs), [client/schema_store.rs](../../../../../crates/client/src/schema_store.rs), `open_at` and `rebuild` in [client/lib.rs](../../../../../crates/client/src/lib.rs), `Schema::compatibility` in [core/schema.rs](../../../../../crates/core/src/schema.rs) |
+- [protocol5](protocol5.md)
+- [reconciliation](reconciliation.md)
+- [store](store.md)
 
-## Stream vocabulary upgrade
+## 10. Quality Requirements
 
-Existing SQLite files migrate framework delivery tables/columns and the layout marker in place before network scheduling. The database path, subscriptions/cursors, Model rows/stamps, frozen Load requests/continuations, queued/pending/rejected work, companions and device-only Models are preserved. No application query-cache JSON is rewritten. The opening transaction commits `local_authority_version=1` and removes the obsolete client holding table/index; retained reconciliation fields are inert. Historical Remove changes no Model, while newer Loader null is canonical absence. Unsubscribe retains content and server tracking. See [reconciliation](reconciliation.md#stream-membership-upgrade) and [coordinated cutover](../../../../../website/docs/backend/deployment.md#stream-membership-cutover).
+Changes must preserve the component boundary and the protocol’s commit/failure rules. The joined native gate `integration/v05-sdk/run-host.sh` exercises the generated client, real HTTP/WebSocket backend and SQLite. Installed-package and mobile evidence are separate adoption gates.

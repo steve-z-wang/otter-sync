@@ -1,6 +1,6 @@
 # Guarantees
 
-The requirements for the bound protocol-4 API. A passing component test does not establish every cross-runtime guarantee; [coverage review](testing/review.md) records evidence and gaps. The retained [0.3 contract](guarantees-0.3.md) describes internal compatibility paths, not a supported migration or an alternative public API.
+The requirements for protocol 5. A passing component test does not establish every cross-runtime guarantee; [coverage review](testing/review.md) records evidence and gaps. The [0.3 contract](guarantees-0.3.md) and protocol-4 pages are historical references, not supported file migrations or alternate public APIs.
 
 Each client owns one physical SQLite file, one Store and one Stream. Different files may follow the same Stream. Authentication and publication of every change affecting Loader content or visibility are application responsibilities.
 
@@ -27,9 +27,9 @@ Pending optimism changes the projection without clearing base protection. Ordina
 | ID | Required behavior |
 | --- | --- |
 | P1 | Frozen-request retry returns its saved backend outcome without rerunning handlers, preparation, tracking or publication. |
-| P2 | Authenticated bound context, call identity and exact frozen intent reject foreign or conflicting replay before business work. Each protocol-4 request carries one named Mutation; legacy batch sequence admission belongs to the 0.3 path. |
+| P2 | Authenticated Store context, Mutation identity and exact frozen intent reject foreign or conflicting replay before business work. Each immutable Batch contains named Mutations with independently committed backend outcomes. |
 | P3 | Unready prerequisites block dependent calls; lifecycle and sequence dependencies retain their declared meaning. Independent ready work can proceed. |
-| P4 | Frozen intent, call identity and original descriptor survive retries, reopen and supported 0.4 schema reconciliation unchanged. |
+| P4 | Frozen intent, call identity and original descriptor survive retries, reopen and supported retained-schema reconciliation unchanged. |
 | P5 | Rejection removes only that Mutation's optimism and companions, rejects lifecycle dependents and retains a readable refusal. Other pending work replays. |
 | P6 | A Mutation-level refusal rolls back its savepoint and effects, preserving successful independent calls. Infrastructure failure rolls back the enclosing delivery/receipt and stays retryable. |
 | P7 | Unsupported Mutation versions are per-call refusals. Backend acceptance followed by local failure remains accepted-awaiting-settlement; it never becomes business rejection. |
@@ -49,7 +49,7 @@ Dropping an unsent call is an explicit local decision. Dismissal, retry and drop
 | Q7 | Mutation input targets are mandatory settlement obligations. Declared Model outputs remain immutable invocation results; returning them alone neither enrolls them nor installs them in the Store. Explicit Stream publication controls their later authoritative delivery. |
 | Q8 | Returning/storing a Model never enrolls it. Tracking is explicit and commits with the read's saved outcome. Query handlers have no framework business-write publication lane. |
 
-For Query/Fetch, default and explicit true are equivalent; false has distinct request/cache identity. A completed once hit returns the saved result without reapplying Models or tracking. Refresh creates a new request. Missing Fetch results or omitted Query items are not canonical deletion.
+For Query/Fetch, default and explicit true are equivalent; false installs no Models. Every invocation has a fresh request and snapshot; public once, refresh and saved-result invalidation controls are removed.
 
 ## T. Backend transactions
 
@@ -70,9 +70,9 @@ Only Stream delivery establishes authority. Current content/deletion protection,
 | --- | --- |
 | A1 | Authority replaces settled older state; later pending operations replay over the base. |
 | A2 | `C` advances only across a proven contiguous committed prefix. Required companions may be ahead of that prefix, bounded by the observed head; installing them advances `G`, never an invented `C`. |
-| A3 | Mutation completion requires real target Stream evidence or permitted call-owned private settlement. Untracked/no-op/other-Stream calls can finish without enrolling targets or bumping a shared cursor. |
+| A3 | Mutation completion requires committed execution acknowledgment plus real target Stream evidence or permitted call-owned private settlement. Untracked/no-op/other-Stream calls can finish without enrolling targets or bumping a shared cursor. |
 | A4 | Receipt-before-Stream and Stream-before-receipt converge. Receipts cannot replace newer authority, but their outstanding obligations still complete after sufficient evidence commits. |
-| A5 | Admission checks exact frozen intent, binding, incarnation and retained descriptor from this database. Acceptance persists before fallible local settlement; queue retirement and terminal completion commit together. |
+| A5 | Admission checks exact frozen intent, Store identity, Stream and retained descriptor from this database. Execution acknowledgment persists before fallible local settlement; queue retirement and terminal completion commit together. |
 
 Receipt-owned Materialize can obtain current authority for an otherwise missing historical target. It runs no public Bootstrap handler, enrolls nothing and advances no `C`. A later membership Remove may enable saved private fallback at the original operation order, subject to original generation/current guards. Acceptance cannot revive work superseded by newer Stream content.
 
@@ -90,16 +90,16 @@ Convergence assumes correct publication, valid contracts and resumed delivery. D
 | D6 | Membership Remove changes holding evidence, releasing current live protection while retaining content, historical authority and genuine deletion evidence. It is not canonical absence. |
 | D7 | Loader/constraint/commit failure cannot advance progress across its unresolved unit. Earlier committed units remain; fresh smaller requests can recover independent prefixes. Persistent required-group failure remains observable. |
 | D8 | Invalid envelopes, context mismatch, unsupported schema, divergence and capacity/constraint failures report diagnostics without inventing absence, completion or progress. |
-| D9 | Binding/incarnation persist offline and across reopen/reconnect. The initial boundary commits once; ACK alone proves neither delivery nor Bootstrap coverage. Reconnection never replaces committed progress. |
-| D10 | Bootstrap awaits complete finite manifest coverage and ordinary delivery through one fixed captured tail. Moving/removed keys keep explicit ordinal outcomes. Completion is neither perpetual freshness nor every historical transition. |
+| D9 | Store identity and Stream persist offline and across reopen/reconnect. The initial boundary commits once; ACK alone proves neither delivery nor Bootstrap coverage. Reconnection never replaces committed progress. |
+| D10 | Handshake commits initial head S and C=S. B remains absent until the last complete Bootstrap unit commits. Bootstrap and Sync capture finite authority heads; completion is neither perpetual freshness nor every historical transition. |
 
-Bootstrap selects initial Models through concrete `@@bootstrap` declarations after explicit application enrollment. Companions share an atomic unit but earn no ordinal coverage. Later Stream delivery includes unmarked Models normally. Compatible rematerialization also includes Store-held authoritative identities and preserves local work. Rows, evidence and ordinal coverage commit together.
+Bootstrap selects initial Models through concrete `@@bootstrap` declarations after explicit application enrollment. Companions share an atomic unit but earn no ordinal coverage. Later Stream delivery includes unmarked Models normally. Compatible rematerialization also includes Store-held authoritative identities and preserves local work. Rows, evidence and unit coverage commit together.
 
 Query/Fetch Model snapshots always carry `cursor:null`. Storage checks current protection at commit, not whether an ID ever appeared in the Stream. Declared delete-cascade references to a currently Stream-deleted parent suppress stale child cache writes without inventing child authority. Missing or device-deleted parents do not imply that guard.
 
 ## N. Native Loads
 
-Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Bound 0.4 uses Bootstrap, Query and Model Fetch.
+Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract](guarantees-0.3.md#n-native-loads) retains internal compatibility requirements. Protocol 5 uses Bootstrap, Query and Model Fetch.
 
 ## R. Resilience
 
@@ -107,9 +107,9 @@ Public Load jobs/schema declarations and N1–N8 are retired. The [0.3 contract]
 | --- | --- |
 | R1 | Local reads/writes continue offline. Bound open requires no handshake; pending work resumes when connectivity recovers. |
 | R2 | Lost, duplicate, delayed and reordered messages preserve admission/commit rules. Progress requires resumed delivery. |
-| R3 | Reopen retains committed rows, context, evidence, manifest coverage, frozen work and completions. A crash cannot expose half a required local unit; close/reopen alone proves no arbitrary crash boundary. |
+| R3 | Reopen retains committed rows, context, evidence, complete-unit coverage, frozen work and completions. A crash cannot expose half a required local unit; close/reopen alone proves no arbitrary crash boundary. |
 | R4 | A physical SQLite file has one runtime owner across aliases, hardlinks and processes. Duplicate open fails before schema coordination. Different files may follow the same Stream. |
 
 Explicit reset retains binding/file ownership, changes incarnation and atomically retires replica state. It refuses pending work unless explicitly discarded, reports abandoned Calls and fences old effects. Supported schema reconciliation retains complete old descriptors; incompatible storage changes fail explicitly.
 
-No age-based pruning of saved outcomes, manifest ownership or authoritative deletion evidence is introduced in 0.4. Capacity limits fail explicitly. [Protocol](architecture/protocol/0.4.md), [client](architecture/client/protocol4.md) and [server](architecture/server/protocol4.md) own mechanisms and bounds; [testing](testing.md) owns executed evidence.
+Batch replay retains current/last-completed outcomes and prunes the older set on valid next-Batch admission. Immutable delivery staging expires after five minutes; expiry proves no coverage. Capacity limits fail explicitly. [Protocol 5](architecture/protocol/0.5.md), [client](architecture/client/storage/protocol5.md) and [server](architecture/server/protocol5.md) own mechanisms and bounds; [adoption](protocol5-adoption.md) owns release gates and limits.

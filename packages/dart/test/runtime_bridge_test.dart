@@ -43,7 +43,7 @@ class Fixture {
   Future<Bridge> bridge() => Bridge.open(
     path: path,
     schema: schema,
-    binding: offlineStoreConnection().identity.binding('User:viewer'),
+    stream: 'User:viewer',
     libraryPath: library,
   );
   Future<void> dispose() => dir.delete(recursive: true);
@@ -210,7 +210,7 @@ void main() {
     final before = Bridge.attached.toSet();
     await expectLater(
       Bridge.open(
-        binding: offlineStoreConnection().identity.binding('User:viewer'),
+        stream: 'User:viewer',
         path: '${fixture.dir.path}/missing/dir/db',
         schema: fixture.schema,
         libraryPath: Fixture.library,
@@ -695,9 +695,12 @@ void main() {
         path: 'unused',
         schema: const {},
         stream: 'User:viewer',
-        connection: offlineStoreConnection(),
         carrier: carrier,
       );
+      expect(carrier.openedRequest['protocol'], 5);
+      expect(carrier.openedRequest['stream'], 'User:viewer');
+      expect(carrier.openedRequest.containsKey('binding'), false);
+      expect(carrier.commands, isEmpty);
       try {
         await client.read('Todo', {'id': 't'});
         expect(carrier.commands.last, {
@@ -706,13 +709,6 @@ void main() {
             'model': 'Todo',
             'identity': {'id': 't'},
           },
-        });
-        await client.invalidateQuery('GetTodo', 1, {'id': 't'});
-        expect(carrier.commands.last, {
-          'kind': 'invalidateQueryOnce',
-          'name': 'GetTodo',
-          'version': 1,
-          'args': {'id': 't'},
         });
       } finally {
         await client.close();

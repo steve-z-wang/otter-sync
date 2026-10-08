@@ -1,8 +1,15 @@
 // Every marked line must fail for its stated analyzer code.
 // ignore_for_file: unused_local_variable
 import '../generated.dart';
+import 'package:axton/axton.dart' show Client;
 
 Future<void> misuse(GeneratedClient client, ApplicationTransaction tx, CompanionContext local, Entry row) async {
+ Client.open(path:'unused',schema:{},stream:'User:u',projectionGeneration:'2'); // reject: UNDEFINED_NAMED_PARAMETER
+ GeneratedClient.open(path:'unused',stream:'User:u',projectionGeneration:'2'); // reject: UNDEFINED_NAMED_PARAMETER
+ client.queries.readEntry(id:row.id,once:false); // reject: UNDEFINED_NAMED_PARAMETER
+ client.queries.readEntry(id:row.id,refresh:false); // reject: UNDEFINED_NAMED_PARAMETER
+ client.queries.invalidate; // reject: UNDEFINED_GETTER
+ StoreConnection(url:'unused',token:()=>'x',identity:{}); // reject: UNDEFINED_NAMED_PARAMETER
  client.models.entry.query(where:const EntryFilter(tags:Present(['x']))); // reject: UNDEFINED_NAMED_PARAMETER
  client.models.entry.query(orderBy:[EntryOrder(EntryOrderField.byStatus)]); // reject: UNDEFINED_ENUM_CONSTANT
  client.models.entry.query(where:const EntryFilter(at:Present('2026-01-01'))); // reject: ARGUMENT_TYPE_NOT_ASSIGNABLE
@@ -12,7 +19,7 @@ Future<void> misuse(GeneratedClient client, ApplicationTransaction tx, Companion
  tx.transaction.mutate; // reject: UNDEFINED_GETTER
  tx.transaction.actions; // reject: UNDEFINED_GETTER
  EntryPatch(id:'bad'); // reject: UNDEFINED_NAMED_PARAMETER
- EditEntryEntryUpdate(identity:EntryIdentity(id:row.id),tags:const Present(['x'])); // reject: UNDEFINED_NAMED_PARAMETER
+ const RenameInput(id:'id',title:'title',tags:[]); // reject: UNDEFINED_NAMED_PARAMETER
  const EntryPatch(title:Present(null)); // reject: ARGUMENT_TYPE_NOT_ASSIGNABLE
  Entry(id:row.id,title:row.title,note:row.note,at:row.at,tags:row.tags,status:Status.typo); // reject: UNDEFINED_ENUM_CONSTANT
  const DraftCreate(); // reject: MISSING_REQUIRED_ARGUMENT
@@ -49,5 +56,5 @@ Future<void> misuse(GeneratedClient client, ApplicationTransaction tx, Companion
  client.models.draftFields; // reject: UNDEFINED_GETTER
  row.missing; // reject: UNDEFINED_GETTER
  StoreHooks(entry:(tx,changes){}); // reject: UNDEFINED_FUNCTION
- GeneratedClient.open(path:'unused',stream:'U',connection:StoreConnection(url:'http://127.0.0.1',token:()=>'x',identity:const StoreIdentity(backend:'b',viewer:'v',contract:'c')),onStore:{}); // reject: UNDEFINED_NAMED_PARAMETER
+ GeneratedClient.open(path:'unused',stream:'U',onStore:{}); // reject: UNDEFINED_NAMED_PARAMETER
 }

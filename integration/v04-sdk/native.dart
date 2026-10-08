@@ -3,7 +3,7 @@ import 'generated.dart';
 void check(bool value,String message) { if(!value) throw StateError(message); }
 Future<void> main() async {
   final directory=await Directory.systemTemp.createTemp('axton-sdk04-dart-');
-  final connection=StoreConnection(url:'http://127.0.0.1:1',token:()=>'offline',identity:const StoreIdentity(backend:'test',viewer:'alice',contract:'test'));
+  final connection=StoreConnection(url:'http://127.0.0.1:1',token:()=>'offline');
   final library=Platform.environment['AXTON_LIBRARY']!;
   final a=await GeneratedClient.open(path:'${directory.path}/a',stream:'User:alice',connection:connection,libraryPath:library);
   final b=await GeneratedClient.open(path:'${directory.path}/b',stream:'User:alice',connection:connection,libraryPath:library);

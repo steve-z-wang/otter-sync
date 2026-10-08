@@ -83,18 +83,46 @@ test("generated backend decodes Date values and declares canonical identities th
   };
   const native = {
     validateConfig() {},
-    async processAction(
+    serverMaterializationId05() {
+      return "fixture-materialization";
+    },
+    async processRead05(
       _config: string,
       _owner: string,
       _request: string,
       callback: (request: string) => Promise<string>,
     ) {
+      assert.equal(
+        JSON.parse(
+          await callback(
+            JSON.stringify({
+              op: "protocol05",
+              request: {
+                op: "admit",
+                owner: "alice",
+                context: {
+                  protocol: 5,
+                  storeId: "fixture-store",
+                  stream: "todos",
+                  materialization: "fixture-materialization",
+                },
+              },
+            }),
+          ),
+        ),
+        true,
+      );
       for (const version of [1, 2]) {
         const handled = JSON.parse(
           await callback(
             JSON.stringify({
               op: "handleAction",
-              context: { binding: { stream: "todos" } },
+              context: {
+                owner: "alice",
+                stream: "todos",
+                storeId: "fixture-store",
+                materialization: "fixture-materialization",
+              },
               name: "Put",
               version,
               owner: "alice",
@@ -131,22 +159,10 @@ test("generated backend decodes Date values and declares canonical identities th
       seen.push(loaded);
       return "{}";
     },
-    async processPush() {
-      return "{}";
-    },
-    async processFetch() {
-      return "{}";
-    },
-    async processPull() {
-      return "{}";
-    },
-    async settleExternal() {
+    async settleExternal05() {
       return "{}";
     },
     async negotiateLive() {
-      return "{}";
-    },
-    async pullLive() {
       return "{}";
     },
     liveEvent() {
@@ -160,6 +176,7 @@ test("generated backend decodes Date values and declares canonical identities th
       persistence: () => ({ call: async () => null }),
     },
     authenticate: () => "alice",
+    protocol5: { authorizeStream: () => true },
     mutations,
     queries,
     loaders,
@@ -184,9 +201,21 @@ test("generated backend decodes Date values and declares canonical identities th
       record: { model, identity },
     });
     assert.deepEqual(handled.declarations, [
-      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: first } } },
-      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: second } } },
-      { kind: "invalidate", streams: null, record: { model: "Moment", identity: { at: second } } },
+      {
+        kind: "invalidate",
+        streams: null,
+        record: { model: "Moment", identity: { at: first } },
+      },
+      {
+        kind: "invalidate",
+        streams: null,
+        record: { model: "Moment", identity: { at: second } },
+      },
+      {
+        kind: "invalidate",
+        streams: null,
+        record: { model: "Moment", identity: { at: second } },
+      },
       add("Todo", { id: "one" }),
       add("Moment", { at: "2026-01-03T00:00:00.000Z" }),
       add("Pin", { todo: "one", at: first }),
@@ -205,32 +234,43 @@ type Tx = { rows: Map<string, Todo> };
 function nativeHost(requests: object[], answers: unknown[]) {
   return {
     validateConfig() {},
-    async processAction(
+    serverMaterializationId05() {
+      return "fixture-materialization";
+    },
+    async processRead05(
       _config: string,
       _owner: string,
       _request: string,
       callback: (request: string) => Promise<string>,
     ) {
+      assert.equal(
+        JSON.parse(
+          await callback(
+            JSON.stringify({
+              op: "protocol05",
+              request: {
+                op: "admit",
+                owner: "alice",
+                context: {
+                  protocol: 5,
+                  storeId: "fixture-store",
+                  stream: "todos",
+                  materialization: "fixture-materialization",
+                },
+              },
+            }),
+          ),
+        ),
+        true,
+      );
       for (const request of requests)
         answers.push(JSON.parse(await callback(JSON.stringify(request))));
       return "{}";
     },
-    async processPush() {
-      return "{}";
-    },
-    async processFetch() {
-      return "{}";
-    },
-    async processPull() {
-      return "{}";
-    },
-    async settleExternal() {
+    async settleExternal05() {
       return "{}";
     },
     async negotiateLive() {
-      return "{}";
-    },
-    async pullLive() {
       return "{}";
     },
     liveEvent() {
@@ -291,7 +331,12 @@ test("Query handlers receive track-only capabilities and no invalidation", async
   const at = "2026-01-01T00:00:00.000Z";
   const call = (name: string, version: number) => ({
     op: "handleAction",
-              context: { binding: { stream: "todos" } },
+    context: {
+      owner: "alice",
+      stream: "todos",
+      storeId: "fixture-store",
+      materialization: "fixture-materialization",
+    },
     name,
     version,
     owner: "alice",
@@ -302,6 +347,7 @@ test("Query handlers receive track-only capabilities and no invalidation", async
   const backend = createBackend<Tx>({
     database,
     authenticate: () => "alice",
+    protocol5: { authorizeStream: () => true },
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx, args }) => {
@@ -333,14 +379,23 @@ test("Query handlers receive track-only capabilities and no invalidation", async
   });
   await backend.action("alice", "{}");
   assert.deepEqual(seen, [
-    { kind: "mutation", keys: ["callId", "invalidate", "stream", "streams", "tx", "userId"] },
+    {
+      kind: "mutation",
+      keys: ["callId", "invalidate", "stream", "streams", "tx", "userId"],
+    },
     { kind: "query", keys: ["callId", "stream", "streams", "tx", "userId"] },
   ]);
   assert.deepEqual(answers, [
     {
       outputs: { todo: { id: "one" } },
       changes: [],
-      declarations: [{ kind: "invalidate", streams: null, record: { model: "Todo", identity: { id: "one" } } }],
+      declarations: [
+        {
+          kind: "invalidate",
+          streams: null,
+          record: { model: "Todo", identity: { id: "one" } },
+        },
+      ],
     },
     { outputs: { todo: { id: "one" } }, changes: [], declarations: [] },
   ]);
@@ -353,8 +408,12 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
     createBackend<Tx>({
       database,
       authenticate: () => "alice",
+      protocol5: { authorizeStream: () => true },
       mutations: mutationHandlers(),
-      queries: { ...emptyQueries(), find: { v2: async () => ({ todo: null }) } },
+      queries: {
+        ...emptyQueries(),
+        find: { v2: async () => ({ todo: null }) },
+      },
       loaders,
 
       native: nativeHost([], []),
@@ -366,7 +425,11 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
     [{ queries: {} as Queries<Tx> }, /Missing query find for Find v2/],
     // A bare function is v1 shorthand; Find's only Query version is v2.
     [
-      { queries: { find: async () => ({ todo: null }) } as unknown as Queries<Tx> },
+      {
+        queries: {
+          find: async () => ({ todo: null }),
+        } as unknown as Queries<Tx>,
+      },
       /Query find must register v2 of Find; a function registers v1 only/,
     ],
     [
@@ -392,31 +455,43 @@ test("registration is checked per kind at startup: missing, extra and wrong-kind
       {
         mutations: {
           ...mutationHandlers(),
-          find: { v1: async () => ({ todo: null }), v2: async () => ({ todo: null }) },
+          find: {
+            v1: async () => ({ todo: null }),
+            v2: async () => ({ todo: null }),
+          },
         } as unknown as Mutations<Tx>,
       },
       /Unknown mutation find\.v2 for Find: retained mutation versions are v1/,
     ],
     [
-      { handlers: { find: async () => ({ todo: null }) } } as never,
-      /Handler find names Find v1 \(mutation\), v2 \(query\)/,
-    ],
-    [
       {
         queries: {
           ...emptyQueries(),
-          find: { v1: async () => ({ todo: null }), v2: async () => ({ todo: null }) },
+          find: {
+            v1: async () => ({ todo: null }),
+            v2: async () => ({ todo: null }),
+          },
         } as unknown as Queries<Tx>,
       },
       /Unknown query find\.v1 for Find: retained query versions are v2/,
     ],
     [
-      { handlers: { ping: async () => {} } } as never,
-      /Handler ping names Ping v1 \(mutation\); register each version under mutations or queries by its kind/,
+      {
+        queries: {
+          find: { v2: async () => ({ todo: null }) },
+        } as unknown as Queries<Tx>,
+      },
+      /Missing query todoPages/,
     ],
-    [{ queries: { find: { v2: async () => ({ todo: null }) } } as Queries<Tx> }, /Missing query todoPages/],
-    [{ mutations: { ...mutationHandlers(), todoPages: async () => ({}) } as never }, /retains no mutation version/],
-
+    [
+      {
+        mutations: {
+          ...mutationHandlers(),
+          todoPages: async () => ({}),
+        } as never,
+      },
+      /retains no mutation version/,
+    ],
   ];
   for (const [options, message] of cases)
     assert.throws(() => start(options), message);
@@ -432,7 +507,12 @@ test("declaration handles close when the handler or external body settles, even 
   const at = "2026-01-01T00:00:00.000Z";
   const call = (ordinal: number) => ({
     op: "handleAction",
-              context: { binding: { stream: "todos" } },
+    context: {
+      owner: "alice",
+      stream: "todos",
+      storeId: "fixture-store",
+      materialization: "fixture-materialization",
+    },
     name: "Find",
     version: 1,
     owner: "alice",
@@ -442,7 +522,7 @@ test("declaration handles close when the handler or external body settles, even 
   });
   const native = {
     ...nativeHost([call(1), call(2)], answers),
-    async settleExternal(_config: string, settlement: string) {
+    async settleExternal05(_config: string, settlement: string) {
       settled.push(settlement);
       return "[]";
     },
@@ -450,6 +530,7 @@ test("declaration handles close when the handler or external body settles, even 
   const backend = createBackend<Tx>({
     database,
     authenticate: () => "alice",
+    protocol5: { authorizeStream: () => true },
     mutations: {
       ...mutationHandlers(),
       find: async ({ ctx }) => {
@@ -465,7 +546,7 @@ test("declaration handles close when the handler or external body settles, even 
     native,
     onError: () => {},
   });
-  await backend.action("alice", "{}");
+  await assert.rejects(backend.action("alice", "{}"), /after declaring/);
   assert.deepEqual(answers, [
     {
       outputs: { todo: null },
@@ -475,23 +556,28 @@ test("declaration handles close when the handler or external body settles, even 
           kind: "track",
           stream: "found",
           record: { model: "Todo", identity: { id: "one" } },
-            },
+        },
       ],
     },
-    { error: "after declaring" },
   ]);
   // The external body answers its own value; its declarations settle after it.
-  const value = await backend.transaction(async ({ streams: scope, invalidate: touch }) => {
-    escaped.push({ streams: scope, invalidate: touch });
-    touch.pin({ todo: "one", at: new Date(at) });
-    scope(["found"]).invalidate.todo({ id: "one" });
-    return { arbitrary: [1, 2] };
-  });
+  const value = await backend.transaction(
+    async ({ streams: scope, invalidate: touch }) => {
+      escaped.push({ streams: scope, invalidate: touch });
+      touch.pin({ todo: "one", at: new Date(at) });
+      scope(["found"]).invalidate.todo({ id: "one" });
+      return { arbitrary: [1, 2] };
+    },
+  );
   assert.deepEqual(value, { arbitrary: [1, 2] });
   assert.deepEqual(JSON.parse(settled[0]!), {
     changes: [],
     declarations: [
-      { kind: "invalidate", streams: null, record: { model: "Pin", identity: { todo: "one", at } } },
+      {
+        kind: "invalidate",
+        streams: null,
+        record: { model: "Pin", identity: { todo: "one", at } },
+      },
       {
         kind: "invalidate",
         streams: ["found"],

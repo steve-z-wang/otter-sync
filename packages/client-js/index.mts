@@ -13,7 +13,6 @@ export {
   CallError,
   type Call,
   type CallOptions,
-  type OnceOptions,
   type QueryOptions,
   type CallOutcome,
   type CallStatus,
@@ -41,9 +40,7 @@ export type {
   ClientSyncState,
   ModelSyncState,
   PendingMutation,
-  RebuildReport,
   Rejection,
-  SchemaState,
 } from "./runtime.mts";
 export type {
   ActOperation,

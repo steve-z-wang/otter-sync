@@ -53,23 +53,6 @@ fn position(declarations: Option<&Declarations>, owner: &str) -> Option<Pos> {
         .map(|a| a.pos)
 }
 
-/// Names the generated clients and backend declare (or re-export) beside
-/// Loads, and only when the schema declares one ([#173](https://github.com/zanminwang/axton/issues/173)).
-pub(crate) const LOAD_HELPERS: &[&str] = &[
-    "JsonValue",
-    "Load",
-    "LoadContext",
-    "LoadError",
-    "LoadException",
-    "LoadHandlerCall",
-    "LoadInvalidations",
-    "LoadNext",
-    "LoadOptions",
-    "LoadPhase",
-    "LoadStatus",
-    "Loads",
-];
-
 /// Names the generated clients declare beside a current Mutation for
 /// transactional Mutation enqueue and the transaction's resolutions of unsent
 /// work; `SubmitMutationPort` is also the Dart runtime's port those clients
@@ -156,73 +139,6 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
             add(format!("{n}V{version}Identity"), format!("model {n}"))?;
         }
     }
-    // Beside the shared Load names, exactly the per-version backend handler
-    // types: `{Name}Input` and `{Name}HandlerOutput`, `V{n}`-prefixed for a
-    // retained version.
-    let loads = values(config, "loads");
-    if !loads.is_empty() {
-        for helper in LOAD_HELPERS {
-            add((*helper).into(), "load helper".into())?;
-        }
-    }
-    let load_versions = || {
-        loads
-            .iter()
-            .filter_map(|load| Some((load["name"].as_str()?, load["version"].as_u64()?)))
-    };
-    let mut load_latest = BTreeMap::<&str, u64>::new();
-    for (n, version) in load_versions() {
-        load_latest
-            .entry(n)
-            .and_modify(|v| *v = (*v).max(version))
-            .or_insert(version);
-    }
-    for (n, version) in load_versions() {
-        let prefix = if version == load_latest[n] {
-            n.to_owned()
-        } else {
-            format!("{n}V{version}")
-        };
-        for suffix in ["Input", "HandlerOutput"] {
-            add(
-                format!("{prefix}{suffix}"),
-                format!("Load {n} v{version} {suffix}"),
-            )?;
-        }
-    }
-    let mutations = if config["backendMutations"].is_array() {
-        values(config, "backendMutations")
-    } else {
-        values(config, "mutations")
-    };
-    let mut mutation_latest = BTreeMap::<&str, u64>::new();
-    for mutation in mutations {
-        let n = name(mutation);
-        let version = mutation["version"].as_u64().unwrap();
-        mutation_latest
-            .entry(n)
-            .and_modify(|v| *v = (*v).max(version))
-            .or_insert(version);
-    }
-    for mutation in mutations {
-        let n = name(mutation);
-        let version = mutation["version"].as_u64().unwrap();
-        let prefix = if version == mutation_latest[n] {
-            n.to_owned()
-        } else {
-            format!("{n}V{version}")
-        };
-        add(format!("{prefix}Input"), format!("mutation {n} v{version}"))?;
-    }
-    for mutation in values(config, "mutations") {
-        let n = name(mutation);
-        let owner = format!("mutation {n} v{}", mutation["version"]);
-        add(format!("{n}Args"), owner.clone())?;
-        // Dart's encoder is a top-level function in the same library as
-        // generated field classes. Its actual lower-first name must not
-        // shadow a type or another Mutation's encoder.
-        add(crate::emit::lower(n), owner)?;
-    }
     // Model-only schemas still emit every per-model type (such as
     // `{Model}Create`); the remaining names exist only beside operations.
     if actions.is_empty() {
@@ -240,14 +156,10 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         "CallSuccess",
         "MutationContext",
         "MutationHandlerCall",
-        "MutationHandlers",
         "Mutations",
-        "OnceOptions",
         "Queries",
         "QueryContext",
         "QueryHandlerCall",
-        "QueryHandlers",
-        "QueryInvalidations",
     ] {
         add(helper.into(), "operation helper".into())?;
     }
@@ -269,13 +181,6 @@ pub(crate) fn check(config: &Value, declarations: Option<&Declarations>) -> Resu
         for helper in TRANSACTION_HELPERS {
             add((*helper).into(), "transaction mutation helper".into())?;
         }
-    }
-    let mut handler_groups = std::collections::BTreeSet::new();
-    for action in actions {
-        handler_groups.insert((label(action), name(action)));
-    }
-    for (kind, n) in handler_groups {
-        add(format!("{kind}{n}Handlers"), format!("{kind} {n} handlers"))?;
     }
     for action in actions {
         let n = name(action);

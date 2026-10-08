@@ -38,11 +38,11 @@ The same normalization runs wherever a value enters a record: before an operatio
 
 ## 10. Quality Requirements
 
-- An integer outside the safe range is refused on every path, so no runtime can widen a value another cannot read. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `state_is_complete_but_patch_preserves_absent_and_null`; PostgreSQL `bigint` narrowing in [runtime.test.mjs](../../../../integration/persistence/server/runtime.test.mjs) `loader safely converts PostgreSQL BigInt scalar and list values`.
+- An integer outside the safe range is refused on every path, so no runtime can widen a value another cannot read. Evidence: [core/tests/contracts.rs](../../../../crates/core/tests/contracts.rs) `state_is_complete_but_patch_preserves_absent_and_null`; PostgreSQL `bigint` narrowing in [runtime.test.mjs](https://github.com/zanminwang/axton/blob/v0.4.2/integration/persistence/server/runtime.test.mjs) `loader safely converts PostgreSQL BigInt scalar and list values`.
 - Identity values normalize identically everywhere, so one record has one key. Evidence: `identities_are_exact_normalized_and_independent_of_scopes` in the same core test file.
-- Booleans and lists survive the SQLite round trip. Evidence: [sqlite/tests/engine.rs](../../../../crates/sqlite/tests/engine.rs) `model_rows_round_trip_booleans_lists_and_copy_aside`.
+- Booleans and lists survive the SQLite round trip. Historical v0.4.2 evidence: [sqlite/tests/engine.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/sqlite/tests/engine.rs) `model_rows_round_trip_booleans_lists_and_copy_aside`.
 
 ## 11. Risks and Technical Debt
 
-- **Accepted limitation:** enum columns are `TEXT` without a check constraint; only normalization rejects unknown names, so rows stored before an enum value was removed remain in the table as strings the schema cannot decode. A changed value set of an enum a stored field uses is an incompatible schema change, so the client rebuilds its database rather than reading such rows ([Client / Storage / Reconciliation](../client/storage/reconciliation.md)).
+- **Accepted limitation:** enum columns are `TEXT` without a check constraint; only normalization rejects unknown names, so rows stored before an enum value was removed remain in the table as strings the schema cannot decode. A changed value set of an enum a stored field uses is an incompatible schema change, so compatible local open refuses it intact rather than converting such rows ([Client / Storage / Reconciliation](../client/storage/reconciliation.md)).
 - Creation defaults (`@default`) are specified in [Models](models.md#5-building-block-view); they use the normalization rules above.

@@ -5,18 +5,9 @@ use crate::host::{
 };
 use crate::stream_members::{MemberDelta, MemberPosition, PositionKind};
 use crate::{Config, Error, Host, Result, code, internal};
-use axton_core::{MembershipClaim, RecordKey};
+use axton_core::RecordKey;
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) type Changes = BTreeMap<String, RecordKey>;
-pub(crate) struct Settlement {
-    pub stamps: BTreeMap<String, u64>,
-}
-impl std::ops::Deref for Settlement {
-    type Target = BTreeMap<String, u64>;
-    fn deref(&self) -> &Self::Target {
-        &self.stamps
-    }
-}
 pub(crate) fn unregistered(model: &str) -> Error {
     Error::new(
         code::LOADER_UNREGISTERED,
@@ -64,16 +55,7 @@ pub(crate) async fn settle_changes(
     changed: &Changes,
     declarations: &[StreamIntent],
     host: &impl Host,
-) -> Result<Settlement> {
-    settle_locked(config, changed, declarations, &BTreeSet::new(), host).await
-}
-pub(crate) async fn settle_locked(
-    config: &Config,
-    changed: &Changes,
-    declarations: &[StreamIntent],
-    held: &BTreeSet<String>,
-    host: &impl Host,
-) -> Result<Settlement> {
+) -> Result<()> {
     let mut records = changed.clone();
     let mut invalidations: BTreeMap<String, Selection> = changed
         .keys()
@@ -120,9 +102,7 @@ pub(crate) async fn settle_locked(
         records.insert(encoded, key);
     }
     if records.is_empty() {
-        return Ok(Settlement {
-            stamps: BTreeMap::new(),
-        });
+        return Ok(());
     }
     let globals: Vec<MemberKey> = invalidations
         .iter()
@@ -162,26 +142,14 @@ pub(crate) async fn settle_locked(
     let before: Tracking = host.call_typed(request.clone()).await?;
     let mut locked = named;
     locked.extend(before.iter().map(|p| p.stream.clone()));
-    if !locked.is_subset(held) {
-        // A caller holding earlier locks must never extend them below an already
-        // acquired name. Loads declare all names before their stamp reads.
-        if !held.is_empty() {
-            return Err(Error::new(
-                code::TRANSACTION_CONFLICT,
-                "settlement requires streams outside the held lock set",
-            ));
-        }
-        lock_streams(&locked, host).await?;
-    }
+    lock_streams(&locked, host).await?;
     let track_keys: BTreeSet<String> = tracks.keys().map(|(_, k)| k.clone()).collect();
     let guards: Vec<GuardRecord> = records
         .iter()
         .map(|(encoded, key)| GuardRecord {
             model: key.model.clone(),
             identity_key: key.encoded_identity().expect("canonical key"),
-            mode: if invalidations.contains_key(encoded) {
-                GuardMode::Advance
-            } else if track_keys.contains(encoded) {
+            mode: if invalidations.contains_key(encoded) || track_keys.contains(encoded) {
                 GuardMode::Ensure
             } else {
                 GuardMode::Lock
@@ -191,11 +159,8 @@ pub(crate) async fn settle_locked(
     let guarded: Guards = host
         .call_typed(HostRequest::GuardRecords { records: guards })
         .await?;
-    let mut stamps = BTreeMap::new();
-    for ((encoded, _), stamp) in records.iter().zip(guarded) {
-        if invalidations.contains_key(encoded) {
-            stamps.insert(encoded.clone(), stamp.expect("advance validated").0);
-        }
+    if guarded.len() != records.len() {
+        return Err(internal("guard cardinality mismatch"));
     }
     let after: Tracking = host.call_typed(request).await?;
     let mut final_pairs: BTreeMap<(String, String), RecordKey> = BTreeMap::new();
@@ -228,105 +193,31 @@ pub(crate) async fn settle_locked(
     if !deltas.is_empty() {
         let request = HostRequest::ApplyStreamMembers { deltas };
         let positions: Positions = host.call_typed(request.clone()).await?;
-        check_positions(&request, &positions)?;
-        if config.protocol4.is_some() {
-            let HostRequest::ApplyStreamMembers { deltas } = &request else {
-                unreachable!()
-            };
-            let published = positions
-                .into_iter()
-                .zip(deltas)
-                .filter_map(|(position, delta)| delta.publish.then_some(position))
-                .collect::<Vec<_>>();
-            if !published.is_empty() {
-                let _: Acknowledged = host
-                    .call_typed(HostRequest::SavePublicationGroups {
-                        positions: published,
-                    })
-                    .await?;
-            }
-        }
-    }
-    Ok(Settlement { stamps })
-}
-fn check_positions(request: &HostRequest, positions: &[MemberPosition]) -> Result<()> {
-    let HostRequest::ApplyStreamMembers { deltas } = request else {
-        return Err(internal(
-            "check_positions needs an applyStreamMembers request",
-        ));
-    };
-    if positions.len() != deltas.len() {
-        return Err(request.invalid_response(format!(
-            "answers {} positions for {} deltas",
-            positions.len(),
-            deltas.len()
-        )));
-    }
-    let mut published: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
-    let mut kept: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
-    for (delta, position) in deltas.iter().zip(positions) {
-        let kind = PositionKind::Upsert;
-        if position.stream != delta.stream || position.key != delta.key || position.kind != kind {
-            return Err(request.invalid_response(format!(
-                "answers a {:?} position of {} {} in Stream {} for {} {} in Stream {}",
-                position.kind,
-                position.key.model,
-                position.key.identity,
-                position.stream,
-                delta.key.model,
-                delta.key.identity,
-                delta.stream
-            )));
-        }
-        let cursors = if delta.publish {
-            &mut published
-        } else {
-            &mut kept
-        };
-        cursors
-            .entry(delta.stream.as_str())
-            .or_default()
-            .push(position.cursor);
-    }
-    for (stream, cursors) in &published {
-        if cursors.windows(2).any(|pair| pair[1] != pair[0] + 1) {
-            return Err(request.invalid_response(format!(
-                "Stream {stream} positions {cursors:?} are not one consecutive range"
-            )));
-        }
-        let start = cursors[0];
-        if kept
-            .get(stream)
-            .is_some_and(|kept| kept.iter().any(|cursor| *cursor >= start))
-        {
-            return Err(request.invalid_response(format!(
-                "Stream {stream} keeps a position at or above its new range from {start}"
-            )));
-        }
-    }
-    for (stream, cursors) in &kept {
-        if cursors.iter().collect::<BTreeSet<_>>().len() != cursors.len() {
-            return Err(request
-                .invalid_response(format!("Stream {stream} answers one kept position twice")));
-        }
+        check_positions05(&request, &positions)?;
     }
     Ok(())
 }
-
-/// Preserve saved cursor evidence while adapting its identity like readback.
-pub(crate) fn current_claims(
-    config: &Config,
-    claims: Vec<MembershipClaim>,
-) -> Result<Vec<MembershipClaim>> {
-    claims
-        .into_iter()
-        .map(|mut claim| {
-            let key = config
-                .schema
-                .record_key(&claim.model, &claim.identity)
-                .map_err(crate::storage_invalid)?;
-            claim.identity = key.identity;
-            Ok(claim)
-        })
-        .collect()
+fn check_positions05(request: &HostRequest, positions: &[MemberPosition]) -> Result<()> {
+    let HostRequest::ApplyStreamMembers { deltas } = request else {
+        return Err(internal("publication deltas missing"));
+    };
+    if positions.len() != deltas.len() {
+        return Err(request.invalid_response("wrong position count"));
+    }
+    let mut published = BTreeMap::new();
+    for (d, p) in deltas.iter().zip(positions) {
+        axton_core::counter(p.cursor).map_err(crate::storage_invalid)?;
+        if p.cursor == 0 || d.stream != p.stream || d.key != p.key || p.kind != PositionKind::Upsert
+        {
+            return Err(request.invalid_response("wrong publication position"));
+        }
+        if d.publish
+            && published
+                .insert(&d.stream, p.cursor)
+                .is_some_and(|old| old != p.cursor)
+        {
+            return Err(request.invalid_response("one Mutation has multiple Stream cursors"));
+        }
+    }
+    Ok(())
 }

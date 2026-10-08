@@ -7,16 +7,11 @@ const path = process.argv[3];
 const connection = {
   url: "http://127.0.0.1:1",
   token: "offline",
-  identity: {
-    backend: "persistence",
-    viewer: "viewer",
-    contract: "persistence-v04",
-  },
 };
 for (let run = 0; run < 2; run++) {
   await assert.rejects(
     GeneratedClient.open({ path, stream: "User:viewer", connection }),
-    /protocol_mismatch/,
+    /unsupported Store format/,
   );
 }
 let first;
@@ -51,7 +46,7 @@ for (let run = 0; run < 2; run++) {
     );
     assert.equal((await c.syncState()).pending, 1);
     const saved = await c.client.readSql(
-      "SELECT intent FROM axton_v04_call",
+      "SELECT q.*, d.descriptor AS retained_descriptor, o.* FROM axton_mutation_queue q JOIN axton_descriptor d ON d.context=q.descriptor JOIN axton_mutation_queue_operation o ON o.mutation_id=q.id ORDER BY q.id,o.step",
       [],
     );
     assert.equal(saved.length, 1);

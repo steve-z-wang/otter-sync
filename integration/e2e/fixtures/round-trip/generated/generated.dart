@@ -2,7 +2,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:axton/axton.dart';
-export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, StoreIdentity, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
+export 'package:axton/axton.dart' show RuntimeConnection, SyncServer, AdmissionRefused, Call, CallOutcome, CallSuccess, CallFailure, CallStatus, CallError, StoreConnection, BootstrapStatus, BootstrapPhase, BootstrapError, BootstrapFailedException, ClientClosedException, PrerequisiteRetry, PrerequisiteHandler, AxtonDateTime, RefusedAct, FailedAct, FailedTask, SubmittedAct, ActOperation;
 class Present<T> { final T value; const Present(this.value); }
 abstract interface class _DartActionRecord { Map<String,dynamic> toRecord(); }
 final Map<String,dynamic> schema = jsonDecode('{"actions":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"inputs":[{"allowedPatchFields":["text","note"],"cardinality":"single","kind":"model","model":"Entry","name":"entry","operation":"update"}],"kind":"mutation","name":"EditEntry","outputEnums":[],"outputs":[{"cardinality":"single","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"id","nullable":false,"required":true,"type":{"kind":"scalar","name":"string"}}],"kind":"query","name":"FindEntry","outputEnums":[],"outputs":[{"cardinality":"optional","handlerType":{"fields":[{"name":"id","type":{"kind":"scalar","name":"string"}}],"kind":"identity","model":"Entry"},"kind":"model","model":"Entry","modelReadVersion":1,"name":"entry","source":"handlerIdentity"}],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[{"input":{"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry"}]},"knownFields":{"Entry":["id","text","note"]},"name":"Edit","prerequisites":[],"requirements":[],"sequence":null,"slots":[{"allowedPatchFields":["text","note"],"cardinality":"single","model":"Entry","name":"entry","operation":"update"}],"version":1}],"enums":[],"models":[{"bootstrap":true,"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"text","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Entry","version":1}]}') as Map<String,dynamic>;
@@ -58,20 +58,6 @@ class EntryCreate implements EntryCreateInput {
  'note': note == null ? null : note!,
  };
 }
-class EditEntryUpdate {
- final EntryIdentity identity;
- final Present<String>? text;
- final Present<String?>? note;
- const EditEntryUpdate({required this.identity,this.text,this.note});
- Map<String,dynamic> toRecord() => {
- if (text != null) 'text': text!.value,
- if (note != null) 'note': note!.value == null ? null : note!.value!,
- };
-}
-Map<String,dynamic> edit({required EditEntryUpdate entry}) { final operations=<Map<String,dynamic>>[];
- for (final value in [entry]) {
- operations.add({'model':'Entry','op':'update','identity':value.identity.toRecord(),'values':value.toRecord()}); }
- return {'name':'Edit','version':1,'operations':operations}; }
 class EntryFilter {
  final Present<String>? id;
  final Present<String>? text;
@@ -209,13 +195,7 @@ class Mutations extends TransactionMutations { Mutations(super.port); }
 /// Query results are invocation snapshots.
 class Queries {
  final Client client; Queries(this.client);
- late final QueryInvalidations invalidate = QueryInvalidations(client);
- Future<FindEntryOutput> findEntry({required String id, bool store = true, bool once = false, bool refresh = false}) => this.client.invokeQuery<FindEntryOutput>('FindEntry', 1, {'id': _dartActionEncode(id)}, (value) { final row = (value as Map).cast<String,dynamic>(); return FindEntryOutput(entry: row['entry'] == null ? null : Entry.fromRecord((row['entry'] as Map).cast<String,dynamic>())); }, store: store, once: once, refresh: refresh);
-}
-/// Discards the saved `once` results of one Query argument set, for every store policy.
-class QueryInvalidations {
- final Client client; QueryInvalidations(this.client);
- Future<void> findEntry({required String id}) => this.client.invalidateQuery('FindEntry', 1, {'id': _dartActionEncode(id)});
+ Future<FindEntryOutput> findEntry({required String id, bool store = true}) => this.client.invokeQuery<FindEntryOutput>('FindEntry', 1, {'id': _dartActionEncode(id)}, (value) { final row = (value as Map).cast<String,dynamic>(); return FindEntryOutput(entry: row['entry'] == null ? null : Entry.fromRecord((row['entry'] as Map).cast<String,dynamic>())); }, store: store);
 }
 class LiveModels { final Client port; LiveModels(this.port);
  late final EntryLiveModel entry = EntryLiveModel(port);
@@ -246,7 +226,7 @@ class GeneratedClient {
  late final Queries queries=Queries(client);
  late final FetchModels fetch=FetchModels(client);
  GeneratedClient._(this.client);
- static Future<GeneratedClient> open({required String path, required String stream, required StoreConnection connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
+ static Future<GeneratedClient> open({required String path, required String stream, StoreConnection? connection, String? libraryPath, Map<String,PrerequisiteHandler>? prerequisites}) async => GeneratedClient._(await Client.open(path:path,stream:stream,connection:connection,schema:schema,libraryPath:libraryPath,prerequisites:prerequisites));
  Future<void> bootstrap() => client.bootstrap();
  Future<RuntimeConnection> connect(SyncServer server,{void Function(Object)? onError,Future<void> Function()? refreshAuth,Duration directTimeout=const Duration(seconds:30)}) => client.connect(server,onError:onError,refreshAuth:refreshAuth,directTimeout:directTimeout);
  Future<void> resetStore({bool discardPending=false}) => client.resetStore(discardPending:discardPending);
@@ -255,8 +235,6 @@ class GeneratedClient {
  String get clientId => client.clientId;
  /// The client's sync state: a local snapshot, not a network probe.
  Future<Map<String,dynamic>> syncState() => client.syncState();
- /// Leave an incompatible database behind for a fresh file; refused while unsent work remains unless [discardPending].
- Future<Map<String,dynamic>> rebuild({bool discardPending = false}) => client.rebuild(discardPending: discardPending);
  /// Remove a handled rejection from the local inbox; it is not retried.
  Future<void> dismissRejection(int ordinal) => client.dismissRejection(ordinal);
  /// Remove unsent work and recompute local state; frozen work cannot be dropped.

@@ -1,5 +1,5 @@
 import 'store_fixture.dart';
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 // The connection as an effect executor (#134): the runtime owns the lanes,
 // direct calls, refresh coordination and timeouts; the SDK executes the
 // effects it asks for and aborts each one when it is cancelled. The executor
@@ -598,10 +598,12 @@ void main() {
 
   group('reports', () {
     final record = {
-      'kind': 'conflict',
+      'kind': 'diverged',
       'model': 'Entry',
       'identity': {'id': 'e'},
-      'stamp': 3,
+      'ordinal': 7,
+      'code': 'replay.invalid',
+      'detail': {'reason': 'authority'},
     };
 
     test('records become AxtonReports; errors become StateErrors', () {
@@ -617,8 +619,11 @@ void main() {
         reported.take(2),
         everyElement(
           isA<AxtonReport>()
-              .having((r) => r.kind, 'kind', 'conflict')
-              .having((r) => r.stamp, 'stamp', 3),
+              .having((r) => r.kind, 'kind', 'diverged')
+              .having((r) => r.identity, 'identity', {'id': 'e'})
+              .having((r) => r.ordinal, 'ordinal', 7)
+              .having((r) => r.code, 'code', 'replay.invalid')
+              .having((r) => r.detail, 'detail', {'reason': 'authority'}),
         ),
       );
       expect(reported.skip(2).map((e) => (e as StateError).message), [
@@ -884,16 +889,22 @@ void main() {
     final disconnected = Completer<void>();
     Socket? accepted;
     final subscription = server.listen((socket) {
-      accepted = socket;
+      var direct = false;
+      var request = '';
       socket.listen(
-        (_) {
-          if (!entered.isCompleted) entered.complete();
+        (bytes) {
+          request += utf8.decode(bytes);
+          if (request.contains(' /sync/actions ')) {
+            direct = true;
+            accepted = socket;
+            if (!entered.isCompleted) entered.complete();
+          }
         },
         onDone: () {
-          if (!disconnected.isCompleted) disconnected.complete();
+          if (direct && !disconnected.isCompleted) disconnected.complete();
         },
         onError: (Object _) {
-          if (!disconnected.isCompleted) disconnected.complete();
+          if (direct && !disconnected.isCompleted) disconnected.complete();
         },
       );
     });
@@ -915,7 +926,13 @@ void main() {
         directTimeout: Duration(milliseconds: closeConnection ? 1000 : 100),
       );
       await connection.pause();
-      final pending = client.invokeQuery<Object?>('Ping', 1, {}, (v) => v);
+      final pending = client.invokeQuery<Object?>(
+        'Ping',
+        1,
+        {},
+        (v) => v,
+        store: false,
+      );
       final observed = expectLater(pending, throwsA(isA<CallError>()));
       await entered.future.timeout(const Duration(seconds: 1));
       if (closeConnection) await connection.close();
@@ -1000,16 +1017,7 @@ void main() {
                 as Map<String, dynamic>;
         entered.complete(body);
         await release.future;
-        request.response.write(
-          jsonEncode({
-            'context': body['context'],
-            'completion': {
-              'callId': body['callId'],
-              'outcome': {'status': 'succeeded', 'result': null},
-            },
-            'records': [],
-          }),
-        );
+        request.response.write(jsonEncode(emptyRead(body)));
         await request.response.close();
       });
       final client = await Client.open(
@@ -1070,16 +1078,7 @@ void main() {
                 as Map<String, dynamic>;
         entered.complete(body);
         await releaseResponse.future;
-        request.response.write(
-          jsonEncode({
-            'context': body['context'],
-            'completion': {
-              'callId': body['callId'],
-              'outcome': {'status': 'succeeded', 'result': null},
-            },
-            'records': [],
-          }),
-        );
+        request.response.write(jsonEncode(emptyRead(body)));
         await request.response.close();
         responseSent.complete();
       });
@@ -1121,7 +1120,7 @@ void main() {
         await transaction;
         await closing;
         expect(await pending, isNull);
-        expect(completions.single['callId'], call['callId']);
+        expect(completions.single['callId'], call['requestId']);
       } finally {
         if (!hold.isCompleted) hold.complete();
         if (!releaseResponse.isCompleted) releaseResponse.complete();
@@ -1215,10 +1214,13 @@ void main() {
             );
             expect(completions, hasLength(1));
             if (intent != null)
-              expect(completions.single['callId'], intent['callId']);
+              expect(
+                completions.single['callId'],
+                '${intent['storeId']}:${(intent['mutations'] as List).single['id']}',
+              );
             expect(
               completions.single['callId'],
-              matches(RegExp(r'^[0-9a-f-]{36}$')),
+              matches(RegExp(r'^[0-9a-f-]{36}:[1-9][0-9]*$')),
             );
             expect((completions.single['outcome'] as Map)['code'], 'abandoned');
             expect((await client.syncState())['pending'], 0);
@@ -1252,12 +1254,12 @@ void main() {
         if (request.uri.path == '/sync/pull') {
           final body =
               jsonDecode(await utf8.decoder.bind(request).join()) as Map;
-          if (body['kind'] == 'page') {
+          if (body['bootstrap'] == true) {
             // Held: only the client's abort ends this manifest page.
             loads++;
             return;
           }
-          request.response.write(jsonEncode(emptyPull(body, total: 1)));
+          request.response.write(jsonEncode(emptyPull(body)));
           await request.response.close();
           return;
         }

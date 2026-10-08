@@ -1,6 +1,8 @@
-# Common
+# Historical common carriers
 
-[Protocol 4](0.4.md) defines current bound contexts and carriers. Stamp and client batch-sequence descriptions below are retained protocol-3 fields.
+This page records protocol-4 encoding, limits and stamp/capability mechanics from v0.4.2. They are not current carrier requirements. [Protocol 5](0.5.md) owns current contexts, bounds and authority rules; shared value normalization remains in [Types](../schema/types.md).
+
+[Protocol 4](0.4.md) records historical bound contexts and carriers. Stamp and client batch-sequence descriptions below are retained protocol-3 fields.
 
 ## 1. Introduction and Goals
 
@@ -20,7 +22,7 @@ Wire names are short and stable: `streams` and `cursors` name streams and their 
 
 **State shapes.** A received state must contain every non-identity field (nullable ones default to `null`), may not contain identity fields, and drops unknown fields, which is what lets an older client accept states from a newer server. Loader output on the server is looser: it may include identity fields and omit nullable ones. A patch names only known non-identity fields and keeps explicit `null`.
 
-**Admission.** A client may send application headers, such as its platform and build, with every request and the live upgrade ([client transport](../client/connection/transport.md)). The backend's `admit` may refuse any of them before the route runs, with a status of 400-599, a JSON body the application chose, and the response header `axton-admission: refused` ([server transport](../server/connection/transport.md)). The marker, not the status, makes an answer a refusal: it refuses the client, not one request, so the client stops its connection and reports the refusal once ([Scheduling](../client/connection/controller/scheduling.md#6-runtime-view)). The same status without the marker is an ordinary failure.
+**Admission.** A client may send application headers, such as its platform and build, with every request and the live upgrade ([client transport](../client/connection/transport.md)). The backend's `admit` may refuse any of them before the route runs, with a status of 400-599, a JSON body the application chose, and the response header `axton-admission: refused` ([server transport](../server/connection/transport.md)). The marker, not the status, makes an answer a refusal: it refuses the client, not one request, so the client stops its connection and reports the refusal once ([Scheduling](../client/connection/controller/scheduling.md)). The same status without the marker is an ordinary failure.
 
 **Errors.** Core has one error kind carrying a message. The server runtime has a structured error `{code, message, details?}` whose codes the HTTP layer maps to statuses ([SDKs / Bindings](../sdks/bindings.md), [Server / Connection / Transport](../server/connection/transport.md)).
 
@@ -51,7 +53,7 @@ Executed 2026-09-16: `cargo test -p axton-core --locked` passed with the tests a
 
 ## Authority capability and historical metadata
 
-New requests advertise `capabilities: ["stream-authority-v1"]`. Negotiation is excluded from saved-call logical equality, so decoration never changes a frozen call's identity. Valid unsupported requests are refused before handlers or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md#stream-membership-cutover) upgrades all runtimes together.
+New requests advertise `capabilities: ["stream-authority-v1"]`. Negotiation is excluded from saved-call logical equality, so decoration never changes a frozen call's identity. Valid unsupported requests are refused before handlers or progress; malformed metadata is `request.invalid`. Live subscribe is refused before acknowledgement. The coordinated [cutover](../../../../website/docs/backend/deployment.md) upgrades all runtimes together.
 
 Fresh Load pages, receipts and direct responses emit no `memberships` claims. Historical top-level claims remain decodable and replayable but supply no cache ownership or permission. Saved nested business fields named `memberships`, `scope` or `channel`, including result and continuation data, retain their exact meaning. Replay runs no Handler, Loader or tracking declarations.
 

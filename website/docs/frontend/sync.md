@@ -2,15 +2,15 @@
 
 ## Follow one Stream
 
-Open each Store with its stable backend, viewer, contract and one Stream. Opening binds the local database before connecting. Credentials belong to the connection; refreshing a token does not change the Store's identity.
+Open each Store with one Stream and a fresh format-5 SQLite file. Opening binds the local database before connecting. Credentials belong to the connection; refreshing a token does not change the Store's identity.
 
-`await client.bootstrap()` waits for every required manifest unit and for normal Stream delivery to reach the captured tail. It is useful for initial data and supported schema rematerialization. A Query or Fetch reads named records; it does not replace Bootstrap. Model watches report committed local state throughout delivery.
+`await client.bootstrap()` waits for every complete required Bootstrap unit at the finite captured head. It is useful for initial data and supported schema rematerialization. A Query or Fetch reads named records; it does not replace Bootstrap. Model watches report committed local state throughout delivery.
 
 ## Submit and settle
 
 The first await of a named Mutation returns its durable `Call` after the local transaction commits. Its declared Model changes appear optimistically. A callback returns the typed input and may use `tx.models` for device-only companion writes before optimism is applied. A callback failure rolls back both contributions.
 
-`await call.wait()` observes terminal settlement. Server acceptance can precede installation of the required Stream authority, so acceptance alone does not complete the Call. The runtime can recover a receipt's historical targets through a bounded manifest without rerunning the public Bootstrap handler or enrolling new records. The result is the invocation's saved snapshot; later local edits may make the current Model view different.
+`await call.wait()` observes terminal settlement. Server acceptance can precede installation of the required Stream authority, so acceptance alone does not complete the Call. The runtime can recover saved settlement targets through a finite owned plan without rerunning the public Bootstrap handler or enrolling new records. The result is the invocation's saved snapshot; later local edits may make the current Model view different.
 
 A refusal removes that call's owned optimism and companions while retaining later independent work. Several named Mutations in one local transaction commit together and settle independently. Direct `tx.models` writes never enter the remote queue.
 
@@ -18,7 +18,7 @@ A refusal removes that call's owned optimism and companions while retaining late
 
 Pause the connection to keep local work available while delaying network delivery:
 
-```ts title="v04-sdk"
+```ts title="v05-sdk"
 await client.connection!.pause();
 const call = await client.mutations.publish(async tx => {
   await tx.models.draft.delete({ id: 'draft-1' });
@@ -30,7 +30,7 @@ const outcome = await call.wait();
 
 Dart uses the same typed invoker with `.withTransaction((tx) async => input)`. A plain typed input uses `.publish(input)`.
 
-The same database can reopen offline with the same binding and projection generation. Frozen Mutation requests survive reopen and supported schema evolution under retained contracts. Query and Fetch are finite requests; they do not queue for later delivery. `store: false` returns the read snapshot without changing the cache. `once` retains a Query snapshot under its stable invocation identity, and `refresh` requests a new snapshot.
+The same database can reopen offline with the same binding and projection generation. Frozen Mutation requests survive reopen and supported schema evolution under retained contracts. Query and Fetch are finite requests; they do not queue for later delivery. `store: false` returns the read snapshot without changing the cache. Each invocation has a fresh request and snapshot; there are no saved Query-result controls.
 
 ## Connection failures
 
@@ -38,7 +38,7 @@ Set `onError` and optional `refreshAuth` on the connection. Retry uses the exact
 
 Admission refusal stops the connection and reports `AdmissionRefused`; connect again after the application can satisfy the backend's admission policy. Query and Fetch timeouts report whether execution is known or unknown. Background errors retain owned pending work.
 
-The bound Stream reconnects from its committed delivery cursor. HTTP catch-up and live pages share atomic commit units. Successful independent prefixes can commit before a later unit fails; neither a failed unit nor a manifest tail capture advances progress. Request limits reduce after eligible page failures to permit a smaller independent prefix, but cannot split a required constraint group.
+The bound Stream reconnects from its committed delivery cursor. HTTP catch-up and live pages share atomic commit units. Successful independent prefixes can commit before a later unit fails; neither a failed unit nor a captured plan head advances progress. Request limits reduce after eligible page failures to permit a smaller independent prefix, but cannot split a required constraint group.
 
 ## Accounts and cache authority
 

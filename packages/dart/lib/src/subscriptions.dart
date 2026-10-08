@@ -249,9 +249,6 @@ class Subscription {
   /// The runtime ended this handle's observer, or its client stopped it.
   bool _closed = false;
 
-  /// It ended because its client closed: its status is readable, its work is
-  /// not.
-  bool _stopped = false;
   final _sinks = <MultiStreamController<SubscriptionStatus>>[];
   Subscription._(SubscriptionState state, this._observerId, this._registry)
     : stream = state.stream,
@@ -265,7 +262,7 @@ class Subscription {
     _publish(
       SubscriptionStatus._fromJson(snapshot['status'] as Map<String, dynamic>),
     );
-    if (snapshot['closed'] == true) _end(stopped: _registry._stopping);
+    if (snapshot['closed'] == true) _end();
   }
 
   void _publish(SubscriptionStatus next) {
@@ -277,9 +274,8 @@ class Subscription {
 
   /// A closed handle has no changes left: its streams end after its last
   /// snapshot, and the registry forgets its identity.
-  void _end({required bool stopped}) {
+  void _end() {
     _closed = true;
-    _stopped = stopped;
     _registry._forget(this);
     for (final sink in _sinks.toList()) {
       sink.close();
@@ -327,21 +323,7 @@ class Subscription {
         };
       });
 
-  /// Commit the local removal of this registration and stop the handle: the
-  /// runtime publishes the terminal snapshot before the removal completes.
-  /// Repeating it on a closed handle is a no-op; a handle its client stopped
-  /// cannot commit work at all.
-  Future<void> unsubscribe() async {
-    // Handle lifetime: nothing is left to remove, and a stopped handle has no
-    // runtime to ask.
-    if (_stopped) throw const SubscriptionClosedException();
-    if (_closed) return;
-    await _registry._host.task({
-      'kind': 'streamUnsubscribe',
-      'stream': stream,
-      'subscriptionId': subscriptionId,
-    });
-  }
+
 }
 
 /// The registry: one handle per persistent subscription identity, claimed
@@ -352,7 +334,6 @@ class Subscriptions {
 
   /// The client is closing: a terminal snapshot from here on stops a handle
   /// with its client rather than removing it.
-  bool _stopping = false;
   Subscriptions(this._host);
 
   /// Register durable intent and answer with the handle of the identity that
@@ -389,25 +370,17 @@ class Subscriptions {
     _host.unlisten(handle._observerId);
   }
 
-  /// Remove whatever registration a Stream name has. The runtime ends the handle it had
-  /// before the removal completes.
-  Future<void> unsubscribeStream(String stream) async {
-    await _host.task({'kind': 'stream', 'stream': stream, 'subscribed': false});
-  }
-
   /// The client began closing: the runtime's terminal snapshots from here on
   /// stop handles with it.
-  void closing() => _stopping = true;
 
   /// The runtime is gone. Its terminal snapshots ended every handle it knew;
   /// any handle still open stops here, with the status it last had. The
   /// bridge contract makes this a fallback: it only keeps a Dart stream from
   /// waiting forever on a runtime that ended without its terminal snapshot.
   void close() {
-    _stopping = true;
     for (final handle in _handles.values.toList()) {
       handle._publish(handle._snapshot._stopped());
-      handle._end(stopped: true);
+      handle._end();
     }
   }
 }

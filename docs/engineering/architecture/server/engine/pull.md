@@ -1,5 +1,7 @@
 # Pull
 
+Historical carrier reference. Current responsibilities are owned by [protocol 5](../../protocol/0.5.md). This page describes the old release, not a supported current API.
+
 ## 1. Introduction and Goals
 
 Server pull delivers the latest retained Stream/record state after a position. Upserts use current stamped Loader authority; removals use stored identities without a Loader. [Protocol Pull](../../protocol/pull.md) owns exact wire and pagination rules.
@@ -22,7 +24,7 @@ Compaction retains one latest membership state per Stream/record. It avoids appe
 
 ## 10. Quality Requirements
 
-See the stream/provenance, removal-only, Loader-distinction and compacted-pagination cases in [stamp.rs](../../../../../crates/server/tests/stamp.rs), [bootstrap.rs](../../../../../crates/server/tests/bootstrap.rs), [live.rs](../../../../../crates/server/tests/live.rs) and the real PostgreSQL [runtime suite](../../../../../integration/persistence/server/runtime.test.mjs). Task 5 verified focused server and persistence suites; final capability/runtime acceptance is separate.
+See the stream/provenance, removal-only, Loader-distinction and compacted-pagination cases in [stamp.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/stamp.rs), [bootstrap.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/bootstrap.rs), [live.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/tests/live.rs) and the real PostgreSQL [runtime suite](https://github.com/zanminwang/axton/blob/v0.4.2/integration/persistence/server/runtime.test.mjs). Task 5 verified focused server and persistence suites; final capability/runtime acceptance is separate.
 
 ## 11. Risks and Technical Debt
 

@@ -11,104 +11,80 @@ import {
   lowerFirst,
   type RuntimeInvalidate,
 } from "./effects.mts";
-import type {
-  HostRequest,
-  LoadNext,
-  SettlementEffects,
-} from "./host-contract.mts";
+import type { HostRequest, SettlementEffects } from "./host-contract.mts";
 import { isRetryableTransactionError } from "./retryable.mts";
 export { WebSocket } from "ws";
 export { isRetryableTransactionError } from "./retryable.mts";
 export type { RecordRef, RuntimeInvalidate } from "./effects.mts";
 export type {
   Acknowledged,
-  Claimed,
-  ClaimedCall,
   Head,
   HostRequest,
-  Invalidation,
   JsonValue,
-  LoadNext,
-  Locked,
   TrackingDelta,
   TrackingPair,
   MemberKey,
   MemberPosition,
-  Stamped,
-  Stamps,
+  Protocol05Context,
+  Protocol05Operation,
+  Protocol05Request,
 } from "./host-contract.mts";
 import type { JsonValue } from "./host-contract.mts";
-/** What escaped one Load item's transaction, as the carrier observed it. */
-export type LoadFault =
-  | { kind: "engine"; code: string; message: string }
-  | { kind: "conflict" }
-  | { kind: "unavailable" };
-/** One Load item as its transaction ended: its committed page or its fault. */
-export type LoadItemAnswer = { page: string } | { fault: LoadFault };
 export type Native = {
-  validateConfig(config: string): void;
-  serverMaterializationId?(
+  processLive05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processDelivery05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processMaterialization05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  processRead05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  handshake05?(
+    config: string,
+    owner: string,
+    request: string,
+    callback: (request: string) => Promise<string>,
+  ): Promise<string>;
+  serverMaterializationId05?(
     config: string,
     projectionGeneration: string,
   ): string;
-  processPush(
+  validateMutationBatch?(config: string, request: string): string;
+  processBatchMember?(
     config: string,
     owner: string,
     request: string,
+    ordinal: number,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
-  processAction(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  /** Serves one Model Fetch (`POST /sync/fetch`) through its versioned Loader. */
-  processFetch(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  processPull(
-    config: string,
-    owner: string,
-    request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  /** Structurally validates a `{loads:[…]}` batch; answers each item's canonical JSON in order. */
-  validateLoadBatch(request: string): string[];
-  /**
-   * The one bounded `{"loads":[…]}` response: the items `validateLoadBatch`
-   * answered and, in the same order, each one's committed page or the fault
-   * that escaped its transaction. The engine classifies every fault.
-   */
-  encodeLoadBatch(items: string[], answers: LoadItemAnswer[]): string;
-  /** Executes or replays one validated Load page item in the callback's transaction. */
-  processLoad(
-    config: string,
-    owner: string,
-    item: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  /** Settles a business change made outside a handler: the same `{changes, declarations}` a handler answers with. */
-  settleExternal(
+  encodeBatchAcknowledgement?(request: string, results: string[]): string;
+  settleExternal05?(
     config: string,
     settlement: string,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
+  validateConfig(config: string): void;
   /** Negotiates and opens the socket's `Subscriptions`; answers `{handle, actions}` JSON. */
   negotiateLive(
     config: string,
     owner: string,
     request: string,
-    callback: (request: string) => Promise<string>,
-  ): Promise<string>;
-  pullLive(
-    config: string,
-    owner: string,
-    cursors: string,
-    models: string,
     callback: (request: string) => Promise<string>,
   ): Promise<string>;
   /** Applies one `LiveEvent` JSON to the session and answers its `LiveAction[]` JSON. */
@@ -125,16 +101,9 @@ export type LiveEvent =
   | { type: "closed" };
 /** What the controller asks the executor to do, in order. */
 export type LiveAction =
-  | { type: "pullV04"; request: string }
+  | { type: "pullV05"; request: string }
   | { type: "listen"; stream: string }
-  | { type: "send"; frame: string }
-  | {
-      type: "pull";
-      /** The cursor to pull after, per stream: one pull covers them all. */
-      cursors: Record<string, number>;
-      /** The read contracts the session declared: model name to version. */
-      models: Record<string, number>;
-    };
+  | { type: "send"; frame: string };
 export interface Persistence {
   call(request: Record<string, any>): Promise<unknown>;
 }
@@ -232,21 +201,8 @@ function engineError(error: unknown): unknown {
 }
 /** Wrap every native function so its failures surface as `EngineError`. */
 function typedNative(native: Native): Native {
-  type Async =
-    | "processPush"
-    | "processAction"
-    | "processFetch"
-    | "processPull"
-    | "processLoad"
-    | "settleExternal"
-    | "negotiateLive"
-    | "pullLive";
-  type Sync =
-    | "validateConfig"
-    | "validateLoadBatch"
-    | "encodeLoadBatch"
-    | "liveEvent"
-    | "liveClose";
+  type Async = "negotiateLive";
+  type Sync = "validateConfig" | "liveEvent" | "liveClose";
   const wrap =
     <K extends Async>(key: K) =>
     (...args: Parameters<Native[K]>): ReturnType<Native[K]> =>
@@ -267,20 +223,73 @@ function typedNative(native: Native): Native {
       }
     };
   return {
-    ...(native.serverMaterializationId
-      ? { serverMaterializationId: native.serverMaterializationId.bind(native) }
+    ...Object.fromEntries(
+      [
+        "processDelivery05",
+        "processMaterialization05",
+        "processRead05",
+        "handshake05",
+        "processLive05",
+      ]
+        .filter((key) => typeof (native as any)[key] === "function")
+        .map((key) => [
+          key,
+          (...args: any[]) =>
+            (native as any)[key](...args).catch((error: unknown) => {
+              throw engineError(error);
+            }),
+        ]),
+    ),
+    ...(native.serverMaterializationId05
+      ? {
+          serverMaterializationId05:
+            native.serverMaterializationId05.bind(native),
+        }
+      : {}),
+    ...(native.validateMutationBatch
+      ? {
+          validateMutationBatch: (config: string, request: string) => {
+            try {
+              return native.validateMutationBatch!(config, request);
+            } catch (error) {
+              throw engineError(error);
+            }
+          },
+        }
+      : {}),
+    ...(native.processBatchMember
+      ? {
+          processBatchMember: (
+            ...args: Parameters<NonNullable<Native["processBatchMember"]>>
+          ) =>
+            native.processBatchMember!(...args).catch((error) => {
+              throw engineError(error);
+            }),
+        }
+      : {}),
+    ...(native.encodeBatchAcknowledgement
+      ? {
+          encodeBatchAcknowledgement: (request: string, results: string[]) => {
+            try {
+              return native.encodeBatchAcknowledgement!(request, results);
+            } catch (error) {
+              throw engineError(error);
+            }
+          },
+        }
+      : {}),
+    ...(native.settleExternal05
+      ? {
+          settleExternal05: (
+            ...args: Parameters<NonNullable<Native["settleExternal05"]>>
+          ) =>
+            native.settleExternal05!(...args).catch((error) => {
+              throw engineError(error);
+            }),
+        }
       : {}),
     validateConfig: wrapSync("validateConfig"),
-    processPush: wrap("processPush"),
-    processAction: wrap("processAction"),
-    processFetch: wrap("processFetch"),
-    processPull: wrap("processPull"),
-    validateLoadBatch: wrapSync("validateLoadBatch"),
-    encodeLoadBatch: wrapSync("encodeLoadBatch"),
-    processLoad: wrap("processLoad"),
-    settleExternal: wrap("settleExternal"),
     negotiateLive: wrap("negotiateLive"),
-    pullLive: wrap("pullLive"),
     liveEvent: wrapSync("liveEvent"),
     liveClose: wrapSync("liveClose"),
   };
@@ -290,24 +299,19 @@ function typedNative(native: Native): Native {
  * server-side defect: reported to `onError` and answered `500 {code: "server"}`.
  */
 const HTTP_STATUS_BY_CODE: Readonly<Record<string, number>> = {
+  "delivery.expired": 410,
+  "delivery.capacity": 413,
   "request.invalid": 400,
   context_mismatch: 409,
   "stream.forbidden": 403,
-  "manifest.capacity": 413,
+  "store.binding": 403,
+  "principal.invalid": 400,
+  "batch.conflict": 409,
+  "batch.sequence": 409,
+  "batch.progress": 409,
   "page.capacity": 413,
   constraint_group_capacity: 413,
-  "manifest.identity_untracked": 400,
-  "manifest.identity_invalid": 400,
-  "receipt.invalid": 400,
-  "manifest.invalid": 404,
-  "manifest.ordinal_invalid": 400,
-  "manifest.coverage_missing": 409,
-  "bootstrap.coverage_incomplete": 409,
   "protocol.unsupported": 426,
-  "client.owner_mismatch": 403,
-  gap: 409,
-  overlap: 409,
-  mutation_version_unsupported: 409,
   model_version_unsupported: 409,
 };
 export class MutationRejected extends Error {
@@ -334,29 +338,15 @@ export interface TransactionCall<Tx> {
   stream(names: string | readonly string[]): RuntimeStream;
   invalidate: RuntimeInvalidate;
 }
-/** A legacy slot handler's call: its decoded input and the same declaration handles. */
-export interface HandlerCall<Tx, Input> {
-  input: Input;
-  tx: Tx;
-  userId: string;
-  stream(names: string | readonly string[]): RuntimeStream;
-  invalidate: RuntimeInvalidate;
-}
-/** Loads name no stream: the same identity, version and stamp describe the same content on every delivery path. */
+/** A viewer Loader answers current state at one retained read version. */
 export interface LoaderCall<Tx, Identity> {
   ids: readonly Identity[];
   tx: Tx;
   userId: string;
 }
-export type Handler<Tx, Input = any> = (
-  call: HandlerCall<Tx, Input>,
-) => Promise<void>;
 export type Loader<Tx, Identity = any, Row = object> = (
   call: LoaderCall<Tx, Identity>,
 ) => Promise<readonly (Row | null)[]>;
-/** Every retained version of one mutation, or a bare function as shorthand for a v1-only contract. */
-export type HandlerRegistration<Tx> =
-  Handler<Tx> | { [version: `v${number}`]: Handler<Tx> };
 /**
  * Trusted framework context of a Mutation: it may change business state,
  * declare records it changed beyond its inputs (`invalidate`) and track records or target invalidation
@@ -373,9 +363,9 @@ export interface MutationContext<Tx> {
   invalidate: RuntimeInvalidate;
 }
 /**
- * Trusted framework context of a Query. It carries no `stream` or `invalidate`:
- * a Query reads without business side effects. `tx` is still the
- * application's own transaction; the framework cannot inspect arbitrary SQL,
+ * Trusted framework context of a Query. It may track explicitly in its authenticated
+ * Stream, and carries no `invalidate`. A Query reads without business side effects.
+ * `tx` is still the application's own transaction; the framework cannot inspect arbitrary SQL,
  * so honoring the read-only contract is the handler's responsibility.
  */
 export interface QueryContext<Tx> {
@@ -386,33 +376,6 @@ export interface QueryContext<Tx> {
     ((names: string | readonly string[]) => RuntimeLoadStream);
   streams(names: readonly string[]): RuntimeLoadStream;
 }
-/**
- * Trusted framework context of one Load page. A Load reads without business
- * side effects, so it carries no `invalidate`, and the framework cannot inspect
- * arbitrary SQL on `tx`. `stream(names).track` records interest in records this
- * page returns into a Stream, which the engine settles with the page. Its
- * handles close when the handler settles. `callId` is the page's durable
- * call ID and `loadId` its job.
- */
-export interface LoadContext<Tx> {
-  tx: Tx;
-  userId: string;
-  callId: string;
-  loadId: string;
-  stream(names: string | readonly string[]): RuntimeLoadStream;
-}
-/**
- * One page of a Load: `continuation` is `null` on the first page and the
- * previous `next` wrapper afterwards. Answers the declared identity lists and
- * `next` (`null` completes the traversal). `next.state` must be portable
- * JSON: no undefined, BigInt, non-finite or unsafe-integer numbers, cycles
- * or class instances, at most 64 levels deep and 64 KiB encoded.
- */
-export type LoadHandler<Tx, Args = any, Data = any> = (call: {
-  ctx: LoadContext<Tx>;
-  args: Args;
-  continuation: LoadNext;
-}) => Promise<{ data: Data; next: LoadNext }>;
 export type MutationHandler<Tx, Args = any, Outputs = any> = (call: {
   ctx: MutationContext<Tx>;
   args: Args;
@@ -426,9 +389,6 @@ export type MutationHandlerRegistration<Tx> =
   MutationHandler<Tx> | { [version: `v${number}`]: MutationHandler<Tx> };
 export type QueryHandlerRegistration<Tx> =
   QueryHandler<Tx> | { [version: `v${number}`]: QueryHandler<Tx> };
-export type LoadHandlerRegistration<Tx> =
-  LoadHandler<Tx> | { [version: `v${number}`]: LoadHandler<Tx> };
-/** Every retained version of one model's read contract, or a bare function as shorthand for a v1-only model. */
 export type LoaderRegistration<Tx> =
   Loader<Tx> | { [version: `v${number}`]: Loader<Tx> };
 /**
@@ -437,7 +397,7 @@ export type LoaderRegistration<Tx> =
  * for the latest version. Refused at startup, naming the key and version.
  */
 function versioned<F>(
-  kind: "handler" | "loader" | "mutation" | "query" | "load",
+  kind: "loader" | "mutation" | "query",
   name: string,
   key: string,
   versions: readonly number[],
@@ -471,7 +431,7 @@ function versioned<F>(
   for (const found of Object.keys(registration))
     if (!/^v[1-9][0-9]*$/.test(found) || !table.has(Number(found.slice(1))))
       throw new Error(
-        `Unknown ${kind} ${key}.${found} for ${name}: retained ${kind === "mutation" || kind === "query" || kind === "load" ? `${kind} ` : ""}versions are ${list}`,
+        `Unknown ${kind} ${key}.${found} for ${name}: retained ${kind === "mutation" || kind === "query" ? `${kind} ` : ""}versions are ${list}`,
       );
   return table;
 }
@@ -499,12 +459,12 @@ function decodeActionRecord(
 /** Current binding is trusted by the engine; selectors remain explicit. */
 function scopedStreams<S extends RuntimeLoadStream>(
   effects: { stream: (names: string | readonly string[]) => S },
-  context: { binding: { stream: string } },
+  context: { stream: string },
 ): {
   stream: S & ((names: string | readonly string[]) => S);
   streams: (names: readonly string[]) => S;
 } {
-  const current = effects.stream(context.binding.stream);
+  const current = effects.stream(context.stream);
   const stream = Object.assign(
     (names: string | readonly string[]) => effects.stream(names),
     current,
@@ -515,18 +475,17 @@ function scopedStreams<S extends RuntimeLoadStream>(
   };
 }
 export interface BackendOptions<T> {
-  protocol4?: {
-    backendId: string;
-    contractId: string;
-    materializationId?: string;
+  protocol5?: {
     projectionGeneration?: string;
-    maxUnitBytes?: number;
     materializations?: Record<
       string,
       { schema: object; projectionGeneration?: string }
     >;
-    /** Evaluated now, including saved response replay; no default Stream grant. */
-    authorizeStream(viewer: string, stream: string): boolean | Promise<boolean>;
+    authorizeStream(
+      principal: string,
+      stream: string,
+      tx: T,
+    ): boolean | Promise<boolean>;
   };
   bootstrap?: (call: { ctx: QueryContext<T> }) => void | Promise<void>;
   config: object;
@@ -539,18 +498,14 @@ export interface BackendOptions<T> {
    * something that is not a refusal, is a server error.
    */
   admit?: Admit | undefined;
-  /** Legacy slot mutations (`mutation Name { slots }`), by lower-camel name. */
-  handlers?: Record<string, HandlerRegistration<T>> | undefined;
   /** Every retained Mutation version, by lower-camel name. */
   mutations?: Record<string, MutationHandlerRegistration<T>> | undefined;
   /** Every retained Query version, by lower-camel name. */
   queries?: Record<string, QueryHandlerRegistration<T>> | undefined;
-  /** Every retained Load version, by lower-camel name. */
-  loads?: Record<string, LoadHandlerRegistration<T>> | undefined;
   /**
    * Every retained version of each Model's read contract, by lower-camel
    * name. A Model left out (or `undefined`) is device-only: never published,
-   * and no retained Mutation, Query or Load may name it on the wire.
+   * and no retained Mutation or Query may name it on the wire.
    */
   loaders: Record<string, LoaderRegistration<T> | undefined>;
   loaderHooks?: Record<
@@ -592,100 +547,6 @@ function callbackJson(value: unknown): string {
     return item;
   });
 }
-/** Portable continuation bounds; the engine rechecks them independently. */
-const LOAD_STATE_BYTES = 64 * 1024;
-const LOAD_STATE_DEPTH = 64;
-/**
- * Why a Load handler's `next` is not `null` or `{state}` with portable JSON
- * state, or `undefined` when it is. Checked before `callbackJson`, which
- * would silently turn a safe BigInt into a number or call `toJSON`. A value
- * that throws while it is inspected (a getter, a Proxy trap) is not portable.
- */
-/**
- * A lone UTF-16 surrogate: `JSON.stringify` escapes it, but it is not Unicode
- * text, so Rust refuses the answer. Well-formed pairs match nothing here.
- */
-const LONE_SURROGATE = /\p{Surrogate}/u;
-function continuationProblem(next: unknown): string | undefined {
-  try {
-    return inspectContinuation(next);
-  } catch (error) {
-    return `next throws when read: ${error instanceof Error ? error.message : String(error)}`;
-  }
-}
-function inspectContinuation(next: unknown): string | undefined {
-  if (next === null) return undefined;
-  if (
-    typeof next !== "object" ||
-    Array.isArray(next) ||
-    Object.getPrototypeOf(next) !== Object.prototype ||
-    Reflect.ownKeys(next).length !== 1 ||
-    !Object.hasOwn(next, "state")
-  )
-    return "next must be null or exactly {state}";
-  const open = new Set<object>();
-  const visit = (value: unknown, depth: number): string | undefined => {
-    switch (typeof value) {
-      case "string":
-        return LONE_SURROGATE.test(value)
-          ? "a string with a lone UTF-16 surrogate"
-          : undefined;
-      case "boolean":
-        return undefined;
-      case "number":
-        if (!Number.isFinite(value)) return "a non-finite number";
-        if (Number.isInteger(value) && !Number.isSafeInteger(value))
-          return "an integer outside the safe range";
-        return undefined;
-      case "object":
-        break;
-      default:
-        return `a ${typeof value} value`;
-    }
-    if (value === null) return undefined;
-    if (depth + 1 > LOAD_STATE_DEPTH)
-      return `nesting deeper than ${LOAD_STATE_DEPTH}`;
-    if (open.has(value)) return "a cycle";
-    const prototype = Object.getPrototypeOf(value);
-    if (Array.isArray(value)) {
-      if (prototype !== Array.prototype) return "a class instance";
-    } else if (prototype !== Object.prototype && prototype !== null)
-      return "a class instance";
-    if (Object.getOwnPropertySymbols(value).length) return "a symbol key";
-    if (typeof (value as { toJSON?: unknown }).toJSON === "function")
-      return "custom JSON serialization";
-    open.add(value);
-    try {
-      if (Array.isArray(value)) {
-        for (let index = 0; index < value.length; index++) {
-          if (!Object.hasOwn(value, index)) return "an array hole";
-          const problem = visit(value[index], depth + 1);
-          if (problem) return problem;
-        }
-      } else
-        for (const key of Object.keys(value)) {
-          if (LONE_SURROGATE.test(key))
-            return "a key with a lone UTF-16 surrogate";
-          const problem = visit(
-            (value as Record<string, unknown>)[key],
-            depth + 1,
-          );
-          if (problem) return problem;
-        }
-    } finally {
-      open.delete(value);
-    }
-    return undefined;
-  };
-  const state = (next as { state: unknown }).state;
-  const problem = visit(state, 0);
-  if (problem) return `state holds ${problem}`;
-  if (Buffer.byteLength(JSON.stringify(state), "utf8") > LOAD_STATE_BYTES)
-    return `state exceeds ${LOAD_STATE_BYTES} bytes`;
-  return undefined;
-}
-/** At most this many Load items of one request hold a database transaction at once. */
-const LOAD_ITEM_TRANSACTIONS = 4;
 class WakeHub {
   private listeners = new Map<string, Set<() => void>>();
   subscribe(stream: string, wake: () => void): () => void {
@@ -751,19 +612,7 @@ type CallKind = "mutation" | "query";
 const REGISTRATION_GROUP = {
   mutation: "mutations",
   query: "queries",
-  load: "loads",
 } as const;
-type MutationSlot = {
-  name: string;
-  operation: string;
-  cardinality: string;
-  model: string;
-};
-type MutationDescriptor = {
-  name: string;
-  version: number;
-  slots?: MutationSlot[];
-};
 /**
  * `External` is what `backend.transaction` hands its body; a generated
  * backend passes its own `TransactionCall`, typed by its schema's Models.
@@ -807,30 +656,13 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           }[];
         };
       }[];
-      loads?: {
-        name: string;
-        version: number;
-        inputs?: {
-          kind: string;
-          name: string;
-          list?: boolean;
-          type?: unknown;
-        }[];
-      }[];
     };
-    mutations?: MutationDescriptor[];
     models?: {
       name: string;
       version: number;
       fields?: { name: string; type: unknown }[];
     }[];
   };
-  const retained = new Map<string, number[]>();
-  for (const m of descriptor.mutations ?? [])
-    retained.set(
-      m.name,
-      [...(retained.get(m.name) ?? []), m.version].sort((a, b) => a - b),
-    );
   const schemaModels = descriptor.schema?.models ?? [];
   const modelNames = schemaModels.map((model) => model.name);
   // A Model whose Loader is omitted (undefined) is device-only (#187): the
@@ -846,30 +678,24 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   const config = JSON.stringify({
     ...options.config,
     loaders: loadedModels,
-    ...(options.protocol4
+    ...(options.protocol5
       ? {
-          protocol4: {
-            backendId: options.protocol4.backendId,
-            contractId: options.protocol4.contractId,
-            projectionGeneration: options.protocol4.projectionGeneration ?? "1",
-            maxUnitBytes: options.protocol4.maxUnitBytes ?? 1024 * 1024,
-            ...(options.protocol4.materializationId
-              ? { materializationId: options.protocol4.materializationId }
-              : {}),
-            materializations: options.protocol4.materializations ?? {},
+          protocol5: {
+            projectionGeneration: options.protocol5.projectionGeneration ?? "1",
+            materializations: options.protocol5.materializations ?? {},
           },
         }
       : {}),
   });
-  native.validateConfig(config);
-  const materializationId = options.protocol4
-    ? native.serverMaterializationId?.(
+  const materializationId = options.protocol5
+    ? native.serverMaterializationId05?.(
         config,
-        options.protocol4.projectionGeneration ?? "1",
+        options.protocol5.projectionGeneration ?? "1",
       )
     : undefined;
-  if (options.protocol4 && !materializationId)
-    throw new Error("protocol4 native materialization derivation unavailable");
+  native.validateConfig(config);
+  if (options.protocol5 && !materializationId)
+    throw new Error("protocol5 native materialization derivation unavailable");
   // Refuses Models whose generated accessors collide,
   // and declarations naming a device-only Model.
   const createEffects = effectsFor(
@@ -908,35 +734,12 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     for (const [version, loader] of table)
       loaderTable.set(`${name}:${version}`, loader);
   }
-  const registered = new Map<string, Map<number, Handler<T>>>();
-  for (const [name, versions] of retained) {
-    const key = lowerFirst(name);
-    registered.set(
-      name,
-      versioned<Handler<T>>(
-        "handler",
-        name,
-        key,
-        versions,
-        options.handlers?.[key],
-      ),
-    );
-  }
   const operations = descriptor.schema?.actions ?? [];
-  const loadDescriptors = descriptor.schema?.loads ?? [];
-  /** Every retained operation version with its kind; Loads share the operation namespace. */
-  const retainedOperations = [
-    ...operations.map((action) => ({
-      name: action.name,
-      version: action.version,
-      kind: (action.kind ?? "mutation") as CallKind | "load",
-    })),
-    ...loadDescriptors.map((load) => ({
-      name: load.name,
-      version: load.version,
-      kind: "load" as const,
-    })),
-  ];
+  const retainedOperations = operations.map((action) => ({
+    name: action.name,
+    version: action.version,
+    kind: (action.kind ?? "mutation") as CallKind,
+  }));
   const retainedVersions = (key: string) =>
     retainedOperations.filter(
       (operation) => lowerFirst(operation.name) === key,
@@ -963,24 +766,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       .filter((group) => group !== except)
       .sort()
       .join(" or ");
-  for (const key of Object.keys(options.handlers ?? {}))
-    if (![...retained.keys()].some((name) => lowerFirst(name) === key)) {
-      const kinds = retainedKinds(key);
-      throw new Error(
-        kinds
-          ? `Handler ${key} names ${kinds}; register each version under ${retainedVersions(key).some((operation) => operation.kind === "load") ? "mutations, queries or loads" : "mutations or queries"} by its kind`
-          : `Unknown handler ${key}: no retained mutation ${key}`,
-      );
-    }
-  const handlerTable = new Map<
-    string,
-    { handler: Handler<T>; slots: MutationSlot[] }
-  >();
-  for (const m of descriptor.mutations ?? [])
-    handlerTable.set(`${m.name}:${m.version}`, {
-      handler: registered.get(m.name)!.get(m.version)!,
-      slots: m.slots ?? [],
-    });
   // Registration follows each retained version's own kind: one name may
   // retain a Mutation version and a Query version, each in its own map.
   const actionHandlers = new Map<
@@ -1020,38 +805,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         );
       }
   }
-  // Every retained Load version registers under `loads`, like an operation
-  // under its kind's map.
-  const loadHandlers = new Map<string, LoadHandler<T>>();
-  const loadVersions = new Map<string, number[]>();
-  for (const load of loadDescriptors)
-    loadVersions.set(
-      load.name,
-      [...(loadVersions.get(load.name) ?? []), load.version].sort(
-        (a, b) => a - b,
-      ),
-    );
-  for (const [name, list] of loadVersions)
-    for (const [version, handler] of versioned<LoadHandler<T>>(
-      "load",
-      name,
-      lowerFirst(name),
-      list,
-      options.loads?.[lowerFirst(name)],
-    ))
-      loadHandlers.set(`${name}:${version}`, handler);
-  for (const key of Object.keys(options.loads ?? {}))
-    if (![...loadVersions.keys()].some((name) => lowerFirst(name) === key)) {
-      const kinds = retainedKinds(key);
-      throw new Error(
-        kinds
-          ? `loads.${key}: ${kinds} retains no load version; register it under ${groupsFor(key, "loads")}`
-          : `Unknown load ${key}: no retained load ${key}`,
-      );
-    }
-  const loadTable = new Map(
-    loadDescriptors.map((load) => [`${load.name}:${load.version}`, load]),
-  );
   const actionTable = new Map(
     (descriptor.schema?.actions ?? []).map((action) => [
       `${action.name}:${action.version}`,
@@ -1095,65 +848,35 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
         if (req.op === "savepoint") session.savepoint(req.ordinal);
         if (req.op === "rollback") session.rollback(req.ordinal);
         if (req.op === "release") session.release(req.ordinal);
-        if (req.op === "admitContext") {
+        if (req.op === "protocol05" && req.request.op === "admit") {
+          const context = req.request.context as { stream: string };
           result =
-            !!options.protocol4 &&
-            (await options.protocol4.authorizeStream(
-              req.owner,
-              req.context.binding.stream,
+            !!options.protocol5 &&
+            (await options.protocol5.authorizeStream(
+              String(req.request.owner),
+              context.stream,
+              tx,
             ));
-        } else if (req.op === "handleBootstrap") {
+        } else if (
+          req.op === "protocol05" &&
+          req.request.op === "handleBootstrap05"
+        ) {
           const effects = createLoadEffects();
           try {
             await options.bootstrap?.({
               ctx: {
                 tx,
-                userId: req.owner,
-                callId: req.callId,
-                ...scopedStreams(effects, req.context),
+                userId: req.request.owner,
+                callId: `bootstrap:${req.request.storeId}`,
+                stream: Object.assign(
+                  (names: string | readonly string[]) => effects.stream(names),
+                  effects.stream(req.request.stream),
+                ),
+                streams: (names: readonly string[]) => effects.stream(names),
               },
             });
             if (effects.failure()) throw effects.failure()!.error;
             result = { declarations: effects.tracking() };
-          } finally {
-            effects.close();
-          }
-        } else if (req.op === "handle") {
-          const entry = handlerTable.get(`${req.name}:${req.version}`);
-          if (!entry)
-            throw new Error(`Missing handler ${req.name} v${req.version}`);
-          const shape = (slot: MutationSlot, raw: any) => {
-            if (raw === null || raw === undefined) return null;
-            if (slot.operation === "create")
-              return { ...raw.identity, ...raw.data };
-            if (slot.operation === "update")
-              return { identity: raw.identity, patch: raw.patch };
-            return { identity: raw.identity };
-          };
-          const input: Record<string, unknown> = {};
-          for (const slot of entry.slots) {
-            const raw = req.arguments[slot.name] as any;
-            input[slot.name] =
-              slot.cardinality === "list"
-                ? (raw as any[]).map((item) => shape(slot, item))
-                : shape(slot, raw);
-          }
-          // The engine derives the records the operations target and adds
-          // them to the change set itself; `declarations` carries the
-          // handler's explicit tracking and invalidation.
-          const effects = createEffects();
-          try {
-            await entry.handler({
-              input,
-              tx,
-              userId: req.owner,
-              stream: effects.stream,
-              invalidate: effects.invalidate,
-            });
-            result = effects.settlement();
-          } catch (error) {
-            if (isRetryableTransactionError(error)) throw error;
-            result = refusal(error);
           } finally {
             effects.close();
           }
@@ -1242,112 +965,11 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             };
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
-            result = refusal(error);
+            const answer = refusal(error);
+            if ("error" in answer) throw error;
+            result = answer;
           } finally {
             effects?.close();
-          }
-        } else if (req.op === "handleLoad") {
-          const load = loadTable.get(`${req.name}:${req.version}`);
-          const handler = loadHandlers.get(`${req.name}:${req.version}`);
-          if (!load || !handler)
-            throw new Error(`Missing Load handler ${req.name} v${req.version}`);
-          const args = { ...req.arguments };
-          for (const input of load.inputs ?? [])
-            if (input.kind === "value")
-              args[input.name] = decodeActionValue(
-                input.list ? { kind: "list", element: input.type } : input.type,
-                args[input.name],
-              );
-          const label = `${req.name} v${req.version}`;
-          const invalid = (problem: string) => {
-            const error = new Error(
-              `invalid Load handler answer for ${label}: ${problem}`,
-            );
-            onError(error);
-            return callbackJson({ error: error.message });
-          };
-          // One fresh tracking-only collector per attempt: a retried transaction
-          // runs the handler again and never inherits these declarations.
-          // They close when the handler settles, before its answer is read,
-          // so neither an escaped handle nor a getter declares later.
-          const effects = createLoadEffects();
-          // The handler's answer is judged inside its error boundary, like
-          // the call itself: reading it can throw (a getter, a Proxy), and
-          // whatever it answered is this page's saved outcome, never a host
-          // fault. A continuation that is not portable JSON is refused
-          // before `callbackJson` could coerce it; any other unencodable
-          // answer is a failure. Only `data` and `next` are read from it:
-          // the page's tracking is its declarations, never a returned
-          // property, and are attached only when there are some.
-          try {
-            let page: unknown;
-            let thrown: { error: unknown } | undefined;
-            try {
-              page = await handler({
-                ctx: {
-                  tx,
-                  userId: req.owner,
-                  callId: req.callId,
-                  loadId: req.loadId,
-                  stream: effects.stream,
-                },
-                args,
-                continuation: req.continuation,
-              });
-            } catch (error) {
-              if (isRetryableTransactionError(error)) throw error;
-              thrown = { error };
-            } finally {
-              effects.close();
-            }
-            // A refused declaration fails the page even when the handler
-            // caught it, so no page enrolls part of what it declared: an
-            // enrollment past its bound first, then any other refusal, then
-            // what the handler itself threw.
-            const failure = effects.failure();
-            if (failure?.kind === "overflow") {
-              onError(failure.error);
-              return callbackJson({ rejection: "load.page_too_large" });
-            }
-            if (failure) {
-              onError(failure.error);
-              return callbackJson({
-                error:
-                  failure.error instanceof Error
-                    ? failure.error.message
-                    : String(failure.error),
-              });
-            }
-            if (thrown) return callbackJson(refusal(thrown.error));
-            if (
-              page === null ||
-              typeof page !== "object" ||
-              Array.isArray(page)
-            )
-              return invalid("expected {data, next}");
-            const { data, next } = page as { data: unknown; next: unknown };
-            const problem = continuationProblem(next);
-            if (problem !== undefined) {
-              onError(
-                new Error(`invalid Load continuation for ${label}: ${problem}`),
-              );
-              return callbackJson({ rejection: "load.invalid_continuation" });
-            }
-            const tracking = effects.tracking();
-            let answer: string;
-            try {
-              answer = callbackJson(
-                tracking.length ? { data, next, tracking } : { data, next },
-              );
-            } catch (error) {
-              return invalid(
-                error instanceof Error ? error.message : String(error),
-              );
-            }
-            return answer;
-          } catch (error) {
-            if (isRetryableTransactionError(error)) throw error;
-            return callbackJson(refusal(error));
           }
         } else if (req.op === "load") {
           // Dispatch is by model name and contract version; a version that
@@ -1369,19 +991,15 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
             tx,
             userId: req.owner,
           };
-          // A read refusal (`MutationRejected` or a translated error) is
-          // answered as data: the engine records it as the mutation's
-          // rejection in a push and as that record's `error` change in a
-          // pull. Any other thrown error is also answered as data - a
-          // failure - which becomes `loader.failed` for that one mutation or
-          // record.
+          // Explicit business refusal is data. Other thrown errors abort the
+          // acceptance/read transaction; the caller's retry loop keeps the
+          // original infrastructure error.
           let refused: { rejection: string } | { error: string } | undefined;
           let rows: unknown;
           try {
             const hook = options.loaderHooks?.[lowerFirst(req.model)];
             if (req.mode !== "canonical" && hook) {
-              if (options.protocol4)
-                await storage.call({ op: "publicationFence" });
+              await storage.call({ op: "publicationFence" });
               const effects = createEffects();
               try {
                 await hook.prepareForViewer({
@@ -1392,17 +1010,18 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
               } finally {
                 effects.close();
               }
-              if (options.protocol4)
-                await native.settleExternal(
-                  config,
-                  JSON.stringify(effects.settlement()),
-                  host(tx, session),
-                );
+              await native.settleExternal05!(
+                config,
+                JSON.stringify(effects.settlement()),
+                host(tx, session),
+              );
             }
             rows = req.mode === "prepare" ? [] : await loader(call);
           } catch (error) {
             if (isRetryableTransactionError(error)) throw error;
-            refused = refusal(error);
+            const answer = refusal(error);
+            if ("error" in answer) throw error;
+            refused = answer;
           }
           if (refused) return callbackJson(refused);
           // An answer JSON cannot carry faithfully is a failed read, never a
@@ -1430,27 +1049,12 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           // know: an operation added to the contract without an arm here is a
           // compile error, not a silent forward.
           switch (req.op) {
-            case "readCall":
-            case "createManifest":
-            case "readManifest":
-            case "captureTail":
-            case "savePublicationGroups":
-            case "readPublicationGroups":
-            case "readPositions":
+            case "protocol05":
             case "publicationFence":
-            case "claim":
-            case "saveReceipt":
-            case "claimCall":
-            case "saveCall":
             case "head":
-            case "scan":
             case "savepoint":
             case "rollback":
             case "release":
-            case "advanceStamp":
-            case "ensureStamp":
-            case "readStamps":
-            case "lockRecord":
             case "readTracking":
             case "guardRecords":
             case "lockStreams":
@@ -1464,8 +1068,17 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
           result = await storage.call(req);
           // Every position that survives its savepoint wakes the stream's
           // subscribers after commit; `rollback` restores the set it snapshot.
-          if (req.op === "applyStreamMembers")
-            for (const delta of req.deltas)
+          const publication =
+            req.op === "protocol05" && req.request.op === "applyStreamMembers"
+              ? req.request
+              : req.op === "applyStreamMembers"
+                ? req
+                : undefined;
+          if (publication)
+            for (const delta of publication.deltas as {
+              publish: boolean;
+              stream: string;
+            }[])
               if (delta.publish) session.touched.add(delta.stream);
         }
         return callbackJson(result);
@@ -1518,7 +1131,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
   };
   /**
    * Runs `body` with a Mutation's `stream` and `invalidate`, then settles what it
-   * declared in `tx`: one new stamp per invalidated record, delivered to its selected
+   * declared in `tx`: current state for each invalidated record, delivered to its selected
    * tracking streams, and each newly tracked pair delivered once. The handles close when the body settles, whether it
    * returns or throws.
    */
@@ -1527,10 +1140,9 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     session: Session,
     body: (call: External) => R | Promise<R>,
   ): Promise<R> => {
-    if (options.protocol4)
-      await session.track(() =>
-        options.database.persistence(tx).call({ op: "publicationFence" }),
-      );
+    await session.track(() =>
+      options.database.persistence(tx).call({ op: "publicationFence" }),
+    );
     const effects = createEffects();
     let result: R;
     try {
@@ -1545,7 +1157,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       effects.close();
     }
     await session.track(() =>
-      native.settleExternal(
+      native.settleExternal05!(
         config,
         JSON.stringify(effects.settlement()),
         host(tx, session),
@@ -1564,7 +1176,7 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     run((tx, session) => settle(tx, session, body));
   /**
    * Settles `body`'s declarations in `tx`, a transaction the application
-   * opened and still owns, before this call resolves: the stamps,
+   * opened and still owns, before this call resolves: the identities,
    * memberships and positions are written through `tx`, so they commit or
    * roll back with it, a savepoint included. Answers the wake: call it once
    * `tx` has committed, and never after a rollback; until then no live
@@ -1586,130 +1198,87 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
     typeof request === "string"
       ? request
       : new TextDecoder("utf-8", { fatal: true }).decode(request);
-  // Only retained protocol-3 carriers have per-record Loader diagnostics.
-  // Reporting after commit must never replace the saved response.
-  const diagnosticItems = (wire: string, field: string): unknown[] => {
-    try {
-      const envelope = JSON.parse(wire);
-      return Array.isArray(envelope?.[field]) ? envelope[field] : [];
-    } catch {
-      return [];
-    }
-  };
-  const reportDiagnostic = (error: Error): void => {
-    try {
-      onError(error);
-    } catch {
-      // The application observer cannot turn a committed answer into failure.
-    }
-  };
-  const reportInvalidPage = (page: string): string => {
-    for (const item of diagnosticItems(page, "changes")) {
-      const change = item as {
-        model?: string;
-        identity?: unknown;
-        error?: string;
-      } | null;
-      if (change?.error === "loader.invalid")
-        reportDiagnostic(
-          new Error(
-            `loader returned a row the served ${change.model} contract does not accept: ${JSON.stringify(change.identity)}`,
-          ),
-        );
-    }
-    return page;
-  };
-  const reportInvalidReceipt = (receipt: string): string => {
-    for (const item of diagnosticItems(receipt, "rejections")) {
-      const rejection = item as { ordinal?: number; code?: string } | null;
-      if (rejection?.code === "loader.invalid")
-        reportDiagnostic(
-          new Error(
-            `loader returned a row the declared contract does not accept while reading back mutation ${rejection.ordinal}`,
-          ),
-        );
-    }
-    return receipt;
-  };
-  /**
-   * One Load page in its own application transaction: the engine's page JSON
-   * once it committed, or what escaped the transaction boundary. The carrier
-   * only reports what it observed; the engine classifies it in
-   * `encodeLoadBatch` (a commit whose result is unknown, a pool or driver
-   * failure and a conflict are `retryable`, so the client resends the same
-   * call ID and the saved claim decides what committed; a deterministic
-   * engine defect is an unsaved `failed` item, so the job stops).
-   */
-  const loadItem = async (
-    owner: string,
-    item: string,
-  ): Promise<LoadItemAnswer> => {
-    try {
-      return {
-        page: await run((tx, session) =>
-          native.processLoad(config, owner, item, host(tx, session)),
-        ),
-      };
-    } catch (error) {
-      onError(error);
-      return {
-        fault:
-          error instanceof EngineError
-            ? { kind: "engine", code: error.code, message: error.message }
-            : isRetryableTransactionError(error)
-              ? { kind: "conflict" }
-              : { kind: "unavailable" },
-      };
-    }
-  };
-  /**
-   * One `POST /sync/loads` batch: validated whole by the engine, then each
-   * item in its own transaction, at most `LOAD_ITEM_TRANSACTIONS` at once.
-   * Transport grouping only: items share no transaction, and the engine
-   * writes the one bounded response after every item has committed or
-   * rolled back.
-   */
-  const loads = async (
-    owner: string,
-    request: Uint8Array | string,
+  // Expiry is a successful read outcome: commit staging cleanup, then surface
+  // the explicit error outside the transaction. Capacity/faults still roll back.
+  const deliveryRead = async (
+    operation: (tx: T, session: Session) => Promise<string>,
   ): Promise<string> => {
-    const items = native.validateLoadBatch(text(request));
-    const answers: LoadItemAnswer[] = new Array(items.length);
-    let next = 0;
-    const worker = async () => {
-      while (next < items.length) {
-        const index = next++;
-        answers[index] = await loadItem(owner, items[index]!);
+    const outcome = await run(async (tx, session) => {
+      try {
+        return { response: await operation(tx, session) };
+      } catch (error) {
+        if (error instanceof EngineError && error.code === "delivery.expired")
+          return { expired: error };
+        throw error;
       }
-    };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(LOAD_ITEM_TRANSACTIONS, items.length) },
-        worker,
-      ),
-    );
-    return native.encodeLoadBatch(items, answers);
+    });
+    if ("expired" in outcome) throw outcome.expired;
+    return outcome.response;
   };
   /** @internal Raw protocol seams used by the framework's own tests; not part of the supported surface. */
   const api = {
     materializationId,
-    push: (owner: string, request: Uint8Array | string) =>
-      run((tx, session) =>
-        native.processPush(config, owner, text(request), host(tx, session)),
-      ).then(reportInvalidReceipt),
+    push: async (owner: string, request: Uint8Array | string) => {
+      const wire = text(request);
+      {
+        if (
+          !native.validateMutationBatch ||
+          !native.processBatchMember ||
+          !native.encodeBatchAcknowledgement
+        )
+          throw new Error("protocol05 native Batch support unavailable");
+        const frozen = native.validateMutationBatch(config, wire);
+        const count = (JSON.parse(frozen).mutations as unknown[]).length;
+        const results: string[] = [];
+        for (let ordinal = 0; ordinal < count; ordinal++)
+          results.push(
+            await run((tx, session) =>
+              native.processBatchMember!(
+                config,
+                owner,
+                frozen,
+                ordinal,
+                host(tx, session),
+              ),
+            ),
+          );
+        return native.encodeBatchAcknowledgement(frozen, results);
+      }
+    },
     action: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
-        native.processAction(config, owner, text(request), host(tx, session)),
+        native.processRead05!(config, owner, text(request), host(tx, session)),
       ),
     fetch: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
-        native.processFetch(config, owner, text(request), host(tx, session)),
+        native.processRead05!(config, owner, text(request), host(tx, session)),
       ),
     pull: (owner: string, request: Uint8Array | string) =>
+      deliveryRead((tx, session) =>
+        native.processDelivery05!(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
+      ),
+    pull05Live: (owner: string, request: string) =>
+      deliveryRead((tx, session) =>
+        native.processLive05!(config, owner, request, host(tx, session)),
+      ),
+    handshake: (owner: string, request: Uint8Array | string) =>
       run((tx, session) =>
-        native.processPull(config, owner, text(request), host(tx, session)),
-      ).then(reportInvalidPage),
-    loads,
+        native.handshake05!(config, owner, text(request), host(tx, session)),
+      ),
+    materialize: (owner: string, request: Uint8Array | string) =>
+      deliveryRead((tx, session) =>
+        native.processMaterialization05!(
+          config,
+          owner,
+          text(request),
+          host(tx, session),
+        ),
+      ),
     negotiateLive: (
       owner: string,
       request: Uint8Array | string,
@@ -1717,27 +1286,6 @@ export function createBackend<T, External extends object = TransactionCall<T>>(
       run((tx, session) =>
         native.negotiateLive(config, owner, text(request), host(tx, session)),
       ).then(JSON.parse),
-    pullLive: (
-      owner: string,
-      cursors: Record<string, number>,
-      models: Record<string, number>,
-    ): Promise<{ page: string; cursors: Record<string, CursorRange> }> =>
-      run((tx, session) =>
-        native.pullLive(
-          config,
-          owner,
-          JSON.stringify(cursors),
-          JSON.stringify(models),
-          host(tx, session),
-        ),
-      ).then((result) => {
-        const parsed = JSON.parse(result) as {
-          page: string;
-          cursors: Record<string, CursorRange>;
-        };
-        reportInvalidPage(parsed.page);
-        return parsed;
-      }),
     liveEvent: (handle: number, event: LiveEvent): LiveAction[] =>
       JSON.parse(native.liveEvent(handle, JSON.stringify(event))),
     liveClose: (handle: number): void => native.liveClose(handle),
@@ -1863,10 +1411,11 @@ function checkedRefusal(answer: unknown): Refusal | null {
   return { status: status as number, body: text };
 }
 interface HttpBackend {
+  handshake?(owner: string, request: Uint8Array | string): Promise<string>;
+  materialize?(owner: string, request: Uint8Array | string): Promise<string>;
   push(owner: string, request: Uint8Array | string): Promise<string>;
   pull(owner: string, request: Uint8Array | string): Promise<string>;
   action(owner: string, request: Uint8Array | string): Promise<string>;
-  loads(owner: string, request: Uint8Array | string): Promise<string>;
   fetch(owner: string, request: Uint8Array | string): Promise<string>;
 }
 /** Authenticate a request, then ask the application's `admit` about it. */
@@ -1893,8 +1442,9 @@ function createHttpHandler(options: {
       path !== "/sync/mutations" &&
       path !== "/sync/pull" &&
       path !== "/sync/actions" &&
-      path !== "/sync/loads" &&
-      path !== "/sync/fetch"
+      path !== "/sync/fetch" &&
+      path !== "/sync/materialize" &&
+      path !== "/sync/handshake"
     ) {
       send(404, { code: "not_found" });
       return;
@@ -1945,15 +1495,17 @@ function createHttpHandler(options: {
         send(400, { code: "request.invalid" });
         return;
       }
-      const result = await (path === "/sync/mutations"
-        ? options.backend.push(owner, bytes)
-        : path === "/sync/actions"
-          ? options.backend.action(owner, bytes)
-          : path === "/sync/loads"
-            ? options.backend.loads(owner, bytes)
-            : path === "/sync/fetch"
-              ? options.backend.fetch(owner, bytes)
-              : options.backend.pull(owner, bytes));
+      const result = await (path === "/sync/handshake"
+        ? options.backend.handshake!(owner, bytes)
+        : path === "/sync/materialize"
+          ? options.backend.materialize!(owner, bytes)
+          : path === "/sync/mutations"
+            ? options.backend.push(owner, bytes)
+            : path === "/sync/actions"
+              ? options.backend.action(owner, bytes)
+              : path === "/sync/fetch"
+                ? options.backend.fetch(owner, bytes)
+                : options.backend.pull(owner, bytes));
       send(200, result);
     } catch (error) {
       const status =
@@ -1976,16 +1528,12 @@ function createHttpHandler(options: {
  * commit hub it asks the executor to use.
  */
 interface LiveBackend {
+  pull05Live?(owner: string, request: string): Promise<string>;
   pull?(owner: string, request: string): Promise<string>;
   negotiateLive(
     owner: string,
     request: Uint8Array | string,
   ): Promise<{ handle: number; actions: LiveAction[] }>;
-  pullLive(
-    owner: string,
-    cursors: Record<string, number>,
-    models: Record<string, number>,
-  ): Promise<{ page: string; cursors: Record<string, CursorRange> }>;
   liveEvent(handle: number, event: LiveEvent): LiveAction[];
   liveClose(handle: number): void;
   onCommitted(stream: string, wake: () => void): () => void;
@@ -2142,24 +1690,15 @@ async function serveLive(
         );
       } else if (action.type === "send") {
         if (open()) connection.send(action.frame);
-      } else if (action.type === "pullV04") {
-        if (!backend.pull) {
-          fail(new Error("v04 pull carrier unavailable"));
+      } else if (action.type === "pullV05") {
+        if (!backend.pull05Live) {
+          fail(new Error("v05 live carrier unavailable"));
           return;
         }
         trackPull(
           backend
-            .pull(owner, action.request)
+            .pull05Live(owner, action.request)
             .then((page) => dispatch({ type: "pulled", page }), fail),
-        );
-      } else {
-        trackPull(
-          backend
-            .pullLive(owner, action.cursors, action.models)
-            .then(
-              (progress) => dispatch({ type: "pulled", page: progress.page }),
-              fail,
-            ),
         );
       }
     }

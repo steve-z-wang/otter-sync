@@ -207,7 +207,9 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("retained schema: {e}"))?;
     axton_compiler::check_action_names(&config)?;
     let mut backend = config.clone();
-    backend["mutations"] = serde_json::json!(historical);
+    // Retained slot descriptors belong to immutable history/client policies.
+    // The server executes only named actions.
+    backend.as_object_mut().unwrap().remove("mutations");
     backend["models"] = config["backendModels"].clone();
     backend.as_object_mut().unwrap().remove("backendMutations");
     backend.as_object_mut().unwrap().remove("backendModels");

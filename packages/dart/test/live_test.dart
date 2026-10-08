@@ -1,4 +1,4 @@
-import 'protocol4_transport.dart';
+import 'protocol5_transport.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -6,24 +6,14 @@ import 'package:axton/axton.dart';
 import 'package:axton/src/live.dart' show ServerSession, SocketEvents;
 import 'package:test/test.dart';
 
-final subscribeFrame = jsonEncode({
-  'context': {
-    'binding': {'stream': 'scope'},
-  },
+final subscribe = {
+  'protocol': 5,
+  'storeId': 'store',
+  'stream': 'User:viewer',
   'cursor': 7,
-});
-
-/// The acknowledgement: every subscribed scope at `head`.
-String ack(Map sub, [int head = 0]) => jsonEncode({
-  'context': sub['context'],
-  'cursor': sub['cursor'],
-  'head': head,
-});
-Map<String, dynamic> range(int from, int to, [int? head]) => {
-  'from': from,
-  'to': to,
-  'head': head ?? to,
 };
+final subscribeFrame = jsonEncode(subscribe);
+
 SocketEvents events({
   Future<void> Function(String)? message,
   void Function(Object, StackTrace?)? closed,
@@ -63,11 +53,18 @@ void main() {
         final socket = await WebSocketTransformer.upgrade(request);
         socket.listen((message) {
           handshake.complete(jsonDecode(message as String) as Map);
-          socket.add(ack(jsonDecode(message) as Map));
           socket.add(
             jsonEncode({
-              'cursors': {'scope': range(7, 8)},
-              'changes': [],
+              ...emptyHandshake(jsonDecode(message) as Map),
+              'head': 7,
+            }),
+          );
+          socket.add(
+            jsonEncode({
+              'protocol': 5,
+              'storeId': 'store',
+              'stream': 'User:viewer',
+              'head': 8,
             }),
           );
         }, onDone: () => finished.complete());
@@ -92,19 +89,17 @@ void main() {
         ),
       );
       try {
-        expect(await handshake.future.timeout(const Duration(seconds: 2)), {
-          'context': {
-            'binding': {'stream': 'scope'},
-          },
-          'cursor': 7,
-        });
+        expect(
+          await handshake.future.timeout(const Duration(seconds: 2)),
+          subscribe,
+        );
         await second.future.timeout(const Duration(seconds: 2));
         expect(
-          frames[0]['cursor'],
+          frames[0]['head'],
           7,
           reason: 'the transport does not interpret frames',
         );
-        expect(frames[1]['cursors']['scope']['to'], 8);
+        expect(frames[1]['head'], 8);
         cancel.complete();
         await finished.future.timeout(const Duration(seconds: 2));
       } finally {
@@ -215,13 +210,7 @@ void main() {
           socket.listen((message) {
             final body = jsonDecode(message as String) as Map;
             frames.add(body);
-            socket.add(
-              jsonEncode({
-                'context': body['context'],
-                'cursor': body['cursor'],
-                'head': body['cursor'],
-              }),
-            );
+            socket.add(jsonEncode({...emptyHandshake(body)}));
             arrivals[frames.length - 1].complete();
           }, onError: (Object _) {});
         } else {
@@ -247,11 +236,6 @@ void main() {
         connection: StoreConnection(
           url: 'http://127.0.0.1:${server.port}',
           token: () => 'token',
-          identity: const StoreIdentity(
-            backend: 'live',
-            viewer: 'viewer',
-            contract: 'v04',
-          ),
           onError: (_) {},
         ),
         libraryPath: Platform.environment['AXTON_LIBRARY']!,
@@ -264,13 +248,10 @@ void main() {
         await client.close();
         client = await open();
         await arrivals[1].future.timeout(const Duration(seconds: 5));
-        expect(frames[0]['context'], frames[1]['context']);
-        expect((frames[0]['context'] as Map)['binding'], {
-          'backend': 'live',
-          'viewer': 'viewer',
-          'stream': 'User:viewer',
-          'contract': 'v04',
-        });
+        expect(frames[0], frames[1]);
+        expect(frames[0]['protocol'], 5);
+        expect(frames[0]['stream'], 'User:viewer');
+        expect(frames[0]['storeId'], matches(RegExp(r'^[0-9a-f-]{36}$')));
         expect(frames[0].containsKey('streams'), isFalse);
       } finally {
         await client?.close();

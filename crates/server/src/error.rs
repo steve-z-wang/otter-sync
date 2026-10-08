@@ -2,7 +2,7 @@
 //!
 //! `code` is the stable machine name a transport maps to a status; `message`
 //! is for people and may change; `details` carries the fields a code promises
-//! (only `mutation_version_unsupported` has any). Rewording a message must
+//! (when a code needs structured context). Rewording a message must
 //! never change how a caller classifies the error.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,16 +10,8 @@ use serde_json::Value;
 /// Codes the HTTP transport maps to a client-visible status. Every other code
 /// is a server-side failure the transport reports as `500 {code: "server"}`.
 pub mod code {
-    /// The request body could not be decoded, or names a cursor ahead of the scope head.
+    /// The request body could not be decoded, or names a cursor ahead of the Stream head.
     pub const REQUEST_INVALID: &str = "request.invalid";
-    /// The client identity belongs to another owner.
-    pub const OWNER_MISMATCH: &str = "client.owner_mismatch";
-    /// The batch sequence skips ahead of the last accepted one.
-    pub const GAP: &str = "gap";
-    /// The batch sequence is behind the last accepted one and is not a retry of it.
-    pub const OVERLAP: &str = "overlap";
-    /// A mutation names a version this backend does not serve; details carry `ordinal`, `name` and `version`.
-    pub const MUTATION_VERSION_UNSUPPORTED: &str = "mutation_version_unsupported";
     /// A model read contract this backend does not serve: the client declared
     /// a model or version that is not retained, or a page holds a model the
     /// client did not declare. In a push this rejects only the mutation that
@@ -39,14 +31,10 @@ pub mod code {
     /// A handler settled a mutation with an invalid rejection code or checkpoint.
     pub const HANDLER_INVALID: &str = "handler.invalid";
     /// The handler threw an error that is not a business rejection; the error
-    /// reached `onError`. Rejects only that mutation.
+    /// reached `onError`. Aborts the acceptance transaction.
     pub const HANDLER_FAILED: &str = "handler.failed";
-    /// A Query handler settled with business changes or memberships, which
-    /// its contract forbids. Rejects only that call; its savepoint rolls back
-    /// before any stamp, readback or publication.
-    pub const QUERY_EFFECTS_FORBIDDEN: &str = "query.effects_forbidden";
     /// A loader threw an error that is not a business rejection; the error
-    /// reached `onError`. Rejects only the mutation it was reading back for.
+    /// reached `onError`. Aborts the acceptance transaction.
     pub const LOADER_FAILED: &str = "loader.failed";
     /// A loader is not registered for the model.
     pub const LOADER_UNREGISTERED: &str = "loader.unregistered";
@@ -57,35 +45,10 @@ pub mod code {
     /// A live page does not continue the subscription it was produced for.
     pub const LIVE_INVALID_PAGE: &str = "live.invalid_page";
     /// The host drove a live session with an event it cannot accept: an unknown
-    /// scope, a pull it was not asked for, or a session handle that is not open.
+    /// Stream, a pull it was not asked for, or a session handle that is not open.
     pub const LIVE_INVALID_EVENT: &str = "live.invalid_event";
-    /// A Load page names an operation or version this backend does not retain.
-    /// Saved as that page's terminal outcome.
-    pub const LOAD_VERSION_UNSUPPORTED: &str = "load_version_unsupported";
-    /// A Load page's business arguments do not match the retained Load inputs.
-    pub const LOAD_INVALID: &str = "load.invalid";
-    /// A Load page's incoming or returned continuation is not bounded
-    /// portable JSON in the `{state}` wrapper.
-    pub const LOAD_INVALID_CONTINUATION: &str = "load.invalid_continuation";
-    /// A Load handler enumerated an identity its Loader answered as absent.
-    /// Never read as a deletion: the whole page fails.
-    pub const LOAD_RECORD_UNAVAILABLE: &str = "load.record_unavailable";
-    /// A Load page exceeds its identity or encoded byte bound. Retrying the
-    /// same continuation reproduces it; the backend must page smaller.
-    pub const LOAD_PAGE_TOO_LARGE: &str = "load.page_too_large";
-    /// A call ID already names a different saved request, of this or another
-    /// operation kind. Answered without saving anything.
-    pub const CALL_IDENTITY_CONFLICT: &str = "call.identity_conflict";
-    /// A Load item's transaction did not complete, or its commit result is
-    /// unknown. Answered as that item's unsaved `retryable` outcome: the
-    /// client resends the same call ID.
-    pub const SERVER_UNAVAILABLE: &str = "server.unavailable";
-    /// A serialization conflict, deadlock or outdated Scope lock set: the
-    /// whole application transaction must run again. Settlement raises it
-    /// when a competing membership write moved a changed record into a
-    /// Scope it had not locked; it is never a call's saved outcome. A Load
-    /// item whose transaction kept failing this way answers it as its unsaved
-    /// `retryable` outcome.
+    /// A serialization conflict, deadlock or changed holder set: the whole
+    /// application transaction must retry with a fresh snapshot.
     pub const TRANSACTION_CONFLICT: &str = "transaction.conflict";
     /// Encoding a response failed.
     pub const INTERNAL: &str = "internal";

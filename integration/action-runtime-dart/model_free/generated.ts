@@ -3,9 +3,9 @@ import type { Call, QueryOptions } from './client.ts';
 export interface ReadPort { read(model:string,identity:object):Promise<Record<string,unknown>|null>; querySpec(model:string,query:object):Promise<Record<string,unknown>[]>; related(model:string,identity:object,relation:string):Promise<Record<string,unknown>|null>; referencing(model:string,identity:object,source:string,relation:string):Promise<Record<string,unknown>[]>; }
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
-export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
+export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; }
 export const schema = {"actions":[{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"name":"Clock","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":1},{"input":{"enums":[],"models":[]},"inputs":[{"cardinality":"single","kind":"value","list":false,"name":"at","nullable":false,"required":true,"type":{"kind":"scalar","name":"dateTime"}}],"kind":"query","name":"Clock","outputEnums":[],"outputs":[{"cardinality":"single","kind":"value","name":"at","source":"handlerValue","type":{"kind":"scalar","name":"dateTime"}}],"prerequisites":[],"requirements":[],"sequence":null,"version":2},{"input":{"enums":[],"models":[]},"inputs":[],"kind":"mutation","name":"Ping","outputEnums":[],"outputs":[],"prerequisites":[],"requirements":[],"sequence":null,"version":1}],"clientPolicies":[],"enums":[],"models":[],"prerequisites":[],"requirements":[],"resultModels":[]} as const;
-export type MutationName = string;
+export type MutationName = 'Ping';
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
 export interface Rejection { ordinal:number; code:string; [key:string]:unknown; }
 export interface SyncState { pending:PendingMutation[]; rejections:Rejection[]; }
@@ -33,9 +33,6 @@ export type ClockOptions = QueryOptions;
 /** Queries return invocation snapshots after permitted cache writes commit. */
 export function makeQueries(port:CallPort) { return {
  clock: (args:ClockInput, options?:ClockOptions):Promise<ClockOutput> => port.invokeQuery('Clock',2,encodeClockInput(args),decodeClockOutput,options),
- invalidate: {
-  clock: (args:ClockInput):Promise<void> => port.invalidateQuery('Clock',2,encodeClockInput(args)),
- }
 }; }
 export interface LiveModels {  }
 export function liveModels(port:LivePort):LiveModels { return {  }; }

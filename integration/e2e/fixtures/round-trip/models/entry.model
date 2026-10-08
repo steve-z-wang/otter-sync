@@ -5,6 +5,7 @@ model Entry {
  @@id(id)
  @@bootstrap
 }
+// Retained generic descriptor only; current execution is named EditEntry.
 mutation Edit { entry Entry.update<text,note> }
 mutation EditEntry(entry Entry.update<text,note>) { entry Entry }
 query FindEntry(id String) { entry Entry? }

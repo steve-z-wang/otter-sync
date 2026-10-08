@@ -78,8 +78,10 @@ test(
       await f.reopen();
       await held.arrived;
       const first = f.proxy
-        .requests("/sync/actions")
-        .find((x) => x.request.name === "EditEntry").request;
+        .requests("/sync/mutations")
+        .find((x) =>
+          x.request.mutations.some((mutation) => mutation.name === "EditEntry"),
+        ).request;
       const calls = f.app.handlerCalls;
       f.proxy.down();
       held.release();
@@ -91,8 +93,10 @@ test(
         "accepted retry",
       );
       const requests = f.proxy
-        .requests("/sync/actions")
-        .filter((x) => x.request.name === "EditEntry");
+        .requests("/sync/mutations")
+        .filter((x) =>
+          x.request.mutations.some((mutation) => mutation.name === "EditEntry"),
+        );
       assert.deepEqual(requests.at(-1).request, first);
       assert.equal(f.app.handlerCalls, calls);
       assert.equal(

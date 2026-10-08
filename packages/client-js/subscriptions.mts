@@ -64,9 +64,8 @@ export interface Subscription {
    * retries the saved run.
    */
   bootstrap(): Promise<void>;
-  unsubscribe(): Promise<void>;
 }
-/** Work attempted through a handle that is closed: unsubscribed, or stopped with its client. */
+/** Work attempted through a handle that is closed after a Store reset or client shutdown. */
 export const subscriptionClosed = () =>
   Object.assign(Error("subscription.closed"), {
     code: "subscription.closed" as const,
@@ -145,13 +144,10 @@ class Handle implements Subscription {
   #report: (error: unknown) => void;
   #snapshot: SubscriptionStatus;
   /**
-   * Why the handle is closed: `removed` through a removal or rebuild, whose
-   * later `unsubscribe()` is a harmless no-op, or `stopped` with its client,
-   * through which no work can be committed.
+   * Why the bound handle ended: its Store incarnation ended (`removed`),
+   * or its client stopped (`stopped`).
    */
   #closed: "removed" | "stopped" | undefined;
-  /** This handle submitted its own removal: the terminal snapshot is that. */
-  #removing = false;
   #listeners = new Set<(status: SubscriptionStatus) => void>();
   constructor(
     state: SubscriptionState,
@@ -191,7 +187,7 @@ class Handle implements Subscription {
     this.#publish(
       frozen(snapshot.status),
       snapshot.closed === true
-        ? this.#removing || !this.#registry.closing
+        ? !this.#registry.closing
           ? "removed"
           : "stopped"
         : undefined,
@@ -254,23 +250,11 @@ class Handle implements Subscription {
         },
       );
   }
-  /** Resolves once the runtime's terminal snapshot closed this handle. */
-  async unsubscribe(): Promise<void> {
-    if (this.#closed === "removed") return;
-    if (this.#closed === "stopped") throw subscriptionClosed();
-    this.#removing = true;
-    await this.#bridge.task({
-      kind: "streamUnsubscribe",
-      stream: this.stream,
-      subscriptionId: this.subscriptionId,
-    });
-  }
 }
 
 /**
- * The registry: one handle per persistent subscription identity, held until
- * the runtime's terminal snapshot for it - after a removal, a rebuild or the
- * client's close - releases it.
+ * The bound Stream handle cache. Reset and close release handles only after
+ * the runtime publishes their terminal snapshot.
  */
 export class Subscriptions {
   #bridge: SubscriptionBridge;
@@ -313,18 +297,6 @@ export class Subscriptions {
       },
     );
     return handle;
-  }
-  /**
-   * Remove whatever registration a Stream name has. One command, so a removal and a
-   * registration of the same Stream commit in the order they were called in;
-   * the runtime closes the handle it had before the command completes.
-   */
-  async unsubscribeStream(stream: string): Promise<void> {
-    await this.#bridge.task({
-      kind: "stream",
-      stream: stream,
-      subscribed: false,
-    });
   }
   /** A handle the runtime closed is no longer the identity's handle. */
   forget(handle: Handle): void {

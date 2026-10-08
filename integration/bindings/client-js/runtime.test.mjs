@@ -162,7 +162,7 @@ async function scriptedWatchClient() {
  const carrier = {
   runtimeOpen(request, wakeRuntime) {
    wake = wakeRuntime;
-   outbox.push({ type: 'taskCompleted', requestId: JSON.parse(request).requestId, ok: true, value: { clientId: 'c', schema: { rebuilt: false, pending: null, lastRebuild: null } } });
+   outbox.push({ type: 'taskCompleted', requestId: JSON.parse(request).requestId, ok: true, value: { clientId: 'c' } });
    later();
    return '1';
   },

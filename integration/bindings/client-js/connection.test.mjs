@@ -320,8 +320,8 @@ test("reports reach onError: records as AxtonReports, errors with the runtime's 
     diagnostic: {
       kind: "records",
       reports: [
-        { kind: "readFailed", model: "Entry", identity: { id: "a" }, stamp: 9, code: "loader.failed" },
-        { kind: "skipped", model: "Entry", identity: { id: "b" }, stamp: 3 },
+        { kind: "diverged", model: "Entry", identity: { id: "a" }, code: "local.diverged" },
+        { kind: "diverged", model: "Entry", identity: { id: "b" } },
       ],
     },
   });
@@ -342,11 +342,11 @@ test("reports reach onError: records as AxtonReports, errors with the runtime's 
   });
   assert.equal(errors.length, 5);
   assert.ok(errors[0] instanceof AxtonReport);
-  assert.equal(errors[0].kind, "readFailed");
-  assert.equal(errors[0].code, "loader.failed");
-  assert.match(errors[0].message, /readFailed: Entry .* stamp 9 \(loader.failed\)/);
+  assert.equal(errors[0].kind, "diverged");
+  assert.equal(errors[0].code, "local.diverged");
+  assert.match(errors[0].message, /diverged: Entry .* \(local.diverged\)/);
   assert.ok(errors[1] instanceof AxtonReport);
-  assert.equal(errors[1].kind, "skipped");
+  assert.equal(errors[1].kind, "diverged");
   assert.ok(errors[2] instanceof Error && !(errors[2] instanceof AxtonReport));
   assert.equal(errors[2].message, "pull failed: 503 unavailable");
   assert.equal(errors[2].status, 503);
@@ -376,8 +376,8 @@ test("a throwing onError is reported and the rest of the reports still arrive", 
       diagnostic: {
         kind: "records",
         reports: [
-          { kind: "conflict", model: "Entry", identity: { id: "a" }, stamp: 1 },
-          { kind: "conflict", model: "Entry", identity: { id: "b" }, stamp: 1 },
+          { kind: "diverged", model: "Entry", identity: { id: "a" } },
+          { kind: "diverged", model: "Entry", identity: { id: "b" } },
         ],
       },
     });
@@ -445,7 +445,7 @@ const answer=emptyRead;
 async function scripted(network, body, { schema = pingSchema, carrier = native } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "axton-effects-"));
   const Client = createClient(carrier, Transaction, () => ({
-    push: (kind, text, signal) => kind === "pull" ? Promise.resolve(emptyPull(text)) : network(kind, text, signal),
+    push: (kind, text, signal) => (kind === "pull" || kind === "handshake") ? Promise.resolve(emptyPull(text)) : network(kind, text, signal),
     open() {},
   }));
   const client = await openStore(Client,{ path: join(directory, "db"), schema });
@@ -553,7 +553,7 @@ test("direct request completes while durable delivery is blocked", async () => {
   const pushed = deferred();
   await scripted(
     async (kind, body) => {
-      if (JSON.parse(body).models) {
+      if (kind === "push") {
         pushed.resolve();
         return new Promise(() => {});
       }
@@ -648,7 +648,7 @@ test('reset rejects pending work unless discarded and settles exact Call identit
   const call=await client.submitMutation('PingMutation',1,{},value=>value);
   await assert.rejects(client.resetStore());await client.resetStore({discardPending:true});
   assert.equal((await call.wait()).error.code,'abandoned');
-  assert.equal(completions.length,1);assert.match(completions[0].callId,/^[0-9a-f-]{36}$/);assert.equal((await client.syncState()).pending,0);
+  assert.equal(completions.length,1);assert.match(completions[0].callId,/^[0-9a-f-]{36}:[1-9][0-9]*$/);assert.equal((await client.syncState()).pending,0);
  });
 });
 
@@ -698,7 +698,7 @@ test("close aborts an uncooperative push and its late receipt never applies", as
     runtimeDrain(runtimeId) {
       const text = native.runtimeDrain(runtimeId);
       for (const event of JSON.parse(text))
-        if (event.type === "effect" && event.operation.route === "action")
+        if (event.type === "effect" && event.operation.route === "push")
           pushes.push(event.effectId);
       return text;
     },
@@ -706,7 +706,7 @@ test("close aborts an uncooperative push and its late receipt never applies", as
   };
   await scripted(
     (kind, body, abort) => {
-      assert.equal(kind, "action");
+      assert.equal(kind, "push");
       signal = abort;
       const batch = JSON.parse(body);
       pushed.resolve();
@@ -751,7 +751,7 @@ test("client close is priority control while a callback holds the transaction", 
   const sockets = [];
   const directory = await mkdtemp(join(tmpdir(), "axton-close-callback-"));
   const Client = createClient(native, Transaction, () => ({
-    push:(kind,text)=>kind==='pull'?Promise.resolve(emptyPull(text)):new Promise(()=>{}),
+    push:(kind,text)=>(kind==='pull'||kind==='handshake')?Promise.resolve(emptyPull(text)):new Promise(()=>{}),
     open: (subscribe, signal) => sockets.push(signal),
   }));
   const client = await openStore(Client,{
@@ -901,12 +901,13 @@ test("reset wakes the existing connection under a new Store incarnation", async 
     await client.connect({url:"http://unused",token:"token"},{onError:error=>errors.push(error)});
     await client.bootstrap();
     await eventually(()=>sockets.length===1,"initial single Stream handshake");
-    const before=sockets[0].subscribe.context;
+    const before=sockets[0].subscribe;
     await client.resetStore();
     await client.bootstrap();
     await eventually(()=>sockets.length===2,"reset Stream handshake");
-    assert.deepEqual(sockets[1].subscribe.context.binding,before.binding);
-    assert.notEqual(sockets[1].subscribe.context.incarnation,before.incarnation);
+    assert.equal(sockets[1].subscribe.stream,before.stream);
+    assert.equal(sockets[1].subscribe.protocol,before.protocol);
+    assert.notEqual(sockets[1].subscribe.storeId,before.storeId);
     assert.equal(sockets[0].signal.aborted,true);
     assert.equal(sockets[1].signal.aborted,false);
     assert.equal(connects,1,"reset retains the chosen connection");

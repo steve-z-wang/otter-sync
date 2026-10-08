@@ -3,7 +3,7 @@ import type { Call, QueryOptions } from './client.ts';
 export interface ReadPort { read(model:string,identity:object):Promise<Record<string,unknown>|null>; querySpec(model:string,query:object):Promise<Record<string,unknown>[]>; related(model:string,identity:object,relation:string):Promise<Record<string,unknown>|null>; referencing(model:string,identity:object,source:string,relation:string):Promise<Record<string,unknown>[]>; }
 export interface WritePort extends ReadPort { direct(operation:object):Promise<void>; }
 export interface LivePort extends WritePort { watch(model:string,where:Record<string,unknown>,listener:(rows:Record<string,unknown>[])=>void,onError?:(error:unknown)=>void):()=>void; syncState(model:string,identity:object):Promise<unknown>; }
-export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; invalidateQuery(name:string,version:number,args:object):Promise<void>; }
+export interface CallPort { invokeQuery<T>(name:string,version:number,args:object,decode:(value:unknown)=>T,options?:QueryOptions):Promise<T>; }
 export const schema = {"actions":[],"clientPolicies":[],"enums":[],"models":[{"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","relations":[],"unique":[],"version":1}],"prerequisites":[],"requirements":[],"resultModels":[{"enums":[],"fields":[{"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},{"name":"label","nullable":false,"type":{"kind":"scalar","name":"string"}}],"identity":["id"],"name":"Item","version":1}]} as const;
 export type MutationName = string;
 export interface PendingMutation { ordinal:number; name:MutationName; phase:'queued'|'frozen'; prerequisites:{key:string;state:'ready'|'pending'|'failed'}[]; diverged?:boolean; }
@@ -66,7 +66,7 @@ export class ItemLiveModel extends ItemTxModel<LivePort> {
  async syncState(identity:ItemIdentity):Promise<SyncState> { return (await this.port.syncState('Item',encodeItemIdentity(identity))) as SyncState; }
 }
 export function makeMutations(_port:CallPort) { return {}; }
-export function makeQueries(_port:CallPort) { return { invalidate: {} }; }
+export function makeQueries(_port:CallPort) { return {}; }
 export interface LiveModels { item:ItemLiveModel; }
 export function liveModels(port:LivePort):LiveModels { return { item:new ItemLiveModel(port) }; }
 export interface TxModels { item:ItemTxModel; }

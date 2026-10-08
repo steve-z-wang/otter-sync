@@ -33,11 +33,6 @@ Future<void> main() async {
   final connection = StoreConnection(
     url: 'http://127.0.0.1:1',
     token: () => 'offline',
-    identity: const StoreIdentity(
-      backend: 'installed',
-      viewer: 'viewer',
-      contract: 'installed-v04',
-    ),
   );
   Client.configureApplicationData(directory.path);
   try {

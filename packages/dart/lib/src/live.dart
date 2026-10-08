@@ -48,24 +48,7 @@ class SyncServer {
   });
 }
 
-/// Stable identity available offline; credentials never select a Store.
-class StoreIdentity {
-  final String backend, viewer, contract;
-  const StoreIdentity({
-    required this.backend,
-    required this.viewer,
-    required this.contract,
-  });
-  Map<String, dynamic> binding(String stream) => {
-    'backend': backend,
-    'viewer': viewer,
-    'contract': contract,
-    'stream': stream,
-  };
-}
-
 class StoreConnection extends SyncServer {
-  final StoreIdentity identity;
   final String projectionGeneration;
   final void Function(Object)? onError;
   final Future<void> Function()? refreshAuth;
@@ -74,7 +57,6 @@ class StoreConnection extends SyncServer {
     required super.url,
     required super.token,
     super.headers,
-    required this.identity,
     this.projectionGeneration = '1',
     this.onError,
     this.refreshAuth,
@@ -112,6 +94,14 @@ class ServerSession {
     }
   }
 
+  /// `POST /sync/handshake`: the Store's current Stream head.
+  Future<String> handshake(String body, Future<void> cancellation) =>
+      _post('handshake', 'handshake', body, cancellation);
+
+  /// `POST /sync/materialize`: an owned settlement or schema plan.
+  Future<String> materialize(String body, Future<void> cancellation) =>
+      _post('materialize', 'materialize', body, cancellation);
+
   /// `POST /sync/mutations`: one frozen push batch.
   Future<String> push(String body, Future<void> cancellation) =>
       _post('mutations', 'push', body, cancellation);
@@ -125,10 +115,6 @@ class ServerSession {
   /// even while the response is stalled.
   Future<String> fetch(String body, Future<void> cancellation) =>
       _post('fetch', 'fetch', body, cancellation);
-
-  /// `POST /sync/loads`: one batch of native Load pages.
-  Future<String> load(String body, Future<void> cancellation) =>
-      _post('loads', 'load', body, cancellation);
 
   /// `POST /sync/pull`: an ordinary catch-up or a Bootstrap page.
   Future<String> pull(String body, Future<void> cancellation) =>

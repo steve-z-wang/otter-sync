@@ -1,11 +1,12 @@
 import type { Transport } from "./connection.mts";
 /** The backend path of every runtime HTTP route. A route not listed here is refused, never posted to another path. */
 const ROUTES: Readonly<Record<string, string>> = {
+  handshake: "handshake",
+  materialize: "materialize",
   push: "mutations",
   pull: "pull",
   action: "actions",
   fetch: "fetch",
-  load: "loads",
 };
 /** The response header that marks an admission refusal (`refused`). */
 export const ADMISSION_HEADER = "axton-admission";

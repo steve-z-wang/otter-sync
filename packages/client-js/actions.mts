@@ -22,64 +22,28 @@ export type CallOutcome<T> =
 /**
  * Invocation options, kept apart from business args. `store` selects which
  * explicit Model outputs also update local Models: omitted or `true` stores
- * all, `false` none, and a map overrides named outputs (unnamed ones stay
- * true). Results are the same either way.
+ * all and `false` none. Results are the same either way.
  */
 export type CallOptions<K extends string = string> = {
   store?: boolean;
 };
-/**
- * Direct Query controls, kept apart from business args and never sent to the
- * backend. `once` reuses the complete result saved by an earlier successful
- * `once` call with equal arguments and store policy, or saves this one; the
- * snapshot is persisted even with `store: false`. `refresh` (only with
- * `once`) always requests and replaces the snapshot on success.
- */
-export type OnceOptions =
-  { once?: false; refresh?: false } | { once: true; refresh?: boolean };
-/** Invocation options of a direct Query: store policy plus once controls. */
-export type QueryOptions<K extends string = string> = CallOptions<K> &
-  OnceOptions;
+/** Invocation options of a direct Query. */
+export type QueryOptions<K extends string = string> = CallOptions<K>;
 const invalidOptions = (message: string) =>
   new CallError("action.invalid_options", "rejected", Error(message));
-/** Mutations and `enqueue` accept no once controls, even from dynamic callers. */
-export function assertNoOnce(options: unknown): void {
-  const value = options as { once?: unknown; refresh?: unknown } | undefined;
-  if (value?.once !== undefined || value?.refresh !== undefined)
-    throw invalidOptions("once and refresh apply only to direct Queries");
-}
-/**
- * Only a Mutation submitted in a transaction (`tx.mutations`) runs a `local`
- * callback; every other route refuses one, even from dynamic callers, rather
- * than queue the call without it.
- */
-function assertNoLocal(options: unknown): void {
-  if ((options as { local?: unknown } | undefined)?.local !== undefined)
-    throw invalidOptions(
-      "local applies only to a Mutation submitted in a transaction",
-    );
-}
-/** A standalone Mutation or direct call: no once controls, no `local`. */
-export function assertCallOptions(options: unknown): void {
-  assertNoOnce(options);
-  assertNoLocal(options);
-}
-/** Validate a direct Query's once controls before any I/O. */
-export function onceControls(options: unknown): {
-  once: boolean;
-  refresh: boolean;
-} {
-  assertNoLocal(options);
-  const store = (options as { store?: unknown } | undefined)?.store;
+/** Validate the current boolean storage option before I/O. */
+export function assertQueryOptions(options: unknown): void {
+  if (options === undefined) return;
+  if (
+    options === null ||
+    typeof options !== "object" ||
+    Array.isArray(options) ||
+    Object.keys(options).some((key) => key !== "store")
+  )
+    throw invalidOptions("Query accepts only a boolean store option");
+  const store = (options as { store?: unknown }).store;
   if (store !== undefined && typeof store !== "boolean")
     throw invalidOptions("store must be a boolean");
-  const value = options as { once?: unknown; refresh?: unknown } | undefined;
-  const once = value?.once ?? false;
-  const refresh = value?.refresh ?? false;
-  if (typeof once !== "boolean" || typeof refresh !== "boolean")
-    throw invalidOptions("once and refresh must be booleans");
-  if (refresh && !once) throw invalidOptions("refresh requires once: true");
-  return { once, refresh };
 }
 export interface Call<T> {
   readonly status: CallStatus;
@@ -353,18 +317,12 @@ export function actionError(error: unknown): CallError {
   const code =
     typeof value?.code === "string"
       ? value.code
-      : value?.details?.code === "store_hook_failed"
-        ? "store_hook_failed"
-        : error instanceof Error && error.message === "transaction_active"
-          ? "transaction_active"
-          : "action.transport_failed";
+      : error instanceof Error && error.message === "transaction_active"
+        ? "transaction_active"
+        : "action.transport_failed";
   const execution =
     value?.execution === "rejected" || code === "transaction_active"
       ? "rejected"
       : "unknown";
-  return new CallError(
-    code,
-    execution,
-    code === "store_hook_failed" ? (value?.cause ?? error) : error,
-  );
+  return new CallError(code, execution, error);
 }

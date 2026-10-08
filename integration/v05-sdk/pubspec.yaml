@@ -1,0 +1,7 @@
+name: axton_v05_sdk_fixture
+publish_to: none
+environment:
+  sdk: '>=3.8.0 <4.0.0'
+dependencies:
+  axton:
+    path: ../../packages/dart

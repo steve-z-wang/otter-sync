@@ -730,7 +730,7 @@ fn validate_load(
     operation_names: &mut OperationNames,
 ) -> Result<Load, String> {
     let name = &decl.name;
-    // `client.loads.get`, `.list` and `.invalidate` manage jobs and once reuse.
+    // Historical Load descriptors retain their published name validation.
     if axton_core::RESERVED_LOAD_NAMES
         .iter()
         .any(|r| name.eq_ignore_ascii_case(r))
@@ -847,7 +847,6 @@ const GENERATED_NAMES: &[&str] = &[
     "ClientSyncState",
     "Connection",
     "StoreConnection",
-    "StoreIdentity",
     "QueryOptions",
     "FailedAct",
     "FailedTask",
@@ -857,7 +856,6 @@ const GENERATED_NAMES: &[&str] = &[
     "LiveModels",
     "LivePort",
     "MutationHandlerCall",
-    "MutationHandlers",
     "MutationName",
     "Mutations",
     "PendingMutation",
@@ -866,9 +864,7 @@ const GENERATED_NAMES: &[&str] = &[
     "Present",
     "Queries",
     "QueryHandlerCall",
-    "QueryHandlers",
     "ReadPort",
-    "RebuildReport",
     "RefusedAct",
     "Rejection",
     "RuntimeConnection",
@@ -887,7 +883,6 @@ const GENERATED_BACKEND_NAMES: &[&str] = &[
     "Stream",
     "LoadStream",
     "RecordDeclaration",
-    "HandlerCall",
     "MutationContext",
     "QueryContext",
     "RecordRef",
@@ -1534,19 +1529,6 @@ pub fn validate(d: &Declarations) -> Result<Validated, String> {
     let mut operation_names = OperationNames::default();
     for decl in &d.actions {
         let label = kind_label(decl.kind);
-        // `mutations.call` and `queries.enqueue` select the other delivery
-        // route and `queries.invalidate` discards saved once results, so an
-        // operation of that kind cannot take the member name.
-        let reserved: &[&str] = match decl.kind {
-            axton_core::CallKind::Mutation => &["call"],
-            axton_core::CallKind::Query => &["enqueue", "invalidate"],
-        };
-        if reserved.iter().any(|r| decl.name.eq_ignore_ascii_case(r)) {
-            return Err(at(
-                decl.pos,
-                format!("{label} name {} is reserved", decl.name),
-            ));
-        }
         // Generated Dart route classes hold `client` and inherit `Object`
         // members; an operation method cannot reuse those names.
         let method = method_name(&decl.name);

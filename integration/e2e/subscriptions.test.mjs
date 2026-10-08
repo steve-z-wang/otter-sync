@@ -46,7 +46,7 @@ test(
           stream: "User:other",
           connection: connection(server.url, "other"),
         }),
-        /binding|mismatch/,
+        /binding|mismatch|Stream|stream/,
       );
       client = await open();
       assert.equal(

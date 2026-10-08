@@ -142,6 +142,56 @@
             "kind": "scalar",
             "name": "uuid"
           }
+        }
+      ],
+      "kind": "query",
+      "name": "ReadEntry",
+      "outputEnums": [],
+      "outputs": [
+        {
+          "cardinality": "optional",
+          "handlerType": {
+            "fields": [
+              {
+                "name": "id",
+                "type": {
+                  "kind": "scalar",
+                  "name": "uuid"
+                }
+              }
+            ],
+            "kind": "identity",
+            "model": "Entry"
+          },
+          "kind": "model",
+          "model": "Entry",
+          "modelReadVersion": 2,
+          "name": "entry",
+          "source": "handlerIdentity"
+        }
+      ],
+      "prerequisites": [],
+      "requirements": [],
+      "sequence": null,
+      "version": 1
+    },
+    {
+      "input": {
+        "enums": [],
+        "models": []
+      },
+      "inputs": [
+        {
+          "cardinality": "single",
+          "kind": "value",
+          "list": false,
+          "name": "id",
+          "nullable": false,
+          "required": true,
+          "type": {
+            "kind": "scalar",
+            "name": "uuid"
+          }
         },
         {
           "cardinality": "single",

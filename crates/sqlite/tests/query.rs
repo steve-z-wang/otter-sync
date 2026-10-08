@@ -1,16 +1,16 @@
-mod common;
+pub mod common05;
 use axton_client::*;
 use axton_sqlite::SqliteStore;
-use common::*;
+use common05::*;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 
 #[test]
 fn query_normalizes_filters_orders_nulls_and_resolves_relationships() {
     let dir = tempfile::tempdir().unwrap();
-    let mut c = Client::open(
+    let mut c = Client::open05(
         SqliteStore::open(dir.path().join("db")).unwrap(),
         family_schema(),
+        "User:u",
     )
     .unwrap();
     c.transaction(|tx| {
@@ -63,10 +63,9 @@ fn query_normalizes_filters_orders_nulls_and_resolves_relationships() {
 fn readonly_sql_sees_optimistic_rows_and_refuses_write_statements() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = open(&dir.path().join("db"));
-    subscribe(&mut c, "book");
-    c.apply_page(page("book", 0, 1, Some("A"))).unwrap();
+    seed(&mut c, "A");
     c.transaction(|tx| {
-        tx.enqueue(mutation("B"))?;
+        tx.submit_mutation05("Edit", 1, json!({"entry":{"id":"e","text":"B"}}), vec![])?;
         Ok(())
     })
     .unwrap();
@@ -103,9 +102,10 @@ fn readonly_sql_sees_optimistic_rows_and_refuses_write_statements() {
 #[test]
 fn sql_tables_are_the_model_tables_a_select_reads() {
     let dir = tempfile::tempdir().unwrap();
-    let mut c = Client::open(
+    let mut c = Client::open05(
         SqliteStore::open(dir.path().join("db")).unwrap(),
         family_schema(),
+        "User:u",
     )
     .unwrap();
     let tables = |c: &mut Client<SqliteStore>, sql: &str| {
@@ -161,10 +161,10 @@ fn sql_tables_are_the_model_tables_a_select_reads() {
     })
     .unwrap();
     assert_eq!(
-        c.read_sql("SELECT count(*) AS n FROM axton_record", &[])
+        c.read_sql("SELECT count(*) AS n FROM axton_authority", &[])
             .unwrap(),
-        vec![json!({"n":0})],
-        "readSql is unchanged"
+        vec![json!({"n":1})],
+        "direct write evidence is exposed through the derived read view"
     );
     assert_eq!(
         c.read_sql("SELECT title FROM Book", &[]).unwrap(),
@@ -172,45 +172,6 @@ fn sql_tables_are_the_model_tables_a_select_reads() {
     );
 }
 
-#[test]
-fn transport_pulls_only_subscribed_scopes_and_the_receipt_completes_the_push() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut c = open(&dir.path().join("db"));
-    subscribe(&mut c, "book");
-    seed(&mut c, "A");
-    c.transaction(|tx| {
-        tx.enqueue(mutation("B"))?;
-        Ok(())
-    })
-    .unwrap();
-    let mut cycle = SyncCycle::default();
-    let push = cycle.next(&mut c).unwrap().unwrap();
-    assert_eq!(push.kind, "push");
-    let receipt = receipt(&mut c, 1, vec![authority(Some("B"), 1)]);
-    cycle.complete(&mut c, &receipt.encode().unwrap()).unwrap();
-    assert_eq!(
-        c.pending_count().unwrap(),
-        0,
-        "the receipt's authority completes the push; no scope is awaited"
-    );
-    let first = cycle.next(&mut c).unwrap().unwrap();
-    assert_eq!(first.kind, "pull");
-    let request = PullRequest::decode(first.body.as_bytes()).unwrap();
-    assert_eq!(request.cursors, BTreeMap::from([("book".to_string(), 0)]));
-    cycle
-        .complete(
-            &mut c,
-            &multi(&[("book", 0, 0, 0)], vec![]).encode().unwrap(),
-        )
-        .unwrap();
-    assert!(
-        cycle.next(&mut c).unwrap().is_none(),
-        "only subscribed scopes are pulled"
-    );
-}
-
-/// Query shapes the engine refuses: predicates on list fields, ordering by a
-/// non-scalar field, and unknown fields in either position ([Queries]).
 #[test]
 fn unsupported_filter_and_order_shapes_are_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -221,7 +182,12 @@ fn unsupported_filter_and_order_shapes_are_refused() {
             {"name":"tags","nullable":false,"type":{"kind":"list","element":{"kind":"scalar","name":"string"}}}
         ]}]}))
     .unwrap();
-    let mut c = Client::open(SqliteStore::open(dir.path().join("db")).unwrap(), schema).unwrap();
+    let mut c = Client::open05(
+        SqliteStore::open(dir.path().join("db")).unwrap(),
+        schema,
+        "User:u",
+    )
+    .unwrap();
     c.transaction(|tx| tx.direct(create("Note", "n", json!({"mood":"calm","tags":["a"]}))))
         .unwrap();
     let mut query = |spec: Value| {

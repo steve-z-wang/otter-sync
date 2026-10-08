@@ -77,10 +77,7 @@ fn dart_query_business_client_does_not_shadow_runtime_owner() {
         dart.contains("this.client.invokeQuery<FindOutput>"),
         "{dart}"
     );
-    assert!(
-        dart.contains("this.client.invalidateQuery('Find'"),
-        "{dart}"
-    );
+    assert!(!dart.contains("invalidateQuery"), "{dart}");
     assert!(dart.contains("required String client"), "{dart}");
 }
 
@@ -90,11 +87,24 @@ fn dart_retained_slot_helpers_do_not_emit_unused_private_aliases() {
     descriptor["mutations"] = serde_json::json!([{ "name": "Rename", "version": 1, "slots": [{ "name": "entry", "model": "Entry", "operation": "update", "cardinality": "single", "allowedPatchFields": ["text"] }] }]);
     let dart = axton_compiler::dart(&descriptor);
     assert!(
-        dart.contains("Map<String,dynamic> rename("),
-        "slot encoder missing"
+        !dart.contains("Map<String,dynamic> rename("),
+        "retired generic slot encoder remains"
     );
     assert!(
         !dart.contains("final _rename = rename;"),
         "retired private facade alias remains"
+    );
+}
+
+#[test]
+fn generated_backend_requires_protocol5_without_protocol4_identity() {
+    let output = axton_compiler::backend_typescript(&compile(SCHEMA).unwrap(), "@axtonjs/server");
+    assert!(
+        output.contains("protocol5: NonNullable<BackendOptions<Tx>[\"protocol5\"]>"),
+        "new backend lacks required protocol5 authority configuration"
+    );
+    assert!(
+        !output.contains("protocol4: NonNullable<BackendOptions<Tx>[\"protocol4\"]>"),
+        "new generated backend requires retired public identity/config"
     );
 }

@@ -1,0 +1,36 @@
+model Parent {
+ id String
+ title String
+ @@id(id)
+ @@bootstrap
+}
+model Child {
+ id String
+ parentId String
+ title String
+ parent Parent @reference(via: [parentId], onTargetDelete: delete)
+ @@id(id)
+}
+model Item {
+ id String
+ project String
+ title String
+ @@id(id)
+ @@unique(title)
+ @@bootstrap
+}
+model Tag {
+ id String
+ project String
+ label String
+ @@id(id)
+}
+model Draft {
+ id String
+ title String
+ @@id(id)
+}
+mutation PublishItem(item Item.create, private Boolean) { item Item }
+mutation RenameItem(item Item.update<title>) { item Item }
+query ProjectItems(project String) { items Item[] tags Tag[] }
+query FindItem(id String) { item Item? }

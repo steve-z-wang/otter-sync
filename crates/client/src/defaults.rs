@@ -150,3 +150,36 @@ fn fill_record(
     );
     record.extend(additions);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn retained_input_contract_only_receives_defaults_for_its_own_field_types() {
+        let schema = Schema::from_value(json!({"enums":[],"models":[{"name":"Todo","identity":["id"],"fields":[
+            {"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"},"createDefault":{"kind":"uuid"}},
+            {"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"},"createDefault":{"kind":"literal","value":""}},
+            {"name":"priority","nullable":false,"type":{"kind":"scalar","name":"int"},"createDefault":{"kind":"literal","value":0}},
+            {"name":"note","nullable":true,"type":{"kind":"scalar","name":"string"},"createDefault":{"kind":"literal","value":"new"}}
+        ]}],"actions":[{"name":"AddOld","version":1,"inputs":[{"kind":"model","name":"todo","model":"Todo","operation":"create","cardinality":"single"}],"outputs":[],"input":{"enums":[],"models":[{"name":"Todo","version":1,"identity":["id"],"fields":[
+            {"name":"id","nullable":false,"type":{"kind":"scalar","name":"string"}},
+            {"name":"title","nullable":false,"type":{"kind":"scalar","name":"string"}},
+            {"name":"priority","nullable":true,"type":{"kind":"scalar","name":"string"}}
+        ]}]}}]})).unwrap();
+        let action = schema.action("AddOld", 1).unwrap();
+        let mut args = json!({"todo":{}});
+        fill_action_args(&schema, action, &mut args);
+        let args = axton_core::normalize_action_args(&schema, action, &args).unwrap();
+        let todo = &args["todo"];
+        assert_eq!(
+            uuid::Uuid::parse_str(todo["id"].as_str().unwrap())
+                .unwrap()
+                .get_version_num(),
+            4
+        );
+        assert_eq!(todo["title"], "");
+        assert_eq!(todo["priority"], Value::Null);
+        assert!(todo.get("note").is_none());
+    }
+}

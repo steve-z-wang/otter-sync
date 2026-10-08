@@ -22,9 +22,8 @@ Future<void> clientContract(GeneratedClient client) async {
    await owned.models.todo.delete(identity);return input;
   });
  });
- final FindTodosOutput found=await client.queries.findTodos(text:'x',cursor:null,store:false,once:true);
- await client.queries.findTodos(text:'x',cursor:found.nextCursor,store:true,once:true,refresh:true);
- await client.queries.invalidate.findTodos(text:'x',cursor:null);
+ final FindTodosOutput found=await client.queries.findTodos(text:'x',cursor:null,store:false);
+ await client.queries.findTodos(text:'x',cursor:found.nextCursor,store:true);
  await client.fetch.todo(identity,store:false);
  await client.models.note.create(defaulted);
  await client.mutations.addNotes(const AddNotesInput(note:defaulted,many:[]));

@@ -17,7 +17,7 @@ const backend = createBackend<Tx>({
   mutations,
   queries,
   loaders,
-  protocol4: { backendId: 'app', contractId: 'app-v04', authorizeStream: (viewer, stream) => stream === `User:${viewer}` },
+  protocol5: { authorizeStream: (principal, stream, tx) => stream === `User:${principal}` },
 });
 const server = await backend.listen({ port: 4242 });
 console.log(server.url);
@@ -25,7 +25,7 @@ console.log(server.url);
 
 The generated `createBackend` needs no `config` option: the schema is already bound. The runtime's own `createBackend` (`packages/server/index.mts`) still takes `config` explicitly, for callers that build the schema themselves.
 
-`mutations`, `queries` and `loaders` are application modules typed against the generated interfaces; a schema without Queries omits `queries`, one without Mutations omits `mutations`. The application enforces write and read permissions. Authorization, unique constraints, child deletion and client identity are the application's responsibility ([What your backend owns](api.md#what-your-backend-owns)).
+`mutations`, `queries` and `loaders` are application modules typed against the generated interfaces; a schema without Queries omits `queries`, one without Mutations omits `mutations`. The application enforces write and read permissions. Stream authorization, business permissions, unique constraints and child deletion are the application's responsibility ([What your backend owns](api.md#what-your-backend-owns)).
 
 ## Call objects
 
@@ -47,7 +47,7 @@ Tracking is independent of permission and survives absence. Shared content chang
 
 ## Background jobs
 
-Outside a Handler there is no readback and no receipt, so a change reaches clients only through Streams. Use `backend.transaction`; its body gets the same `invalidate` and `stream` as a Mutation Handler, the framework stamps, enrolls and delivers what it collected inside the same transaction as your writes, and wakes live subscribers after commit:
+Outside a Handler there is no readback and no receipt, so a change reaches clients only through Streams. Use `backend.transaction`; its body gets the same `invalidate` and `stream` as a Mutation Handler, the framework settles explicit tracking and existing-holder invalidation inside the same transaction as your writes, and wakes live subscribers after commit:
 
 ```ts
 await backend.transaction(async ({ tx, streams, invalidate }) => {
@@ -75,6 +75,6 @@ Optional Bootstrap preparation tracks initial records. The schema selects histor
 
 Run `integration/persistence/server/run.sh` for the disposable PostgreSQL/Prisma integration suite. Its database is created, used, and destroyed by the runner.
 
-`backend.listen({ port, host? })` starts a Node HTTP+WebSocket server that serves strict Action `/sync/actions`, Fetch `/sync/fetch`, manifest `/sync/loads`, Delta `/sync/pull`, and live `/sync/live` on one port, and returns `{ url, close() }`. It resolves once the listener is bound.
+`backend.listen({ port, host? })` starts a Node HTTP+WebSocket server that serves Handshake `/sync/handshake`, Mutations `/sync/mutations`, Query `/sync/actions`, Fetch `/sync/fetch`, owned materialization `/sync/materialize`, finite delivery `/sync/pull`, and WebSocket `/sync/live` on one port, and returns `{ url, close() }`. It resolves once the listener is bound.
 
 For every option, callback, return value and failure mode, see the [backend interface reference](api.md). For process placement, the reverse-proxy configuration and trust boundaries, see [Deploy the backend](deployment.md).

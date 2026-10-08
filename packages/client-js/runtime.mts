@@ -8,9 +8,8 @@ import {
   type PrerequisiteHandler,
 } from "./connection.mts";
 export type { Connection, ConnectionOptions } from "./connection.mts";
-/** Offline-readable Store identity is independent of credentials and transport URLs. */
+/** Optional network connection for a Store. */
 export type StoreConnection = ServerOptions & {
-  identity: { backend: string; viewer: string; contract: string };
   projectionGeneration?: string;
   options?: ConnectionOptions;
 };
@@ -33,29 +32,6 @@ export type ModelSyncState<Name extends string = string> = {
   pending: PendingMutation<Name>[];
   rejections: Rejection[];
 };
-/** What a rebuild left in the old database file. */
-export type RebuildReport = {
-  oldFile: string;
-  newFile: string;
-  reason: string;
-  leftPending: number;
-  leftDirect: number;
-  abandonedCalls: { callId: string; frozen: boolean }[];
-  /** The Load jobs of the replica left behind; their handles and waiters ended with `load.schema_changed`. */
-  abandonedLoads: string[];
-};
-/** The open-time schema check: whether this open rebuilt, or is waiting to. */
-export type SchemaState = {
-  rebuilt: boolean;
-  /** The incompatible file is still in use because it holds unsent work. */
-  pending: {
-    oldFile: string;
-    reason: string;
-    pending: number;
-    direct: number;
-  } | null;
-  lastRebuild: RebuildReport | null;
-};
 /** The whole client's sync state: a local snapshot, not a network probe. */
 export type ClientSyncState = {
   clientId: string;
@@ -63,8 +39,7 @@ export type ClientSyncState = {
   beforeImages: number;
   cursors: Record<string, number>;
   streams: string[];
-  rejections: Rejection[];
-  schema: SchemaState;
+  rejections: RefusedAct[];
 };
 import type { QuerySpec, RecordValue } from "./values.mts";
 import {
@@ -74,31 +49,8 @@ import {
   type ObserverSnapshot,
   type TaskError,
   type TaskHooks,
-  type RawStoreChange,
 } from "./bridge.mts";
 export type { NativeCarrier } from "./bridge.mts";
-export type { RawStoreChange } from "./bridge.mts";
-export type StoreHook<Tx = import("./transaction.mts").Transaction> = (
-  tx: Tx,
-  changes: readonly RawStoreChange[],
-) => void | Promise<void>;
-
-/** Clear the payload before a hook's Promise can become long lived. */
-class StoreHookInvocation<Tx> {
-  #hook: StoreHook<Tx> | undefined;
-  #changes: readonly RawStoreChange[] | undefined;
-  constructor(hook: StoreHook<Tx>, changes: readonly RawStoreChange[]) {
-    this.#hook = hook;
-    this.#changes = changes;
-  }
-  run = (tx: Tx): void | Promise<void> => {
-    const hook = this.#hook!;
-    const changes = this.#changes!;
-    this.#hook = undefined;
-    this.#changes = undefined;
-    return hook(tx, changes);
-  };
-}
 import type { ServerOptions, ServerConnection } from "./live.mts";
 import { Subscriptions, type Subscription } from "./subscriptions.mts";
 export type {
@@ -112,8 +64,7 @@ import {
   ActionRegistry,
   CallError,
   actionError,
-  assertCallOptions,
-  onceControls,
+  assertQueryOptions,
   type Call,
   type CallOptions,
   type QueryOptions,
@@ -124,6 +75,7 @@ import {
   type ClientFailures,
   type ClientOutbound,
   type ClientRejections,
+  type RefusedAct,
 } from "./unsent.mts";
 export type {
   ActOperation,
@@ -138,14 +90,6 @@ export type {
   TransactionRejections,
 } from "./unsent.mts";
 
-/**
- * The native command field for an Action's store option, beside its args.
- * Once controls never reach this seam: Mutations and `enqueue` refuse them.
- */
-function storeOption(options?: CallOptions): { store?: unknown } {
-  assertCallOptions(options);
-  return options?.store === undefined ? {} : { store: options.store };
-}
 type DirectOutcome = {
   status: string;
   result?: unknown;
@@ -186,13 +130,6 @@ const INVOKE_CODES: Record<string, "unknown" | "rejected"> = {
  * error for `actionError` to map.
  */
 function invokeError(error: unknown): unknown {
-  const details = (error as TaskError | null)?.details;
-  if (details?.code === "store_hook_failed")
-    return new CallError(
-      "store_hook_failed",
-      "unknown",
-      (error as Error & { cause?: unknown }).cause ?? error,
-    );
   const message = (error as { message?: unknown } | null)?.message;
   if (message === "client_closed")
     return new CallError("action.unavailable", "unknown", error);
@@ -219,7 +156,7 @@ function directCause(error: unknown): unknown {
 /**
  * Model Fetch options ([#153](https://github.com/zanminwang/axton/issues/153)):
  * `store` defaults to `true`; `false` returns the snapshot without local
- * storage or onStore. There is no other option.
+ * storage. There is no other option.
  */
 export type FetchOptions = { store?: boolean };
 /**
@@ -242,14 +179,11 @@ function fetchStore(options: unknown): { store?: unknown } {
   return store === undefined ? {} : { store };
 }
 /** Fetch failures refused before any request was sent. */
-const FETCH_REJECTED = new Set([
-  "fetch.invalid_options",
-  "fetch.schema_pending",
-]);
+const FETCH_REJECTED = new Set(["fetch.invalid_options"]);
 /**
  * A `fetch` task's failure as a {@link CallError}: a `fetch.*` code the
- * runtime decided keeps its cause - the refusing onStore callback's value or
- * the transport failure with its status. A closed client's admission error
+ * runtime decided keeps its cache commit cause or transport failure with its
+ * status. A closed client's admission error
  * and any other engine error stay as they are.
  */
 function fetchError(error: unknown): unknown {
@@ -317,8 +251,6 @@ export function createClient<
       (callId) => this.#bridge.task({ kind: "callCompletion", callId }),
       () => this.#guard(true),
     );
-    /** Once callers still waiting: closing the client settles them at once. */
-    #waitingOnce = new Set<(error: CallError) => void>();
     #connecting = false;
     #started: Promise<void> | undefined;
     #closing: Promise<void> | undefined;
@@ -349,7 +281,7 @@ export function createClient<
       this.failures = unsent.failures;
       this.outbound = unsent.outbound;
       // Every call outcome the runtime committed - receipts, discards, direct
-      // calls, once flights and rebuild abandonments - after the commit that
+      // calls and reset abandonments - after the commit that
       // decided it. This is the only path completions take.
       bridge.on("callCompleted", (event) =>
         this.#deliverCompletions([
@@ -399,12 +331,11 @@ export function createClient<
       path: string;
       schema: object;
       stream: string;
-      connection: StoreConnection;
+      connection?: StoreConnection;
       prerequisites?: Record<string, PrerequisiteHandler>;
     }) {
-      if (!options.connection?.identity)
-        throw Error("connection identity is required");
-      const { backend, viewer, contract } = options.connection.identity;
+      if (options.connection && "identity" in options.connection)
+        throw Error("connection identity is no longer supported");
       const required = { ...options.prerequisites };
       let effects!: Effects;
       const { bridge, opened } = await Bridge.open(
@@ -412,8 +343,8 @@ export function createClient<
         {
           path: options.path,
           schema: options.schema,
-          binding: { backend, viewer, contract, stream: options.stream },
-          projectionGeneration: options.connection.projectionGeneration ?? "1",
+          stream: options.stream,
+          projectionGeneration: options.connection?.projectionGeneration ?? "1",
           prerequisiteHandlers: Object.keys(required),
         },
         (bridge) => {
@@ -424,10 +355,11 @@ export function createClient<
       const client = new Client(bridge, opened.clientId, effects);
       client.#stream = options.stream;
       try {
-        await client.connect(
-          options.connection,
-          options.connection.options ?? {},
-        );
+        if (options.connection)
+          await client.connect(
+            options.connection,
+            options.connection.options ?? {},
+          );
       } catch (error) {
         await client.close().catch(() => {});
         throw error;
@@ -507,24 +439,6 @@ export function createClient<
         if (this.#activePublicTx === tx) this.#activePublicTx = undefined;
       }
     }
-    /** Store invocation and completion bookkeeping use separate frames. */
-    #runStoreTransaction(
-      transactionId: string,
-      hook: StoreHook<Tx>,
-      changes: readonly RawStoreChange[],
-      cancellation: AbortSignal,
-    ): Promise<void> {
-      this.#transactions++;
-      const invocation = new StoreHookInvocation(hook, changes);
-      return this.#trackStoreTransaction(
-        this.#runTransactionBody(transactionId, invocation.run, cancellation),
-      );
-    }
-    #trackStoreTransaction(running: Promise<void>): Promise<void> {
-      return running.finally(() => {
-        this.#transactions--;
-      });
-    }
     read(model: string, identity: object): Promise<RecordValue | null> {
       return this.#task({ kind: "read", key: { model, identity } });
     }
@@ -601,14 +515,7 @@ export function createClient<
       }
       return decodeOutcome(outcome, decode);
     }
-    /**
-     * Execute a direct Query. Without `once` it is exactly
-     * [`invokeQueryAttempt`]: a fresh request that reads and writes no
-     * snapshot. With `once`, Rust decides: a saved result is decoded without
-     * any request or Model write, an active request is joined, or a new one
-     * is executed and its successful result saved with its authority. Every
-     * caller decodes its own copy of the outcome.
-     */
+    /** Execute a fresh direct Query and decode its committed invocation snapshot. */
     async invokeQuery<T>(
       name: string,
       version: number,
@@ -616,35 +523,14 @@ export function createClient<
       decode: (value: unknown) => T,
       options?: QueryOptions,
     ): Promise<T> {
-      const { once, refresh } = onceControls(options);
-      const call: CallOptions =
-        options?.store === undefined ? {} : { store: options.store };
-      if (!once)
-        return this.#invokeQueryAttempt(name, version, args, decode, call);
-      let outcome: DirectOutcome | undefined;
-      try {
-        this.#guard(true);
-        ({ outcome } = await this.#untilClosed(
-          this.#bridge.task({
-            kind: "invoke",
-            name,
-            version,
-            args,
-            once,
-            refresh,
-            ...storeOption(call),
-          }),
-        ));
-      } catch (error) {
-        throw actionError(invokeError(error));
-      }
-      return decodeOutcome(outcome, decode);
+      assertQueryOptions(options);
+      return this.#invokeQueryAttempt(name, version, args, decode, options);
     }
     /**
      * Fetch one Model by identity through its existing Loader
      * ([#153](https://github.com/zanminwang/axton/issues/153)). Rust
-     * validates the identity and options, joins an identical request in
-     * flight or sends a new one, and by default stores the reply before
+     * validates the identity and options, sends an independent request,
+     * and by default stores its guarded cache projection before
      * answering; this submits the task and decodes this caller's own copy of
      * the snapshot. `null` when the Loader has no readable record.
      */
@@ -671,40 +557,6 @@ export function createClient<
       return decodeOutcome(outcome, (result) =>
         result === null ? null : decode(result as RecordValue),
       );
-    }
-    /**
-     * Discard the saved once results of one Query argument set, every store
-     * variant, in a local transaction. Needs no network; an older request
-     * still in flight cannot save its result afterwards.
-     */
-    async invalidateQuery(
-      name: string,
-      version: number,
-      args: object,
-    ): Promise<void> {
-      try {
-        this.#guard(true);
-        await this.#bridge.task({
-          kind: "invalidateQueryOnce",
-          name,
-          version,
-          args,
-        });
-      } catch (error) {
-        throw actionError(error);
-      }
-    }
-    /**
-     * Promise lifetime: a once caller settles with `client.closed` as soon as
-     * the public `close()` is called, before the runtime's own `client_closed`.
-     */
-    #untilClosed<T>(task: Promise<T>): Promise<T> {
-      return new Promise<T>((resolve, reject) => {
-        this.#waitingOnce.add(reject);
-        task
-          .then(resolve, reject)
-          .finally(() => this.#waitingOnce.delete(reject));
-      });
     }
     onActionCompletion(listener: (completion: any) => void): () => void {
       this.#completionListeners.add(listener);
@@ -733,7 +585,8 @@ export function createClient<
       options?: CallOptions,
     ): Promise<{ outcome: DirectOutcome }> {
       this.#guard(true);
-      const store = storeOption(options);
+      const store =
+        options?.store === undefined ? {} : { store: options.store };
       try {
         return await this.#bridge.task({
           kind: "invoke",
@@ -842,17 +695,6 @@ export function createClient<
         finished();
       }
     }
-    /** Protocol seams for tests and tools; the connection never uses them. */
-    freeze(): Promise<string | null> {
-      return this.#task({ kind: "freeze" });
-    }
-    /** The completions in its value were already delivered as `callCompleted`. */
-    acknowledge(sequence: number, receipt: object) {
-      return this.#task({ kind: "ack", sequence, receipt });
-    }
-    applyPull(page: object) {
-      return this.#task({ kind: "pull", page });
-    }
     /** The client's sync state, or one record's when `model` and `identity` are given. */
     syncState(): Promise<ClientSyncState>;
     syncState(model: string, identity: object): Promise<ModelSyncState>;
@@ -860,19 +702,6 @@ export function createClient<
       return model === undefined
         ? this.#task({ kind: "status" })
         : this.#task({ kind: "recordStatus", key: { model, identity } });
-    }
-    /**
-     * Leave an incompatible database behind and open a fresh file for the
-     * schema this client asked for. Refused while unsent mutations remain
-     * unless `discardPending`; the report says what the old file keeps. The
-     * runtime completes every abandoned call, ends every subscription handle
-     * of the replica it left and re-runs every watch before the report
-     * arrives.
-     */
-    rebuild(
-      options: { discardPending?: boolean } = {},
-    ): Promise<RebuildReport> {
-      return this.#task({ kind: "rebuild", ...options });
     }
     pendingTasks(): Promise<RecordValue[]> {
       return this.#task({ kind: "tasks" });
@@ -997,9 +826,6 @@ export function createClient<
     }
     close(): Promise<void> {
       this.#actions.close();
-      for (const settle of [...this.#waitingOnce])
-        settle(new CallError("client.closed"));
-      this.#waitingOnce.clear();
       // The runtime's close ends every handle; they stop with this client.
       this.#subscriptions.close();
       return (this.#closing ??= this.#finishClose());

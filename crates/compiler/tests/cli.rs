@@ -285,7 +285,7 @@ fn cli_retains_history_and_does_not_overwrite_on_break() {
     assert!(compile().status.success());
     let backend: serde_json::Value =
         serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
-    assert_eq!(backend["mutations"].as_array().unwrap().len(), 2);
+    assert!(backend.get("mutations").is_none());
     assert_eq!(
         backend["schema"]["clientPolicies"]
             .as_array()
@@ -422,7 +422,8 @@ fn cli_writes_backend_ts_with_the_requested_runtime_import() {
     assert!(status.success());
     let backend = fs::read_to_string(out.join("backend.ts")).unwrap();
     assert!(backend.contains("from \"../../packages/server/index.mts\""));
-    assert!(backend.contains(" save: { v1(call: HandlerCall<Tx, SaveInput>)"));
+    assert!(!backend.contains("HandlerCall<Tx, SaveInput>"));
+    assert!(!backend.contains("options.handlers"));
     assert!(backend.contains(" a?: { v1(call: LoaderCall<Tx, AIdentity>)"));
     let client = fs::read_to_string(out.join("client.ts")).unwrap();
     assert!(client.contains("from \"../../packages/client-js/index.mts\""));
@@ -1221,4 +1222,57 @@ fn cli_generated_typescript_imports_the_public_packages_by_default() {
     let client = fs::read_to_string(out.join("client.ts")).unwrap();
     assert!(backend.contains("from \"@axtonjs/server\""), "{backend}");
     assert!(client.contains("from \"@axtonjs/client\""), "{client}");
+}
+
+#[test]
+fn backend_executes_named_actions_while_retained_slot_history_stays_in_client_schema() {
+    let (root, input) = workspace("retained-slot-carrier");
+    let out = root.join("out");
+    fs::write(input.join("test.model"), "model Entry { id String text String @@id(id) } mutation LegacyEdit { entry Entry.update<text> } mutation EditEntry(entry Entry.update<text>)").unwrap();
+    let result = axton(&[input.as_os_str(), out.as_os_str()]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let history = fs::read(input.join("history/mutations.json")).unwrap();
+    let backend: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("backend.json")).unwrap()).unwrap();
+    assert!(backend.get("mutations").is_none());
+    assert_eq!(backend["schema"]["clientPolicies"][0]["name"], "LegacyEdit");
+    assert!(
+        backend["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "EditEntry")
+    );
+    let generated = fs::read_to_string(out.join("backend.ts")).unwrap();
+    assert!(generated.contains("EditEntry"));
+    assert!(!generated.contains("RecordHandler"));
+    let inline = generated
+        .lines()
+        .find(|line| line.starts_with("const schema = "))
+        .unwrap();
+    let inline: serde_json::Value = serde_json::from_str(
+        inline
+            .strip_prefix("const schema = ")
+            .unwrap()
+            .strip_suffix(" as const;")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(inline, backend, "both server execution carriers must agree");
+    assert!(inline.get("mutations").is_none());
+    let client = fs::read_to_string(out.join("generated.ts")).unwrap();
+    assert!(client.contains("export type MutationName = 'EditEntry';"));
+    assert!(
+        axton(&[input.as_os_str(), out.as_os_str()])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read(input.join("history/mutations.json")).unwrap(),
+        history
+    );
 }

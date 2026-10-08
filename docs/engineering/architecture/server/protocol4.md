@@ -1,12 +1,14 @@
 # Protocol 4 server runtime
 
+Historical carrier reference. Current behavior is owned by [protocol 5](../protocol/0.5.md). This page does not promise support for old local files or an alternate current API.
+
 ## 1. Introduction and Goals
 
 Protocol 4 serves one Stream bound to a persistent Store. Ordinary Query and Fetch snapshots carry `cursor: null`; only Stream and manifest records carry that Stream's real per-identity cursor. Mutation receipts acknowledge an immutable accepted or refused call and identify its server-visible optimistic targets. Device-only companions are settled locally and never appear in a receipt.
 
 ## 3. Context and Scope
 
-[`protocol_v04.rs`](../../../../crates/server/src/protocol_v04.rs) is dispatched from the existing Action, Fetch and Pull entrypoints. [`live.rs`](../../../../crates/server/src/live.rs) negotiates the shared `SubscribeIntent` and drains strict Delta pages through the same Pull carrier. The Node host owns the application transaction and current Stream authorization; PostgreSQL persists calls, membership, publication groups and bounded identity manifests.
+[`protocol_v04.rs`](https://github.com/zanminwang/axton/blob/v0.4.2/crates/server/src/protocol_v04.rs) is dispatched from the existing Action, Fetch and Pull entrypoints. [`live.rs`](../../../../crates/server/src/live.rs) negotiates the shared `SubscribeIntent` and drains strict Delta pages through the same Pull carrier. The Node host owns the application transaction and current Stream authorization; PostgreSQL persists calls, membership, publication groups and bounded identity manifests.
 
 `backendId` and `contractId` are stable trusted configuration. The materialization ID uses the shared normalized Model-read descriptor and `projectionGeneration` (default `"1"`), not a hash of the entire client/server Schema. Current Model names, versions, fields, identities, relevant enums and Bootstrap selection participate. Credential refresh does not change these values. A Store's incarnation survives ordinary reopen; explicit reset changes it.
 
@@ -38,4 +40,4 @@ Publication/constraint groups allow at most 10,000 identities and 1 MiB of retai
 
 ## 10. Quality Requirements
 
-[`protocol-v04.test.mjs`](../../../../integration/persistence/server/protocol-v04.test.mjs) exercises real Node/Rust/PostgreSQL and HTTP/WebSocket boundaries: null reads, tracking upgrade retries, immutable replay, original-prefix groups, unique transfers across pages and separate transactions, finite manifest resume and Remove coverage, type filtering, retained-context receipt recovery, no-op/private Mutation targets, bounded failure and live delivery. Client-side authority admission, projection reconstruction, ownership and durable C/G commits remain the client engine's responsibility; server evidence alone does not prove local completion.
+[`protocol-v04.test.mjs`](https://github.com/zanminwang/axton/blob/v0.4.2/integration/persistence/server/protocol-v04.test.mjs) exercises real Node/Rust/PostgreSQL and HTTP/WebSocket boundaries: null reads, tracking upgrade retries, immutable replay, original-prefix groups, unique transfers across pages and separate transactions, finite manifest resume and Remove coverage, type filtering, retained-context receipt recovery, no-op/private Mutation targets, bounded failure and live delivery. Client-side authority admission, projection reconstruction, ownership and durable C/G commits remain the client engine's responsibility; server evidence alone does not prove local completion.

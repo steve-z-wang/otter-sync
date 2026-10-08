@@ -12,11 +12,6 @@ Future<void> main(List<String> args) async {
       connection: StoreConnection(
         url: 'http://[',
         token: () => 'secret',
-        identity: const StoreIdentity(
-          backend: 'failed',
-          viewer: 'viewer',
-          contract: 'v04',
-        ),
       ),
     );
     throw StateError('invalid URL unexpectedly opened');
@@ -36,11 +31,6 @@ Future<void> main(List<String> args) async {
       connection: StoreConnection(
         url: 'http://127.0.0.1:1',
         token: () => 'secret',
-        identity: const StoreIdentity(
-          backend: 'failed',
-          viewer: 'viewer',
-          contract: 'v04',
-        ),
       ),
     );
     throw Exception('missing directory unexpectedly opened');

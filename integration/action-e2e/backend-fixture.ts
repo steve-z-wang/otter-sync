@@ -1,4 +1,4 @@
-import { drainedDatabase } from "../load-e2e/lifecycle.mts";
+import { drainedDatabase } from "../e2e/lifecycle.mts";
 import { isRetryableTransactionError } from "../../packages/server/index.mts";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
@@ -30,8 +30,9 @@ export async function createFixture() {
     note?: { id: string; createdAt?: Date } | null;
     at: Date;
   }[] = [];
-  const onceCalls = { todoPage: 0, countTodos: 0 };
+  const queryExecutions = { todoPage: 0, countTodos: 0 };
   let failQueries = false;
+  let queryGate: (() => Promise<void>) | undefined;
   /** Every PublishEntry argument exactly as the handler received it. */
   const publishes: {
     entry: { id: string; title: string; body: string };
@@ -228,7 +229,8 @@ export async function createFixture() {
     },
     // Each execution has a distinct asOf, so a reused result is observable.
     async todoPage({ ctx, args }) {
-      onceCalls.todoPage++;
+      if (queryGate) await queryGate();
+      queryExecutions.todoPage++;
       if (failQueries) throw new CallRejected("query.down");
       const rows = (
         await ctx.tx.query(
@@ -239,12 +241,12 @@ export async function createFixture() {
       return {
         todos: rows.map((row) => ({ id: String(row.id) })),
         count: rows.length,
-        asOf: new Date(Date.UTC(2026, 0, 1, 0, 0, onceCalls.todoPage)),
+        asOf: new Date(Date.UTC(2026, 0, 1, 0, 0, queryExecutions.todoPage)),
         next: rows.length ? `after:${rows[rows.length - 1].id}` : null,
       };
     },
     async countTodos({ ctx }) {
-      onceCalls.countTodos++;
+      queryExecutions.countTodos++;
       return {
         count: Number(
           (await ctx.tx.query("SELECT COUNT(*)::int AS n FROM action_e2e_todo"))
@@ -376,9 +378,7 @@ export async function createFixture() {
   const backend = createBackend<PgClient>({
     database: lifecycle.database,
     authenticate: devAuth(),
-    protocol4: {
-      backendId: "action-e2e",
-      contractId: "action-v04",
+    protocol5: {
       authorizeStream: (viewer, stream) => stream === `User:${viewer}`,
     },
     mutations,
@@ -409,8 +409,11 @@ export async function createFixture() {
     notes,
     /** Restamp arguments in arrival order. */
     restamps,
-    /** Real handler executions of the once-test Queries. */
-    onceCalls,
+    /** Real handler executions of the fresh Queries. */
+    queryExecutions,
+    set queryGate(value: (() => Promise<void>) | undefined) {
+      queryGate = value;
+    },
     set failQueries(value: boolean) {
       failQueries = value;
     },

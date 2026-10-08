@@ -10,13 +10,13 @@ import {pg,type PgClient} from '../../packages/postgres/index.mts';
 import {createBackend,devAuth,CallRejected} from './backend.ts';
 import {GeneratedClient} from './client.ts';
 
-test('generated SDK uses real Query/Fetch, once, Bootstrap and settled Mutation paths',async()=>{
+test('generated SDK uses real fresh Query/Fetch, Bootstrap and settled Mutation paths',async()=>{
  const pool=new Pool({connectionString:process.env.DATABASE_URL});
  const dir=await mkdtemp(join(tmpdir(),'axton-sdk-host-'));
  let queries=0,bootstraps=0,invalidIdentity=false;
  await pool.query(await readFile(new URL('../../packages/postgres/migration.sql',import.meta.url),'utf8'));
  await pool.query('CREATE TABLE sdk_entry(id text PRIMARY KEY,text text NOT NULL)');
- const backend=createBackend<PgClient>({database:pg(pool),authenticate:devAuth(),protocol4:{backendId:'sdk',contractId:'sdk-v04',authorizeStream:(viewer,stream)=>stream===`User:${viewer}`},mutations:{
+ const backend=createBackend<PgClient>({database:pg(pool),authenticate:devAuth(),protocol5:{authorizeStream:(viewer,stream)=>stream===`User:${viewer}`},mutations:{
   async publish({ctx,args}) {
    if(args.entry.text==='refuse') throw new CallRejected('publish.refused');
    await ctx.tx.query('INSERT INTO sdk_entry VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET text=excluded.text',[args.entry.id,args.entry.text.trim()]);
@@ -28,7 +28,7 @@ test('generated SDK uses real Query/Fetch, once, Bootstrap and settled Mutation 
   const values=new Map(rows.map(row=>[String(row.id),{id:String(row.id),text:String(row.text)}]));return ids.map(x=>values.get(x.id)??null);
  },draft:undefined},bootstrap:async()=>{bootstraps++;}});
  const server=await backend.listen({port:0});
- const connection={url:server.url,token:'alice',identity:{backend:'sdk',viewer:'alice',contract:'sdk-v04'}};
+ const connection={url:server.url,token:'alice'};
  const client=await GeneratedClient.open({path:join(dir,'db'),stream:'User:alice',connection});
  try {
   await client.bootstrap();assert.equal(bootstraps,1);
@@ -42,11 +42,11 @@ test('generated SDK uses real Query/Fetch, once, Bootstrap and settled Mutation 
   assert.equal(await client.models.draft.get({id:'refused-draft'}),null);
   assert.equal(await client.models.entry.get({id:'refused-entry'}),null);
   await pool.query("INSERT INTO sdk_entry VALUES('read','snapshot')");
-  const first=await client.queries.find({id:'read'},{store:false,once:true});assert.equal(first.entry?.text,'snapshot');
+  const first=await client.queries.find({id:'read'},{store:false});assert.equal(first.entry?.text,'snapshot');
   assert.equal(await client.models.entry.get({id:'read'}),null);
   await pool.query("UPDATE sdk_entry SET text='changed' WHERE id='read'");
-  assert.equal((await client.queries.find({id:'read'},{store:false,once:true})).entry?.text,'snapshot');assert.equal(queries,1);
-  assert.equal((await client.queries.find({id:'read'},{store:false,once:true,refresh:true})).entry?.text,'changed');assert.equal(queries,2);
+  assert.equal((await client.queries.find({id:'read'},{store:false})).entry?.text,'changed');assert.equal(queries,2);
+  assert.equal((await client.queries.find({id:'read'},{store:false})).entry?.text,'changed');assert.equal(queries,3);
   assert.equal((await client.fetch.entry({id:'read'},{store:false}))?.text,'changed');assert.equal(await client.models.entry.get({id:'read'}),null);
   assert.equal((await client.fetch.entry({id:'read'}))?.text,'changed');assert.equal((await client.models.entry.get({id:'read'}))?.text,'changed');
   assert.equal((await client.queries.find({id:'missing'})).entry,null);
@@ -63,7 +63,7 @@ test('generated Dart scalar codecs settle through actual retained host contracts
  if(!process.env.AXTON_DART) return;
  const {createBackend:createDateBackend}=await import('../action-runtime-dart/backend.ts');
  const pool=new Pool({connectionString:process.env.DATABASE_URL});
- const backend=createDateBackend<PgClient>({database:pg(pool),authenticate:devAuth(),protocol4:{backendId:'date-sdk',contractId:'date-v04',authorizeStream:(viewer,stream)=>stream===`User:${viewer}`},mutations:{
+ const backend=createDateBackend<PgClient>({database:pg(pool),authenticate:devAuth(),protocol5:{authorizeStream:(viewer,stream)=>stream===`User:${viewer}`},mutations:{
   echo:async({args})=>({result:args.at,moods:args.moods,maybe:args.maybe}),
   touch:async({args})=>({stamp:args.note.at}),ping:async()=>{},
  },queries:{now:async({args})=>({at:args.at}),notesSince:async()=>({notes:[],pinned:[]})},loaders:{note:async({ids})=>ids.map(()=>null)},bootstrap:async()=>{}});

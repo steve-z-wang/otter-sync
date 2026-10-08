@@ -95,12 +95,24 @@ mod tests {
     #[test]
     fn runtime_carrier_opens_wakes_drains_and_detaches_across_the_c_boundary() {
         let dir = tempfile::tempdir().unwrap();
+        let application = CString::new(dir.path().join("application").to_str().unwrap()).unwrap();
+        let mut configuration_error = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                super::axton_mobile_runtime_configure_application_data(
+                    application.as_ptr(),
+                    &mut configuration_error,
+                )
+            },
+            0
+        );
+        assert!(configuration_error.is_null());
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
         let (sender, wakes) = std::sync::mpsc::channel::<u64>();
         let context = Box::into_raw(Box::new(std::sync::Mutex::new(sender)));
         let request = CString::new(
-            serde_json::json!({"type":"open","requestId":"1","path":dir.path().join("db"),"schema":schema,"binding":{"backend":"mobile-tests","viewer":"a","stream":"User:a","contract":"app"}})
+            serde_json::json!({"type":"open","requestId":"1","path":dir.path().join("db"),"schema":schema,"protocol":5,"stream":"User:a"})
                 .to_string(),
         )
         .unwrap();
@@ -128,7 +140,8 @@ mod tests {
             events.extend(drained(runtime));
         };
         let opened = wait(&mut events, "taskCompleted");
-        assert_eq!(opened["ok"], true);
+        assert_eq!(opened["ok"], true, "{opened:?}");
+        assert_eq!(opened["value"]["context"]["protocol"], 5);
         assert!(opened["value"]["clientId"].is_string());
 
         let close = CString::new(r#"{"type":"close"}"#).unwrap();

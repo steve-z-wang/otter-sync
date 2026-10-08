@@ -643,7 +643,7 @@ pub async fn process_read05(
                 )
                 .await?;
                 // Caller and cache contracts may project the same identity differently.
-                let cache_state = if cache_version == *version {
+                let cache_state = if !r.store || cache_version == *version {
                     state.clone()
                 } else {
                     crate::action_results::load_one_canonical_state(
@@ -747,6 +747,7 @@ pub async fn process_read05(
                     crate::action_results::SnapshotPolicy {
                         models: &versions,
                         canonical: true,
+                        cache: r.store,
                     },
                     &host,
                 )

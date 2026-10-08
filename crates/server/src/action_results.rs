@@ -108,6 +108,7 @@ fn snapshot_selection(
 pub(crate) struct SnapshotPolicy<'a> {
     pub models: &'a BTreeMap<String, u64>,
     pub canonical: bool,
+    pub cache: bool,
 }
 
 pub(crate) async fn assemble_snapshots(
@@ -170,9 +171,14 @@ pub(crate) async fn assemble_snapshots(
                 .models
                 .get(model)
                 .ok_or_else(|| Error::code(code::MODEL_VERSION_UNSUPPORTED))?;
-            let cache_state = reads
-                .cached(config, owner, &key, cache_version, host)
-                .await?;
+            let cache_state = if policy.cache {
+                reads
+                    .cached(config, owner, &key, cache_version, host)
+                    .await?
+            } else {
+                // Non-storing reads carry caller evidence, never a cache projection.
+                state.clone()
+            };
             snapshots.insert(
                 key.encoded().map_err(internal)?,
                 ReadRecord {

@@ -208,6 +208,7 @@ pub(crate) async fn execute(
                 crate::action_results::SnapshotPolicy {
                     models: &models,
                     canonical: true,
+                    cache: true,
                 },
                 &host,
             )

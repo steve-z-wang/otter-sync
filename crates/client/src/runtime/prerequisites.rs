@@ -14,7 +14,7 @@
 //! A success resolves the task and a plain failure fails it with its reason,
 //! each in its own unit. A failure the handler declared transient
 //! (`error.retry`) writes nothing: the task stays pending and waits
-//! [`crate::ConnectionDriver::backoff`] of its consecutive transient failures, counted in
+//! exponential backoff of its consecutive transient failures, counted in
 //! memory, so a reopen runs it at once. One `timer` effect waits for the
 //! earliest retry. A readiness change forgets a task's backoff.
 use super::effects::{EffectKind, Ready};

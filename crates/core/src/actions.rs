@@ -1,36 +1,13 @@
 //! Shared Action contracts. The compiler, client and server use these same
 //! descriptors to normalize invocation data before any application code runs.
 use crate::{
-    AuthorityRecord, EnumDescriptor, FieldDescriptor, MAX_SAFE_INTEGER, ModelDescriptor, Result,
-    Schema, ValueType, canonical_json, invalid,
+    EnumDescriptor, FieldDescriptor, MAX_SAFE_INTEGER, ModelDescriptor, Result, Schema, ValueType,
+    invalid,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActionIntent {
-    pub call_id: String,
-    pub name: String,
-    pub version: u64,
-    pub args: Value,
-    /// Per-invocation output storage policy, outside business args. The
-    /// default (all) is omitted, so default requests keep their bytes.
-    #[serde(default, skip_serializing_if = "ActionStore::is_all")]
-    pub store: ActionStore,
-}
-impl ActionIntent {
-    pub fn normalize(mut self, schema: &Schema) -> Result<Self> {
-        self.call_id = normalize_call_id(&self.call_id)?;
-        let action = schema.action(&self.name, self.version)?;
-        self.args = normalize_action_args(schema, action, &self.args)?;
-        self.store.validate(action)?;
-        self.store = self.store.canonical();
-        Ok(self)
-    }
-}
 
 /// Which explicit Model outputs of one invocation contribute additional
 /// local authority. It never disables authority required by mutation inputs
@@ -147,93 +124,6 @@ pub fn store_eligible(output: &ActionOutputDescriptor) -> bool {
             output.source,
             ActionOutputSource::Named(ActionNamedSource::HandlerIdentity)
         )
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DirectActionRequest {
-    pub call: ActionIntent,
-    pub models: BTreeMap<String, u64>,
-}
-impl DirectActionRequest {
-    /// Structural server ingress. Semantic Action name/version/args failures
-    /// remain per-call outcomes after the call identity has been claimed.
-    pub fn decode_envelope(bytes: &[u8]) -> Result<Self> {
-        crate::check_request_size(bytes, crate::limits::PUSH_BYTES)
-            .map_err(|_| invalid("direct Action request exceeds byte limit"))?;
-        let raw: Value = serde_json::from_slice(bytes)?;
-        // Negotiation metadata is checked here and kept out of the request.
-        crate::read_capabilities(&raw)?;
-        let models = crate::protocol::read_action_models(&raw["models"])?;
-        let call: ActionIntent = serde_json::from_value(
-            raw.get("call")
-                .cloned()
-                .ok_or_else(|| invalid("direct Action call missing"))?,
-        )?;
-        let call = ActionIntent {
-            call_id: normalize_call_id(&call.call_id)?,
-            ..call
-        };
-        if call.name.trim().is_empty() {
-            return Err(invalid("direct Action name missing"));
-        }
-        Ok(Self { call, models })
-    }
-    pub fn decode(bytes: &[u8], schema: &Schema) -> Result<Self> {
-        let mut request = Self::decode_envelope(bytes)?;
-        request.call = request.call.normalize(schema)?;
-        validate_action_models(
-            schema,
-            schema.action(&request.call.name, request.call.version)?,
-            &request.models,
-        )?;
-        Ok(request)
-    }
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DirectActionResponse {
-    pub completion: CallCompletion,
-    pub records: Vec<AuthorityRecord>,
-    /// Enrollment claims for returned records ([`MembershipClaim`]); omitted
-    /// from the wire when the call enrolled nothing.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub memberships: Vec<crate::MembershipClaim>,
-}
-impl DirectActionResponse {
-    pub fn decode(bytes: &[u8], request: &DirectActionRequest, schema: &Schema) -> Result<Self> {
-        if bytes.len() > crate::limits::PUSH_BYTES {
-            return Err(invalid("direct Action response exceeds byte limit"));
-        }
-        let raw: Value = serde_json::from_slice(bytes)?;
-        let rejection = if raw["completion"]["outcome"]["status"] == "failed" {
-            vec![serde_json::json!({"ordinal":1,"code":raw["completion"]["outcome"]["code"]})]
-        } else {
-            vec![]
-        };
-        let mut wrapper = serde_json::json!({"clientId":"direct","batchSequence":1,"rejections":rejection,"completions":[raw["completion"]],"records":raw["records"]});
-        if let Some(memberships) = raw.get("memberships") {
-            wrapper["memberships"] = memberships.clone();
-        }
-        let mut mutation = serde_json::to_value(&request.call)?;
-        mutation["ordinal"] = serde_json::json!(1);
-        let frozen = crate::PushRequest::decode_actions(serde_json::json!({"clientId":"direct","batchSequence":1,"models":request.models,"mutations":[mutation]}).to_string().as_bytes(), schema)?;
-        let receipt =
-            crate::PushReceipt::decode_actions(wrapper.to_string().as_bytes(), &frozen, schema)?;
-        // A failed call enrolled nothing, as it carries no records.
-        if !rejection.is_empty() && !receipt.memberships.is_empty() {
-            return Err(invalid("a failed direct Action carries no memberships"));
-        }
-        Ok(Self {
-            completion: receipt.completions.into_iter().next().unwrap(),
-            records: receipt.records,
-            memberships: receipt.memberships,
-        })
-    }
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        Ok(canonical_json(&serde_json::to_value(self)?)?.into_bytes())
-    }
 }
 
 pub fn normalize_call_id(value: &str) -> Result<String> {

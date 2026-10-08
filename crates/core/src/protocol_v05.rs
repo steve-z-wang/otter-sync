@@ -1,5 +1,4 @@
 //! Protocol 5 contract and pure planning helpers. No network or database I/O.
-//! Runtime adoption is separate; protocol 4 remains available.
 use crate::{Result, canonical_json, check_stream, counter, invalid};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;

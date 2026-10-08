@@ -2,7 +2,6 @@
 pub mod actions;
 pub mod authority;
 pub mod bootstrap;
-pub mod connection;
 pub mod ddl;
 mod defaults;
 pub mod engine;
@@ -25,7 +24,6 @@ pub use axton_core::*;
 pub use bootstrap::{
     BootstrapError, BootstrapPhase, BootstrapRecordFailure, BootstrapState, SUBSCRIPTION_CLOSED,
 };
-pub use connection::*;
 pub use query::{Direction, QueryOrder, QuerySpec};
 pub use store::*;
 pub use subscriptions::SubscriptionState;

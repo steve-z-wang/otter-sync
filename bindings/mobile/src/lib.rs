@@ -92,21 +92,30 @@ mod tests {
         serde_json::from_str(&text).unwrap()
     }
 
+    fn configure_application_data() {
+        static APPLICATION: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        APPLICATION.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = CString::new(dir.path().to_str().unwrap()).unwrap();
+            let mut error = std::ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    super::axton_mobile_runtime_configure_application_data(
+                        path.as_ptr(),
+                        &mut error,
+                    )
+                },
+                0
+            );
+            assert!(error.is_null());
+            dir
+        });
+    }
+
     #[test]
     fn runtime_carrier_opens_wakes_drains_and_detaches_across_the_c_boundary() {
+        configure_application_data();
         let dir = tempfile::tempdir().unwrap();
-        let application = CString::new(dir.path().join("application").to_str().unwrap()).unwrap();
-        let mut configuration_error = std::ptr::null_mut();
-        assert_eq!(
-            unsafe {
-                super::axton_mobile_runtime_configure_application_data(
-                    application.as_ptr(),
-                    &mut configuration_error,
-                )
-            },
-            0
-        );
-        assert!(configuration_error.is_null());
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
         let (sender, wakes) = std::sync::mpsc::channel::<u64>();
@@ -231,6 +240,7 @@ mod tests {
     /// parser's message, and a string it returned is freed exactly once.
     #[test]
     fn a_failed_open_and_malformed_input_are_answered_across_the_c_boundary() {
+        configure_application_data();
         let dir = tempfile::tempdir().unwrap();
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../../fixtures/schemas/entry.json")).unwrap();
@@ -238,7 +248,7 @@ mod tests {
         let context = Box::into_raw(Box::new(std::sync::Mutex::new(sender)));
         let missing = dir.path().join("missing").join("sub").join("mobile.db");
         let request = CString::new(
-            serde_json::json!({"type":"open","requestId":"1","path":missing,"schema":schema,"binding":{"backend":"mobile-tests","viewer":"a","stream":"User:a","contract":"app"}})
+            serde_json::json!({"type":"open","requestId":"1","path":missing,"schema":schema,"protocol":5,"stream":"User:a"})
                 .to_string(),
         )
         .unwrap();
@@ -256,7 +266,10 @@ mod tests {
         let failed = wait_for(&wakes, runtime, &mut events, "taskCompleted");
         assert_eq!(failed["requestId"], "1");
         assert_eq!(failed["ok"], false, "open in a missing directory must fail");
-        assert!(!failed["error"].as_str().unwrap().is_empty());
+        assert!(
+            failed["error"].as_str().unwrap().contains("sqlite file:"),
+            "{failed:?}"
+        );
         wait_for(&wakes, runtime, &mut events, "runtimeClosed");
         let status =
             CString::new(r#"{"type":"task","requestId":"2","command":{"kind":"status"}}"#).unwrap();

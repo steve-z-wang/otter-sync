@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.2](https://github.com/zanminwang/axton/compare/v0.5.1...v0.5.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **client:** let lifecycle dependencies subsume sequence edges ([#257](https://github.com/zanminwang/axton/issues/257)) ([930968a](https://github.com/zanminwang/axton/commit/930968a4da12015fe6f4e69924eb65bf4d76280e))
+* isolate unsupported protocol 5 Mutation versions ([#262](https://github.com/zanminwang/axton/issues/262)) ([0ee02eb](https://github.com/zanminwang/axton/commit/0ee02eb95563bb597b9168b33ffed5fdf2a4c842))
+* retire completed materialization owners before the next batch ([#261](https://github.com/zanminwang/axton/issues/261)) ([227505c](https://github.com/zanminwang/axton/commit/227505ce4349e5620dd443580c5648203a5f7cd4))
+
 ## [0.5.1](https://github.com/zanminwang/axton/compare/v0.5.0...v0.5.1) (2026-10-08)
 
 

@@ -448,19 +448,6 @@ class Client implements WritePort, SubmitMutationPort {
     return await connecting;
   }
 
-  /// Test seams over the legacy commands: freeze the next push batch, settle
-  /// it with a receipt, apply one page. The connection never uses them.
-  Future<String?> freeze() async => await _task({'kind': 'freeze'}) as String?;
-
-  /// The runtime announces every completion the receipt settled as
-  /// `callCompleted`.
-  Future<void> acknowledge(int sequence, Map<String, dynamic> receipt) async {
-    await _task({'kind': 'ack', 'sequence': sequence, 'receipt': receipt});
-  }
-
-  Future<Map<String, dynamic>> applyPull(Map<String, dynamic> page) async =>
-      (await _task({'kind': 'pull', 'page': page})) as Map<String, dynamic>;
-
   /// One record's sync state: its pending mutations and retained rejections.
   Future<Map<String, dynamic>> recordSyncState(
     String model,

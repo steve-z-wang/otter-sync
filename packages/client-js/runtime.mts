@@ -704,17 +704,6 @@ export function createClient<
         finished();
       }
     }
-    /** Protocol seams for tests and tools; the connection never uses them. */
-    freeze(): Promise<string | null> {
-      return this.#task({ kind: "freeze" });
-    }
-    /** The completions in its value were already delivered as `callCompleted`. */
-    acknowledge(sequence: number, receipt: object) {
-      return this.#task({ kind: "ack", sequence, receipt });
-    }
-    applyPull(page: object) {
-      return this.#task({ kind: "pull", page });
-    }
     /** The client's sync state, or one record's when `model` and `identity` are given. */
     syncState(): Promise<ClientSyncState>;
     syncState(model: string, identity: object): Promise<ModelSyncState>;

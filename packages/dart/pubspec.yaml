@@ -2,7 +2,7 @@ name: axton
 description: >-
   Dart client for AXTON, a schema-driven framework for local-first
   applications with an application-owned backend. Alpha.
-version: 0.5.1 # x-release-please-version
+version: 0.5.2 # x-release-please-version
 homepage: https://github.com/zanminwang/axton#readme
 repository: https://github.com/zanminwang/axton
 environment:

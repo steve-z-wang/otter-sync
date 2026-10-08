@@ -618,9 +618,7 @@ fn late_cascade_discovery_extends_owned_effects_without_changing_frozen_input() 
     );
 }
 
-#[test]
-fn offline_create_then_sequenced_update_preserves_lifecycle_dependency() {
-    let d = tempfile::tempdir().unwrap();
+fn creation_then_sequenced_edit_schema() -> Schema {
     let mut value = serde_json::to_value(schema()).unwrap();
     value["actions"].as_array_mut().unwrap().push(json!({
         "name":"Edit","version":1,
@@ -628,7 +626,13 @@ fn offline_create_then_sequenced_update_preserves_lifecycle_dependency() {
         "outputs":[],
         "sequence":{"after":[{"name":"Write","arguments":{"entries":"entry"}}]}
     }));
-    let s = Schema::from_value(value).unwrap();
+    Schema::from_value(value).unwrap()
+}
+
+#[test]
+fn offline_create_then_sequenced_update_preserves_lifecycle_dependency() {
+    let d = tempfile::tempdir().unwrap();
+    let s = creation_then_sequenced_edit_schema();
     let mut c =
         Client::open05(SqliteStore::open(d.path().join("db")).unwrap(), s, "User:u").unwrap();
     let (created, edited) = c
@@ -670,6 +674,114 @@ fn offline_create_then_sequenced_update_preserves_lifecycle_dependency() {
     assert!(
         matches!(c.mutation_result05(edited.ordinal).unwrap().unwrap().outcome,
         v05::MutationOutcome::Rejected { ref code, .. } if code == "dependency.rejected")
+    );
+    assert!(c.call_completion05(&edited.call_id).unwrap().is_some());
+    assert!(
+        c.read(&axton_client::RecordKey {
+            model: "Entry".into(),
+            identity: json!({"id":"e"}),
+        })
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn offline_sequenced_update_waits_for_creation_settlement_and_survives_reopen() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let s = creation_then_sequenced_edit_schema();
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), s.clone(), "User:u").unwrap();
+    let created = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Write",
+                1,
+                json!({"entries":[{"id":"e","text":"created","note":null}]}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let edited = c
+        .transaction(|tx| {
+            tx.submit_mutation05(
+                "Edit",
+                1,
+                json!({"entry":{"id":"e","text":"edited"}}),
+                vec![],
+            )
+        })
+        .unwrap();
+    let key = axton_client::RecordKey {
+        model: "Entry".into(),
+        identity: json!({"id":"e"}),
+    };
+    assert_eq!(c.read(&key).unwrap().unwrap()["text"], "edited");
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(
+        batch.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![created.ordinal]
+    );
+    c.acknowledge_batch05(&v05::BatchAcknowledgement {
+        context: batch.context.clone(),
+        batch_id: batch.batch_id,
+        digest: batch.digest.clone(),
+        results: vec![v05::MutationResult {
+            mutation_id: created.ordinal,
+            outcome: v05::MutationOutcome::Accepted {
+                sync_cursor: 9,
+                result: Value::Null,
+                targets: vec![v05::SettlementTarget::Stream {
+                    key: v05::RecordKey {
+                        model: "Entry".into(),
+                        identity: key.identity.clone(),
+                    },
+                    cursor: 9,
+                    fallback: v05::ReadRecord {
+                        key: v05::RecordKey {
+                            model: "Entry".into(),
+                            identity: key.identity.clone(),
+                        },
+                        cursor: (),
+                        state: json!({"text":"created","note":null}),
+                    },
+                }],
+            },
+        }],
+    })
+    .unwrap();
+    assert!(
+        c.freeze_batch05().unwrap().is_none(),
+        "acceptance still waits for creation settlement"
+    );
+    drop(c);
+    let mut c = Client::open05(SqliteStore::open(&path).unwrap(), s, "User:u").unwrap();
+    assert_eq!(c.read(&key).unwrap().unwrap()["text"], "edited");
+    assert!(
+        c.freeze_batch05().unwrap().is_none(),
+        "reopen preserves the dependency fence"
+    );
+    c.initialize_stream05(9).unwrap();
+    c.install_authority05(
+        &batch.context,
+        &[v05::AuthorityChange::Record {
+            key: v05::RecordKey {
+                model: "Entry".into(),
+                identity: key.identity.clone(),
+            },
+            cursor: 9,
+            state: json!({"text":"created","note":null}),
+        }],
+        None,
+    )
+    .unwrap();
+    assert_eq!(c.read(&key).unwrap().unwrap()["text"], "edited");
+    assert!(c.call_completion05(&created.call_id).unwrap().is_some());
+    assert!(c.call_completion05(&edited.call_id).unwrap().is_none());
+    let next = c.freeze_batch05().unwrap().unwrap();
+    assert_eq!(
+        next.mutations.iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![edited.ordinal]
     );
 }
 

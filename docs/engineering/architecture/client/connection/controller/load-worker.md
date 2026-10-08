@@ -12,7 +12,7 @@ Inputs: ready pages from the ledger (`load_ready_pages`), connection controls, e
 
 ## 5. Building Block View
 
-`LoadWorker` in [client/load_worker.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/load_worker.rs) keeps in memory only the batches in flight, the outcomes waiting to apply and each job's backoff (`{call_id, attempts, due}`). Every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its reads are bounded: one scan reads at most the batch size plus the pages it must skip plus 20 damaged rows. The runtime glue is [client/runtime/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/runtime/loads.rs); lane readiness and alternation are in [client/runtime/tasks.rs](../../../../../../crates/client/src/runtime/tasks.rs).
+`LoadWorker` in [client/load_worker.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/load_worker.rs) keeps in memory only the batches in flight, the outcomes waiting to apply and each job's backoff (`{call_id, attempts, due}`). Every durable fact - the frozen request, the attempt count, the phase - is in `axton_load`. Its reads are bounded: one scan reads at most the batch size plus the pages it must skip plus 20 damaged rows. The runtime glue is [client/runtime/loads.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/runtime/loads.rs); lane readiness and alternation are in [client/runtime/tasks.rs](https://github.com/zanminwang/axton/blob/v0.4.2/crates/client/src/runtime/tasks.rs).
 
 | Limit (internal default) | Value |
 | --- | --- |

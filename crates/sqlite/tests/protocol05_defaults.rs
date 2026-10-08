@@ -291,3 +291,89 @@ fn durable_create_and_local_companion_defaults_expand_once_before_freeze() {
     reopened.sort_by_key(|r| r["title"].as_str().unwrap().to_string());
     assert_eq!(reopened, visible);
 }
+
+#[test]
+fn servers_and_loaders_never_synthesize_creation_defaults() {
+    let schema = schema();
+    let complete = json!({"id":"t","title":"complete","done":false,"priority":0,"status":"open","createdAt":"2026-01-01T00:00:00.000Z","note":null,"memo":null});
+    let action = schema.action("Add", 1).unwrap();
+    assert!(axton_core::normalize_action_args(&schema, action, &json!({"todo":complete})).is_ok());
+    let mut missing = complete.clone();
+    missing.as_object_mut().unwrap().remove("done");
+    assert!(axton_core::normalize_action_args(&schema, action, &json!({"todo":missing})).is_err());
+    missing.as_object_mut().unwrap().remove("id");
+    assert!(schema.normalize_state("Todo", &missing).is_err());
+    assert!(schema.validate_state("Todo", &missing).is_err());
+}
+#[test]
+fn a_default_only_change_opens_in_place_and_rewrites_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = open(&path);
+    c.transaction(|tx| {
+        tx.submit_mutation05("Add", 1, json!({"todo":{"title":"queued"}}), vec![])?;
+        tx.direct(local_create(json!({"title":"local"})))
+    })
+    .unwrap();
+    let before = rows(&mut c);
+    let batch = c.freeze_batch05().unwrap().unwrap();
+    drop(c);
+    let mut changed = serde_json::to_value(schema()).unwrap();
+    let fields = changed["models"][0]["fields"].as_array_mut().unwrap();
+    fields[1]["createDefault"] = json!({"kind":"literal","value":"changed"});
+    fields[6]["createDefault"] = json!({"kind":"uuid"});
+    fields[5].as_object_mut().unwrap().remove("createDefault");
+    let mut c = Client::open05(
+        SqliteStore::open(&path).unwrap(),
+        Schema::from_value(changed).unwrap(),
+        "User:u",
+    )
+    .unwrap();
+    assert!(c.pending_schema05().unwrap().is_none());
+    assert_eq!(rows(&mut c), before);
+    assert_eq!(c.freeze_batch05().unwrap().unwrap(), batch);
+    assert!(
+        c.transaction(|tx| tx.direct(local_create(json!({}))))
+            .is_err()
+    );
+    c.transaction(|tx| {
+        tx.direct(local_create(
+            json!({"createdAt":"2026-01-01T00:00:00.000Z"}),
+        ))
+    })
+    .unwrap();
+    let fresh = rows(&mut c)
+        .into_iter()
+        .find(|row| !before.contains(row))
+        .unwrap();
+    assert_eq!(fresh["title"], "changed");
+    assert_uuid_v4(&fresh["note"]);
+}
+#[test]
+fn a_creation_default_never_backfills_a_new_required_column() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("db");
+    let mut c = open(&path);
+    c.transaction(|tx| tx.direct(local_create(json!({"title":"old"}))))
+        .unwrap();
+    let before = rows(&mut c);
+    drop(c);
+    let mut changed = serde_json::to_value(schema()).unwrap();
+    changed["models"][0]["fields"].as_array_mut().unwrap().push(json!({"name":"rank","nullable":false,"type":{"kind":"scalar","name":"int"},"createDefault":{"kind":"literal","value":3}}));
+    assert!(
+        Client::open05(
+            SqliteStore::open(&path).unwrap(),
+            Schema::from_value(changed).unwrap(),
+            "User:u"
+        )
+        .is_err()
+    );
+    let mut c = open(&path);
+    assert_eq!(rows(&mut c), before);
+    assert!(
+        !c.read_sql("PRAGMA table_info(Todo)", &[])
+            .unwrap()
+            .iter()
+            .any(|r| r["name"] == "rank")
+    );
+}
